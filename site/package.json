@@ -1,0 +1,25 @@
+{
+  "name": "sap-business-agents-site",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "catalog": "node scripts/generate-agent-catalog.mjs",
+    "validate": "node scripts/validate-agent-catalog.mjs",
+    "dev": "npm run catalog && astro dev",
+    "check": "npm run catalog && astro check",
+    "build": "npm run validate && npm run catalog && astro build",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "astro": "6.4.8"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.9",
+    "typescript": "5.9.3"
+  }
+}

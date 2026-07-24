@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "slug": "ap-payment",
+  "module": "FI",
+  "title": { "zh": "AP Payment Assistant", "en": "AP Payment Assistant" },
+  "summary": {
+    "zh": "查询供应商未清项目与付款状态，并用可解释规则识别重复、冻结、异常账户和逾期风险。",
+    "en": "Checks vendor open items and payment status, then explains duplicate, block, bank-account and overdue risks."
+  },
+  "status": "Runnable prototype",
+  "version": "0.1.0",
+  "owner": "FI-AP",
+  "tags": ["Accounts Payable", "Payment Risk", "Open Items", "Explainable Rules"],
+  "sapModules": ["FI-AP", "MM-IV", "Bank Accounting"],
+  "transactions": ["FBL1N", "FK10N", "FB03", "F110", "MIR4", "ME23N"],
+  "tables": ["BSIK", "BSAK", "BKPF", "BSEG", "LFA1", "LFB1", "REGUH", "REGUP"],
+  "systems": ["SAP ECC", "SAP S/4HANA"],
+  "inputs": {
+    "zh": ["自然语言问题", "供应商或发票标识", "公司代码（可选）", "查询基准日或日期范围"],
+    "en": ["Natural-language question", "Vendor or invoice identifier", "Optional company code", "As-of date or date range"]
+  },
+  "outputs": {
+    "zh": ["付款状态摘要", "未清项目明细", "风险证据与等级", "建议处理动作", "数据来源追踪"],
+    "en": ["Payment status summary", "Open-item details", "Risk evidence and severity", "Suggested actions", "Data lineage"]
+  },
+  "guardrails": {
+    "zh": ["只读查询，不执行付款或清账", "银行账户只显示掩码", "计划付款不等同于已清账"],
+    "en": ["Read-only; never pays or clears items", "Bank accounts remain masked", "Scheduled payment is not reported as cleared"]
+  },
+  "workflow": [
+    {
+      "id": "understand-request",
+      "title": { "zh": "理解付款问题", "en": "Understand the payment question" },
+      "description": { "zh": "识别到期、未清、发票状态或风险检查意图，并抽取供应商、公司代码、凭证和日期范围。", "en": "Classifies due-date, open-item, invoice-status or risk intent and extracts scope." },
+      "tools": [
+        { "name": "ApIntentParser", "kind": "Agent component", "purpose": { "zh": "确定性意图和参数抽取", "en": "Deterministic intent and parameter extraction" } }
+      ]
+    },
+    {
+      "id": "load-ap-data",
+      "title": { "zh": "读取应付证据", "en": "Load AP evidence" },
+      "description": { "zh": "通过可替换的只读端口获取未清、已清、付款运行和主数据。", "en": "Loads open, cleared, payment-run and master data through a replaceable read-only port." },
+      "tools": [
+        { "name": "SapApDataAdapter", "kind": "Data port", "purpose": { "zh": "隔离 RFC、OData、CDS 或 fixture", "en": "Isolates RFC, OData, CDS or fixtures" } },
+        { "name": "FBL1N / F110 / FB03", "kind": "SAP read", "purpose": { "zh": "人工核对未清项、付款运行和凭证", "en": "Human verification of open items, payment runs and documents" } }
+      ]
+    },
+    {
+      "id": "determine-status",
+      "title": { "zh": "判定付款状态", "en": "Determine payment status" },
+      "description": { "zh": "区分未清、已计划、已付款和已清账，避免把付款运行误报为最终付款。", "en": "Separates open, scheduled, paid and cleared states without overstating payment-run evidence." },
+      "tools": [
+        { "name": "ApPaymentAssistant", "kind": "Orchestrator", "purpose": { "zh": "范围校验、查询编排和状态聚合", "en": "Scope validation, query orchestration and status aggregation" } }
+      ]
+    },
+    {
+      "id": "evaluate-risk",
+      "title": { "zh": "执行付款风险规则", "en": "Evaluate payment risks" },
+      "description": { "zh": "检查重复参考号、重复金额、付款冻结、异常银行账户和逾期。", "en": "Checks duplicate references, duplicate amounts, blocks, unusual bank data and overdue items." },
+      "tools": [
+        { "name": "PaymentRiskEngine", "kind": "Rule engine", "purpose": { "zh": "产生可追踪规则编号、证据和建议", "en": "Produces traceable rule IDs, evidence and recommendations" } }
+      ]
+    },
+    {
+      "id": "present-result",
+      "title": { "zh": "生成业务回答", "en": "Present the business answer" },
+      "description": { "zh": "返回按币种汇总、项目、风险和数据追踪，并保留机器可读 JSON。", "en": "Returns currency-aware summaries, items, risks and lineage as business text and JSON." },
+      "tools": [
+        { "name": "AssistantResponse / CLI", "kind": "Output", "purpose": { "zh": "结构化 JSON 与中文业务摘要", "en": "Structured JSON and business-readable summary" } }
+      ]
+    }
+  ]
+}

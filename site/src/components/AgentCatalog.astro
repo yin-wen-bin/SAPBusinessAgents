@@ -1,0 +1,132 @@
+---
+import type { AgentDefinition, Locale } from "../lib/types";
+import { MODULES } from "../lib/types";
+import { agentPath } from "../lib/urls";
+
+interface Props {
+  locale: Locale;
+  agents: AgentDefinition[];
+}
+
+const { locale, agents } = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+
+<section class="catalog-section" data-agent-catalog>
+  <div class="search-row">
+    <label class="search-box">
+      <span aria-hidden="true">⌕</span>
+      <input
+        type="search"
+        placeholder={locale === "zh" ? "搜索 Agent、事务码、表、Tool 或业务场景…" : "Search agents, T-codes, tables, tools or scenarios…"}
+        aria-label={locale === "zh" ? "搜索 Agent" : "Search agents"}
+        data-search-input
+      />
+    </label>
+    <div class="catalog-count" aria-live="polite">
+      <strong data-result-count>{agents.length}</strong>
+      <span>{locale === "zh" ? "个结果" : "results"}</span>
+    </div>
+  </div>
+
+  <div class="filter-bar" aria-label={locale === "zh" ? "模块筛选" : "Module filters"}>
+    <button class="active" type="button" data-module-filter="All">{locale === "zh" ? "全部" : "All"}</button>
+    {MODULES.map((moduleName) => (
+      <button type="button" data-module-filter={moduleName}>{moduleName}</button>
+    ))}
+  </div>
+
+  <div class="catalog-head" aria-hidden="true">
+    <span>AGENT</span><span>{locale === "zh" ? "用途" : "PURPOSE"}</span><span>SAP</span><span>{locale === "zh" ? "工作流" : "WORKFLOW"}</span>
+  </div>
+  <div class="agent-list">
+    {agents.map((agent) => {
+      const searchText = [
+        agent.slug,
+        agent.title.zh,
+        agent.title.en,
+        agent.summary.zh,
+        agent.summary.en,
+        ...agent.tags,
+        ...agent.sapModules,
+        ...agent.transactions,
+        ...agent.tables,
+        ...agent.workflow.flatMap((step) => [
+          step.title.zh,
+          step.title.en,
+          ...step.tools.flatMap((tool) => [tool.name, tool.kind, tool.purpose.zh, tool.purpose.en]),
+        ]),
+      ].join(" ").toLowerCase();
+      const toolCount = new Set(agent.workflow.flatMap((step) => step.tools.map((tool) => tool.name))).size;
+      return (
+        <a
+          class="agent-row"
+          href={agentPath(base, locale, agent.module, agent.slug)}
+          data-agent-row
+          data-module={agent.module}
+          data-search={searchText}
+        >
+          <div class="agent-identity">
+            <span class:list={["module-badge", `module-${agent.module.toLowerCase()}`]}>{agent.module}</span>
+            <span>
+              <strong>{agent.title[locale]}</strong>
+              <code>{agent.slug}</code>
+            </span>
+          </div>
+          <p>{agent.summary[locale]}</p>
+          <div class="sap-scope">
+            {agent.sapModules.slice(0, 3).map((sapModule) => <span>{sapModule}</span>)}
+          </div>
+          <div class="workflow-summary">
+            <b>{agent.workflow.length}</b>
+            <span>{locale === "zh" ? "步" : "steps"}</span>
+            <i>→</i>
+            <small>{toolCount} Tools</small>
+          </div>
+        </a>
+      );
+    })}
+    <div class="empty-state" data-empty-state hidden>
+      <strong>{locale === "zh" ? "没有找到匹配的 Agent" : "No matching agents"}</strong>
+      <p>{locale === "zh" ? "尝试事务码、模块名、表名或 Tool 名称。" : "Try a T-code, module, table or tool name."}</p>
+    </div>
+  </div>
+</section>
+
+<script>
+  const catalog = document.querySelector<HTMLElement>("[data-agent-catalog]");
+  if (catalog) {
+    const searchInput = catalog.querySelector<HTMLInputElement>("[data-search-input]");
+    const rows = Array.from(catalog.querySelectorAll<HTMLElement>("[data-agent-row]"));
+    const buttons = Array.from(catalog.querySelectorAll<HTMLButtonElement>("[data-module-filter]"));
+    const count = catalog.querySelector<HTMLElement>("[data-result-count]");
+    const empty = catalog.querySelector<HTMLElement>("[data-empty-state]");
+    const requestedModule = new URLSearchParams(window.location.search).get("module");
+    let activeModule = buttons.some((button) => button.dataset.moduleFilter === requestedModule) ? requestedModule! : "All";
+
+    const applyFilters = () => {
+      const query = searchInput?.value.trim().toLowerCase() ?? "";
+      let visible = 0;
+      for (const row of rows) {
+        const moduleMatches = activeModule === "All" || row.dataset.module === activeModule;
+        const queryMatches = !query || (row.dataset.search ?? "").includes(query);
+        row.hidden = !(moduleMatches && queryMatches);
+        if (!row.hidden) visible += 1;
+      }
+      buttons.forEach((button) => button.classList.toggle("active", button.dataset.moduleFilter === activeModule));
+      if (count) count.textContent = String(visible);
+      if (empty) empty.hidden = visible !== 0;
+    };
+
+    buttons.forEach((button) => button.addEventListener("click", () => {
+      activeModule = button.dataset.moduleFilter ?? "All";
+      const url = new URL(window.location.href);
+      if (activeModule === "All") url.searchParams.delete("module");
+      else url.searchParams.set("module", activeModule);
+      window.history.replaceState({}, "", url);
+      applyFilters();
+    }));
+    searchInput?.addEventListener("input", applyFilters);
+    applyFilters();
+  }
+</script>

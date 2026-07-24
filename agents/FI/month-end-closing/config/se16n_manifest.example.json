@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "source_type": "sap-se16n-export",
+  "sap_system": "S4Q",
+  "sap_client": "100",
+  "reviewed_by": "Finance Reviewer",
+  "reviewed_at": "2026-07-31T18:00:00+08:00",
+  "scope": {
+    "company_code": "1010",
+    "fiscal_year": 2026,
+    "period": 7
+  },
+  "currency": "EUR",
+  "checks": {
+    "AP_OVERDUE_ITEMS": {
+      "value": 2,
+      "amount": "125.00",
+      "currency": "EUR",
+      "data_quality_issues": [],
+      "evidence": [
+        {
+          "supplier": "V1",
+          "count": 2
+        }
+      ],
+      "exports": [
+        {
+          "table": "BSIK",
+          "file": "../.local/se16n/BSIK_1010_2026_07.xlsx",
+          "sha256": "replace-with-64-character-lowercase-sha256",
+          "row_count": 2,
+          "selection_scope": {
+            "company_code": "1010",
+            "fiscal_year": 2026,
+            "period": 7
+          }
+        }
+      ]
+    }
+  }
+}

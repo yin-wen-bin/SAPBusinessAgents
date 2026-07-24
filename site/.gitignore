@@ -1,0 +1,11 @@
+node_modules/
+.npm-cache/
+.astro/
+.vinext/
+.wrangler/
+dist/
+src/generated/
+.local/
+.env
+.env.*
+!.env.example

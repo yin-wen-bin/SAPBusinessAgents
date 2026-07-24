@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+
+# Local runs and generated output
+.local/
+.local-scaffold/
+output/
+out/
+
+# Site
+site/node_modules/
+site/dist/
+site/.astro/
+site/.npm-cache/
+site/src/generated/
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

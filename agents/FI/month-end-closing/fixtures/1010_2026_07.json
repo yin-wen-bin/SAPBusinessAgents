@@ -1,0 +1,69 @@
+{
+  "company_code": "1010",
+  "fiscal_year": 2026,
+  "period": 7,
+  "currency": "CNY",
+  "checks": {
+    "AP_OVERDUE_ITEMS": {
+      "value": 12,
+      "amount": "125000.00",
+      "evidence": [{"bucket": ">90 days", "count": 12}]
+    },
+    "AR_UNAPPLIED_RECEIPTS": {
+      "value": 0,
+      "amount": "0.00",
+      "evidence": []
+    },
+    "GL_UNRECONCILED_ITEMS": {
+      "value": 3,
+      "amount": "9800.00",
+      "evidence": [{"account": "transitory account", "count": 3}]
+    },
+    "MM_GRIR_AGED_ITEMS": {
+      "value": 4,
+      "amount": "84500.00",
+      "evidence": [{"bucket": ">60 days", "count": 4}]
+    },
+    "MM_GRIR_ADJUSTMENTS_PENDING": {
+      "value": 0,
+      "amount": "0.00",
+      "evidence": []
+    },
+    "AA_DEPRECIATION_PENDING": {
+      "value": 1,
+      "amount": "0.00",
+      "evidence": [{"depreciation_area": "01", "status": "not posted"}]
+    },
+    "GL_FX_VALUATION_PENDING": {
+      "value": 0,
+      "amount": "0.00",
+      "evidence": []
+    },
+    "GL_AUTO_CLEARING_PENDING": {
+      "value": 7,
+      "amount": "23000.00",
+      "evidence": [{"account_group": "clearing", "count": 7}]
+    },
+    "GL_PERIOD_CONTROL_ISSUE": {
+      "value": 0,
+      "amount": "0.00",
+      "evidence": []
+    },
+    "MM_PERIOD_CLOSE_PENDING": {
+      "value": 1,
+      "amount": "0.00",
+      "evidence": [{"status": "previous period still open"}]
+    },
+    "CO_UNALLOCATED_COSTS": {
+      "value": 5,
+      "amount": "45000.00",
+      "evidence": [{"cost_center_group": "shared services", "count": 5}]
+    },
+    "SD_BILLING_TRANSFER_ERRORS": {
+      "value": 2,
+      "amount": "62000.00",
+      "evidence": [{"interface": "SD-FI", "status": "accounting transfer error", "count": 2}]
+    }
+  }
+}
+

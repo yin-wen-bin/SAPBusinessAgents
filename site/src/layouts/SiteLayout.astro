@@ -1,0 +1,43 @@
+---
+import SiteHeader from "../components/SiteHeader.astro";
+import Sidebar from "../components/Sidebar.astro";
+import type { Locale, SapModule } from "../lib/types";
+import "../styles/global.css";
+
+interface Props {
+  locale: Locale;
+  title: string;
+  description: string;
+  alternateHref: string;
+  counts: Record<SapModule, number>;
+  activeModule?: SapModule;
+}
+
+const { locale, title, description, alternateHref, counts, activeModule } = Astro.props;
+const pageTitle = title === "SAP Business Agents" ? title : `${title} — SAP Business Agents`;
+const canonical = Astro.site ? new URL(Astro.url.pathname, Astro.site) : undefined;
+---
+
+<!doctype html>
+<html lang={locale === "zh" ? "zh-CN" : "en"}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    {canonical && <link rel="canonical" href={canonical} />}
+    <title>{pageTitle}</title>
+  </head>
+  <body>
+    <div class="site-root">
+      <SiteHeader locale={locale} alternateHref={alternateHref} />
+      <div class="app-shell">
+        <Sidebar locale={locale} counts={counts} activeModule={activeModule} />
+        <slot />
+      </div>
+    </div>
+  </body>
+</html>

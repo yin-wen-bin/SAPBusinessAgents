@@ -1,0 +1,210 @@
+[checklist]
+id = "SAP_MONTH_END_CORE"
+version = "1.0"
+description = "FI/CO/MM/SD month-end exception checklist"
+currency = "CNY"
+not_recommended_at = "medium"
+
+[[checks]]
+id = "AP_OVERDUE_ITEMS"
+name = "AP 逾期未清供应商项目"
+module = "FI-AP"
+handler = "ap"
+metric_name = "overdue_open_item_count"
+operator = "gt"
+threshold = 0
+severity = "high"
+blocking = false
+owner_department = "Accounts Payable"
+owner = "AP Closing Team"
+remediation = "复核逾期供应商项目，确认付款、清账或记录合理结转说明。"
+requires_human_confirmation = true
+tcode = "FBL1N"
+tables = ["BSIK", "BSAK", "BKPF", "BSEG"]
+
+[[checks]]
+id = "AR_UNAPPLIED_RECEIPTS"
+name = "AR 未认领收款"
+module = "FI-AR"
+handler = "ar"
+metric_name = "unapplied_receipt_count"
+operator = "gt"
+threshold = 0
+severity = "medium"
+blocking = false
+owner_department = "Accounts Receivable"
+owner = "AR Closing Team"
+remediation = "核对客户与银行流水，完成收款认领或形成经审批的结转说明。"
+requires_human_confirmation = true
+tcode = "FBL5N"
+tables = ["BSID", "BSAD", "BKPF", "BSEG"]
+
+[[checks]]
+id = "GL_UNRECONCILED_ITEMS"
+name = "GL 未核对明细"
+module = "FI-GL"
+handler = "gl"
+metric_name = "unreconciled_item_count"
+operator = "gt"
+threshold = 0
+severity = "high"
+blocking = false
+owner_department = "General Ledger"
+owner = "GL Closing Team"
+remediation = "核对总账明细与支持凭证，完成必要的更正、重分类或解释。"
+requires_human_confirmation = true
+tcode = "FBL3N"
+tables = ["BSIS", "BSAS", "BKPF", "BSEG"]
+
+[[checks]]
+id = "MM_GRIR_AGED_ITEMS"
+name = "MM 长账龄 GR/IR 差异"
+module = "MM"
+handler = "mm"
+metric_name = "aged_grir_item_count"
+operator = "gt"
+threshold = 0
+severity = "medium"
+blocking = false
+owner_department = "Procure to Pay"
+owner = "MM/AP Reconciliation Team"
+remediation = "核对收货、发票和采购订单历史，明确补票、冲销或结转处理。"
+requires_human_confirmation = true
+tcode = "MB5S"
+tables = ["EKBE", "BKPF", "BSEG"]
+
+[[checks]]
+id = "MM_GRIR_ADJUSTMENTS_PENDING"
+name = "MM GR/IR 维护待处理"
+module = "MM"
+handler = "mm"
+metric_name = "grir_adjustment_count"
+operator = "gt"
+threshold = 0
+severity = "high"
+blocking = false
+owner_department = "Procure to Pay"
+owner = "MM/AP Reconciliation Team"
+remediation = "复核差异根因；任何 MR11 调整均须由授权人员确认后执行。"
+requires_human_confirmation = true
+tcode = "MR11"
+tables = ["EKBE", "BKPF", "BSEG"]
+
+[[checks]]
+id = "AA_DEPRECIATION_PENDING"
+name = "AA 折旧运行未完成"
+module = "FI-AA"
+handler = "aa"
+metric_name = "pending_depreciation_run_count"
+operator = "gt"
+threshold = 0
+severity = "critical"
+blocking = true
+owner_department = "Asset Accounting"
+owner = "Fixed Assets Team"
+remediation = "分析折旧日志并修复错误；AFAB 正式运行与过账必须人工确认。"
+requires_human_confirmation = true
+tcode = "AFAB"
+tables = ["TABA", "ANLC", "ANEP", "BKPF", "BSEG"]
+
+[[checks]]
+id = "GL_FX_VALUATION_PENDING"
+name = "GL 外币评估未完成"
+module = "FI-GL"
+handler = "gl"
+metric_name = "pending_fx_valuation_count"
+operator = "gt"
+threshold = 0
+severity = "critical"
+blocking = true
+owner_department = "General Ledger"
+owner = "GL Closing Team"
+remediation = "复核汇率、评估范围与测试运行日志；F.05 正式过账必须人工确认。"
+requires_human_confirmation = true
+tcode = "F.05"
+tables = ["BKPF", "BSEG", "BSIS"]
+
+[[checks]]
+id = "GL_AUTO_CLEARING_PENDING"
+name = "GL 自动清账候选未处理"
+module = "FI-GL"
+handler = "gl"
+metric_name = "auto_clearing_candidate_count"
+operator = "gt"
+threshold = 0
+severity = "high"
+blocking = false
+owner_department = "General Ledger"
+owner = "GL Closing Team"
+remediation = "复核清账条件与候选明细；F.13 正式清账必须人工确认。"
+requires_human_confirmation = true
+tcode = "F.13"
+tables = ["BSEG", "BSIS", "BSAS", "BKPF"]
+
+[[checks]]
+id = "GL_PERIOD_CONTROL_ISSUE"
+name = "GL 期间控制异常"
+module = "FI-GL"
+handler = "gl"
+metric_name = "period_control_issue_count"
+operator = "gt"
+threshold = 0
+severity = "critical"
+blocking = true
+owner_department = "Financial Control"
+owner = "Finance System Controller"
+remediation = "复核期间变式与账户类型；任何 OB52 开关期间操作必须经授权人员确认。"
+requires_human_confirmation = true
+tcode = "OB52"
+tables = ["T001", "T001B", "BKPF"]
+
+[[checks]]
+id = "MM_PERIOD_CLOSE_PENDING"
+name = "MM 期间结转未完成"
+module = "MM"
+handler = "mm"
+metric_name = "pending_mm_period_close_count"
+operator = "gt"
+threshold = 0
+severity = "critical"
+blocking = true
+owner_department = "Inventory Accounting"
+owner = "MM Period Controller"
+remediation = "复核未完成物料移动和期间状态；MMPV 结转必须经授权人员确认。"
+requires_human_confirmation = true
+tcode = "MMPV"
+tables = ["MARV", "EKBE", "BKPF", "BSEG"]
+
+[[checks]]
+id = "CO_UNALLOCATED_COSTS"
+name = "CO 未分配成本"
+module = "CO"
+handler = "co"
+metric_name = "unallocated_cost_item_count"
+operator = "gt"
+threshold = 0
+severity = "medium"
+blocking = false
+owner_department = "Controlling"
+owner = "CO Closing Team"
+remediation = "核对成本中心明细与分配循环，完成分配或记录审批后的结转理由。"
+requires_human_confirmation = true
+tcode = "KSB1"
+tables = ["COEP", "BKPF", "BSEG"]
+
+[[checks]]
+id = "SD_BILLING_TRANSFER_ERRORS"
+name = "SD 开票传输至 FI 失败"
+module = "SD"
+handler = "sd"
+metric_name = "billing_transfer_error_count"
+operator = "gt"
+threshold = 0
+severity = "critical"
+blocking = true
+owner_department = "Order to Cash"
+owner = "SD Billing Team"
+remediation = "检查开票凭证状态与会计接口错误；重新传输或过账必须人工确认。"
+requires_human_confirmation = true
+tcode = "VF03"
+tables = ["BKPF", "BSEG", "BSID"]

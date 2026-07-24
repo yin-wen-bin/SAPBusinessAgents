@@ -1,0 +1,50 @@
+---
+import { MODULES, type Locale, type SapModule } from "../lib/types";
+import { homePath } from "../lib/urls";
+
+interface Props {
+  locale: Locale;
+  counts: Record<SapModule, number>;
+  activeModule?: SapModule;
+}
+
+const { locale, counts, activeModule } = Astro.props;
+const homeHref = homePath(import.meta.env.BASE_URL, locale);
+const moduleLabels: Record<SapModule, { zh: string; en: string }> = {
+  Common: { zh: "跨模块", en: "Cross-module" },
+  FI: { zh: "财务会计", en: "Financial Accounting" },
+  CO: { zh: "管理会计", en: "Controlling" },
+  SD: { zh: "销售分销", en: "Sales & Distribution" },
+  MM: { zh: "物料管理", en: "Materials Management" },
+  PP: { zh: "生产计划", en: "Production Planning" },
+};
+---
+
+<aside class="sidebar">
+  <a class:list={["sidebar-overview", { active: !activeModule }]} href={homeHref}>
+    <span class="nav-symbol">◫</span>
+    <span>{locale === "zh" ? "全部 Agents" : "All Agents"}</span>
+    <strong>{Object.values(counts).reduce((sum, count) => sum + count, 0)}</strong>
+  </a>
+  <p class="sidebar-label">SAP MODULES</p>
+  <nav aria-label={locale === "zh" ? "SAP 模块" : "SAP modules"}>
+    {MODULES.map((moduleName) => (
+      <a
+        class:list={["module-link", { active: activeModule === moduleName, muted: counts[moduleName] === 0 }]}
+        href={`${homeHref}?module=${moduleName}`}
+      >
+        <span class="module-code">{moduleName.slice(0, 2)}</span>
+        <span>
+          <b>{moduleName}</b>
+          <small>{moduleLabels[moduleName][locale]}</small>
+        </span>
+        <strong>{counts[moduleName]}</strong>
+      </a>
+    ))}
+  </nav>
+  <div class="sidebar-footer">
+    <span>{locale === "zh" ? "内容来源" : "Content source"}</span>
+    <code>agents/&lt;module&gt;/&lt;slug&gt;</code>
+    <p>{locale === "zh" ? "新增清单后自动进入目录。" : "New manifests are discovered automatically."}</p>
+  </div>
+</aside>

@@ -1,0 +1,27 @@
+{
+  "source_name": "sample-fixture",
+  "po_items": [
+    {"po_number":"4500000001","po_item":"00010","company_code":"1000","plant":"1000","vendor":"V10001","currency":"CNY","ordered_quantity":"100","net_price":"10","material":"MAT-A","description":"已收货未发票","purchasing_group":"001"},
+    {"po_number":"4500000002","po_item":"00010","company_code":"1000","plant":"1000","vendor":"V10002","currency":"CNY","ordered_quantity":"50","net_price":"20","material":"MAT-B","description":"已发票未收货","purchasing_group":"001"},
+    {"po_number":"4500000003","po_item":"00010","company_code":"1000","plant":"1100","vendor":"V10003","currency":"CNY","ordered_quantity":"100","net_price":"15","material":"MAT-C","description":"数量差异","purchasing_group":"002"},
+    {"po_number":"4500000004","po_item":"00010","company_code":"1000","plant":"1100","vendor":"V10004","currency":"CNY","ordered_quantity":"10","net_price":"100","material":"MAT-D","description":"价格差异","purchasing_group":"002"},
+    {"po_number":"4500000005","po_item":"00010","company_code":"2000","plant":"2000","vendor":"V10005","currency":"CNY","ordered_quantity":"100","net_price":"8","material":"MAT-E","description":"退货未处理","purchasing_group":"003"},
+    {"po_number":"4500000006","po_item":"00010","company_code":"2000","plant":"2000","vendor":"V10006","currency":"CNY","ordered_quantity":"10","net_price":"30","material":"MAT-F","description":"长期价格尾差","purchasing_group":"003"},
+    {"po_number":"4500000007","po_item":"00010","company_code":"1000","plant":"1000","vendor":"V10007","currency":"CNY","ordered_quantity":"5","net_price":"50","material":"MAT-G","description":"已清项目","purchasing_group":"001"}
+  ],
+  "history": [
+    {"po_number":"4500000001","po_item":"00010","event_id":"h1","event_type":"goods_receipt","posting_date":"2026-01-10","quantity":"100","amount":"1000","currency":"CNY","document_number":"5000000001","fiscal_year":"2026","movement_type":"101"},
+    {"po_number":"4500000002","po_item":"00010","event_id":"h2","event_type":"invoice_receipt","posting_date":"2026-07-03","quantity":"50","amount":"1000","currency":"CNY","document_number":"5100000002","fiscal_year":"2026"},
+    {"po_number":"4500000003","po_item":"00010","event_id":"h3","event_type":"goods_receipt","posting_date":"2026-07-01","quantity":"100","amount":"1500","currency":"CNY","document_number":"5000000003","fiscal_year":"2026","movement_type":"101"},
+    {"po_number":"4500000003","po_item":"00010","event_id":"h4","event_type":"invoice_receipt","posting_date":"2026-07-05","quantity":"80","amount":"1200","currency":"CNY","document_number":"5100000003","fiscal_year":"2026"},
+    {"po_number":"4500000004","po_item":"00010","event_id":"h5","event_type":"goods_receipt","posting_date":"2026-07-06","quantity":"10","amount":"1000","currency":"CNY","document_number":"5000000004","fiscal_year":"2026","movement_type":"101"},
+    {"po_number":"4500000004","po_item":"00010","event_id":"h6","event_type":"invoice_receipt","posting_date":"2026-07-08","quantity":"10","amount":"1080","currency":"CNY","document_number":"5100000004","fiscal_year":"2026"},
+    {"po_number":"4500000005","po_item":"00010","event_id":"h7","event_type":"goods_receipt","posting_date":"2026-05-10","quantity":"100","amount":"800","currency":"CNY","document_number":"5000000005","fiscal_year":"2026","movement_type":"101"},
+    {"po_number":"4500000005","po_item":"00010","event_id":"h8","event_type":"invoice_receipt","posting_date":"2026-05-15","quantity":"100","amount":"800","currency":"CNY","document_number":"5100000005","fiscal_year":"2026"},
+    {"po_number":"4500000005","po_item":"00010","event_id":"h9","event_type":"goods_return","posting_date":"2026-07-12","quantity":"-20","amount":"-160","currency":"CNY","document_number":"5000000015","fiscal_year":"2026","movement_type":"122"},
+    {"po_number":"4500000006","po_item":"00010","event_id":"h10","event_type":"goods_receipt","posting_date":"2026-01-02","quantity":"10","amount":"300","currency":"CNY","document_number":"5000000006","fiscal_year":"2026","movement_type":"101"},
+    {"po_number":"4500000006","po_item":"00010","event_id":"h11","event_type":"invoice_receipt","posting_date":"2026-01-04","quantity":"10","amount":"305","currency":"CNY","document_number":"5100000006","fiscal_year":"2026"},
+    {"po_number":"4500000007","po_item":"00010","event_id":"h12","event_type":"goods_receipt","posting_date":"2026-07-10","quantity":"5","amount":"250","currency":"CNY","document_number":"5000000007","fiscal_year":"2026","movement_type":"101"},
+    {"po_number":"4500000007","po_item":"00010","event_id":"h13","event_type":"invoice_receipt","posting_date":"2026-07-11","quantity":"5","amount":"250","currency":"CNY","document_number":"5100000007","fiscal_year":"2026"}
+  ]
+}

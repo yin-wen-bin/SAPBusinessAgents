@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "slug": "gr-ir-clearing",
+  "module": "FI",
+  "title": { "zh": "GR/IR Clearing Assistant", "en": "GR/IR Clearing Assistant" },
+  "summary": {
+    "zh": "关联采购订单历史与 GR/IR 未清项，解释差异原因、账龄和责任方，并给出受控清理建议。",
+    "en": "Links PO history to open GR/IR balances, explains causes, aging and ownership, and proposes controlled cleanup actions."
+  },
+  "status": "Runnable prototype",
+  "version": "0.1.0",
+  "owner": "MM-IV / FI-GL",
+  "tags": ["GR/IR", "Month End", "Reconciliation", "Exception Analysis"],
+  "sapModules": ["MM-IM", "MM-IV", "FI-GL", "FI-AP"],
+  "transactions": ["MB5S", "ME23N", "MIR4", "FBL3N", "MR11"],
+  "tables": ["EKBE", "EKPO", "EKKO", "RBKP", "RSEG", "BKPF", "BSEG"],
+  "systems": ["SAP ECC", "SAP S/4HANA"],
+  "inputs": {
+    "zh": ["公司代码与期间", "GR/IR 未清项目", "PO 收货与发票历史", "分析基准日"],
+    "en": ["Company code and period", "Open GR/IR items", "PO receipt and invoice history", "Analysis date"]
+  },
+  "outputs": {
+    "zh": ["原因分类", "账龄", "责任部门", "建议处理动作", "JSON/CSV 异常清单"],
+    "en": ["Cause classification", "Aging", "Responsible team", "Suggested action", "JSON/CSV exception list"]
+  },
+  "guardrails": {
+    "zh": ["分析与建议保持只读", "MR11 仅作为人工复核建议", "缺少范围或凭证证据时保留数据缺口"],
+    "en": ["Analysis remains read-only", "MR11 is only a human-review recommendation", "Missing scope or evidence remains a data gap"]
+  },
+  "workflow": [
+    {
+      "id": "load-open-items",
+      "title": { "zh": "读取 GR/IR 未清项", "en": "Load open GR/IR items" },
+      "description": { "zh": "按公司代码与期间读取范围受控的 GR/IR 余额和关联 PO。", "en": "Loads scope-bound GR/IR balances and linked POs for a company and period." },
+      "tools": [
+        { "name": "GRIRDataPort", "kind": "Data port", "purpose": { "zh": "统一 SAP 只读数据或 fixture", "en": "Unifies read-only SAP data or fixtures" } },
+        { "name": "MB5S / FBL3N", "kind": "SAP read", "purpose": { "zh": "人工核对 GR/IR 科目未清项", "en": "Human verification of GR/IR open items" } }
+      ]
+    },
+    {
+      "id": "link-po-history",
+      "title": { "zh": "关联 PO 历史", "en": "Link PO history" },
+      "description": { "zh": "关联收货、冲销、发票、贷项与采购订单状态。", "en": "Links receipts, reversals, invoices, credits and purchase-order status." },
+      "tools": [
+        { "name": "SapAdapter / FixtureAdapter", "kind": "Adapter", "purpose": { "zh": "标准化 EKBE、RBKP/RSEG 和 FI 证据", "en": "Normalizes EKBE, RBKP/RSEG and FI evidence" } },
+        { "name": "ME23N / MIR4", "kind": "SAP read", "purpose": { "zh": "人工查看 PO 历史和发票", "en": "Human review of PO history and invoices" } }
+      ]
+    },
+    {
+      "id": "classify-cause",
+      "title": { "zh": "分类未清原因", "en": "Classify the open cause" },
+      "description": { "zh": "识别已收货未发票、已发票未收货、数量/价格差异、退货或长期挂账。", "en": "Classifies receipt-without-invoice, invoice-without-receipt, quantity/price differences, returns or stale balances." },
+      "tools": [
+        { "name": "GRIRAnalyzer", "kind": "Rule engine", "purpose": { "zh": "原因规则、净额与证据校验", "en": "Cause rules, netting and evidence validation" } }
+      ]
+    },
+    {
+      "id": "assign-action",
+      "title": { "zh": "确定账龄、责任与建议", "en": "Assign aging, owner and action" },
+      "description": { "zh": "计算账龄并路由采购、仓库、AP 或供应商责任，给出补票、冲销、调整或 MR11 复核建议。", "en": "Calculates aging, routes ownership and suggests invoice, reversal, adjustment or MR11 review." },
+      "tools": [
+        { "name": "Aging & responsibility rules", "kind": "Decision engine", "purpose": { "zh": "稳定责任归属和处理建议", "en": "Stable ownership and action recommendations" } }
+      ]
+    },
+    {
+      "id": "export-exceptions",
+      "title": { "zh": "输出异常清单", "en": "Export the exception list" },
+      "description": { "zh": "生成可追踪 JSON 或 CSV，供月结 follow-up 使用。", "en": "Produces traceable JSON or CSV for month-end follow-up." },
+      "tools": [
+        { "name": "ReportWriter / CLI", "kind": "Output", "purpose": { "zh": "结构化异常和人工跟进清单", "en": "Structured exceptions and human follow-up list" } }
+      ]
+    }
+  ]
+}

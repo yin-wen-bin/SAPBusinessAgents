@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+testpaths = ["agents"]
+pythonpath = [
+  "agents/FI/ap-payment/src",
+  "agents/FI/ar-collection/src",
+  "agents/FI/gr-ir-clearing/src",
+  "agents/FI/month-end-closing/src",
+  "agents/MM/procure-to-pay-status/src",
+]

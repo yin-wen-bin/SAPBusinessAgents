@@ -1,0 +1,37 @@
+---
+import { homePath } from "../lib/urls";
+import type { Locale } from "../lib/types";
+
+interface Props {
+  locale: Locale;
+  alternateHref: string;
+}
+
+const { locale, alternateHref } = Astro.props;
+const homeHref = homePath(import.meta.env.BASE_URL, locale);
+---
+
+<header class="site-header">
+  <a class="brand" href={homeHref} aria-label="SAP Business Agents home">
+    <span class="brand-mark" aria-hidden="true">BA</span>
+    <span>
+      <strong>SAP Business Agents</strong>
+      <small>{locale === "zh" ? "业务 Agent 目录" : "Business agent catalog"}</small>
+    </span>
+  </a>
+  <div class="header-actions">
+    <span class="header-note">{locale === "zh" ? "可运行 · 可审计 · 人工可控" : "Runnable · Auditable · Human controlled"}</span>
+    <a class="language-toggle" href={alternateHref} data-language-link>
+      <span class:list={{ active: locale === "zh" }}>中</span>
+      <span aria-hidden="true">/</span>
+      <span class:list={{ active: locale === "en" }}>EN</span>
+    </a>
+  </div>
+</header>
+
+<script>
+  document.querySelector("[data-language-link]")?.addEventListener("click", (event) => {
+    const link = event.currentTarget as HTMLAnchorElement;
+    localStorage.setItem("sap-business-agents-language", link.pathname.includes("/en/") ? "en" : "zh");
+  });
+</script>

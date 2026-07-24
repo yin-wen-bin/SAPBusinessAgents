@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "slug": "procure-to-pay-status",
+  "module": "MM",
+  "title": { "zh": "Procure-to-Pay Status Assistant", "en": "Procure-to-Pay Status Assistant" },
+  "summary": {
+    "zh": "从采购订单出发，跨 PO、收货、发票、FI 与付款凭证逐行项目判断端到端状态和阻塞原因。",
+    "en": "Traces each PO item across receipt, invoice, FI and payment documents to explain end-to-end status and blockers."
+  },
+  "status": "Runnable prototype",
+  "version": "0.1.0",
+  "owner": "MM / FI-AP",
+  "tags": ["Procure-to-Pay", "Purchase Order", "Document Flow", "Status"],
+  "sapModules": ["MM-PUR", "MM-IM", "MM-IV", "FI-AP"],
+  "transactions": ["ME23N", "MIGO", "MB03", "MIR4", "FBL1N", "FB03"],
+  "tables": ["EKKO", "EKPO", "EKBE", "MKPF", "MSEG", "RBKP", "RSEG", "BKPF", "BSEG"],
+  "systems": ["SAP ECC", "SAP S/4HANA"],
+  "inputs": {
+    "zh": ["包含 PO 的自然语言问题", "可选 PO item", "查询基准日", "SAP 凭证链数据"],
+    "en": ["Natural-language question containing a PO", "Optional PO item", "As-of date", "SAP document-chain data"]
+  },
+  "outputs": {
+    "zh": ["逐行项目状态", "数量与金额进度", "阻塞原因", "关联凭证证据", "Markdown 或 JSON"],
+    "en": ["Item-level status", "Quantity and amount progress", "Blocker explanations", "Linked-document evidence", "Markdown or JSON"]
+  },
+  "guardrails": {
+    "zh": ["只读追踪，不创建后续凭证", "冲销与贷项按净额处理", "仅有清账号不自动等同于付款"],
+    "en": ["Read-only trace; never creates follow-on documents", "Reversals and credits are netted", "A clearing number alone is not assumed to be payment"]
+  },
+  "workflow": [
+    {
+      "id": "extract-po",
+      "title": { "zh": "提取 PO 范围", "en": "Extract PO scope" },
+      "description": { "zh": "从中英文问题中识别采购订单号和可选行项目。", "en": "Extracts the purchase order and optional item from Chinese or English input." },
+      "tools": [
+        { "name": "QueryExtractor", "kind": "Agent component", "purpose": { "zh": "确定性 PO/item 参数抽取", "en": "Deterministic PO and item extraction" } }
+      ]
+    },
+    {
+      "id": "load-document-chain",
+      "title": { "zh": "读取凭证链", "en": "Load the document chain" },
+      "description": { "zh": "一次加载 PO 抬头/项目、历史、物料凭证、发票和 FI 行项目。", "en": "Loads PO header/items, history, material documents, invoices and FI lines." },
+      "tools": [
+        { "name": "P2PDataSource", "kind": "Data port", "purpose": { "zh": "统一 RFC、OData、CDS 或 fixture", "en": "Unifies RFC, OData, CDS or fixtures" } },
+        { "name": "ME23N / MIR4 / FBL1N", "kind": "SAP read", "purpose": { "zh": "人工核对 PO、发票与付款状态", "en": "Human verification of PO, invoice and payment status" } }
+      ]
+    },
+    {
+      "id": "link-evidence",
+      "title": { "zh": "关联跨模块证据", "en": "Link cross-module evidence" },
+      "description": { "zh": "按 PO item 关联 GR、IV、FI 和付款/清账凭证，并处理冲销与贷项净额。", "en": "Links GR, IV, FI and payment/clearing evidence per PO item and nets reversals and credits." },
+      "tools": [
+        { "name": "P2PAnalyzer", "kind": "Analysis engine", "purpose": { "zh": "跨表关联、金额分摊和证据完整性检查", "en": "Cross-table linking, allocation and evidence checks" } }
+      ]
+    },
+    {
+      "id": "classify-state",
+      "title": { "zh": "判定当前状态", "en": "Classify current state" },
+      "description": { "zh": "按前序未完成优先级判定未收货、部分收货、未发票、未付款、部分付款或已付款。", "en": "Classifies the earliest incomplete stage from no receipt through paid." },
+      "tools": [
+        { "name": "P2P state machine", "kind": "State engine", "purpose": { "zh": "稳定状态优先级与异常叠加", "en": "Stable status precedence with anomaly overlays" } }
+      ]
+    },
+    {
+      "id": "explain-output",
+      "title": { "zh": "解释阻塞并输出", "en": "Explain blockers and output" },
+      "description": { "zh": "给出每个项目的下一步、异常原因和原始凭证键。", "en": "Presents next actions, blockers and source document keys for every item." },
+      "tools": [
+        { "name": "MarkdownFormatter / JSON CLI", "kind": "Output", "purpose": { "zh": "人类可读与机器可读结果", "en": "Human-readable and machine-readable results" } }
+      ]
+    }
+  ]
+}

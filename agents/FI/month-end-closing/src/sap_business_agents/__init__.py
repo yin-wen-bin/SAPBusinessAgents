@@ -1,0 +1,2 @@
+"""SAP business assistant implementations."""
+
