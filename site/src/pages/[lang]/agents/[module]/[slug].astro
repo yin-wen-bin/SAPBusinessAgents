@@ -40,7 +40,6 @@ const labels = locale === "zh" ? {
   tools: "本步骤 Tools",
   guardrails: "安全边界",
   source: "在 GitHub 查看源码",
-  toc: "本页目录",
 } : {
   all: "All agents",
   profile: "Agent profile",
@@ -61,15 +60,7 @@ const labels = locale === "zh" ? {
   tools: "Tools used at this step",
   guardrails: "Guardrails",
   source: "View source on GitHub",
-  toc: "On this page",
 };
-const tableOfContents = [
-  { id: "agent-profile", label: labels.profile },
-  { id: "inputs-outputs", label: labels.inputsOutputs },
-  { id: "sap-scope", label: labels.sapScope },
-  { id: "workflow-tools", label: labels.workflow },
-  { id: "guardrails", label: labels.guardrails },
-];
 ---
 
 <SiteLayout
@@ -195,12 +186,6 @@ const tableOfContents = [
           </div>
         </article>
 
-        <aside class="table-of-contents" aria-label={labels.toc}>
-          <p>{labels.toc}</p>
-          <ol>
-            {tableOfContents.map((item) => <li><a href={`#${item.id}`}>{item.label}</a></li>)}
-          </ol>
-        </aside>
       </div>
     </main>
   </div>

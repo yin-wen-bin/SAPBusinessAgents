@@ -27,7 +27,8 @@ test("English catalog reuses the SAPSkillhub UI structure", async () => {
 test("detail pages render workflow and step-level tools", async () => {
   const ap = await readPage("zh", "agents", "FI", "ap-payment");
   assert.match(ap, /工作流与 Tools/);
-  assert.match(ap, /class="table-of-contents"/);
+  assert.doesNotMatch(ap, /class="table-of-contents"/);
+  assert.doesNotMatch(ap, /本页目录/);
   assert.match(ap, /class="source-button"/);
   assert.match(ap, /ApIntentParser/);
   assert.match(ap, /SapApDataAdapter/);
