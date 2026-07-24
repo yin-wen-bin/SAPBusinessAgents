@@ -29,7 +29,9 @@ test("detail pages render workflow and step-level tools", async () => {
   assert.match(ap, /工作流与 Tools/);
   assert.doesNotMatch(ap, /class="table-of-contents"/);
   assert.doesNotMatch(ap, /本页目录/);
-  assert.match(ap, /class="source-button"/);
+  assert.doesNotMatch(ap, /class="tag-list detail-tags"/);
+  assert.match(ap, /id="sap-scope"/);
+  assert.match(ap, /class="source-button detail-source-button"/);
   assert.match(ap, /ApIntentParser/);
   assert.match(ap, /SapApDataAdapter/);
   assert.match(ap, /PaymentRiskEngine/);
@@ -37,5 +39,11 @@ test("detail pages render workflow and step-level tools", async () => {
   const closing = await readPage("zh", "agents", "FI", "month-end-closing");
   const grir = await readPage("zh", "agents", "FI", "gr-ir-clearing");
   assert.match(closing, /class="detail-module-badge">FI</);
+  assert.match(closing, /SAP S\/4HANA On-Premise/);
+  assert.doesNotMatch(closing, /id="sap-scope"/);
+  assert.match(closing, /class="step-sap-scope"/);
+  assert.match(closing, /业务模块/);
+  assert.match(closing, /事务码/);
+  assert.match(closing, /核心对象 \/ 表/);
   assert.match(grir, /class="detail-module-badge">FI</);
 });

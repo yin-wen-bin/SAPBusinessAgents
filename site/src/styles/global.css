@@ -539,18 +539,6 @@ select {
   line-height: 1.6;
 }
 
-.detail-meta {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  margin: 18px 0 32px;
-}
-
-.detail-tags {
-  padding-top: 3px;
-}
-
 .source-button {
   display: inline-flex;
   flex: 0 0 auto;
@@ -563,6 +551,11 @@ select {
   text-decoration: none;
   font-size: 13px;
   font-weight: 630;
+}
+
+.detail-source-button {
+  width: fit-content;
+  margin: 18px 0 32px auto;
 }
 
 .source-button:hover {
@@ -765,14 +758,11 @@ select {
     align-self: center;
   }
 
-  .detail-meta {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .source-button {
+  .detail-source-button {
+    width: 100%;
     justify-content: center;
   }
+
 }
 
 @media (max-width: 520px) {
@@ -1005,6 +995,42 @@ select {
   padding: 15px 17px;
   color: #43516a;
   font-size: 13px;
+}
+
+.step-sap-scope {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-border);
+}
+
+.step-sap-scope > div {
+  min-width: 0;
+  background: white;
+  padding: 12px 17px;
+}
+
+.step-sap-scope h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.step-sap-scope h4 svg {
+  color: var(--color-primary);
+}
+
+@media (max-width: 820px) {
+  .step-sap-scope {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .step-tools {

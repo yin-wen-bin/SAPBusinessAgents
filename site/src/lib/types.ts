@@ -19,10 +19,17 @@ export interface WorkflowTool {
   purpose: LocalizedText;
 }
 
+export interface WorkflowSapScope {
+  modules: string[];
+  transactions: string[];
+  tables: string[];
+}
+
 export interface WorkflowStep {
   id: string;
   title: LocalizedText;
   description: LocalizedText;
+  sapScope?: WorkflowSapScope;
   tools: WorkflowTool[];
 }
 

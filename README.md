@@ -63,7 +63,8 @@ agents/<模块>/<agent-slug>/
 - SAP 模块、事务码和核心对象或表；
 - 中英文输入、输出和安全边界；
 - 至少一个工作流步骤；
-- 每个步骤至少一个 Tool，并描述 Tool 类型和中英文用途。
+- 每个步骤至少一个 Tool，并描述 Tool 类型和中英文用途；
+- 可选的步骤级 `sapScope` 将业务模块、事务码和核心对象/表映射到实际工作流步骤；启用后必须覆盖 Agent 的完整 SAP 范围。
 
 站点在构建前校验全部清单。新增或修改 `agent.json` 后，目录页和详情页会自动更新。
 
@@ -121,7 +122,7 @@ SAP Business Agents is a runnable catalog organized by SAP business module. Foll
 - Organizes SAP business agents under Common, FI, CO, SD, MM, and PP.
 - Keeps every Agent as an isolated, runnable, and testable vertical slice.
 - Searches by module, transaction, table, Tool, or business keyword in Chinese and English.
-- Shows inputs, outputs, SAP scope, guardrails, and the complete workflow on every detail page.
+- Shows inputs, outputs, SAP scope, guardrails, and the complete workflow on every detail page; curated step-level SAP scope is rendered inside the corresponding workflow step.
 - Names the actual Tool, data surface, or control component used at every workflow step.
 - Preserves read-only, human-confirmation, and audit boundaries for high-risk SAP actions.
 
@@ -148,7 +149,7 @@ site/                          # Astro static catalog
 
 ### Agent manifest contract
 
-Every `agent.json` uses schema version 1 and provides localized metadata, SAP scope, inputs, outputs, guardrails, and at least one workflow step. Every step must declare at least one Tool with its kind and localized purpose. The build validates all manifests before generating the catalog.
+Every `agent.json` uses schema version 1 and provides localized metadata, SAP scope, inputs, outputs, guardrails, and at least one workflow step. Every step must declare at least one Tool with its kind and localized purpose. A workflow may additionally declare step-level `sapScope` mappings; when enabled, those mappings must cover every module, transaction, and table in the Agent scope. The build validates all manifests before generating the catalog.
 
 ### Runtime dependency version policy
 

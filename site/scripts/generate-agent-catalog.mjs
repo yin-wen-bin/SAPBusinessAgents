@@ -38,17 +38,57 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
   }
   requireList(agent.workflow, `${source}.workflow`);
   const stepIds = new Set();
+  const scopedSapValues = {
+    modules: new Set(),
+    transactions: new Set(),
+    tables: new Set(),
+  };
+  const sapScopeFields = {
+    modules: "sapModules",
+    transactions: "transactions",
+    tables: "tables",
+  };
+  let hasStepSapScope = false;
   for (const [index, step] of agent.workflow.entries()) {
     requireString(step.id, `${source}.workflow[${index}].id`);
     if (stepIds.has(step.id)) throw new Error(`${source}: duplicate workflow step '${step.id}'`);
     stepIds.add(step.id);
     requireLocalized(step.title, `${source}.workflow[${index}].title`);
     requireLocalized(step.description, `${source}.workflow[${index}].description`);
+    if (step.sapScope !== undefined) {
+      if (!step.sapScope || typeof step.sapScope !== "object" || Array.isArray(step.sapScope)) {
+        throw new Error(`${source}.workflow[${index}].sapScope must be an object`);
+      }
+      hasStepSapScope = true;
+      let assignedValueCount = 0;
+      for (const [scopeField, agentField] of Object.entries(sapScopeFields)) {
+        const values = step.sapScope[scopeField];
+        if (!Array.isArray(values)) throw new Error(`${source}.workflow[${index}].sapScope.${scopeField} must be an array`);
+        for (const [valueIndex, value] of values.entries()) {
+          requireString(value, `${source}.workflow[${index}].sapScope.${scopeField}[${valueIndex}]`);
+          if (!agent[agentField].includes(value)) {
+            throw new Error(`${source}.workflow[${index}].sapScope.${scopeField} contains '${value}' outside agent.${agentField}`);
+          }
+          scopedSapValues[scopeField].add(value);
+          assignedValueCount += 1;
+        }
+      }
+      if (assignedValueCount === 0) throw new Error(`${source}.workflow[${index}].sapScope must assign at least one SAP scope value`);
+    }
     requireList(step.tools, `${source}.workflow[${index}].tools`);
     for (const [toolIndex, tool] of step.tools.entries()) {
       requireString(tool.name, `${source}.workflow[${index}].tools[${toolIndex}].name`);
       requireString(tool.kind, `${source}.workflow[${index}].tools[${toolIndex}].kind`);
       requireLocalized(tool.purpose, `${source}.workflow[${index}].tools[${toolIndex}].purpose`);
+    }
+  }
+  if (hasStepSapScope) {
+    for (const [scopeField, agentField] of Object.entries(sapScopeFields)) {
+      for (const value of agent[agentField]) {
+        if (!scopedSapValues[scopeField].has(value)) {
+          throw new Error(`${source}: agent.${agentField} value '${value}' is not assigned to any workflow step`);
+        }
+      }
     }
   }
 }
