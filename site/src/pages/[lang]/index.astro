@@ -1,53 +1,31 @@
 ---
-import AgentCatalog from "../../components/AgentCatalog.astro";
 import SiteLayout from "../../layouts/SiteLayout.astro";
+import Sidebar from "../../components/Sidebar.astro";
+import AgentCatalog from "../../components/AgentCatalog.astro";
 import { getAgents, moduleCounts } from "../../lib/catalog";
-import type { Locale } from "../../lib/types";
 import { homePath } from "../../lib/urls";
+import type { Locale } from "../../lib/types";
 
 export function getStaticPaths() {
-  return (["zh", "en"] as const).map((lang) => ({ params: { lang }, props: { locale: lang } }));
+  return [{ params: { lang: "zh" } }, { params: { lang: "en" } }];
 }
 
-interface Props { locale: Locale }
-const { locale } = Astro.props;
+const locale = Astro.params.lang as Locale;
 const agents = getAgents();
 const counts = moduleCounts(agents);
+const base = import.meta.env.BASE_URL;
 const alternateLocale: Locale = locale === "zh" ? "en" : "zh";
-const alternateHref = homePath(import.meta.env.BASE_URL, alternateLocale);
-const workflowCount = agents.reduce((sum, agent) => sum + agent.workflow.length, 0);
-const toolCount = new Set(agents.flatMap((agent) => agent.workflow.flatMap((step) => step.tools.map((tool) => tool.name)))).size;
+const title = locale === "zh" ? "SAP Business Agents — SAP 业务 Agent 目录" : "SAP Business Agents — SAP business agent catalog";
 const description = locale === "zh"
-  ? "按 SAP 模块搜索可运行的业务 Agent，查看能力、安全边界、完整工作流与步骤 Tool。"
-  : "Browse runnable SAP business agents with capabilities, guardrails, workflows and step-level tools.";
+  ? "搜索和浏览 Common、FI、CO、SD、MM、PP 模块的 SAP 业务 Agent。"
+  : "Search and browse SAP business agents for Common, FI, CO, SD, MM, and PP.";
 ---
 
-<SiteLayout
-  locale={locale}
-  title={locale === "zh" ? "SAP 业务 Agent 目录" : "SAP business agent catalog"}
-  description={description}
-  alternateHref={alternateHref}
-  counts={counts}
->
-  <main class="catalog-main">
-    <section class="hero">
-      <div class="eyebrow"><span></span>{locale === "zh" ? "从业务问题到受控行动" : "From business question to controlled action"}</div>
-      {locale === "zh"
-        ? <h1>找到能真正完成 SAP 工作的 <em>Agent</em></h1>
-        : <h1>Find agents that complete real <em>SAP work</em></h1>}
-      <p>{locale === "zh"
-        ? "每个 Agent 都是一条可运行、可审计的业务纵向切片。详情页不仅说明它做什么，还完整展示执行步骤，以及每一步调用的 Tool。"
-        : "Every Agent is a runnable, auditable business slice. Detail pages explain not only what it does, but every execution step and the tools used at that step."}</p>
-      <div class="hero-stats">
-        <div><strong>{agents.length}</strong><span>{locale === "zh" ? "可运行 Agents" : "Runnable agents"}</span></div>
-        <div><strong>{workflowCount}</strong><span>{locale === "zh" ? "工作流步骤" : "Workflow steps"}</span></div>
-        <div><strong>{toolCount}</strong><span>{locale === "zh" ? "步骤级 Tools" : "Step-level tools"}</span></div>
-      </div>
-    </section>
-    <AgentCatalog locale={locale} agents={agents} />
-    <footer class="site-footer">
-      <span>SAP Business Agents</span>
-      <p>{locale === "zh" ? "内容由 agents/ 清单自动生成。高风险 SAP 动作始终要求人工确认。" : "Generated from agents/ manifests. High-risk SAP actions always require human confirmation."}</p>
-    </footer>
-  </main>
+<SiteLayout title={title} description={description} locale={locale} alternateHref={homePath(base, alternateLocale)}>
+  <div class="app-shell">
+    <Sidebar locale={locale} counts={counts} />
+    <main id="main-content" class="main-content">
+      <AgentCatalog locale={locale} agents={agents} counts={counts} />
+    </main>
+  </div>
 </SiteLayout>

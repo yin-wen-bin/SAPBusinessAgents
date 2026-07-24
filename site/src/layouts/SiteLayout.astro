@@ -1,21 +1,17 @@
 ---
-import SiteHeader from "../components/SiteHeader.astro";
-import Sidebar from "../components/Sidebar.astro";
-import type { Locale, SapModule } from "../lib/types";
+import "@fontsource-variable/inter";
 import "../styles/global.css";
+import SiteHeader from "../components/SiteHeader.astro";
+import type { Locale } from "../lib/types";
 
 interface Props {
-  locale: Locale;
   title: string;
   description: string;
+  locale: Locale;
   alternateHref: string;
-  counts: Record<SapModule, number>;
-  activeModule?: SapModule;
 }
 
-const { locale, title, description, alternateHref, counts, activeModule } = Astro.props;
-const pageTitle = title === "SAP Business Agents" ? title : `${title} — SAP Business Agents`;
-const canonical = Astro.site ? new URL(Astro.url.pathname, Astro.site) : undefined;
+const { title, description, locale, alternateHref } = Astro.props;
 ---
 
 <!doctype html>
@@ -23,21 +19,23 @@ const canonical = Astro.site ? new URL(Astro.url.pathname, Astro.site) : undefin
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width" />
-    <meta name="generator" content={Astro.generator} />
     <meta name="description" content={description} />
-    <meta property="og:type" content="website" />
-    <meta property="og:title" content={pageTitle} />
-    <meta property="og:description" content={description} />
-    {canonical && <link rel="canonical" href={canonical} />}
-    <title>{pageTitle}</title>
+    <meta name="generator" content={Astro.generator} />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="icon" href="data:," />
+    <title>{title}</title>
   </head>
   <body>
-    <div class="site-root">
-      <SiteHeader locale={locale} alternateHref={alternateHref} />
-      <div class="app-shell">
-        <Sidebar locale={locale} counts={counts} activeModule={activeModule} />
-        <slot />
-      </div>
-    </div>
+    <a class="skip-link" href="#main-content">{locale === "zh" ? "跳到主要内容" : "Skip to main content"}</a>
+    <SiteHeader locale={locale} alternateHref={alternateHref} />
+    <slot />
+    <script is:inline>
+      document.querySelectorAll("[data-language-link]").forEach((link) => {
+        link.addEventListener("click", () => {
+          const locale = link.getAttribute("data-language-link");
+          if (locale) localStorage.setItem("sap-business-agents-language", locale);
+        });
+      });
+    </script>
   </body>
 </html>

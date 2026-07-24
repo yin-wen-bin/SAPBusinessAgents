@@ -45,3 +45,16 @@ export interface AgentDefinition {
   guardrails: LocalizedList;
   workflow: WorkflowStep[];
 }
+
+export interface AgentSearchItem {
+  id: string;
+  slug: string;
+  module: SapModule;
+  title: string;
+  summary: string;
+  tags: string[];
+  transactions: string[];
+  sapModules: string[];
+  workflowTerms: string[];
+  href: string;
+}

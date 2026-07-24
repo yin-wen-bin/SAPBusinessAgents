@@ -1,8 +1,10 @@
 ---
+import { Database, ExternalLink, FolderGit2, ShieldCheck, Wrench } from "@lucide/astro";
 import SiteLayout from "../../../../layouts/SiteLayout.astro";
+import Sidebar from "../../../../components/Sidebar.astro";
 import { getAgents, moduleCounts } from "../../../../lib/catalog";
 import type { AgentDefinition, Locale } from "../../../../lib/types";
-import { agentPath, homePath } from "../../../../lib/urls";
+import { agentPath, homePath, sourceUrl } from "../../../../lib/urls";
 
 export function getStaticPaths() {
   return getAgents().flatMap((agent) => (["zh", "en"] as const).map((locale) => ({
@@ -17,120 +19,189 @@ const counts = moduleCounts();
 const base = import.meta.env.BASE_URL;
 const alternateLocale: Locale = locale === "zh" ? "en" : "zh";
 const alternateHref = agentPath(base, alternateLocale, agent.module, agent.slug);
-const homeHref = homePath(base, locale);
+const githubUrl = sourceUrl(agent.module, agent.slug);
 const labels = locale === "zh" ? {
-  all: "全部 Agents", profile: "Agent 信息", owner: "业务域", status: "状态", version: "版本",
-  systems: "适用系统", sapScope: "SAP 范围", transactions: "事务码", tables: "核心对象 / 表",
-  inputs: "输入", outputs: "输出", guardrails: "安全边界", workflow: "工作流与 Tools",
-  workflowLead: "从输入到输出的执行路径。每一步都列出实际使用的组件、数据入口或控制工具。",
-  tools: "本步骤 Tools", step: "步骤", source: "实现目录",
+  all: "全部 Agents",
+  profile: "Agent 信息",
+  owner: "业务域",
+  status: "状态",
+  version: "版本",
+  systems: "适用系统",
+  inputsOutputs: "输入与输出",
+  inputs: "输入",
+  outputs: "输出",
+  sapScope: "SAP 范围",
+  modules: "业务模块",
+  transactions: "事务码",
+  tables: "核心对象 / 表",
+  workflow: "工作流与 Tools",
+  workflowLead: "从业务输入到安全输出的完整执行路径。每一步均列出实际使用的 Tool。",
+  step: "步骤",
+  tools: "本步骤 Tools",
+  guardrails: "安全边界",
+  source: "在 GitHub 查看源码",
+  toc: "本页目录",
 } : {
-  all: "All Agents", profile: "Agent profile", owner: "Business owner", status: "Status", version: "Version",
-  systems: "Systems", sapScope: "SAP scope", transactions: "Transactions", tables: "Core objects / tables",
-  inputs: "Inputs", outputs: "Outputs", guardrails: "Guardrails", workflow: "Workflow & Tools",
-  workflowLead: "The execution path from input to output. Every step names the actual components, data surfaces or control tools it uses.",
-  tools: "Tools used at this step", step: "Step", source: "Implementation directory",
+  all: "All agents",
+  profile: "Agent profile",
+  owner: "Business owner",
+  status: "Status",
+  version: "Version",
+  systems: "Systems",
+  inputsOutputs: "Inputs and outputs",
+  inputs: "Inputs",
+  outputs: "Outputs",
+  sapScope: "SAP scope",
+  modules: "Business modules",
+  transactions: "Transactions",
+  tables: "Core objects / tables",
+  workflow: "Workflow & Tools",
+  workflowLead: "The complete execution path from business input to safe output. Every step names the Tools it uses.",
+  step: "Step",
+  tools: "Tools used at this step",
+  guardrails: "Guardrails",
+  source: "View source on GitHub",
+  toc: "On this page",
 };
+const tableOfContents = [
+  { id: "agent-profile", label: labels.profile },
+  { id: "inputs-outputs", label: labels.inputsOutputs },
+  { id: "sap-scope", label: labels.sapScope },
+  { id: "workflow-tools", label: labels.workflow },
+  { id: "guardrails", label: labels.guardrails },
+];
 ---
 
 <SiteLayout
-  locale={locale}
-  title={agent.title[locale]}
+  title={`${agent.title[locale]} — SAP Business Agents`}
   description={agent.summary[locale]}
+  locale={locale}
   alternateHref={alternateHref}
-  counts={counts}
-  activeModule={agent.module}
 >
-  <main class="detail-main">
-    <nav class="breadcrumbs" aria-label="Breadcrumb">
-      <a href={homeHref}>{labels.all}</a><span>/</span>
-      <a href={`${homeHref}?module=${agent.module}`}>{agent.module}</a><span>/</span>
-      <span aria-current="page">{agent.title[locale]}</span>
-    </nav>
+  <div class="app-shell">
+    <Sidebar locale={locale} counts={counts} activeModule={agent.module} />
+    <main id="main-content" class="detail-main">
+      <nav class="breadcrumbs" aria-label={locale === "zh" ? "面包屑" : "Breadcrumb"}>
+        <a href={homePath(base, locale)}>{labels.all}</a>
+        <span>/</span>
+        <a href={`${homePath(base, locale)}?module=${agent.module}`}>{agent.module}</a>
+        <span>/</span>
+        <span aria-current="page">{agent.title[locale]}</span>
+      </nav>
 
-    <section class="detail-hero">
-      <div class="detail-title-row">
-        <span class:list={["detail-module", `module-${agent.module.toLowerCase()}`]}>{agent.module}</span>
-        <div>
-          <p class="detail-kicker">{agent.owner} · {agent.status}</p>
-          <h1>{agent.title[locale]}</h1>
-          <p class="detail-summary">{agent.summary[locale]}</p>
-        </div>
-      </div>
-      <div class="detail-tags">{agent.tags.map((tag) => <span>{tag}</span>)}</div>
-    </section>
+      <div class="detail-layout">
+        <article class="skill-document">
+          <header class="detail-header">
+            <span class="detail-module-badge">{agent.module}</span>
+            <div>
+              <h1>{agent.title[locale]}</h1>
+              <p>{agent.summary[locale]}</p>
+            </div>
+          </header>
 
-    <div class="detail-layout">
-      <article class="detail-content">
-        <section class="io-grid">
-          <div class="info-panel inputs-panel">
-            <div class="panel-number">IN</div>
-            <div><h2>{labels.inputs}</h2><ul>{agent.inputs[locale].map((item) => <li>{item}</li>)}</ul></div>
+          <div class="detail-meta">
+            <ul class="tag-list detail-tags">
+              {[...new Set([...agent.transactions, ...agent.tags])].map((tag) => <li>{tag}</li>)}
+            </ul>
+            <a class="source-button" href={githubUrl} target="_blank" rel="noreferrer">
+              <FolderGit2 size={18} stroke-width={1.8} aria-hidden="true" />
+              <span>{labels.source}</span>
+              <ExternalLink size={15} stroke-width={1.8} aria-hidden="true" />
+            </a>
           </div>
-          <div class="info-panel outputs-panel">
-            <div class="panel-number">OUT</div>
-            <div><h2>{labels.outputs}</h2><ul>{agent.outputs[locale].map((item) => <li>{item}</li>)}</ul></div>
-          </div>
-        </section>
 
-        <section class="workflow-section">
-          <div class="section-heading">
-            <span class="section-index">01</span>
-            <div><h2>{labels.workflow}</h2><p>{labels.workflowLead}</p></div>
-          </div>
-          <ol class="workflow-list">
-            {agent.workflow.map((step, index) => (
-              <li class="workflow-step">
-                <div class="step-rail"><span>{String(index + 1).padStart(2, "0")}</span></div>
-                <div class="step-card">
-                  <div class="step-header">
-                    <div><small>{labels.step} {index + 1}</small><h3>{step.title[locale]}</h3></div>
-                    <code>{step.id}</code>
-                  </div>
-                  <p>{step.description[locale]}</p>
-                  <div class="tool-zone">
-                    <h4>{labels.tools}</h4>
-                    <div class="tool-grid">
-                      {step.tools.map((tool) => (
-                        <div class="tool-card">
-                          <div><strong>{tool.name}</strong><span>{tool.kind}</span></div>
-                          <p>{tool.purpose[locale]}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+          <div class="markdown-body agent-document-body">
+            <section id="agent-profile">
+              <h2>{labels.profile}</h2>
+              <dl class="profile-grid">
+                <div><dt>{labels.owner}</dt><dd>{agent.owner}</dd></div>
+                <div><dt>{labels.status}</dt><dd>{agent.status}</dd></div>
+                <div><dt>{labels.version}</dt><dd>{agent.version}</dd></div>
+                <div><dt>{labels.systems}</dt><dd>{agent.systems.join(" · ")}</dd></div>
+              </dl>
+            </section>
+
+            <section id="inputs-outputs">
+              <h2>{labels.inputsOutputs}</h2>
+              <div class="io-grid">
+                <div class="document-panel">
+                  <h3>{labels.inputs}</h3>
+                  <ul>{agent.inputs[locale].map((item) => <li>{item}</li>)}</ul>
                 </div>
-              </li>
-            ))}
-          </ol>
-        </section>
+                <div class="document-panel">
+                  <h3>{labels.outputs}</h3>
+                  <ul>{agent.outputs[locale].map((item) => <li>{item}</li>)}</ul>
+                </div>
+              </div>
+            </section>
 
-        <section class="guardrail-section">
-          <div class="section-heading compact">
-            <span class="section-index">02</span>
-            <div><h2>{labels.guardrails}</h2></div>
+            <section id="sap-scope">
+              <h2>{labels.sapScope}</h2>
+              <div class="scope-grid">
+                <div>
+                  <h3><Database size={18} stroke-width={1.8} aria-hidden="true" />{labels.modules}</h3>
+                  <ul class="tag-list scope-tags">{agent.sapModules.map((item) => <li>{item}</li>)}</ul>
+                </div>
+                <div>
+                  <h3>{labels.transactions}</h3>
+                  <ul class="tag-list scope-tags">{agent.transactions.map((item) => <li><code>{item}</code></li>)}</ul>
+                </div>
+                <div>
+                  <h3>{labels.tables}</h3>
+                  <ul class="tag-list scope-tags">{agent.tables.map((item) => <li><code>{item}</code></li>)}</ul>
+                </div>
+              </div>
+            </section>
+
+            <section id="workflow-tools">
+              <h2>{labels.workflow}</h2>
+              <p>{labels.workflowLead}</p>
+              <ol class="agent-workflow">
+                {agent.workflow.map((step, index) => (
+                  <li class="workflow-step">
+                    <div class="workflow-step-heading">
+                      <span class="workflow-index">{String(index + 1).padStart(2, "0")}</span>
+                      <div>
+                        <small>{labels.step} {index + 1}</small>
+                        <h3>{step.title[locale]}</h3>
+                      </div>
+                      <code>{step.id}</code>
+                    </div>
+                    <p>{step.description[locale]}</p>
+                    <div class="step-tools">
+                      <h4><Wrench size={16} stroke-width={1.8} aria-hidden="true" />{labels.tools}</h4>
+                      <ul>
+                        {step.tools.map((tool) => (
+                          <li>
+                            <div class="tool-heading"><code>{tool.name}</code><span>{tool.kind}</span></div>
+                            <p>{tool.purpose[locale]}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </section>
+
+            <section id="guardrails">
+              <h2>{labels.guardrails}</h2>
+              <ul class="guardrail-list">
+                {agent.guardrails[locale].map((guardrail) => (
+                  <li><ShieldCheck size={18} stroke-width={1.8} aria-hidden="true" /><span>{guardrail}</span></li>
+                ))}
+              </ul>
+            </section>
           </div>
-          <ul>{agent.guardrails[locale].map((guardrail) => <li><span aria-hidden="true">✓</span>{guardrail}</li>)}</ul>
-        </section>
-      </article>
+        </article>
 
-      <aside class="profile-card">
-        <p class="profile-title">{labels.profile}</p>
-        <dl>
-          <div><dt>{labels.owner}</dt><dd>{agent.owner}</dd></div>
-          <div><dt>{labels.status}</dt><dd><span class="status-dot"></span>{agent.status}</dd></div>
-          <div><dt>{labels.version}</dt><dd>{agent.version}</dd></div>
-          <div><dt>{labels.systems}</dt><dd>{agent.systems.join(" · ")}</dd></div>
-        </dl>
-        <div class="profile-group"><h3>{labels.sapScope}</h3><div>{agent.sapModules.map((item) => <span>{item}</span>)}</div></div>
-        <div class="profile-group"><h3>{labels.transactions}</h3><div>{agent.transactions.map((item) => <code>{item}</code>)}</div></div>
-        <div class="profile-group"><h3>{labels.tables}</h3><div>{agent.tables.map((item) => <code>{item}</code>)}</div></div>
-        <div class="source-path"><span>{labels.source}</span><code>agents/{agent.module}/{agent.slug}</code></div>
-      </aside>
-    </div>
-    <footer class="site-footer detail-footer">
-      <a href={homeHref}>← {labels.all}</a>
-      <p>{locale === "zh" ? "工作流与 Tool 映射来自 Agent 清单。" : "Workflow and tool mappings come from the Agent manifest."}</p>
-    </footer>
-  </main>
+        <aside class="table-of-contents" aria-label={labels.toc}>
+          <p>{labels.toc}</p>
+          <ol>
+            {tableOfContents.map((item) => <li><a href={`#${item.id}`}>{item.label}</a></li>)}
+          </ol>
+        </aside>
+      </div>
+    </main>
+  </div>
 </SiteLayout>

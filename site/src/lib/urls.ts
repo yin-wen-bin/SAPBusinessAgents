@@ -1,4 +1,5 @@
 import type { Locale, SapModule } from "./types";
+import { repositoryBranch, repositoryUrl } from "./siteConfig";
 
 export function withBase(base: string, ...segments: string[]): string {
   const normalizedBase = base.endsWith("/") ? base : `${base}/`;
@@ -15,4 +16,8 @@ export function homePath(base: string, locale: Locale): string {
 
 export function agentPath(base: string, locale: Locale, moduleName: SapModule, slug: string): string {
   return withBase(base, locale, "agents", moduleName, slug);
+}
+
+export function sourceUrl(moduleName: SapModule, slug: string): string {
+  return `${repositoryUrl}/tree/${repositoryBranch}/agents/${moduleName}/${slug}`;
 }
