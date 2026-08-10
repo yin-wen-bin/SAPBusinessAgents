@@ -1,0 +1,28 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "delivery-delay-prediction-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "DLV-DEMO-01",
+      "requested_delivery_date": "2026-08-01",
+      "goods_movement_complete": false,
+      "business_block": "01",
+      "credit_status": "B",
+      "incompletion_status": "X"
+    }
+  ]
+}

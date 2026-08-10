@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { loadAgentCatalog, validateAgent } from "../scripts/generate-agent-catalog.mjs";
 
-test("catalog discovers five valid agents with step-level tools", () => {
+test("catalog discovers sixteen valid agents with step-level tools", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
-  assert.equal(records.length, 5);
+  assert.equal(records.length, 16);
   assert.deepEqual(
     records.map((agent) => `${agent.module}/${agent.slug}`),
     [
@@ -13,6 +13,17 @@ test("catalog discovers five valid agents with step-level tools", () => {
       "FI/ar-collection",
       "FI/gr-ir-clearing",
       "FI/month-end-closing",
+      "SD/billing-block-diagnosis",
+      "SD/billing-completeness-check",
+      "SD/billing-dispute-classification",
+      "SD/billing-output-monitor",
+      "SD/delivered-not-billed",
+      "SD/delivery-delay-prediction",
+      "SD/due-delivery-prioritization",
+      "SD/order-to-cash-anomaly-monitor",
+      "SD/order-to-cash-status",
+      "SD/returns-credit-anomaly",
+      "SD/shortage-allocation-advisor",
       "MM/procure-to-pay-status",
     ],
   );
@@ -20,6 +31,12 @@ test("catalog discovers five valid agents with step-level tools", () => {
     assert.ok(agent.workflow.length > 0);
     assert.ok(agent.workflow.every((step) => step.tools.length > 0));
   }
+  const sdAgents = records.filter((agent) => agent.module === "SD");
+  assert.equal(sdAgents.length, 11);
+  assert.ok(sdAgents.every((agent) => agent.workflow.length === 8));
+  assert.ok(sdAgents.every((agent) => agent.workflow.some((step) => step.sapScope)));
+  assert.ok(sdAgents.every((agent) => agent.guardrails.en.some((item) => item.includes("read-only"))));
+
   const closing = records.find((agent) => agent.slug === "month-end-closing");
   assert.ok(closing.workflow.every((step) => step.sapScope));
   for (const [scopeField, agentField] of [["modules", "sapModules"], ["transactions", "transactions"], ["tables", "tables"]]) {

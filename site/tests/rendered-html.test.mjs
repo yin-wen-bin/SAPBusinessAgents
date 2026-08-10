@@ -5,14 +5,31 @@ import path from "node:path";
 
 const readPage = (...segments) => readFile(path.join("dist", ...segments, "index.html"), "utf8");
 
-test("static catalog contains all five agents and the GitHub Pages base path", async () => {
+test("static catalog contains all sixteen agents and the GitHub Pages base path", async () => {
   const html = await readPage("zh");
   for (const slug of ["ap-payment", "ar-collection", "gr-ir-clearing", "month-end-closing", "procure-to-pay-status"]) {
     assert.match(html, new RegExp(`/SAPBusinessAgents/zh/agents/(?:FI|MM)/${slug}/`));
   }
   assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 4);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 1);
+  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 11);
   assert.doesNotMatch(html, /href="\/zh\//);
+});
+
+test("SD detail pages render eleven independent eight-step workflows", async () => {
+  const slugs = [
+    "delivered-not-billed", "billing-block-diagnosis", "billing-completeness-check",
+    "billing-output-monitor", "delivery-delay-prediction", "due-delivery-prioritization",
+    "shortage-allocation-advisor", "billing-dispute-classification", "returns-credit-anomaly",
+    "order-to-cash-anomaly-monitor", "order-to-cash-status",
+  ];
+  for (const slug of slugs) {
+    const zh = await readPage("zh", "agents", "SD", slug);
+    assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
+    assert.match(zh, /sapclaw_runtime_health/);
+    assert.match(zh, /SAPSkillhub read-only skill/);
+    assert.match(zh, /严格只读/);
+  }
 });
 
 test("English catalog reuses the SAPSkillhub UI structure", async () => {

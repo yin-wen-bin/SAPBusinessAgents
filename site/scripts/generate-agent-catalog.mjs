@@ -119,7 +119,7 @@ export function loadAgentCatalog(root = agentsRoot) {
     const modulePath = path.join(root, moduleName);
     if (!existsSync(modulePath)) throw new Error(`Required module directory is missing: agents/${moduleName}`);
     const directories = readdirSync(modulePath, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && !entry.name.startsWith("_"))
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const directory of directories) {
       const manifestPath = path.join(modulePath, directory.name, "agent.json");

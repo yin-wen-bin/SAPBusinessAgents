@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sap-shortage-allocation-advisor"
+version = "0.1.0"
+description = "Shortage Allocation Advisor"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+shortage-allocation-advisor = "shortage_allocation_advisor.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+shortage_allocation_advisor = ["fixtures/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", ".."]
+testpaths = ["tests"]
+addopts = "-q"

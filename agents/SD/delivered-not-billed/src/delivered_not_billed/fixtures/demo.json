@@ -1,0 +1,26 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "delivered-not-billed-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "DLV-DEMO-01",
+      "goods_movement_complete": true,
+      "billing_status": "B",
+      "actual_goods_movement_date": "2026-07-20"
+    }
+  ]
+}

@@ -1,9 +1,21 @@
 [tool.pytest.ini_options]
 testpaths = ["agents"]
 pythonpath = [
+  "agents/SD",
   "agents/FI/ap-payment/src",
   "agents/FI/ar-collection/src",
   "agents/FI/gr-ir-clearing/src",
   "agents/FI/month-end-closing/src",
   "agents/MM/procure-to-pay-status/src",
+  "agents/SD/delivered-not-billed/src",
+  "agents/SD/billing-block-diagnosis/src",
+  "agents/SD/billing-completeness-check/src",
+  "agents/SD/billing-output-monitor/src",
+  "agents/SD/delivery-delay-prediction/src",
+  "agents/SD/due-delivery-prioritization/src",
+  "agents/SD/shortage-allocation-advisor/src",
+  "agents/SD/billing-dispute-classification/src",
+  "agents/SD/returns-credit-anomaly/src",
+  "agents/SD/order-to-cash-anomaly-monitor/src",
+  "agents/SD/order-to-cash-status/src",
 ]

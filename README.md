@@ -26,6 +26,17 @@ SAP Business Agents 是一个按 SAP 业务模块组织的可运行 Agent 目录
 | FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/) | GR/IR 未清原因、证据与清理建议 |
 | FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD 月结异常检查与关账待办 |
 | MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | PO → GR → IV → FI → Payment 全链路状态 |
+| SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/) | 已发货未开票识别与滞留分级 |
+| SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/) | 订单、项目与交货开票冻结诊断 |
+| SD | [Billing Completeness Check](agents/SD/billing-completeness-check/) | 数量、价格、币种与税务完整性检查 |
+| SD | [Billing Output Monitor](agents/SD/billing-output-monitor/) | 发票输出失败与客户送达监控 |
+| SD | [Delivery Delay Prediction](agents/SD/delivery-delay-prediction/) | 可解释交货延期风险评分 |
+| SD | [Due Delivery Prioritization](agents/SD/due-delivery-prioritization/) | 到期交货清单智能排序 |
+| SD | [Shortage Allocation Advisor](agents/SD/shortage-allocation-advisor/) | 缺货场景的只读库存分配建议 |
+| SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/) | 客户拒票与发票争议分类 |
+| SD | [Returns and Credit Anomaly Monitor](agents/SD/returns-credit-anomaly/) | 退货及贷项异常检测 |
+| SD | [Order-to-Cash Anomaly Monitor](agents/SD/order-to-cash-anomaly-monitor/) | O2C端到端异常聚合与待办 |
+| SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/) | 订单、交货、开票、FI与回款状态 |
 
 ### 仓库结构
 
@@ -137,6 +148,17 @@ Live catalog: [https://yin-wen-bin.github.io/SAPBusinessAgents/](https://yin-wen
 | FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/) | GR/IR open-item causes, evidence, and clearing advice |
 | FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD close checks and traceable follow-up work |
 | MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | End-to-end PO → GR → IV → FI → Payment status |
+| SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/) | Delivered-but-unbilled detection and ageing |
+| SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/) | Billing-block and incompletion diagnosis |
+| SD | [Billing Completeness Check](agents/SD/billing-completeness-check/) | Quantity, price, currency and tax validation |
+| SD | [Billing Output Monitor](agents/SD/billing-output-monitor/) | Invoice-output delivery monitoring |
+| SD | [Delivery Delay Prediction](agents/SD/delivery-delay-prediction/) | Explainable delivery-delay risk scoring |
+| SD | [Due Delivery Prioritization](agents/SD/due-delivery-prioritization/) | Due-delivery worklist prioritization |
+| SD | [Shortage Allocation Advisor](agents/SD/shortage-allocation-advisor/) | Read-only shortage allocation advice |
+| SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/) | Billing rejection and dispute classification |
+| SD | [Returns and Credit Anomaly Monitor](agents/SD/returns-credit-anomaly/) | Returns and credit anomaly detection |
+| SD | [Order-to-Cash Anomaly Monitor](agents/SD/order-to-cash-anomaly-monitor/) | End-to-end O2C anomaly worklist |
+| SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/) | Sales order through FI clearing status |
 
 ### Repository structure
 

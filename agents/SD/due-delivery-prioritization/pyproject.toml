@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sap-due-delivery-prioritization"
+version = "0.1.0"
+description = "Due Delivery Prioritization"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+due-delivery-prioritization = "due_delivery_prioritization.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+due_delivery_prioritization = ["fixtures/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", ".."]
+testpaths = ["tests"]
+addopts = "-q"

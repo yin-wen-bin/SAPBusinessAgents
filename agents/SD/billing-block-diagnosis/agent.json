@@ -1,0 +1,334 @@
+{
+  "schemaVersion": 1,
+  "slug": "billing-block-diagnosis",
+  "module": "SD",
+  "title": {
+    "zh": "开票冻结诊断",
+    "en": "Billing Block Diagnosis"
+  },
+  "summary": {
+    "zh": "诊断销售订单、项目与交货层的开票冻结、信用检查及不完整状态。",
+    "en": "诊断销售订单、项目与交货层的开票冻结、信用检查及不完整状态。"
+  },
+  "status": "Runnable prototype",
+  "version": "0.1.0",
+  "owner": "SD / FI-AR",
+  "tags": [
+    "Order-to-Cash",
+    "SAP SD",
+    "Read-only",
+    "Explainable AI"
+  ],
+  "sapModules": [
+    "SD"
+  ],
+  "transactions": [
+    "VA03",
+    "VL03N",
+    "VF04"
+  ],
+  "tables": [
+    "VBAK",
+    "VBAP",
+    "VBUK",
+    "VBUP",
+    "LIKP",
+    "LIPS"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "自然语言业务问题",
+      "可选业务对象标识",
+      "查询基准日",
+      "SAP只读证据"
+    ],
+    "en": [
+      "Natural-language business question",
+      "Optional business-object identifier",
+      "As-of date",
+      "Read-only SAP evidence"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "状态与可解释分析",
+      "异常和阻塞原因",
+      "建议动作",
+      "Markdown或JSON"
+    ],
+    "en": [
+      "Status and explainable analysis",
+      "Anomalies and blockers",
+      "Recommended actions",
+      "Markdown or JSON"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "严格只读，不创建或修改SAP凭证",
+      "Fixture不得冒充真机证据",
+      "凭据和敏感业务数据不得写入报告"
+    ],
+    "en": [
+      "Strictly read-only; never creates or changes SAP documents",
+      "Fixtures never masquerade as live evidence",
+      "Credentials and sensitive business data are excluded from reports"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "parse-user-input",
+      "title": {
+        "zh": "解析输入和范围",
+        "en": "Parse input and scope"
+      },
+      "description": {
+        "zh": "解析自然语言对象标识、日期和组织范围。",
+        "en": "Parse natural-language identifiers, dates and organizational scope."
+      },
+      "operations": {
+        "zh": [
+          "解析自然语言对象标识、日期和组织范围。"
+        ],
+        "en": [
+          "Parse natural-language identifiers, dates and organizational scope."
+        ]
+      },
+      "tools": [
+        {
+          "name": "QueryExtractor",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "提取查询对象并保留歧义。",
+            "en": "Extract query objects while preserving ambiguity."
+          }
+        }
+      ]
+    },
+    {
+      "id": "check-thin-runtime",
+      "title": {
+        "zh": "检查Thin Runtime",
+        "en": "Check Thin Runtime"
+      },
+      "description": {
+        "zh": "确认Runtime健康、启用、只读且schema可执行。",
+        "en": "Require a healthy, enabled, read-only runtime and executable schemas."
+      },
+      "operations": {
+        "zh": [
+          "确认Runtime健康、启用、只读且schema可执行。"
+        ],
+        "en": [
+          "Require a healthy, enabled, read-only runtime and executable schemas."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sapclaw_runtime_health / sapclaw_schema",
+          "kind": "sapclaw_runtime MCP",
+          "purpose": {
+            "zh": "执行健康和权威schema检查。",
+            "en": "Run health and authoritative schema checks."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-sap-data",
+      "title": {
+        "zh": "读取SAP证据",
+        "en": "Load SAP evidence"
+      },
+      "description": {
+        "zh": "使用服务端过滤、窄字段和完整分页读取业务证据。",
+        "en": "Read business evidence with server filters, narrow fields and complete pagination."
+      },
+      "operations": {
+        "zh": [
+          "使用服务端过滤、窄字段和完整分页读取业务证据。"
+        ],
+        "en": [
+          "Read business evidence with server filters, narrow fields and complete pagination."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_SALES_ORDER_SRV + API_OUTBOUND_DELIVERY_SRV",
+          "kind": "SAP OData via sapclaw_execute_get",
+          "purpose": {
+            "zh": "执行批准的只读GET。",
+            "en": "Execute approved read-only GET requests."
+          }
+        }
+      ],
+      "sapScope": {
+        "modules": [
+          "SD"
+        ],
+        "transactions": [
+          "VA03",
+          "VL03N",
+          "VF04"
+        ],
+        "tables": [
+          "VBAK",
+          "VBAP",
+          "VBUK",
+          "VBUP",
+          "LIKP",
+          "LIPS"
+        ]
+      }
+    },
+    {
+      "id": "supplement-with-skill",
+      "title": {
+        "zh": "按需补充SAPSkillhub证据",
+        "en": "Supplement with SAPSkillhub"
+      },
+      "description": {
+        "zh": "仅当标准OData缺少必要证据时调用明确匹配的只读skill。",
+        "en": "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
+      },
+      "operations": {
+        "zh": [
+          "仅当标准OData缺少必要证据时调用明确匹配的只读skill。"
+        ],
+        "en": [
+          "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
+        ]
+      },
+      "tools": [
+        {
+          "name": "SAPSkillhub read-only skill",
+          "kind": "SAPSkill",
+          "purpose": {
+            "zh": "补充GUI、CDS或输出管理证据。",
+            "en": "Supplement GUI, CDS or output-management evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "assemble-evidence",
+      "title": {
+        "zh": "组装脱敏证据",
+        "en": "Assemble sanitized evidence"
+      },
+      "description": {
+        "zh": "生成带run id、来源、只读标志和分页状态的evidence。",
+        "en": "Create evidence with run id, provenance, read-only flag and pagination state."
+      },
+      "operations": {
+        "zh": [
+          "生成带run id、来源、只读标志和分页状态的evidence。"
+        ],
+        "en": [
+          "Create evidence with run id, provenance, read-only flag and pagination state."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Evidence snapshot builder",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "验证并脱敏证据快照。",
+            "en": "Validate and sanitize the evidence snapshot."
+          }
+        }
+      ]
+    },
+    {
+      "id": "validate-evidence",
+      "title": {
+        "zh": "校验证据质量",
+        "en": "Validate evidence quality"
+      },
+      "description": {
+        "zh": "检查必填字段、单位、币种、冲销、重复与来源完整性。",
+        "en": "Check required fields, units, currencies, reversals, duplicates and provenance."
+      },
+      "operations": {
+        "zh": [
+          "检查必填字段、单位、币种、冲销、重复与来源完整性。"
+        ],
+        "en": [
+          "Check required fields, units, currencies, reversals, duplicates and provenance."
+        ]
+      },
+      "tools": [
+        {
+          "name": "EvidenceValidator",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "阻止不完整证据被误判为正常。",
+            "en": "Prevent incomplete evidence from being treated as normal."
+          }
+        }
+      ]
+    },
+    {
+      "id": "analyze-business-rule",
+      "title": {
+        "zh": "执行可解释分析",
+        "en": "Run explainable analysis"
+      },
+      "description": {
+        "zh": "运行确定性规则、分类或版本化评分，不生成SAP写操作。",
+        "en": "Run deterministic rules, classification or versioned scoring without SAP writes."
+      },
+      "operations": {
+        "zh": [
+          "运行确定性规则、分类或版本化评分，不生成SAP写操作。"
+        ],
+        "en": [
+          "Run deterministic rules, classification or versioned scoring without SAP writes."
+        ]
+      },
+      "tools": [
+        {
+          "name": "SD O2C analyzer",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "生成状态、评分、发现和建议动作。",
+            "en": "Produce status, score, findings and recommended actions."
+          }
+        }
+      ]
+    },
+    {
+      "id": "present-report",
+      "title": {
+        "zh": "输出报告",
+        "en": "Present report"
+      },
+      "description": {
+        "zh": "输出Markdown和JSON，并区分真机、Fixture与推断证据。",
+        "en": "Output Markdown and JSON while separating live, fixture and inferred evidence."
+      },
+      "operations": {
+        "zh": [
+          "输出Markdown和JSON，并区分真机、Fixture与推断证据。"
+        ],
+        "en": [
+          "Output Markdown and JSON while separating live, fixture and inferred evidence."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Markdown / JSON formatter",
+          "kind": "Presentation",
+          "purpose": {
+            "zh": "生成可审计的双格式结果。",
+            "en": "Generate auditable dual-format results."
+          }
+        }
+      ]
+    }
+  ]
+}
