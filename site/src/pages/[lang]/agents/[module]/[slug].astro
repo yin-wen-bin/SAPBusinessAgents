@@ -1,5 +1,5 @@
 ---
-import { Database, ExternalLink, FolderGit2, ShieldCheck, Wrench } from "@lucide/astro";
+import { Database, ExternalLink, FolderGit2, ListChecks, ShieldCheck, Wrench } from "@lucide/astro";
 import SiteLayout from "../../../../layouts/SiteLayout.astro";
 import Sidebar from "../../../../components/Sidebar.astro";
 import { getAgents, moduleCounts } from "../../../../lib/catalog";
@@ -38,7 +38,8 @@ const labels = locale === "zh" ? {
   workflow: "工作流与 Tools",
   workflowLead: "从业务输入到安全输出的完整执行路径。每一步均列出对应 SAP 范围与实际使用的 Tool。",
   step: "步骤",
-  tools: "本步骤 Tools",
+  operations: "详细操作",
+  tools: "本步骤 API / SAPSkill / Tools",
   guardrails: "安全边界",
   source: "在 GitHub 查看源码",
 } : {
@@ -58,7 +59,8 @@ const labels = locale === "zh" ? {
   workflow: "Workflow & Tools",
   workflowLead: "The complete execution path from business input to safe output. Every step identifies its SAP scope and the Tools it uses.",
   step: "Step",
-  tools: "Tools used at this step",
+  operations: "Detailed operations",
+  tools: "APIs, SAPSkills & tools used at this step",
   guardrails: "Guardrails",
   source: "View source on GitHub",
 };
@@ -157,6 +159,14 @@ const labels = locale === "zh" ? {
                       <code>{step.id}</code>
                     </div>
                     <p>{step.description[locale]}</p>
+                    {step.operations && (
+                      <div class="step-operations">
+                        <h4><ListChecks size={16} stroke-width={1.8} aria-hidden="true" />{labels.operations}</h4>
+                        <ol>
+                          {step.operations[locale].map((operation) => <li>{operation}</li>)}
+                        </ol>
+                      </div>
+                    )}
                     {step.sapScope && (
                       <div class="step-sap-scope">
                         {step.sapScope.modules.length > 0 && (

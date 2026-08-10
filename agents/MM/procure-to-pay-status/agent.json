@@ -16,7 +16,7 @@
   "tables": ["EKKO", "EKPO", "EKBE", "MKPF", "MSEG", "RBKP", "RSEG", "BKPF", "BSEG"],
   "systems": ["SAP ECC", "SAP S/4HANA"],
   "inputs": {
-    "zh": ["包含 PO 的自然语言问题", "可选 PO item", "查询基准日", "SAP 凭证链数据"],
+    "zh": ["包含 PO 的自然语言问题", "可选 PO item", "查询基准日", "SAP 凭证链证据（自动查询）"],
     "en": ["Natural-language question containing a PO", "Optional PO item", "As-of date", "SAP document-chain data"]
   },
   "outputs": {
@@ -29,44 +29,194 @@
   },
   "workflow": [
     {
-      "id": "extract-po",
-      "title": { "zh": "提取 PO 范围", "en": "Extract PO scope" },
-      "description": { "zh": "从中英文问题中识别采购订单号和可选行项目。", "en": "Extracts the purchase order and optional item from Chinese or English input." },
+      "id": "parse-user-input",
+      "title": { "zh": "解析用户输入并确定查询范围", "en": "Parse user input and establish scope" },
+      "description": { "zh": "确定性解析用户问题，并与基准日及付款凭证类型配置合并成统一查询参数。", "en": "Deterministically parses the user's question and combines it with the as-of date and payment-document configuration." },
+      "operations": {
+        "zh": [
+          "从中英文自然语言问题中提取唯一采购订单号和可选项目号。",
+          "缺少采购订单、出现多个采购订单或项目表达有歧义时停止并返回明确错误。",
+          "基准日来自 --as-of，未提供时使用实际执行日；付款凭证类型来自 --payment-document-types 或默认配置。",
+          "将解析结果和运行配置合并为统一 QueryParameters，交给后续只读查询与分析。"
+        ],
+        "en": [
+          "Extract exactly one purchase order and an optional item from the Chinese or English question.",
+          "Stop with an explicit error when the purchase order is missing, multiple orders are present, or the item scope is ambiguous.",
+          "Take the as-of date from --as-of or the execution date, and payment document types from --payment-document-types or defaults.",
+          "Combine the extracted values and runtime configuration into QueryParameters for downstream read-only collection and analysis."
+        ]
+      },
       "tools": [
-        { "name": "QueryExtractor", "kind": "Agent component", "purpose": { "zh": "确定性 PO/item 参数抽取", "en": "Deterministic PO and item extraction" } }
+        { "name": "QueryExtractor", "kind": "Agent component", "purpose": { "zh": "确定性提取 PO 和可选项目号。", "en": "Deterministically extracts the PO and optional item." } },
+        { "name": "CLI runtime parameters", "kind": "Control", "purpose": { "zh": "提供基准日和允许的付款凭证类型。", "en": "Supplies the as-of date and allowed payment document types." } },
+        { "name": "No SAP call", "kind": "Boundary", "purpose": { "zh": "本步骤不访问 SAP API，也不调用 SAPSkill。", "en": "This step does not call a SAP API or SAPSkill." } }
       ]
     },
     {
-      "id": "load-document-chain",
-      "title": { "zh": "读取凭证链", "en": "Load the document chain" },
-      "description": { "zh": "一次加载 PO 抬头/项目、历史、物料凭证、发票和 FI 行项目。", "en": "Loads PO header/items, history, material documents, invoices and FI lines." },
+      "id": "check-thin-runtime",
+      "title": { "zh": "检查 Thin Runtime", "en": "Check Thin Runtime" },
+      "description": { "zh": "在访问真实 SAP 前确认 Thin Runtime 健康、启用且严格只读，并验证目标服务 schema。", "en": "Confirms that Thin Runtime is healthy, enabled and strictly read-only before validating the target service schemas." },
+      "operations": {
+        "zh": [
+          "调用 sapclaw_runtime_health，要求 ok=true、runtime_enabled=true 且 read_only=true。",
+          "调用 sapclaw_schema，确认采购订单、物料凭证、供应商发票和会计凭证四个服务及必要字段可执行。",
+          "健康或 schema 检查失败时停止；主路径不启用 LLM-first，也不调用 sapclaw MCP。"
+        ],
+        "en": [
+          "Call sapclaw_runtime_health and require ok=true, runtime_enabled=true and read_only=true.",
+          "Call sapclaw_schema to verify executable schemas and required fields for purchase orders, material documents, supplier invoices and accounting documents.",
+          "Stop when health or schema validation fails; the primary path does not enable LLM-first or call the sapclaw MCP."
+        ]
+      },
       "tools": [
-        { "name": "P2PDataSource", "kind": "Data port", "purpose": { "zh": "统一 RFC、OData、CDS 或 fixture", "en": "Unifies RFC, OData, CDS or fixtures" } },
-        { "name": "ME23N / MIR4 / FBL1N", "kind": "SAP read", "purpose": { "zh": "人工核对 PO、发票与付款状态", "en": "Human verification of PO, invoice and payment status" } }
+        { "name": "sapclaw_runtime_health", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "验证 Thin Runtime、索引、SAP 配置和只读状态。", "en": "Validates Thin Runtime, index, SAP configuration and read-only state." } },
+        { "name": "sapclaw_schema", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "读取权威实体、字段、类型和可执行性。", "en": "Reads authoritative entities, fields, types and executability." } }
       ]
     },
     {
-      "id": "link-evidence",
-      "title": { "zh": "关联跨模块证据", "en": "Link cross-module evidence" },
-      "description": { "zh": "按 PO item 关联 GR、IV、FI 和付款/清账凭证，并处理冲销与贷项净额。", "en": "Links GR, IV, FI and payment/clearing evidence per PO item and nets reversals and credits." },
+      "id": "load-purchase-order",
+      "title": { "zh": "读取采购订单", "en": "Load the purchase order" },
+      "description": { "zh": "按精确 PO 过滤读取抬头和项目，建立后续凭证查询的业务范围。", "en": "Loads the header and items with an exact PO filter to establish the scope for subsequent document queries." },
+      "operations": {
+        "zh": [
+          "查询 A_PurchaseOrder，读取公司代码、供应商、凭证币种、采购订单日期和类型。",
+          "查询 A_PurchaseOrderItem，读取项目、物料、描述、工厂、订单数量、订单单位和删除/完成标志。",
+          "使用采购订单号进行服务端精确过滤，不下载无关采购订单。",
+          "读取所有页面直到 has_next=false；缺少抬头或项目时停止。"
+        ],
+        "en": [
+          "Query A_PurchaseOrder for company code, supplier, document currency, purchase-order date and type.",
+          "Query A_PurchaseOrderItem for item, material, description, plant, order quantity, order unit and deletion/completion indicators.",
+          "Apply an exact server-side purchase-order filter and do not download unrelated orders.",
+          "Read every page until has_next=false and stop when the header or items are missing."
+        ]
+      },
       "tools": [
-        { "name": "P2PAnalyzer", "kind": "Analysis engine", "purpose": { "zh": "跨表关联、金额分摊和证据完整性检查", "en": "Cross-table linking, allocation and evidence checks" } }
+        { "name": "API_PURCHASEORDER_PROCESS_SRV", "kind": "SAP OData API", "purpose": { "zh": "通过 A_PurchaseOrder 和 A_PurchaseOrderItem 获取 PO 范围。", "en": "Provides PO scope through A_PurchaseOrder and A_PurchaseOrderItem." } },
+        { "name": "sapclaw_execute_get", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "执行字段受控、服务端过滤的只读 GET。", "en": "Executes field-controlled, server-filtered read-only GET requests." } }
       ]
     },
     {
-      "id": "classify-state",
-      "title": { "zh": "判定当前状态", "en": "Classify current state" },
-      "description": { "zh": "按前序未完成优先级判定未收货、部分收货、未发票、未付款、部分付款或已付款。", "en": "Classifies the earliest incomplete stage from no receipt through paid." },
+      "id": "load-goods-receipts",
+      "title": { "zh": "读取并净额计算收货", "en": "Load and net goods receipts" },
+      "description": { "zh": "按 PO item 读取收货、退货和冲销，并用一致单位计算有效净收货数量。", "en": "Loads receipts, returns and reversals by PO item and calculates valid net receipt quantity in a consistent unit." },
+      "operations": {
+        "zh": [
+          "查询 A_MaterialDocumentItem，按 PO/item 读取物料凭证、移动类型、数量、单位、借贷标识和冲销引用。",
+          "按物料凭证号和年度查询 A_MaterialDocumentHeader，补充过账日期和抬头冲销信息。",
+          "排除取消记录，并按借贷标识、反向移动类型及冲销凭证对收货、退货和冲销做净额计算。",
+          "单位一致时输出净收货数量；无法可靠换算时停止数量结论并标记证据冲突。"
+        ],
+        "en": [
+          "Query A_MaterialDocumentItem by PO/item for document keys, movement type, quantity, unit, debit/credit code and reversal references.",
+          "Query A_MaterialDocumentHeader by material-document number and year to add posting dates and header reversal evidence.",
+          "Exclude cancelled records and net receipts, returns and reversals using debit/credit codes, reverse movement types and reversal documents.",
+          "Return net received quantity only in a consistent unit; stop the quantity conclusion when conversion is not reliable."
+        ]
+      },
       "tools": [
-        { "name": "P2P state machine", "kind": "State engine", "purpose": { "zh": "稳定状态优先级与异常叠加", "en": "Stable status precedence with anomaly overlays" } }
+        { "name": "API_MATERIAL_DOCUMENT_SRV", "kind": "SAP OData API", "purpose": { "zh": "通过 A_MaterialDocumentItem 和 A_MaterialDocumentHeader 提供 GR、退货和冲销证据。", "en": "Provides GR, return and reversal evidence through A_MaterialDocumentItem and A_MaterialDocumentHeader." } },
+        { "name": "sapclaw_execute_get", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "按 PO 和物料凭证技术键执行完整分页查询。", "en": "Executes complete paged queries by PO and material-document keys." } }
       ]
     },
     {
-      "id": "explain-output",
-      "title": { "zh": "解释阻塞并输出", "en": "Explain blockers and output" },
-      "description": { "zh": "给出每个项目的下一步、异常原因和原始凭证键。", "en": "Presents next actions, blockers and source document keys for every item." },
+      "id": "load-supplier-invoices",
+      "title": { "zh": "读取并验证供应商发票", "en": "Load and validate supplier invoices" },
+      "description": { "zh": "从 PO item 找到供应商发票，并验证过账、贷项和冲销状态。", "en": "Finds supplier invoices from each PO item and validates posting, credit-memo and reversal status." },
+      "operations": {
+        "zh": [
+          "查询 A_SuplrInvcItemPurOrdRef，按 PO/item 获取发票号、年度、项目、数量、金额、单位和币种。",
+          "使用发票号和年度查询 A_SupplierInvoice，读取发票状态、过账日期、贷项和冲销字段。",
+          "只统计已过账且未被冲销的有效发票，并将贷项和冲销按负向证据净额处理。",
+          "IsFinallyInvoiced=false 仅表示未设置最终发票标志，不能否定已经找到的已过账发票。"
+        ],
+        "en": [
+          "Query A_SuplrInvcItemPurOrdRef by PO/item for invoice number, year, item, quantity, amount, unit and currency.",
+          "Query A_SupplierInvoice by invoice number and year for status, posting date, credit-memo and reversal fields.",
+          "Count only posted, non-reversed invoices and net credit memos and reversals as negative evidence.",
+          "IsFinallyInvoiced=false only means that the final-invoice indicator is not set; it does not negate an observed posted invoice."
+        ]
+      },
       "tools": [
-        { "name": "MarkdownFormatter / JSON CLI", "kind": "Output", "purpose": { "zh": "人类可读与机器可读结果", "en": "Human-readable and machine-readable results" } }
+        { "name": "API_SUPPLIERINVOICE_PROCESS_SRV", "kind": "SAP OData API", "purpose": { "zh": "通过 A_SuplrInvcItemPurOrdRef 和 A_SupplierInvoice 提供 PO 发票证据。", "en": "Provides PO invoice evidence through A_SuplrInvcItemPurOrdRef and A_SupplierInvoice." } },
+        { "name": "sapclaw_execute_get", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "按 PO 引用和发票技术键执行只读查询。", "en": "Executes read-only queries by PO reference and invoice technical keys." } }
+      ]
+    },
+    {
+      "id": "link-fi-payment",
+      "title": { "zh": "串联 FI 与付款证据", "en": "Link FI and payment evidence" },
+      "description": { "zh": "从供应商发票定位 FI 供应商行，再沿清账键确认付款凭证类型。", "en": "Locates the FI supplier line from the supplier invoice and follows clearing keys to confirm the payment document type." },
+      "operations": {
+        "zh": [
+          "从供应商发票 API 取得 SupplierInvoice 和 FiscalYear，形成发票到 FI 的技术关联输入。",
+          "在 A_OperationalAcctgDocItemCube 中通过 OriginalReferenceDocument 定位发票 FI 会计凭证。",
+          "读取 FI 供应商行、付款冻结、NetDueDate、交易币种金额和清账字段。",
+          "从 ClearingAccountingDocument 和 ClearingDocFiscalYear 取得清账凭证技术键。",
+          "再次查询清账凭证并读取 AccountingDocumentType，确认清账动作的业务类型。",
+          "仅当清账凭证类型属于配置集合 KZ、ZP、PY 或显式客户映射时判定付款；非付款清账保持未付款。",
+          "存在明确部分付款引用时，按已付金额占发票供应商行金额的比例分配到相关 PO item。"
+        ],
+        "en": [
+          "Take SupplierInvoice and FiscalYear from the supplier-invoice API as the technical input for invoice-to-FI linking.",
+          "Use OriginalReferenceDocument in A_OperationalAcctgDocItemCube to locate the invoice FI accounting document.",
+          "Read the FI supplier line, payment block, NetDueDate, transaction-currency amount and clearing fields.",
+          "Take ClearingAccountingDocument and ClearingDocFiscalYear as the clearing-document technical key.",
+          "Query the clearing document again and read AccountingDocumentType to confirm the business nature of the clearing action.",
+          "Classify payment only when the clearing type belongs to KZ, ZP, PY or an explicit customer mapping; non-payment clearing remains unpaid.",
+          "When an explicit partial-payment reference exists, allocate the paid ratio from the invoice supplier-line amount to its PO items."
+        ]
+      },
+      "tools": [
+        { "name": "API_OPLACCTGDOCITEMCUBE_SRV", "kind": "SAP OData API", "purpose": { "zh": "通过 A_OperationalAcctgDocItemCube 提供 FI 发票行、清账和付款凭证证据。", "en": "Provides FI invoice-line, clearing and payment-document evidence through A_OperationalAcctgDocItemCube." } },
+        { "name": "sapclaw_execute_get", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "按 PO、原始参考凭证、FI 凭证和清账凭证键执行串联查询。", "en": "Executes chained queries by PO, original reference, FI document and clearing-document keys." } }
+      ]
+    },
+    {
+      "id": "assemble-evidence",
+      "title": { "zh": "组装并校验证据", "en": "Assemble and validate evidence" },
+      "description": { "zh": "将多 API 结果映射到统一 P2P 数据契约，并执行完整性、单位、币种和敏感信息检查。", "en": "Maps multi-API results into the unified P2P contract and checks completeness, units, currencies and sensitive data." },
+      "operations": {
+        "zh": [
+          "把采购订单、物料凭证、供应商发票和会计凭证实体映射为 EKKO/EKPO、MKPF/MSEG、RBKP/RSEG、BKPF/BSEG 语义。",
+          "确认每个查询均读取到 has_next=false，并保存运行 ID、SAP client、技术键、来源工具和分页状态。",
+          "检查跨 API 技术键、单位和币种一致性；缺页、权限错误或证据冲突时输出 INCONCLUSIVE。",
+          "生成不含凭据、银行信息或完整供应商敏感数据的 evidence 快照；SAPSkillhub 仅可选补证，本次验证主路径未使用。"
+        ],
+        "en": [
+          "Map purchase-order, material-document, supplier-invoice and accounting-document entities to EKKO/EKPO, MKPF/MSEG, RBKP/RSEG and BKPF/BSEG semantics.",
+          "Confirm that every query reaches has_next=false and save the run ID, SAP client, technical keys, source tool and pagination state.",
+          "Validate cross-API technical keys, units and currencies; return INCONCLUSIVE for missing pages, permission errors or conflicting evidence.",
+          "Create an evidence snapshot without credentials, bank data or full supplier-sensitive data; SAPSkillhub is optional supplemental evidence and was not used in the validated primary path."
+        ]
+      },
+      "tools": [
+        { "name": "Evidence snapshot builder", "kind": "Orchestration", "purpose": { "zh": "保存脱敏 API 请求、实体和完整性元数据。", "en": "Stores sanitized API requests, entities and completeness metadata." } },
+        { "name": "EvidenceP2PDataSource", "kind": "Data adapter", "purpose": { "zh": "把 evidence JSON 映射为 P2PTables。", "en": "Maps evidence JSON into P2PTables." } },
+        { "name": "SAPSkillhub skill (optional)", "kind": "SAPSkill", "purpose": { "zh": "仅在存在明确匹配的只读 skill 时补证；本次真实验证未使用。", "en": "Supplements evidence only when an explicitly matching read-only skill exists; none was used in the live validation." } }
+      ]
+    },
+    {
+      "id": "classify-and-present",
+      "title": { "zh": "判定状态并输出", "en": "Classify status and present results" },
+      "description": { "zh": "按最早未完成阶段判定每个 PO item，并输出数量、金额、阻塞原因和技术凭证链。", "en": "Classifies each PO item by its earliest incomplete stage and presents quantities, amounts, blockers and technical document chains." },
+      "operations": {
+        "zh": [
+          "按删除、收货、发票和付款的前序未完成优先级计算项目状态，并叠加异常而不覆盖主状态。",
+          "对收货、发票、贷项、冲销和付款金额做净额及发票级分摊，避免多项目发票重复计款。",
+          "输出项目级状态、数量和金额进度、阻塞或异常原因，以及 GR、Invoice、FI 和 Payment 技术凭证键。",
+          "生成 Markdown 或稳定 JSON；整个流程保持只读，不创建或修改任何 SAP 凭证。"
+        ],
+        "en": [
+          "Calculate item status using deletion, receipt, invoice and payment precedence, adding anomalies without replacing the primary state.",
+          "Net receipts, invoices, credits, reversals and payments and allocate at invoice level to avoid double-counting multi-item invoices.",
+          "Return item status, quantity and amount progress, blocker or anomaly explanations, and GR, Invoice, FI and Payment technical keys.",
+          "Produce Markdown or stable JSON while the entire workflow remains read-only and creates or changes no SAP document."
+        ]
+      },
+      "tools": [
+        { "name": "P2PAnalyzer", "kind": "Analysis engine", "purpose": { "zh": "执行跨对象关联、净额计算、付款分摊和证据检查。", "en": "Performs cross-object linking, netting, payment allocation and evidence checks." } },
+        { "name": "P2P state machine", "kind": "State engine", "purpose": { "zh": "执行稳定的状态优先级和异常叠加。", "en": "Applies stable state precedence and anomaly overlays." } },
+        { "name": "MarkdownFormatter / JSON CLI", "kind": "Output", "purpose": { "zh": "生成人类可读和机器可读结果。", "en": "Produces human-readable and machine-readable results." } }
       ]
     }
   ]

@@ -55,6 +55,18 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
     stepIds.add(step.id);
     requireLocalized(step.title, `${source}.workflow[${index}].title`);
     requireLocalized(step.description, `${source}.workflow[${index}].description`);
+    if (step.operations !== undefined) {
+      requireList(step.operations?.zh, `${source}.workflow[${index}].operations.zh`);
+      requireList(step.operations?.en, `${source}.workflow[${index}].operations.en`);
+      if (step.operations.zh.length !== step.operations.en.length) {
+        throw new Error(`${source}.workflow[${index}].operations must contain the same number of zh and en items`);
+      }
+      for (const locale of ["zh", "en"]) {
+        for (const [operationIndex, operation] of step.operations[locale].entries()) {
+          requireString(operation, `${source}.workflow[${index}].operations.${locale}[${operationIndex}]`);
+        }
+      }
+    }
     if (step.sapScope !== undefined) {
       if (!step.sapScope || typeof step.sapScope !== "object" || Array.isArray(step.sapScope)) {
         throw new Error(`${source}.workflow[${index}].sapScope must be an object`);

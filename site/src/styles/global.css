@@ -997,6 +997,46 @@ select {
   font-size: 13px;
 }
 
+.step-operations {
+  border-top: 1px solid var(--color-border);
+  padding: 14px 17px 16px;
+}
+
+.step-operations h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 10px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.step-operations h4 svg {
+  color: var(--color-primary);
+}
+
+.step-operations ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 24px;
+}
+
+.step-operations li {
+  padding-left: 4px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.step-operations li::marker {
+  color: var(--color-module);
+  font-weight: 760;
+}
+
 .step-sap-scope {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

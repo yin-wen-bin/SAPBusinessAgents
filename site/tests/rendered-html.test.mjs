@@ -47,3 +47,30 @@ test("detail pages render workflow and step-level tools", async () => {
   assert.match(closing, /核心对象 \/ 表/);
   assert.match(grir, /class="detail-module-badge">FI</);
 });
+
+test("P2P detail page renders the complete bilingual API workflow", async () => {
+  const zh = await readPage("zh", "agents", "MM", "procure-to-pay-status");
+  const en = await readPage("en", "agents", "MM", "procure-to-pay-status");
+
+  assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
+  assert.equal((zh.match(/class="step-operations"/g) ?? []).length, 8);
+  assert.match(zh, /详细操作/);
+  assert.match(zh, /本步骤 API \/ SAPSkill \/ Tools/);
+  assert.match(zh, /sapclaw_runtime_health/);
+  assert.match(zh, /sapclaw_schema/);
+  assert.match(zh, /API_PURCHASEORDER_PROCESS_SRV/);
+  assert.match(zh, /API_MATERIAL_DOCUMENT_SRV/);
+  assert.match(zh, /API_SUPPLIERINVOICE_PROCESS_SRV/);
+  assert.match(zh, /API_OPLACCTGDOCITEMCUBE_SRV/);
+  assert.match(zh, /OriginalReferenceDocument/);
+  assert.match(zh, /ClearingAccountingDocument/);
+  assert.match(zh, /本次验证主路径未使用/);
+
+  assert.equal((en.match(/class="workflow-step"/g) ?? []).length, 8);
+  assert.equal((en.match(/class="step-operations"/g) ?? []).length, 8);
+  assert.match(en, /Detailed operations/);
+  assert.match(en, /APIs, SAPSkills &amp; tools used at this step/);
+  assert.match(en, /OriginalReferenceDocument/);
+  assert.match(en, /ClearingAccountingDocument/);
+  assert.match(en, /none was used in the live validation/);
+});

@@ -24,6 +24,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("未识别", stderr.getvalue())
 
+    def test_evidence_source_requires_path(self) -> None:
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            code = main(["PO 4500001234 是否已付款？", "--source", "evidence"])
+        self.assertEqual(code, 2)
+        self.assertIn("requires --evidence", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

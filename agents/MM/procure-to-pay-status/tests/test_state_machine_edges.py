@@ -73,6 +73,24 @@ class StateMachineEdgeTests(unittest.TestCase):
         self.assertEqual(item.status, ItemStatus.PARTIALLY_INVOICED)
         self.assertEqual(item.invoiced_quantity, 5)
 
+    def test_baseline_date_is_not_treated_as_net_due_date(self) -> None:
+        tables = P2PTables(
+            ekko=(HEADER,),
+            ekpo=(ITEM,),
+            mkpf=({"MBLNR": "5001", "MJAHR": "2026"},),
+            mseg=(
+                {"EBELN": "4500009999", "EBELP": "00010", "MBLNR": "5001", "MJAHR": "2026", "MENGE": "10", "SHKZG": "S"},
+            ),
+            rseg=(
+                {"EBELN": "4500009999", "EBELP": "00010", "BELNR": "5101", "GJAHR": "2026", "MENGE": "10", "WRBTR": "100", "SHKZG": "S"},
+            ),
+            rbkp=({"BELNR": "5101", "GJAHR": "2026", "RBSTAT": "5"},),
+            bkpf=({"BUKRS": "1000", "BELNR": "1901", "GJAHR": "2026", "AWTYP": "RMRP", "AWKEY": "51012026"},),
+            bseg=({"BUKRS": "1000", "BELNR": "1901", "GJAHR": "2026", "BUZEI": "001", "KOART": "K", "WRBTR": "100", "SHKZG": "H", "ZFBDT": "20260101"},),
+        )
+        item = self.analyzer.analyze(tables, self.query, as_of=date(2026, 7, 22)).items[0]
+        self.assertNotIn("PAYMENT_OVERDUE", {finding.code for finding in item.findings})
+
 
 if __name__ == "__main__":
     unittest.main()
