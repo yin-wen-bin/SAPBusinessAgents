@@ -26,6 +26,20 @@ test("catalog discovers five valid agents with step-level tools", () => {
     const coveredValues = new Set(closing.workflow.flatMap((step) => step.sapScope[scopeField]));
     assert.deepEqual(coveredValues, new Set(closing[agentField]));
   }
+
+  const p2p = records.find((agent) => agent.slug === "procure-to-pay-status");
+  assert.equal(p2p.workflow.length, 8);
+  assert.ok(p2p.workflow.every((step) => step.operations.zh.length > 0));
+  assert.ok(p2p.workflow.every((step) => step.operations.zh.length === step.operations.en.length));
+  const p2pTools = p2p.workflow.flatMap((step) => step.tools.map((tool) => tool.name));
+  for (const api of [
+    "API_PURCHASEORDER_PROCESS_SRV",
+    "API_MATERIAL_DOCUMENT_SRV",
+    "API_SUPPLIERINVOICE_PROCESS_SRV",
+    "API_OPLACCTGDOCITEMCUBE_SRV",
+  ]) {
+    assert.ok(p2pTools.includes(api));
+  }
 });
 
 test("manifest validation rejects a workflow step without tools", () => {
@@ -43,5 +57,23 @@ test("manifest validation rejects step SAP scope outside the Agent scope", () =>
   assert.throws(
     () => validateAgent(example, example.module, example.slug, "example/agent.json"),
     /outside agent\.transactions/,
+  );
+});
+
+test("manifest validation rejects an empty localized operations list", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "procure-to-pay-status"));
+  example.workflow[0].operations.zh = [];
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /operations\.zh must be a non-empty array/,
+  );
+});
+
+test("manifest validation rejects mismatched localized operations", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "procure-to-pay-status"));
+  example.workflow[0].operations.en.pop();
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /operations must contain the same number of zh and en items/,
   );
 });

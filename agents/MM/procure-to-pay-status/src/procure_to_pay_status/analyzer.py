@@ -91,6 +91,12 @@ def _is_truthy_flag(value: Any) -> bool:
 class P2PAnalyzer:
     """Join EKKO/EKPO through material, invoice and FI/payment documents."""
 
+    def __init__(self, payment_document_types: Iterable[str] = PAYMENT_DOCUMENT_TYPES):
+        configured = {str(value).strip().upper() for value in payment_document_types if str(value).strip()}
+        if not configured:
+            raise ValueError("At least one payment document type must be configured")
+        self.payment_document_types = configured
+
     def analyze(
         self,
         tables: P2PTables,
@@ -268,6 +274,21 @@ class P2PAnalyzer:
                 and _text(row, "AWKEY").startswith(f"{inv_number}{inv_year}")
             ]
             if not fi_headers:
+                direct_rows = [
+                    row
+                    for row in tables.bseg
+                    if _text(row, "EBELN") == po
+                    and _text(row, "EBELP").zfill(5) == item_number
+                    and (
+                        (_text(row, "LIV_BELNR") == inv_number and _text(row, "LIV_GJAHR") == inv_year)
+                        or (len(invoice_groups) == 1 and not _text(row, "LIV_BELNR"))
+                    )
+                ]
+                direct_keys = {_key(row, "BUKRS", "BELNR", "GJAHR") for row in direct_rows}
+                fi_headers = [
+                    row for row in tables.bkpf if _key(row, "BUKRS", "BELNR", "GJAHR") in direct_keys
+                ]
+            if not fi_headers:
                 open_amount += item_amount
                 findings.append(
                     Finding(
@@ -323,7 +344,7 @@ class P2PAnalyzer:
                         clearing_header = bkpf_by_key.get(clearing_key)
                         clearing_document = _document(clearing_number, clearing_year)
                         clearing_documents.append(clearing_document)
-                        if clearing_header and _text(clearing_header, "BLART").upper() in PAYMENT_DOCUMENT_TYPES:
+                        if clearing_header and _text(clearing_header, "BLART").upper() in self.payment_document_types:
                             invoice_paid_factor = Decimal("1")
                         else:
                             invoice_cleared_nonpayment = True
@@ -352,7 +373,7 @@ class P2PAnalyzer:
                     valid_partial_rows = []
                     for row in partial_rows:
                         payment_header = bkpf_by_key.get(_key(row, "BUKRS", "BELNR", "GJAHR"))
-                        if payment_header and _text(payment_header, "BLART").upper() in PAYMENT_DOCUMENT_TYPES:
+                        if payment_header and _text(payment_header, "BLART").upper() in self.payment_document_types:
                             valid_partial_rows.append(row)
                             clearing_documents.append(
                                 _document(_text(row, "BELNR"), _text(row, "GJAHR"))
@@ -362,7 +383,7 @@ class P2PAnalyzer:
                         invoice_paid_factor = min(Decimal("1"), partial_total / vendor_total)
                     invoice_open_factor = Decimal("1") - invoice_paid_factor
 
-                    due_date = _date(vendor_line.get("FAEDT")) or _date(vendor_line.get("ZFBDT"))
+                    due_date = _date(vendor_line.get("FAEDT"))
                     if due_date and due_date < as_of and invoice_open_factor > EPSILON:
                         findings.append(
                             Finding(

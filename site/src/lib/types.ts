@@ -29,6 +29,7 @@ export interface WorkflowStep {
   id: string;
   title: LocalizedText;
   description: LocalizedText;
+  operations?: LocalizedList;
   sapScope?: WorkflowSapScope;
   tools: WorkflowTool[];
 }

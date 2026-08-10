@@ -37,7 +37,36 @@ class P2PDataSource(Protocol):
 | BKPF | `BUKRS BELNR GJAHR BLART BUDAT AWTYP AWKEY STBLG` | LIV→FI 与清账/付款凭证分类 |
 | BSEG | `BUKRS BELNR GJAHR BUZEI KOART LIFNR WRBTR DMBTR SHKZG AUGBL AUGGJ AUGDT ZLSPR ZFBDT REBZG REBZJ REBZZ` | 供应商未清、冻结、清账、部分付款 |
 
-适配器可额外返回 `FAEDT` 作为已经正确计算的净到期日。没有可靠到期日时应留空，分析器就不会做逾期断言。
+适配器可额外返回 `FAEDT` 作为已经正确计算的净到期日。没有可靠到期日时应留空，分析器就不会做逾期断言。分析器不会把 `ZFBDT` 付款基准日当作净到期日。
+
+## SAPClaw evidence 快照
+
+`EvidenceP2PDataSource` 接受验证编排层生成的 JSON，而不在 Assistant 进程内调用 MCP。根对象至少包含：
+
+```json
+{
+  "schema_version": "1.0",
+  "metadata": {
+    "run_id": "...",
+    "source": "sapclaw_runtime",
+    "as_of": "2026-08-09"
+  },
+  "completeness": { "complete": true },
+  "entities": {
+    "A_PurchaseOrder": [],
+    "A_PurchaseOrderItem": [],
+    "A_MaterialDocumentHeader": [],
+    "A_MaterialDocumentItem": [],
+    "A_SupplierInvoice": [],
+    "A_SuplrInvcItemPurOrdRef": [],
+    "A_OperationalAcctgDocItemCube": []
+  }
+}
+```
+
+编排层在 FI 行上可添加 `SupplierInvoice`、`SupplierInvoiceFiscalYear`、`PartialPaymentReference` 和 `PartialPaymentReferenceFiscalYear` 作为确定性跨 API 关联字段。若这些字段缺失，只有单发票 PO 项目允许按 `PurchasingDocument/PurchasingDocumentItem` 保守关联；多发票项目必须提供明确关联。
+
+所有分页必须读取完毕后才能设置 `completeness.complete=true`。快照不得包含凭据、银行字段或完整供应商敏感数据。
 
 ## 净额与状态语义
 

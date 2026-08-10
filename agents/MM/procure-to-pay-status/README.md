@@ -12,6 +12,7 @@
 - 付款识别：通过发票 FI 供应商行的 `AUGBL/AUGGJ` 追踪清账凭证并校验付款凭证类型；也支持通过 `REBZG/REBZJ` 识别部分付款。
 - 人类可读 Markdown 与稳定 JSON 两种输出。
 - 无真实 SAP 时使用包内 SAP-like JSON fixture；生产适配器只需实现一个协议。
+- 可读取由 `sapclaw_runtime` 或受控 SAPSkillhub skill 生成的脱敏 evidence 快照；MCP 调用与业务分析保持解耦。
 
 ## 快速运行
 
@@ -34,6 +35,19 @@ p2p-status "采购订单 4500001234 项目 40 的付款状态"
 ```powershell
 p2p-status "PO 4500001234 item 50" --json
 ```
+
+读取真实 SAP 验证编排层生成的 evidence：
+
+```powershell
+p2p-status "PO 4500001234 是否已经收货、发票校验和付款？" `
+  --source evidence `
+  --evidence D:\SAPBusinessAgents\.local\runs\procure-to-pay-status\RUN_ID\sapclaw-evidence.json `
+  --payment-document-types KZ,ZP,PY `
+  --as-of 2026-08-09 `
+  --json
+```
+
+evidence 必须明确标记 `completeness.complete=true`，并包含 PO、物料凭证、供应商发票和 FI/清账实体。缺页、币种不一致或单位不一致时数据源会拒绝分析，而不是生成推测性状态。
 
 不安装也可运行：
 
@@ -92,6 +106,7 @@ python -m unittest discover -s tests -v
 - fixture 不含真实凭据或个人数据；认证、重试、分页、权限与连接池属于适配器职责。
 - `KZ/ZP/PY` 是当前已知付款凭证类型，客户自定义凭证类型必须配置或映射后才能判定为付款；仅有 `AUGBL` 不等于付款。
 - `FAEDT` 在接口契约中是可选的派生净到期日。若源端只提供 `ZFBDT/ZTERM/ZBD*T`，应在适配器或 SAP 标准函数中计算，不能把基准日直接当到期日。
+- `--payment-document-types` 默认使用 `KZ,ZP/PY`；客户自定义付款凭证类型必须显式配置。
 - S/4HANA 可从 CDS/API 或 MATDOC 兼容视图提供与本契约等价的字段，不要求直接读取透明表。
 - 当前参数抽取故意保持确定性与可审计性。需要自由表达时，可在上层增加 LLM extractor，但应返回相同 `QueryParameters` 并保留此实现作为校验/回退。
 
