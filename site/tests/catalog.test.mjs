@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { loadAgentCatalog, validateAgent } from "../scripts/generate-agent-catalog.mjs";
 
-test("catalog discovers sixteen valid agents with step-level tools", () => {
+test("catalog discovers twenty-one valid agents with step-level tools", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
-  assert.equal(records.length, 16);
+  assert.equal(records.length, 21);
   assert.deepEqual(
     records.map((agent) => `${agent.module}/${agent.slug}`),
     [
@@ -25,18 +25,23 @@ test("catalog discovers sixteen valid agents with step-level tools", () => {
       "SD/returns-credit-anomaly",
       "SD/shortage-allocation-advisor",
       "MM/procure-to-pay-status",
+      "PP/demand-forecast-planning",
+      "PP/mrp-exception-analysis",
+      "PP/production-order-monitoring",
+      "PP/production-scheduling-capacity",
+      "PP/production-variance-analysis",
     ],
   );
   for (const agent of records) {
     assert.ok(agent.workflow.length > 0);
     assert.ok(agent.workflow.every((step) => step.tools.length > 0));
   }
+
   const sdAgents = records.filter((agent) => agent.module === "SD");
   assert.equal(sdAgents.length, 11);
   assert.ok(sdAgents.every((agent) => agent.workflow.length === 8));
   assert.ok(sdAgents.every((agent) => agent.workflow.some((step) => step.sapScope)));
-  assert.ok(sdAgents.every((agent) => agent.guardrails.en.some((item) => item.includes("read-only"))));
-
+  assert.ok(sdAgents.every((agent) => agent.guardrails.zh.some((item) => item.includes("只读"))));
   const closing = records.find((agent) => agent.slug === "month-end-closing");
   assert.ok(closing.workflow.every((step) => step.sapScope));
   for (const [scopeField, agentField] of [["modules", "sapModules"], ["transactions", "transactions"], ["tables", "tables"]]) {
@@ -57,6 +62,14 @@ test("catalog discovers sixteen valid agents with step-level tools", () => {
   ]) {
     assert.ok(p2pTools.includes(api));
   }
+
+  const ppAgents = records.filter((agent) => agent.module === "PP");
+  assert.equal(ppAgents.length, 5);
+  assert.ok(ppAgents.every((agent) => agent.status === "Live-tested design"));
+  assert.ok(ppAgents.every((agent) => agent.workflow.length === 6));
+  assert.ok(ppAgents.every((agent) => agent.workflow.every((step) => step.operations.zh.length === step.operations.en.length)));
+  assert.ok(ppAgents.every((agent) => agent.workflow.some((step) => step.tools.some((tool) => tool.kind === "Thin SAPClaw"))));
+  assert.ok(ppAgents.every((agent) => agent.workflow.some((step) => step.tools.some((tool) => tool.kind === "SAPSkillhub"))));
 });
 
 test("manifest validation rejects a workflow step without tools", () => {
