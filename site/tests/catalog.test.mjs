@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { loadAgentCatalog, validateAgent } from "../scripts/generate-agent-catalog.mjs";
 
-test("catalog discovers five valid agents with step-level tools", () => {
+test("catalog discovers six valid agents with step-level tools", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
-  assert.equal(records.length, 5);
+  assert.equal(records.length, 6);
   assert.deepEqual(
     records.map((agent) => `${agent.module}/${agent.slug}`),
     [
@@ -13,6 +13,7 @@ test("catalog discovers five valid agents with step-level tools", () => {
       "FI/ar-collection",
       "FI/gr-ir-clearing",
       "FI/month-end-closing",
+      "MM/gr-ir-aging",
       "MM/procure-to-pay-status",
     ],
   );
@@ -40,6 +41,11 @@ test("catalog discovers five valid agents with step-level tools", () => {
   ]) {
     assert.ok(p2pTools.includes(api));
   }
+
+  const grIr = records.find((agent) => agent.slug === "gr-ir-aging");
+  assert.equal(grIr.workflow.length, 6);
+  assert.ok(grIr.guardrails.zh.some((value) => value.includes("严格只读")));
+  assert.ok(grIr.workflow.flatMap((step) => step.tools.map((tool) => tool.name)).includes("API_OPLACCTGDOCITEMCUBE_SRV"));
 });
 
 test("manifest validation rejects a workflow step without tools", () => {
