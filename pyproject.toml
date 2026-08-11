@@ -6,4 +6,5 @@ pythonpath = [
   "agents/FI/gr-ir-clearing/src",
   "agents/FI/month-end-closing/src",
   "agents/MM/procure-to-pay-status/src",
+  "agents/MM/gr-ir-aging/src",
 ]

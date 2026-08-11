@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "slug": "gr-ir-aging",
+  "module": "MM",
+  "title": { "zh": "GR/IR 账龄分析 Agent", "en": "GR/IR Ageing Analysis Agent" },
+  "summary": {
+    "zh": "通过 Thin SAPClaw 只读会计凭证证据计算采购订单项目的 GR/IR 未结余额、最后活动日和账龄，并在证据不完整时保守停止。",
+    "en": "Uses read-only Thin SAPClaw accounting evidence to calculate PO-item GR/IR residuals, last activity and ageing, failing closed when evidence is incomplete."
+  },
+  "status": "Runnable prototype",
+  "version": "0.1.0",
+  "owner": "MM-IV / FI-GL",
+  "tags": ["GR/IR", "Ageing", "Purchase Order", "Reconciliation"],
+  "sapModules": ["MM-IV", "MM-IM", "FI-GL"],
+  "transactions": ["MB5S"],
+  "tables": ["EKBE", "BKPF", "BSEG", "ACDOCA"],
+  "systems": ["SAP ECC", "SAP S/4HANA"],
+  "inputs": {
+    "zh": ["公司代码", "关键日期", "可选采购订单、工厂和 GR/IR 科目", "账龄阈值与分桶", "SAP 凭证链证据（自动查询）"],
+    "en": ["Company code", "Key date", "Optional purchase orders, plants and GR/IR accounts", "Ageing threshold and buckets", "Automatically queried SAP evidence"]
+  },
+  "outputs": {
+    "zh": ["PO/项目级 GR 和 IR 数量与金额", "未结余额与币种", "最后活动日、账龄及分桶", "源凭证引用", "完整性结论"],
+    "en": ["PO-item GR and IR quantities and values", "Residual and currency", "Last activity, ageing and bucket", "Source document references", "Completeness conclusion"]
+  },
+  "guardrails": {
+    "zh": ["严格只读，不执行 MB5S 或任何 SAP 写入", "完整分页后才计算", "混合公司代码币种、重复业务键或不可换算单位时返回 inconclusive"],
+    "en": ["Strictly read-only; never executes MB5S or any SAP write", "Calculates only after complete pagination", "Returns inconclusive for mixed company currencies, duplicate keys or non-convertible units"]
+  },
+  "workflow": [
+    {
+      "id": "validate-input",
+      "title": { "zh": "校验查询范围", "en": "Validate query scope" },
+      "description": { "zh": "规范化公司代码、关键日期、可选范围和账龄策略。", "en": "Normalizes company code, key date, optional scope and ageing policy." },
+      "operations": {
+        "zh": ["要求公司代码和关键日期。", "校验账龄阈值非负，分桶边界唯一且递增。", "采购订单、工厂和科目仅作为显式服务端过滤条件。"],
+        "en": ["Require company code and key date.", "Require a non-negative threshold and unique ascending bucket boundaries.", "Use purchase orders, plants and accounts only as explicit server-side filters."]
+      },
+      "tools": [
+        { "name": "QueryParameters", "kind": "Agent component", "purpose": { "zh": "保存确定性查询范围。", "en": "Stores deterministic query scope." } },
+        { "name": "No SAP call", "kind": "Boundary", "purpose": { "zh": "输入解析阶段不访问 SAP。", "en": "Input parsing does not access SAP." } }
+      ]
+    },
+    {
+      "id": "check-thin-runtime",
+      "title": { "zh": "验证 Thin SAPClaw", "en": "Validate Thin SAPClaw" },
+      "description": { "zh": "确认运行时健康、可执行且严格只读。", "en": "Confirms the runtime is healthy, executable and strictly read-only." },
+      "operations": {
+        "zh": ["调用健康检查并要求 read_only=true。", "读取会计凭证立方体 schema 并确认所需字段。", "服务不可执行或权限不足时停止。"],
+        "en": ["Call health and require read_only=true.", "Read the accounting-item cube schema and verify required fields.", "Stop when the service is not executable or authorization fails."]
+      },
+      "tools": [
+        { "name": "sapclaw_runtime_health", "kind": "Thin SAPClaw MCP", "purpose": { "zh": "验证健康与只读状态。", "en": "Validates health and read-only state." } },
+        { "name": "sapclaw_schema", "kind": "Thin SAPClaw MCP", "purpose": { "zh": "验证实体字段和可执行性。", "en": "Validates entity fields and executability." } }
+      ]
+    },
+    {
+      "id": "query-accounting-evidence",
+      "title": { "zh": "查询 GR/IR 会计证据", "en": "Query GR/IR accounting evidence" },
+      "description": { "zh": "按公司代码、关键日期和可选范围读取会计凭证项目。", "en": "Reads accounting document items by company, key date and optional scope." },
+      "operations": {
+        "zh": ["查询 A_OperationalAcctgDocItemCube。", "只选择 PO、供应商、物料、工厂、日期、借贷、数量、金额、币种和冲销字段。", "跟随分页直到 has_next=false，并保存 run id、system、client 和实际过滤条件。", "不调用 CDS-only 的 I_PurchaseOrderHistoryAPI01。"],
+        "en": ["Query A_OperationalAcctgDocItemCube.", "Select only PO, supplier, material, plant, date, debit/credit, quantity, amount, currency and reversal fields.", "Follow pagination until has_next=false and store run id, system, client and actual filters.", "Do not call the CDS-only I_PurchaseOrderHistoryAPI01."]
+      },
+      "tools": [
+        { "name": "API_OPLACCTGDOCITEMCUBE_SRV", "kind": "SAP OData API", "purpose": { "zh": "提供 GR/IR 会计行及 PO 引用。", "en": "Provides GR/IR accounting lines and PO references." } },
+        { "name": "sapclaw_execute_get", "kind": "Thin SAPClaw MCP", "purpose": { "zh": "执行受控、分页、只读 GET。", "en": "Executes controlled, paged, read-only GET requests." } }
+      ]
+    },
+    {
+      "id": "validate-evidence",
+      "title": { "zh": "校验证据完整性", "en": "Validate evidence completeness" },
+      "description": { "zh": "拒绝缺页、重复键、缺字段和非只读来源。", "en": "Rejects missing pages, duplicate keys, missing fields and non-read-only sources." },
+      "operations": {
+        "zh": ["要求 completeness.complete=true、source_complete=true 和 read_only=true。", "用公司代码、年度、会计凭证和项目检测重复业务键。", "校验过账日期、PO 项目、公司代码金额与币种字段。", "任何错误都返回 inconclusive，不输出余额。"],
+        "en": ["Require completeness.complete=true, source_complete=true and read_only=true.", "Detect duplicate business keys using company, year, accounting document and item.", "Validate posting date, PO item, company-code amount and currency fields.", "Return inconclusive without residuals for any error."]
+      },
+      "tools": [
+        { "name": "EvidenceSnapshot", "kind": "Data adapter", "purpose": { "zh": "验证并冻结脱敏 evidence。", "en": "Validates and freezes sanitized evidence." } }
+      ]
+    },
+    {
+      "id": "calculate-aging",
+      "title": { "zh": "计算净额与账龄", "en": "Calculate residuals and ageing" },
+      "description": { "zh": "按 PO 项目净额处理 GR、IR、退货、贷项和冲销。", "en": "Nets GR, IR, returns, credits and reversals by PO item." },
+      "operations": {
+        "zh": ["依据来源类型、参考凭证类型和会计凭证类型归类 GR/IR。", "依据借贷标识和冲销标识计算公司代码币种净额。", "服务采购订单允许数量单位为空，但仍以金额核对。", "以最后有效过账日期计算账龄并按配置分桶。"],
+        "en": ["Classify GR/IR by explicit source, reference type and accounting document type.", "Use debit/credit and reversal indicators to net company-code currency amounts.", "Allow service POs to omit quantity units while still reconciling value.", "Calculate age from the last valid posting date and apply configured buckets."]
+      },
+      "tools": [
+        { "name": "GrIrAnalyzer", "kind": "Deterministic rules", "purpose": { "zh": "执行可解释净额和账龄规则。", "en": "Applies explainable netting and ageing rules." } }
+      ]
+    },
+    {
+      "id": "present-results",
+      "title": { "zh": "输出结果与证据", "en": "Present results and evidence" },
+      "description": { "zh": "输出未结项目、币种分桶总额和源凭证。", "en": "Returns open items, currency/bucket totals and source documents." },
+      "operations": {
+        "zh": ["输出 PO、项目、供应商、物料、工厂、GR/IR 数量和值。", "输出未结余额、公司代码币种、最后活动日、账龄和分桶。", "按币种和分桶汇总，绝不跨公司代码币种相加。", "提供稳定 JSON 或 Markdown，并保留 source_complete 和 read_only 标志。"],
+        "en": ["Return PO, item, supplier, material, plant and GR/IR quantities and values.", "Return residual, company currency, last activity date, age and bucket.", "Total by currency and bucket and never combine company-code currencies.", "Provide stable JSON or Markdown with source_complete and read_only flags."]
+      },
+      "tools": [
+        { "name": "JSON / Markdown formatter", "kind": "Output", "purpose": { "zh": "输出人读与机读报告。", "en": "Produces human- and machine-readable reports." } }
+      ]
+    }
+  ]
+}

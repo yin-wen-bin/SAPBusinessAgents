@@ -5,14 +5,23 @@ import path from "node:path";
 
 const readPage = (...segments) => readFile(path.join("dist", ...segments, "index.html"), "utf8");
 
-test("static catalog contains all five agents and the GitHub Pages base path", async () => {
+test("static catalog contains all six agents and the GitHub Pages base path", async () => {
   const html = await readPage("zh");
-  for (const slug of ["ap-payment", "ar-collection", "gr-ir-clearing", "month-end-closing", "procure-to-pay-status"]) {
+  for (const slug of ["ap-payment", "ar-collection", "gr-ir-clearing", "month-end-closing", "gr-ir-aging", "procure-to-pay-status"]) {
     assert.match(html, new RegExp(`/SAPBusinessAgents/zh/agents/(?:FI|MM)/${slug}/`));
   }
   assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 4);
-  assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 1);
+  assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 2);
   assert.doesNotMatch(html, /href="\/zh\//);
+});
+
+test("GR/IR ageing detail exposes Thin read-only provenance", async () => {
+  const html = await readPage("zh", "agents", "MM", "gr-ir-aging");
+  assert.equal((html.match(/class="workflow-step"/g) ?? []).length, 6);
+  assert.match(html, /API_OPLACCTGDOCITEMCUBE_SRV/);
+  assert.match(html, /sapclaw_runtime_health/);
+  assert.match(html, /source_complete/);
+  assert.match(html, /严格只读/);
 });
 
 test("English catalog reuses the SAPSkillhub UI structure", async () => {
