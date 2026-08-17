@@ -8,6 +8,8 @@ import pytest
 
 from sap_business_agents_platform.skills import (
     SkillError,
+    SkillRegistry,
+    _load_trusted_schema,
     _validate_adt_input,
     _validate_adt_manifest,
     _validate_adt_output,
@@ -103,3 +105,21 @@ def test_adt_adjacent_manifest_must_match_exact_output_bytes(tmp_path: Path) -> 
     )
     with pytest.raises(SkillError, match="SHA-256"):
         _validate_adt_manifest(output_path, payload, output)
+
+
+def test_skill_registry_loads_full_published_schemas_and_blocks_path_escape(tmp_path: Path) -> None:
+    source_root = Path(r"C:\Users\wenbi\Documents\SAPSkillhub")
+    if not source_root.is_dir():
+        pytest.skip("Local SAPSkillhub checkout is unavailable for schema-drift verification.")
+    registry = SkillRegistry(source_root, Path(__file__).resolve().parents[1] / "config" / "skills.json")
+    skill = registry.get("sap-adt-table-export")
+    assert skill["input_schema"]["additionalProperties"] is False
+    assert set(skill["input_schema"]["required"]) >= {"connection_profile", "filters", "max_rows"}
+    assert set(skill["output_schema"]["required"]) >= {"skill_id", "completeness", "artifacts"}
+
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"type":"object"}', encoding="utf-8")
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    with pytest.raises(SkillError, match="escapes SAPSkillhub root"):
+        _load_trusted_schema(trusted, "../outside.json", "input_schema")

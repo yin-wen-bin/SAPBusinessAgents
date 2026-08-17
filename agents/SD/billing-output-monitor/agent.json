@@ -109,8 +109,8 @@
     {
       "id": "check-thin-runtime",
       "title": {
-        "zh": "检查Thin Runtime",
-        "en": "Check Thin Runtime"
+        "zh": "检查Embedded Provider",
+        "en": "Check Embedded Provider"
       },
       "description": {
         "zh": "确认Runtime健康、启用、只读且schema可执行。",
@@ -126,8 +126,8 @@
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health / sapclaw_schema",
-          "kind": "sapclaw_runtime MCP",
+          "name": "sap_read_provider_health / sap_read_schema",
+          "kind": "Embedded SAP Read Provider",
           "purpose": {
             "zh": "执行健康和权威schema检查。",
             "en": "Run health and authoritative schema checks."
@@ -156,7 +156,7 @@
       "tools": [
         {
           "name": "API_BILLING_DOCUMENT_SRV",
-          "kind": "SAP OData via sapclaw_execute_get",
+          "kind": "SAP OData via sap_read_execute_get",
           "purpose": {
             "zh": "执行批准的只读GET。",
             "en": "Execute approved read-only GET requests."
@@ -429,6 +429,53 @@
         }
       },
       {
+        "id": "preflight_output_status",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "NAST",
+          "fields": ["KAPPL", "OBJKY", "KSCHL", "NACHA", "VSTAT", "ERDAT", "ERUHR", "DATVR", "UHRVR"],
+          "filters": [
+            {"field": "KAPPL", "operator": "eq", "value": "V3"},
+            {"field": "OBJKY", "operator": "eq", "value": "{{input.billing_document}}"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_output_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_output_status.output}}"}
+      },
+      {
+        "id": "read_output_status",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.assess_output_preflight.output.proceed}}", "equals": true},
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "NAST",
+          "fields": ["KAPPL", "OBJKY", "KSCHL", "NACHA", "VSTAT", "ERDAT", "ERUHR", "DATVR", "UHRVR"],
+          "filters": [
+            {"field": "KAPPL", "operator": "eq", "value": "V3"},
+            {"field": "OBJKY", "operator": "eq", "value": "{{input.billing_document}}"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
         "id": "evaluate_business_result",
         "executor": "rule",
         "operation": "evaluate_business_agent",
@@ -438,9 +485,10 @@
           "evidence": {
             "collect_billing_output_base": "{{steps.collect_billing_output_base.output}}"
           },
-          "known_gaps": [
-            "billing_output_status_evidence"
-          ]
+          "fallbacks": {
+            "output_status": "{{steps.read_output_status.output}}"
+          },
+          "known_gaps": []
         }
       }
     ]

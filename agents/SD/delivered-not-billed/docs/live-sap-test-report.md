@@ -1,45 +1,35 @@
-# 真机SAP测试报告：Delivered-not-Billed Monitor
+# delivered-not-billed 真机测试报告
 
-- 流程：已发货未开票监控
-- 测试日期：2026-08-10
-- Runtime：健康、启用、严格只读；53个服务已索引，51个可执行
-- 样本策略：每个实体使用服务端 `$top=5` 有界脱敏样本
-- 全量分页：未验证；`source_complete=false`，不得视为生产全量验收
-- 最终结论：**通过（有界真机样本）**
+- 测试日期：2026-08-17T10:10:51.837108+00:00
+- 代码版本：`5ed8943+working-tree`
+- 系统与客户端：已脱敏；连接配置和凭据不落库
+- Embedded Provider：`embedded` `1.0.0`，严格GET-only
+- ADT Skill版本：`7d72576`
+- SAPClaw调用数：`0`
+- 技术状态：`failed`
+- 业务结论：`阻塞`
 
-## 自然语言用例
+## 真机证据
 
-参见Agent README中的业务问题；问题不包含API、实体、字段或OData语法。
+- 自然语言/结构化用例输入（脱敏）：`{}`
+- Embedded服务与实体：`API_BILLING_DOCUMENT_SRV/A_BillingDocumentItem`, `API_OUTBOUND_DELIVERY_SRV/A_OutbDeliveryHeader`, `API_OUTBOUND_DELIVERY_SRV/A_OutbDeliveryItem`
+- SAP GET次数：0；证据行计数：0；耗时：0 ms
+- 查询源完整：`false`；业务完整：`false`
+- 分页/错误代码：sap_base_url_missing, sap_credentials_missing
 
-## Thin SAPClaw基线
+## ADT缺口证据
 
-- API_OUTBOUND_DELIVERY_SRV.A_OutbDeliveryHeader（5条）
-- API_BILLING_DOCUMENT_SRV（schema及关联字段已验证）
+- Skill：`sap-adt-table-export`；平台预检：`blocked`
+- 允许对象：本流程默认不使用ADT
+- Profile别名：`sapba-live-readonly`；URL、客户端、凭据和CA路径均位于仓库外。
+- Hash验证：`false`；完整性：`false`
 
-11组实体查询均成功、无validation issue，单次耗时约2.4–10.9秒。真实凭证号、客户和金额未写入本报告。
+## Fixture与推断边界
 
-## Fixture与Agent结果
+Fixture仅覆盖规则分支，不替代真机通过。真实业务原始行、客户、金额和完整凭证号未写入本报告。
+当前缺口：embedded_provider_configuration。
+本轮样本执行状态以SAP GET次数为准；GET=0表示未执行真机样本。正常、异常、取消、部分处理和空结果覆盖尚未完成时，结论保持部分通过或阻塞。
 
-通过：PGI完成且开票未完成会按滞留天数生成异常。
+## Issue与复测
 
-5条外向交货抬头样本读取成功；本批样本未发现已发货未开票异常。
-
-## LLM-first结果
-
-成功，正确选择 API_OUTBOUND_DELIVERY_SRV.A_OutbDeliveryHeader，约85.0秒。
-
-## SAPSkillhub
-
-仅在标准OData缺少证据时使用。本流程的缺口与issue见下节；仓库内不存在可冒充真机证据的Fixture。
-
-## 问题与复测
-
-无。
-
-修复关联issue后，应复用相同自然语言问题、确定性Thin基线和脱敏比较规则复测。
-
-## 证据边界
-
-- 真机证据：上述Thin Runtime和LLM-first执行结果。
-- Fixture证据：仅用于规则分支和输出契约测试。
-- 推断结论：评分、分类和建议动作，均不执行SAP写操作。
+未因Profile缺失、权限或无业务样本自动创建项目Issue。只有可重复的平台或Skill通用缺陷才进入去重Issue流程。

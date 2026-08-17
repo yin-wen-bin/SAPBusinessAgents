@@ -540,12 +540,61 @@
         }
       },
       {
+        "id": "assess_document_flow",
+        "executor": "rule",
+        "operation": "assess_o2c_document_flow",
+        "inputMapping": {"sap_read": "{{steps.collect_o2c_evidence.output}}"}
+      },
+      {
+        "id": "preflight_document_flow_fallback",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.assess_document_flow.output.needs_adt.document_flow}}", "equals": true},
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "VBFA",
+          "fields": ["VBELV", "POSNV", "VBELN", "POSNN", "VBTYP_N", "ERDAT"],
+          "filters": [{"field": "VBELV", "operator": "eq", "value": "{{input.sales_order}}"}],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_document_flow_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_document_flow_fallback.output}}"}
+      },
+      {
+        "id": "read_document_flow_fallback",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.assess_document_flow_preflight.output.proceed}}", "equals": true},
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "VBFA",
+          "fields": ["VBELV", "POSNV", "VBELN", "POSNN", "VBTYP_N", "ERDAT"],
+          "filters": [{"field": "VBELV", "operator": "eq", "value": "{{input.sales_order}}"}],
+          "max_rows": 200
+        }
+      },
+      {
         "id": "validate_o2c_evidence",
         "executor": "rule",
         "operation": "evaluate_o2c_status",
         "inputMapping": {
           "run_input": "{{input}}",
-          "sap_read": "{{steps.collect_o2c_evidence.output}}"
+          "sap_read": "{{steps.collect_o2c_evidence.output}}",
+          "document_flow": "{{steps.read_document_flow_fallback.output}}"
         }
       }
     ]

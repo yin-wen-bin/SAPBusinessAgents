@@ -327,6 +327,7 @@ class LiveValidator:
                 "order-to-cash-anomaly-monitor": {"sales_organization": str(range_sales.get("SalesOrganization") or "1710"), "date_from": from_sales, "date_to": to_sales},
                 "returns-credit-anomaly": {"sales_organization": str(ranged_return.get("SalesOrganization") or range_sales.get("SalesOrganization") or "1710"), "date_from": from_return, "date_to": to_return},
                 "shortage-allocation-advisor": {"plant": str(item.get("ProductionPlant") or "1710"), "material": str(item.get("Material") or "SG21"), "date_from": from_requested, "date_to": to_requested},
+                "order-to-cash-status": {"sales_order": str(exact_sales.get("SalesOrder") or "5814")},
                 "demand-forecast-planning": {"plant": str(planned_row.get("ProductionPlant") or item.get("ProductionPlant") or "1710"), "material": str(planned_row.get("Material") or item.get("Material") or "SG21"), "date_from": from_planned, "date_to": to_planned},
                 "mrp-exception-analysis": {"plant": str(mrp_row.get("MRPPlant") or mrp_master.get("MRPPlant") or "1710"), "mrp_area": str(mrp_row.get("MRPArea") or mrp_master.get("MRPArea") or "1710"), "material": str(mrp_row.get("Material") or mrp_master.get("Material") or "SG21"), "shortage_profile": str(mrp_row.get("MaterialShortageProfile") or "SAP000000001"), "shortage_counter": str(mrp_row.get("MaterialShortageProfileCount") or "001")},
                 "production-order-monitoring": {"manufacturing_order": str(prod.get("ManufacturingOrder") or "1000000")},

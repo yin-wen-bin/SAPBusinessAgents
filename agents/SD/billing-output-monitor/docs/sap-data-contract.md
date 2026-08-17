@@ -6,7 +6,7 @@
 - `metadata.schema_version` 固定为 `1.0`；真机evidence必须声明 `read_only=true`。
 - 每次查询记录数据来源、完整分页状态、validation issues和脱敏run id。
 
-## Thin SAPClaw服务
+## Embedded SAP Read Provider服务
 
 - `API_BILLING_DOCUMENT_SRV`
 

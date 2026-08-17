@@ -112,8 +112,8 @@
     {
       "id": "check-thin-runtime",
       "title": {
-        "zh": "检查Thin Runtime",
-        "en": "Check Thin Runtime"
+        "zh": "检查Embedded Provider",
+        "en": "Check Embedded Provider"
       },
       "description": {
         "zh": "确认Runtime健康、启用、只读且schema可执行。",
@@ -129,8 +129,8 @@
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health / sapclaw_schema",
-          "kind": "sapclaw_runtime MCP",
+          "name": "sap_read_provider_health / sap_read_schema",
+          "kind": "Embedded SAP Read Provider",
           "purpose": {
             "zh": "执行健康和权威schema检查。",
             "en": "Run health and authoritative schema checks."
@@ -159,7 +159,7 @@
       "tools": [
         {
           "name": "API_SALES_ORDER_SRV + API_OUTBOUND_DELIVERY_SRV + API_MATERIAL_STOCK_SRV",
-          "kind": "SAP OData via sapclaw_execute_get",
+          "kind": "SAP OData via sap_read_execute_get",
           "purpose": {
             "zh": "执行批准的只读GET。",
             "en": "Execute approved read-only GET requests."

@@ -215,10 +215,12 @@ class EmbeddedODataProvider:
                 {
                     "service_name": service,
                     "entity_set": entity,
+                    "entity_kind": descriptor.get("kind", "entity_set"),
                     "key_fields": descriptor["keys"],
-                    "supports_filter": True,
-                    "supports_orderby": True,
-                    "supports_top": True,
+                    "function_parameters": descriptor.get("parameters", []),
+                    "supports_filter": descriptor.get("kind", "entity_set") == "entity_set",
+                    "supports_orderby": descriptor.get("kind", "entity_set") == "entity_set",
+                    "supports_top": descriptor.get("kind", "entity_set") == "entity_set",
                     "runtime_available": True,
                     "executable": True,
                 }
@@ -301,6 +303,45 @@ class EmbeddedODataProvider:
             service = str(step.get("service_name") or plan.get("service_name") or "")
             entity = str(step.get("entity_set") or "")
             available = schema_fields.get((service, entity), {})
+            descriptor = self._metadata_cache.get(service, {}).get(entity, {})
+            if str(step.get("plan_kind") or plan.get("plan_kind") or "direct") == "function_import":
+                supplied = {
+                    str(item.get("name") or ""): item
+                    for item in step.get("function_parameters") or []
+                    if isinstance(item, dict)
+                }
+                expected = {
+                    str(item.get("name") or ""): item
+                    for item in descriptor.get("parameters") or []
+                    if isinstance(item, dict)
+                }
+                if descriptor.get("kind") != "function_import":
+                    issues.append(
+                        {
+                            "code": "schema_drift_function_import_unavailable",
+                            "service_name": service,
+                            "entity_set": entity,
+                        }
+                    )
+                for name in sorted(set(expected).difference(supplied)):
+                    issues.append(
+                        {
+                            "code": "function_parameter_missing",
+                            "service_name": service,
+                            "entity_set": entity,
+                            "field": name,
+                        }
+                    )
+                for name in sorted(set(supplied).difference(expected)):
+                    issues.append(
+                        {
+                            "code": "function_parameter_unavailable",
+                            "service_name": service,
+                            "entity_set": entity,
+                            "field": name,
+                        }
+                    )
+                continue
             for field_name, use in self._field_uses(step):
                 descriptor = available.get(field_name)
                 if descriptor is None:
@@ -445,6 +486,8 @@ class EmbeddedODataProvider:
     ) -> dict[str, Any]:
         service = self._validate_service(str(step.get("service_name") or ""))
         entity = self._validate_identifier(str(step.get("entity_set") or ""), "entity_set")
+        if str(step.get("plan_kind") or "direct") == "function_import":
+            return await self._execute_function_import(service, entity, step)
         literal_filter = self._literal_filters(step.get("filters") or [])
         binding_groups = self._binding_filter_groups(step.get("filter_from_previous") or [], prior)
         if binding_groups == [] and step.get("filter_from_previous"):
@@ -489,6 +532,53 @@ class EmbeddedODataProvider:
             "source_complete": complete,
             "source_truncated": truncated,
             "requests": requests,
+        }
+
+    async def _execute_function_import(
+        self, service: str, function_name: str, step: dict[str, Any]
+    ) -> dict[str, Any]:
+        descriptor = self._metadata_cache.get(service, {}).get(function_name, {})
+        expected = {
+            str(item.get("name") or ""): str(item.get("type") or "Edm.String")
+            for item in descriptor.get("parameters") or []
+            if isinstance(item, dict)
+        }
+        params: dict[str, str] = {}
+        for item in step.get("function_parameters") or []:
+            name = self._validate_identifier(str(item.get("name") or ""), "function parameter")
+            edm_type = expected.get(name, str(item.get("value_type") or "Edm.String"))
+            params[name] = self._odata_literal(
+                item.get("value"), item.get("value_type") or edm_type
+            )
+        response = await self._request(
+            f"/sap/opu/odata/sap/{service}/{function_name}", params=params
+        )
+        payload = self._response_json(response)
+        rows, next_link = self._rows_and_next(payload)
+        if next_link:
+            raise SapReadError(
+                "Function-import responses cannot continue through an unvalidated paging link.",
+                code="function_import_paging_rejected",
+            )
+        return {
+            "ok": True,
+            "service_name": service,
+            "entity_set": function_name,
+            "entity_kind": "function_import",
+            "results": rows,
+            "result_count": len(rows),
+            "source_complete": True,
+            "source_truncated": False,
+            "requests": [
+                {
+                    "http_method": "GET",
+                    "service_name": service,
+                    "entity_set": function_name,
+                    "request_path": str(response.request.url.copy_with(scheme=None, host=None)),
+                    "http_status": response.status_code,
+                    "returned_rows": len(rows),
+                }
+            ],
         }
 
     async def _fetch_all(
@@ -680,6 +770,29 @@ class EmbeddedODataProvider:
                 issues.append({"code": "invalid_service_name", "step_id": step_id})
             if not _IDENTIFIER.fullmatch(entity):
                 issues.append({"code": "invalid_entity_set", "step_id": step_id})
+            kind = str(step.get("plan_kind") or plan.get("plan_kind") or "direct")
+            if kind == "function_import":
+                parameters = step.get("function_parameters")
+                if not isinstance(parameters, list) or not parameters:
+                    issues.append({"code": "function_parameters_missing", "step_id": step_id})
+                else:
+                    names: set[str] = set()
+                    for item in parameters:
+                        name = str(item.get("name") or "") if isinstance(item, dict) else ""
+                        if not _IDENTIFIER.fullmatch(name) or name in names or "value" not in item:
+                            issues.append({"code": "invalid_function_parameter", "step_id": step_id})
+                        names.add(name)
+                forbidden = set(step).intersection(
+                    {"filters", "filter_from_previous", "order_by", "top", "select_fields"}
+                )
+                if forbidden:
+                    issues.append(
+                        {
+                            "code": "function_import_query_options_forbidden",
+                            "step_id": step_id,
+                            "fields": sorted(forbidden),
+                        }
+                    )
             top = step.get("top")
             if top is not None and (not isinstance(top, int) or isinstance(top, bool) or top <= 0):
                 issues.append({"code": "invalid_top", "step_id": step_id})
@@ -694,10 +807,7 @@ class EmbeddedODataProvider:
     def _plan_steps(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         kind = str(plan.get("plan_kind") or "direct")
         if kind == "function_import":
-            raise SapReadError(
-                "Function imports are not enabled for the embedded prototype.",
-                code="function_import_not_supported",
-            )
+            return [dict(plan)]
         nested = plan.get("steps")
         if kind in {"lookup", "multi_step"}:
             if not isinstance(nested, list) or not nested:
@@ -792,7 +902,8 @@ class EmbeddedODataProvider:
         if isinstance(value, (int, float)) or normalized in {
             "int", "integer", "number", "decimal", "edm.int16", "edm.int32", "edm.int64", "edm.decimal", "edm.double",
         }:
-            return str(value)
+            suffix = "M" if normalized in {"decimal", "edm.decimal"} else ""
+            return f"{value}{suffix}"
         text = str(value).replace("'", "''")
         if normalized in {"date", "datetime", "date_start", "date_end", "edm.datetime"} or isinstance(value, (date, datetime)):
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
@@ -882,13 +993,54 @@ class EmbeddedODataProvider:
                         "sortable": str(prop.attrib.get(f"{{{_SAP_NS}}}sortable", "true")).lower() != "false",
                     }
                 )
-            entity_types[name] = {"keys": keys, "fields": fields}
+            entity_types[name] = {"keys": keys, "fields": fields, "kind": "entity_set"}
+        for complex_type in root.findall(".//{*}ComplexType"):
+            name = str(complex_type.attrib.get("Name") or "")
+            if not name:
+                continue
+            fields = []
+            for prop in complex_type.findall("./{*}Property"):
+                field_name = str(prop.attrib.get("Name") or "")
+                if field_name:
+                    fields.append(
+                        {
+                            "name": field_name,
+                            "type": str(prop.attrib.get("Type") or "Edm.String"),
+                            "nullable": str(prop.attrib.get("Nullable", "true")).lower() != "false",
+                            "selectable": True,
+                            "filterable": False,
+                            "sortable": False,
+                        }
+                    )
+            entity_types[name] = {"keys": [], "fields": fields, "kind": "complex_type"}
         result: dict[str, dict[str, Any]] = {}
         for entity_set in root.findall(".//{*}EntitySet"):
             name = str(entity_set.attrib.get("Name") or "")
             type_name = str(entity_set.attrib.get("EntityType") or "").rsplit(".", 1)[-1]
             if name and type_name in entity_types:
                 result[name] = entity_types[type_name]
+        for function in root.findall(".//{*}FunctionImport"):
+            name = str(function.attrib.get("Name") or "")
+            return_name = str(function.attrib.get("ReturnType") or "").replace("Collection(", "").rstrip(")").rsplit(".", 1)[-1]
+            if not name:
+                continue
+            returned = entity_types.get(return_name, {"keys": [], "fields": []})
+            parameters = [
+                {
+                    "name": str(item.attrib.get("Name") or ""),
+                    "type": str(item.attrib.get("Type") or "Edm.String"),
+                    "nullable": str(item.attrib.get("Nullable", "false")).lower() != "false",
+                }
+                for item in function.findall("./{*}Parameter")
+                if item.attrib.get("Name")
+            ]
+            result[name] = {
+                "keys": [],
+                "fields": list(returned.get("fields") or []),
+                "kind": "function_import",
+                "parameters": parameters,
+                "http_method": str(function.attrib.get("{http://schemas.microsoft.com/ado/2007/08/dataservices/metadata}HttpMethod") or "GET").upper(),
+            }
         if not result:
             raise ValueError("metadata contains no entity sets")
         return result

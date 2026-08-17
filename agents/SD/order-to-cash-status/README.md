@@ -4,7 +4,7 @@
 
 ## 能力
 
-- 严格只读，Thin SAPClaw优先，SAPSkillhub仅按缺口补证。
+- 严格只读，Embedded SAP Read Provider优先，SAPSkillhub仅按缺口补证。
 - 支持Fixture和脱敏evidence输入，输出统一Markdown或JSON契约。
 - 自然语言示例：客户订单当前进行到哪一步，为什么还没有回款？
 
