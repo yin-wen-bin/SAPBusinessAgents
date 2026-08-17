@@ -104,6 +104,29 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
     }
   }
   if (agent.schemaVersion === 2) validateExecution(agent.execution, source);
+  if (agent.validation !== undefined) validateLiveValidation(agent.validation, source);
+}
+
+function validateLiveValidation(validation, source) {
+  if (!validation || typeof validation !== "object" || Array.isArray(validation)) {
+    throw new Error(`${source}.validation must be an object`);
+  }
+  if (!["PASS", "PARTIAL", "FAIL", "BLOCKED"].includes(validation.verdict)) {
+    throw new Error(`${source}.validation.verdict is invalid`);
+  }
+  if (!["complete", "partial", "bounded"].includes(validation.evidenceScope)) {
+    throw new Error(`${source}.validation.evidenceScope is invalid`);
+  }
+  requireString(validation.testedAt, `${source}.validation.testedAt`);
+  if (Number.isNaN(Date.parse(validation.testedAt))) {
+    throw new Error(`${source}.validation.testedAt must be ISO-8601`);
+  }
+  requireList(validation.providers, `${source}.validation.providers`);
+  requireLocalized(validation.summary, `${source}.validation.summary`);
+  requireString(validation.reportPath, `${source}.validation.reportPath`);
+  if (!/^docs\/[a-z0-9][a-z0-9._/-]*\.md$/.test(validation.reportPath)) {
+    throw new Error(`${source}.validation.reportPath must be a relative docs Markdown path`);
+  }
 }
 
 function validateExecution(execution, source) {
@@ -130,6 +153,14 @@ function validateExecution(execution, source) {
     requireString(step.operation, `${location}.operation`);
     if (["sap_read", "sapclaw", "skill"].includes(step.executor) && step.readOnly !== true) {
       throw new Error(`${location} must declare readOnly=true`);
+    }
+    if (step.when !== undefined) {
+      const keys = Object.keys(step.when ?? {}).sort();
+      if (keys.join(",") !== "equals,source" || typeof step.when.source !== "string" || typeof step.when.equals !== "boolean") {
+        throw new Error(`${location}.when must contain a template source and boolean equals`);
+      }
+      const match = step.when.source.match(/^\{\{\s*steps\.([a-z][a-z0-9_-]*)\.output(?:\.[A-Za-z0-9_-]+)+\s*\}\}$/);
+      if (!match || match[1] === step.id || !stepIds.has(match[1])) throw new Error(`${location}.when must reference a prior step output`);
     }
     if (["sap_read", "sapclaw"].includes(step.executor)) {
       if (!["execute_plan", "execute_get"].includes(step.operation)) {

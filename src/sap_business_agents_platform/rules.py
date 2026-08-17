@@ -10,8 +10,12 @@ O2C_CUSTOMER_PAYMENT_DOCUMENT_TYPES = frozenset({"DZ"})
 
 
 def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    if operation == "assess_api_evidence":
+        return assess_api_evidence(inputs)
     if operation == "evidence_summary":
         return evidence_summary(inputs)
+    if operation == "extract_bounded_values":
+        return extract_bounded_values(inputs)
     if operation == "evaluate_business_agent":
         return evaluate_business_agent(inputs)
     if operation == "evaluate_p2p_status":
@@ -19,6 +23,68 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "evaluate_o2c_status":
         return evaluate_o2c_status(inputs)
     raise ValueError(f"Unknown deterministic rule operation: {operation}")
+
+
+def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
+    checks = inputs.get("checks")
+    if not isinstance(checks, dict) or not checks:
+        raise ValueError("assess_api_evidence requires named checks")
+    needs_adt: dict[str, bool] = {}
+    api_complete: dict[str, bool] = {}
+    missing: list[str] = []
+    for name, payload in checks.items():
+        flags = _collect_source_complete(payload)
+        ok_values = [value for value in _collect_values(payload, "ok") if isinstance(value, bool)]
+        complete = bool(flags) and all(flags) and (not ok_values or all(ok_values))
+        key = str(name)
+        api_complete[key] = complete
+        needs_adt[key] = not complete
+        if not complete:
+            missing.append(key)
+    return {
+        "rule_id": "api_evidence_gap_assessment_v1",
+        "status": "complete" if not missing else "fallback_required",
+        "api_complete": api_complete,
+        "needs_adt": needs_adt,
+        "missing_evidence": missing,
+        "summary": {
+            "zh": "标准 API 证据完整。" if not missing else "标准 API 存在证据缺口，将按白名单调用 ADT。",
+            "en": "Standard API evidence is complete." if not missing else "Standard API evidence has gaps; allowlisted ADT fallbacks are required.",
+        },
+    }
+
+
+def extract_bounded_values(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Extract one static column for a bounded downstream typed IN filter."""
+
+    payload = inputs.get("payload")
+    field = str(inputs.get("field") or "")
+    maximum = inputs.get("max_values", 100)
+    if not field or not field.replace("_", "").isalnum() or not field[0].isalpha():
+        raise ValueError("extract_bounded_values requires one static field identifier")
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 100:
+        raise ValueError("extract_bounded_values max_values must be between 1 and 100")
+    values: list[Any] = []
+    for group in _collect_values(payload, "rows"):
+        if not isinstance(group, list):
+            continue
+        for row in group:
+            if isinstance(row, dict) and row.get(field) not in {None, ""} and row[field] not in values:
+                values.append(row[field])
+    truncated = len(values) > maximum
+    values = values[:maximum]
+    flags = _collect_source_complete(payload)
+    complete = bool(flags) and all(flags) and not truncated
+    return {
+        "rule_id": "extract_bounded_values_v1",
+        "status": "complete" if complete else "inconclusive",
+        "field": field,
+        "values": values,
+        "value_count": len(values),
+        "has_values": bool(values),
+        "source_complete": complete,
+        "truncated": truncated,
+    }
 
 
 def evidence_summary(inputs: dict[str, Any]) -> dict[str, Any]:

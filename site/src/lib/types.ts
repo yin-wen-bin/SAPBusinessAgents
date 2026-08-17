@@ -68,6 +68,16 @@ export interface AgentExecutionStep {
   inputMapping?: Record<string, unknown>;
   skillId?: string;
   failurePolicy?: "fail_run" | "record_gap";
+  when?: { source: string; equals: boolean };
+}
+
+export interface AgentValidation {
+  verdict: "PASS" | "PARTIAL" | "FAIL" | "BLOCKED";
+  testedAt: string;
+  evidenceScope: "complete" | "partial" | "bounded";
+  providers: string[];
+  summary: LocalizedText;
+  reportPath: string;
 }
 
 export interface AgentExecution {
@@ -135,6 +145,7 @@ export interface AgentDefinition {
   guardrails: LocalizedList;
   workflow: WorkflowStep[];
   execution?: AgentExecution;
+  validation?: AgentValidation;
 }
 
 export interface AgentSearchItem {

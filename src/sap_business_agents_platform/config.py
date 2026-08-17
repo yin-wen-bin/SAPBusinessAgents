@@ -54,8 +54,7 @@ class Settings:
             candidate = Path(configured_env_file)
             sap_env_file = (candidate if candidate.is_absolute() else root / candidate).resolve()
         else:
-            legacy_candidate = (root.parent / "SAPClaw" / "env" / ".env").resolve()
-            sap_env_file = legacy_candidate if legacy_candidate.is_file() else None
+            sap_env_file = None
         if sap_env_file and sap_env_file.is_file():
             # Transitional credential reuse only: values are loaded in process and never copied.
             load_dotenv(sap_env_file, override=False)

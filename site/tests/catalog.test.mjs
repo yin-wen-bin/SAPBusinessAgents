@@ -9,9 +9,9 @@ test("Astro React development runtime stays on supported Vite 7", () => {
   assert.match(packageJson.overrides?.vite ?? "", /^\^?7\./);
 });
 
-test("catalog discovers twenty-one valid agents with step-level tools", () => {
+test("catalog discovers twenty-five valid agents with step-level tools", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
-  assert.equal(records.length, 21);
+  assert.equal(records.length, 25);
   assert.deepEqual(
     records.map((agent) => `${agent.module}/${agent.slug}`),
     [
@@ -30,7 +30,11 @@ test("catalog discovers twenty-one valid agents with step-level tools", () => {
       "SD/order-to-cash-status",
       "SD/returns-credit-anomaly",
       "SD/shortage-allocation-advisor",
+      "MM/intelligent-sourcing-rfq",
+      "MM/inventory-health-balancing",
+      "MM/material-shortage-procurement-response",
       "MM/procure-to-pay-status",
+      "MM/supplier-performance-risk",
       "PP/demand-forecast-planning",
       "PP/mrp-exception-analysis",
       "PP/production-order-monitoring",
@@ -74,6 +78,15 @@ test("catalog discovers twenty-one valid agents with step-level tools", () => {
   ]) {
     assert.ok(p2pTools.includes(api));
   }
+
+  const mmAgents = records.filter((agent) => agent.module === "MM");
+  assert.equal(mmAgents.length, 5);
+  const newMmAgents = mmAgents.filter((agent) => agent.slug !== "procure-to-pay-status");
+  assert.ok(newMmAgents.every((agent) => agent.workflow.length === 8));
+  assert.ok(newMmAgents.every((agent) => agent.validation?.providers.includes("embedded-sap-odata")));
+  assert.ok(newMmAgents.every((agent) => agent.validation?.providers.includes("sap-adt-table-export")));
+  assert.ok(newMmAgents.every((agent) => agent.execution.steps.some((step) => step.when)));
+  assert.ok(newMmAgents.every((agent) => agent.execution.steps.filter((step) => step.executor === "skill").every((step) => step.skillId === "sap-adt-table-export" && step.failurePolicy === "record_gap")));
 
   const o2c = records.find((agent) => agent.slug === "order-to-cash-status");
   assert.equal(o2c.schemaVersion, 2);

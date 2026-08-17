@@ -5,15 +5,31 @@ import path from "node:path";
 
 const readPage = (...segments) => readFile(path.join("dist", ...segments, "index.html"), "utf8");
 
-test("static catalog contains all sixteen agents and the GitHub Pages base path", async () => {
+test("static catalog contains all twenty-five agents and the GitHub Pages base path", async () => {
   const html = await readPage("zh");
   for (const slug of ["ap-payment", "ar-collection", "gr-ir-clearing", "month-end-closing", "procure-to-pay-status"]) {
     assert.match(html, new RegExp(`/SAPBusinessAgents/zh/agents/(?:FI|MM)/${slug}/`));
   }
   assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 4);
-  assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 1);
+  assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 11);
   assert.doesNotMatch(html, /href="\/zh\//);
+});
+
+test("new MM detail pages render eight steps and live validation metadata", async () => {
+  for (const slug of [
+    "material-shortage-procurement-response",
+    "inventory-health-balancing",
+    "intelligent-sourcing-rfq",
+    "supplier-performance-risk",
+  ]) {
+    const zh = await readPage("zh", "agents", "MM", slug);
+    assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
+    assert.match(zh, /Embedded Provider/);
+    assert.match(zh, /sap-adt-table-export/);
+    assert.match(zh, /真机验收/);
+    assert.match(zh, /live-sap-test-report\.md/);
+  }
 });
 
 test("SD detail pages render eleven independent eight-step workflows", async () => {

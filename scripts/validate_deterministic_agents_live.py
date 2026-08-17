@@ -494,7 +494,7 @@ def _write_report(
             gaps.append(_gap_for(case, root, len(gaps) + 1))
     comparison = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "scope": "19 deterministic Agents excluding the established P2P and O2C reference Agents",
+        "scope": "23 deterministic Agents excluding the established P2P and O2C reference Agents",
         "safety": {"read_only": True, "http_methods": ["GET"], "provider": "embedded-odata"},
         "discovery": discoveries,
         "test_data_gaps": test_data_gaps,
@@ -544,10 +544,10 @@ def _write_report(
     inconclusive = sum(case["status"] == "inconclusive" for case in cases)
     failed = sum(case["technical_chain"] == "failed" for case in cases)
     lines = [
-        "# 其余 19 个固定 Agent 真机只读验收",
+        "# 其余 23 个固定 Agent 真机只读验收",
         "",
-        f"- 已发出真实 SAP GET：**{sum(case['sap_get_count'] > 0 for case in cases)}/19**",
-        f"- 技术链路完整通过：**{passed}/19**",
+        f"- 已发出真实 SAP GET：**{sum(case['sap_get_count'] > 0 for case in cases)}/23**",
+        f"- 技术链路完整通过：**{passed}/23**",
         f"- 技术链路部分通过：**{partial}**",
         f"- 业务结果 completed：**{complete}**",
         f"- 因证据或能力边界 inconclusive：**{inconclusive}**",
@@ -608,9 +608,9 @@ async def _main(args: argparse.Namespace) -> int:
             platform_health.get("ok") is not True
             or (platform_health.get("sap_read") or {}).get("selected_provider") != "embedded"
             or ((platform_health.get("sap_read") or {}).get("data") or {}).get("read_only") is not True
-            or int(platform_health.get("executable_agents") or 0) != 21
+            or int(platform_health.get("executable_agents") or 0) != 25
         ):
-            raise RuntimeError("SAPBusinessAgents is not ready with 21 embedded GET-only Agents.")
+            raise RuntimeError("SAPBusinessAgents is not ready with 25 embedded GET-only Agents.")
         for _module, agent in manifests:
             values = samples[agent]
             try:
@@ -635,7 +635,7 @@ async def _main(args: argparse.Namespace) -> int:
                 }
             cases.append(case)
             print(
-                f"{len(cases):02d}/19 {agent}: {case['status']} "
+                f"{len(cases):02d}/23 {agent}: {case['status']} "
                 f"GET={case['sap_get_count']} rows={case['evidence_row_count']}",
                 flush=True,
             )

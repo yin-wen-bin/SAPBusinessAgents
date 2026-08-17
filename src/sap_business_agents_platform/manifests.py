@@ -9,7 +9,9 @@ from typing import Any
 ALLOWED_EXECUTORS = {"sap_read", "sapclaw", "skill", "rule"}
 ALLOWED_SAP_READ_OPERATIONS = {"execute_plan", "execute_get"}
 ALLOWED_RULE_OPERATIONS = {
+    "assess_api_evidence",
     "evidence_summary",
+    "extract_bounded_values",
     "evaluate_business_agent",
     "evaluate_p2p_status",
     "evaluate_o2c_status",
@@ -88,6 +90,9 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
         if step_id in seen:
             raise ManifestError(f"{source}: duplicate execution step {step_id}")
         seen.add(step_id)
+        when = step.get("when")
+        if when is not None:
+            _validate_when(when, seen - {step_id}, location)
         executor = step.get("executor")
         if executor not in ALLOWED_EXECUTORS:
             raise ManifestError(f"{location}.executor is not allowed")
@@ -116,6 +121,23 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
                 raise ManifestError(f"{location} skill input must be an object")
         if executor == "rule" and step.get("operation") not in ALLOWED_RULE_OPERATIONS:
             raise ManifestError(f"{location}.operation is not an approved local rule")
+
+
+def _validate_when(value: Any, prior_step_ids: set[str], location: str) -> None:
+    if not isinstance(value, dict) or set(value) != {"source", "equals"}:
+        raise ManifestError(f"{location}.when must contain only source and equals")
+    source = value.get("source")
+    expected = value.get("equals")
+    if not isinstance(source, str) or not isinstance(expected, bool):
+        raise ManifestError(f"{location}.when requires a template source and boolean equals")
+    match = re.fullmatch(
+        r"\{\{\s*steps\.([a-z][a-z0-9_-]*)\.output(?:\.[A-Za-z0-9_-]+)+\s*\}\}",
+        source,
+    )
+    if match is None:
+        raise ManifestError(f"{location}.when.source must be one prior step output template")
+    if match.group(1) not in prior_step_ids:
+        raise ManifestError(f"{location}.when.source must reference a prior step")
 
 
 def _reject_write_methods(value: Any, location: str) -> None:

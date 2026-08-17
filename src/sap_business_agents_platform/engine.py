@@ -200,6 +200,34 @@ class RunCoordinator:
         for index, step in enumerate(execution["steps"]):
             self._ensure_not_cancelled(run_id)
             step_id = step["id"]
+            if not _when_matches(step.get("when"), context):
+                timestamp = utc_now()
+                skipped = {
+                    "ok": True,
+                    "status": "skipped",
+                    "reason": "condition_false",
+                    "source_complete": True,
+                    "required": False,
+                }
+                context["steps"][step_id] = {"output": skipped}
+                result.steps.append(
+                    {
+                        "step_id": step_id,
+                        "executor": step["executor"],
+                        "operation": step.get("operation"),
+                        "status": "skipped",
+                        "reason": "condition_false",
+                        "started_at": timestamp,
+                        "completed_at": timestamp,
+                    }
+                )
+                self.store.append_event(
+                    run_id,
+                    "step_skipped",
+                    {"step_id": step_id, "reason": "condition_false", "index": index},
+                )
+                self.store.update_run(run_id, result_json=result)
+                continue
             self.store.append_event(
                 run_id,
                 "step_started",
@@ -294,6 +322,7 @@ class RunCoordinator:
                 continue
             output = _redact_sensitive(output)
             context["steps"][step_id] = {"output": output}
+            public_output = _public_step_output(step, output)
             step_record = {
                 "step_id": step_id,
                 "executor": step["executor"],
@@ -328,7 +357,7 @@ class RunCoordinator:
                         "call_id": call_id,
                         "step_id": step_id,
                         "source": "sap_read" if step["executor"] in {"sap_read", "sapclaw"} else step["executor"],
-                        "payload": output,
+                        "payload": public_output,
                     }
                 )
                 self.store.append_event(
@@ -1454,6 +1483,18 @@ def _lookup(context: dict[str, Any], path: str) -> Any:
     return current
 
 
+def _when_matches(value: Any, context: dict[str, Any]) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        raise ValueError("Agent step condition must be an object.")
+    actual = _render_template(value.get("source"), context)
+    expected = value.get("equals")
+    if not isinstance(actual, bool) or not isinstance(expected, bool):
+        raise ValueError("Agent step condition must compare booleans.")
+    return actual is expected
+
+
 def _resolve_node_input(
     workflow: dict[str, Any],
     node_id: str,
@@ -1938,3 +1979,21 @@ def _redact_sensitive(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_sensitive(child) for child in value]
     return value
+
+
+def _public_step_output(step: dict[str, Any], output: Any) -> Any:
+    """Keep raw ADT rows and connection details in transient execution context only."""
+
+    if step.get("executor") != "skill" or step.get("skillId") != "sap-adt-table-export":
+        return output
+    if not isinstance(output, dict):
+        return output
+    public = copy.deepcopy(output)
+    rows = public.pop("rows", [])
+    public["rows_redacted"] = True
+    public["returned_row_count"] = len(rows) if isinstance(rows, list) else public.get("row_count", 0)
+    source = public.get("source")
+    if isinstance(source, dict):
+        for key in ("client", "endpoint", "metadata_endpoint", "system_alias"):
+            source.pop(key, None)
+    return public

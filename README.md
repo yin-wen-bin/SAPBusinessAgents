@@ -28,6 +28,10 @@ SAP Business Agents 是一个按 SAP 业务模块组织的可运行 Agent 目录
 | FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/) | GR/IR 未清原因、证据与清理建议 |
 | FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD 月结异常检查与关账待办 |
 | MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | PO → GR → IV → FI → Payment 全链路状态 |
+| MM | [Material Shortage Procurement Response](agents/MM/material-shortage-procurement-response/) | MRP 短缺、PR、PO 交期与货源响应 |
+| MM | [Inventory Health and Balancing](agents/MM/inventory-health-balancing/) | 慢动、呆滞、临期与库存平衡 |
+| MM | [Intelligent Sourcing and RFQ Evaluation](agents/MM/intelligent-sourcing-rfq/) | RFQ/报价固定权重评估 |
+| MM | [Supplier Performance and Delivery Risk](agents/MM/supplier-performance-risk/) | 计划行净收货 OTIF 与交付风险 |
 | SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/) | 已发货未开票识别与滞留分级 |
 | SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/) | 订单、项目与交货开票冻结诊断 |
 | SD | [Billing Completeness Check](agents/SD/billing-completeness-check/) | 数量、价格、币种与税务完整性检查 |
@@ -144,7 +148,7 @@ npm ci
 npm run dev
 ```
 
-打开站点后可从 21 个 Agent 详情页执行 Schema v2 确定性工作流，也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。
+打开站点后可从 25 个 Agent 详情页执行 Schema v2 确定性工作流，也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。
 
 如需迁移期回退到 SAPClaw，可显式运行：
 
@@ -174,7 +178,7 @@ Skill 自动执行默认关闭。只有在 `config/skills.json` 中显式登记�
 python -m pytest -q
 ```
 
-在已启动 embedded GET-only 服务后，自动发现真机样本并验收 P2P/O2C 之外的 19 个固定 Agent：
+在已启动 embedded GET-only 服务后，自动发现真机样本并验收 P2P/O2C 之外的 23 个固定 Agent：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\validate_deterministic_agents_live.py
@@ -239,6 +243,10 @@ Live catalog: [https://yin-wen-bin.github.io/SAPBusinessAgents/](https://yin-wen
 | FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/) | GR/IR open-item causes, evidence, and clearing advice |
 | FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD close checks and traceable follow-up work |
 | MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | End-to-end PO → GR → IV → FI → Payment status |
+| MM | [Material Shortage Procurement Response](agents/MM/material-shortage-procurement-response/) | MRP shortage, PR, PO schedule, and source response |
+| MM | [Inventory Health and Balancing](agents/MM/inventory-health-balancing/) | Slow-moving, obsolete, expiry, and inventory balancing |
+| MM | [Intelligent Sourcing and RFQ Evaluation](agents/MM/intelligent-sourcing-rfq/) | Fixed-weight RFQ and quotation evaluation |
+| MM | [Supplier Performance and Delivery Risk](agents/MM/supplier-performance-risk/) | Schedule-line net-receipt OTIF and delivery risk |
 | SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/) | Delivered-but-unbilled detection and ageing |
 | SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/) | Billing-block and incompletion diagnosis |
 | SD | [Billing Completeness Check](agents/SD/billing-completeness-check/) | Quantity, price, currency and tax validation |

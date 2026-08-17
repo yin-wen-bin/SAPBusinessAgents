@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -55,6 +57,8 @@ class SkillRegistry:
         if skill.get("read_only") is not True or skill.get("validated") is not True:
             raise SkillError(f"Skill {skill_id} is not approved for read-only automation.")
         _validate_object_contract(input_payload, skill.get("input_schema"), "input")
+        if skill_id == "sap-adt-table-export":
+            _validate_adt_input(input_payload)
         timeout = max(1, int(skill.get("timeout") or 300))
         with tempfile.TemporaryDirectory(prefix="sapba-skill-") as temporary:
             temporary_root = Path(temporary)
@@ -85,12 +89,16 @@ class SkillRegistry:
                     "Its stderr was intentionally not persisted because it may contain sensitive data."
                 )
             try:
-                result = json.loads(output_path.read_text(encoding="utf-8"))
+                output_bytes = output_path.read_bytes()
+                result = json.loads(output_bytes.decode("utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise SkillError(f"Skill {skill_id} did not write one JSON object to --output.") from exc
-        if not isinstance(result, dict):
-            raise SkillError(f"Skill {skill_id} returned an invalid result.")
-        _validate_object_contract(result, skill.get("output_schema"), "output")
+            if not isinstance(result, dict):
+                raise SkillError(f"Skill {skill_id} returned an invalid result.")
+            _validate_object_contract(result, skill.get("output_schema"), "output")
+            if skill_id == "sap-adt-table-export":
+                _validate_adt_output(result)
+                _validate_adt_manifest(output_path, output_bytes, result)
         return result
 
 
@@ -107,3 +115,138 @@ def _validate_object_contract(
         unknown = sorted(set(value).difference(properties))
         if unknown:
             raise SkillError(f"Skill {label} contains unknown fields: {', '.join(unknown)}")
+
+
+_ADT_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,59}$")
+_ADT_OBJECT = re.compile(r"^[A-Za-z][A-Za-z0-9_/]{0,59}$")
+_ADT_PROFILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_ADT_FILTER_KEYS = {"field", "sign", "option", "operator", "value", "low", "high", "values"}
+_ADT_OPERATORS = {"eq", "ne", "gt", "ge", "lt", "le", "bt", "in"}
+_SENSITIVE_KEYS = {
+    "url",
+    "endpoint",
+    "host",
+    "client",
+    "username",
+    "user",
+    "password",
+    "credential",
+    "credentials",
+    "ca_path",
+    "certificate",
+    "verify_ssl",
+    "sql",
+}
+
+
+def _validate_adt_input(value: dict[str, Any]) -> None:
+    """Fail closed before invoking ADT with a strictly bounded declarative task."""
+
+    if value.get("schema_version") != 1:
+        raise SkillError("ADT input schema_version must be 1.")
+    profile = value.get("connection_profile")
+    if not isinstance(profile, str) or not _ADT_PROFILE.fullmatch(profile):
+        raise SkillError("ADT connection_profile must be one fixed non-sensitive profile name.")
+    if value.get("source_type") not in {"table", "cds"}:
+        raise SkillError("ADT source_type must be table or cds.")
+    object_name = value.get("object")
+    if not isinstance(object_name, str) or not _ADT_OBJECT.fullmatch(object_name):
+        raise SkillError("ADT object must be one static approved identifier.")
+    fields = value.get("fields")
+    if (
+        not isinstance(fields, list)
+        or not fields
+        or len(fields) > 100
+        or len(set(fields)) != len(fields)
+        or any(not isinstance(field, str) or not _ADT_IDENTIFIER.fullmatch(field) for field in fields)
+    ):
+        raise SkillError("ADT fields must be a non-empty unique list of static identifiers.")
+    filters = value.get("filters")
+    if not isinstance(filters, list) or not filters or len(filters) > 20:
+        raise SkillError("ADT filters must be non-empty and bounded.")
+    for index, item in enumerate(filters):
+        if not isinstance(item, dict) or set(item).difference(_ADT_FILTER_KEYS):
+            raise SkillError(f"ADT filter {index} contains unsupported keys.")
+        field = item.get("field")
+        operator = str(item.get("operator") or item.get("option") or "").lower()
+        if not isinstance(field, str) or not _ADT_IDENTIFIER.fullmatch(field):
+            raise SkillError(f"ADT filter {index} field is invalid.")
+        if operator not in _ADT_OPERATORS:
+            raise SkillError(f"ADT filter {index} operator is not approved.")
+        if ("operator" in item) == ("option" in item):
+            raise SkillError(f"ADT filter {index} requires exactly one operator key.")
+        if item.get("sign", "I") not in {"I", "E"}:
+            raise SkillError(f"ADT filter {index} sign is invalid.")
+        if "values" in item and (
+            not isinstance(item["values"], list) or not item["values"] or len(item["values"]) > 100
+        ):
+            raise SkillError(f"ADT filter {index} values must be a non-empty bounded list.")
+        if operator == "bt" and ("low" not in item or "high" not in item):
+            raise SkillError(f"ADT filter {index} between requires low and high.")
+        if operator not in {"bt", "in"} and not any(key in item for key in ("value", "low", "values")):
+            raise SkillError(f"ADT filter {index} requires a typed value.")
+    order_by = value.get("order_by", [])
+    if not isinstance(order_by, list) or len(order_by) > 10:
+        raise SkillError("ADT order_by must be a bounded array.")
+    for index, item in enumerate(order_by):
+        if isinstance(item, str):
+            field, direction = item, "asc"
+        elif isinstance(item, dict) and set(item).issubset({"field", "direction"}):
+            field, direction = item.get("field"), str(item.get("direction") or "asc").lower()
+        else:
+            raise SkillError(f"ADT order_by {index} is invalid.")
+        if not isinstance(field, str) or not _ADT_IDENTIFIER.fullmatch(field) or direction != "asc":
+            raise SkillError("ADT order_by must use static ascending stable keys only.")
+    max_rows = value.get("max_rows")
+    if isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= 10_000:
+        raise SkillError("ADT max_rows must be between 1 and 10000.")
+    _reject_sensitive_adt_keys(value)
+
+
+def _reject_sensitive_adt_keys(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).lower() in _SENSITIVE_KEYS:
+                raise SkillError(f"ADT input contains prohibited key: {key}")
+            _reject_sensitive_adt_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_sensitive_adt_keys(child)
+
+
+def _validate_adt_output(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != 1 or value.get("skill_id") != "sap-adt-table-export":
+        raise SkillError("ADT output identity is invalid.")
+    if value.get("read_only") is not True:
+        raise SkillError("ADT output did not attest read_only=true.")
+    status = value.get("status")
+    if status not in {"complete", "partial", "failed"}:
+        raise SkillError("ADT output status is invalid.")
+    completeness = value.get("completeness")
+    issues = value.get("validation_issues")
+    if not isinstance(completeness, dict) or not isinstance(issues, list):
+        raise SkillError("ADT output completeness contract is invalid.")
+    if status == "complete" and not (
+        value.get("validated") is True
+        and completeness.get("source_complete") is True
+        and completeness.get("paging_complete") is True
+        and not issues
+    ):
+        raise SkillError("ADT complete result lacks required validation or paging evidence.")
+    rows = value.get("rows")
+    if not isinstance(rows, list) or value.get("row_count") != len(rows):
+        raise SkillError("ADT output row_count does not match returned rows.")
+
+
+def _validate_adt_manifest(output_path: Path, output_bytes: bytes, result: dict[str, Any]) -> None:
+    manifest_path = output_path.with_name(output_path.name + ".manifest.json")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SkillError("ADT output is missing its adjacent SHA-256 manifest.") from exc
+    expected = hashlib.sha256(output_bytes).hexdigest()
+    if not isinstance(manifest, dict) or manifest.get("output_sha256") != expected:
+        raise SkillError("ADT output SHA-256 manifest verification failed.")
+    for key in ("skill_id", "run_id", "read_only", "status"):
+        if manifest.get(key) != result.get(key):
+            raise SkillError(f"ADT output manifest {key} does not match the result.")

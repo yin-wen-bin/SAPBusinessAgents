@@ -14,6 +14,7 @@ htmlcov/
 .local-scaffold/
 output/
 out/
+.artifacts/
 
 # Site
 site/node_modules/

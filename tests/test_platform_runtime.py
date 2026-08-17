@@ -528,6 +528,9 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "demand-forecast-planning",
         "due-delivery-prioritization",
         "gr-ir-clearing",
+        "intelligent-sourcing-rfq",
+        "inventory-health-balancing",
+        "material-shortage-procurement-response",
         "month-end-closing",
         "mrp-exception-analysis",
         "order-to-cash-anomaly-monitor",
@@ -538,6 +541,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "production-variance-analysis",
         "returns-credit-anomaly",
         "shortage-allocation-advisor",
+        "supplier-performance-risk",
     }
     for record in records:
         assert record["schemaVersion"] == 2
@@ -637,6 +641,50 @@ def test_embedded_provider_is_default_capability_without_sapclaw_runtime(
         assert run["status"] == "completed"
         assert run["result"]["tool_calls"][0]["plugin_id"] == "embedded-sap-odata"
         assert len(embedded.executed_plans) == 1
+
+
+def test_complete_mm_api_evidence_skips_every_conditional_adt_step(
+    tmp_path: Path,
+) -> None:
+    embedded = FakeSapClaw()
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=embedded,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "mode": "agent",
+                "agentId": "material-shortage-procurement-response",
+                "input": {
+                    "material": "MAT001",
+                    "plant": "1010",
+                    "mrp_area": "1010",
+                    "purchasing_organization": "1010",
+                    "shortage_profile": "SAP000000001",
+                    "shortage_counter": "001",
+                    "as_of": "2026-08-17",
+                },
+            },
+        )
+        run = _wait(client, response.json()["run_id"])
+        assert run["status"] == "completed"
+        assert len(embedded.executed_plans) == 6
+        adt_steps = {
+            "adt_mrp", "adt_pr", "adt_po_scope", "adt_po",
+            "adt_source_scope", "adt_source",
+        }
+        skipped = {
+            item["step_id"]
+            for item in run["result"]["steps"]
+            if item["status"] == "skipped"
+        }
+        assert skipped == adt_steps
+        assert all(call.get("skill_id") != "sap-adt-table-export" for call in run["result"]["tool_calls"])
+        events = app.state.store.events_after(run["run_id"])
+        assert sum(event.type == "step_skipped" for event in events) == 6
 
 
 def test_plugin_api_exposes_lifecycle_and_capability_inventory(tmp_path: Path) -> None:
