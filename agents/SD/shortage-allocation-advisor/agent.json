@@ -109,8 +109,8 @@
     {
       "id": "check-thin-runtime",
       "title": {
-        "zh": "检查Thin Runtime",
-        "en": "Check Thin Runtime"
+        "zh": "检查Embedded Provider",
+        "en": "Check Embedded Provider"
       },
       "description": {
         "zh": "确认Runtime健康、启用、只读且schema可执行。",
@@ -126,8 +126,8 @@
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health / sapclaw_schema",
-          "kind": "sapclaw_runtime MCP",
+          "name": "sap_read_provider_health / sap_read_schema",
+          "kind": "Embedded SAP Read Provider",
           "purpose": {
             "zh": "执行健康和权威schema检查。",
             "en": "Run health and authoritative schema checks."
@@ -156,7 +156,7 @@
       "tools": [
         {
           "name": "API_SALES_ORDER_SRV + API_MATERIAL_STOCK_SRV + API_PRODUCT_AVAILY_INFO_BASIC",
-          "kind": "SAP OData via sapclaw_execute_get",
+          "kind": "SAP OData via sap_read_execute_get",
           "purpose": {
             "zh": "执行批准的只读GET。",
             "en": "Execute approved read-only GET requests."
@@ -532,6 +532,82 @@
         }
       },
       {
+        "id": "read_released_atp",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_PRODUCT_AVAILY_INFO_BASIC",
+            "entity_set": "DetermineAvailabilityAt",
+            "http_method": "GET",
+            "plan_kind": "function_import",
+            "function_parameters": [
+              {"name": "Material", "value": "{{input.material}}", "value_type": "string"},
+              {"name": "SupplyingPlant", "value": "{{input.plant}}", "value_type": "string"},
+              {"name": "ATPCheckingRule", "value": "A", "value_type": "string"},
+              {"name": "RequestedUTCDateTime", "value": "{{input.date_to}}T23:59:59Z", "value_type": "datetimeoffset"}
+            ],
+            "rationale": "Call the released ATP function import with an exact material, plant, checking rule, and horizon."
+          }
+        }
+      },
+      {
+        "id": "assess_atp_evidence",
+        "executor": "rule",
+        "operation": "assess_api_evidence",
+        "inputMapping": {"checks": {"atp": "{{steps.read_released_atp.output}}"}}
+      },
+      {
+        "id": "preflight_mrp_context",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.assess_atp_evidence.output.needs_adt.atp}}", "equals": true},
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "MDKP",
+          "fields": ["DTNUM", "MATNR", "PLWRK"],
+          "filters": [
+            {"field": "MATNR", "operator": "eq", "value": "{{input.material}}"},
+            {"field": "PLWRK", "operator": "eq", "value": "{{input.plant}}"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_mrp_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_mrp_context.output}}"}
+      },
+      {
+        "id": "read_mrp_context",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.assess_mrp_preflight.output.proceed}}", "equals": true},
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "MDKP",
+          "fields": ["DTNUM", "MATNR", "PLWRK"],
+          "filters": [
+            {"field": "MATNR", "operator": "eq", "value": "{{input.material}}"},
+            {"field": "PLWRK", "operator": "eq", "value": "{{input.plant}}"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
         "id": "evaluate_business_result",
         "executor": "rule",
         "operation": "evaluate_business_agent",
@@ -539,11 +615,11 @@
           "agent_id": "shortage-allocation-advisor",
           "run_input": "{{input}}",
           "evidence": {
-            "collect_shortage_evidence": "{{steps.collect_shortage_evidence.output}}"
+            "collect_shortage_evidence": "{{steps.collect_shortage_evidence.output}}",
+            "atp_availability": "{{steps.read_released_atp.output}}"
           },
-          "known_gaps": [
-            "atp_availability_evidence"
-          ]
+          "fallbacks": {"mrp_context": "{{steps.read_mrp_context.output}}"},
+          "known_gaps": []
         }
       }
     ]

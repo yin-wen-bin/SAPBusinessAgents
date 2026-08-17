@@ -1,45 +1,35 @@
-# 真机SAP测试报告：Billing Output Monitor
+# billing-output-monitor 真机测试报告
 
-- 流程：发票输出监控
-- 测试日期：2026-08-10
-- Runtime：健康、启用、严格只读；53个服务已索引，51个可执行
-- 样本策略：每个实体使用服务端 `$top=5` 有界脱敏样本
-- 全量分页：未验证；`source_complete=false`，不得视为生产全量验收
-- 最终结论：**阻塞**
+- 测试日期：2026-08-17T10:38:39.756133+00:00
+- 代码版本：`f392e27`
+- 系统与客户端：已脱敏；连接配置和凭据不落库
+- Embedded Provider：`embedded` `1.0.0`，严格GET-only
+- ADT Skill版本：`7d72576`
+- SAPClaw调用数：`0`
+- 技术状态：`failed`
+- 业务结论：`阻塞`
 
-## 自然语言用例
+## 真机证据
 
-参见Agent README中的业务问题；问题不包含API、实体、字段或OData语法。
+- 自然语言/结构化用例输入（脱敏）：`{}`
+- Embedded服务与实体：`API_BILLING_DOCUMENT_SRV/A_BillingDocument`, `API_BILLING_DOCUMENT_SRV/A_BillingDocumentItem`
+- SAP GET次数：0；证据行计数：0；耗时：0 ms
+- 查询源完整：`false`；业务完整：`false`
+- 分页/错误代码：sap_base_url_missing, sap_credentials_missing
 
-## Thin SAPClaw基线
+## ADT缺口证据
 
-- API_BILLING_DOCUMENT_SRV.A_BillingDocument（5条）
-- SAPSkillhub SD目录（无对应skill）
+- Skill：`sap-adt-table-export`；平台预检：`blocked`
+- 允许对象：`NAST`
+- Profile别名：`sapba-live-readonly`；URL、客户端、凭据和CA路径均位于仓库外。
+- Hash验证：`false`；完整性：`false`
 
-11组实体查询均成功、无validation issue，单次耗时约2.4–10.9秒。真实凭证号、客户和金额未写入本报告。
+## Fixture与推断边界
 
-## Fixture与Agent结果
+Fixture仅覆盖规则分支，不替代真机通过。真实业务原始行、客户、金额和完整凭证号未写入本报告。
+当前缺口：embedded_provider_configuration。
+本轮样本执行状态以SAP GET次数为准；GET=0表示未执行真机样本。正常、异常、取消、部分处理和空结果覆盖尚未完成时，结论保持部分通过或阻塞。
 
-通过：sent/pending/failed/missing evidence状态可区分。
+## Issue与复测
 
-开票凭证可读取，但现有Thin服务不提供输出发送状态；Agent按契约返回 blocked。
-
-## LLM-first结果
-
-重复返回 schema planner no feasible plan，符合数据面缺失。
-
-## SAPSkillhub
-
-仅在标准OData缺少证据时使用。本流程的缺口与issue见下节；仓库内不存在可冒充真机证据的Fixture。
-
-## 问题与复测
-
-SAPSkillhub [#12](https://github.com/yin-wen-bin/SAPSkillhub/issues/12)。
-
-修复关联issue后，应复用相同自然语言问题、确定性Thin基线和脱敏比较规则复测。
-
-## 证据边界
-
-- 真机证据：上述Thin Runtime和LLM-first执行结果。
-- Fixture证据：仅用于规则分支和输出契约测试。
-- 推断结论：评分、分类和建议动作，均不执行SAP写操作。
+复评已有Issue：https://github.com/yin-wen-bin/SAPSkillhub/issues/12；因当前未完成业务对象真机预检而保持Open，未创建重复Issue。

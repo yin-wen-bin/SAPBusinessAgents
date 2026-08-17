@@ -12,6 +12,10 @@ O2C_CUSTOMER_PAYMENT_DOCUMENT_TYPES = frozenset({"DZ"})
 def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "assess_api_evidence":
         return assess_api_evidence(inputs)
+    if operation == "assess_adt_preflight":
+        return assess_adt_preflight(inputs)
+    if operation == "assess_o2c_document_flow":
+        return assess_o2c_document_flow(inputs)
     if operation == "evidence_summary":
         return evidence_summary(inputs)
     if operation == "extract_bounded_values":
@@ -23,6 +27,26 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "evaluate_o2c_status":
         return evaluate_o2c_status(inputs)
     raise ValueError(f"Unknown deterministic rule operation: {operation}")
+
+
+def assess_o2c_document_flow(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Request VBFA only when the complete OData result cannot prove a follow-on link."""
+
+    payload = inputs.get("sap_read")
+    steps = _step_results(payload)
+    order_rows = _step_rows(steps, "sales_order")
+    delivery_rows = _step_rows(steps, "delivery_items")
+    billing_rows = _rows_for_prefixes(steps, ("billing_items",))
+    source_complete = _source_complete(payload)
+    relationship_proven = bool(delivery_rows or billing_rows)
+    needs_adt = bool(order_rows) and source_complete and not relationship_proven
+    return {
+        "rule_id": "o2c_document_flow_gap_assessment_v1",
+        "status": "fallback_required" if needs_adt else "complete",
+        "source_complete": source_complete,
+        "relationship_proven": relationship_proven,
+        "needs_adt": {"document_flow": needs_adt},
+    }
 
 
 def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -51,6 +75,27 @@ def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
             "zh": "标准 API 证据完整。" if not missing else "标准 API 存在证据缺口，将按白名单调用 ADT。",
             "en": "Standard API evidence is complete." if not missing else "Standard API evidence has gaps; allowlisted ADT fallbacks are required.",
         },
+    }
+
+
+def assess_adt_preflight(inputs: dict[str, Any]) -> dict[str, Any]:
+    payload = inputs.get("payload")
+    completeness = payload.get("completeness") if isinstance(payload, dict) else None
+    proceed = bool(
+        isinstance(payload, dict)
+        and payload.get("status") == "complete"
+        and payload.get("read_only") is True
+        and payload.get("validated") is True
+        and isinstance(completeness, dict)
+        and completeness.get("source_complete") is True
+        and completeness.get("paging_complete") is True
+        and not payload.get("validation_issues")
+    )
+    return {
+        "rule_id": "adt_preflight_assessment_v1",
+        "status": "complete" if proceed else "record_gap",
+        "proceed": proceed,
+        "source_complete": proceed,
     }
 
 
@@ -236,6 +281,13 @@ def evaluate_o2c_status(inputs: dict[str, Any]) -> dict[str, Any]:
         steps,
         ("accounting_items", "accounting_by_", "clearing_documents"),
     )
+    document_flow_rows = [
+        dict(row)
+        for group in _collect_values(inputs.get("document_flow"), "rows")
+        if isinstance(group, list)
+        for row in group
+        if isinstance(row, dict)
+    ]
 
     pgi_rows = [
         row
@@ -279,6 +331,11 @@ def evaluate_o2c_status(inputs: dict[str, Any]) -> dict[str, Any]:
             "required_document_types": sorted(O2C_CUSTOMER_PAYMENT_DOCUMENT_TYPES),
             "requires_house_bank": True,
         },
+        "document_flow_fallback": {
+            "state": "confirmed" if document_flow_rows else "not_required_or_not_found",
+            "evidence_count": len(document_flow_rows),
+            "supplemental_only": True,
+        },
     }
     source_complete = _source_complete(inputs)
     process_stages = ("sales_order", "items", "delivery", "pgi", "billing", "ar_clearing")
@@ -291,6 +348,7 @@ def evaluate_o2c_status(inputs: dict[str, Any]) -> dict[str, Any]:
         "billing_items": len(billing_rows),
         "billing_headers": len(billing_header_rows),
         "accounting_items": len(accounting_rows),
+        "document_flow_rows": len(document_flow_rows),
     }
     business_report = _o2c_business_report(
         stages=stages,

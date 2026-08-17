@@ -1,4 +1,4 @@
-"""Read-only Thin SAPClaw validation orchestrator for the eleven SD agents.
+"""Read-only Embedded SAP Read Provider validation orchestrator for the eleven SD agents.
 
 The script prints a sanitized JSON summary only. It never persists SAP rows and
 never invokes a write-capable SAP operation.

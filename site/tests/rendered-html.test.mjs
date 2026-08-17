@@ -42,7 +42,8 @@ test("SD detail pages render eleven independent eight-step workflows", async () 
   for (const slug of slugs) {
     const zh = await readPage("zh", "agents", "SD", slug);
     assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
-    assert.match(zh, /sap_read\.health|sapclaw_runtime_health/);
+    assert.match(zh, /sap_read\.health|sap_read_provider_health/);
+    assert.doesNotMatch(zh, /SAPClaw|sapclaw/);
     assert.match(zh, /SAPSkillhub read-only skill/);
     assert.match(zh, /严格只读/);
   }

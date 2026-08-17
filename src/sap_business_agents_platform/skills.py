@@ -9,6 +9,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError, ValidationError
+
 
 class SkillError(RuntimeError):
     pass
@@ -32,6 +35,15 @@ class SkillRegistry:
             within_root = self.skillhub_root == entrypoint or self.skillhub_root in entrypoint.parents
             record["available"] = bool(within_root and entrypoint.is_file())
             record["entrypoint"] = str(entrypoint)
+            try:
+                for schema_name in ("input_schema", "output_schema"):
+                    schema_path_name = f"{schema_name}_path"
+                    if record.get(schema_path_name):
+                        record[schema_name] = _load_trusted_schema(
+                            self.skillhub_root, str(record[schema_path_name]), schema_name
+                        )
+            except SkillError:
+                record["available"] = False
             has_contract = all(
                 isinstance(record.get(name), dict) and record[name].get("type") == "object"
                 for name in ("input_schema", "output_schema")
@@ -56,7 +68,7 @@ class SkillRegistry:
             raise SkillError(f"Skill {skill_id} is allowlisted but its entrypoint is unavailable.")
         if skill.get("read_only") is not True or skill.get("validated") is not True:
             raise SkillError(f"Skill {skill_id} is not approved for read-only automation.")
-        _validate_object_contract(input_payload, skill.get("input_schema"), "input")
+        _validate_json_contract(input_payload, skill.get("input_schema"), "input")
         if skill_id == "sap-adt-table-export":
             _validate_adt_input(input_payload)
         timeout = max(1, int(skill.get("timeout") or 300))
@@ -95,26 +107,42 @@ class SkillRegistry:
                 raise SkillError(f"Skill {skill_id} did not write one JSON object to --output.") from exc
             if not isinstance(result, dict):
                 raise SkillError(f"Skill {skill_id} returned an invalid result.")
-            _validate_object_contract(result, skill.get("output_schema"), "output")
+            _validate_json_contract(result, skill.get("output_schema"), "output")
             if skill_id == "sap-adt-table-export":
                 _validate_adt_output(result)
-                _validate_adt_manifest(output_path, output_bytes, result)
+                manifest_hash = _validate_adt_manifest(output_path, output_bytes, result)
+                result["artifacts"].append(
+                    {"type": "output_manifest", "sha256": manifest_hash, "verified": True}
+                )
         return result
 
 
-def _validate_object_contract(
-    value: dict[str, Any], schema: Any, label: str
-) -> None:
+def _load_trusted_schema(root: Path, relative_path: str, label: str) -> dict[str, Any]:
+    path = (root / relative_path).resolve()
+    if root != path and root not in path.parents:
+        raise SkillError(f"Skill {label} path escapes SAPSkillhub root.")
+    try:
+        schema = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SkillError(f"Skill {label} could not be loaded from its trusted schema path.") from exc
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        raise SkillError(f"Skill {label} must be an object JSON Schema.")
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise SkillError(f"Skill {label} JSON Schema is invalid.") from exc
+    return schema
+
+
+def _validate_json_contract(value: dict[str, Any], schema: Any, label: str) -> None:
     if not isinstance(schema, dict) or schema.get("type") != "object":
         raise SkillError(f"Skill {label}_schema must be an object JSON Schema.")
-    missing = [name for name in schema.get("required", []) if name not in value]
-    if missing:
-        raise SkillError(f"Skill {label} is missing required fields: {', '.join(missing)}")
-    properties = schema.get("properties") or {}
-    if schema.get("additionalProperties") is False:
-        unknown = sorted(set(value).difference(properties))
-        if unknown:
-            raise SkillError(f"Skill {label} contains unknown fields: {', '.join(unknown)}")
+    try:
+        Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
+    except (SchemaError, ValidationError) as exc:
+        path = ".".join(str(item) for item in getattr(exc, "absolute_path", []))
+        suffix = f" at {path}" if path else ""
+        raise SkillError(f"Skill {label} does not match its JSON Schema{suffix}.") from exc
 
 
 _ADT_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,59}$")
@@ -238,7 +266,7 @@ def _validate_adt_output(value: dict[str, Any]) -> None:
         raise SkillError("ADT output row_count does not match returned rows.")
 
 
-def _validate_adt_manifest(output_path: Path, output_bytes: bytes, result: dict[str, Any]) -> None:
+def _validate_adt_manifest(output_path: Path, output_bytes: bytes, result: dict[str, Any]) -> str:
     manifest_path = output_path.with_name(output_path.name + ".manifest.json")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -250,3 +278,4 @@ def _validate_adt_manifest(output_path: Path, output_bytes: bytes, result: dict[
     for key in ("skill_id", "run_id", "read_only", "status"):
         if manifest.get(key) != result.get(key):
             raise SkillError(f"ADT output manifest {key} does not match the result.")
+    return expected

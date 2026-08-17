@@ -41,6 +41,14 @@ def _rows(inputs: JsonObject, *step_ids: str) -> list[JsonObject]:
         if not isinstance(step_results, dict):
             data = payload.get("data")
             step_results = data.get("step_results") if isinstance(data, dict) else None
+            if str(evidence_name) in wanted and isinstance(data, dict):
+                for row in data.get("results") or []:
+                    if isinstance(row, dict):
+                        found.append(row)
+            if str(evidence_name) in wanted:
+                for row in payload.get("results") or []:
+                    if isinstance(row, dict):
+                        found.append(row)
         if not isinstance(step_results, dict):
             continue
         for step_id, result in step_results.items():
@@ -420,19 +428,21 @@ def _shortage_allocation(inputs: JsonObject) -> JsonObject:
     items = _rows(inputs, "sales_order_items")
     schedules = _rows(inputs, "schedule_lines")
     stock = _rows(inputs, "material_stock")
+    atp = _rows(inputs, "atp_availability")
     available = sum((_decimal(row.get("MatlWrhsStkQtyInMatlBaseUnit") or row.get("MaterialBaseUnit")) for row in stock), Decimal(0))
     requested = sum((_decimal(row.get("ScheduleLineOrderQuantity") or row.get("RequestedQuantity")) for row in schedules + items), Decimal(0))
     confirmed = sum((_decimal(row.get("ConfdOrderQtyByMatlAvailCheck") or row.get("ConfdDelivQtyInOrderQtyUnit")) for row in schedules + items), Decimal(0))
     shortage = max(requested - confirmed - available, Decimal(0))
-    gaps = _gaps(inputs, "atp_availability_evidence")
+    atp_complete = bool(atp) and _source_complete(inputs)
+    gaps = _gaps(inputs, *(() if atp_complete else ("atp_availability_evidence",)))
     return _result(
         inputs,
         business_status="attention" if shortage else "partial",
         headline_zh=f"基于当前库存的未覆盖需求为 {shortage}",
         headline_en=f"Uncovered demand based on current stock is {shortage}",
-        overview_zh="当前只能提供基于订单确认量和库存快照的建议；不能替代 SAP ATP 检查。",
-        overview_en="The recommendation uses confirmed demand and a stock snapshot and does not replace SAP ATP.",
-        stages=[_stage("demand", "订单需求", "Order demand", len(items) + len(schedules)), _stage("stock", "库存快照", "Stock snapshot", len(stock)), _stage("atp", "ATP 可用量", "ATP availability", 0, state="unknown")],
+        overview_zh="优先使用 Released ATP API；MDKP/MDTB 只作为 MRP 上下文，绝不冒充 ATP 结果。",
+        overview_en="The Released ATP API is authoritative; MDKP/MDTB may add MRP context but never substitute for ATP.",
+        stages=[_stage("demand", "订单需求", "Order demand", len(items) + len(schedules)), _stage("stock", "库存快照", "Stock snapshot", len(stock)), _stage("atp", "ATP 可用量", "ATP availability", len(atp), state="confirmed" if atp_complete else "unknown")],
         metrics=[{"id": "requested", "value": str(requested)}, {"id": "confirmed", "value": str(confirmed)}, {"id": "stock", "value": str(available)}, {"id": "uncovered", "value": str(shortage)}],
         gaps=gaps,
         actions_zh=["由计划人员在 SAP 中执行 ATP 复核后再决定分配。"],
@@ -448,15 +458,24 @@ def _o2c_anomaly(inputs: JsonObject) -> JsonObject:
     anomalies = sum(1 for row in orders if row.get("TotalBlockStatus"))
     anomalies += sum(1 for row in billing if _truthy(row.get("BillingDocumentIsCancelled")))
     anomalies += sum(1 for row in accounting if not _truthy(row.get("IsCleared")))
-    gaps = _gaps(inputs, "billing_output_and_dispute_evidence")
+    output_rows = _adt_rows(inputs, "output_status")
+    dispute_rows = _adt_rows(inputs, "dispute_case")
+    output_complete = _adt_complete(_fallback(inputs, "output_status")) and bool(output_rows)
+    dispute_complete = _adt_complete(_fallback(inputs, "dispute_case")) and bool(dispute_rows)
+    missing = []
+    if not output_complete:
+        missing.append("billing_output_status_evidence")
+    if not dispute_complete:
+        missing.append("billing_dispute_case_evidence")
+    gaps = _gaps(inputs, *missing)
     return _result(
         inputs,
         business_status="attention" if anomalies else "partial",
         headline_zh=f"当前证据中识别到 {anomalies} 项 O2C 异常",
         headline_en=f"Identified {anomalies} O2C anomaly item(s) in current evidence",
-        overview_zh="结果覆盖订单、交货、开票和应收；发票输出与争议维度当前未覆盖。",
-        overview_en="The result covers orders, deliveries, billing, and receivables; output and dispute dimensions are not covered.",
-        stages=[_stage("orders", "销售订单", "Sales orders", len(orders)), _stage("deliveries", "交货", "Deliveries", len(deliveries)), _stage("billing", "开票", "Billing", len(billing)), _stage("accounting", "应收", "Receivables", len(accounting))],
+        overview_zh="结果覆盖订单、交货、开票和应收，并复用经过完整性与 Hash 验证的输出及争议 ADT 证据。",
+        overview_en="The result covers orders, deliveries, billing, and receivables and reuses completeness- and hash-verified output and dispute ADT evidence.",
+        stages=[_stage("orders", "销售订单", "Sales orders", len(orders)), _stage("deliveries", "交货", "Deliveries", len(deliveries)), _stage("billing", "开票", "Billing", len(billing)), _stage("accounting", "应收", "Receivables", len(accounting)), _stage("output", "输出状态", "Output status", len(output_rows), state="confirmed" if output_complete else "unknown"), _stage("dispute", "争议案件", "Dispute cases", len(dispute_rows), state="confirmed" if dispute_complete else "unknown")],
         metrics=[{"id": "anomaly_count", "value": anomalies}],
         gaps=gaps,
         actions_zh=["按冻结、取消和未清应收分别分派责任人。"] if anomalies else [],
@@ -464,19 +483,48 @@ def _o2c_anomaly(inputs: JsonObject) -> JsonObject:
     )
 
 
-def _known_capability_block(inputs: JsonObject, zh: str, en: str, gap: str, stage_zh: str, stage_en: str) -> JsonObject:
-    billing = _rows(inputs, "billing_headers", "billing_items", "accounting_items")
+def _billing_output(inputs: JsonObject) -> JsonObject:
+    billing = _rows(inputs, "billing_headers", "billing_items")
+    output_rows = _adt_rows(inputs, "output_status")
+    complete = _adt_complete(_fallback(inputs, "output_status")) and bool(output_rows)
+    failures = [row for row in output_rows if str(row.get("VSTAT") or "").strip() not in {"", "1"}]
     return _result(
         inputs,
-        business_status="capability_blocked",
-        headline_zh=zh,
-        headline_en=en,
-        overview_zh="基础 SAP 凭证已读取，但缺少作出该业务结论所必需的只读取证能力。",
-        overview_en="Base SAP documents were read, but a required read-only evidence capability is unavailable.",
-        stages=[_stage("base_document", "基础业务凭证", "Base business document", len(billing)), _stage("required_evidence", stage_zh, stage_en, 0, state="unknown")],
-        gaps=_gaps(inputs, gap),
-        actions_zh=["补齐并审批对应的只读 SAPSkillhub Skill 后重新运行。"],
-        actions_en=["Add and approve the corresponding read-only SAPSkillhub Skill, then rerun."],
+        business_status="attention" if failures else "normal",
+        headline_zh=f"取得 {len(output_rows)} 条结构化输出状态，{len(failures)} 条需要复核" if complete else "输出状态证据不完整，无法确认发送结果",
+        headline_en=f"Found {len(output_rows)} structured output status row(s); {len(failures)} require review" if complete else "Output evidence is incomplete, so delivery cannot be confirmed",
+        overview_zh="只读取 NAST 或已批准的结构化输出状态；不读取收件人、邮件正文或附件。完整零行也不能证明发票未输出。",
+        overview_en="Only NAST or approved structured output status is read; recipients, message bodies, and attachments are excluded. A complete zero-row result does not prove that no output occurred.",
+        stages=[_stage("base_document", "开票凭证", "Billing document", len(billing)), _stage("output_status", "结构化输出状态", "Structured output status", len(output_rows), state="confirmed" if complete else "unknown")],
+        findings=[{"code": "OUTPUT_STATUS_REQUIRES_REVIEW", "severity": "medium"} for _ in failures],
+        gaps=_gaps(inputs, *(() if complete else ("billing_output_status_evidence",))),
+        actions_zh=["由开票输出负责人复核失败或未处理状态。"] if failures else [],
+        actions_en=["Have the billing-output owner review failed or unprocessed statuses."] if failures else [],
+        source_complete_override=_source_complete(inputs) and complete,
+    )
+
+
+def _billing_dispute(inputs: JsonObject) -> JsonObject:
+    billing = _rows(inputs, "billing_headers", "billing_items", "accounting_items")
+    cases = _adt_rows(inputs, "dispute_case")
+    complete = _adt_complete(_fallback(inputs, "dispute_case")) and bool(cases)
+    categories: dict[str, int] = {}
+    for row in cases:
+        code = str(row.get("FIN_ROOT_CODE") or "UNCLASSIFIED").strip() or "UNCLASSIFIED"
+        categories[code] = categories.get(code, 0) + 1
+    return _result(
+        inputs,
+        business_status="attention" if cases else "partial",
+        headline_zh=f"取得 {len(cases)} 条结构化争议案件属性" if complete else "争议案件证据不完整，无法完成分类",
+        headline_en=f"Found {len(cases)} structured dispute case attribute row(s)" if complete else "Dispute case evidence is incomplete, so classification is inconclusive",
+        overview_zh="仅使用已批准的案件GUID、根因码、到期日、客户、公司代码和来源；不导出自由文本或客户通信。",
+        overview_en="Only approved case GUID, root-cause code, due date, customer, company code, and origin are used; free text and customer communications are excluded.",
+        stages=[_stage("base_document", "开票与 FI 凭证", "Billing and FI documents", len(billing)), _stage("dispute_case", "结构化争议案件", "Structured dispute cases", len(cases), state="confirmed" if complete else "unknown")],
+        metrics=[{"id": "case_count", "value": len(cases)}, {"id": "root_cause_counts", "value": categories}],
+        gaps=_gaps(inputs, *(() if complete else ("billing_dispute_case_evidence",))),
+        actions_zh=["由应收争议负责人按根因码复核并补充业务处置。"] if cases else [],
+        actions_en=["Have the AR dispute owner review root-cause codes and determine follow-up actions."] if cases else [],
+        source_complete_override=_source_complete(inputs) and complete,
     )
 
 
@@ -933,8 +981,8 @@ _EVALUATORS: dict[str, Callable[[JsonObject], JsonObject]] = {
     "month-end-closing": _month_end,
     "billing-block-diagnosis": _billing_block,
     "billing-completeness-check": _billing_completeness,
-    "billing-dispute-classification": lambda inputs: _known_capability_block(inputs, "缺少争议文本，无法进行争议分类", "Dispute text is missing, so classification cannot be completed", "billing_dispute_text_evidence", "争议案件或沟通文本", "Dispute case or communication text"),
-    "billing-output-monitor": lambda inputs: _known_capability_block(inputs, "缺少发票输出状态，无法确认是否已发送", "Billing output status is missing, so delivery cannot be confirmed", "billing_output_status_evidence", "Output Management、VF31 或 SOST 状态", "Output Management, VF31, or SOST status"),
+    "billing-dispute-classification": _billing_dispute,
+    "billing-output-monitor": _billing_output,
     "delivered-not-billed": _delivered_not_billed,
     "delivery-delay-prediction": _delivery_delay,
     "due-delivery-prioritization": _due_priority,

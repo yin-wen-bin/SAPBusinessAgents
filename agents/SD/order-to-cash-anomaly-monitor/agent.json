@@ -116,8 +116,8 @@
     {
       "id": "check-thin-runtime",
       "title": {
-        "zh": "检查Thin Runtime",
-        "en": "Check Thin Runtime"
+        "zh": "检查Embedded Provider",
+        "en": "Check Embedded Provider"
       },
       "description": {
         "zh": "确认Runtime健康、启用、只读且schema可执行。",
@@ -133,8 +133,8 @@
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health / sapclaw_schema",
-          "kind": "sapclaw_runtime MCP",
+          "name": "sap_read_provider_health / sap_read_schema",
+          "kind": "Embedded SAP Read Provider",
           "purpose": {
             "zh": "执行健康和权威schema检查。",
             "en": "Run health and authoritative schema checks."
@@ -163,7 +163,7 @@
       "tools": [
         {
           "name": "API_SALES_ORDER_SRV + API_OUTBOUND_DELIVERY_SRV + API_BILLING_DOCUMENT_SRV + API_OPLACCTGDOCITEMCUBE_SRV",
-          "kind": "SAP OData via sapclaw_execute_get",
+          "kind": "SAP OData via sap_read_execute_get",
           "purpose": {
             "zh": "执行批准的只读GET。",
             "en": "Execute approved read-only GET requests."
@@ -638,6 +638,112 @@
         }
       },
       {
+        "id": "extract_billing_documents",
+        "executor": "rule",
+        "operation": "extract_bounded_values",
+        "inputMapping": {"payload": "{{steps.collect_o2c_anomaly_evidence.output}}", "field": "BillingDocument", "max_values": 100}
+      },
+      {
+        "id": "extract_customers",
+        "executor": "rule",
+        "operation": "extract_bounded_values",
+        "inputMapping": {"payload": "{{steps.collect_o2c_anomaly_evidence.output}}", "field": "Customer", "max_values": 100}
+      },
+      {
+        "id": "preflight_output_status",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.extract_billing_documents.output.has_values}}", "equals": true},
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "NAST",
+          "fields": ["KAPPL", "OBJKY", "KSCHL", "NACHA", "VSTAT", "ERDAT", "ERUHR", "DATVR", "UHRVR"],
+          "filters": [
+            {"field": "KAPPL", "operator": "eq", "value": "V3"},
+            {"field": "OBJKY", "operator": "in", "values": "{{steps.extract_billing_documents.output.values}}"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_output_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_output_status.output}}"}
+      },
+      {
+        "id": "read_output_status",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.assess_output_preflight.output.proceed}}", "equals": true},
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "NAST",
+          "fields": ["KAPPL", "OBJKY", "KSCHL", "NACHA", "VSTAT", "ERDAT", "ERUHR", "DATVR", "UHRVR"],
+          "filters": [
+            {"field": "KAPPL", "operator": "eq", "value": "V3"},
+            {"field": "OBJKY", "operator": "in", "values": "{{steps.extract_billing_documents.output.values}}"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
+        "id": "preflight_structured_dispute_cases",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.extract_customers.output.has_values}}", "equals": true},
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "UDMCASEATTR00",
+          "fields": ["CASE_GUID", "FIN_ROOT_CODE", "FIN_DUE_DATE", "FIN_KUNNR", "FIN_BUKRS", "FIN_ORIGIN"],
+          "filters": [
+            {"field": "FIN_KUNNR", "operator": "in", "values": "{{steps.extract_customers.output.values}}"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_dispute_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_structured_dispute_cases.output}}"}
+      },
+      {
+        "id": "read_structured_dispute_cases",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.assess_dispute_preflight.output.proceed}}", "equals": true},
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "UDMCASEATTR00",
+          "fields": ["CASE_GUID", "FIN_ROOT_CODE", "FIN_DUE_DATE", "FIN_KUNNR", "FIN_BUKRS", "FIN_ORIGIN"],
+          "filters": [
+            {"field": "FIN_KUNNR", "operator": "in", "values": "{{steps.extract_customers.output.values}}"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
         "id": "evaluate_business_result",
         "executor": "rule",
         "operation": "evaluate_business_agent",
@@ -647,9 +753,11 @@
           "evidence": {
             "collect_o2c_anomaly_evidence": "{{steps.collect_o2c_anomaly_evidence.output}}"
           },
-          "known_gaps": [
-            "billing_output_and_dispute_evidence"
-          ]
+          "fallbacks": {
+            "output_status": "{{steps.read_output_status.output}}",
+            "dispute_case": "{{steps.read_structured_dispute_cases.output}}"
+          },
+          "known_gaps": []
         }
       }
     ]

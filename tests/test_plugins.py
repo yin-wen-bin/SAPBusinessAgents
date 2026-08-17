@@ -161,8 +161,18 @@ _METADATA = """<?xml version="1.0" encoding="utf-8"?>
         <Property Name="OrderID" Type="Edm.String" Nullable="false" sap:filterable="false" sap:sortable="true" />
         <Property Name="Amount" Type="Edm.Decimal" Nullable="true" />
       </EntityType>
+      <ComplexType Name="AvailabilityType">
+        <Property Name="Material" Type="Edm.String" Nullable="false" />
+        <Property Name="AvailableQuantity" Type="Edm.Decimal" Nullable="false" />
+      </ComplexType>
       <EntityContainer Name="Container" m:IsDefaultEntityContainer="true">
         <EntitySet Name="A_Order" EntityType="TEST.OrderType" />
+        <FunctionImport Name="DetermineAvailabilityAt" ReturnType="TEST.AvailabilityType" m:HttpMethod="GET">
+          <Parameter Name="Material" Type="Edm.String" Mode="In" />
+          <Parameter Name="SupplyingPlant" Type="Edm.String" Mode="In" />
+          <Parameter Name="ATPCheckingRule" Type="Edm.String" Mode="In" />
+          <Parameter Name="RequestedUTCDateTime" Type="Edm.DateTimeOffset" Mode="In" />
+        </FunctionImport>
       </EntityContainer>
     </Schema>
   </edmx:DataServices>
@@ -241,6 +251,55 @@ def test_embedded_provider_rejects_write_before_network_access() -> None:
     assert validation["ok"] is False
     assert validation["validation_issues"][0]["code"] == "write_operation_rejected"
     assert called is False
+
+
+def test_embedded_provider_executes_live_schema_validated_get_function_import() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        if request.url.path.endswith("/$metadata"):
+            return httpx.Response(200, text=_METADATA)
+        assert request.url.path.endswith("/DetermineAvailabilityAt")
+        assert request.url.params["Material"] == "'TG0011'"
+        assert request.url.params["SupplyingPlant"] == "'1710'"
+        assert request.url.params["ATPCheckingRule"] == "'A'"
+        assert request.url.params["RequestedUTCDateTime"] == "datetimeoffset'2026-08-17T00:00:00Z'"
+        assert not any(key.startswith("$") for key in request.url.params)
+        return httpx.Response(
+            200,
+            json={"d": {"Material": "TG0011", "AvailableQuantity": "12.000"}},
+        )
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        transport=httpx.MockTransport(handler),
+    )
+    plan = {
+        "service_name": "API_PRODUCT_AVAILY_INFO_BASIC",
+        "entity_set": "DetermineAvailabilityAt",
+        "http_method": "GET",
+        "plan_kind": "function_import",
+        "function_parameters": [
+            {"name": "Material", "value": "TG0011", "value_type": "string"},
+            {"name": "SupplyingPlant", "value": "1710", "value_type": "string"},
+            {"name": "ATPCheckingRule", "value": "A", "value_type": "string"},
+            {
+                "name": "RequestedUTCDateTime",
+                "value": "2026-08-17T00:00:00Z",
+                "value_type": "datetimeoffset",
+            },
+        ],
+    }
+    validation = asyncio.run(provider.validate_plan(plan))
+    assert validation["ok"] is True
+    result = asyncio.run(provider.execute_plan(plan))
+    assert result["source_complete"] is True
+    assert result["data"]["results"][0]["AvailableQuantity"] == "12.000"
+    assert all("fixture-password" not in str(request.url) for request in requests)
 
 
 def test_embedded_provider_uses_metadata_keys_for_complete_manual_paging() -> None:
