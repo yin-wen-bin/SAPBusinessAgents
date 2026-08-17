@@ -1,7 +1,7 @@
 # delivery-delay-prediction 真机测试报告
 
-- 测试日期：2026-08-17T10:10:51.837108+00:00
-- 代码版本：`5ed8943+working-tree`
+- 测试日期：2026-08-17T10:38:39.756133+00:00
+- 代码版本：`f392e27`
 - 系统与客户端：已脱敏；连接配置和凭据不落库
 - Embedded Provider：`embedded` `1.0.0`，严格GET-only
 - ADT Skill版本：`7d72576`

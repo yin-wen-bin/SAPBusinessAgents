@@ -1,7 +1,7 @@
 # SD 11 Agent Embedded + ADT 真机校验总览
 
-- 测试时间：2026-08-17T10:10:51.837108+00:00
-- 代码版本：`5ed8943+working-tree`
+- 测试时间：2026-08-17T10:38:39.756133+00:00
+- 代码版本：`f392e27`
 - 主数据通道：Embedded SAP Read Provider `1.0.0`（GET-only）
 - ADT Skill版本：`7d72576`
 - SAPClaw调用数：**0**
