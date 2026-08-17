@@ -1,0 +1,77 @@
+{
+  "run_input": {},
+  "assessment": {
+    "api_complete": {
+      "order": true,
+      "actual_cost": true
+    },
+    "capability_gaps": [
+      "standard_cost"
+    ]
+  },
+  "evidence": {
+    "production_orders": {
+      "source_complete": true,
+      "step_results": {
+        "production_orders": {
+          "results": [
+            {
+              "ManufacturingOrder": "DEMO"
+            }
+          ]
+        }
+      }
+    },
+    "actual_cost_items": {
+      "source_complete": true,
+      "step_results": {
+        "actual_cost_items": {
+          "results": [
+            {
+              "AmountInCompanyCodeCurrency": "500",
+              "CompanyCodeCurrency": "EUR"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "fallbacks": {
+    "standard_cost": {
+      "header": {
+        "status": "complete",
+        "read_only": true,
+        "validated": true,
+        "source_complete": true,
+        "completeness": {
+          "source_complete": true,
+          "paging_complete": true
+        },
+        "validation_issues": [],
+        "rows": [
+          {
+            "KALNR": "1"
+          }
+        ]
+      },
+      "period": {
+        "status": "complete",
+        "read_only": true,
+        "validated": true,
+        "source_complete": true,
+        "completeness": {
+          "source_complete": true,
+          "paging_complete": true
+        },
+        "validation_issues": [],
+        "rows": [
+          {
+            "KALNR": "1",
+            "PVPRS": "12",
+            "STPRS": "10"
+          }
+        ]
+      }
+    }
+  }
+}

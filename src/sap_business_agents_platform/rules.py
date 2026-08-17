@@ -8,12 +8,29 @@ from .agent_rules import evaluate_business_agent
 P2P_PAYMENT_DOCUMENT_TYPES = frozenset({"KZ", "ZP"})
 O2C_CUSTOMER_PAYMENT_DOCUMENT_TYPES = frozenset({"DZ"})
 
+# Only authoritative schema/capability findings may open the ADT fallback path.
+# Transport, authentication, timeout, truncation, and generic execution failures
+# remain explicit operational gaps so the primary API failure is never hidden.
+API_CAPABILITY_GAP_CODES = frozenset(
+    {
+        "schema_drift_entity_unavailable",
+        "schema_drift_field_unavailable",
+        "schema_drift_relationship_unavailable",
+        "relationship_mapping_missing",
+        "field_not_filterable",
+        "field_not_selectable",
+        "field_not_sortable",
+    }
+)
+
 
 def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "assess_api_evidence":
         return assess_api_evidence(inputs)
     if operation == "assess_adt_preflight":
         return assess_adt_preflight(inputs)
+    if operation == "classify_control_object":
+        return classify_control_object(inputs)
     if operation == "assess_o2c_document_flow":
         return assess_o2c_document_flow(inputs)
     if operation == "evidence_summary":
@@ -27,6 +44,19 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "evaluate_o2c_status":
         return evaluate_o2c_status(inputs)
     raise ValueError(f"Unknown deterministic rule operation: {operation}")
+
+
+def classify_control_object(inputs: dict[str, Any]) -> dict[str, Any]:
+    object_type = str(inputs.get("object_type") or "").strip().upper()
+    if object_type not in {"INTERNAL_ORDER", "WBS"}:
+        raise ValueError("classify_control_object requires INTERNAL_ORDER or WBS")
+    return {
+        "rule_id": "classify_control_object_v1",
+        "status": "complete",
+        "object_type": object_type,
+        "is_internal_order": object_type == "INTERNAL_ORDER",
+        "is_wbs": object_type == "WBS",
+    }
 
 
 def assess_o2c_document_flow(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -53,27 +83,69 @@ def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
     checks = inputs.get("checks")
     if not isinstance(checks, dict) or not checks:
         raise ValueError("assess_api_evidence requires named checks")
+    declared = {
+        str(item)
+        for item in inputs.get("capability_gaps") or []
+        if str(item).strip()
+    }
     needs_adt: dict[str, bool] = {}
     api_complete: dict[str, bool] = {}
     missing: list[str] = []
+    capability_gaps: list[str] = []
+    operational_gaps: list[str] = []
     for name, payload in checks.items():
         flags = _collect_source_complete(payload)
         ok_values = [value for value in _collect_values(payload, "ok") if isinstance(value, bool)]
         complete = bool(flags) and all(flags) and (not ok_values or all(ok_values))
         key = str(name)
+        codes = {
+            str(value)
+            for value in _collect_values(payload, "code")
+            if str(value).strip()
+        }
+        capability_gap = not complete and (
+            key in declared or bool(codes.intersection(API_CAPABILITY_GAP_CODES))
+        )
         api_complete[key] = complete
-        needs_adt[key] = not complete
+        needs_adt[key] = capability_gap
         if not complete:
             missing.append(key)
+            (capability_gaps if capability_gap else operational_gaps).append(key)
+    for key in sorted(declared.difference(api_complete)):
+        api_complete[key] = False
+        needs_adt[key] = True
+        missing.append(key)
+        capability_gaps.append(key)
+    status = (
+        "fallback_required"
+        if capability_gaps
+        else "inconclusive"
+        if operational_gaps
+        else "complete"
+    )
     return {
-        "rule_id": "api_evidence_gap_assessment_v1",
-        "status": "complete" if not missing else "fallback_required",
+        "rule_id": "api_evidence_gap_assessment_v2",
+        "status": status,
         "api_complete": api_complete,
         "needs_adt": needs_adt,
-        "missing_evidence": missing,
+        "missing_evidence": sorted(set(missing)),
+        "capability_gaps": sorted(set(capability_gaps)),
+        "operational_gaps": sorted(set(operational_gaps)),
         "summary": {
-            "zh": "标准 API 证据完整。" if not missing else "标准 API 存在证据缺口，将按白名单调用 ADT。",
-            "en": "Standard API evidence is complete." if not missing else "Standard API evidence has gaps; allowlisted ADT fallbacks are required.",
+            "zh": (
+                "标准 API 证据完整。"
+                if not missing
+                else "实时 schema 确认 API 能力缺口，将按白名单调用 ADT。"
+                if capability_gaps
+                else "标准 API 执行或完整性不足；保持不确定且不触发 ADT。"
+            ),
+            "en": (
+                "Standard API evidence is complete."
+                if not missing
+                else "Live schema confirms an API capability gap; allowlisted ADT fallback is required."
+                if capability_gaps
+                else "Standard API execution or completeness is insufficient; remain inconclusive without ADT fallback."
+            ),
         },
     }
 

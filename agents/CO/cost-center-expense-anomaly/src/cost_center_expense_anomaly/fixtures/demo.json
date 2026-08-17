@@ -1,0 +1,53 @@
+{
+  "run_input": {
+    "variance_threshold_pct": 20
+  },
+  "assessment": {
+    "api_complete": {
+      "master": true,
+      "actual": true,
+      "plan": true
+    }
+  },
+  "evidence": {
+    "cost_centers": {
+      "source_complete": true,
+      "step_results": {
+        "cost_centers": {
+          "results": [
+            {
+              "CostCenter": "CC-DEMO"
+            }
+          ]
+        }
+      }
+    },
+    "actual_items": {
+      "source_complete": true,
+      "step_results": {
+        "actual_items": {
+          "results": [
+            {
+              "AmountInCompanyCodeCurrency": "120",
+              "CompanyCodeCurrency": "EUR"
+            }
+          ]
+        }
+      }
+    },
+    "plan_items": {
+      "source_complete": true,
+      "step_results": {
+        "plan_items": {
+          "results": [
+            {
+              "AmountInCompanyCodeCurrency": "100",
+              "CompanyCodeCurrency": "EUR"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "fallbacks": {}
+}

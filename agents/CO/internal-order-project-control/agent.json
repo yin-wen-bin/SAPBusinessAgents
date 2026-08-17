@@ -1,0 +1,880 @@
+{
+  "schemaVersion": 2,
+  "slug": "internal-order-project-control",
+  "module": "CO",
+  "title": {
+    "zh": "内部订单与项目控制助手",
+    "en": "Internal Order and Project Control Assistant"
+  },
+  "summary": {
+    "zh": "整合订单/WBS 的实际、计划、预算和承诺，形成只读 EAC 与预算风险。",
+    "en": "Combines order/WBS actual, plan, budget, and commitments into a read-only EAC and budget-risk assessment."
+  },
+  "status": "Deterministic prototype with bounded live validation",
+  "version": "0.1.0",
+  "owner": "CO-OM-OPA / PS",
+  "tags": [
+    "Internal Order",
+    "WBS",
+    "Budget",
+    "Commitment",
+    "EAC"
+  ],
+  "sapModules": [
+    "CO-OM-OPA",
+    "PS"
+  ],
+  "transactions": [
+    "KOB1",
+    "S_ALR_87013558",
+    "CJI3"
+  ],
+  "tables": [
+    "AUFK",
+    "PRPS",
+    "BPJA",
+    "COOI",
+    "ACDOCA",
+    "ACDOCP"
+  ],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "对象类型",
+      "订单/WBS 标识",
+      "公司代码",
+      "年度",
+      "计划类别"
+    ],
+    "en": [
+      "Object type",
+      "Order/WBS identifier",
+      "Company code",
+      "Year",
+      "Planning category"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "实际与计划",
+      "预算与承诺",
+      "预计完工成本",
+      "超预算风险"
+    ],
+    "en": [
+      "Actual and plan",
+      "Budget and commitments",
+      "Estimate at completion",
+      "Over-budget risk"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "全部 SAP 访问严格只读",
+      "Embedded OData 为唯一主 provider",
+      "仅 schema 能力缺口触发 ADT",
+      "不使用 SAPClaw 或 SE16N",
+      "不完整证据不得生成确定结论"
+    ],
+    "en": [
+      "All SAP access is strictly read-only",
+      "Embedded OData is the sole primary provider",
+      "Only schema capability gaps trigger ADT",
+      "Never use SAPClaw or SE16N",
+      "Incomplete evidence cannot produce a confirmed conclusion"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "validate-scope",
+      "title": {
+        "zh": "1. 校验 CO 范围",
+        "en": "1. Validate CO scope"
+      },
+      "description": {
+        "zh": "校验一个内部订单或 WBS 标识及其公司代码和年度。",
+        "en": "Validate one internal-order or WBS identifier with company code and year."
+      },
+      "operations": {
+        "zh": [
+          "拒绝无界或格式错误的范围。"
+        ],
+        "en": [
+          "Reject unbounded or malformed scope."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Input schema",
+          "kind": "Control",
+          "purpose": {
+            "zh": "限制真机读取范围。",
+            "en": "Bounds live reads."
+          }
+        }
+      ]
+    },
+    {
+      "id": "check-schema",
+      "title": {
+        "zh": "2. 校验 Embedded API schema",
+        "en": "2. Validate Embedded API schema"
+      },
+      "description": {
+        "zh": "从目标系统实时 metadata 校验实体、字段、筛选和稳定键。",
+        "en": "Validate entities, fields, filters, and stable keys against live target metadata."
+      },
+      "operations": {
+        "zh": [
+          "同名字段和静态目录不能替代实时 schema。"
+        ],
+        "en": [
+          "Same-named fields and static catalogs do not replace live schema."
+        ]
+      },
+      "tools": [
+        {
+          "name": "embedded-sap-odata",
+          "kind": "SAP read Provider",
+          "purpose": {
+            "zh": "提供 GET-only schema 权威来源。",
+            "en": "Provides the authoritative GET-only schema."
+          }
+        }
+      ]
+    },
+    {
+      "id": "read-api",
+      "title": {
+        "zh": "3. 分页读取标准 API",
+        "en": "3. Read released APIs with paging"
+      },
+      "description": {
+        "zh": "分别按订单和 WBS 读取实际与计划行项目。",
+        "en": "Read actual and plan entries through both order and WBS scopes."
+      },
+      "operations": {
+        "zh": [
+          "不使用显式 top 作为完整性证据。"
+        ],
+        "en": [
+          "Do not use explicit top as completeness evidence."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Released SAP OData APIs",
+          "kind": "SAP API",
+          "purpose": {
+            "zh": "提供首选业务证据。",
+            "en": "Provides preferred business evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "assess-gap",
+      "title": {
+        "zh": "4. 评估 API 能力缺口",
+        "en": "4. Assess API capability gaps"
+      },
+      "description": {
+        "zh": "仅实时 schema 的实体、字段或关系缺口可以触发 ADT。",
+        "en": "Only live-schema entity, field, or relationship gaps can trigger ADT."
+      },
+      "operations": {
+        "zh": [
+          "超时、权限、截断和完整空结果不触发 ADT。"
+        ],
+        "en": [
+          "Timeouts, authorization failures, truncation, and complete empty results do not trigger ADT."
+        ]
+      },
+      "tools": [
+        {
+          "name": "assess_api_evidence",
+          "kind": "Deterministic rule",
+          "purpose": {
+            "zh": "区分能力缺口和操作故障。",
+            "en": "Separates capability gaps from operational failures."
+          }
+        }
+      ]
+    },
+    {
+      "id": "adt-fallback",
+      "title": {
+        "zh": "5. 条件调用 sap-adt-table-export",
+        "en": "5. Conditionally call sap-adt-table-export"
+      },
+      "description": {
+        "zh": "发布 API 不提供预算和承诺完整链路时读取 AUFK/PRPS、BPJA 和 COOI。",
+        "en": "Read AUFK/PRPS, BPJA, and COOI when released APIs do not provide the complete budget and commitment chain."
+      },
+      "operations": {
+        "zh": [
+          "仅使用静态对象、白名单字段、有界过滤和升序稳定键。"
+        ],
+        "en": [
+          "Use only static objects, allowlisted fields, bounded filters, and ascending stable keys."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "SAPSkillhub Skill",
+          "purpose": {
+            "zh": "提供受保护的表级补证。",
+            "en": "Provides protected table-level supplemental evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "merge-evidence",
+      "title": {
+        "zh": "6. 合并并验证证据",
+        "en": "6. Merge and validate evidence"
+      },
+      "description": {
+        "zh": "校验业务键、币种、单位、期间、分页和 SHA-256 manifest。",
+        "en": "Validate business keys, currency, units, periods, paging, and the SHA-256 manifest."
+      },
+      "operations": {
+        "zh": [
+          "冲突不覆盖；达到行数上限保持 partial。"
+        ],
+        "en": [
+          "Do not overwrite conflicts; retain partial at the row limit."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Evidence gate",
+          "kind": "Control",
+          "purpose": {
+            "zh": "保护完整性语义。",
+            "en": "Protects completeness semantics."
+          }
+        }
+      ]
+    },
+    {
+      "id": "analyze",
+      "title": {
+        "zh": "7. 执行确定性 CO 分析",
+        "en": "7. Run deterministic CO analysis"
+      },
+      "description": {
+        "zh": "按实际加承诺计算 EAC，并在币种、对象归属和预算完整时判断风险。",
+        "en": "Calculate EAC as actual plus commitments and assess risk only with complete currency, attribution, and budget evidence."
+      },
+      "operations": {
+        "zh": [
+          "规则透明、可复现且不回写 SAP。"
+        ],
+        "en": [
+          "Rules are transparent, reproducible, and never write to SAP."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Order/project control evaluator",
+          "kind": "Rule engine",
+          "purpose": {
+            "zh": "生成确定性业务结论。",
+            "en": "Produces deterministic business conclusions."
+          }
+        }
+      ]
+    },
+    {
+      "id": "present",
+      "title": {
+        "zh": "8. 输出结论和限制",
+        "en": "8. Present conclusions and limits"
+      },
+      "description": {
+        "zh": "输出状态、指标、证据范围、缺口和人工复核动作。",
+        "en": "Present status, metrics, evidence scope, gaps, and human-review actions."
+      },
+      "operations": {
+        "zh": [
+          "必需证据不完整时输出 INCONCLUSIVE。"
+        ],
+        "en": [
+          "Return INCONCLUSIVE when required evidence is incomplete."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Business report",
+          "kind": "Output",
+          "purpose": {
+            "zh": "形成双语、可审计报告。",
+            "en": "Creates a bilingual auditable report."
+          }
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 600,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "fiscal_year": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 4,
+          "pattern": "^[0-9]{4}$"
+        },
+        "object_type": {
+          "type": "string",
+          "pattern": "^(INTERNAL_ORDER|WBS)$"
+        },
+        "object_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24,
+          "pattern": "^[0-9A-Za-z_.-]+$"
+        },
+        "planning_category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10
+        }
+      },
+      "required": [
+        "object_type",
+        "object_id",
+        "company_code",
+        "fiscal_year",
+        "planning_category"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "business_status": {
+          "type": "string"
+        },
+        "source_complete": {
+          "type": "boolean"
+        },
+        "business_report": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "business_status": "{{steps.evaluate.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate.output.workflow_output.business_report}}"
+    },
+    "steps": [
+      {
+        "id": "read_order_actual",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "CompanyCode",
+              "FiscalYear",
+              "FiscalPeriod",
+              "AccountingDocument",
+              "AccountingDocumentItem",
+              "ControllingArea",
+              "CostCenter",
+              "OrderID",
+              "WBSElementInternalID",
+              "Material",
+              "Plant",
+              "GLAccount",
+              "PostingDate",
+              "AmountInCompanyCodeCurrency",
+              "CompanyCodeCurrency"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "FiscalYear",
+                "operator": "eq",
+                "value": "{{input.fiscal_year}}",
+                "value_type": "string"
+              },
+              {
+                "field": "OrderID",
+                "operator": "eq",
+                "value": "{{input.object_id}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read internal-order actual cost."
+          }
+        }
+      },
+      {
+        "id": "read_wbs_actual",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "CompanyCode",
+              "FiscalYear",
+              "FiscalPeriod",
+              "AccountingDocument",
+              "AccountingDocumentItem",
+              "ControllingArea",
+              "CostCenter",
+              "OrderID",
+              "WBSElementInternalID",
+              "Material",
+              "Plant",
+              "GLAccount",
+              "PostingDate",
+              "AmountInCompanyCodeCurrency",
+              "CompanyCodeCurrency"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "FiscalYear",
+                "operator": "eq",
+                "value": "{{input.fiscal_year}}",
+                "value_type": "string"
+              },
+              {
+                "field": "WBSElementInternalID",
+                "operator": "eq",
+                "value": "{{input.object_id}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read WBS actual cost when the identifier is internal."
+          }
+        }
+      },
+      {
+        "id": "read_order_plan",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_FINPLANNINGENTRYITEM_SRV",
+            "entity_set": "A_FinPlanningEntryItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "ID",
+              "Ledger",
+              "PlanningCategory",
+              "LedgerFiscalYear",
+              "FiscalPeriod",
+              "CompanyCode",
+              "CostCenter",
+              "OrderID",
+              "WBSElementExternalID",
+              "Plant",
+              "GLAccount",
+              "AmountInCompanyCodeCurrency",
+              "CompanyCodeCurrency"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "LedgerFiscalYear",
+                "operator": "eq",
+                "value": "{{input.fiscal_year}}",
+                "value_type": "string"
+              },
+              {
+                "field": "PlanningCategory",
+                "operator": "eq",
+                "value": "{{input.planning_category}}",
+                "value_type": "string"
+              },
+              {
+                "field": "OrderID",
+                "operator": "eq",
+                "value": "{{input.object_id}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read internal-order plan cost."
+          }
+        }
+      },
+      {
+        "id": "read_wbs_plan",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_FINPLANNINGENTRYITEM_SRV",
+            "entity_set": "A_FinPlanningEntryItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "ID",
+              "Ledger",
+              "PlanningCategory",
+              "LedgerFiscalYear",
+              "FiscalPeriod",
+              "CompanyCode",
+              "CostCenter",
+              "OrderID",
+              "WBSElementExternalID",
+              "Plant",
+              "GLAccount",
+              "AmountInCompanyCodeCurrency",
+              "CompanyCodeCurrency"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "LedgerFiscalYear",
+                "operator": "eq",
+                "value": "{{input.fiscal_year}}",
+                "value_type": "string"
+              },
+              {
+                "field": "PlanningCategory",
+                "operator": "eq",
+                "value": "{{input.planning_category}}",
+                "value_type": "string"
+              },
+              {
+                "field": "WBSElementExternalID",
+                "operator": "eq",
+                "value": "{{input.object_id}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read WBS plan cost when the identifier is external."
+          }
+        }
+      },
+      {
+        "id": "assess",
+        "executor": "rule",
+        "operation": "assess_api_evidence",
+        "inputMapping": {
+          "checks": {
+            "actual": {
+              "order": "{{steps.read_order_actual.output}}",
+              "wbs": "{{steps.read_wbs_actual.output}}"
+            },
+            "plan": {
+              "order": "{{steps.read_order_plan.output}}",
+              "wbs": "{{steps.read_wbs_plan.output}}"
+            }
+          },
+          "capability_gaps": [
+            "master",
+            "budget",
+            "commitment"
+          ]
+        }
+      },
+      {
+        "id": "object_kind",
+        "executor": "rule",
+        "operation": "classify_control_object",
+        "inputMapping": {
+          "object_type": "{{input.object_type}}"
+        }
+      },
+      {
+        "id": "adt_order_master",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.object_kind.output.is_internal_order}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "AUFK",
+          "fields": [
+            "AUFNR",
+            "OBJNR",
+            "KOKRS",
+            "BUKRS",
+            "LOEKZ",
+            "PHAS3"
+          ],
+          "filters": [
+            {
+              "field": "AUFNR",
+              "operator": "eq",
+              "value": "{{input.object_id}}"
+            }
+          ],
+          "order_by": [
+            "AUFNR"
+          ],
+          "max_rows": 10
+        }
+      },
+      {
+        "id": "adt_wbs_master",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.object_kind.output.is_wbs}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "PRPS",
+          "fields": [
+            "PSPNR",
+            "POSID",
+            "OBJNR",
+            "KOKRS",
+            "BUKRS",
+            "LOEVM"
+          ],
+          "filters": [
+            {
+              "field": "POSID",
+              "operator": "eq",
+              "value": "{{input.object_id}}"
+            }
+          ],
+          "order_by": [
+            "PSPNR"
+          ],
+          "max_rows": 10
+        }
+      },
+      {
+        "id": "object_numbers",
+        "executor": "rule",
+        "operation": "extract_bounded_values",
+        "inputMapping": {
+          "payload": {
+            "order": "{{steps.adt_order_master.output}}",
+            "wbs": "{{steps.adt_wbs_master.output}}"
+          },
+          "field": "OBJNR",
+          "max_values": 20
+        }
+      },
+      {
+        "id": "adt_budget",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.object_numbers.output.has_values}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "BPJA",
+          "fields": [
+            "OBJNR",
+            "GJAHR",
+            "WRTTP",
+            "VERSN",
+            "WTG001",
+            "WTG002",
+            "WTG003",
+            "WTG004",
+            "WTG005",
+            "WTG006",
+            "WTG007",
+            "WTG008",
+            "WTG009",
+            "WTG010",
+            "WTG011",
+            "WTG012"
+          ],
+          "filters": [
+            {
+              "field": "OBJNR",
+              "operator": "in",
+              "values": "{{steps.object_numbers.output.values}}"
+            },
+            {
+              "field": "GJAHR",
+              "operator": "eq",
+              "value": "{{input.fiscal_year}}"
+            }
+          ],
+          "order_by": [
+            "OBJNR",
+            "GJAHR",
+            "WRTTP",
+            "VERSN"
+          ],
+          "max_rows": 1000
+        }
+      },
+      {
+        "id": "adt_commitment",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.object_numbers.output.has_values}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "COOI",
+          "fields": [
+            "OBJNR",
+            "GJAHR",
+            "WRTTP",
+            "VERSN",
+            "WTG001",
+            "WTG002",
+            "WTG003",
+            "WTG004",
+            "WTG005",
+            "WTG006",
+            "WTG007",
+            "WTG008",
+            "WTG009",
+            "WTG010",
+            "WTG011",
+            "WTG012"
+          ],
+          "filters": [
+            {
+              "field": "OBJNR",
+              "operator": "in",
+              "values": "{{steps.object_numbers.output.values}}"
+            },
+            {
+              "field": "GJAHR",
+              "operator": "eq",
+              "value": "{{input.fiscal_year}}"
+            }
+          ],
+          "order_by": [
+            "OBJNR",
+            "GJAHR",
+            "WRTTP",
+            "VERSN"
+          ],
+          "max_rows": 1000
+        }
+      },
+      {
+        "id": "evaluate",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "internal-order-project-control",
+          "run_input": "{{input}}",
+          "assessment": "{{steps.assess.output}}",
+          "evidence": {
+            "order_actual": "{{steps.read_order_actual.output}}",
+            "wbs_actual": "{{steps.read_wbs_actual.output}}",
+            "order_plan": "{{steps.read_order_plan.output}}",
+            "wbs_plan": "{{steps.read_wbs_plan.output}}"
+          },
+          "fallbacks": {
+            "master": {
+              "order": "{{steps.adt_order_master.output}}",
+              "wbs": "{{steps.adt_wbs_master.output}}"
+            },
+            "budget": "{{steps.adt_budget.output}}",
+            "commitment": "{{steps.adt_commitment.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  },
+  "validation": {
+    "verdict": "PARTIAL",
+    "testedAt": "2026-08-17T11:41:06.839334+00:00",
+    "evidenceScope": "partial",
+    "providers": [
+      "embedded-sap-odata",
+      "sap-adt-table-export"
+    ],
+    "summary": {
+      "zh": "已执行 Embedded 真机读取，但仍有明确证据缺口。",
+      "en": "Embedded live reads ran, but explicit evidence gaps remain."
+    },
+    "reportPath": "docs/live-sap-test-report.md"
+  }
+}

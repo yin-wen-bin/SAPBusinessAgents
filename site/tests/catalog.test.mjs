@@ -9,9 +9,9 @@ test("Astro React development runtime stays on supported Vite 7", () => {
   assert.match(packageJson.overrides?.vite ?? "", /^\^?7\./);
 });
 
-test("catalog discovers twenty-five valid agents with step-level tools", () => {
+test("catalog discovers thirty valid agents with step-level tools", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
-  assert.equal(records.length, 25);
+  assert.equal(records.length, 30);
   assert.deepEqual(
     records.map((agent) => `${agent.module}/${agent.slug}`),
     [
@@ -19,6 +19,11 @@ test("catalog discovers twenty-five valid agents with step-level tools", () => {
       "FI/ar-collection",
       "FI/gr-ir-clearing",
       "FI/month-end-closing",
+      "CO/budget-rolling-forecast",
+      "CO/co-month-end-allocation-settlement",
+      "CO/cost-center-expense-anomaly",
+      "CO/internal-order-project-control",
+      "CO/product-cost-variance",
       "SD/billing-block-diagnosis",
       "SD/billing-completeness-check",
       "SD/billing-dispute-classification",
@@ -87,6 +92,14 @@ test("catalog discovers twenty-five valid agents with step-level tools", () => {
   assert.ok(newMmAgents.every((agent) => agent.validation?.providers.includes("sap-adt-table-export")));
   assert.ok(newMmAgents.every((agent) => agent.execution.steps.some((step) => step.when)));
   assert.ok(newMmAgents.every((agent) => agent.execution.steps.filter((step) => step.executor === "skill").every((step) => step.skillId === "sap-adt-table-export" && step.failurePolicy === "record_gap")));
+
+  const coAgents = records.filter((agent) => agent.module === "CO");
+  assert.equal(coAgents.length, 5);
+  assert.ok(coAgents.every((agent) => agent.schemaVersion === 2));
+  assert.ok(coAgents.every((agent) => agent.workflow.length === 8));
+  assert.ok(coAgents.every((agent) => agent.validation?.providers.includes("embedded-sap-odata")));
+  assert.ok(coAgents.every((agent) => agent.validation?.providers.includes("sap-adt-table-export")));
+  assert.ok(coAgents.every((agent) => agent.execution.steps.every((step) => ["sap_read", "skill", "rule"].includes(step.executor))));
 
   const o2c = records.find((agent) => agent.slug === "order-to-cash-status");
   assert.equal(o2c.schemaVersion, 2);

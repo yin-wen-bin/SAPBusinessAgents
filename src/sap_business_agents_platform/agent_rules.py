@@ -974,6 +974,341 @@ def _supplier_performance_risk(inputs: JsonObject) -> JsonObject:
     )
 
 
+def _amount(row: JsonObject) -> Decimal:
+    for field in (
+        "AmountInCompanyCodeCurrency",
+        "AmountInObjectCurrency",
+        "AmountInTransactionCurrency",
+        "HSL",
+        "KSL",
+        "TSL",
+        "WKG",
+        "WTG",
+    ):
+        if row.get(field) not in {None, ""}:
+            return _decimal(row.get(field))
+    return Decimal(0)
+
+
+def _currency(row: JsonObject) -> str:
+    for field in (
+        "CompanyCodeCurrency",
+        "ControllingObjectCurrency",
+        "TransactionCurrency",
+        "RHCUR",
+        "RKCUR",
+        "RTCUR",
+        "WAERS",
+    ):
+        value = str(row.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _currency_set(rows: list[JsonObject]) -> set[str]:
+    return {value for row in rows for value in [_currency(row)] if value}
+
+
+def _sum_amount(rows: list[JsonObject]) -> Decimal:
+    return sum((_amount(row) for row in rows), Decimal(0))
+
+
+def _cost_center_expense_anomaly(inputs: JsonObject) -> JsonObject:
+    masters = _rows(inputs, "cost_centers") + _adt_rows(inputs, "master")
+    actual = _rows(inputs, "actual_items") + _adt_rows(inputs, "actual")
+    plan = _rows(inputs, "plan_items") + _adt_rows(inputs, "plan")
+    complete, missing = _required_topics(inputs, "master", "actual", "plan")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    threshold = _decimal(run_input.get("variance_threshold_pct") or 20)
+    actual_total = _sum_amount(actual)
+    plan_total = _sum_amount(plan)
+    variance = actual_total - plan_total
+    currencies = _currency_set(actual + plan)
+    comparable = complete and len(currencies) <= 1 and plan_total != 0
+    variance_pct = (variance / abs(plan_total) * Decimal(100)) if comparable else None
+    findings: list[JsonObject] = []
+    blocked = any(
+        _truthy(row.get(field))
+        for row in masters
+        for field in (
+            "IsBlkdForPrimaryCostsPosting",
+            "IsBlkdForSecondaryCostsPosting",
+            "BKZKP",
+            "BKZKS",
+        )
+    )
+    if blocked:
+        findings.append({"code": "COST_CENTER_POSTING_BLOCK", "severity": "high"})
+    if len(currencies) > 1:
+        findings.append({"code": "CURRENCY_NOT_COMPARABLE", "severity": "high"})
+    if plan_total == 0:
+        findings.append({"code": "PLAN_BASE_MISSING_OR_ZERO", "severity": "medium"})
+    if variance_pct is not None and abs(variance_pct) >= threshold:
+        findings.append(
+            {
+                "code": "EXPENSE_VARIANCE_THRESHOLD_EXCEEDED",
+                "severity": "high",
+                "variance_pct": str(variance_pct.quantize(Decimal("0.01"))),
+            }
+        )
+    return _result(
+        inputs,
+        business_status="attention" if findings else "normal",
+        headline_zh=(
+            f"成本中心费用偏差为 {variance_pct.quantize(Decimal('0.01'))}%"
+            if variance_pct is not None
+            else "成本中心费用证据不可形成可比偏差率"
+        ),
+        headline_en=(
+            f"Cost-center expense variance is {variance_pct.quantize(Decimal('0.01'))}%"
+            if variance_pct is not None
+            else "Cost-center evidence cannot produce a comparable variance percentage"
+        ),
+        overview_zh="仅在实际、计划、期间和币种证据完整可比时计算偏差率；完整读取不代表费用一定正常。",
+        overview_en="Variance is calculated only when actual, plan, period, and currency evidence is complete and comparable; complete reads do not by themselves prove normal spending.",
+        stages=[
+            _stage("master", "成本中心主数据", "Cost-center master", len(masters), state="confirmed" if _topic_complete(inputs, "master") else "unknown"),
+            _stage("actual", "实际费用", "Actual expense", len(actual), state="confirmed" if _topic_complete(inputs, "actual") else "unknown"),
+            _stage("plan", "计划费用", "Planned expense", len(plan), state="confirmed" if _topic_complete(inputs, "plan") else "unknown"),
+        ],
+        findings=findings,
+        metrics=[
+            {"id": "actual_amount", "value": str(actual_total)},
+            {"id": "plan_amount", "value": str(plan_total)},
+            {"id": "variance_amount", "value": str(variance)},
+            {"id": "variance_pct", "value": str(variance_pct.quantize(Decimal("0.01"))) if variance_pct is not None else None},
+            {"id": "currency", "value": next(iter(currencies), None) if len(currencies) <= 1 else None},
+        ],
+        gaps=_gaps(inputs, *missing),
+        actions_zh=["由成本中心负责人按科目和期间复核超阈值偏差、一次性费用及错配成本中心。"],
+        actions_en=["Have the cost-center owner review threshold breaches, one-off expenses, and misassigned cost centers by account and period."],
+        source_complete_override=complete,
+    )
+
+
+def _co_month_end_allocation_settlement(inputs: JsonObject) -> JsonObject:
+    postings = _rows(inputs, "actual_items") + _adt_rows(inputs, "posting")
+    cycles = _adt_rows(inputs, "allocation_cycle")
+    settlement = _adt_rows(inputs, "settlement_rule")
+    objects = _adt_rows(inputs, "object_status")
+    complete, missing = _required_topics(
+        inputs, "posting", "allocation_cycle", "settlement_rule", "object_status"
+    )
+    deleted_or_closed = any(
+        _truthy(row.get(field))
+        for row in objects
+        for field in ("LOEKZ", "PHAS3", "OrderIsClosed", "OrderIsMarkedForDeletion")
+    )
+    ready = complete and bool(cycles) and bool(settlement) and bool(objects) and not deleted_or_closed
+    findings: list[JsonObject] = []
+    if not cycles:
+        findings.append({"code": "ALLOCATION_CYCLE_NOT_CONFIRMED", "severity": "high"})
+    if not settlement:
+        findings.append({"code": "SETTLEMENT_RULE_NOT_CONFIRMED", "severity": "high"})
+    if not objects:
+        findings.append({"code": "CO_OBJECT_NOT_CONFIRMED", "severity": "high"})
+    if deleted_or_closed:
+        findings.append({"code": "CO_OBJECT_CLOSED_OR_DELETED", "severity": "high"})
+    return _result(
+        inputs,
+        business_status="ready" if ready else "blocked",
+        headline_zh="分配与结算只读检查具备执行条件" if ready else "分配或结算前置证据不足",
+        headline_en="Allocation and settlement evidence is ready" if ready else "Allocation or settlement prerequisites are not confirmed",
+        overview_zh="本 Agent 只判断单个 CO 对象和周期的只读准备度，不运行分配、分摊、结算或财务关账。",
+        overview_en="This Agent only assesses read-only readiness for one CO object and cycle; it never runs allocation, assessment, settlement, or financial close.",
+        stages=[
+            _stage("posting", "期间 CO 过账", "Period CO postings", len(postings), state="confirmed" if _topic_complete(inputs, "posting") else "unknown"),
+            _stage("cycle", "分配周期", "Allocation cycle", len(cycles), state="confirmed" if _topic_complete(inputs, "allocation_cycle") else "unknown"),
+            _stage("settlement", "结算规则", "Settlement rule", len(settlement), state="confirmed" if _topic_complete(inputs, "settlement_rule") else "unknown"),
+            _stage("object", "CO 对象状态", "CO object status", len(objects), state="confirmed" if _topic_complete(inputs, "object_status") else "unknown"),
+        ],
+        findings=findings,
+        metrics=[
+            {"id": "posting_rows", "value": len(postings)},
+            {"id": "allocation_cycle_rows", "value": len(cycles)},
+            {"id": "settlement_rule_rows", "value": len(settlement)},
+            {"id": "ready", "value": ready},
+        ],
+        gaps=_gaps(inputs, *missing),
+        actions_zh=["由 CO 月结负责人确认周期有效期、发送方/接收方规则和结算对象状态后，再在 SAP 中人工执行。"],
+        actions_en=["Have the CO close owner confirm cycle validity, sender/receiver rules, and settlement-object status before manually executing in SAP."],
+        source_complete_override=complete,
+    )
+
+
+def _product_cost_variance(inputs: JsonObject) -> JsonObject:
+    orders = _rows(inputs, "production_orders") + _adt_rows(inputs, "order")
+    actual = _rows(inputs, "actual_cost_items") + _adt_rows(inputs, "actual_cost")
+    costing = _adt_rows(inputs, "standard_cost")
+    complete, missing = _required_topics(inputs, "order", "actual_cost", "standard_cost")
+    actual_total = _sum_amount(actual)
+    periodic_prices = [
+        _decimal(row.get("PVPRS"))
+        for row in costing
+        if row.get("PVPRS") not in {None, ""}
+    ]
+    standard_prices = [
+        _decimal(row.get("STPRS"))
+        for row in costing
+        if row.get("STPRS") not in {None, ""}
+    ]
+    periodic = sum(periodic_prices, Decimal(0)) if periodic_prices else None
+    standard = sum(standard_prices, Decimal(0)) if standard_prices else None
+    price_variance = periodic - standard if periodic is not None and standard is not None else None
+    findings: list[JsonObject] = []
+    if not orders:
+        findings.append({"code": "PRODUCTION_ORDER_NOT_CONFIRMED", "severity": "high"})
+    if price_variance is None:
+        findings.append({"code": "STANDARD_PERIODIC_PRICE_NOT_COMPARABLE", "severity": "high"})
+    elif price_variance != 0:
+        findings.append({"code": "PRODUCT_COST_VARIANCE", "severity": "medium", "value": str(price_variance)})
+    return _result(
+        inputs,
+        business_status="attention" if findings else "normal",
+        headline_zh=(f"周期价格与标准价格差异为 {price_variance}" if price_variance is not None else "产品成本差异证据不可比较"),
+        headline_en=(f"Periodic-to-standard price variance is {price_variance}" if price_variance is not None else "Product-cost variance evidence is not comparable"),
+        overview_zh="产品成本结论区分订单实际发生额与物料分类账单位价格；两者不在单位和归属完整前混合汇总。",
+        overview_en="Product-cost conclusions keep order actual amounts separate from Material Ledger unit prices until units and attribution are complete.",
+        stages=[
+            _stage("order", "生产订单", "Production order", len(orders), state="confirmed" if _topic_complete(inputs, "order") else "unknown"),
+            _stage("actual", "订单实际成本", "Order actual cost", len(actual), state="confirmed" if _topic_complete(inputs, "actual_cost") else "unknown"),
+            _stage("standard", "标准与周期成本", "Standard and periodic cost", len(costing), state="confirmed" if _topic_complete(inputs, "standard_cost") else "unknown"),
+        ],
+        findings=findings,
+        metrics=[
+            {"id": "order_actual_amount", "value": str(actual_total)},
+            {"id": "standard_unit_price", "value": str(standard) if standard is not None else None},
+            {"id": "periodic_unit_price", "value": str(periodic) if periodic is not None else None},
+            {"id": "unit_price_variance", "value": str(price_variance) if price_variance is not None else None},
+        ],
+        gaps=_gaps(inputs, *missing),
+        actions_zh=["由产品成本会计复核物料分类账期间、价格单位、订单归属和结算状态。"],
+        actions_en=["Have product-cost accounting review the Material Ledger period, price unit, order attribution, and settlement status."],
+        source_complete_override=complete,
+    )
+
+
+def _budget_rolling_forecast(inputs: JsonObject) -> JsonObject:
+    actual = _rows(inputs, "actual_items") + _adt_rows(inputs, "actual")
+    plan = _rows(inputs, "plan_items") + _adt_rows(inputs, "plan")
+    complete, missing = _required_topics(inputs, "actual", "plan")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    current_period = max(1, min(12, int(run_input.get("current_period") or 1)))
+    actual_total = _sum_amount(actual)
+    plan_total = _sum_amount(plan)
+    currencies = _currency_set(actual + plan)
+    comparable = complete and len(currencies) <= 1
+    average = actual_total / Decimal(current_period) if comparable else None
+    forecast = actual_total + average * Decimal(12 - current_period) if average is not None else None
+    forecast_variance = forecast - plan_total if forecast is not None else None
+    forecast_pct = (
+        forecast_variance / abs(plan_total) * Decimal(100)
+        if forecast_variance is not None and plan_total != 0
+        else None
+    )
+    threshold = _decimal(run_input.get("risk_threshold_pct") or 10)
+    findings: list[JsonObject] = []
+    if len(currencies) > 1:
+        findings.append({"code": "CURRENCY_NOT_COMPARABLE", "severity": "high"})
+    if plan_total == 0:
+        findings.append({"code": "ANNUAL_PLAN_MISSING_OR_ZERO", "severity": "high"})
+    if forecast_pct is not None and forecast_pct > threshold:
+        findings.append({"code": "FORECAST_OVER_PLAN", "severity": "high", "variance_pct": str(forecast_pct.quantize(Decimal("0.01")))})
+    return _result(
+        inputs,
+        business_status="attention" if findings else "normal",
+        headline_zh=(f"全年滚动预测相对计划偏差 {forecast_pct.quantize(Decimal('0.01'))}%" if forecast_pct is not None else "滚动预测因证据不可比而被抑制"),
+        headline_en=(f"Full-year rolling forecast variance is {forecast_pct.quantize(Decimal('0.01'))}% versus plan" if forecast_pct is not None else "Rolling forecast is suppressed because evidence is not comparable"),
+        overview_zh="预测使用截至当前期间的简单月均外推，是透明基线而非机器学习预测；不自动回写预算。",
+        overview_en="The forecast is a transparent monthly-average extrapolation through the current period, not an ML forecast, and never writes a budget back to SAP.",
+        stages=[
+            _stage("actual", "累计实际", "Year-to-date actual", len(actual), state="confirmed" if _topic_complete(inputs, "actual") else "unknown"),
+            _stage("plan", "全年计划", "Full-year plan", len(plan), state="confirmed" if _topic_complete(inputs, "plan") else "unknown"),
+        ],
+        findings=findings,
+        metrics=[
+            {"id": "actual_ytd", "value": str(actual_total)},
+            {"id": "annual_plan", "value": str(plan_total)},
+            {"id": "full_year_forecast", "value": str(forecast) if forecast is not None else None},
+            {"id": "forecast_variance_pct", "value": str(forecast_pct.quantize(Decimal("0.01"))) if forecast_pct is not None else None},
+        ],
+        gaps=_gaps(inputs, *missing),
+        actions_zh=["由预算负责人复核季节性、一次性项目和计划版本后决定是否调整预测。"],
+        actions_en=["Have the budget owner review seasonality, one-off items, and the planning version before adjusting the forecast."],
+        source_complete_override=complete,
+    )
+
+
+def _sum_period_fields(rows: list[JsonObject]) -> Decimal:
+    total = Decimal(0)
+    for row in rows:
+        period_fields = [key for key in row if key.startswith(("WTG", "WKG")) and key[3:].isdigit()]
+        if period_fields:
+            total += sum((_decimal(row.get(key)) for key in period_fields), Decimal(0))
+        else:
+            total += _amount(row)
+    return total
+
+
+def _internal_order_project_control(inputs: JsonObject) -> JsonObject:
+    actual = _rows(inputs, "order_actual", "wbs_actual") + _adt_rows(inputs, "actual")
+    plan = _rows(inputs, "order_plan", "wbs_plan") + _adt_rows(inputs, "plan")
+    masters = _adt_rows(inputs, "master")
+    budgets = _adt_rows(inputs, "budget")
+    commitments = _adt_rows(inputs, "commitment")
+    complete, missing = _required_topics(inputs, "actual", "plan", "master", "budget", "commitment")
+    actual_total = _sum_amount(actual)
+    plan_total = _sum_amount(plan)
+    budget_total = _sum_period_fields(budgets)
+    commitment_total = _sum_period_fields(commitments)
+    eac = actual_total + commitment_total
+    variance = budget_total - eac
+    currencies = _currency_set(actual + plan + budgets + commitments)
+    comparable = complete and len(currencies) <= 1 and budget_total != 0
+    consumption_pct = eac / abs(budget_total) * Decimal(100) if comparable else None
+    findings: list[JsonObject] = []
+    business_gaps: list[str] = []
+    if not masters:
+        findings.append({"code": "CONTROL_OBJECT_NOT_CONFIRMED", "severity": "high"})
+        business_gaps.append("control_object_not_found")
+    if len(currencies) > 1:
+        findings.append({"code": "CURRENCY_NOT_COMPARABLE", "severity": "high"})
+    if budget_total == 0:
+        findings.append({"code": "BUDGET_MISSING_OR_ZERO", "severity": "high"})
+    if comparable and eac > budget_total:
+        findings.append({"code": "EAC_EXCEEDS_BUDGET", "severity": "high", "variance": str(-variance)})
+    return _result(
+        inputs,
+        business_status="attention" if findings else "normal",
+        headline_zh=(f"预计完工成本占预算 {consumption_pct.quantize(Decimal('0.01'))}%" if consumption_pct is not None else "订单/项目预算控制证据不可比较"),
+        headline_en=(f"Estimate at completion consumes {consumption_pct.quantize(Decimal('0.01'))}% of budget" if consumption_pct is not None else "Order/project budget-control evidence is not comparable"),
+        overview_zh="EAC 仅按实际加承诺计算；计划、预算、币种或对象归属不完整时不输出确定超预算结论。",
+        overview_en="EAC is calculated only as actual plus commitments; no confirmed over-budget conclusion is emitted when plan, budget, currency, or object attribution is incomplete.",
+        stages=[
+            _stage("master", "订单/WBS 主数据", "Order/WBS master", len(masters), state="confirmed" if _topic_complete(inputs, "master") else "unknown"),
+            _stage("actual", "实际成本", "Actual cost", len(actual), state="confirmed" if _topic_complete(inputs, "actual") else "unknown"),
+            _stage("plan", "计划成本", "Planned cost", len(plan), state="confirmed" if _topic_complete(inputs, "plan") else "unknown"),
+            _stage("budget", "预算", "Budget", len(budgets), state="confirmed" if _topic_complete(inputs, "budget") else "unknown"),
+            _stage("commitment", "承诺", "Commitments", len(commitments), state="confirmed" if _topic_complete(inputs, "commitment") else "unknown"),
+        ],
+        findings=findings,
+        metrics=[
+            {"id": "actual_amount", "value": str(actual_total)},
+            {"id": "plan_amount", "value": str(plan_total)},
+            {"id": "budget_amount", "value": str(budget_total)},
+            {"id": "commitment_amount", "value": str(commitment_total)},
+            {"id": "estimate_at_completion", "value": str(eac)},
+            {"id": "remaining_budget", "value": str(variance)},
+            {"id": "budget_consumption_pct", "value": str(consumption_pct.quantize(Decimal("0.01"))) if consumption_pct is not None else None},
+        ],
+        gaps=_gaps(inputs, *missing, *business_gaps),
+        actions_zh=["由内部订单或项目负责人复核承诺、未过账成本、预算补充和结算计划。"],
+        actions_en=["Have the internal-order or project owner review commitments, unposted cost, budget supplements, and settlement plans."],
+        source_complete_override=complete,
+    )
+
+
 _EVALUATORS: dict[str, Callable[[JsonObject], JsonObject]] = {
     "ap-payment": _ap_payment,
     "ar-collection": _ar_collection,
@@ -998,4 +1333,9 @@ _EVALUATORS: dict[str, Callable[[JsonObject], JsonObject]] = {
     "inventory-health-balancing": _inventory_health_balancing,
     "intelligent-sourcing-rfq": _intelligent_sourcing_rfq,
     "supplier-performance-risk": _supplier_performance_risk,
+    "cost-center-expense-anomaly": _cost_center_expense_anomaly,
+    "co-month-end-allocation-settlement": _co_month_end_allocation_settlement,
+    "product-cost-variance": _product_cost_variance,
+    "budget-rolling-forecast": _budget_rolling_forecast,
+    "internal-order-project-control": _internal_order_project_control,
 }

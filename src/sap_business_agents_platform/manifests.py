@@ -12,6 +12,7 @@ ALLOWED_RULE_OPERATIONS = {
     "assess_api_evidence",
     "assess_adt_preflight",
     "assess_o2c_document_flow",
+    "classify_control_object",
     "evidence_summary",
     "extract_bounded_values",
     "evaluate_business_agent",
