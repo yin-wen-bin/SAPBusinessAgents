@@ -1,0 +1,694 @@
+{
+  "schemaVersion": 2,
+  "slug": "co-month-end-allocation-settlement",
+  "module": "CO",
+  "title": {
+    "zh": "CO 月结分配与结算助手",
+    "en": "CO Month-End Allocation and Settlement Assistant"
+  },
+  "summary": {
+    "zh": "只读检查单个 CO 对象的期间过账、分配周期、对象状态和结算规则。",
+    "en": "Read-only assessment of period postings, allocation cycle, object status, and settlement rules for one CO object."
+  },
+  "status": "Deterministic prototype with bounded live validation",
+  "version": "0.1.0",
+  "owner": "CO-OM / Period-End Closing",
+  "tags": [
+    "Month End",
+    "Allocation",
+    "Settlement",
+    "Readiness"
+  ],
+  "sapModules": [
+    "CO-OM",
+    "CO-OM-OPA"
+  ],
+  "transactions": [
+    "KSU3",
+    "KSV3",
+    "KO88"
+  ],
+  "tables": [
+    "ACDOCA",
+    "T811C",
+    "AUFK",
+    "COBRA"
+  ],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "控制范围",
+      "公司代码",
+      "年度期间",
+      "内部订单",
+      "分配周期"
+    ],
+    "en": [
+      "Controlling area",
+      "Company code",
+      "Fiscal period",
+      "Internal order",
+      "Allocation cycle"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "准备度",
+      "阻塞项",
+      "周期与结算规则证据",
+      "人工复核动作"
+    ],
+    "en": [
+      "Readiness",
+      "Blocking items",
+      "Cycle and settlement-rule evidence",
+      "Human-review actions"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "全部 SAP 访问严格只读",
+      "Embedded OData 为唯一主 provider",
+      "仅 schema 能力缺口触发 ADT",
+      "不使用 SAPClaw 或 SE16N",
+      "不完整证据不得生成确定结论"
+    ],
+    "en": [
+      "All SAP access is strictly read-only",
+      "Embedded OData is the sole primary provider",
+      "Only schema capability gaps trigger ADT",
+      "Never use SAPClaw or SE16N",
+      "Incomplete evidence cannot produce a confirmed conclusion"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "validate-scope",
+      "title": {
+        "zh": "1. 校验 CO 范围",
+        "en": "1. Validate CO scope"
+      },
+      "description": {
+        "zh": "校验控制范围、期间、内部订单和分配周期。",
+        "en": "Validate controlling area, period, internal order, and allocation cycle."
+      },
+      "operations": {
+        "zh": [
+          "拒绝无界或格式错误的范围。"
+        ],
+        "en": [
+          "Reject unbounded or malformed scope."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Input schema",
+          "kind": "Control",
+          "purpose": {
+            "zh": "限制真机读取范围。",
+            "en": "Bounds live reads."
+          }
+        }
+      ]
+    },
+    {
+      "id": "check-schema",
+      "title": {
+        "zh": "2. 校验 Embedded API schema",
+        "en": "2. Validate Embedded API schema"
+      },
+      "description": {
+        "zh": "从目标系统实时 metadata 校验实体、字段、筛选和稳定键。",
+        "en": "Validate entities, fields, filters, and stable keys against live target metadata."
+      },
+      "operations": {
+        "zh": [
+          "同名字段和静态目录不能替代实时 schema。"
+        ],
+        "en": [
+          "Same-named fields and static catalogs do not replace live schema."
+        ]
+      },
+      "tools": [
+        {
+          "name": "embedded-sap-odata",
+          "kind": "SAP read Provider",
+          "purpose": {
+            "zh": "提供 GET-only schema 权威来源。",
+            "en": "Provides the authoritative GET-only schema."
+          }
+        }
+      ]
+    },
+    {
+      "id": "read-api",
+      "title": {
+        "zh": "3. 分页读取标准 API",
+        "en": "3. Read released APIs with paging"
+      },
+      "description": {
+        "zh": "读取单个对象的期间运营会计过账。",
+        "en": "Read period operational-accounting postings for one object."
+      },
+      "operations": {
+        "zh": [
+          "不使用显式 top 作为完整性证据。"
+        ],
+        "en": [
+          "Do not use explicit top as completeness evidence."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Released SAP OData APIs",
+          "kind": "SAP API",
+          "purpose": {
+            "zh": "提供首选业务证据。",
+            "en": "Provides preferred business evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "assess-gap",
+      "title": {
+        "zh": "4. 评估 API 能力缺口",
+        "en": "4. Assess API capability gaps"
+      },
+      "description": {
+        "zh": "仅实时 schema 的实体、字段或关系缺口可以触发 ADT。",
+        "en": "Only live-schema entity, field, or relationship gaps can trigger ADT."
+      },
+      "operations": {
+        "zh": [
+          "超时、权限、截断和完整空结果不触发 ADT。"
+        ],
+        "en": [
+          "Timeouts, authorization failures, truncation, and complete empty results do not trigger ADT."
+        ]
+      },
+      "tools": [
+        {
+          "name": "assess_api_evidence",
+          "kind": "Deterministic rule",
+          "purpose": {
+            "zh": "区分能力缺口和操作故障。",
+            "en": "Separates capability gaps from operational failures."
+          }
+        }
+      ]
+    },
+    {
+      "id": "adt-fallback",
+      "title": {
+        "zh": "5. 条件调用 sap-adt-table-export",
+        "en": "5. Conditionally call sap-adt-table-export"
+      },
+      "description": {
+        "zh": "目标系统无发布的周期/结算配置 API 时读取 T811C、AUFK 和 COBRA。",
+        "en": "Read T811C, AUFK, and COBRA when the target has no released cycle/settlement configuration API."
+      },
+      "operations": {
+        "zh": [
+          "仅使用静态对象、白名单字段、有界过滤和升序稳定键。"
+        ],
+        "en": [
+          "Use only static objects, allowlisted fields, bounded filters, and ascending stable keys."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "SAPSkillhub Skill",
+          "purpose": {
+            "zh": "提供受保护的表级补证。",
+            "en": "Provides protected table-level supplemental evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "merge-evidence",
+      "title": {
+        "zh": "6. 合并并验证证据",
+        "en": "6. Merge and validate evidence"
+      },
+      "description": {
+        "zh": "校验业务键、币种、单位、期间、分页和 SHA-256 manifest。",
+        "en": "Validate business keys, currency, units, periods, paging, and the SHA-256 manifest."
+      },
+      "operations": {
+        "zh": [
+          "冲突不覆盖；达到行数上限保持 partial。"
+        ],
+        "en": [
+          "Do not overwrite conflicts; retain partial at the row limit."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Evidence gate",
+          "kind": "Control",
+          "purpose": {
+            "zh": "保护完整性语义。",
+            "en": "Protects completeness semantics."
+          }
+        }
+      ]
+    },
+    {
+      "id": "analyze",
+      "title": {
+        "zh": "7. 执行确定性 CO 分析",
+        "en": "7. Run deterministic CO analysis"
+      },
+      "description": {
+        "zh": "确认配置、对象状态和期间证据，不执行月结事务。",
+        "en": "Confirm configuration, object status, and period evidence without executing close transactions."
+      },
+      "operations": {
+        "zh": [
+          "规则透明、可复现且不回写 SAP。"
+        ],
+        "en": [
+          "Rules are transparent, reproducible, and never write to SAP."
+        ]
+      },
+      "tools": [
+        {
+          "name": "CO close readiness evaluator",
+          "kind": "Rule engine",
+          "purpose": {
+            "zh": "生成确定性业务结论。",
+            "en": "Produces deterministic business conclusions."
+          }
+        }
+      ]
+    },
+    {
+      "id": "present",
+      "title": {
+        "zh": "8. 输出结论和限制",
+        "en": "8. Present conclusions and limits"
+      },
+      "description": {
+        "zh": "输出状态、指标、证据范围、缺口和人工复核动作。",
+        "en": "Present status, metrics, evidence scope, gaps, and human-review actions."
+      },
+      "operations": {
+        "zh": [
+          "必需证据不完整时输出 INCONCLUSIVE。"
+        ],
+        "en": [
+          "Return INCONCLUSIVE when required evidence is incomplete."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Business report",
+          "kind": "Output",
+          "purpose": {
+            "zh": "形成双语、可审计报告。",
+            "en": "Creates a bilingual auditable report."
+          }
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 600,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "fiscal_year": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 4,
+          "pattern": "^[0-9]{4}$"
+        },
+        "controlling_area": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4
+        },
+        "period": {
+          "type": "string",
+          "pattern": "^[0-9]{1,3}$"
+        },
+        "internal_order": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 12,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "allocation_cycle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        }
+      },
+      "required": [
+        "controlling_area",
+        "company_code",
+        "fiscal_year",
+        "period",
+        "internal_order",
+        "allocation_cycle"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "business_status": {
+          "type": "string"
+        },
+        "source_complete": {
+          "type": "boolean"
+        },
+        "business_report": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "business_status": "{{steps.evaluate.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate.output.workflow_output.business_report}}"
+    },
+    "steps": [
+      {
+        "id": "read_posting",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "CompanyCode",
+              "FiscalYear",
+              "FiscalPeriod",
+              "AccountingDocument",
+              "AccountingDocumentItem",
+              "ControllingArea",
+              "CostCenter",
+              "OrderID",
+              "WBSElementInternalID",
+              "Material",
+              "Plant",
+              "GLAccount",
+              "PostingDate",
+              "AmountInCompanyCodeCurrency",
+              "CompanyCodeCurrency"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "FiscalYear",
+                "operator": "eq",
+                "value": "{{input.fiscal_year}}",
+                "value_type": "string"
+              },
+              {
+                "field": "FiscalPeriod",
+                "operator": "eq",
+                "value": "{{input.period}}",
+                "value_type": "string"
+              },
+              {
+                "field": "OrderID",
+                "operator": "eq",
+                "value": "{{input.internal_order}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read period postings for one CO object."
+          }
+        }
+      },
+      {
+        "id": "assess",
+        "executor": "rule",
+        "operation": "assess_api_evidence",
+        "inputMapping": {
+          "checks": {
+            "posting": "{{steps.read_posting.output}}"
+          },
+          "capability_gaps": [
+            "allocation_cycle",
+            "settlement_rule",
+            "object_status"
+          ]
+        }
+      },
+      {
+        "id": "adt_posting",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.posting}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "ACDOCA",
+          "fields": [
+            "RLDNR",
+            "RBUKRS",
+            "GJAHR",
+            "BELNR",
+            "DOCLN",
+            "POPER",
+            "AUFNR",
+            "RACCT",
+            "HSL",
+            "RHCUR"
+          ],
+          "filters": [
+            {
+              "field": "RBUKRS",
+              "operator": "eq",
+              "value": "{{input.company_code}}"
+            },
+            {
+              "field": "GJAHR",
+              "operator": "eq",
+              "value": "{{input.fiscal_year}}"
+            },
+            {
+              "field": "POPER",
+              "operator": "eq",
+              "value": "{{input.period}}"
+            },
+            {
+              "field": "AUFNR",
+              "operator": "eq",
+              "value": "{{input.internal_order}}"
+            }
+          ],
+          "order_by": [
+            "RLDNR",
+            "RBUKRS",
+            "GJAHR",
+            "BELNR",
+            "DOCLN"
+          ],
+          "max_rows": 10000
+        }
+      },
+      {
+        "id": "adt_cycle",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.allocation_cycle}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "T811C",
+          "fields": [
+            "KOKRS",
+            "CYCLE",
+            "SDATE"
+          ],
+          "filters": [
+            {
+              "field": "KOKRS",
+              "operator": "eq",
+              "value": "{{input.controlling_area}}"
+            },
+            {
+              "field": "CYCLE",
+              "operator": "eq",
+              "value": "{{input.allocation_cycle}}"
+            }
+          ],
+          "order_by": [
+            "KOKRS",
+            "CYCLE",
+            "SDATE"
+          ],
+          "max_rows": 100
+        }
+      },
+      {
+        "id": "adt_object",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.object_status}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "AUFK",
+          "fields": [
+            "AUFNR",
+            "OBJNR",
+            "KOKRS",
+            "BUKRS",
+            "LOEKZ",
+            "PHAS0",
+            "PHAS1",
+            "PHAS2",
+            "PHAS3"
+          ],
+          "filters": [
+            {
+              "field": "AUFNR",
+              "operator": "eq",
+              "value": "{{input.internal_order}}"
+            }
+          ],
+          "order_by": [
+            "AUFNR"
+          ],
+          "max_rows": 10
+        }
+      },
+      {
+        "id": "object_numbers",
+        "executor": "rule",
+        "operation": "extract_bounded_values",
+        "inputMapping": {
+          "payload": "{{steps.adt_object.output}}",
+          "field": "OBJNR",
+          "max_values": 10
+        }
+      },
+      {
+        "id": "adt_settlement",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.object_numbers.output.has_values}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "connection_profile": "sapba-live-readonly",
+          "source_type": "table",
+          "object": "COBRA",
+          "fields": [
+            "OBJNR",
+            "GABJA",
+            "GABPE",
+            "GBISP",
+            "LETJA",
+            "LETPE"
+          ],
+          "filters": [
+            {
+              "field": "OBJNR",
+              "operator": "in",
+              "values": "{{steps.object_numbers.output.values}}"
+            }
+          ],
+          "order_by": [
+            "OBJNR"
+          ],
+          "max_rows": 100
+        }
+      },
+      {
+        "id": "evaluate",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "co-month-end-allocation-settlement",
+          "run_input": "{{input}}",
+          "assessment": "{{steps.assess.output}}",
+          "evidence": {
+            "actual_items": "{{steps.read_posting.output}}"
+          },
+          "fallbacks": {
+            "posting": "{{steps.adt_posting.output}}",
+            "allocation_cycle": "{{steps.adt_cycle.output}}",
+            "object_status": "{{steps.adt_object.output}}",
+            "settlement_rule": "{{steps.adt_settlement.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  },
+  "validation": {
+    "verdict": "PARTIAL",
+    "testedAt": "2026-08-17T11:41:06.839334+00:00",
+    "evidenceScope": "partial",
+    "providers": [
+      "embedded-sap-odata",
+      "sap-adt-table-export"
+    ],
+    "summary": {
+      "zh": "已执行 Embedded 真机读取，但仍有明确证据缺口。",
+      "en": "Embedded live reads ran, but explicit evidence gaps remain."
+    },
+    "reportPath": "docs/live-sap-test-report.md"
+  }
+}

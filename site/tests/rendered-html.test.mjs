@@ -5,15 +5,34 @@ import path from "node:path";
 
 const readPage = (...segments) => readFile(path.join("dist", ...segments, "index.html"), "utf8");
 
-test("static catalog contains all twenty-five agents and the GitHub Pages base path", async () => {
+test("static catalog contains all thirty agents and the GitHub Pages base path", async () => {
   const html = await readPage("zh");
   for (const slug of ["ap-payment", "ar-collection", "gr-ir-clearing", "month-end-closing", "procure-to-pay-status"]) {
     assert.match(html, new RegExp(`/SAPBusinessAgents/zh/agents/(?:FI|MM)/${slug}/`));
   }
   assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 4);
+  assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 11);
   assert.doesNotMatch(html, /href="\/zh\//);
+});
+
+test("CO detail pages render five independent eight-step Embedded and ADT workflows", async () => {
+  for (const slug of [
+    "cost-center-expense-anomaly",
+    "co-month-end-allocation-settlement",
+    "product-cost-variance",
+    "budget-rolling-forecast",
+    "internal-order-project-control",
+  ]) {
+    const zh = await readPage("zh", "agents", "CO", slug);
+    const en = await readPage("en", "agents", "CO", slug);
+    assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
+    assert.equal((en.match(/class="workflow-step"/g) ?? []).length, 8);
+    assert.match(zh, /Embedded API schema/);
+    assert.match(zh, /sap-adt-table-export/);
+    assert.match(zh, /live-sap-test-report\.md/);
+  }
 });
 
 test("new MM detail pages render eight steps and live validation metadata", async () => {

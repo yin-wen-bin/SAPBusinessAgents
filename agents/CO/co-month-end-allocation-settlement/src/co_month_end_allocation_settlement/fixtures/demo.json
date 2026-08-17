@@ -1,0 +1,78 @@
+{
+  "run_input": {},
+  "assessment": {
+    "api_complete": {
+      "posting": true
+    },
+    "capability_gaps": [
+      "allocation_cycle",
+      "settlement_rule",
+      "object_status"
+    ]
+  },
+  "evidence": {
+    "actual_items": {
+      "source_complete": true,
+      "step_results": {
+        "actual_items": {
+          "results": [
+            {
+              "AccountingDocument": "DEMO"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "fallbacks": {
+    "allocation_cycle": {
+      "status": "complete",
+      "read_only": true,
+      "validated": true,
+      "source_complete": true,
+      "completeness": {
+        "source_complete": true,
+        "paging_complete": true
+      },
+      "validation_issues": [],
+      "rows": [
+        {
+          "CYCLE": "DEMO"
+        }
+      ]
+    },
+    "object_status": {
+      "status": "complete",
+      "read_only": true,
+      "validated": true,
+      "source_complete": true,
+      "completeness": {
+        "source_complete": true,
+        "paging_complete": true
+      },
+      "validation_issues": [],
+      "rows": [
+        {
+          "AUFNR": "DEMO",
+          "OBJNR": "ORDEMO"
+        }
+      ]
+    },
+    "settlement_rule": {
+      "status": "complete",
+      "read_only": true,
+      "validated": true,
+      "source_complete": true,
+      "completeness": {
+        "source_complete": true,
+        "paging_complete": true
+      },
+      "validation_issues": [],
+      "rows": [
+        {
+          "OBJNR": "ORDEMO"
+        }
+      ]
+    }
+  }
+}

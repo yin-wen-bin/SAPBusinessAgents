@@ -1,0 +1,41 @@
+{
+  "run_input": {
+    "current_period": 6,
+    "risk_threshold_pct": 10
+  },
+  "assessment": {
+    "api_complete": {
+      "actual": true,
+      "plan": true
+    }
+  },
+  "evidence": {
+    "actual_items": {
+      "source_complete": true,
+      "step_results": {
+        "actual_items": {
+          "results": [
+            {
+              "AmountInCompanyCodeCurrency": "600",
+              "CompanyCodeCurrency": "EUR"
+            }
+          ]
+        }
+      }
+    },
+    "plan_items": {
+      "source_complete": true,
+      "step_results": {
+        "plan_items": {
+          "results": [
+            {
+              "AmountInCompanyCodeCurrency": "1000",
+              "CompanyCodeCurrency": "EUR"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "fallbacks": {}
+}

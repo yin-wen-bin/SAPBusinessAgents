@@ -1,0 +1,127 @@
+{
+  "run_input": {},
+  "assessment": {
+    "api_complete": {
+      "actual": true,
+      "plan": true
+    },
+    "capability_gaps": [
+      "master",
+      "budget",
+      "commitment"
+    ]
+  },
+  "evidence": {
+    "order_actual": {
+      "source_complete": true,
+      "step_results": {
+        "order_actual": {
+          "results": [
+            {
+              "AmountInCompanyCodeCurrency": "400",
+              "CompanyCodeCurrency": "EUR"
+            }
+          ]
+        }
+      }
+    },
+    "wbs_actual": {
+      "source_complete": true,
+      "step_results": {
+        "wbs_actual": {
+          "results": []
+        }
+      }
+    },
+    "order_plan": {
+      "source_complete": true,
+      "step_results": {
+        "order_plan": {
+          "results": [
+            {
+              "AmountInCompanyCodeCurrency": "900",
+              "CompanyCodeCurrency": "EUR"
+            }
+          ]
+        }
+      }
+    },
+    "wbs_plan": {
+      "source_complete": true,
+      "step_results": {
+        "wbs_plan": {
+          "results": []
+        }
+      }
+    }
+  },
+  "fallbacks": {
+    "master": {
+      "order": {
+        "status": "complete",
+        "read_only": true,
+        "validated": true,
+        "source_complete": true,
+        "completeness": {
+          "source_complete": true,
+          "paging_complete": true
+        },
+        "validation_issues": [],
+        "rows": [
+          {
+            "AUFNR": "DEMO",
+            "OBJNR": "ORDEMO"
+          }
+        ]
+      },
+      "wbs": {
+        "status": "complete",
+        "read_only": true,
+        "validated": true,
+        "source_complete": true,
+        "completeness": {
+          "source_complete": true,
+          "paging_complete": true
+        },
+        "validation_issues": [],
+        "rows": []
+      }
+    },
+    "budget": {
+      "status": "complete",
+      "read_only": true,
+      "validated": true,
+      "source_complete": true,
+      "completeness": {
+        "source_complete": true,
+        "paging_complete": true
+      },
+      "validation_issues": [],
+      "rows": [
+        {
+          "OBJNR": "ORDEMO",
+          "WTG001": "1000",
+          "WAERS": "EUR"
+        }
+      ]
+    },
+    "commitment": {
+      "status": "complete",
+      "read_only": true,
+      "validated": true,
+      "source_complete": true,
+      "completeness": {
+        "source_complete": true,
+        "paging_complete": true
+      },
+      "validation_issues": [],
+      "rows": [
+        {
+          "OBJNR": "ORDEMO",
+          "WTG001": "200",
+          "WAERS": "EUR"
+        }
+      ]
+    }
+  }
+}
