@@ -1,0 +1,10 @@
+{
+  "run_input": {"supplier": "100001", "purchasing_organization": "1010", "date_from": "2026-01-01", "date_to": "2026-08-17"},
+  "assessment": {"api_complete": {"po_schedule": true, "receipt": true, "supplier": true}},
+  "evidence": {
+    "po": {"source_complete": true, "step_results": {"po_schedules": {"results": [{"PurchaseOrder": "4500000001", "PurchaseOrderItem": "10", "ScheduleLineDeliveryDate": "2026-02-01", "ScheduleLineOrderQuantity": "10"}, {"PurchaseOrder": "4500000002", "PurchaseOrderItem": "10", "ScheduleLineDeliveryDate": "2026-03-01", "ScheduleLineOrderQuantity": "10"}, {"PurchaseOrder": "4500000003", "PurchaseOrderItem": "10", "ScheduleLineDeliveryDate": "2026-04-01", "ScheduleLineOrderQuantity": "10"}, {"PurchaseOrder": "4500000004", "PurchaseOrderItem": "10", "ScheduleLineDeliveryDate": "2026-05-01", "ScheduleLineOrderQuantity": "10"}, {"PurchaseOrder": "4500000005", "PurchaseOrderItem": "10", "ScheduleLineDeliveryDate": "2026-06-01", "ScheduleLineOrderQuantity": "10"}]}}},
+    "receipt": {"source_complete": true, "step_results": {"receipts": {"results": [{"PurchaseOrder": "4500000001", "PurchaseOrderItem": "10", "PostingDate": "2026-01-30", "QuantityInEntryUnit": "10", "DebitCreditCode": "S"}, {"PurchaseOrder": "4500000002", "PurchaseOrderItem": "10", "PostingDate": "2026-02-28", "QuantityInEntryUnit": "10", "DebitCreditCode": "S"}, {"PurchaseOrder": "4500000003", "PurchaseOrderItem": "10", "PostingDate": "2026-03-31", "QuantityInEntryUnit": "10", "DebitCreditCode": "S"}, {"PurchaseOrder": "4500000004", "PurchaseOrderItem": "10", "PostingDate": "2026-04-30", "QuantityInEntryUnit": "10", "DebitCreditCode": "S"}, {"PurchaseOrder": "4500000005", "PurchaseOrderItem": "10", "PostingDate": "2026-06-03", "QuantityInEntryUnit": "10", "DebitCreditCode": "S"}]}}},
+    "supplier": {"source_complete": true, "step_results": {"suppliers": {"results": [{"Supplier": "100001", "PurchasingIsBlockedForSupplier": false}]}}}
+  },
+  "fallbacks": {}, "known_gaps": []
+}

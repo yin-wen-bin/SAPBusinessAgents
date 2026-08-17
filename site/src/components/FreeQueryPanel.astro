@@ -1,0 +1,71 @@
+---
+import { ArrowRight, MessageSquareText, ShieldCheck } from "@lucide/astro";
+import type { Locale } from "../lib/types";
+import { runPath } from "../lib/urls";
+
+interface Props { locale: Locale }
+const { locale } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
+const destination = runPath(base, locale);
+const copy = locale === "zh" ? {
+  eyebrow: "自由 SAP 查询",
+  title: "没有合适的 Agent？直接询问 SAP",
+  body: "Codex 运行插件从已注册的只读能力目录生成查询计划；当前 SAP 只读 Provider 会再次验证元数据、字段和 GET 边界。",
+  placeholder: "例如：查询供应商 1000123 上个月到期但尚未付款的采购订单",
+  submit: "开始只读查询",
+  safety: "仅允许 SAP Provider GET 和已批准的只读 Skill",
+  error: "无法连接本地运行服务，请先启动 127.0.0.1:8765。",
+} : {
+  eyebrow: "Free SAP query",
+  title: "No matching Agent? Ask SAP directly",
+  body: "The Codex runtime plugin authors a plan from registered read-only capabilities; the selected SAP read Provider revalidates metadata, fields, and the GET-only boundary.",
+  placeholder: "Example: find purchase orders for supplier 1000123 that were due last month but remain unpaid",
+  submit: "Start read-only query",
+  safety: "Only SAP Provider GET and approved read-only Skills are allowed",
+  error: "Cannot reach the local runtime. Start 127.0.0.1:8765 first.",
+};
+---
+
+<section class="free-query-panel" data-free-query data-api-base={apiBase} data-run-path={destination}>
+  <div>
+    <p class="runtime-eyebrow"><MessageSquareText size={16} aria-hidden="true" />{copy.eyebrow}</p>
+    <h2>{copy.title}</h2>
+    <p>{copy.body}</p>
+    <p class="runtime-safety"><ShieldCheck size={16} aria-hidden="true" />{copy.safety}</p>
+  </div>
+  <form class="free-query-form">
+    <textarea name="query" required rows="4" placeholder={copy.placeholder}></textarea>
+    <div class="runtime-form-actions">
+      <span class="runtime-form-error" role="alert" hidden>{copy.error}</span>
+      <button type="submit">{copy.submit}<ArrowRight size={17} aria-hidden="true" /></button>
+    </div>
+  </form>
+</section>
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-free-query]").forEach((panel) => {
+    const form = panel.querySelector<HTMLFormElement>("form");
+    const error = panel.querySelector<HTMLElement>(".runtime-form-error");
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submit = form.querySelector<HTMLButtonElement>("button[type=submit]");
+      if (submit) submit.disabled = true;
+      if (error) error.hidden = true;
+      const query = String(new FormData(form).get("query") || "").trim();
+      try {
+        const response = await fetch(`${panel.dataset.apiBase}/api/runs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "free_query", query }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const payload = await response.json();
+        window.location.href = `${panel.dataset.runPath}?run=${encodeURIComponent(payload.run_id)}`;
+      } catch {
+        if (error) error.hidden = false;
+        if (submit) submit.disabled = false;
+      }
+    });
+  });
+</script>

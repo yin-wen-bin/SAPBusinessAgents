@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "returns-credit-anomaly-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "RET-DEMO-01",
+      "reference_document": "SO-DEMO-01",
+      "customer": "CUST-DEMO",
+      "return_quantity": "12",
+      "original_quantity": "10",
+      "credit_amount": "120",
+      "original_amount": "100",
+      "refund_issued": true,
+      "return_received": false
+    }
+  ]
+}

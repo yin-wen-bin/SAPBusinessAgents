@@ -24,7 +24,7 @@ function requireList(value, location) {
 }
 
 export function validateAgent(agent, expectedModule, expectedSlug, source) {
-  if (agent.schemaVersion !== 1) throw new Error(`${source}: unsupported schemaVersion`);
+  if (![1, 2].includes(agent.schemaVersion)) throw new Error(`${source}: unsupported schemaVersion`);
   if (!SLUG_PATTERN.test(expectedSlug)) throw new Error(`${source}: directory must use a lowercase kebab-case slug`);
   if (agent.slug !== expectedSlug) throw new Error(`${source}: slug must match directory '${expectedSlug}'`);
   if (agent.module !== expectedModule) throw new Error(`${source}: module must match directory '${expectedModule}'`);
@@ -103,6 +103,89 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
       }
     }
   }
+  if (agent.schemaVersion === 2) validateExecution(agent.execution, source);
+  if (agent.validation !== undefined) validateLiveValidation(agent.validation, source);
+}
+
+function validateLiveValidation(validation, source) {
+  if (!validation || typeof validation !== "object" || Array.isArray(validation)) {
+    throw new Error(`${source}.validation must be an object`);
+  }
+  if (!["PASS", "PARTIAL", "FAIL", "BLOCKED"].includes(validation.verdict)) {
+    throw new Error(`${source}.validation.verdict is invalid`);
+  }
+  if (!["complete", "partial", "bounded"].includes(validation.evidenceScope)) {
+    throw new Error(`${source}.validation.evidenceScope is invalid`);
+  }
+  requireString(validation.testedAt, `${source}.validation.testedAt`);
+  if (Number.isNaN(Date.parse(validation.testedAt))) {
+    throw new Error(`${source}.validation.testedAt must be ISO-8601`);
+  }
+  requireList(validation.providers, `${source}.validation.providers`);
+  requireLocalized(validation.summary, `${source}.validation.summary`);
+  requireString(validation.reportPath, `${source}.validation.reportPath`);
+  if (!/^docs\/[a-z0-9][a-z0-9._/-]*\.md$/.test(validation.reportPath)) {
+    throw new Error(`${source}.validation.reportPath must be a relative docs Markdown path`);
+  }
+}
+
+function validateExecution(execution, source) {
+  if (!execution || typeof execution !== "object" || Array.isArray(execution)) {
+    throw new Error(`${source}.execution must be an object for schemaVersion 2`);
+  }
+  if (execution.mode !== "deterministic") throw new Error(`${source}.execution.mode must be deterministic`);
+  if (!execution.inputSchema || execution.inputSchema.type !== "object") {
+    throw new Error(`${source}.execution.inputSchema must be an object JSON Schema`);
+  }
+  if (!execution.inputSchema.properties || typeof execution.inputSchema.properties !== "object") {
+    throw new Error(`${source}.execution.inputSchema.properties must be an object`);
+  }
+  requireList(execution.steps, `${source}.execution.steps`);
+  const stepIds = new Set();
+  for (const [index, step] of execution.steps.entries()) {
+    const location = `${source}.execution.steps[${index}]`;
+    requireString(step.id, `${location}.id`);
+    if (stepIds.has(step.id)) throw new Error(`${source}: duplicate execution step '${step.id}'`);
+    stepIds.add(step.id);
+    if (!["sap_read", "sapclaw", "skill", "rule"].includes(step.executor)) {
+      throw new Error(`${location}.executor is not supported`);
+    }
+    requireString(step.operation, `${location}.operation`);
+    if (["sap_read", "sapclaw", "skill"].includes(step.executor) && step.readOnly !== true) {
+      throw new Error(`${location} must declare readOnly=true`);
+    }
+    if (step.when !== undefined) {
+      const keys = Object.keys(step.when ?? {}).sort();
+      if (keys.join(",") !== "equals,source" || typeof step.when.source !== "string" || typeof step.when.equals !== "boolean") {
+        throw new Error(`${location}.when must contain a template source and boolean equals`);
+      }
+      const match = step.when.source.match(/^\{\{\s*steps\.([a-z][a-z0-9_-]*)\.output(?:\.[A-Za-z0-9_-]+)+\s*\}\}$/);
+      if (!match || match[1] === step.id || !stepIds.has(match[1])) throw new Error(`${location}.when must reference a prior step output`);
+    }
+    if (["sap_read", "sapclaw"].includes(step.executor)) {
+      if (!["execute_plan", "execute_get"].includes(step.operation)) {
+        throw new Error(`${location}.operation is not allowed for a SAP read Provider`);
+      }
+      if (!step.request || typeof step.request !== "object" || Array.isArray(step.request)) {
+        throw new Error(`${location}.request must be an object`);
+      }
+      rejectWriteMethods(step.request, location);
+    }
+  }
+}
+
+function rejectWriteMethods(value, location) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => rejectWriteMethods(item, location));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    if (["http_method", "httpMethod"].includes(key) && String(child).toUpperCase() !== "GET") {
+      throw new Error(`${location} contains a non-GET SAP operation`);
+    }
+    rejectWriteMethods(child, location);
+  }
 }
 
 export function loadAgentCatalog(root = agentsRoot) {
@@ -119,7 +202,7 @@ export function loadAgentCatalog(root = agentsRoot) {
     const modulePath = path.join(root, moduleName);
     if (!existsSync(modulePath)) throw new Error(`Required module directory is missing: agents/${moduleName}`);
     const directories = readdirSync(modulePath, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && !entry.name.startsWith("_"))
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const directory of directories) {
       const manifestPath = path.join(modulePath, directory.name, "agent.json");

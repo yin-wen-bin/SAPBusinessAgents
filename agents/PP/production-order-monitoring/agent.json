@@ -1,0 +1,505 @@
+{
+  "schemaVersion": 2,
+  "slug": "production-order-monitoring",
+  "module": "PP",
+  "title": {
+    "zh": "生产订单执行监控助手",
+    "en": "Production Order Execution Monitoring Assistant"
+  },
+  "summary": {
+    "zh": "按生产订单串联抬头、工序、组件、确认和物料移动，识别延期、缺料与执行阻塞。",
+    "en": "Traces production-order headers, operations, components, confirmations and goods movements to identify delays, shortages and execution blockers."
+  },
+  "status": "Live-tested deterministic prototype",
+  "version": "0.1.0",
+  "owner": "PP-SFC / Shop Floor Control",
+  "tags": [
+    "Production Order",
+    "Execution",
+    "Confirmation",
+    "Material Movement"
+  ],
+  "sapModules": [
+    "PP-SFC",
+    "MM-IM"
+  ],
+  "transactions": [
+    "CO03",
+    "COOIS",
+    "CO14",
+    "MB51"
+  ],
+  "tables": [
+    "AUFK",
+    "AFKO",
+    "AFPO",
+    "AFVC",
+    "AFRU",
+    "RESB",
+    "MATDOC"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "生产订单或工厂",
+      "监控日期与阈值",
+      "状态、工序和组件范围"
+    ],
+    "en": [
+      "Production order or plant",
+      "Monitoring date and thresholds",
+      "Status, operation and component scope"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "订单与工序状态",
+      "计划/确认/收货进度",
+      "缺料和延期预警",
+      "关联技术证据"
+    ],
+    "en": [
+      "Order and operation status",
+      "Plan/confirmation/receipt progress",
+      "Shortage and delay alerts",
+      "Linked technical evidence"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "只读监控，不确认、不发料、不收货",
+      "订单级查询优先于全工厂扫描",
+      "空物料凭证不等于业务错误",
+      "状态字段为空时保留原值并用其他证据解释"
+    ],
+    "en": [
+      "Read-only monitoring; never confirm, issue or receive goods",
+      "Prefer exact order queries over broad plant scans",
+      "No material document does not itself mean an error",
+      "Preserve blank status values and explain with other evidence"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "parse-monitoring-scope",
+      "title": {
+        "zh": "解析监控范围",
+        "en": "Parse monitoring scope"
+      },
+      "description": {
+        "zh": "确定订单、工厂、日期和预警阈值。",
+        "en": "Resolve order, plant, date and alert thresholds."
+      },
+      "operations": {
+        "zh": [
+          "生产订单明确时只查询该订单。",
+          "工厂级监控必须带期间和行数上限。"
+        ],
+        "en": [
+          "Query only the supplied production order when present.",
+          "Require horizon and row limits for plant-level monitoring."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Execution scope validator",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "防止无界查询。",
+            "en": "Prevents unbounded queries."
+          }
+        }
+      ]
+    },
+    {
+      "id": "validate-live-services",
+      "title": {
+        "zh": "验证真机服务",
+        "en": "Validate live services"
+      },
+      "description": {
+        "zh": "检查 Thin Runtime 并验证生产订单和物料凭证 schema。",
+        "en": "Check Thin Runtime and validate production-order and material-document schemas."
+      },
+      "operations": {
+        "zh": [
+          "要求健康、可执行且只读。",
+          "分别验证抬头、项目、工序、组件和物料凭证字段。"
+        ],
+        "en": [
+          "Require healthy, executable and read-only services.",
+          "Validate header, item, operation, component and material-document fields."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sapclaw_runtime_health",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "验证运行环境。",
+            "en": "Validates the runtime."
+          }
+        },
+        {
+          "name": "sapclaw_schema",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "提供字段契约。",
+            "en": "Provides field contracts."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-order-and-operations",
+      "title": {
+        "zh": "读取订单与工序",
+        "en": "Load order and operations"
+      },
+      "description": {
+        "zh": "读取订单状态、计划日期、数量、工序和确认进度。",
+        "en": "Read status, planned dates, quantities, operations and confirmation progress."
+      },
+      "operations": {
+        "zh": [
+          "先读取订单抬头和项目，再按订单键读取工序。",
+          "比较计划总量、确认产量、收货量和交货完成标志。"
+        ],
+        "en": [
+          "Read header and item first, then operations by order key.",
+          "Compare planned quantity, confirmed yield, goods receipt and delivery completion."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_PRODUCTION_ORDER_2_SRV",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供订单、工序和组件证据。",
+            "en": "Provides order, operation and component evidence."
+          }
+        },
+        {
+          "name": "sapclaw_execute_get",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "执行精确 GET。",
+            "en": "Executes exact GET requests."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-components-and-movements",
+      "title": {
+        "zh": "读取组件与物料移动",
+        "en": "Load components and movements"
+      },
+      "description": {
+        "zh": "读取组件需求、领料量、可用量及订单关联物料凭证。",
+        "en": "Read component requirements, withdrawals, availability and order-linked material documents."
+      },
+      "operations": {
+        "zh": [
+          "按订单读取 RESB 语义组件并检查最终发料标志。",
+          "按 ManufacturingOrder 查询物料凭证，空结果保持为空。"
+        ],
+        "en": [
+          "Read RESB-semantic components by order and check final-issue flags.",
+          "Query material documents by ManufacturingOrder and preserve valid empty results."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_MATERIAL_DOCUMENT_SRV",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供真实物料移动。",
+            "en": "Provides actual goods movements."
+          }
+        }
+      ]
+    },
+    {
+      "id": "cross-check-order-tables",
+      "title": {
+        "zh": "核对订单表",
+        "en": "Cross-check order tables"
+      },
+      "description": {
+        "zh": "通过 SAPSkillhub 读取 AFKO、AFPO、AFRU 和 RESB。",
+        "en": "Use SAPSkillhub to read AFKO, AFPO, AFRU and RESB."
+      },
+      "operations": {
+        "zh": [
+          "低行数核对订单和确认数据。",
+          "导出脚本超时或会话不空闲时停止并记录。"
+        ],
+        "en": [
+          "Cross-check orders and confirmations with low row counts.",
+          "Stop and record exporter timeouts or a busy session."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-se16n-export",
+          "kind": "SAPSkillhub",
+          "purpose": {
+            "zh": "提供独立表级证据。",
+            "en": "Provides independent table-level evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "classify-and-alert",
+      "title": {
+        "zh": "判定状态并预警",
+        "en": "Classify and alert"
+      },
+      "description": {
+        "zh": "基于计划、确认、发料和收货证据解释最早阻塞阶段。",
+        "en": "Explain the earliest blocked stage from plan, confirmation, issue and receipt evidence."
+      },
+      "operations": {
+        "zh": [
+          "区分未开工、部分确认、缺料、待收货和技术完成。",
+          "输出订单/工序/组件键、证据完整性和建议责任人。"
+        ],
+        "en": [
+          "Distinguish not started, partial confirmation, shortage, pending receipt and technical completion.",
+          "Present order/operation/component keys, completeness and suggested owner."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Execution state engine",
+          "kind": "AI analysis",
+          "purpose": {
+            "zh": "生成可解释执行状态。",
+            "en": "Generates explainable execution states."
+          }
+        },
+        {
+          "name": "Alert policy",
+          "kind": "Control",
+          "purpose": {
+            "zh": "按阈值抑制无证据告警。",
+            "en": "Suppresses alerts without sufficient evidence."
+          }
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "manufacturing_order": {
+          "type": "string",
+          "title": {
+            "zh": "生产订单号",
+            "en": "Manufacturing order"
+          },
+          "description": {
+            "zh": "请输入生产订单号。",
+            "en": "Enter the manufacturing order."
+          },
+          "placeholder": {
+            "zh": "例如：1000000",
+            "en": "Example: 1000000"
+          },
+          "minLength": 1,
+          "maxLength": 12,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "manufacturing_order"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_production_execution",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_PRODUCTION_ORDER_2_SRV",
+            "entity_set": "A_ProductionOrder_2",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "production_order",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "entity_set": "A_ProductionOrder_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ProductionPlant",
+                  "Material",
+                  "ManufacturingOrderType",
+                  "MfgOrderPlannedStartDate",
+                  "MfgOrderPlannedEndDate",
+                  "TotalQuantity",
+                  "MfgOrderConfirmedYieldQty"
+                ],
+                "rationale": "Load production-order header.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_order_items",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "entity_set": "A_ProductionOrderItem_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "MfgOrderItemPlannedTotalQty",
+                  "MfgOrderItemGoodsReceiptQty",
+                  "MfgOrderItemActualDeviationQty"
+                ],
+                "rationale": "Load production-order items.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_statuses",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "entity_set": "A_ProductionOrderStatus_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "StatusCode",
+                  "StatusShortName",
+                  "StatusName"
+                ],
+                "rationale": "Load production-order statuses.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_operations",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "entity_set": "A_ProductionOrderOperation_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderOperation",
+                  "WorkCenter",
+                  "OperationIsConfirmed",
+                  "OperationIsPartiallyConfirmed",
+                  "OpPlannedTotalQuantity",
+                  "OpTotalConfirmedYieldQty"
+                ],
+                "rationale": "Load production operations and confirmations.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_components",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "entity_set": "A_ProductionOrderComponent_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "Reservation",
+                  "ReservationItem",
+                  "Material",
+                  "Plant",
+                  "RequiredQuantity",
+                  "WithdrawnQuantity",
+                  "ConfirmedAvailableQuantity"
+                ],
+                "rationale": "Load production-order components.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "material_documents",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "entity_set": "A_MaterialDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "ManufacturingOrder",
+                  "Material",
+                  "Plant",
+                  "QuantityInBaseUnit",
+                  "DebitCreditCode",
+                  "ReversedMaterialDocument"
+                ],
+                "rationale": "Load material issues, receipts, and reversals.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect production execution evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "production-order-monitoring",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_production_execution": "{{steps.collect_production_execution.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
+}

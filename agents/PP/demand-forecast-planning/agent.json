@@ -1,0 +1,507 @@
+{
+  "schemaVersion": 2,
+  "slug": "demand-forecast-planning",
+  "module": "PP",
+  "title": {
+    "zh": "需求预测与计划独立需求助手",
+    "en": "Demand Forecast & PIR Planning Assistant"
+  },
+  "summary": {
+    "zh": "汇总销售需求、历史订单与计划独立需求，识别预测偏差并形成可审计的 PIR 调整建议。",
+    "en": "Combines sales demand, order history and planned independent requirements to explain forecast gaps and recommend auditable PIR adjustments."
+  },
+  "status": "Live-tested deterministic prototype",
+  "version": "0.1.0",
+  "owner": "PP Demand Planning / Sales Planning",
+  "tags": [
+    "Demand Forecast",
+    "PIR",
+    "Sales Demand",
+    "Planning"
+  ],
+  "sapModules": [
+    "PP-MP",
+    "SD-SLS"
+  ],
+  "transactions": [
+    "MD61",
+    "MD62",
+    "MD63",
+    "VA05"
+  ],
+  "tables": [
+    "VBAP",
+    "PBIM",
+    "PBED",
+    "PLAF"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "工厂、物料与预测期间",
+      "销售订单需求",
+      "现有 PIR 与计划版本",
+      "预测模型参数和业务事件"
+    ],
+    "en": [
+      "Plant, material and forecast horizon",
+      "Sales-order demand",
+      "Existing PIRs and planning version",
+      "Forecast parameters and business events"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "需求趋势与异常",
+      "预测值和置信区间",
+      "PIR 调整建议",
+      "来源与审批证据"
+    ],
+    "en": [
+      "Demand trends and anomalies",
+      "Forecast and confidence interval",
+      "PIR adjustment recommendation",
+      "Source and approval evidence"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "默认只读，不自动修改 PIR",
+      "销售订单与 PIR 必须按工厂、物料、单位和期间对齐",
+      "样本不足或数据过旧时返回 INCONCLUSIVE",
+      "任何写回必须由计划员审批"
+    ],
+    "en": [
+      "Read-only by default; never change PIRs automatically",
+      "Align sales orders and PIRs by plant, material, unit and period",
+      "Return INCONCLUSIVE for sparse or stale data",
+      "Require planner approval before any write-back"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "define-forecast-scope",
+      "title": {
+        "zh": "确定预测范围",
+        "en": "Define forecast scope"
+      },
+      "description": {
+        "zh": "解析工厂、物料、期间、粒度和计划版本。",
+        "en": "Parse plant, material, horizon, granularity and planning version."
+      },
+      "operations": {
+        "zh": [
+          "校验工厂、物料和期间唯一且单位明确。",
+          "记录促销、停产和一次性订单等业务事件。"
+        ],
+        "en": [
+          "Validate a unique plant, material, horizon and unit.",
+          "Capture promotions, discontinuations and one-off orders."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Query scope validator",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "生成可审计的预测查询范围。",
+            "en": "Creates an auditable forecast scope."
+          }
+        }
+      ]
+    },
+    {
+      "id": "check-thin-runtime",
+      "title": {
+        "zh": "检查 Thin Runtime",
+        "en": "Check Thin Runtime"
+      },
+      "description": {
+        "zh": "确认运行时健康、只读并验证销售订单和计划订单 schema。",
+        "en": "Verify a healthy read-only runtime and authoritative sales/planned-order schemas."
+      },
+      "operations": {
+        "zh": [
+          "要求 runtime_enabled=true 且 read_only=true。",
+          "schema 不完整时停止，不猜测字段。"
+        ],
+        "en": [
+          "Require runtime_enabled=true and read_only=true.",
+          "Stop on incomplete schemas instead of guessing fields."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sapclaw_runtime_health",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "检查连接与只读边界。",
+            "en": "Checks connectivity and the read-only boundary."
+          }
+        },
+        {
+          "name": "sapclaw_schema",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "验证实体和字段。",
+            "en": "Validates entities and fields."
+          }
+        }
+      ]
+    },
+    {
+      "id": "collect-demand-history",
+      "title": {
+        "zh": "读取销售需求",
+        "en": "Collect sales demand"
+      },
+      "description": {
+        "zh": "按物料、工厂和期间读取销售订单项目并标准化数量。",
+        "en": "Read sales-order items by material, plant and date and normalize quantities."
+      },
+      "operations": {
+        "zh": [
+          "读取订单、项目、物料、生产工厂、请求数量和状态。",
+          "剔除拒绝、取消或重复需求并保留原始键。"
+        ],
+        "en": [
+          "Read order, item, material, production plant, requested quantity and status.",
+          "Exclude rejected, cancelled or duplicate demand while retaining source keys."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_SALES_ORDER_SRV",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供真实销售需求。",
+            "en": "Provides actual sales demand."
+          }
+        },
+        {
+          "name": "sapclaw_execute_get",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "执行受控只读查询。",
+            "en": "Executes controlled read-only queries."
+          }
+        }
+      ]
+    },
+    {
+      "id": "collect-pir-and-supply",
+      "title": {
+        "zh": "读取 PIR 与计划供给",
+        "en": "Collect PIR and planned supply"
+      },
+      "description": {
+        "zh": "读取现有 PIR、计划订单和计划版本，建立预测对照。",
+        "en": "Read existing PIRs, planned orders and planning versions for comparison."
+      },
+      "operations": {
+        "zh": [
+          "通过 SAPSkillhub/SE16N 读取 PBIM、PBED 的只读证据。",
+          "通过计划订单 API 读取物料、数量、日期和固定/可转换标志。"
+        ],
+        "en": [
+          "Use SAPSkillhub/SE16N for read-only PBIM and PBED evidence.",
+          "Read planned-order material, quantity, dates and firm/convertible flags."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_PLANNED_ORDERS",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供计划供给证据。",
+            "en": "Provides planned-supply evidence."
+          }
+        },
+        {
+          "name": "sap-se16n-export",
+          "kind": "SAPSkillhub",
+          "purpose": {
+            "zh": "补充 PIR 表证据。",
+            "en": "Supplements PIR table evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "forecast-and-explain",
+      "title": {
+        "zh": "预测并解释偏差",
+        "en": "Forecast and explain gaps"
+      },
+      "description": {
+        "zh": "比较基线、实际需求与现有 PIR，输出带置信度的建议。",
+        "en": "Compare baseline, actual demand and existing PIRs and produce confidence-scored recommendations."
+      },
+      "operations": {
+        "zh": [
+          "按期间计算趋势、季节性、异常值和预测误差。",
+          "把模型建议与促销等人工事件分开解释。"
+        ],
+        "en": [
+          "Calculate trend, seasonality, outliers and forecast error by period.",
+          "Explain model effects separately from planner-supplied events."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Forecast engine",
+          "kind": "AI analysis",
+          "purpose": {
+            "zh": "生成预测、区间和驱动因素。",
+            "en": "Generates forecasts, intervals and drivers."
+          }
+        }
+      ]
+    },
+    {
+      "id": "review-and-present",
+      "title": {
+        "zh": "复核并提交建议",
+        "en": "Review and present recommendations"
+      },
+      "description": {
+        "zh": "验证完整性并向计划员展示建议，保持只读。",
+        "en": "Validate completeness and present recommendations to the planner without write-back."
+      },
+      "operations": {
+        "zh": [
+          "检查分页、期间、单位和数据新鲜度。",
+          "输出建议调整量、证据键、风险和审批状态。"
+        ],
+        "en": [
+          "Check pagination, periods, units and freshness.",
+          "Present recommended deltas, evidence keys, risks and approval status."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Evidence validator",
+          "kind": "Control",
+          "purpose": {
+            "zh": "阻止不完整数据驱动的调整。",
+            "en": "Blocks adjustments based on incomplete evidence."
+          }
+        },
+        {
+          "name": "Planner approval",
+          "kind": "Human control",
+          "purpose": {
+            "zh": "保留 PIR 变更决策权。",
+            "en": "Retains human authority over PIR changes."
+          }
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          },
+          "description": {
+            "zh": "请输入工厂。",
+            "en": "Enter the plant."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          },
+          "description": {
+            "zh": "请输入物料。",
+            "en": "Enter the material."
+          },
+          "placeholder": {
+            "zh": "例如：SG21",
+            "en": "Example: SG21"
+          },
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "plant",
+        "material",
+        "date_from",
+        "date_to"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 366
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "collect_forecast_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_SALES_ORDER_SRV",
+            "entity_set": "A_SalesOrderItem",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "sales_demand",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "RequestedQuantity",
+                  "ConfdDelivQtyInOrderQtyUnit"
+                ],
+                "rationale": "Load historical sales demand.",
+                "filters": [
+                  {
+                    "field": "ProductionPlant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "Material",
+                    "operator": "eq",
+                    "value": "{{input.material}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "planned_orders",
+                "service_name": "API_PLANNED_ORDERS",
+                "entity_set": "A_PlannedOrder",
+                "http_method": "GET",
+                "select_fields": [
+                  "PlannedOrder",
+                  "Material",
+                  "ProductionPlant",
+                  "TotalQuantity",
+                  "PlndOrderPlannedStartDate",
+                  "PlndOrderPlannedEndDate",
+                  "PlannedOrderIsFirm",
+                  "PlannedOrderIsConvertible"
+                ],
+                "rationale": "Load planned orders in the comparison period.",
+                "filters": [
+                  {
+                    "field": "ProductionPlant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "Material",
+                    "operator": "eq",
+                    "value": "{{input.material}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "PlndOrderPlannedStartDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "PlndOrderPlannedStartDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect demand and planned-order evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "demand-forecast-planning",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_forecast_evidence": "{{steps.collect_forecast_evidence.output}}"
+          },
+          "known_gaps": [
+            "pir_evidence"
+          ]
+        }
+      }
+    ]
+  }
+}

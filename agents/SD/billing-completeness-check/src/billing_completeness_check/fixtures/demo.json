@@ -1,0 +1,33 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "billing-completeness-check-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "BIL-DEMO-01",
+      "reference_document": "DLV-DEMO-01",
+      "billing_document": "BIL-DEMO-01",
+      "delivered_quantity": "10",
+      "billed_quantity": "12",
+      "expected_currency": "CNY",
+      "billing_currency": "CNY",
+      "expected_net_amount": "100",
+      "billing_net_amount": "100",
+      "tax_amount": "13",
+      "tax_code": ""
+    }
+  ]
+}

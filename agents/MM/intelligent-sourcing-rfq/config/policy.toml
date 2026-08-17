@@ -1,0 +1,9 @@
+read_only = true
+selected_provider = "embedded"
+automatic_sapclaw_fallback = false
+adt_skill = "sap-adt-table-export"
+adt_connection_profile = "mm-read-only"
+max_rows = 10000
+price_weight = 60
+delivery_weight = 25
+completeness_weight = 15

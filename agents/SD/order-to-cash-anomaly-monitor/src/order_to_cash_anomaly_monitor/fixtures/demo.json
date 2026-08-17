@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "order-to-cash-anomaly-monitor-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "ANM-DEMO-01",
+      "code": "DELIVERED_NOT_BILLED",
+      "severity": "high",
+      "amount_impact": 100,
+      "age_days": 12,
+      "evidence_completeness": 1,
+      "message": "已发货未开票"
+    }
+  ]
+}

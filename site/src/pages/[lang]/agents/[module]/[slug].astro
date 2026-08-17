@@ -2,7 +2,9 @@
 import { Database, ExternalLink, FolderGit2, ListChecks, ShieldCheck, Wrench } from "@lucide/astro";
 import SiteLayout from "../../../../layouts/SiteLayout.astro";
 import Sidebar from "../../../../components/Sidebar.astro";
+import AgentRunPanel from "../../../../components/AgentRunPanel.astro";
 import { getAgents, moduleCounts } from "../../../../lib/catalog";
+import { statusLabel } from "../../../../lib/display";
 import type { AgentDefinition, Locale } from "../../../../lib/types";
 import { agentPath, homePath, sourceUrl } from "../../../../lib/urls";
 
@@ -20,6 +22,9 @@ const base = import.meta.env.BASE_URL;
 const alternateLocale: Locale = locale === "zh" ? "en" : "zh";
 const alternateHref = agentPath(base, alternateLocale, agent.module, agent.slug);
 const githubUrl = sourceUrl(agent.module, agent.slug);
+const validationReportUrl = agent.validation
+  ? `${githubUrl}/${agent.validation.reportPath}`
+  : undefined;
 const hasStepSapScope = agent.workflow.some((step) => step.sapScope !== undefined);
 const labels = locale === "zh" ? {
   all: "全部 Agents",
@@ -42,6 +47,12 @@ const labels = locale === "zh" ? {
   tools: "本步骤 API / SAPSkill / Tools",
   guardrails: "安全边界",
   source: "在 GitHub 查看源码",
+  validation: "真机验收",
+  verdict: "判定",
+  evidenceScope: "证据范围",
+  testedAt: "测试时间",
+  providers: "证据 Provider",
+  report: "查看独立测试报告",
 } : {
   all: "All agents",
   profile: "Agent profile",
@@ -63,6 +74,12 @@ const labels = locale === "zh" ? {
   tools: "APIs, SAPSkills & tools used at this step",
   guardrails: "Guardrails",
   source: "View source on GitHub",
+  validation: "Live SAP validation",
+  verdict: "Verdict",
+  evidenceScope: "Evidence scope",
+  testedAt: "Tested at",
+  providers: "Evidence providers",
+  report: "View independent test report",
 };
 ---
 
@@ -100,15 +117,32 @@ const labels = locale === "zh" ? {
           </a>
 
           <div class="markdown-body agent-document-body">
+            <AgentRunPanel locale={locale} agent={agent} />
             <section id="agent-profile">
               <h2>{labels.profile}</h2>
               <dl class="profile-grid">
                 <div><dt>{labels.owner}</dt><dd>{agent.owner}</dd></div>
-                <div><dt>{labels.status}</dt><dd>{agent.status}</dd></div>
+                <div><dt>{labels.status}</dt><dd>{statusLabel(agent.status, locale)}</dd></div>
                 <div><dt>{labels.version}</dt><dd>{agent.version}</dd></div>
                 <div><dt>{labels.systems}</dt><dd>{agent.systems.join(" · ")}</dd></div>
               </dl>
             </section>
+
+            {agent.validation && (
+              <section id="live-validation">
+                <h2>{labels.validation}</h2>
+                <p>{agent.validation.summary[locale]}</p>
+                <dl class="profile-grid">
+                  <div><dt>{labels.verdict}</dt><dd><code>{agent.validation.verdict}</code></dd></div>
+                  <div><dt>{labels.evidenceScope}</dt><dd>{agent.validation.evidenceScope}</dd></div>
+                  <div><dt>{labels.testedAt}</dt><dd>{agent.validation.testedAt}</dd></div>
+                  <div><dt>{labels.providers}</dt><dd>{agent.validation.providers.join(" · ")}</dd></div>
+                </dl>
+                {validationReportUrl && (
+                  <p><a href={validationReportUrl} target="_blank" rel="noreferrer">{labels.report} <ExternalLink size={14} aria-hidden="true" /></a></p>
+                )}
+              </section>
+            )}
 
             <section id="inputs-outputs">
               <h2>{labels.inputsOutputs}</h2>

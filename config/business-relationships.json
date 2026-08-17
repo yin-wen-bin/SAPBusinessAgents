@@ -1,0 +1,1230 @@
+{
+  "schema_version": "1.0",
+  "description": "Approved GET-only business-key semantics and cross-entity joins for deterministic FI, MM, SD, and PP Agents.",
+  "field_semantics": [
+    {
+      "service_name": "API_SALES_ORDER_SRV",
+      "entity_set": "A_SalesOrder",
+      "field": "SalesOrder",
+      "semantic": "sales_order_id"
+    },
+    {
+      "service_name": "API_SALES_ORDER_SRV",
+      "entity_set": "A_SalesOrderItem",
+      "field": "SalesOrder",
+      "semantic": "sales_order_id"
+    },
+    {
+      "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "entity_set": "A_OutbDeliveryItem",
+      "field": "ReferenceSDDocument",
+      "semantic": "sd_reference_document_id"
+    },
+    {
+      "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "entity_set": "A_OutbDeliveryItem",
+      "field": "DeliveryDocument",
+      "semantic": "delivery_document_id"
+    },
+    {
+      "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "entity_set": "A_OutbDeliveryHeader",
+      "field": "DeliveryDocument",
+      "semantic": "delivery_document_id"
+    },
+    {
+      "service_name": "API_BILLING_DOCUMENT_SRV",
+      "entity_set": "A_BillingDocumentItem",
+      "field": "ReferenceSDDocument",
+      "semantic": "sd_reference_document_id"
+    },
+    {
+      "service_name": "API_BILLING_DOCUMENT_SRV",
+      "entity_set": "A_BillingDocumentItem",
+      "field": "BillingDocument",
+      "semantic": "billing_document_id"
+    },
+    {
+      "service_name": "API_BILLING_DOCUMENT_SRV",
+      "entity_set": "A_BillingDocumentItem",
+      "field": "OrderID",
+      "semantic": "internal_order_id"
+    },
+    {
+      "service_name": "API_BILLING_DOCUMENT_SRV",
+      "entity_set": "A_BillingDocument",
+      "field": "BillingDocument",
+      "semantic": "billing_document_id"
+    },
+    {
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "entity_set": "A_MaterialDocumentItem",
+      "field": "SalesOrder",
+      "semantic": "sales_order_id"
+    },
+    {
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "entity_set": "A_MaterialDocumentItem",
+      "field": "PurchaseOrder",
+      "semantic": "purchase_order_id"
+    },
+    {
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "entity_set": "A_MaterialDocumentItem",
+      "field": "MaterialDocument",
+      "semantic": "material_document_id"
+    },
+    {
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "entity_set": "A_MaterialDocumentItem",
+      "field": "MaterialDocumentYear",
+      "semantic": "fiscal_year"
+    },
+    {
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "entity_set": "A_MaterialDocumentHeader",
+      "field": "MaterialDocument",
+      "semantic": "material_document_id"
+    },
+    {
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "entity_set": "A_MaterialDocumentHeader",
+      "field": "MaterialDocumentYear",
+      "semantic": "fiscal_year"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "SalesDocument",
+      "semantic": "sales_order_id"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "BillingDocument",
+      "semantic": "billing_document_id"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "PurchasingDocument",
+      "semantic": "purchase_order_id"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "OrderID",
+      "semantic": "internal_order_id"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "AccountingDocument",
+      "semantic": "accounting_document_id"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "ClearingAccountingDocument",
+      "semantic": "accounting_document_id"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "CompanyCode",
+      "semantic": "company_code"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "ClearingDocFiscalYear",
+      "semantic": "fiscal_year"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "FiscalYear",
+      "semantic": "fiscal_year"
+    },
+    {
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "entity_set": "GLAccountLineItem",
+      "field": "SalesDocument",
+      "semantic": "sales_order_id"
+    },
+    {
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "entity_set": "GLAccountLineItem",
+      "field": "PurchasingDocument",
+      "semantic": "purchase_order_id"
+    },
+    {
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "entity_set": "GLAccountLineItem",
+      "field": "OrderID",
+      "semantic": "internal_order_id"
+    },
+    {
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "entity_set": "GLAccountLineItem",
+      "field": "AccountingDocument",
+      "semantic": "accounting_document_id"
+    },
+    {
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "entity_set": "GLAccountLineItem",
+      "field": "ClearingAccountingDocument",
+      "semantic": "accounting_document_id"
+    },
+    {
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "entity_set": "GLAccountLineItem",
+      "field": "CompanyCode",
+      "semantic": "company_code"
+    },
+    {
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "entity_set": "GLAccountLineItem",
+      "field": "ClearingDocFiscalYear",
+      "semantic": "fiscal_year"
+    },
+    {
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "entity_set": "GLAccountLineItem",
+      "field": "FiscalYear",
+      "semantic": "fiscal_year"
+    },
+    {
+      "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "entity_set": "A_PurchaseOrder",
+      "field": "PurchaseOrder",
+      "semantic": "purchase_order_id"
+    },
+    {
+      "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "entity_set": "A_PurchaseOrderItem",
+      "field": "PurchaseOrder",
+      "semantic": "purchase_order_id"
+    },
+    {
+      "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+      "entity_set": "A_SuplrInvcItemPurOrdRef",
+      "field": "PurchaseOrder",
+      "semantic": "purchase_order_id"
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "entity_set": "A_PaymentAdviceItem",
+      "field": "DeliveryDocument",
+      "semantic": "delivery_document_id"
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "entity_set": "A_PaymentAdviceItem",
+      "field": "PaymentAdvice",
+      "semantic": "payment_advice_id"
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "entity_set": "A_PaymentAdviceItem",
+      "field": "CompanyCode",
+      "semantic": "company_code"
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "entity_set": "A_PaymentAdviceItem",
+      "field": "PaymentAdviceAccount",
+      "semantic": "payment_advice_account"
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "entity_set": "A_PaymentAdviceItem",
+      "field": "PaymentAdviceAccountType",
+      "semantic": "payment_advice_account_type"
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "entity_set": "A_PaymentAdvice",
+      "field": "PaymentAdvice",
+      "semantic": "payment_advice_id"
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "entity_set": "A_PaymentAdvice",
+      "field": "CompanyCode",
+      "semantic": "company_code"
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "entity_set": "A_PaymentAdvice",
+      "field": "PaymentAdviceAccount",
+      "semantic": "payment_advice_account"
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "entity_set": "A_PaymentAdvice",
+      "field": "PaymentAdviceAccountType",
+      "semantic": "payment_advice_account_type"
+    },
+    {
+      "service_name": "API_SALES_ORDER_SRV",
+      "entity_set": "A_SalesOrderScheduleLine",
+      "field": "SalesOrder",
+      "semantic": "sales_order_id"
+    },
+    {
+      "service_name": "API_SALES_ORDER_SRV",
+      "entity_set": "A_SalesOrderItem",
+      "field": "SalesOrderItem",
+      "semantic": "sales_order_item_id"
+    },
+    {
+      "service_name": "API_SALES_ORDER_SRV",
+      "entity_set": "A_SalesOrderScheduleLine",
+      "field": "SalesOrderItem",
+      "semantic": "sales_order_item_id"
+    },
+    {
+      "service_name": "API_BILLING_DOCUMENT_SRV",
+      "entity_set": "A_BillingDocumentItem",
+      "field": "SalesDocument",
+      "semantic": "sales_order_id"
+    },
+    {
+      "service_name": "API_BILLING_DOCUMENT_SRV",
+      "entity_set": "A_BillingDocumentItem",
+      "field": "SalesDocumentItem",
+      "semantic": "sales_order_item_id"
+    },
+    {
+      "service_name": "API_BILLING_DOCUMENT_SRV",
+      "entity_set": "A_BillingDocumentItem",
+      "field": "ReferenceSDDocumentItem",
+      "semantic": "sd_reference_document_item_id"
+    },
+    {
+      "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "entity_set": "A_OutbDeliveryItem",
+      "field": "DeliveryDocumentItem",
+      "semantic": "delivery_document_item_id"
+    },
+    {
+      "service_name": "API_CUSTOMER_RETURN_SRV",
+      "entity_set": "A_CustomerReturn",
+      "field": "CustomerReturn",
+      "semantic": "customer_return_id"
+    },
+    {
+      "service_name": "API_CUSTOMER_RETURN_SRV",
+      "entity_set": "A_CustomerReturnItem",
+      "field": "CustomerReturn",
+      "semantic": "customer_return_id"
+    },
+    {
+      "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+      "entity_set": "A_CreditMemoRequest",
+      "field": "CreditMemoRequest",
+      "semantic": "credit_memo_request_id"
+    },
+    {
+      "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+      "entity_set": "A_CreditMemoRequestItem",
+      "field": "CreditMemoRequest",
+      "semantic": "credit_memo_request_id"
+    },
+    {
+      "service_name": "API_PLANNED_ORDERS",
+      "entity_set": "A_PlannedOrder",
+      "field": "PlannedOrder",
+      "semantic": "planned_order_id"
+    },
+    {
+      "service_name": "API_PLANNED_ORDERS",
+      "entity_set": "A_PlannedOrderCapacity",
+      "field": "PlannedOrder",
+      "semantic": "planned_order_id"
+    },
+    {
+      "service_name": "API_WORK_CENTERS",
+      "entity_set": "A_WorkCenters",
+      "field": "CapacityInternalID",
+      "semantic": "capacity_internal_id"
+    },
+    {
+      "service_name": "API_WORK_CENTERS",
+      "entity_set": "A_WorkCenterCapacity",
+      "field": "CapacityInternalID",
+      "semantic": "capacity_internal_id"
+    },
+    {
+      "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "entity_set": "A_ProductionOrder_2",
+      "field": "ManufacturingOrder",
+      "semantic": "manufacturing_order_id"
+    },
+    {
+      "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "entity_set": "A_ProductionOrderItem_2",
+      "field": "ManufacturingOrder",
+      "semantic": "manufacturing_order_id"
+    },
+    {
+      "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "entity_set": "A_ProductionOrderStatus_2",
+      "field": "ManufacturingOrder",
+      "semantic": "manufacturing_order_id"
+    },
+    {
+      "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "entity_set": "A_ProductionOrderOperation_2",
+      "field": "ManufacturingOrder",
+      "semantic": "manufacturing_order_id"
+    },
+    {
+      "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "entity_set": "A_ProductionOrderComponent_2",
+      "field": "ManufacturingOrder",
+      "semantic": "manufacturing_order_id"
+    },
+    {
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "entity_set": "A_MaterialDocumentItem",
+      "field": "ManufacturingOrder",
+      "semantic": "manufacturing_order_id"
+    }
+  ],
+  "relationships": [
+    {
+      "id": "o2c-sales-order-items",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrderItem",
+        "field": "SalesOrder"
+      }
+    },
+    {
+      "id": "o2c-sales-order-delivery",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "ReferenceSDDocument"
+      }
+    },
+    {
+      "id": "o2c-sales-order-direct-billing",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "ReferenceSDDocument"
+      }
+    },
+    {
+      "id": "o2c-sales-order-material-document",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "SalesOrder"
+      }
+    },
+    {
+      "id": "o2c-sales-order-operational-fi",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "SalesDocument"
+      }
+    },
+    {
+      "id": "o2c-sales-order-gl",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "SalesDocument"
+      }
+    },
+    {
+      "id": "o2c-delivery-header",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "DeliveryDocument"
+      },
+      "target": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryHeader",
+        "field": "DeliveryDocument"
+      }
+    },
+    {
+      "id": "o2c-delivery-billing",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "DeliveryDocument"
+      },
+      "target": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "ReferenceSDDocument"
+      }
+    },
+    {
+      "id": "o2c-delivery-payment-advice",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "DeliveryDocument"
+      },
+      "target": {
+        "service_name": "API_PAYMENT_ADVICE_SRV",
+        "entity_set": "A_PaymentAdviceItem",
+        "field": "DeliveryDocument"
+      }
+    },
+    {
+      "id": "o2c-billing-header",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "BillingDocument"
+      },
+      "target": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocument",
+        "field": "BillingDocument"
+      }
+    },
+    {
+      "id": "o2c-billing-operational-fi",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "BillingDocument"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "BillingDocument"
+      }
+    },
+    {
+      "id": "p2p-purchase-order-items",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "entity_set": "A_PurchaseOrder",
+        "field": "PurchaseOrder"
+      },
+      "target": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "entity_set": "A_PurchaseOrderItem",
+        "field": "PurchaseOrder"
+      }
+    },
+    {
+      "id": "p2p-purchase-order-material-document",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "entity_set": "A_PurchaseOrder",
+        "field": "PurchaseOrder"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "PurchaseOrder"
+      }
+    },
+    {
+      "id": "p2p-purchase-order-supplier-invoice",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "entity_set": "A_PurchaseOrder",
+        "field": "PurchaseOrder"
+      },
+      "target": {
+        "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "entity_set": "A_SuplrInvcItemPurOrdRef",
+        "field": "PurchaseOrder"
+      }
+    },
+    {
+      "id": "p2p-purchase-order-operational-fi",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "entity_set": "A_PurchaseOrder",
+        "field": "PurchaseOrder"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "PurchasingDocument"
+      }
+    },
+    {
+      "id": "p2p-purchase-order-gl",
+      "modes": [
+        "literal"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "entity_set": "A_PurchaseOrder",
+        "field": "PurchaseOrder"
+      },
+      "target": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "PurchasingDocument"
+      }
+    },
+    {
+      "id": "material-document-header-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "MaterialDocument"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentHeader",
+        "field": "MaterialDocument"
+      }
+    },
+    {
+      "id": "material-document-header-year",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "MaterialDocumentYear"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentHeader",
+        "field": "MaterialDocumentYear"
+      }
+    },
+    {
+      "id": "operational-fi-clearing-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "ClearingAccountingDocument"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "AccountingDocument"
+      }
+    },
+    {
+      "id": "operational-fi-clearing-company",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "CompanyCode"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "CompanyCode"
+      }
+    },
+    {
+      "id": "operational-fi-clearing-year",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "ClearingDocFiscalYear"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "FiscalYear"
+      }
+    },
+    {
+      "id": "gl-clearing-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "ClearingAccountingDocument"
+      },
+      "target": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "AccountingDocument"
+      }
+    },
+    {
+      "id": "gl-clearing-company",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "CompanyCode"
+      },
+      "target": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "CompanyCode"
+      }
+    },
+    {
+      "id": "gl-clearing-year",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "ClearingDocFiscalYear"
+      },
+      "target": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "FiscalYear"
+      }
+    },
+    {
+      "id": "payment-advice-header-id",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PAYMENT_ADVICE_SRV",
+        "entity_set": "A_PaymentAdviceItem",
+        "field": "PaymentAdvice"
+      },
+      "target": {
+        "service_name": "API_PAYMENT_ADVICE_SRV",
+        "entity_set": "A_PaymentAdvice",
+        "field": "PaymentAdvice"
+      }
+    },
+    {
+      "id": "payment-advice-header-company",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PAYMENT_ADVICE_SRV",
+        "entity_set": "A_PaymentAdviceItem",
+        "field": "CompanyCode"
+      },
+      "target": {
+        "service_name": "API_PAYMENT_ADVICE_SRV",
+        "entity_set": "A_PaymentAdvice",
+        "field": "CompanyCode"
+      }
+    },
+    {
+      "id": "payment-advice-header-account",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PAYMENT_ADVICE_SRV",
+        "entity_set": "A_PaymentAdviceItem",
+        "field": "PaymentAdviceAccount"
+      },
+      "target": {
+        "service_name": "API_PAYMENT_ADVICE_SRV",
+        "entity_set": "A_PaymentAdvice",
+        "field": "PaymentAdviceAccount"
+      }
+    },
+    {
+      "id": "payment-advice-header-account-type",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PAYMENT_ADVICE_SRV",
+        "entity_set": "A_PaymentAdviceItem",
+        "field": "PaymentAdviceAccountType"
+      },
+      "target": {
+        "service_name": "API_PAYMENT_ADVICE_SRV",
+        "entity_set": "A_PaymentAdvice",
+        "field": "PaymentAdviceAccountType"
+      }
+    },
+    {
+      "id": "sd-order-header-items-binding",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrderItem",
+        "field": "SalesOrder"
+      }
+    },
+    {
+      "id": "sd-order-item-schedule-order",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrderItem",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrderScheduleLine",
+        "field": "SalesOrder"
+      }
+    },
+    {
+      "id": "sd-order-item-schedule-item",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrderItem",
+        "field": "SalesOrderItem"
+      },
+      "target": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrderScheduleLine",
+        "field": "SalesOrderItem"
+      }
+    },
+    {
+      "id": "sd-delivery-header-items",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryHeader",
+        "field": "DeliveryDocument"
+      },
+      "target": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "DeliveryDocument"
+      }
+    },
+    {
+      "id": "sd-billing-item-sales-order",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "SalesDocument"
+      },
+      "target": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrderItem",
+        "field": "SalesOrder"
+      }
+    },
+    {
+      "id": "sd-billing-item-sales-item",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "SalesDocumentItem"
+      },
+      "target": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrderItem",
+        "field": "SalesOrderItem"
+      }
+    },
+    {
+      "id": "sd-billing-ref-delivery",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "ReferenceSDDocument"
+      },
+      "target": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "DeliveryDocument"
+      }
+    },
+    {
+      "id": "sd-billing-ref-delivery-item",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "ReferenceSDDocumentItem"
+      },
+      "target": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "DeliveryDocumentItem"
+      }
+    },
+    {
+      "id": "sd-return-header-items",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_CUSTOMER_RETURN_SRV",
+        "entity_set": "A_CustomerReturn",
+        "field": "CustomerReturn"
+      },
+      "target": {
+        "service_name": "API_CUSTOMER_RETURN_SRV",
+        "entity_set": "A_CustomerReturnItem",
+        "field": "CustomerReturn"
+      }
+    },
+    {
+      "id": "sd-credit-header-items",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+        "entity_set": "A_CreditMemoRequest",
+        "field": "CreditMemoRequest"
+      },
+      "target": {
+        "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+        "entity_set": "A_CreditMemoRequestItem",
+        "field": "CreditMemoRequest"
+      }
+    },
+    {
+      "id": "sd-credit-billing",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+        "entity_set": "A_CreditMemoRequest",
+        "field": "CreditMemoRequest"
+      },
+      "target": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "ReferenceSDDocument"
+      }
+    },
+    {
+      "id": "fi-gl-purchase-order",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "PurchasingDocument"
+      },
+      "target": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "entity_set": "A_PurchaseOrderItem",
+        "field": "PurchaseOrder"
+      }
+    },
+    {
+      "id": "fi-gl-material-document-po",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "PurchasingDocument"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "PurchaseOrder"
+      }
+    },
+    {
+      "id": "fi-gl-supplier-invoice-po",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_GLACCOUNTLINEITEM",
+        "entity_set": "GLAccountLineItem",
+        "field": "PurchasingDocument"
+      },
+      "target": {
+        "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "entity_set": "A_SuplrInvcItemPurOrdRef",
+        "field": "PurchaseOrder"
+      }
+    },
+    {
+      "id": "pp-planned-order-capacity",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PLANNED_ORDERS",
+        "entity_set": "A_PlannedOrder",
+        "field": "PlannedOrder"
+      },
+      "target": {
+        "service_name": "API_PLANNED_ORDERS",
+        "entity_set": "A_PlannedOrderCapacity",
+        "field": "PlannedOrder"
+      }
+    },
+    {
+      "id": "pp-work-center-capacity",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_WORK_CENTERS",
+        "entity_set": "A_WorkCenters",
+        "field": "CapacityInternalID"
+      },
+      "target": {
+        "service_name": "API_WORK_CENTERS",
+        "entity_set": "A_WorkCenterCapacity",
+        "field": "CapacityInternalID"
+      }
+    },
+    {
+      "id": "sd-order-delivery-reference",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "ReferenceSDDocument"
+      }
+    },
+    {
+      "id": "sd-order-billing-sales-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "SalesDocument"
+      }
+    },
+    {
+      "id": "sd-order-fi-sales-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "entity_set": "A_SalesOrder",
+        "field": "SalesOrder"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "SalesDocument"
+      }
+    },
+    {
+      "id": "pp-order-header-item",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "entity_set": "A_ProductionOrder_2",
+        "field": "ManufacturingOrder"
+      },
+      "target": {
+        "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "entity_set": "A_ProductionOrderItem_2",
+        "field": "ManufacturingOrder"
+      }
+    },
+    {
+      "id": "pp-order-header-status",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "entity_set": "A_ProductionOrder_2",
+        "field": "ManufacturingOrder"
+      },
+      "target": {
+        "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "entity_set": "A_ProductionOrderStatus_2",
+        "field": "ManufacturingOrder"
+      }
+    },
+    {
+      "id": "pp-order-header-operation",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "entity_set": "A_ProductionOrder_2",
+        "field": "ManufacturingOrder"
+      },
+      "target": {
+        "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "entity_set": "A_ProductionOrderOperation_2",
+        "field": "ManufacturingOrder"
+      }
+    },
+    {
+      "id": "pp-order-header-component",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "entity_set": "A_ProductionOrder_2",
+        "field": "ManufacturingOrder"
+      },
+      "target": {
+        "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "entity_set": "A_ProductionOrderComponent_2",
+        "field": "ManufacturingOrder"
+      }
+    },
+    {
+      "id": "pp-order-material-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "entity_set": "A_ProductionOrder_2",
+        "field": "ManufacturingOrder"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "ManufacturingOrder"
+      }
+    }
+  ]
+}

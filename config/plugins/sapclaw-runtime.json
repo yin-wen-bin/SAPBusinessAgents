@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "plugin_id": "sapclaw-runtime",
+  "version": "2.0.0",
+  "name": {
+    "zh": "SAPClaw 只读运行时",
+    "en": "SAPClaw Read-only Runtime"
+  },
+  "publisher": "SAPBusinessAgents",
+  "enabled": false,
+  "capabilities": [
+    {
+      "capability": "sap_read.v1",
+      "operations": [
+        "health",
+        "catalog",
+        "guidance",
+        "schema",
+        "validate_plan",
+        "execute_plan",
+        "execute_get",
+        "page"
+      ]
+    },
+    {
+      "capability": "mcp_tools.v1",
+      "operations": [
+        "catalog",
+        "schema",
+        "validate_plan",
+        "execute_plan",
+        "execute_get",
+        "page"
+      ]
+    }
+  ],
+  "transport": {
+    "type": "http",
+    "endpoint_config_key": "SAPCLAW_RUNTIME_URL",
+    "loopback_only": true
+  },
+  "permissions": {
+    "sap_read": true,
+    "sap_write": false,
+    "arbitrary_shell": false,
+    "arbitrary_code": false,
+    "filesystem_write": false
+  },
+  "health_check": "health"
+}

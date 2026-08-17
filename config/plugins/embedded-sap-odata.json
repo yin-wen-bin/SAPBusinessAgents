@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "plugin_id": "embedded-sap-odata",
+  "version": "1.0.0",
+  "name": {
+    "zh": "内嵌 SAP 只读连接器",
+    "en": "Embedded SAP Read-only Provider"
+  },
+  "publisher": "SAPBusinessAgents",
+  "enabled": true,
+  "capabilities": [
+    {
+      "capability": "sap_read.v1",
+      "operations": [
+        "health",
+        "catalog",
+        "guidance",
+        "schema",
+        "validate_plan",
+        "execute_plan",
+        "execute_get",
+        "page"
+      ]
+    }
+  ],
+  "transport": {
+    "type": "builtin",
+    "loopback_only": true
+  },
+  "permissions": {
+    "sap_read": true,
+    "sap_write": false,
+    "arbitrary_shell": false,
+    "arbitrary_code": false,
+    "filesystem_write": false
+  },
+  "health_check": "health"
+}

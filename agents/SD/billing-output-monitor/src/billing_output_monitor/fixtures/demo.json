@@ -1,0 +1,23 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "billing-output-monitor-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "BIL-DEMO-01"
+    }
+  ]
+}

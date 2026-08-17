@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "shortage-allocation-advisor-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "SO-DEMO-01",
+      "sales_order": "SO-DEMO-01",
+      "item": "10",
+      "material": "MAT-DEMO",
+      "plant": "PL01",
+      "delivery_priority": 1,
+      "requested_delivery_date": "2026-08-01",
+      "requested_quantity": "10",
+      "confirmed_quantity": "0",
+      "available_quantity": "12"
+    },
+    {
+      "id": "SO-DEMO-02",
+      "sales_order": "SO-DEMO-02",
+      "item": "10",
+      "material": "MAT-DEMO",
+      "plant": "PL01",
+      "delivery_priority": 2,
+      "requested_delivery_date": "2026-08-02",
+      "requested_quantity": "10",
+      "confirmed_quantity": "0",
+      "available_quantity": "12"
+    }
+  ]
+}

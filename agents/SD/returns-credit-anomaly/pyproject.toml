@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sap-returns-credit-anomaly"
+version = "0.1.0"
+description = "Returns and Credit Anomaly Monitor"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+returns-credit-anomaly = "returns_credit_anomaly.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+returns_credit_anomaly = ["fixtures/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", ".."]
+testpaths = ["tests"]
+addopts = "-q"

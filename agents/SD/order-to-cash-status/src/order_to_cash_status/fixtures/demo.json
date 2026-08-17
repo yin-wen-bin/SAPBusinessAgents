@@ -1,0 +1,30 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "order-to-cash-status-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "O2C-DEMO-01",
+      "sales_order": "SO-DEMO-01",
+      "delivery": "DLV-DEMO-01",
+      "goods_issue": "MATDOC-DEMO-01",
+      "billing_document": "BIL-DEMO-01",
+      "accounting_document": "FI-DEMO-01",
+      "clearing_document": "",
+      "blockers": []
+    }
+  ]
+}

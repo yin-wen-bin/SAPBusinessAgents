@@ -5,12 +5,16 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
+*.egg-info/
 
 # Local runs and generated output
 .local/
+.local-data/
+.prototype/
 .local-scaffold/
 output/
 out/
+.artifacts/
 
 # Site
 site/node_modules/

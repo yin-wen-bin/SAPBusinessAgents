@@ -1,0 +1,461 @@
+{
+  "schemaVersion": 2,
+  "slug": "production-variance-analysis",
+  "module": "PP",
+  "title": {
+    "zh": "生产差异根因分析助手",
+    "en": "Production Variance Root Cause Assistant"
+  },
+  "summary": {
+    "zh": "比较生产订单计划与实际产量、废品、用料和成本，定位数量及成本偏差的候选根因。",
+    "en": "Compares planned and actual yield, scrap, consumption and cost to identify candidate root causes of production variance."
+  },
+  "status": "Live-tested deterministic prototype",
+  "version": "0.1.0",
+  "owner": "PP-SFC / CO-PC",
+  "tags": [
+    "Variance",
+    "Scrap",
+    "Consumption",
+    "Root Cause"
+  ],
+  "sapModules": [
+    "PP-SFC",
+    "CO-PC",
+    "MM-IM"
+  ],
+  "transactions": [
+    "CO03",
+    "COOIS",
+    "CO14",
+    "KOB1",
+    "KKBC_ORD"
+  ],
+  "tables": [
+    "AFPO",
+    "AFRU",
+    "RESB",
+    "MATDOC",
+    "ACDOCA"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "生产订单或订单集合",
+      "偏差阈值与比较期间",
+      "数量、工时、用料和成本维度"
+    ],
+    "en": [
+      "Production order or order set",
+      "Variance thresholds and comparison period",
+      "Quantity, activity, consumption and cost dimensions"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "产量与废品偏差",
+      "组件用量偏差",
+      "成本偏差分解",
+      "候选根因与证据等级"
+    ],
+    "en": [
+      "Yield and scrap variance",
+      "Component consumption variance",
+      "Cost variance decomposition",
+      "Candidate root causes and evidence grade"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "相关性不得表述为确定因果",
+      "数量和成本偏差必须分开核对",
+      "缺少实际过账时返回尚无偏差证据",
+      "不自动冲销、重估或结算订单"
+    ],
+    "en": [
+      "Do not present correlation as proven causation",
+      "Validate quantity and cost variance separately",
+      "Return no actual variance evidence when postings are absent",
+      "Never reverse, revalue or settle orders automatically"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "define-variance-scope",
+      "title": {
+        "zh": "确定偏差范围",
+        "en": "Define variance scope"
+      },
+      "description": {
+        "zh": "确定订单、基准、维度、阈值和截止日期。",
+        "en": "Resolve orders, baseline, dimensions, thresholds and cutoff date."
+      },
+      "operations": {
+        "zh": [
+          "明确比较计划值、标准值还是上期实际。",
+          "分开记录数量、工时、用料和金额单位。"
+        ],
+        "en": [
+          "Specify whether the baseline is plan, standard or prior actual.",
+          "Track quantity, activity, consumption and currency units separately."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Variance scope validator",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "建立可审计比较口径。",
+            "en": "Establishes an auditable comparison basis."
+          }
+        }
+      ]
+    },
+    {
+      "id": "validate-source-contracts",
+      "title": {
+        "zh": "验证来源契约",
+        "en": "Validate source contracts"
+      },
+      "description": {
+        "zh": "验证生产订单、物料凭证和会计行项目字段。",
+        "en": "Validate production-order, material-document and accounting-line-item fields."
+      },
+      "operations": {
+        "zh": [
+          "检查 Thin Runtime 只读状态。",
+          "以真机实际 schema 为准，索引字段不兼容时停止该维度。"
+        ],
+        "en": [
+          "Check Thin Runtime read-only state.",
+          "Use the live schema and stop a dimension when an indexed field is incompatible."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sapclaw_schema",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "验证偏差字段。",
+            "en": "Validates variance fields."
+          }
+        },
+        {
+          "name": "sapclaw_execute_get",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "执行受控查询。",
+            "en": "Executes controlled queries."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-plan-and-confirmation",
+      "title": {
+        "zh": "读取计划与确认",
+        "en": "Load plan and confirmation"
+      },
+      "description": {
+        "zh": "读取计划数量、确认产量、实际偏差和废品。",
+        "en": "Read planned quantity, confirmed yield, actual deviation and scrap."
+      },
+      "operations": {
+        "zh": [
+          "按订单读取 AFPO 语义项目和 AFRU 语义工序。",
+          "字段不可执行时记录 schema 漂移，不用零值代替。"
+        ],
+        "en": [
+          "Read AFPO-semantic items and AFRU-semantic operations by order.",
+          "Record schema drift for non-executable fields instead of substituting zero."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_PRODUCTION_ORDER_2_SRV",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供计划、确认和废品字段。",
+            "en": "Provides plan, confirmation and scrap fields."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-consumption-and-cost",
+      "title": {
+        "zh": "读取用料与成本",
+        "en": "Load consumption and cost"
+      },
+      "description": {
+        "zh": "读取组件需求、领料、物料移动和订单成本行。",
+        "en": "Read component requirements, withdrawals, goods movements and order cost lines."
+      },
+      "operations": {
+        "zh": [
+          "用组件需求量与领料/移动净数量计算用量偏差。",
+          "成本维度按订单、成本要素、币种和期间汇总。"
+        ],
+        "en": [
+          "Calculate usage variance from requirements and net issues/movements.",
+          "Aggregate cost by order, cost element, currency and period."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_MATERIAL_DOCUMENT_SRV",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供实际物料移动。",
+            "en": "Provides actual goods movements."
+          }
+        },
+        {
+          "name": "API_GLACCOUNTLINEITEM",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "在可关联时提供订单成本行。",
+            "en": "Provides order cost lines when a supported relationship exists."
+          }
+        }
+      ]
+    },
+    {
+      "id": "cross-check-confirmations",
+      "title": {
+        "zh": "核对确认与订单表",
+        "en": "Cross-check confirmations and order tables"
+      },
+      "description": {
+        "zh": "通过 SAPSkillhub 核对 AFPO、AFRU、RESB 等表。",
+        "en": "Use SAPSkillhub to cross-check AFPO, AFRU and RESB."
+      },
+      "operations": {
+        "zh": [
+          "只导出低行数、不含敏感字段的验证样本。",
+          "脚本卡住时只停止导出脚本，不关闭 SAP GUI。"
+        ],
+        "en": [
+          "Export only low-row, non-sensitive validation samples.",
+          "If the script hangs, stop only the exporter and keep SAP GUI open."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-se16n-export",
+          "kind": "SAPSkillhub",
+          "purpose": {
+            "zh": "提供表级确认和用料证据。",
+            "en": "Provides table-level confirmation and consumption evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "explain-root-causes",
+      "title": {
+        "zh": "解释候选根因",
+        "en": "Explain candidate root causes"
+      },
+      "description": {
+        "zh": "把偏差与组件、工序、日期和成本证据关联并分级。",
+        "en": "Link variance to component, operation, timing and cost evidence and grade confidence."
+      },
+      "operations": {
+        "zh": [
+          "区分尚未发生、数据缺失、真实偏差和已冲销偏差。",
+          "输出候选根因、反证、证据等级和后续核查。"
+        ],
+        "en": [
+          "Distinguish not-yet-posted, missing data, actual variance and reversed variance.",
+          "Present candidate causes, counter-evidence, evidence grade and follow-up checks."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Variance root-cause model",
+          "kind": "AI analysis",
+          "purpose": {
+            "zh": "生成可解释候选根因。",
+            "en": "Generates explainable candidate root causes."
+          }
+        },
+        {
+          "name": "Evidence grading",
+          "kind": "Control",
+          "purpose": {
+            "zh": "限制因果断言。",
+            "en": "Constrains causal claims."
+          }
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "manufacturing_order": {
+          "type": "string",
+          "title": {
+            "zh": "生产订单号",
+            "en": "Manufacturing order"
+          },
+          "description": {
+            "zh": "请输入生产订单号。",
+            "en": "Enter the manufacturing order."
+          },
+          "placeholder": {
+            "zh": "例如：1000000",
+            "en": "Example: 1000000"
+          },
+          "minLength": 1,
+          "maxLength": 12,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "manufacturing_order"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_production_variance",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_PRODUCTION_ORDER_2_SRV",
+            "entity_set": "A_ProductionOrderItem_2",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "production_order_items",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "entity_set": "A_ProductionOrderItem_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "MfgOrderItemPlannedTotalQty",
+                  "MfgOrderItemGoodsReceiptQty",
+                  "MfgOrderItemActualDeviationQty"
+                ],
+                "rationale": "Load production-order items.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_operations",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "entity_set": "A_ProductionOrderOperation_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderOperation",
+                  "WorkCenter",
+                  "OperationIsConfirmed",
+                  "OperationIsPartiallyConfirmed",
+                  "OpPlannedTotalQuantity",
+                  "OpTotalConfirmedYieldQty"
+                ],
+                "rationale": "Load production operations and confirmations.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_components",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "entity_set": "A_ProductionOrderComponent_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "Reservation",
+                  "ReservationItem",
+                  "Material",
+                  "Plant",
+                  "RequiredQuantity",
+                  "WithdrawnQuantity",
+                  "ConfirmedAvailableQuantity"
+                ],
+                "rationale": "Load production-order components.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "material_documents",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "entity_set": "A_MaterialDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "ManufacturingOrder",
+                  "Material",
+                  "Plant",
+                  "QuantityInBaseUnit",
+                  "DebitCreditCode",
+                  "ReversedMaterialDocument"
+                ],
+                "rationale": "Load material issues, receipts, and reversals.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect quantity and material variance evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "production-variance-analysis",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_production_variance": "{{steps.collect_production_variance.output}}"
+          },
+          "known_gaps": [
+            "production_cost_relationship"
+          ]
+        }
+      }
+    ]
+  }
+}

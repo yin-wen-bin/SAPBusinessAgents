@@ -1,0 +1,24 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "billing-dispute-classification-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "DSP-DEMO-01",
+      "text": "客户反馈发票价格与合同价格不一致"
+    }
+  ]
+}

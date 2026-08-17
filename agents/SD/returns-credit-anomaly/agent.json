@@ -1,0 +1,585 @@
+{
+  "schemaVersion": 2,
+  "slug": "returns-credit-anomaly",
+  "module": "SD",
+  "title": {
+    "zh": "退货及贷项异常监控",
+    "en": "Returns and Credit Anomaly Monitor"
+  },
+  "summary": {
+    "zh": "串联客户退货、贷项申请和后续凭证，识别超量、重复和引用异常。",
+    "en": "Links customer returns, credit-memo requests and subsequent documents to identify excess quantities, duplicates and reference anomalies."
+  },
+  "status": "Live-tested deterministic prototype",
+  "version": "0.1.0",
+  "owner": "SD / FI-AR",
+  "tags": [
+    "Order-to-Cash",
+    "SAP SD",
+    "Read-only",
+    "Explainable AI"
+  ],
+  "sapModules": [
+    "SD"
+  ],
+  "transactions": [
+    "VA03",
+    "VF03"
+  ],
+  "tables": [
+    "VBAK",
+    "VBAP",
+    "VBRK",
+    "VBRP",
+    "VBFA"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "自然语言业务问题",
+      "可选业务对象标识",
+      "查询基准日",
+      "SAP只读证据"
+    ],
+    "en": [
+      "Natural-language business question",
+      "Optional business-object identifier",
+      "As-of date",
+      "Read-only SAP evidence"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "状态与可解释分析",
+      "异常和阻塞原因",
+      "建议动作",
+      "Markdown或JSON"
+    ],
+    "en": [
+      "Status and explainable analysis",
+      "Anomalies and blockers",
+      "Recommended actions",
+      "Markdown or JSON"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "严格只读，不创建或修改SAP凭证",
+      "Fixture不得冒充真机证据",
+      "凭据和敏感业务数据不得写入报告"
+    ],
+    "en": [
+      "Strictly read-only; never creates or changes SAP documents",
+      "Fixtures never masquerade as live evidence",
+      "Credentials and sensitive business data are excluded from reports"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "parse-user-input",
+      "title": {
+        "zh": "解析输入和范围",
+        "en": "Parse input and scope"
+      },
+      "description": {
+        "zh": "解析自然语言对象标识、日期和组织范围。",
+        "en": "Parse natural-language identifiers, dates and organizational scope."
+      },
+      "operations": {
+        "zh": [
+          "解析自然语言对象标识、日期和组织范围。"
+        ],
+        "en": [
+          "Parse natural-language identifiers, dates and organizational scope."
+        ]
+      },
+      "tools": [
+        {
+          "name": "QueryExtractor",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "提取查询对象并保留歧义。",
+            "en": "Extract query objects while preserving ambiguity."
+          }
+        }
+      ]
+    },
+    {
+      "id": "check-thin-runtime",
+      "title": {
+        "zh": "检查Thin Runtime",
+        "en": "Check Thin Runtime"
+      },
+      "description": {
+        "zh": "确认Runtime健康、启用、只读且schema可执行。",
+        "en": "Require a healthy, enabled, read-only runtime and executable schemas."
+      },
+      "operations": {
+        "zh": [
+          "确认Runtime健康、启用、只读且schema可执行。"
+        ],
+        "en": [
+          "Require a healthy, enabled, read-only runtime and executable schemas."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sapclaw_runtime_health / sapclaw_schema",
+          "kind": "sapclaw_runtime MCP",
+          "purpose": {
+            "zh": "执行健康和权威schema检查。",
+            "en": "Run health and authoritative schema checks."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-sap-data",
+      "title": {
+        "zh": "读取SAP证据",
+        "en": "Load SAP evidence"
+      },
+      "description": {
+        "zh": "使用服务端过滤、窄字段和完整分页读取业务证据。",
+        "en": "Read business evidence with server filters, narrow fields and complete pagination."
+      },
+      "operations": {
+        "zh": [
+          "使用服务端过滤、窄字段和完整分页读取业务证据。"
+        ],
+        "en": [
+          "Read business evidence with server filters, narrow fields and complete pagination."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_CUSTOMER_RETURN_SRV + API_CREDIT_MEMO_REQUEST_SRV + API_BILLING_DOCUMENT_SRV",
+          "kind": "SAP OData via sapclaw_execute_get",
+          "purpose": {
+            "zh": "执行批准的只读GET。",
+            "en": "Execute approved read-only GET requests."
+          }
+        }
+      ],
+      "sapScope": {
+        "modules": [
+          "SD"
+        ],
+        "transactions": [
+          "VA03",
+          "VF03"
+        ],
+        "tables": [
+          "VBAK",
+          "VBAP",
+          "VBRK",
+          "VBRP",
+          "VBFA"
+        ]
+      }
+    },
+    {
+      "id": "supplement-with-skill",
+      "title": {
+        "zh": "按需补充SAPSkillhub证据",
+        "en": "Supplement with SAPSkillhub"
+      },
+      "description": {
+        "zh": "仅当标准OData缺少必要证据时调用明确匹配的只读skill。",
+        "en": "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
+      },
+      "operations": {
+        "zh": [
+          "仅当标准OData缺少必要证据时调用明确匹配的只读skill。"
+        ],
+        "en": [
+          "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
+        ]
+      },
+      "tools": [
+        {
+          "name": "SAPSkillhub read-only skill",
+          "kind": "SAPSkill",
+          "purpose": {
+            "zh": "补充GUI、CDS或输出管理证据。",
+            "en": "Supplement GUI, CDS or output-management evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "assemble-evidence",
+      "title": {
+        "zh": "组装脱敏证据",
+        "en": "Assemble sanitized evidence"
+      },
+      "description": {
+        "zh": "生成带run id、来源、只读标志和分页状态的evidence。",
+        "en": "Create evidence with run id, provenance, read-only flag and pagination state."
+      },
+      "operations": {
+        "zh": [
+          "生成带run id、来源、只读标志和分页状态的evidence。"
+        ],
+        "en": [
+          "Create evidence with run id, provenance, read-only flag and pagination state."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Evidence snapshot builder",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "验证并脱敏证据快照。",
+            "en": "Validate and sanitize the evidence snapshot."
+          }
+        }
+      ]
+    },
+    {
+      "id": "validate-evidence",
+      "title": {
+        "zh": "校验证据质量",
+        "en": "Validate evidence quality"
+      },
+      "description": {
+        "zh": "检查必填字段、单位、币种、冲销、重复与来源完整性。",
+        "en": "Check required fields, units, currencies, reversals, duplicates and provenance."
+      },
+      "operations": {
+        "zh": [
+          "检查必填字段、单位、币种、冲销、重复与来源完整性。"
+        ],
+        "en": [
+          "Check required fields, units, currencies, reversals, duplicates and provenance."
+        ]
+      },
+      "tools": [
+        {
+          "name": "EvidenceValidator",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "阻止不完整证据被误判为正常。",
+            "en": "Prevent incomplete evidence from being treated as normal."
+          }
+        }
+      ]
+    },
+    {
+      "id": "analyze-business-rule",
+      "title": {
+        "zh": "执行可解释分析",
+        "en": "Run explainable analysis"
+      },
+      "description": {
+        "zh": "运行确定性规则、分类或版本化评分，不生成SAP写操作。",
+        "en": "Run deterministic rules, classification or versioned scoring without SAP writes."
+      },
+      "operations": {
+        "zh": [
+          "运行确定性规则、分类或版本化评分，不生成SAP写操作。"
+        ],
+        "en": [
+          "Run deterministic rules, classification or versioned scoring without SAP writes."
+        ]
+      },
+      "tools": [
+        {
+          "name": "SD O2C analyzer",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "生成状态、评分、发现和建议动作。",
+            "en": "Produce status, score, findings and recommended actions."
+          }
+        }
+      ]
+    },
+    {
+      "id": "present-report",
+      "title": {
+        "zh": "输出报告",
+        "en": "Present report"
+      },
+      "description": {
+        "zh": "输出Markdown和JSON，并区分真机、Fixture与推断证据。",
+        "en": "Output Markdown and JSON while separating live, fixture and inferred evidence."
+      },
+      "operations": {
+        "zh": [
+          "输出Markdown和JSON，并区分真机、Fixture与推断证据。"
+        ],
+        "en": [
+          "Output Markdown and JSON while separating live, fixture and inferred evidence."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Markdown / JSON formatter",
+          "kind": "Presentation",
+          "purpose": {
+            "zh": "生成可审计的双格式结果。",
+            "en": "Generate auditable dual-format results."
+          }
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_organization": {
+          "type": "string",
+          "title": {
+            "zh": "销售组织",
+            "en": "Sales organization"
+          },
+          "description": {
+            "zh": "请输入销售组织。",
+            "en": "Enter the sales organization."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "sales_organization",
+        "date_from",
+        "date_to"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 31
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "collect_returns_credit_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_CUSTOMER_RETURN_SRV",
+            "entity_set": "A_CustomerReturn",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "returns",
+                "service_name": "API_CUSTOMER_RETURN_SRV",
+                "entity_set": "A_CustomerReturn",
+                "http_method": "GET",
+                "select_fields": [
+                  "CustomerReturn",
+                  "SalesOrganization",
+                  "CustomerReturnDate",
+                  "ReferenceSDDocument",
+                  "OverallSDProcessStatus"
+                ],
+                "rationale": "Load customer returns in scope.",
+                "filters": [
+                  {
+                    "field": "SalesOrganization",
+                    "operator": "eq",
+                    "value": "{{input.sales_organization}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "CustomerReturnDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "CustomerReturnDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              },
+              {
+                "step_id": "return_items",
+                "service_name": "API_CUSTOMER_RETURN_SRV",
+                "entity_set": "A_CustomerReturnItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "CustomerReturn",
+                  "CustomerReturnItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "ReturnReason",
+                  "ReturnsMaterialHasBeenReceived",
+                  "ReturnsRefundType",
+                  "RequestedQuantity",
+                  "NetAmount"
+                ],
+                "rationale": "Load customer-return items.",
+                "filter_from_previous": [
+                  {
+                    "field": "CustomerReturn",
+                    "source_step_id": "returns",
+                    "source_field": "CustomerReturn",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "credit_requests",
+                "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+                "entity_set": "A_CreditMemoRequest",
+                "http_method": "GET",
+                "select_fields": [
+                  "CreditMemoRequest",
+                  "SalesOrganization",
+                  "CreditMemoRequestDate",
+                  "ReferenceSDDocument",
+                  "TotalNetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load credit memo requests in scope.",
+                "filters": [
+                  {
+                    "field": "SalesOrganization",
+                    "operator": "eq",
+                    "value": "{{input.sales_organization}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "CreditMemoRequestDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "CreditMemoRequestDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              },
+              {
+                "step_id": "credit_request_items",
+                "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+                "entity_set": "A_CreditMemoRequestItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "CreditMemoRequest",
+                  "CreditMemoRequestItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "RequestedQuantity",
+                  "NetAmount"
+                ],
+                "rationale": "Load credit memo request items.",
+                "filter_from_previous": [
+                  {
+                    "field": "CreditMemoRequest",
+                    "source_step_id": "credit_requests",
+                    "source_field": "CreditMemoRequest",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_documents",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "BillingQuantity",
+                  "NetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load follow-on billing for credit requests.",
+                "filter_from_previous": [
+                  {
+                    "field": "ReferenceSDDocument",
+                    "source_step_id": "credit_requests",
+                    "source_field": "CreditMemoRequest",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect returns and credit evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "returns-credit-anomaly",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_returns_credit_evidence": "{{steps.collect_returns_credit_evidence.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
+}

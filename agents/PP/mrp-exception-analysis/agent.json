@@ -1,0 +1,579 @@
+{
+  "schemaVersion": 2,
+  "slug": "mrp-exception-analysis",
+  "module": "PP",
+  "title": {
+    "zh": "MRP 异常分析助手",
+    "en": "MRP Exception Analysis Assistant"
+  },
+  "summary": {
+    "zh": "分析物料覆盖、供需项目和 MRP 异常消息，解释缺料与重排原因并给出处理优先级。",
+    "en": "Analyzes material coverage, supply-demand items and MRP exception messages to explain shortages, rescheduling needs and priorities."
+  },
+  "status": "Live-tested deterministic prototype",
+  "version": "0.1.0",
+  "owner": "PP-MRP / Material Planning",
+  "tags": [
+    "MRP",
+    "Shortage",
+    "Exception",
+    "Rescheduling"
+  ],
+  "sapModules": [
+    "PP-MRP",
+    "MM-IM"
+  ],
+  "transactions": [
+    "MD04",
+    "MD05",
+    "MD06",
+    "MD07"
+  ],
+  "tables": [
+    "MARC",
+    "MDKP",
+    "MDTB",
+    "PLAF"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "工厂或 MRP 控制员",
+      "物料或物料组",
+      "短缺参数文件与计数器",
+      "评估期间"
+    ],
+    "en": [
+      "Plant or MRP controller",
+      "Material or material group",
+      "Shortage profile and counter",
+      "Evaluation horizon"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "短缺物料清单",
+      "供需缺口与异常消息",
+      "重排和催办建议",
+      "优先级及证据"
+    ],
+    "en": [
+      "Shortage material list",
+      "Supply-demand gaps and exception messages",
+      "Rescheduling and expediting recommendations",
+      "Priority and evidence"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "必须显式提供短缺参数文件和计数器",
+      "空结果与超时不得解释为无短缺",
+      "只建议处理动作，不运行 MRP 或修改凭证",
+      "分页或关键字段不完整时返回 INCONCLUSIVE"
+    ],
+    "en": [
+      "Require an explicit shortage profile and counter",
+      "Never interpret empty or timed-out results as no shortage",
+      "Recommend actions only; do not run MRP or change documents",
+      "Return INCONCLUSIVE for incomplete pages or key fields"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "scope-mrp-run",
+      "title": {
+        "zh": "确定 MRP 范围",
+        "en": "Scope the MRP analysis"
+      },
+      "description": {
+        "zh": "确定物料、工厂、MRP 范围、控制员和短缺定义。",
+        "en": "Resolve material, plant, MRP area, controller and shortage definition."
+      },
+      "operations": {
+        "zh": [
+          "要求至少提供物料、工厂或控制员之一。",
+          "默认标准短缺参数文件也必须显式记录。"
+        ],
+        "en": [
+          "Require at least a material, plant or controller.",
+          "Record even the standard shortage profile explicitly."
+        ]
+      },
+      "tools": [
+        {
+          "name": "MRP scope validator",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "防止无界 MRP 查询。",
+            "en": "Prevents unbounded MRP queries."
+          }
+        }
+      ]
+    },
+    {
+      "id": "validate-runtime-schema",
+      "title": {
+        "zh": "验证运行时和 schema",
+        "en": "Validate runtime and schema"
+      },
+      "description": {
+        "zh": "确认只读连接并验证 MRP 三类实体。",
+        "en": "Confirm read-only connectivity and the three MRP entity contracts."
+      },
+      "operations": {
+        "zh": [
+          "检查 Thin Runtime 健康和只读状态。",
+          "验证 A_MRPMaterial、SupplyDemandItems 和 MaterialCoverages 字段。"
+        ],
+        "en": [
+          "Check Thin Runtime health and read-only state.",
+          "Validate fields for A_MRPMaterial, SupplyDemandItems and MaterialCoverages."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sapclaw_runtime_health",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "验证运行环境。",
+            "en": "Validates the runtime."
+          }
+        },
+        {
+          "name": "sapclaw_schema",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "提供权威字段契约。",
+            "en": "Provides the authoritative field contract."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-mrp-master",
+      "title": {
+        "zh": "读取 MRP 主数据",
+        "en": "Load MRP master data"
+      },
+      "description": {
+        "zh": "读取 MRP 类型、控制员、安全库存和计划策略。",
+        "en": "Read MRP type, controller, safety stock and planning strategy."
+      },
+      "operations": {
+        "zh": [
+          "按物料、工厂和 MRP 范围精确过滤。",
+          "保存主数据键和删除标识。"
+        ],
+        "en": [
+          "Filter exactly by material, plant and MRP area.",
+          "Preserve master-data keys and deletion indicators."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_MRP_MATERIALS_SRV_01",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "读取 A_MRPMaterial。",
+            "en": "Reads A_MRPMaterial."
+          }
+        },
+        {
+          "name": "sapclaw_execute_get",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "执行精确只读查询。",
+            "en": "Executes exact read-only queries."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-coverage-and-elements",
+      "title": {
+        "zh": "读取覆盖与供需项目",
+        "en": "Load coverage and supply-demand items"
+      },
+      "description": {
+        "zh": "读取短缺数量、覆盖天数、MRP 元素和异常消息。",
+        "en": "Read shortage quantity, days of supply, MRP elements and exception messages."
+      },
+      "operations": {
+        "zh": [
+          "MaterialCoverages 必须带短缺参数文件和计数器。",
+          "SupplyDemandItems 按物料和工厂收窄并读取完整分页。"
+        ],
+        "en": [
+          "MaterialCoverages must include shortage profile and counter.",
+          "Narrow SupplyDemandItems by material and plant and read all pages."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_MRP_MATERIALS_SRV_01",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供覆盖与供需证据。",
+            "en": "Provides coverage and supply-demand evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "cross-check-mrp-list",
+      "title": {
+        "zh": "核对 MRP 清单",
+        "en": "Cross-check the MRP list"
+      },
+      "description": {
+        "zh": "通过 SAPSkillhub 读取 MDKP/MDTB 作为独立证据。",
+        "en": "Use SAPSkillhub to read MDKP/MDTB as independent evidence."
+      },
+      "operations": {
+        "zh": [
+          "仅导出低行数验证样本并记录查询时间。",
+          "把权限、空表和导出超时与业务无短缺区分。"
+        ],
+        "en": [
+          "Export only a low-row validation sample and record timing.",
+          "Distinguish authorization, empty-table and export timeouts from no shortage."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-se16n-export",
+          "kind": "SAPSkillhub",
+          "purpose": {
+            "zh": "导出 MRP 清单只读证据。",
+            "en": "Exports read-only MRP-list evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rank-and-present",
+      "title": {
+        "zh": "排序并解释异常",
+        "en": "Rank and explain exceptions"
+      },
+      "description": {
+        "zh": "按缺口、日期、异常码和业务影响形成优先级。",
+        "en": "Prioritize by shortage, date, exception code and business impact."
+      },
+      "operations": {
+        "zh": [
+          "合并同一物料的短缺、重排和计划订单证据。",
+          "输出原因、建议责任方、技术键和可信度。"
+        ],
+        "en": [
+          "Combine shortage, rescheduling and planned-order evidence per material.",
+          "Present cause, suggested owner, technical keys and confidence."
+        ]
+      },
+      "tools": [
+        {
+          "name": "MRP exception classifier",
+          "kind": "AI analysis",
+          "purpose": {
+            "zh": "生成可解释优先级。",
+            "en": "Generates explainable priorities."
+          }
+        },
+        {
+          "name": "Evidence completeness gate",
+          "kind": "Control",
+          "purpose": {
+            "zh": "将超时或缺页标为 INCONCLUSIVE。",
+            "en": "Marks timeouts or missing pages as INCONCLUSIVE."
+          }
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "MRP 工厂",
+            "en": "MRP plant"
+          },
+          "description": {
+            "zh": "请输入MRP 工厂。",
+            "en": "Enter the mrp plant."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "mrp_area": {
+          "type": "string",
+          "title": {
+            "zh": "MRP 范围",
+            "en": "MRP area"
+          },
+          "description": {
+            "zh": "请输入MRP 范围。",
+            "en": "Enter the mrp area."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          },
+          "description": {
+            "zh": "请输入物料。",
+            "en": "Enter the material."
+          },
+          "placeholder": {
+            "zh": "例如：SG21",
+            "en": "Example: SG21"
+          },
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "shortage_profile": {
+          "type": "string",
+          "title": {
+            "zh": "短缺参数文件",
+            "en": "Shortage profile"
+          },
+          "description": {
+            "zh": "请输入短缺参数文件。",
+            "en": "Enter the shortage profile."
+          },
+          "placeholder": {
+            "zh": "例如：SAP000000001",
+            "en": "Example: SAP000000001"
+          },
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "shortage_counter": {
+          "type": "string",
+          "title": {
+            "zh": "短缺计数器",
+            "en": "Shortage profile counter"
+          },
+          "description": {
+            "zh": "请输入短缺计数器。",
+            "en": "Enter the shortage profile counter."
+          },
+          "placeholder": {
+            "zh": "例如：001",
+            "en": "Example: 001"
+          },
+          "minLength": 1,
+          "maxLength": 3,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "plant",
+        "mrp_area",
+        "material",
+        "shortage_profile",
+        "shortage_counter"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_mrp_master",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_MRP_MATERIALS_SRV_01",
+            "entity_set": "A_MRPMaterial",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "Material",
+              "MRPArea",
+              "MRPPlant",
+              "MRPController",
+              "MRPType",
+              "SafetyStockQuantity"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MRPArea",
+                "operator": "eq",
+                "value": "{{input.mrp_area}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Collect MRP master evidence."
+          }
+        }
+      },
+      {
+        "id": "collect_mrp_coverage",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_MRP_MATERIALS_SRV_01",
+            "entity_set": "MaterialCoverages",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "Material",
+              "MaterialShortageProfile",
+              "MaterialShortageProfileCount",
+              "MRPArea",
+              "MRPPlant",
+              "MaterialShortageDuration",
+              "DaysOfSupplyDuration",
+              "MaterialShortageQuantity",
+              "MaterialShortageStartDate",
+              "MaterialShortageEndDate"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MRPArea",
+                "operator": "eq",
+                "value": "{{input.mrp_area}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MRPPlant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MaterialShortageProfile",
+                "operator": "eq",
+                "value": "{{input.shortage_profile}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MaterialShortageProfileCount",
+                "operator": "eq",
+                "value": "{{input.shortage_counter}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Collect MRP coverage evidence."
+          }
+        },
+        "failurePolicy": "record_gap"
+      },
+      {
+        "id": "collect_mrp_elements",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_MRP_MATERIALS_SRV_01",
+            "entity_set": "SupplyDemandItems",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "Material",
+              "MRPArea",
+              "MRPPlant",
+              "MaterialShortageProfile",
+              "MaterialShortageProfileCount",
+              "MRPElement",
+              "MRPElementCategory",
+              "MRPElementAvailyOrRqmtDate",
+              "MRPElementOpenQuantity",
+              "MRPAvailableQuantity",
+              "ExceptionMessageNumber",
+              "ExceptionMessageText"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MRPArea",
+                "operator": "eq",
+                "value": "{{input.mrp_area}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MRPPlant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MaterialShortageProfile",
+                "operator": "eq",
+                "value": "{{input.shortage_profile}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MaterialShortageProfileCount",
+                "operator": "eq",
+                "value": "{{input.shortage_counter}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Collect supply-demand evidence."
+          }
+        },
+        "failurePolicy": "record_gap"
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "mrp-exception-analysis",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_mrp_master": "{{steps.collect_mrp_master.output}}",
+            "collect_mrp_coverage": "{{steps.collect_mrp_coverage.output}}",
+            "collect_mrp_elements": "{{steps.collect_mrp_elements.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
+}
