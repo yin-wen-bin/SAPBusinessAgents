@@ -36,16 +36,19 @@ TERMINAL = {"completed", "inconclusive", "failed", "cancelled"}
 
 
 def _version(root: Path, *, include_dirty: bool = True) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True
-    ).stdout.strip() if include_dirty else ""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True
+        ).stdout.strip() if include_dirty else ""
+    except (FileNotFoundError, NotADirectoryError, subprocess.CalledProcessError):
+        return "unknown"
     return result.stdout.strip() + ("+working-tree" if dirty else "")
 
 
