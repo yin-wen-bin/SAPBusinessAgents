@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "plugin_id": "sapskillhub",
+  "version": "1.0.0",
+  "name": {
+    "zh": "SAPSkillhub 只读技能",
+    "en": "SAPSkillhub Read-only Skills"
+  },
+  "publisher": "SAPBusinessAgents",
+  "enabled": true,
+  "capabilities": [
+    {
+      "capability": "skill_catalog.v1",
+      "operations": ["list", "get"]
+    },
+    {
+      "capability": "skill_execute.v1",
+      "operations": ["execute"]
+    }
+  ],
+  "transport": {
+    "type": "python_cli",
+    "entrypoint": "python run.py --input input.json --output output.json",
+    "loopback_only": true
+  },
+  "permissions": {
+    "sap_read": true,
+    "sap_write": false,
+    "arbitrary_shell": false,
+    "arbitrary_code": false,
+    "filesystem_write": false
+  },
+  "health_check": "health"
+}

@@ -1,0 +1,119 @@
+---
+import { Play, ShieldCheck } from "@lucide/astro";
+import type { AgentDefinition, Locale } from "../lib/types";
+import { runPath } from "../lib/urls";
+
+interface Props { locale: Locale; agent: AgentDefinition }
+const { locale, agent } = Astro.props;
+const execution = agent.execution;
+const base = import.meta.env.BASE_URL;
+const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
+const destination = runPath(base, locale);
+const labels = locale === "zh" ? {
+  title: "执行这个 Agent",
+  deterministicLead: "执行引擎严格按照已定义步骤运行，Codex 不参与 API 或 Skill 选择。",
+  guidedLead: "该 Agent 的确定性工作流尚未接入。你仍可带着此 Agent 的业务范围发起只读查询；Codex 负责规划，SAP Provider 会再次验证字段和 GET-only 边界。",
+  deterministicSubmit: "执行只读工作流",
+  guidedSubmit: "使用此 Agent 发起只读查询",
+  deterministicSafety: "确定性计划 · SAP Provider GET-only · 完整证据检查",
+  guidedSafety: "Agent 业务上下文 · Codex 只读规划 · SAP Provider GET-only",
+  question: "业务问题",
+  questionHelp: "请提供业务对象编号、日期范围以及希望确认的状态。",
+  questionPlaceholder: `例如：${agent.summary.zh}`,
+  error: "无法创建任务，请确认本地运行服务已经启动。",
+} : {
+  title: "Run this Agent",
+  deterministicLead: "The runtime follows the declared steps exactly. Codex does not choose or replace APIs or Skills.",
+  guidedLead: "This Agent does not yet have a deterministic workflow. You can still start a read-only query with its business scope; Codex plans the query and the SAP Provider revalidates fields and the GET-only boundary.",
+  deterministicSubmit: "Run read-only workflow",
+  guidedSubmit: "Start a read-only query with this Agent",
+  deterministicSafety: "Deterministic plan · SAP Provider GET-only · evidence completeness checks",
+  guidedSafety: "Agent business context · Codex read-only planning · SAP Provider GET-only",
+  question: "Business question",
+  questionHelp: "Include the business object ID, date range, and the status you want to confirm.",
+  questionPlaceholder: `Example: ${agent.summary.en}`,
+  error: "Could not create the run. Confirm that the local runtime is started.",
+};
+---
+
+<section
+  class="agent-run-panel"
+  data-agent-run
+  data-api-base={apiBase}
+  data-run-path={destination}
+  data-agent-id={agent.slug}
+  data-run-mode={execution ? "agent" : "free_query"}
+>
+    <div class="agent-run-heading">
+      <div>
+        <h2>{labels.title}</h2>
+        <p>{execution ? labels.deterministicLead : labels.guidedLead}</p>
+      </div>
+      <span><ShieldCheck size={16} aria-hidden="true" />{execution ? labels.deterministicSafety : labels.guidedSafety}</span>
+    </div>
+    <form class="agent-run-form">
+      {execution ? (
+        <div class="runtime-field-grid">
+          {Object.entries(execution.inputSchema.properties).map(([name, property]) => (
+            <label>
+              <span>{property.title?.[locale] || name}</span>
+              {property.description && <small>{property.description[locale]}</small>}
+              <input
+                name={name}
+                type={property.format === "date" ? "date" : property.type === "integer" || property.type === "number" ? "number" : "text"}
+                value={property.default === undefined ? "" : String(property.default)}
+                placeholder={property.placeholder?.[locale]}
+                minlength={property.minLength}
+                maxlength={property.maxLength}
+                pattern={property.pattern}
+                inputmode={property.pattern === "^[0-9]+$" ? "numeric" : undefined}
+                title={property.description?.[locale]}
+                required={execution.inputSchema.required?.includes(name)}
+              />
+            </label>
+          ))}
+        </div>
+      ) : (
+        <label class="guided-agent-question">
+          <span>{labels.question}</span>
+          <small>{labels.questionHelp}</small>
+          <textarea name="query" rows="3" required placeholder={labels.questionPlaceholder}></textarea>
+        </label>
+      )}
+      <div class="runtime-form-actions">
+        <span class="runtime-form-error" role="alert" hidden>{labels.error}</span>
+        <button type="submit"><Play size={17} aria-hidden="true" />{execution ? labels.deterministicSubmit : labels.guidedSubmit}</button>
+      </div>
+    </form>
+</section>
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-agent-run]").forEach((panel) => {
+    const form = panel.querySelector<HTMLFormElement>("form");
+    const error = panel.querySelector<HTMLElement>(".runtime-form-error");
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
+      if (button) button.disabled = true;
+      if (error) error.hidden = true;
+      const mode = panel.dataset.runMode === "agent" ? "agent" : "free_query";
+      const formData = new FormData(form);
+      const body = mode === "agent"
+        ? { mode, agentId: panel.dataset.agentId, input: Object.fromEntries(formData.entries()) }
+        : { mode, agentId: panel.dataset.agentId, query: String(formData.get("query") || "").trim() };
+      try {
+        const response = await fetch(`${panel.dataset.apiBase}/api/runs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const payload = await response.json();
+        window.location.href = `${panel.dataset.runPath}?run=${encodeURIComponent(payload.run_id)}`;
+      } catch {
+        if (error) error.hidden = false;
+        if (button) button.disabled = false;
+      }
+    });
+  });
+</script>

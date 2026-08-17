@@ -1,74 +1,467 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "gr-ir-clearing",
   "module": "FI",
-  "title": { "zh": "GR/IR Clearing Assistant", "en": "GR/IR Clearing Assistant" },
+  "title": {
+    "zh": "GR/IR 清账助手",
+    "en": "GR/IR Clearing Assistant"
+  },
   "summary": {
     "zh": "关联采购订单历史与 GR/IR 未清项，解释差异原因、账龄和责任方，并给出受控清理建议。",
     "en": "Links PO history to open GR/IR balances, explains causes, aging and ownership, and proposes controlled cleanup actions."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "MM-IV / FI-GL",
-  "tags": ["GR/IR", "Month End", "Reconciliation", "Exception Analysis"],
-  "sapModules": ["MM-IM", "MM-IV", "FI-GL", "FI-AP"],
-  "transactions": ["MB5S", "ME23N", "MIR4", "FBL3N", "MR11"],
-  "tables": ["EKBE", "EKPO", "EKKO", "RBKP", "RSEG", "BKPF", "BSEG"],
-  "systems": ["SAP ECC", "SAP S/4HANA"],
+  "tags": [
+    "GR/IR",
+    "Month End",
+    "Reconciliation",
+    "Exception Analysis"
+  ],
+  "sapModules": [
+    "MM-IM",
+    "MM-IV",
+    "FI-GL",
+    "FI-AP"
+  ],
+  "transactions": [
+    "MB5S",
+    "ME23N",
+    "MIR4",
+    "FBL3N",
+    "MR11"
+  ],
+  "tables": [
+    "EKBE",
+    "EKPO",
+    "EKKO",
+    "RBKP",
+    "RSEG",
+    "BKPF",
+    "BSEG"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
   "inputs": {
-    "zh": ["公司代码与期间", "GR/IR 未清项目", "PO 收货与发票历史", "分析基准日"],
-    "en": ["Company code and period", "Open GR/IR items", "PO receipt and invoice history", "Analysis date"]
+    "zh": [
+      "公司代码与期间",
+      "GR/IR 未清项目",
+      "PO 收货与发票历史",
+      "分析基准日"
+    ],
+    "en": [
+      "Company code and period",
+      "Open GR/IR items",
+      "PO receipt and invoice history",
+      "Analysis date"
+    ]
   },
   "outputs": {
-    "zh": ["原因分类", "账龄", "责任部门", "建议处理动作", "JSON/CSV 异常清单"],
-    "en": ["Cause classification", "Aging", "Responsible team", "Suggested action", "JSON/CSV exception list"]
+    "zh": [
+      "原因分类",
+      "账龄",
+      "责任部门",
+      "建议处理动作",
+      "JSON/CSV 异常清单"
+    ],
+    "en": [
+      "Cause classification",
+      "Aging",
+      "Responsible team",
+      "Suggested action",
+      "JSON/CSV exception list"
+    ]
   },
   "guardrails": {
-    "zh": ["分析与建议保持只读", "MR11 仅作为人工复核建议", "缺少范围或凭证证据时保留数据缺口"],
-    "en": ["Analysis remains read-only", "MR11 is only a human-review recommendation", "Missing scope or evidence remains a data gap"]
+    "zh": [
+      "分析与建议保持只读",
+      "MR11 仅作为人工复核建议",
+      "缺少范围或凭证证据时保留数据缺口"
+    ],
+    "en": [
+      "Analysis remains read-only",
+      "MR11 is only a human-review recommendation",
+      "Missing scope or evidence remains a data gap"
+    ]
   },
   "workflow": [
     {
       "id": "load-open-items",
-      "title": { "zh": "读取 GR/IR 未清项", "en": "Load open GR/IR items" },
-      "description": { "zh": "按公司代码与期间读取范围受控的 GR/IR 余额和关联 PO。", "en": "Loads scope-bound GR/IR balances and linked POs for a company and period." },
+      "title": {
+        "zh": "读取 GR/IR 未清项",
+        "en": "Load open GR/IR items"
+      },
+      "description": {
+        "zh": "按公司代码与期间读取范围受控的 GR/IR 余额和关联 PO。",
+        "en": "Loads scope-bound GR/IR balances and linked POs for a company and period."
+      },
       "tools": [
-        { "name": "GRIRDataPort", "kind": "Data port", "purpose": { "zh": "统一 SAP 只读数据或 fixture", "en": "Unifies read-only SAP data or fixtures" } },
-        { "name": "MB5S / FBL3N", "kind": "SAP read", "purpose": { "zh": "人工核对 GR/IR 科目未清项", "en": "Human verification of GR/IR open items" } }
+        {
+          "name": "GRIRDataPort",
+          "kind": "Data port",
+          "purpose": {
+            "zh": "统一 SAP 只读数据或 fixture",
+            "en": "Unifies read-only SAP data or fixtures"
+          }
+        },
+        {
+          "name": "MB5S / FBL3N",
+          "kind": "SAP read",
+          "purpose": {
+            "zh": "人工核对 GR/IR 科目未清项",
+            "en": "Human verification of GR/IR open items"
+          }
+        }
       ]
     },
     {
       "id": "link-po-history",
-      "title": { "zh": "关联 PO 历史", "en": "Link PO history" },
-      "description": { "zh": "关联收货、冲销、发票、贷项与采购订单状态。", "en": "Links receipts, reversals, invoices, credits and purchase-order status." },
+      "title": {
+        "zh": "关联 PO 历史",
+        "en": "Link PO history"
+      },
+      "description": {
+        "zh": "关联收货、冲销、发票、贷项与采购订单状态。",
+        "en": "Links receipts, reversals, invoices, credits and purchase-order status."
+      },
       "tools": [
-        { "name": "SapAdapter / FixtureAdapter", "kind": "Adapter", "purpose": { "zh": "标准化 EKBE、RBKP/RSEG 和 FI 证据", "en": "Normalizes EKBE, RBKP/RSEG and FI evidence" } },
-        { "name": "ME23N / MIR4", "kind": "SAP read", "purpose": { "zh": "人工查看 PO 历史和发票", "en": "Human review of PO history and invoices" } }
+        {
+          "name": "SapAdapter / FixtureAdapter",
+          "kind": "Adapter",
+          "purpose": {
+            "zh": "标准化 EKBE、RBKP/RSEG 和 FI 证据",
+            "en": "Normalizes EKBE, RBKP/RSEG and FI evidence"
+          }
+        },
+        {
+          "name": "ME23N / MIR4",
+          "kind": "SAP read",
+          "purpose": {
+            "zh": "人工查看 PO 历史和发票",
+            "en": "Human review of PO history and invoices"
+          }
+        }
       ]
     },
     {
       "id": "classify-cause",
-      "title": { "zh": "分类未清原因", "en": "Classify the open cause" },
-      "description": { "zh": "识别已收货未发票、已发票未收货、数量/价格差异、退货或长期挂账。", "en": "Classifies receipt-without-invoice, invoice-without-receipt, quantity/price differences, returns or stale balances." },
+      "title": {
+        "zh": "分类未清原因",
+        "en": "Classify the open cause"
+      },
+      "description": {
+        "zh": "识别已收货未发票、已发票未收货、数量/价格差异、退货或长期挂账。",
+        "en": "Classifies receipt-without-invoice, invoice-without-receipt, quantity/price differences, returns or stale balances."
+      },
       "tools": [
-        { "name": "GRIRAnalyzer", "kind": "Rule engine", "purpose": { "zh": "原因规则、净额与证据校验", "en": "Cause rules, netting and evidence validation" } }
+        {
+          "name": "GRIRAnalyzer",
+          "kind": "Rule engine",
+          "purpose": {
+            "zh": "原因规则、净额与证据校验",
+            "en": "Cause rules, netting and evidence validation"
+          }
+        }
       ]
     },
     {
       "id": "assign-action",
-      "title": { "zh": "确定账龄、责任与建议", "en": "Assign aging, owner and action" },
-      "description": { "zh": "计算账龄并路由采购、仓库、AP 或供应商责任，给出补票、冲销、调整或 MR11 复核建议。", "en": "Calculates aging, routes ownership and suggests invoice, reversal, adjustment or MR11 review." },
+      "title": {
+        "zh": "确定账龄、责任与建议",
+        "en": "Assign aging, owner and action"
+      },
+      "description": {
+        "zh": "计算账龄并路由采购、仓库、AP 或供应商责任，给出补票、冲销、调整或 MR11 复核建议。",
+        "en": "Calculates aging, routes ownership and suggests invoice, reversal, adjustment or MR11 review."
+      },
       "tools": [
-        { "name": "Aging & responsibility rules", "kind": "Decision engine", "purpose": { "zh": "稳定责任归属和处理建议", "en": "Stable ownership and action recommendations" } }
+        {
+          "name": "Aging & responsibility rules",
+          "kind": "Decision engine",
+          "purpose": {
+            "zh": "稳定责任归属和处理建议",
+            "en": "Stable ownership and action recommendations"
+          }
+        }
       ]
     },
     {
       "id": "export-exceptions",
-      "title": { "zh": "输出异常清单", "en": "Export the exception list" },
-      "description": { "zh": "生成可追踪 JSON 或 CSV，供月结 follow-up 使用。", "en": "Produces traceable JSON or CSV for month-end follow-up." },
+      "title": {
+        "zh": "输出异常清单",
+        "en": "Export the exception list"
+      },
+      "description": {
+        "zh": "生成可追踪 JSON 或 CSV，供月结 follow-up 使用。",
+        "en": "Produces traceable JSON or CSV for month-end follow-up."
+      },
       "tools": [
-        { "name": "ReportWriter / CLI", "kind": "Output", "purpose": { "zh": "结构化异常和人工跟进清单", "en": "Structured exceptions and human follow-up list" } }
+        {
+          "name": "ReportWriter / CLI",
+          "kind": "Output",
+          "purpose": {
+            "zh": "结构化异常和人工跟进清单",
+            "en": "Structured exceptions and human follow-up list"
+          }
+        }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "title": {
+            "zh": "公司代码",
+            "en": "Company code"
+          },
+          "description": {
+            "zh": "请输入公司代码。",
+            "en": "Enter the company code."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "gl_account": {
+          "type": "string",
+          "title": {
+            "zh": "GR/IR 总账科目",
+            "en": "GR/IR G/L account"
+          },
+          "description": {
+            "zh": "请输入GR/IR 总账科目。",
+            "en": "Enter the gr/ir g/l account."
+          },
+          "placeholder": {
+            "zh": "例如：0021100000",
+            "en": "Example: 0021100000"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "截止日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入截止日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "company_code",
+        "gl_account",
+        "date_from",
+        "date_to"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 366
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "collect_grir_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_GLACCOUNTLINEITEM",
+            "entity_set": "GLAccountLineItem",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "gl_items",
+                "service_name": "API_GLACCOUNTLINEITEM",
+                "entity_set": "GLAccountLineItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "GLAccount",
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "PostingDate",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
+                  "DebitCreditCode"
+                ],
+                "rationale": "Load scoped GR/IR G/L line items.",
+                "filters": [
+                  {
+                    "field": "CompanyCode",
+                    "operator": "eq",
+                    "value": "{{input.company_code}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "GLAccount",
+                    "operator": "eq",
+                    "value": "{{input.gl_account}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "PostingDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "PostingDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              },
+              {
+                "step_id": "purchase_order_items",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "entity_set": "A_PurchaseOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Material",
+                  "Plant",
+                  "OrderQuantity",
+                  "OrderPriceUnit",
+                  "DocumentCurrency"
+                ],
+                "rationale": "Load purchase-order items referenced by GR/IR lines.",
+                "filter_from_previous": [
+                  {
+                    "field": "PurchaseOrder",
+                    "source_step_id": "gl_items",
+                    "source_field": "PurchasingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "material_documents",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "entity_set": "A_MaterialDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Material",
+                  "Plant",
+                  "QuantityInBaseUnit",
+                  "DebitCreditCode",
+                  "ReversedMaterialDocument"
+                ],
+                "rationale": "Load receipt and reversal evidence.",
+                "filter_from_previous": [
+                  {
+                    "field": "PurchaseOrder",
+                    "source_step_id": "gl_items",
+                    "source_field": "PurchasingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "supplier_invoice_items",
+                "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+                "entity_set": "A_SuplrInvcItemPurOrdRef",
+                "http_method": "GET",
+                "select_fields": [
+                  "SupplierInvoice",
+                  "FiscalYear",
+                  "SupplierInvoiceItem",
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "QuantityInPurchaseOrderUnit",
+                  "SupplierInvoiceItemAmount",
+                  "DocumentCurrency"
+                ],
+                "rationale": "Load supplier invoice references.",
+                "filter_from_previous": [
+                  {
+                    "field": "PurchaseOrder",
+                    "source_step_id": "gl_items",
+                    "source_field": "PurchasingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect GR/IR evidence by G/L scope."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "gr-ir-clearing",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_grir_evidence": "{{steps.collect_grir_evidence.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
 }

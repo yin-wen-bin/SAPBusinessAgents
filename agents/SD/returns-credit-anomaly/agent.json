@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "returns-credit-anomaly",
   "module": "SD",
   "title": {
@@ -8,9 +8,9 @@
   },
   "summary": {
     "zh": "串联客户退货、贷项申请和后续凭证，识别超量、重复和引用异常。",
-    "en": "串联客户退货、贷项申请和后续凭证，识别超量、重复和引用异常。"
+    "en": "Links customer returns, credit-memo requests and subsequent documents to identify excess quantities, duplicates and reference anomalies."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -326,5 +326,260 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_organization": {
+          "type": "string",
+          "title": {
+            "zh": "销售组织",
+            "en": "Sales organization"
+          },
+          "description": {
+            "zh": "请输入销售组织。",
+            "en": "Enter the sales organization."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "sales_organization",
+        "date_from",
+        "date_to"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 31
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "collect_returns_credit_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_CUSTOMER_RETURN_SRV",
+            "entity_set": "A_CustomerReturn",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "returns",
+                "service_name": "API_CUSTOMER_RETURN_SRV",
+                "entity_set": "A_CustomerReturn",
+                "http_method": "GET",
+                "select_fields": [
+                  "CustomerReturn",
+                  "SalesOrganization",
+                  "CustomerReturnDate",
+                  "ReferenceSDDocument",
+                  "OverallSDProcessStatus"
+                ],
+                "rationale": "Load customer returns in scope.",
+                "filters": [
+                  {
+                    "field": "SalesOrganization",
+                    "operator": "eq",
+                    "value": "{{input.sales_organization}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "CustomerReturnDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "CustomerReturnDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              },
+              {
+                "step_id": "return_items",
+                "service_name": "API_CUSTOMER_RETURN_SRV",
+                "entity_set": "A_CustomerReturnItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "CustomerReturn",
+                  "CustomerReturnItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "ReturnReason",
+                  "ReturnsMaterialHasBeenReceived",
+                  "ReturnsRefundType",
+                  "RequestedQuantity",
+                  "NetAmount"
+                ],
+                "rationale": "Load customer-return items.",
+                "filter_from_previous": [
+                  {
+                    "field": "CustomerReturn",
+                    "source_step_id": "returns",
+                    "source_field": "CustomerReturn",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "credit_requests",
+                "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+                "entity_set": "A_CreditMemoRequest",
+                "http_method": "GET",
+                "select_fields": [
+                  "CreditMemoRequest",
+                  "SalesOrganization",
+                  "CreditMemoRequestDate",
+                  "ReferenceSDDocument",
+                  "TotalNetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load credit memo requests in scope.",
+                "filters": [
+                  {
+                    "field": "SalesOrganization",
+                    "operator": "eq",
+                    "value": "{{input.sales_organization}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "CreditMemoRequestDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "CreditMemoRequestDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              },
+              {
+                "step_id": "credit_request_items",
+                "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+                "entity_set": "A_CreditMemoRequestItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "CreditMemoRequest",
+                  "CreditMemoRequestItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "RequestedQuantity",
+                  "NetAmount"
+                ],
+                "rationale": "Load credit memo request items.",
+                "filter_from_previous": [
+                  {
+                    "field": "CreditMemoRequest",
+                    "source_step_id": "credit_requests",
+                    "source_field": "CreditMemoRequest",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_documents",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "BillingQuantity",
+                  "NetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load follow-on billing for credit requests.",
+                "filter_from_previous": [
+                  {
+                    "field": "ReferenceSDDocument",
+                    "source_step_id": "credit_requests",
+                    "source_field": "CreditMemoRequest",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect returns and credit evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "returns-credit-anomaly",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_returns_credit_evidence": "{{steps.collect_returns_credit_evidence.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
 }

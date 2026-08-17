@@ -26,7 +26,7 @@ test("SD detail pages render eleven independent eight-step workflows", async () 
   for (const slug of slugs) {
     const zh = await readPage("zh", "agents", "SD", slug);
     assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
-    assert.match(zh, /sapclaw_runtime_health/);
+    assert.match(zh, /sap_read\.health|sapclaw_runtime_health/);
     assert.match(zh, /SAPSkillhub read-only skill/);
     assert.match(zh, /严格只读/);
   }
@@ -39,6 +39,63 @@ test("English catalog reuses the SAPSkillhub UI structure", async () => {
   assert.match(html, /class="sidebar"/);
   assert.match(html, /class="search-shell"/);
   assert.match(html, /class="catalog-table-head"/);
+  assert.doesNotMatch(html, /诊断销售订单|核对订单、交货和开票|聚合订单、交货、开票/);
+});
+
+test("catalog and Agent run entry points are consistently localized", async () => {
+  const zh = await readPage("zh");
+  assert.match(zh, /应付账款付款助手/);
+  assert.match(zh, /生产订单执行监控助手/);
+
+  const guidedZh = await readPage("zh", "agents", "FI", "ap-payment");
+  const guidedEn = await readPage("en", "agents", "FI", "ap-payment");
+  assert.match(guidedZh, /执行引擎严格按照已定义步骤运行/);
+  assert.match(guidedZh, /执行这个 Agent/);
+  assert.match(guidedEn, /The runtime follows the declared steps exactly/);
+  assert.match(guidedEn, /Run this Agent/);
+  assert.doesNotMatch(guidedZh, /该 Agent 的确定性工作流尚未接入/);
+
+  const deterministic = await readPage("zh", "agents", "MM", "procure-to-pay-status");
+  assert.match(deterministic, /执行引擎严格按照已定义步骤运行/);
+  assert.doesNotMatch(deterministic, /该 Agent 的确定性工作流尚未接入/);
+});
+
+test("dual-mode prototype renders free-query and run pages", async () => {
+  const home = await readPage("zh");
+  const ask = await readPage("zh", "ask");
+  const run = await readPage("zh", "run");
+  const plugins = await readPage("zh", "plugins");
+  const settings = await readPage("zh", "settings");
+  assert.match(home, /直接询问 SAP/);
+  assert.match(ask, /开始只读查询/);
+  assert.match(run, /查询进度/);
+  assert.match(run, /业务结论/);
+  assert.match(run, /各阶段结果/);
+  assert.match(run, /查询结果明细/);
+  assert.match(run, /data-input-question/);
+  assert.match(run, /请直接回答下面的具体问题/);
+  assert.match(run, /技术详情（供 IT 支持和审计使用）/);
+  assert.match(run, /<details class="run-technical-details">/);
+  assert.match(run, /原始 SAP 证据/);
+  assert.match(plugins, /插件与能力/);
+  assert.match(plugins, /data-plugin-manager/);
+  assert.match(plugins, /禁止 SAP 写入/);
+  assert.match(settings, /SDK 版本与更新/);
+  assert.match(settings, /检查全部更新/);
+  assert.match(settings, /data-sdk-manager/);
+});
+
+test("workflow builder is rendered and consistently localized", async () => {
+  const zh = await readPage("zh", "workflows");
+  const en = await readPage("en", "workflows");
+  assert.match(zh, /工作流编排/);
+  assert.match(zh, /Codex 真机验证/);
+  assert.match(zh, /发布固定工作流/);
+  assert.doesNotMatch(zh, />Workflow builder</);
+  assert.match(en, /Workflow builder/);
+  assert.match(en, /Validate live with Codex/);
+  assert.match(en, /Publish fixed workflow/);
+  assert.doesNotMatch(en, />工作流编排</);
 });
 
 test("detail pages render workflow and step-level tools", async () => {
@@ -73,8 +130,8 @@ test("P2P detail page renders the complete bilingual API workflow", async () => 
   assert.equal((zh.match(/class="step-operations"/g) ?? []).length, 8);
   assert.match(zh, /详细操作/);
   assert.match(zh, /本步骤 API \/ SAPSkill \/ Tools/);
-  assert.match(zh, /sapclaw_runtime_health/);
-  assert.match(zh, /sapclaw_schema/);
+  assert.match(zh, /sap_read\.health/);
+  assert.match(zh, /sap_read\.schema/);
   assert.match(zh, /API_PURCHASEORDER_PROCESS_SRV/);
   assert.match(zh, /API_MATERIAL_DOCUMENT_SRV/);
   assert.match(zh, /API_SUPPLIERINVOICE_PROCESS_SRV/);
@@ -82,6 +139,8 @@ test("P2P detail page renders the complete bilingual API workflow", async () => 
   assert.match(zh, /OriginalReferenceDocument/);
   assert.match(zh, /ClearingAccountingDocument/);
   assert.match(zh, /本次验证主路径未使用/);
+  assert.match(zh, /执行这个 Agent/);
+  assert.match(zh, /purchase_order/);
 
   assert.equal((en.match(/class="workflow-step"/g) ?? []).length, 8);
   assert.equal((en.match(/class="step-operations"/g) ?? []).length, 8);

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "billing-dispute-classification",
   "module": "SD",
   "title": {
@@ -8,9 +8,9 @@
   },
   "summary": {
     "zh": "将客户拒票与争议文本分类，并关联FI、POD及开票证据。",
-    "en": "将客户拒票与争议文本分类，并关联FI、POD及开票证据。"
+    "en": "Classifies customer invoice rejections and dispute text, then links FI, proof-of-delivery and billing evidence."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -328,5 +328,166 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "billing_document": {
+          "type": "string",
+          "title": {
+            "zh": "开票凭证号",
+            "en": "Billing document"
+          },
+          "description": {
+            "zh": "请输入开票凭证号。",
+            "en": "Enter the billing document."
+          },
+          "placeholder": {
+            "zh": "例如：90000025",
+            "en": "Example: 90000025"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "billing_document"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_dispute_base_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_BILLING_DOCUMENT_SRV",
+            "entity_set": "A_BillingDocument",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "billing_headers",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "SalesOrganization",
+                  "BillingDocumentDate",
+                  "BillingDocumentIsCancelled",
+                  "AccountingPostingStatus",
+                  "OverallBillingStatus",
+                  "TotalNetAmount",
+                  "TransactionCurrency",
+                  "TaxAmount"
+                ],
+                "rationale": "Load the requested billing header.",
+                "filters": [
+                  {
+                    "field": "BillingDocument",
+                    "operator": "eq",
+                    "value": "{{input.billing_document}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_items",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "SalesDocument",
+                  "SalesDocumentItem",
+                  "BillingQuantity",
+                  "NetAmount",
+                  "TransactionCurrency",
+                  "TaxAmount",
+                  "Plant",
+                  "Material"
+                ],
+                "rationale": "Load billing items and source references.",
+                "filters": [
+                  {
+                    "field": "BillingDocument",
+                    "operator": "eq",
+                    "value": "{{input.billing_document}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "accounting_items",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "FiscalPeriod",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "Supplier",
+                  "Customer",
+                  "GLAccount",
+                  "OperationalGLAccount",
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "PostingDate",
+                  "NetDueDate",
+                  "IsCleared",
+                  "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "PaymentMethod",
+                  "PaymentBlockingReason",
+                  "HouseBank",
+                  "HouseBankAccount",
+                  "AccountingDocumentType",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency",
+                  "OrderID"
+                ],
+                "rationale": "Load accounting evidence for the billing document.",
+                "filters": [
+                  {
+                    "field": "BillingDocument",
+                    "operator": "eq",
+                    "value": "{{input.billing_document}}",
+                    "value_type": "string"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect billing and FI evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "billing-dispute-classification",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_dispute_base_evidence": "{{steps.collect_dispute_base_evidence.output}}"
+          },
+          "known_gaps": [
+            "billing_dispute_text_evidence"
+          ]
+        }
+      }
+    ]
+  }
 }

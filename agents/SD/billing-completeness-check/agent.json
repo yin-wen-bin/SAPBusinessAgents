@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "billing-completeness-check",
   "module": "SD",
   "title": {
@@ -8,9 +8,9 @@
   },
   "summary": {
     "zh": "核对订单、交货和开票的数量、金额、币种、税码及重复引用。",
-    "en": "核对订单、交货和开票的数量、金额、币种、税码及重复引用。"
+    "en": "Reconciles quantity, amount, currency, tax code and duplicate references across orders, deliveries and billing documents."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -332,5 +332,187 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "billing_document": {
+          "type": "string",
+          "title": {
+            "zh": "开票凭证号",
+            "en": "Billing document"
+          },
+          "description": {
+            "zh": "请输入开票凭证号。",
+            "en": "Enter the billing document."
+          },
+          "placeholder": {
+            "zh": "例如：90000025",
+            "en": "Example: 90000025"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "billing_document"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_billing_completeness_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_BILLING_DOCUMENT_SRV",
+            "entity_set": "A_BillingDocument",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "billing_headers",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "SalesOrganization",
+                  "BillingDocumentDate",
+                  "BillingDocumentIsCancelled",
+                  "AccountingPostingStatus",
+                  "OverallBillingStatus",
+                  "TotalNetAmount",
+                  "TransactionCurrency",
+                  "TaxAmount"
+                ],
+                "rationale": "Load the requested billing header.",
+                "filters": [
+                  {
+                    "field": "BillingDocument",
+                    "operator": "eq",
+                    "value": "{{input.billing_document}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_items",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "SalesDocument",
+                  "SalesDocumentItem",
+                  "BillingQuantity",
+                  "NetAmount",
+                  "TransactionCurrency",
+                  "TaxAmount",
+                  "Plant",
+                  "Material"
+                ],
+                "rationale": "Load billing items and source references.",
+                "filters": [
+                  {
+                    "field": "BillingDocument",
+                    "operator": "eq",
+                    "value": "{{input.billing_document}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "source_sales_items",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "RequestedQuantity",
+                  "NetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load source sales-order items.",
+                "filter_from_previous": [
+                  {
+                    "field": "SalesOrder",
+                    "source_step_id": "billing_items",
+                    "source_field": "SalesDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "SalesOrderItem",
+                    "source_step_id": "billing_items",
+                    "source_field": "SalesDocumentItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "source_delivery_items",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "entity_set": "A_OutbDeliveryItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "DeliveryDocument",
+                  "DeliveryDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "ActualDeliveryQuantity",
+                  "Plant",
+                  "Material"
+                ],
+                "rationale": "Load source delivery items when billing is delivery-related.",
+                "filter_from_previous": [
+                  {
+                    "field": "DeliveryDocument",
+                    "source_step_id": "billing_items",
+                    "source_field": "ReferenceSDDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "DeliveryDocumentItem",
+                    "source_step_id": "billing_items",
+                    "source_field": "ReferenceSDDocumentItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect billing and source-document evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "billing-completeness-check",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_billing_completeness_evidence": "{{steps.collect_billing_completeness_evidence.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
 }

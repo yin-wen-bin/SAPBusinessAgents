@@ -1,0 +1,1940 @@
+from __future__ import annotations
+
+import asyncio
+import copy
+import csv
+import json
+import re
+import time
+import uuid
+from datetime import date
+from io import StringIO
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
+from . import rules
+from .codex_planner import Planner
+from .config import Settings
+from .database import RunStore
+from .manifests import AgentRepository, ManifestError, validate_execution
+from .models import Completeness, PlannerDecision, RunCreate, RunMode, RunResult, RunStatus, utc_now
+from .plugins import PluginError, SapReadCapability
+from .relationships import RelationshipCatalog
+from .sapclaw import SapClawError
+from .sap_read import SapReadError
+from .skills import SkillError, SkillRegistry
+from .workflows import (
+    WorkflowError,
+    WorkflowRepository,
+    apply_transform,
+    iter_node_connections,
+    topological_order,
+    validate_value,
+    validate_workflow,
+    workflow_digest,
+)
+
+
+class RunExecutionError(RuntimeError):
+    def __init__(self, message: str, *, code: str = "run_failed", detail: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = detail
+
+
+class RunCoordinator:
+    def __init__(
+        self,
+        settings: Settings,
+        store: RunStore,
+        agents: AgentRepository,
+        sap_read: SapReadCapability,
+        skills: SkillRegistry,
+        planner: Planner,
+        workflows: WorkflowRepository | None = None,
+    ) -> None:
+        self.settings = settings
+        self.store = store
+        self.agents = agents
+        self.sap_read = sap_read
+        self.skills = skills
+        self.planner = planner
+        self.workflows = workflows
+        self.relationships = RelationshipCatalog.load(
+            settings.repository_root / "config" / "business-relationships.json"
+        )
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._worker_task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        if self._worker_task is None:
+            self._worker_task = asyncio.create_task(self._worker(), name="sapba-local-worker")
+
+    async def stop(self) -> None:
+        if self._worker_task is not None:
+            await self._queue.put(None)
+            await self._worker_task
+            self._worker_task = None
+
+    async def submit(self, request: RunCreate) -> str:
+        run_id = f"run_{uuid.uuid4().hex[:16]}"
+        workflow: dict[str, Any] | None = None
+        if request.mode == RunMode.workflow:
+            if self.workflows is None:
+                raise RunExecutionError("Workflow runtime is unavailable.", code="workflow_unavailable")
+            workflow = self.workflows.get(str(request.workflow_id))
+        self.store.create_run(run_id, request)
+        if workflow is not None:
+            self.store.save_workflow_snapshot(run_id, workflow)
+        self.store.append_event(run_id, "run_queued", {"mode": request.mode.value})
+        await self._queue.put(run_id)
+        return run_id
+
+    async def submit_workflow_snapshot(
+        self,
+        workflow: dict[str, Any],
+        input_value: dict[str, Any],
+        *,
+        draft_id: str | None = None,
+        revision: int | None = None,
+    ) -> str:
+        if self.workflows is None:
+            raise RunExecutionError("Workflow runtime is unavailable.", code="workflow_unavailable")
+        validate_workflow(workflow, self.agents, source=f"workflow:{workflow.get('id')}")
+        request = RunCreate(
+            mode=RunMode.workflow,
+            workflowId=str(workflow.get("id")),
+            input=input_value,
+        )
+        run_id = f"run_{uuid.uuid4().hex[:16]}"
+        self.store.create_run(run_id, request)
+        self.store.save_workflow_snapshot(
+            run_id, workflow, draft_id=draft_id, revision=revision
+        )
+        self.store.append_event(
+            run_id,
+            "run_queued",
+            {"mode": request.mode.value, "draft_id": draft_id, "revision": revision},
+        )
+        await self._queue.put(run_id)
+        return run_id
+
+    async def provide_input(self, run_id: str, value: str) -> None:
+        record = self.store.get_run(run_id)
+        if record.status != RunStatus.waiting_input:
+            raise RunExecutionError("This run is not waiting for input.", code="run_not_waiting_input")
+        query = f"{record.query or ''}\nAdditional user information / 用户补充：{value}".strip()
+        self.store.update_run(run_id, query=query, status=RunStatus.queued, error_json=None)
+        self.store.append_event(run_id, "input_received", {"input": value})
+        await self._queue.put(run_id)
+
+    def cancel(self, run_id: str) -> None:
+        record = self.store.get_run(run_id)
+        if record.status in {RunStatus.completed, RunStatus.inconclusive, RunStatus.failed, RunStatus.cancelled}:
+            return
+        self.store.update_run(run_id, cancel_requested=True)
+        self.store.append_event(run_id, "cancellation_requested", {})
+
+    async def _worker(self) -> None:
+        while True:
+            run_id = await self._queue.get()
+            try:
+                if run_id is None:
+                    return
+                await asyncio.wait_for(self._execute(run_id), timeout=self.settings.max_run_seconds)
+            except asyncio.CancelledError:
+                if run_id is not None and self.store.get_run(run_id).status == RunStatus.cancelled:
+                    continue
+                raise
+            except TimeoutError:
+                if run_id is not None:
+                    self._finish_error(
+                        run_id,
+                        RunExecutionError("Run exceeded the local timeout.", code="run_timeout"),
+                        RunStatus.inconclusive,
+                    )
+            except Exception as exc:  # keep the single local worker alive
+                if run_id is not None:
+                    self._finish_error(run_id, exc, RunStatus.failed)
+            finally:
+                self._queue.task_done()
+
+    async def _execute(self, run_id: str) -> None:
+        record = self.store.get_run(run_id)
+        if record.cancel_requested:
+            self._finish_cancelled(run_id)
+            return
+        started = record.started_at or utc_now()
+        self.store.update_run(run_id, started_at=started)
+        self.store.append_event(run_id, "run_started", {"mode": record.mode.value})
+        if record.mode == RunMode.agent:
+            await self._execute_agent(run_id)
+        elif record.mode == RunMode.free_query:
+            await self._execute_free_query(run_id)
+        else:
+            await self._execute_workflow(run_id)
+
+    async def _execute_agent(self, run_id: str) -> None:
+        record = self.store.get_run(run_id)
+        self.store.update_run(run_id, status=RunStatus.validating)
+        self.store.append_event(run_id, "validation_started", {"agent_id": record.agent_id})
+        try:
+            agent = self.agents.get(str(record.agent_id))
+            validate_execution(agent, f"agent:{record.agent_id}")
+            _validate_input(record.input, agent["execution"]["inputSchema"])
+        except (KeyError, ManifestError, PluginError, ValueError) as exc:
+            raise RunExecutionError(str(exc), code="agent_validation_failed") from exc
+
+        execution = agent["execution"]
+        context: dict[str, Any] = {"input": record.input, "steps": {}}
+        result = RunResult(
+            run_id=run_id,
+            mode=RunMode.agent,
+            agent_id=record.agent_id,
+            input=record.input,
+            plan={"mode": "deterministic", "steps": execution["steps"]},
+            started_at=record.started_at,
+        )
+        self.store.update_run(run_id, status=RunStatus.running, plan_json=result.plan)
+
+        for index, step in enumerate(execution["steps"]):
+            self._ensure_not_cancelled(run_id)
+            step_id = step["id"]
+            self.store.append_event(
+                run_id,
+                "step_started",
+                {"step_id": step_id, "executor": step["executor"], "index": index},
+            )
+            started_at = utc_now()
+            started_monotonic = time.perf_counter()
+            call_id = (
+                f"call_{uuid.uuid4().hex[:16]}"
+                if step["executor"] in {"sap_read", "sapclaw", "skill"}
+                else None
+            )
+            rendered = _render_template(step.get("request") or step.get("inputMapping") or {}, context)
+            try:
+                output = await self._execute_step(
+                    run_id, step, rendered, record.query or "", call_id=call_id
+                )
+            except (
+                SapReadError,
+                SapClawError,
+                SkillError,
+                PluginError,
+                RunExecutionError,
+                ValueError,
+            ) as exc:
+                result.steps.append(
+                    {
+                        "step_id": step_id,
+                        "executor": step["executor"],
+                        "operation": step.get("operation"),
+                        "status": "failed",
+                        "started_at": started_at,
+                        "completed_at": utc_now(),
+                        "error": _error_payload(exc),
+                    }
+                )
+                if step.get("failurePolicy", "fail_run") != "record_gap":
+                    self.store.update_run(run_id, result_json=result)
+                    raise
+                gap = {
+                    "ok": False,
+                    "status": "capability_blocked",
+                    "source_complete": False,
+                    "source_truncated": False,
+                    "step_id": step_id,
+                    "error": _error_payload(exc),
+                }
+                output = _redact_sensitive(gap)
+                context["steps"][step_id] = {"output": output}
+                result.errors.append(gap["error"])
+                result.evidence.append(
+                    {
+                        "step_id": step_id,
+                        "source": step["executor"],
+                        "operation": step.get("operation"),
+                        "payload": output,
+                    }
+                )
+                if step["executor"] in {"sap_read", "sapclaw", "skill"}:
+                    result.tool_calls.append(
+                        {
+                            **_plugin_trace(
+                                self.skills
+                                if step["executor"] == "skill"
+                                else self.sap_read,
+                                "skill_execute.v1"
+                                if step["executor"] == "skill"
+                                else "sap_read.v1",
+                                "execute"
+                                if step["executor"] == "skill"
+                                else str(step.get("operation") or ""),
+                            ),
+                            "call_id": call_id,
+                            "step_id": step_id,
+                            "tool": "sap_read"
+                            if step["executor"] in {"sap_read", "sapclaw"}
+                            else "skill",
+                            "operation": step.get("operation"),
+                            "status": "capability_blocked",
+                            "duration_ms": round(
+                                (time.perf_counter() - started_monotonic) * 1000, 3
+                            ),
+                            "error": gap["error"],
+                        }
+                    )
+                self.store.append_event(
+                    run_id,
+                    "evidence_gap_recorded",
+                    {"step_id": step_id, "error": gap["error"]},
+                )
+                self.store.update_run(run_id, result_json=result)
+                continue
+            output = _redact_sensitive(output)
+            context["steps"][step_id] = {"output": output}
+            step_record = {
+                "step_id": step_id,
+                "executor": step["executor"],
+                "operation": step.get("operation"),
+                "status": "completed",
+                "started_at": started_at,
+                "completed_at": utc_now(),
+                "output_reference": f"steps.{step_id}.output",
+            }
+            result.steps.append(step_record)
+            if step["executor"] in {"sap_read", "sapclaw", "skill"}:
+                operation = "execute" if step["executor"] == "skill" else str(step.get("operation") or "")
+                trace = _plugin_trace(
+                    self.skills if step["executor"] == "skill" else self.sap_read,
+                    "skill_execute.v1" if step["executor"] == "skill" else "sap_read.v1",
+                    operation,
+                )
+                result.tool_calls.append(
+                    {
+                        **trace,
+                        "call_id": call_id,
+                        "step_id": step_id,
+                        "tool": "sap_read" if step["executor"] in {"sap_read", "sapclaw"} else step["executor"],
+                        "operation": operation,
+                        "status": "completed",
+                        "duration_ms": round((time.perf_counter() - started_monotonic) * 1000, 3),
+                    }
+                )
+                result.evidence.append(
+                    {
+                        **trace,
+                        "call_id": call_id,
+                        "step_id": step_id,
+                        "source": "sap_read" if step["executor"] in {"sap_read", "sapclaw"} else step["executor"],
+                        "payload": output,
+                    }
+                )
+                self.store.append_event(
+                    run_id,
+                    "evidence_received",
+                    {"step_id": step_id, **trace, "call_id": call_id},
+                )
+            if step["executor"] == "rule":
+                result.rule_results.append(output)
+                rule_summary = output.get("summary") if isinstance(output, dict) else None
+                if isinstance(rule_summary, dict):
+                    result.summary = {
+                        key: str(value)
+                        for key, value in rule_summary.items()
+                        if key in {"zh", "en"} and value is not None
+                    }
+                self.store.append_event(run_id, "rule_completed", {"step_id": step_id, "result": output})
+            self.store.append_event(run_id, "tool_completed", {"step_id": step_id})
+            self.store.update_run(run_id, result_json=result)
+
+        output_schema = execution.get("outputSchema")
+        output_mapping = execution.get("outputMapping")
+        if isinstance(output_schema, dict) and isinstance(output_mapping, dict):
+            try:
+                result.workflow_output = _render_template(output_mapping, context)
+                validate_value(
+                    result.workflow_output,
+                    output_schema,
+                    label=f"Agent {record.agent_id} workflow output",
+                )
+            except WorkflowError as exc:
+                raise RunExecutionError(
+                    str(exc), code=exc.code, detail=exc.detail
+                ) from exc
+        self._complete_result(run_id, result)
+
+    async def _execute_step(
+        self,
+        run_id: str,
+        step: dict[str, Any],
+        rendered: dict[str, Any],
+        query: str,
+        *,
+        call_id: str | None = None,
+    ) -> dict[str, Any]:
+        executor = step["executor"]
+        operation = step.get("operation")
+        if executor in {"sap_read", "sapclaw"}:
+            trace = _plugin_trace(self.sap_read, "sap_read.v1", str(operation or ""))
+            self.store.append_event(
+                run_id,
+                "tool_started",
+                {
+                    "step_id": step["id"],
+                    "tool": "sap_read",
+                    "operation": operation,
+                    "call_id": call_id,
+                    **trace,
+                },
+            )
+            if operation == "execute_plan":
+                plan = rendered.get("plan") if "plan" in rendered else rendered
+                relationship_failures = self.relationships.validate_plans(
+                    [(str(step.get("id") or "deterministic_sap_plan"), plan)]
+                )
+                if relationship_failures:
+                    raise RunExecutionError(
+                        "The deterministic Agent plan uses an unapproved cross-entity business relationship.",
+                        code="agent_relationship_rejected",
+                        detail={"failures": relationship_failures},
+                    )
+                validation = await self.sap_read.validate_plan(plan, query)
+                if validation.get("ok") is not True:
+                    raise SapReadError(
+                        "The selected SAP Provider rejected the deterministic Agent plan.",
+                        code="sap_read_plan_rejected",
+                        detail=validation,
+                    )
+                return await self.sap_read.execute_plan(plan, query)
+            if operation == "execute_get":
+                return await self.sap_read.execute_get(rendered)
+        if executor == "skill":
+            trace = _plugin_trace(self.skills, "skill_execute.v1", "execute")
+            self.store.append_event(
+                run_id,
+                "tool_started",
+                {
+                    "step_id": step["id"],
+                    "tool": "skill",
+                    "skill_id": step.get("skillId"),
+                    "call_id": call_id,
+                    **trace,
+                },
+            )
+            return await self.skills.execute(str(step.get("skillId") or ""), rendered)
+        if executor == "rule":
+            return rules.evaluate(str(operation), rendered)
+        raise ValueError(f"Unsupported executor: {executor}")
+
+    async def _execute_workflow(self, run_id: str) -> None:
+        record = self.store.get_run(run_id)
+        if self.workflows is None:
+            raise RunExecutionError("Workflow runtime is unavailable.", code="workflow_unavailable")
+        try:
+            workflow = self.store.get_workflow_snapshot(run_id)
+            validate_workflow(
+                workflow,
+                self.agents,
+                source=f"workflow:{record.workflow_id}",
+                require_pins=True,
+            )
+            _validate_input(record.input, workflow["inputSchema"])
+        except (KeyError, WorkflowError, ValueError) as exc:
+            code = getattr(exc, "code", "workflow_validation_failed")
+            raise RunExecutionError(str(exc), code=code, detail=getattr(exc, "detail", None)) from exc
+
+        self.store.update_run(run_id, status=RunStatus.running, plan_json=workflow)
+        self.store.append_event(
+            run_id,
+            "workflow_started",
+            {
+                "workflow_id": record.workflow_id,
+                "revision": workflow_digest(workflow),
+                "node_count": len(workflow.get("nodes") or []),
+            },
+        )
+        result = RunResult(
+            run_id=run_id,
+            mode=RunMode.workflow,
+            workflow_id=record.workflow_id,
+            workflow_revision=workflow_digest(workflow),
+            input=record.input,
+            plan=workflow,
+            started_at=record.started_at,
+        )
+        nodes = {str(item["id"]): item for item in workflow.get("nodes") or []}
+        node_outputs: dict[str, dict[str, Any]] = {}
+        degraded = False
+        blocked_nodes: set[str] = set()
+
+        for node_id in topological_order(workflow):
+            self._ensure_not_cancelled(run_id)
+            node = nodes[node_id]
+            agent_id = str(node["agentId"])
+            self.store.append_event(
+                run_id,
+                "node_started",
+                {"node_id": node_id, "agent_id": agent_id},
+            )
+            try:
+                node_input = _resolve_node_input(
+                    workflow,
+                    node_id,
+                    record.input,
+                    node_outputs,
+                )
+                agent = self.agents.get(agent_id)
+                _validate_input(node_input, agent["execution"]["inputSchema"])
+            except WorkflowError as exc:
+                if exc.code == "workflow_output_unavailable":
+                    degraded = True
+                    blocked_nodes.add(node_id)
+                    result.node_results.append(
+                        {
+                            "node_id": node_id,
+                            "agent_id": agent_id,
+                            "status": "skipped",
+                            "reason": str(exc),
+                            "error": {"code": exc.code, "message": str(exc)},
+                        }
+                    )
+                    self.store.append_event(
+                        run_id,
+                        "node_skipped",
+                        {"node_id": node_id, "agent_id": agent_id, "reason": str(exc)},
+                    )
+                    continue
+                self.store.append_event(
+                    run_id,
+                    "mapping_failed",
+                    {"node_id": node_id, "agent_id": agent_id, "error": str(exc)},
+                )
+                raise RunExecutionError(str(exc), code=exc.code, detail=exc.detail) from exc
+            except ValueError as exc:
+                if str(exc).startswith("Missing required input:"):
+                    degraded = True
+                    blocked_nodes.add(node_id)
+                    result.node_results.append(
+                        {
+                            "node_id": node_id,
+                            "agent_id": agent_id,
+                            "status": "skipped",
+                            "reason": str(exc),
+                            "error": {
+                                "code": "workflow_output_unavailable",
+                                "message": str(exc),
+                            },
+                        }
+                    )
+                    self.store.append_event(
+                        run_id,
+                        "node_skipped",
+                        {"node_id": node_id, "agent_id": agent_id, "reason": str(exc)},
+                    )
+                    continue
+                self.store.append_event(
+                    run_id,
+                    "mapping_failed",
+                    {"node_id": node_id, "agent_id": agent_id, "error": str(exc)},
+                )
+                raise RunExecutionError(str(exc), code="mapping_failed") from exc
+            except KeyError as exc:
+                self.store.append_event(
+                    run_id,
+                    "mapping_failed",
+                    {"node_id": node_id, "agent_id": agent_id, "error": str(exc)},
+                )
+                raise RunExecutionError(str(exc), code="mapping_failed") from exc
+
+            self.store.append_event(
+                run_id,
+                "node_input_resolved",
+                {"node_id": node_id, "agent_id": agent_id, "fields": sorted(node_input)},
+            )
+            child_run_id = f"run_{uuid.uuid4().hex[:16]}"
+            child_request = RunCreate(mode=RunMode.agent, agentId=agent_id, input=node_input)
+            self.store.create_run(
+                child_run_id,
+                child_request,
+                parent_run_id=run_id,
+                node_id=node_id,
+            )
+            self.store.append_event(
+                child_run_id,
+                "run_queued",
+                {"mode": RunMode.agent.value, "parent_run_id": run_id, "node_id": node_id},
+            )
+            try:
+                await self._execute(child_run_id)
+            except Exception as exc:
+                self._finish_error(child_run_id, exc, RunStatus.failed)
+            child = self.store.get_run(child_run_id)
+            if child.status in {RunStatus.failed, RunStatus.cancelled} or child.result is None:
+                error = child.error or {
+                    "code": "workflow_node_failed",
+                    "message": f"Agent node {node_id} did not return a result.",
+                }
+                result.node_results.append(
+                    {
+                        "node_id": node_id,
+                        "agent_id": agent_id,
+                        "run_id": child_run_id,
+                        "status": child.status.value,
+                        "input": node_input,
+                        "error": error,
+                    }
+                )
+                self.store.update_run(run_id, result_json=result)
+                raise RunExecutionError(
+                    str(error.get("message") or "Workflow node failed."),
+                    code=str(error.get("code") or "workflow_node_failed"),
+                    detail={"node_id": node_id, "child_run_id": child_run_id},
+                )
+            node_output = child.result.workflow_output
+            try:
+                agent = self.agents.get(agent_id)
+                validate_value(
+                    node_output,
+                    agent["execution"]["outputSchema"],
+                    label=f"Node {node_id} output",
+                )
+            except WorkflowError as exc:
+                raise RunExecutionError(str(exc), code=exc.code, detail=exc.detail) from exc
+            node_outputs[node_id] = node_output
+            node_result = {
+                "node_id": node_id,
+                "agent_id": agent_id,
+                "run_id": child_run_id,
+                "status": child.status.value,
+                "input": node_input,
+                "output": node_output,
+                "completeness": child.result.completeness.model_dump(mode="json"),
+            }
+            result.node_results.append(node_result)
+            result.evidence.extend(
+                [{**item, "node_id": node_id, "agent_id": agent_id} for item in child.result.evidence]
+            )
+            result.tool_calls.extend(
+                [{**item, "node_id": node_id, "agent_id": agent_id} for item in child.result.tool_calls]
+            )
+            result.rule_results.extend(
+                [{**item, "node_id": node_id, "agent_id": agent_id} for item in child.result.rule_results]
+            )
+            if child.status == RunStatus.inconclusive:
+                degraded = True
+                self.store.append_event(
+                    run_id,
+                    "node_inconclusive",
+                    {"node_id": node_id, "agent_id": agent_id, "run_id": child_run_id},
+                )
+            else:
+                self.store.append_event(
+                    run_id,
+                    "node_completed",
+                    {"node_id": node_id, "agent_id": agent_id, "run_id": child_run_id},
+                )
+            self.store.update_run(run_id, result_json=result)
+
+        try:
+            result.workflow_output = _resolve_workflow_output(
+                workflow, record.input, node_outputs
+            )
+            validate_value(
+                result.workflow_output,
+                workflow["outputSchema"],
+                label=f"Workflow {record.workflow_id} output",
+            )
+        except WorkflowError as exc:
+            if exc.code == "workflow_output_unavailable":
+                degraded = True
+                result.errors.append({"code": exc.code, "message": str(exc)})
+            else:
+                raise RunExecutionError(str(exc), code=exc.code, detail=exc.detail) from exc
+        self._complete_workflow_result(run_id, result, degraded=degraded or bool(blocked_nodes))
+
+    def _complete_workflow_result(
+        self, run_id: str, result: RunResult, *, degraded: bool
+    ) -> None:
+        node_completeness = [
+            item.get("completeness")
+            for item in result.node_results
+            if isinstance(item.get("completeness"), dict)
+        ]
+        source_complete = bool(node_completeness) and all(
+            item.get("source_complete") is True for item in node_completeness
+        )
+        business_complete = bool(node_completeness) and all(
+            item.get("business_complete") is True for item in node_completeness
+        )
+        missing = sorted(
+            {
+                str(gap)
+                for item in node_completeness
+                for gap in item.get("missing_evidence") or []
+                if str(gap)
+            }
+        )
+        if any(item.get("status") == "skipped" for item in result.node_results):
+            missing.append("workflow_node_skipped")
+        result.completeness = Completeness(
+            source_complete=source_complete,
+            business_complete=business_complete and not degraded,
+            reason=(
+                "All workflow nodes completed with complete source and business evidence."
+                if source_complete and business_complete and not degraded
+                else "At least one workflow node is inconclusive, skipped, bounded, or incomplete."
+            ),
+            missing_evidence=sorted(set(missing)),
+        )
+        result.summary = {
+            "zh": "工作流已完成。" if not degraded else "工作流已完成，但存在未确认或范围受限的结果。",
+            "en": "Workflow completed." if not degraded else "Workflow completed with inconclusive or bounded results.",
+        }
+        result.completed_at = utc_now()
+        result.artifacts = self._write_artifacts(result)
+        status = (
+            RunStatus.completed
+            if source_complete and business_complete and not degraded
+            else RunStatus.inconclusive
+        )
+        self.store.update_run(
+            run_id,
+            status=status,
+            result_json=result,
+            completed_at=result.completed_at,
+            error_json=None,
+        )
+        self.store.append_event(
+            run_id,
+            "workflow_completed" if status == RunStatus.completed else "workflow_inconclusive",
+            {"status": status.value, "completeness": result.completeness.model_dump()},
+        )
+
+    async def _execute_free_query(self, run_id: str) -> None:
+        free_query_started = time.monotonic()
+        record = self.store.get_run(run_id)
+        query = str(record.query or "").strip()
+        planner_query = query
+        if record.agent_id:
+            try:
+                guided_agent = self.agents.get(str(record.agent_id))
+            except (KeyError, PluginError) as exc:
+                raise RunExecutionError(
+                    f"Guided Agent context is unavailable: {record.agent_id}",
+                    code="guided_agent_not_found",
+                ) from exc
+            planner_query = _guided_agent_question(guided_agent, query)
+        self.store.update_run(run_id, status=RunStatus.planning)
+        self.store.append_event(
+            run_id,
+            "planning_started",
+            {"query": query, "agent_id": record.agent_id},
+        )
+        catalog = await self.sap_read.catalog(
+            query=planner_query,
+            limit=min(self.settings.max_tool_calls * 4, 100),
+        )
+        guidance = await self.sap_read.guidance(planner_query)
+        guidance_data = guidance.get("data") if isinstance(guidance, dict) else None
+        guidance = {
+            **(guidance if isinstance(guidance, dict) else {}),
+            "data": {
+                **(guidance_data if isinstance(guidance_data, dict) else {}),
+                "business_relationship_contract": self.relationships.snapshot(),
+                "max_tool_calls": self.settings.max_tool_calls,
+            },
+        }
+        decision: PlannerDecision = await self.planner.plan(
+            planner_query,
+            catalog,
+            guidance,
+            self.skills.list(),
+            thread_id=record.thread_id,
+        )
+        self.store.update_run(run_id, thread_id=decision.thread_id)
+        if decision.needs_clarification:
+            self.store.update_run(
+                run_id,
+                status=RunStatus.waiting_input,
+                error_json={"code": "clarification_required", "message": decision.clarification_question},
+            )
+            self.store.append_event(
+                run_id,
+                "waiting_input",
+                {"question": decision.clarification_question, "intent": decision.intent},
+            )
+            return
+        if not decision.plan:
+            raise RunExecutionError("Codex did not return a query plan.", code="codex_plan_missing")
+        decision = await self._ground_and_validate_free_plan(run_id, planner_query, decision)
+        if not decision.plan:
+            raise RunExecutionError(
+                "Codex could not produce a plan supported by the live SAP schemas.",
+                code="codex_grounded_plan_missing",
+            )
+        self.store.update_run(run_id, thread_id=decision.thread_id)
+        harness_steps = _normalize_free_steps(decision.plan)
+        self.store.update_run(run_id, status=RunStatus.validating, plan_json=decision.plan)
+        self.store.append_event(
+            run_id, "plan_created", {"intent": decision.intent, "plan": decision.plan}
+        )
+        self.store.update_run(run_id, status=RunStatus.running)
+        context: dict[str, Any] = {"query": query, "steps": {}}
+        actual_steps: list[dict[str, Any]] = []
+        tool_calls: list[dict[str, Any]] = []
+        evidence: list[dict[str, Any]] = []
+        last_sap_response: dict[str, Any] | None = None
+
+        for index, step in enumerate(harness_steps, start=1):
+            self._ensure_not_cancelled(run_id)
+            step_id = str(step.get("id") or f"step_{index}")
+            tool = str(step.get("tool") or "")
+            reason = str(step.get("reason") or step.get("purpose") or "")
+            started_monotonic = time.perf_counter()
+            call_id = f"call_{uuid.uuid4().hex[:16]}"
+            self.store.append_event(
+                run_id,
+                "step_started",
+                {"step_id": step_id, "tool": tool, "reason": reason},
+            )
+            if tool in {"sap_read", "sapclaw"}:
+                sap_plan = step.get("plan")
+                if not isinstance(sap_plan, dict):
+                    raise RunExecutionError(
+                        f"Free-query step {step_id} has no SAP read plan.",
+                        code="invalid_codex_plan",
+                    )
+                validation = await self.sap_read.validate_plan(sap_plan, query)
+                if validation.get("ok") is not True:
+                    raise RunExecutionError(
+                        f"The selected SAP Provider rejected Codex step {step_id}.",
+                        code="free_query_plan_rejected",
+                        detail=validation,
+                    )
+                self.store.append_event(
+                    run_id,
+                    "tool_started",
+                    {
+                        "step_id": step_id,
+                        "tool": "sap_read.execute-plan",
+                        "reason": reason,
+                        "call_id": call_id,
+                        **_plugin_trace(self.sap_read, "sap_read.v1", "execute_plan"),
+                    },
+                )
+                output = await self.sap_read.execute_plan(
+                    sap_plan, query, conversation_id=decision.thread_id
+                )
+                output = _redact_sensitive(output)
+                last_sap_response = output
+                call = {
+                    **_plugin_trace(self.sap_read, "sap_read.v1", "execute_plan"),
+                    "step_id": step_id,
+                    "tool": "sap_read",
+                    "operation": "execute_plan",
+                    "service": sap_plan.get("service_name"),
+                    "entity": sap_plan.get("entity_set"),
+                    "reason": reason or sap_plan.get("rationale"),
+                }
+            elif tool == "skill":
+                skill_id = str(step.get("skill_id") or "")
+                try:
+                    skill = self.skills.get(skill_id)
+                except KeyError as exc:
+                    raise RunExecutionError(
+                        f"Codex selected an unregistered Skill: {skill_id}",
+                        code="unregistered_skill_rejected",
+                    ) from exc
+                rendered_input = _render_template(step.get("input") or {}, context)
+                if not isinstance(rendered_input, dict):
+                    raise RunExecutionError(
+                        f"Skill step {step_id} input must be an object.",
+                        code="invalid_codex_plan",
+                    )
+                self.store.append_event(
+                    run_id,
+                    "tool_started",
+                    {
+                        "step_id": step_id,
+                        "tool": "skill",
+                        "skill_id": skill_id,
+                        "reason": reason,
+                        "call_id": call_id,
+                        **_plugin_trace(self.skills, "skill_execute.v1", "execute"),
+                    },
+                )
+                output = await self.skills.execute(skill_id, rendered_input)
+                output = _redact_sensitive(output)
+                call = {
+                    **_plugin_trace(self.skills, "skill_execute.v1", "execute"),
+                    "step_id": step_id,
+                    "tool": "skill",
+                    "operation": "execute",
+                    "skill_id": skill["skill_id"],
+                    "reason": reason,
+                }
+            else:
+                raise RunExecutionError(
+                    f"Codex selected an unsupported tool: {tool}",
+                    code="unregistered_tool_rejected",
+                )
+            context["steps"][step_id] = {"output": output}
+            call["call_id"] = call_id
+            call["status"] = "completed" if output.get("ok", True) else "failed"
+            call["duration_ms"] = round((time.perf_counter() - started_monotonic) * 1000, 3)
+            actual_steps.append(
+                {
+                    "step_id": step_id,
+                    "executor": "sap_read" if tool in {"sap_read", "sapclaw"} else tool,
+                    "operation": call["operation"],
+                    "status": "completed" if output.get("ok", True) else "failed",
+                }
+            )
+            tool_calls.append(call)
+            evidence.append(
+                {
+                    "source": "sap_read" if tool in {"sap_read", "sapclaw"} else tool,
+                    "step_id": step_id,
+                    "payload": output,
+                    "call_id": call["call_id"],
+                    "plugin_id": call["plugin_id"],
+                    "plugin_version": call["plugin_version"],
+                    "capability": call["capability"],
+                }
+            )
+            self.store.append_event(
+                run_id,
+                "tool_completed",
+                {
+                    "step_id": step_id,
+                    "tool": "sap_read" if tool in {"sap_read", "sapclaw"} else tool,
+                    "ok": output.get("ok", True),
+                    "call_id": call["call_id"],
+                    "plugin_id": call["plugin_id"],
+                },
+            )
+            self.store.append_event(
+                run_id,
+                "evidence_received",
+                {"step_id": step_id, "source": "sap_read" if tool in {"sap_read", "sapclaw"} else tool, "case_id": output.get("case_id")},
+            )
+
+        rule_result = rules.evidence_summary({"evidence": evidence})
+        self.store.append_event(run_id, "rule_completed", {"rule": rule_result})
+        summary = {
+            "zh": _safe_message(last_sap_response or {}, "zh", "基于当前只读 SAP 证据返回结果。"),
+            "en": _safe_message(last_sap_response or {}, "en", "Result based on the current read-only SAP evidence."),
+        }
+        summary_errors: list[dict[str, Any]] = []
+        summarize = getattr(self.planner, "summarize", None)
+        supports = getattr(self.planner, "supports", None)
+        summary_supported = not callable(supports) or bool(supports("summarize"))
+        if callable(summarize) and summary_supported and decision.thread_id:
+            self.store.append_event(run_id, "summary_started", {})
+            remaining = (
+                self.settings.max_run_seconds
+                - (time.monotonic() - free_query_started)
+                - 1.0
+            )
+            if remaining <= 0:
+                summary_errors.append(
+                    {
+                        "code": "codex_summary_skipped_deadline",
+                        "message": "Codex explanation was skipped to preserve the run deadline.",
+                        "detail": "SAP evidence and deterministic rule results remain available.",
+                    }
+                )
+            else:
+                try:
+                    summary = await asyncio.wait_for(
+                        summarize(
+                            thread_id=decision.thread_id,
+                            query=query,
+                            plan=decision.plan,
+                            evidence=evidence,
+                            rule_results=[rule_result],
+                        ),
+                        timeout=min(20.0, remaining),
+                    )
+                except TimeoutError:
+                    summary_errors.append(
+                        {
+                            "code": "codex_summary_timeout",
+                            "message": "Codex explanation exceeded its bounded summary time.",
+                            "detail": "SAP evidence and deterministic rule results remain available.",
+                        }
+                    )
+                except Exception as exc:
+                    summary_errors.append(
+                        {
+                            "code": "codex_summary_failed",
+                            "message": str(exc),
+                            "detail": "SAP evidence and deterministic rule results remain available.",
+                        }
+                    )
+        result = RunResult(
+            run_id=run_id,
+            mode=RunMode.free_query,
+            agent_id=record.agent_id,
+            query=query,
+            plan=decision.plan,
+            steps=actual_steps,
+            tool_calls=tool_calls,
+            rule_results=[rule_result],
+            evidence=evidence,
+            summary=summary,
+            errors=summary_errors,
+            thread_id=decision.thread_id,
+            started_at=record.started_at,
+        )
+        self._complete_result(run_id, result)
+
+    async def _ground_and_validate_free_plan(
+        self,
+        run_id: str,
+        query: str,
+        decision: PlannerDecision,
+    ) -> PlannerDecision:
+        if not decision.plan:
+            return decision
+        _validate_free_plan_limits(decision.plan, self.settings.max_tool_calls)
+        original_refs = _collect_sap_entity_refs(decision.plan)
+        if not original_refs:
+            return decision
+        self.store.update_run(run_id, status=RunStatus.validating)
+        self.store.append_event(
+            run_id,
+            "validation_started",
+            {"phase": "live_schema_grounding", "entity_count": len(original_refs)},
+        )
+        schemas = await self._load_live_schemas(query, original_refs)
+        relationship_contract = self.relationships.snapshot_for(original_refs)
+        self.store.append_event(
+            run_id,
+            "schema_received",
+            {
+                "services": len({service for service, _entity in original_refs}),
+                "entities": len(original_refs),
+                "authoritative": True,
+            },
+        )
+
+        decision, canonicalized_order_fields = _canonicalize_plan_order_by(decision)
+        decision, removed_unsupported_order_fields = _remove_unsupported_order_by(
+            decision, schemas
+        )
+        if canonicalized_order_fields:
+            self.store.append_event(
+                run_id,
+                "plan_canonicalized",
+                {
+                    "rule": "sap_read_bare_order_by_fields",
+                    "field_count": canonicalized_order_fields,
+                },
+            )
+        if removed_unsupported_order_fields:
+            self.store.append_event(
+                run_id,
+                "plan_canonicalized",
+                {
+                    "rule": "remove_metadata_unsupported_order_by",
+                    "field_count": removed_unsupported_order_fields,
+                },
+            )
+
+        failures = self._validate_harness_relationships(decision.plan)
+        failures.extend(await self._validate_harness_sap_plans(decision.plan, query))
+        repair_used = False
+        supports = getattr(self.planner, "supports", None)
+        grounding_supported = (
+            callable(getattr(self.planner, "ground_plan", None))
+            and (not callable(supports) or bool(supports("ground_plan")))
+        )
+        if failures and grounding_supported:
+            repair_used = True
+            repaired = await self.planner.ground_plan(
+                query=query,
+                decision=decision,
+                schemas=schemas,
+                relationships=relationship_contract,
+                validation_failures=failures,
+                repair_attempt=1,
+            )
+            decision = _require_grounded_decision(repaired, original_refs)
+            decision, repaired_order_fields = _canonicalize_plan_order_by(decision)
+            decision, repaired_removed_order_fields = _remove_unsupported_order_by(
+                decision, schemas
+            )
+            canonicalized_order_fields += repaired_order_fields
+            removed_unsupported_order_fields += repaired_removed_order_fields
+            _validate_free_plan_limits(decision.plan, self.settings.max_tool_calls)
+            self.store.append_event(
+                run_id,
+                "plan_repaired",
+                {"attempt": 1, "previous_validation_failures": len(failures)},
+            )
+            failures = self._validate_harness_relationships(decision.plan)
+            failures.extend(await self._validate_harness_sap_plans(decision.plan, query))
+        if failures:
+            relationship_rejected = any(
+                failure.get("layer") == "business_relationship" for failure in failures
+            )
+            raise RunExecutionError(
+                (
+                    "The schema-grounded Codex plan uses an unapproved cross-entity "
+                    "business relationship."
+                    if relationship_rejected
+                    else "The selected SAP Provider rejected the schema-grounded Codex plan."
+                ),
+                code=(
+                    "free_query_relationship_rejected"
+                    if relationship_rejected
+                    else "free_query_plan_rejected"
+                ),
+                detail={"attempts": 1 if grounding_supported else 0, "failures": failures},
+            )
+        self.store.append_event(
+            run_id,
+            "plan_validated",
+            {
+                "entity_count": len(original_refs),
+                "repair_used": repair_used,
+            },
+        )
+        return decision
+
+    def _validate_harness_relationships(
+        self,
+        plan: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        sap_plans: list[tuple[str, dict[str, Any]]] = []
+        for step in _normalize_free_steps(plan):
+            if step.get("tool") not in {"sap_read", "sapclaw"}:
+                continue
+            sap_plan = step.get("plan")
+            if isinstance(sap_plan, dict):
+                sap_plans.append((str(step.get("id") or "sap_read_plan"), sap_plan))
+        return self.relationships.validate_plans(sap_plans)
+
+    async def _load_live_schemas(
+        self,
+        query: str,
+        refs: set[tuple[str, str]],
+    ) -> list[dict[str, Any]]:
+        grouped: dict[str, list[str]] = {}
+        for service_name, entity_set in sorted(refs):
+            grouped.setdefault(service_name, []).append(entity_set)
+        responses: list[dict[str, Any]] = []
+        confirmed: set[tuple[str, str]] = set()
+        issues: list[dict[str, Any]] = []
+        for service_name, entity_sets in grouped.items():
+            response = await self.sap_read.schema(
+                service_name,
+                entity_sets,
+                query,
+                include_fields=True,
+                max_fields=5000,
+            )
+            responses.append(response)
+            data = response.get("data") if isinstance(response, dict) else None
+            if response.get("ok") is not True or not isinstance(data, dict):
+                issues.append(
+                    {
+                        "service_name": service_name,
+                        "entity_sets": entity_sets,
+                        "validation_issues": response.get("validation_issues") or [],
+                    }
+                )
+                continue
+            if data.get("schema_authority") is not True or data.get("fields_truncated") is True:
+                issues.append(
+                    {
+                        "service_name": service_name,
+                        "entity_sets": entity_sets,
+                        "schema_authority": data.get("schema_authority"),
+                        "fields_truncated": data.get("fields_truncated"),
+                    }
+                )
+                continue
+            for entity in data.get("entities") or []:
+                if isinstance(entity, dict) and entity.get("runtime_available") is not False:
+                    confirmed.add(
+                        (str(entity.get("service_name") or service_name), str(entity.get("entity_set") or ""))
+                    )
+        missing = sorted(refs.difference(confirmed))
+        if issues or missing:
+            raise RunExecutionError(
+                "Live SAP schema grounding is unavailable for one or more planned entities.",
+                code="free_query_schema_unavailable",
+                detail={"issues": issues, "missing_entities": missing},
+            )
+        return responses
+
+    async def _validate_harness_sap_plans(
+        self,
+        plan: dict[str, Any],
+        query: str,
+    ) -> list[dict[str, Any]]:
+        failures: list[dict[str, Any]] = []
+        for step in _normalize_free_steps(plan):
+            if step.get("tool") not in {"sap_read", "sapclaw"}:
+                continue
+            sap_plan = step.get("plan")
+            if not isinstance(sap_plan, dict):
+                failures.append(
+                    {"step_id": step.get("id"), "code": "missing_sap_read_plan"}
+                )
+                continue
+            validation = await self.sap_read.validate_plan(sap_plan, query)
+            if validation.get("ok") is not True:
+                failures.append(
+                    {
+                        "step_id": step.get("id"),
+                        "layer": "sap_read_schema",
+                        "status": validation.get("status"),
+                        "validation_issues": validation.get("validation_issues") or [],
+                        "error": validation.get("error"),
+                    }
+                )
+        return failures
+
+    def _complete_result(self, run_id: str, result: RunResult) -> None:
+        flags = rules._collect_source_complete(result.evidence)
+        evidence_source_complete = bool(flags) and all(flags)
+        explicit_top_bounds = (
+            _count_free_query_top_bounds(result.plan)
+            if result.mode == RunMode.free_query and isinstance(result.plan, dict)
+            else 0
+        )
+        source_complete = evidence_source_complete and explicit_top_bounds == 0
+        if explicit_top_bounds:
+            completeness_reason = (
+                f"Free-query plan contains {explicit_top_bounds} explicit top bound(s); "
+                "bounded evidence cannot establish source completeness even when the SAP Provider "
+                "reports no next page."
+            )
+        elif source_complete:
+            completeness_reason = "All SAP evidence sources report source_complete=true."
+        else:
+            completeness_reason = (
+                "At least one evidence source is bounded, incomplete, or lacks a "
+                "completeness assertion."
+            )
+        missing_evidence = sorted(
+            {
+                str(item)
+                for rule_result in result.rule_results
+                if isinstance(rule_result, dict)
+                for item in rule_result.get("missing_evidence") or []
+                if str(item)
+            }
+        )
+        conclusive_rules = [
+            item
+            for item in result.rule_results
+            if isinstance(item, dict) and item.get("rule_id") != "evidence_completeness"
+        ]
+        # ``business_complete`` means that the evidence contract needed for a
+        # conclusion is covered.  It does not mean that the business process itself
+        # is finished: a fully evidenced blocked or partial P2P/O2C process is still
+        # a valid completed query.  Legacy and free-query rules remain conclusive
+        # unless they explicitly declare otherwise.
+        business_complete = all(
+            item.get("business_complete", True) is not False
+            for item in conclusive_rules
+        )
+        if missing_evidence:
+            completeness_reason += " Missing required business evidence: " + ", ".join(
+                missing_evidence
+            ) + "."
+        result.completeness = Completeness(
+            source_complete=source_complete,
+            business_complete=business_complete,
+            reason=completeness_reason,
+            missing_evidence=missing_evidence,
+        )
+        result.completed_at = utc_now()
+        result.artifacts = self._write_artifacts(result)
+        status = (
+            RunStatus.completed
+            if source_complete and business_complete
+            else RunStatus.inconclusive
+        )
+        self.store.update_run(
+            run_id,
+            status=status,
+            result_json=result,
+            completed_at=result.completed_at,
+            error_json=None,
+        )
+        self.store.append_event(
+            run_id,
+            "run_completed" if status == RunStatus.completed else "run_inconclusive",
+            {"status": status.value, "completeness": result.completeness.model_dump()},
+        )
+
+    def _write_artifacts(self, result: RunResult) -> list[dict[str, Any]]:
+        artifact_root = (self.settings.data_root / "artifacts" / result.run_id).resolve()
+        expected_root = (self.settings.data_root / "artifacts").resolve()
+        if expected_root not in artifact_root.parents:
+            raise RunExecutionError("Artifact path escaped the local data root.")
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        snapshot = result.model_dump(mode="json", exclude={"artifacts"})
+        (artifact_root / "result.json").write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        csv_buffer = StringIO()
+        writer = csv.DictWriter(csv_buffer, fieldnames=["step_id", "source", "payload_json"])
+        writer.writeheader()
+        for item in result.evidence:
+            writer.writerow(
+                {
+                    "step_id": item.get("step_id", ""),
+                    "source": item.get("source", ""),
+                    "payload_json": json.dumps(item.get("payload"), ensure_ascii=False),
+                }
+            )
+        (artifact_root / "evidence.csv").write_text(csv_buffer.getvalue(), encoding="utf-8-sig")
+        business_report = _find_business_report(result.rule_results)
+        report = _business_markdown_report(result, business_report)
+        (artifact_root / "report.md").write_text(report, encoding="utf-8")
+        artifacts = [{"name": "report.md", "media_type": "text/markdown"}]
+        if business_report:
+            stage_buffer = StringIO()
+            stage_writer = csv.DictWriter(
+                stage_buffer, fieldnames=["stage", "status", "business_explanation"]
+            )
+            stage_writer.writeheader()
+            for stage in business_report.get("stages") or []:
+                if not isinstance(stage, dict):
+                    continue
+                stage_writer.writerow(
+                    {
+                        "stage": _localized_text(stage.get("label"), "zh"),
+                        "status": _localized_text(stage.get("state_label"), "zh"),
+                        "business_explanation": _localized_text(stage.get("detail"), "zh"),
+                    }
+                )
+            (artifact_root / "business-stages.csv").write_text(
+                stage_buffer.getvalue(), encoding="utf-8-sig"
+            )
+            artifacts.append(
+                {"name": "business-stages.csv", "media_type": "text/csv"}
+            )
+        artifacts.extend(
+            [
+                {"name": "evidence.csv", "media_type": "text/csv"},
+                {"name": "result.json", "media_type": "application/json"},
+            ]
+        )
+        return artifacts
+
+    def _ensure_not_cancelled(self, run_id: str) -> None:
+        if self.store.get_run(run_id).cancel_requested:
+            self._finish_cancelled(run_id)
+            raise asyncio.CancelledError()
+
+    def _finish_cancelled(self, run_id: str) -> None:
+        completed = utc_now()
+        self.store.update_run(run_id, status=RunStatus.cancelled, completed_at=completed)
+        self.store.append_event(run_id, "run_cancelled", {})
+
+    def _finish_error(self, run_id: str, exc: Exception, status: RunStatus) -> None:
+        if isinstance(exc, asyncio.CancelledError):
+            return
+        error = _error_payload(exc)
+        completed = utc_now()
+        try:
+            self.store.update_run(
+                run_id,
+                status=status,
+                error_json=error,
+                completed_at=completed,
+            )
+            self.store.append_event(
+                run_id,
+                "run_inconclusive" if status == RunStatus.inconclusive else "run_failed",
+                {"error": error},
+            )
+        except KeyError:
+            pass
+
+
+def _error_payload(exc: Exception) -> dict[str, Any]:
+    return _redact_sensitive({
+        "code": str(getattr(exc, "code", "run_failed")),
+        "message": str(exc),
+        "detail": getattr(exc, "detail", None),
+    })
+
+
+def _plugin_trace(provider: Any, capability: str, operation: str) -> dict[str, Any]:
+    describe = getattr(provider, "plugin_metadata", None)
+    if callable(describe):
+        return dict(describe(operation))
+    return {
+        "plugin_id": "legacy-injected-provider",
+        "plugin_version": "0.0.0",
+        "capability": capability,
+    }
+
+
+def _validate_input(value: dict[str, Any], schema: dict[str, Any]) -> None:
+    required = schema.get("required") or []
+    missing = [name for name in required if value.get(name) in (None, "")]
+    if missing:
+        raise ValueError("Missing required input: " + ", ".join(missing))
+    properties = schema.get("properties") or {}
+    unknown = sorted(set(value).difference(properties))
+    if schema.get("additionalProperties") is False and unknown:
+        raise ValueError("Unknown input fields: " + ", ".join(unknown))
+    for name, property_schema in properties.items():
+        if name not in value or not isinstance(property_schema, dict):
+            continue
+        item = value[name]
+        if property_schema.get("type") != "string" or not isinstance(item, str):
+            continue
+        minimum = property_schema.get("minLength")
+        maximum = property_schema.get("maxLength")
+        pattern = property_schema.get("pattern")
+        if isinstance(minimum, int) and len(item) < minimum:
+            raise ValueError(f"Input {name} must contain at least {minimum} character(s).")
+        if isinstance(maximum, int) and len(item) > maximum:
+            raise ValueError(f"Input {name} must contain at most {maximum} character(s).")
+        if isinstance(pattern, str) and re.search(pattern, item) is None:
+            raise ValueError(f"Input {name} has an invalid format.")
+        if property_schema.get("format") == "date":
+            try:
+                date.fromisoformat(item)
+            except ValueError as exc:
+                raise ValueError(f"Input {name} must be an ISO date (YYYY-MM-DD).") from exc
+    for pair in schema.get("dateRangePairs") or []:
+        if not isinstance(pair, dict):
+            continue
+        start_name = str(pair.get("from") or "")
+        end_name = str(pair.get("to") or "")
+        if start_name not in value or end_name not in value:
+            continue
+        try:
+            start = date.fromisoformat(str(value[start_name]))
+            end = date.fromisoformat(str(value[end_name]))
+        except ValueError as exc:
+            raise ValueError("Date range inputs must use YYYY-MM-DD.") from exc
+        if end < start:
+            raise ValueError(f"Input {end_name} must not be earlier than {start_name}.")
+        maximum = pair.get("maxDays")
+        if isinstance(maximum, int) and (end - start).days > maximum:
+            raise ValueError(f"The date range must not exceed {maximum} days.")
+
+
+_TEMPLATE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+
+
+def _render_template(value: Any, context: dict[str, Any]) -> Any:
+    if isinstance(value, dict):
+        return {key: _render_template(child, context) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_render_template(child, context) for child in value]
+    if not isinstance(value, str):
+        return value
+    exact = _TEMPLATE.fullmatch(value)
+    if exact:
+        return _lookup(context, exact.group(1))
+    return _TEMPLATE.sub(lambda match: str(_lookup(context, match.group(1))), value)
+
+
+def _lookup(context: dict[str, Any], path: str) -> Any:
+    current: Any = context
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise ValueError(f"Template path is unavailable: {path}")
+        current = current[part]
+    return current
+
+
+def _resolve_node_input(
+    workflow: dict[str, Any],
+    node_id: str,
+    workflow_input: dict[str, Any],
+    node_outputs: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    resolved: dict[str, Any] = {}
+    for connection in iter_node_connections(workflow, node_id):
+        target = connection.get("to") or {}
+        port = str(target.get("port") or "")
+        value = _resolve_workflow_source(
+            connection.get("from") or {}, workflow_input, node_outputs
+        )
+        try:
+            resolved[port] = apply_transform(value, connection.get("transform"))
+        except (ValueError, TypeError, WorkflowError) as exc:
+            if isinstance(exc, WorkflowError):
+                raise
+            raise WorkflowError(str(exc), code="mapping_failed") from exc
+    return resolved
+
+
+def _resolve_workflow_output(
+    workflow: dict[str, Any],
+    workflow_input: dict[str, Any],
+    node_outputs: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for item in workflow.get("outputs") or []:
+        name = str(item.get("name") or "")
+        value = _resolve_workflow_source(
+            item.get("source") or {}, workflow_input, node_outputs
+        )
+        output[name] = apply_transform(value, item.get("transform"))
+    return output
+
+
+def _resolve_workflow_source(
+    source: dict[str, Any],
+    workflow_input: dict[str, Any],
+    node_outputs: dict[str, dict[str, Any]],
+) -> Any:
+    scope = source.get("scope")
+    if scope == "constant":
+        return source.get("value")
+    if scope == "workflow_input":
+        port = str(source.get("port") or "")
+        if port not in workflow_input:
+            raise WorkflowError(
+                f"Workflow input {port!r} is unavailable.",
+                code="workflow_output_unavailable",
+            )
+        return workflow_input[port]
+    if scope == "node_output":
+        node_id = str(source.get("nodeId") or "")
+        port = str(source.get("port") or "")
+        if node_id not in node_outputs or port not in node_outputs[node_id]:
+            raise WorkflowError(
+                f"Node output {node_id}.{port} is unavailable.",
+                code="workflow_output_unavailable",
+            )
+        return node_outputs[node_id][port]
+    raise WorkflowError("Workflow mapping source is unsupported.", code="mapping_failed")
+
+
+def _normalize_free_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    if plan.get("kind") != "sap_business_agents_harness":
+        return [
+            {
+                "id": "sap_read_plan",
+                "tool": "sap_read",
+                "plan": plan,
+                "reason": plan.get("rationale", "Execute the validated SAP read plan."),
+            }
+        ]
+    steps = plan.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise RunExecutionError("Harness plan steps must be a non-empty array.", code="invalid_codex_plan")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, step in enumerate(steps, start=1):
+        if not isinstance(step, dict):
+            raise RunExecutionError("Harness plan contains an invalid step.", code="invalid_codex_plan")
+        step_id = str(step.get("id") or f"step_{index}")
+        if step_id in seen or not re.fullmatch(r"[a-z][a-z0-9_-]*", step_id):
+            raise RunExecutionError(f"Invalid or duplicate harness step id: {step_id}", code="invalid_codex_plan")
+        seen.add(step_id)
+        normalized.append({**step, "id": step_id})
+    return normalized
+
+
+def _guided_agent_question(agent: dict[str, Any], query: str) -> str:
+    title = agent.get("title") if isinstance(agent.get("title"), dict) else {}
+    summary = agent.get("summary") if isinstance(agent.get("summary"), dict) else {}
+    workflow = [
+        {"id": step.get("id"), "title": step.get("title")}
+        for step in agent.get("workflow") or []
+        if isinstance(step, dict)
+    ]
+    context = {
+        "agent_id": agent.get("slug"),
+        "module": agent.get("module"),
+        "title": title,
+        "purpose": summary,
+        "sap_modules": agent.get("sapModules") or [],
+        "workflow": workflow,
+    }
+    return (
+        "The user selected this SAPBusinessAgents profile as advisory business context. "
+        "It does not have a deterministic execution contract, so do not claim that the fixed "
+        "Agent ran. Use the profile only to understand intent, and select only registered GET-only "
+        "SAP tools or approved read-only Skills from the supplied catalogs.\n\n"
+        f"Selected Agent context:\n{json.dumps(context, ensure_ascii=False)}\n\n"
+        f"Original user question:\n{query}"
+    )
+
+
+def _collect_sap_entity_refs(plan: dict[str, Any]) -> set[tuple[str, str]]:
+    refs: set[tuple[str, str]] = set()
+    for harness_step in _normalize_free_steps(plan):
+        if harness_step.get("tool") not in {"sap_read", "sapclaw"}:
+            continue
+        sap_plan = harness_step.get("plan")
+        if not isinstance(sap_plan, dict):
+            continue
+        candidates = [sap_plan]
+        nested = sap_plan.get("steps")
+        if isinstance(nested, list):
+            candidates.extend(item for item in nested if isinstance(item, dict))
+        for candidate in candidates:
+            service_name = str(candidate.get("service_name") or "").strip()
+            entity_set = str(candidate.get("entity_set") or "").strip()
+            if service_name and entity_set:
+                refs.add((service_name, entity_set))
+    return refs
+
+
+def _count_free_query_top_bounds(plan: dict[str, Any]) -> int:
+    """Count explicit result-size bounds in SAP read portions of a free-query plan."""
+
+    def visit(value: Any) -> int:
+        if isinstance(value, dict):
+            count = sum(
+                1
+                for key, child in value.items()
+                if key in {"top", "$top"} and child is not None
+            )
+            return count + sum(visit(child) for child in value.values())
+        if isinstance(value, list):
+            return sum(visit(child) for child in value)
+        return 0
+
+    count = 0
+    for harness_step in _normalize_free_steps(plan):
+        if harness_step.get("tool") not in {"sap_read", "sapclaw"}:
+            continue
+        sap_plan = harness_step.get("plan")
+        if isinstance(sap_plan, dict):
+            count += visit(sap_plan)
+    return count
+
+
+def _require_grounded_decision(
+    decision: PlannerDecision,
+    allowed_refs: set[tuple[str, str]],
+) -> PlannerDecision:
+    if decision.needs_clarification or not isinstance(decision.plan, dict):
+        raise RunExecutionError(
+            "Codex could not ground the candidate plan in the live SAP schemas.",
+            code="codex_grounded_plan_missing",
+        )
+    grounded_refs = _collect_sap_entity_refs(decision.plan)
+    unexpected = sorted(grounded_refs.difference(allowed_refs))
+    if unexpected:
+        raise RunExecutionError(
+            "Codex schema grounding introduced an unapproved service or entity.",
+            code="codex_grounding_scope_expanded",
+            detail={"unexpected_entities": unexpected},
+        )
+    return decision
+
+
+def _canonicalize_plan_order_by(
+    decision: PlannerDecision,
+) -> tuple[PlannerDecision, int]:
+    if not isinstance(decision.plan, dict):
+        return decision, 0
+    count = 0
+
+    def visit(value: Any) -> Any:
+        nonlocal count
+        if isinstance(value, dict):
+            normalized = {key: visit(child) for key, child in value.items()}
+            order_by = normalized.get("order_by")
+            if isinstance(order_by, list):
+                fields: list[str] = []
+                for item in order_by:
+                    text = str(item or "").strip()
+                    match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s+(asc|desc)", text, re.I)
+                    if match and match.group(2).lower() == "desc":
+                        raise RunExecutionError(
+                            "Descending order expressions are not supported by the guarded SAP read plan contract.",
+                            code="unsupported_order_direction",
+                            detail={"order_by": text},
+                        )
+                    if match:
+                        text = match.group(1)
+                        count += 1
+                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
+                        raise RunExecutionError(
+                            "SAP read order_by entries must be bare field names.",
+                            code="invalid_order_by_expression",
+                        )
+                    if text not in fields:
+                        fields.append(text)
+                normalized["order_by"] = fields
+            return normalized
+        if isinstance(value, list):
+            return [visit(child) for child in value]
+        return value
+
+    return decision.model_copy(update={"plan": visit(decision.plan)}), count
+
+
+def _remove_unsupported_order_by(
+    decision: PlannerDecision,
+    schemas: list[dict[str, Any]],
+) -> tuple[PlannerDecision, int]:
+    """Remove only order fields that live metadata explicitly marks unsupported.
+
+    Sorting is a transport/paging concern, so dropping an unsupported optional order
+    expression does not change the business filter or expand the query scope. The
+    Provider will report an inconclusive result if it cannot prove stable pagination.
+    """
+
+    if not isinstance(decision.plan, dict):
+        return decision, 0
+    field_sortability: dict[tuple[str, str, str], bool] = {}
+    for response in schemas:
+        data = response.get("data") if isinstance(response, dict) else None
+        if not isinstance(data, dict):
+            continue
+        default_service = str((data.get("service") or {}).get("service_name") or "")
+        for field in data.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            service = str(field.get("service_name") or default_service)
+            entity = str(field.get("entity_set") or "")
+            name = str(field.get("field_name") or "")
+            if service and entity and name:
+                field_sortability[(service, entity, name)] = field.get("sortable") is not False
+
+    copied = copy.deepcopy(decision.plan)
+    removed = 0
+    for harness_step in _normalize_free_steps(copied):
+        if harness_step.get("tool") not in {"sap_read", "sapclaw"}:
+            continue
+        sap_plan = harness_step.get("plan")
+        if not isinstance(sap_plan, dict):
+            continue
+        candidates = [sap_plan]
+        nested = sap_plan.get("steps")
+        if isinstance(nested, list):
+            candidates.extend(item for item in nested if isinstance(item, dict))
+        for candidate in candidates:
+            service = str(candidate.get("service_name") or sap_plan.get("service_name") or "")
+            entity = str(candidate.get("entity_set") or "")
+            order_by = candidate.get("order_by")
+            if not isinstance(order_by, list):
+                continue
+            kept: list[str] = []
+            for field in order_by:
+                name = str(field)
+                if field_sortability.get((service, entity, name)) is False:
+                    removed += 1
+                else:
+                    kept.append(name)
+            candidate["order_by"] = kept
+    return decision.model_copy(update={"plan": copied}), removed
+
+
+def _validate_free_plan_limits(plan: dict[str, Any], max_tool_calls: int) -> None:
+    call_count = 0
+    for step in _normalize_free_steps(plan):
+        tool = step.get("tool")
+        if tool in {"sap_read", "sapclaw"}:
+            sap_plan = step.get("plan")
+            if not isinstance(sap_plan, dict):
+                raise RunExecutionError("SAP read harness step has no plan object.", code="invalid_codex_plan")
+            _reject_non_get(sap_plan)
+            nested_steps = sap_plan.get("steps") or []
+            if not isinstance(nested_steps, list):
+                raise RunExecutionError("SAP read plan steps must be an array.", code="invalid_codex_plan")
+            call_count += max(1, len(nested_steps))
+        elif tool == "skill":
+            if not str(step.get("skill_id") or ""):
+                raise RunExecutionError("Skill harness step has no skill_id.", code="invalid_codex_plan")
+            call_count += 1
+        else:
+            raise RunExecutionError(
+                f"Codex selected an unsupported tool: {tool}", code="unregistered_tool_rejected"
+            )
+    if call_count > max_tool_calls:
+        raise RunExecutionError(
+            f"Codex plan exceeds the {max_tool_calls}-call prototype limit.",
+            code="tool_call_limit_exceeded",
+            detail={"planned_call_count": call_count, "max_tool_calls": max_tool_calls},
+        )
+
+
+def _reject_non_get(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in {"http_method", "httpMethod", "method"} and str(child).upper() != "GET":
+                raise RunExecutionError(
+                    "Codex plan contains a non-GET operation.", code="write_operation_rejected"
+                )
+            _reject_non_get(child)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_non_get(child)
+
+
+def _find_business_report(rule_results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for rule_result in rule_results:
+        report = rule_result.get("business_report") if isinstance(rule_result, dict) else None
+        if isinstance(report, dict):
+            return report
+    return None
+
+
+def _localized_text(value: Any, locale: str = "zh") -> str:
+    if isinstance(value, dict):
+        return str(value.get(locale) or value.get("zh") or value.get("en") or "")
+    return str(value or "")
+
+
+def _markdown_cell(value: Any) -> str:
+    return _localized_text(value, "zh").replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _business_markdown_report(
+    result: RunResult,
+    business_report: dict[str, Any] | None,
+) -> str:
+    summary = result.summary.get("zh") or result.summary.get("en") or ""
+    lines = ["# SAP 业务查询结果", ""]
+    if business_report:
+        headline = _localized_text(business_report.get("headline"), "zh")
+        overview = _localized_text(business_report.get("overview"), "zh")
+        lines.extend(["## 业务结论", "", f"**{headline}**", "", overview, ""])
+        stages = [
+            stage
+            for stage in business_report.get("stages") or []
+            if isinstance(stage, dict)
+        ]
+        if stages:
+            lines.extend(
+                [
+                    "## 各阶段结果",
+                    "",
+                    "| 业务阶段 | 状态 | 说明 |",
+                    "| --- | --- | --- |",
+                ]
+            )
+            for stage in stages:
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            _markdown_cell(stage.get("label")),
+                            _markdown_cell(stage.get("state_label")),
+                            _markdown_cell(stage.get("detail")),
+                        ]
+                    )
+                    + " |"
+                )
+            lines.append("")
+        metrics = [
+            metric
+            for metric in business_report.get("metrics") or []
+            if isinstance(metric, dict)
+        ]
+        if metrics:
+            lines.extend(
+                [
+                    "## 关键业务指标",
+                    "",
+                    "| 指标 | 结果 |",
+                    "| --- | --- |",
+                ]
+            )
+            for metric in metrics:
+                lines.append(
+                    f"| {_markdown_cell(metric.get('label'))} | "
+                    f"{_markdown_cell(metric.get('value'))} |"
+                )
+            lines.append("")
+        findings = [
+            finding
+            for finding in business_report.get("findings") or []
+            if isinstance(finding, dict)
+        ]
+        if findings:
+            lines.extend(["## 业务发现", ""])
+            for finding in findings:
+                detail = finding.get("detail") or finding.get("text") or finding.get("label")
+                lines.append(f"- {_markdown_cell(detail)}")
+            lines.append("")
+        missing_evidence = business_report.get("missing_evidence") or []
+        if isinstance(missing_evidence, list) and missing_evidence:
+            lines.extend(["## 尚缺少的证据或能力", ""])
+            lines.extend(f"- {_markdown_cell(item)}" for item in missing_evidence)
+            lines.append("")
+        actions = business_report.get("next_actions")
+        localized_actions = actions.get("zh") if isinstance(actions, dict) else actions
+        if isinstance(localized_actions, list) and localized_actions:
+            lines.extend(["## 建议下一步", ""])
+            lines.extend(f"{index}. {action}" for index, action in enumerate(localized_actions, 1))
+            lines.append("")
+    else:
+        lines.extend(["## 查询结论", "", summary or "当前没有可展示的业务结论。", ""])
+    completeness_label = (
+        "本次查询范围已完整返回"
+        if result.completeness.source_complete
+        else "当前查询结果存在范围限制"
+    )
+    lines.extend(
+        [
+            "## 数据范围说明",
+            "",
+            f"**{completeness_label}**",
+            "",
+            result.completeness.reason,
+            "",
+            "## 运行信息",
+            "",
+            f"- 运行编号：`{result.run_id}`",
+            f"- 运行方式：{'固定 Agent' if result.mode == RunMode.agent else '自由 SAP 查询'}",
+            f"- Agent：`{result.agent_id or 'N/A'}`",
+            f"- 完成时间：{result.completed_at or 'N/A'}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _safe_message(response: dict[str, Any], locale: str, fallback: str) -> str:
+    presentation = response.get("presentation")
+    if isinstance(presentation, dict) and presentation.get("text"):
+        text = presentation["text"]
+        if isinstance(text, dict):
+            return str(text.get(locale) or text.get("en") or text.get("zh") or fallback)
+        return str(text)
+    snapshot = response.get("result_snapshot")
+    if isinstance(snapshot, dict) and snapshot.get("final_message"):
+        message = snapshot["final_message"]
+        if isinstance(message, dict):
+            return str(message.get(locale) or message.get("en") or message.get("zh") or fallback)
+        return str(message)
+    return fallback
+
+
+_SENSITIVE_KEYS = {
+    "password",
+    "sap_password",
+    "api_key",
+    "apikey",
+    "authorization",
+    "access_token",
+    "refresh_token",
+    "secret",
+}
+
+
+def _redact_sensitive(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if str(key).lower() in _SENSITIVE_KEYS else _redact_sensitive(child)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive(child) for child in value]
+    return value

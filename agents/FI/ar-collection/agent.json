@@ -1,82 +1,398 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "ar-collection",
   "module": "FI",
-  "title": { "zh": "AR Collection Assistant", "en": "AR Collection Assistant" },
+  "title": {
+    "zh": "应收账款催收助手",
+    "en": "AR Collection Assistant"
+  },
   "summary": {
     "zh": "计算客户应收账龄，匹配未认领银行到账，形成催收优先级和需要人工审核的沟通草稿。",
     "en": "Calculates receivables aging, suggests bank-receipt matches and prepares prioritized, reviewable collection drafts."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "FI-AR",
-  "tags": ["Accounts Receivable", "Collections", "Cash Application", "Aging"],
-  "sapModules": ["FI-AR", "SD-Billing", "Bank Accounting"],
-  "transactions": ["FBL5N", "FD10N", "F.27", "FB03", "VF03", "FEBAN"],
-  "tables": ["BSID", "BSAD", "BKPF", "BSEG", "KNA1", "KNB1", "VBRK", "VBRP"],
-  "systems": ["SAP ECC", "SAP S/4HANA"],
+  "tags": [
+    "Accounts Receivable",
+    "Collections",
+    "Cash Application",
+    "Aging"
+  ],
+  "sapModules": [
+    "FI-AR",
+    "SD-Billing",
+    "Bank Accounting"
+  ],
+  "transactions": [
+    "FBL5N",
+    "FD10N",
+    "F.27",
+    "FB03",
+    "VF03",
+    "FEBAN"
+  ],
+  "tables": [
+    "BSID",
+    "BSAD",
+    "BKPF",
+    "BSEG",
+    "KNA1",
+    "KNB1",
+    "VBRK",
+    "VBRP"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
   "inputs": {
-    "zh": ["自然语言问题", "客户范围（可选）", "查询基准日", "未清项与银行到账快照"],
-    "en": ["Natural-language question", "Optional customer scope", "As-of date", "Open-item and bank-receipt snapshot"]
+    "zh": [
+      "自然语言问题",
+      "客户范围（可选）",
+      "查询基准日",
+      "未清项与银行到账快照"
+    ],
+    "en": [
+      "Natural-language question",
+      "Optional customer scope",
+      "As-of date",
+      "Open-item and bank-receipt snapshot"
+    ]
   },
   "outputs": {
-    "zh": ["账龄分桶", "收款匹配建议", "0-100 风险分", "P1-P4/HOLD 优先级", "待审核催款草稿"],
-    "en": ["Aging buckets", "Receipt-match suggestions", "0-100 risk score", "P1-P4/HOLD priority", "Reviewable collection draft"]
+    "zh": [
+      "账龄分桶",
+      "收款匹配建议",
+      "0-100 风险分",
+      "P1-P4/HOLD 优先级",
+      "待审核催款草稿"
+    ],
+    "en": [
+      "Aging buckets",
+      "Receipt-match suggestions",
+      "0-100 risk score",
+      "P1-P4/HOLD priority",
+      "Reviewable collection draft"
+    ]
   },
   "guardrails": {
-    "zh": ["不自动清账或记账", "不自动发送催款信息", "争议或冻结客户进入人工复核"],
-    "en": ["Never clears or posts automatically", "Never sends collection messages automatically", "Disputed or blocked accounts route to review"]
+    "zh": [
+      "不自动清账或记账",
+      "不自动发送催款信息",
+      "争议或冻结客户进入人工复核"
+    ],
+    "en": [
+      "Never clears or posts automatically",
+      "Never sends collection messages automatically",
+      "Disputed or blocked accounts route to review"
+    ]
   },
   "workflow": [
     {
       "id": "understand-request",
-      "title": { "zh": "识别催收意图", "en": "Identify collection intent" },
-      "description": { "zh": "识别周催收清单、客户账龄或未匹配到账问题，并抽取客户范围。", "en": "Classifies weekly collection, customer-aging or unmatched-receipt requests." },
+      "title": {
+        "zh": "识别催收意图",
+        "en": "Identify collection intent"
+      },
+      "description": {
+        "zh": "识别周催收清单、客户账龄或未匹配到账问题，并抽取客户范围。",
+        "en": "Classifies weekly collection, customer-aging or unmatched-receipt requests."
+      },
       "tools": [
-        { "name": "IntentParser", "kind": "Agent component", "purpose": { "zh": "意图与客户标识抽取", "en": "Intent and customer extraction" } }
+        {
+          "name": "IntentParser",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "意图与客户标识抽取",
+            "en": "Intent and customer extraction"
+          }
+        }
       ]
     },
     {
       "id": "load-snapshot",
-      "title": { "zh": "加载应收快照", "en": "Load the AR snapshot" },
-      "description": { "zh": "读取客户、未清项、付款历史、信用敞口与未认领到账。", "en": "Loads customers, open items, payment history, credit exposure and unclaimed receipts." },
+      "title": {
+        "zh": "加载应收快照",
+        "en": "Load the AR snapshot"
+      },
+      "description": {
+        "zh": "读取客户、未清项、付款历史、信用敞口与未认领到账。",
+        "en": "Loads customers, open items, payment history, credit exposure and unclaimed receipts."
+      },
       "tools": [
-        { "name": "ARDataGateway", "kind": "Data port", "purpose": { "zh": "统一 SAP/fixture 只读数据边界", "en": "Unified read-only SAP or fixture boundary" } },
-        { "name": "FBL5N / FD10N / FEBAN", "kind": "SAP read", "purpose": { "zh": "人工核对应收、信用和银行到账", "en": "Human verification of receivables, credit and bank receipts" } }
+        {
+          "name": "ARDataGateway",
+          "kind": "Data port",
+          "purpose": {
+            "zh": "统一 SAP/fixture 只读数据边界",
+            "en": "Unified read-only SAP or fixture boundary"
+          }
+        },
+        {
+          "name": "FBL5N / FD10N / FEBAN",
+          "kind": "SAP read",
+          "purpose": {
+            "zh": "人工核对应收、信用和银行到账",
+            "en": "Human verification of receivables, credit and bank receipts"
+          }
+        }
       ]
     },
     {
       "id": "age-items",
-      "title": { "zh": "计算账龄", "en": "Calculate aging" },
-      "description": { "zh": "按 current、1-30、31-60、61-90、90+ 天对未清项分桶。", "en": "Buckets open items into current, 1-30, 31-60, 61-90 and 90+ days." },
+      "title": {
+        "zh": "计算账龄",
+        "en": "Calculate aging"
+      },
+      "description": {
+        "zh": "按 current、1-30、31-60、61-90、90+ 天对未清项分桶。",
+        "en": "Buckets open items into current, 1-30, 31-60, 61-90 and 90+ days."
+      },
       "tools": [
-        { "name": "AgingEngine", "kind": "Rule engine", "purpose": { "zh": "可复现的自然日账龄计算", "en": "Reproducible calendar-day aging" } }
+        {
+          "name": "AgingEngine",
+          "kind": "Rule engine",
+          "purpose": {
+            "zh": "可复现的自然日账龄计算",
+            "en": "Reproducible calendar-day aging"
+          }
+        }
       ]
     },
     {
       "id": "match-receipts",
-      "title": { "zh": "建议收款匹配", "en": "Suggest receipt matches" },
-      "description": { "zh": "根据参考号、金额、付款人和日期给出 exact、likely 或 unmatched 结论。", "en": "Uses references, amount, payer and date to classify exact, likely or unmatched candidates." },
+      "title": {
+        "zh": "建议收款匹配",
+        "en": "Suggest receipt matches"
+      },
+      "description": {
+        "zh": "根据参考号、金额、付款人和日期给出 exact、likely 或 unmatched 结论。",
+        "en": "Uses references, amount, payer and date to classify exact, likely or unmatched candidates."
+      },
       "tools": [
-        { "name": "ReceiptMatcher", "kind": "Matching engine", "purpose": { "zh": "生成可解释候选，不执行清账", "en": "Creates explainable candidates without clearing" } }
+        {
+          "name": "ReceiptMatcher",
+          "kind": "Matching engine",
+          "purpose": {
+            "zh": "生成可解释候选，不执行清账",
+            "en": "Creates explainable candidates without clearing"
+          }
+        }
       ]
     },
     {
       "id": "score-and-prioritize",
-      "title": { "zh": "评分并排序", "en": "Score and prioritize" },
-      "description": { "zh": "结合逾期、历史付款、信用使用率和待匹配到账生成风险分与行动优先级。", "en": "Combines delinquency, payment history, credit utilization and pending receipts into risk and priority." },
+      "title": {
+        "zh": "评分并排序",
+        "en": "Score and prioritize"
+      },
+      "description": {
+        "zh": "结合逾期、历史付款、信用使用率和待匹配到账生成风险分与行动优先级。",
+        "en": "Combines delinquency, payment history, credit utilization and pending receipts into risk and priority."
+      },
       "tools": [
-        { "name": "RiskScorer", "kind": "Scoring engine", "purpose": { "zh": "输出分项得分和 P1-P4/HOLD", "en": "Outputs score breakdown and P1-P4/HOLD" } }
+        {
+          "name": "RiskScorer",
+          "kind": "Scoring engine",
+          "purpose": {
+            "zh": "输出分项得分和 P1-P4/HOLD",
+            "en": "Outputs score breakdown and P1-P4/HOLD"
+          }
+        }
       ]
     },
     {
       "id": "draft-action",
-      "title": { "zh": "生成待审核行动", "en": "Draft reviewable actions" },
-      "description": { "zh": "生成催收草稿或内部复核任务，明确禁止自动外发。", "en": "Creates a collection draft or internal review task with auto-send disabled." },
+      "title": {
+        "zh": "生成待审核行动",
+        "en": "Draft reviewable actions"
+      },
+      "description": {
+        "zh": "生成催收草稿或内部复核任务，明确禁止自动外发。",
+        "en": "Creates a collection draft or internal review task with auto-send disabled."
+      },
       "tools": [
-        { "name": "DraftingEngine", "kind": "Output", "purpose": { "zh": "人工审核的沟通草稿", "en": "Human-review communication draft" } },
-        { "name": "ARCollectionAssistant", "kind": "Orchestrator", "purpose": { "zh": "编排并返回版本化 JSON", "en": "Orchestrates and returns versioned JSON" } }
+        {
+          "name": "DraftingEngine",
+          "kind": "Output",
+          "purpose": {
+            "zh": "人工审核的沟通草稿",
+            "en": "Human-review communication draft"
+          }
+        },
+        {
+          "name": "ARCollectionAssistant",
+          "kind": "Orchestrator",
+          "purpose": {
+            "zh": "编排并返回版本化 JSON",
+            "en": "Orchestrates and returns versioned JSON"
+          }
+        }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "title": {
+            "zh": "公司代码",
+            "en": "Company code"
+          },
+          "description": {
+            "zh": "请输入公司代码。",
+            "en": "Enter the company code."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "customer": {
+          "type": "string",
+          "title": {
+            "zh": "客户编号",
+            "en": "Customer"
+          },
+          "description": {
+            "zh": "请输入客户编号。",
+            "en": "Enter the customer."
+          },
+          "placeholder": {
+            "zh": "例如：17100001",
+            "en": "Example: 17100001"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "as_of": {
+          "type": "string",
+          "title": {
+            "zh": "查询基准日",
+            "en": "As-of date"
+          },
+          "description": {
+            "zh": "请输入查询基准日。",
+            "en": "Enter the as-of date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "company_code",
+        "customer",
+        "as_of"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": { "type": "string" },
+        "customer": { "type": "string" },
+        "as_of": { "type": "string" },
+        "business_status": { "type": "string" },
+        "source_complete": { "type": "boolean" },
+        "business_report": { "type": "object" }
+      },
+      "required": ["company_code", "customer", "as_of", "business_status", "source_complete", "business_report"],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "company_code": "{{steps.evaluate_business_result.output.workflow_output.company_code}}",
+      "customer": "{{steps.evaluate_business_result.output.workflow_output.customer}}",
+      "as_of": "{{steps.evaluate_business_result.output.workflow_output.as_of}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "steps": [
+      {
+        "id": "collect_ar_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "CompanyCode",
+              "FiscalYear",
+              "FiscalPeriod",
+              "AccountingDocument",
+              "AccountingDocumentItem",
+              "Supplier",
+              "Customer",
+              "GLAccount",
+              "OperationalGLAccount",
+              "PurchasingDocument",
+              "PurchasingDocumentItem",
+              "PostingDate",
+              "NetDueDate",
+              "IsCleared",
+              "ClearingAccountingDocument",
+              "ClearingDocFiscalYear",
+              "PaymentMethod",
+              "PaymentBlockingReason",
+              "HouseBank",
+              "HouseBankAccount",
+              "AccountingDocumentType",
+              "AmountInTransactionCurrency",
+              "TransactionCurrency",
+              "OrderID"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "Customer",
+                "operator": "eq",
+                "value": "{{input.customer}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Collect customer collection evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "ar-collection",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_ar_evidence": "{{steps.collect_ar_evidence.output}}"
+          },
+          "known_gaps": [
+            "bank_receipt_matching_evidence"
+          ]
+        }
+      }
+    ]
+  }
 }

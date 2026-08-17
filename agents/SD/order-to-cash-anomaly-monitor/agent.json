@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "order-to-cash-anomaly-monitor",
   "module": "SD",
   "title": {
@@ -8,9 +8,9 @@
   },
   "summary": {
     "zh": "聚合订单、交货、开票和回款断点，形成统一异常待办。",
-    "en": "聚合订单、交货、开票和回款断点，形成统一异常待办。"
+    "en": "Aggregates breaks across orders, deliveries, billing and collections into one exception worklist."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -338,5 +338,320 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_organization": {
+          "type": "string",
+          "title": {
+            "zh": "销售组织",
+            "en": "Sales organization"
+          },
+          "description": {
+            "zh": "请输入销售组织。",
+            "en": "Enter the sales organization."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "sales_organization",
+        "date_from",
+        "date_to"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 31
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "collect_o2c_anomaly_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_SALES_ORDER_SRV",
+            "entity_set": "A_SalesOrder",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "sales_orders",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrder",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrganization",
+                  "RequestedDeliveryDate",
+                  "TotalBlockStatus",
+                  "TotalCreditCheckStatus",
+                  "HeaderBillingBlockReason",
+                  "DeliveryBlockReason",
+                  "OverallDeliveryStatus",
+                  "OverallOrdReltdBillgStatus"
+                ],
+                "rationale": "Load the requested sales order.",
+                "filters": [
+                  {
+                    "field": "SalesOrganization",
+                    "operator": "eq",
+                    "value": "{{input.sales_organization}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "SalesOrderDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "SalesOrderDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              },
+              {
+                "step_id": "sales_order_items",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "RequestedQuantity",
+                  "ConfdDelivQtyInOrderQtyUnit",
+                  "DeliveryPriority",
+                  "ItemBillingBlockReason",
+                  "DeliveryStatus"
+                ],
+                "rationale": "Load sales-order items.",
+                "filter_from_previous": [
+                  {
+                    "field": "SalesOrder",
+                    "source_step_id": "sales_orders",
+                    "source_field": "SalesOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "delivery_items",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "entity_set": "A_OutbDeliveryItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "DeliveryDocument",
+                  "DeliveryDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "Plant",
+                  "Material",
+                  "ActualDeliveryQuantity",
+                  "GoodsMovementStatus",
+                  "DeliveryRelatedBillingStatus",
+                  "ItemBillingBlockReason"
+                ],
+                "rationale": "Load deliveries referencing the sales order.",
+                "filter_from_previous": [
+                  {
+                    "field": "ReferenceSDDocument",
+                    "source_step_id": "sales_orders",
+                    "source_field": "SalesOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "delivery_headers",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "entity_set": "A_OutbDeliveryHeader",
+                "http_method": "GET",
+                "select_fields": [
+                  "DeliveryDocument",
+                  "ActualGoodsMovementDate",
+                  "OverallGoodsMovementStatus",
+                  "OverallDelivReltdBillgStatus",
+                  "DeliveryBlockReason",
+                  "HeaderBillingBlockReason",
+                  "TotalCreditCheckStatus"
+                ],
+                "rationale": "Load delivery header status.",
+                "filter_from_previous": [
+                  {
+                    "field": "DeliveryDocument",
+                    "source_step_id": "delivery_items",
+                    "source_field": "DeliveryDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_items",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "SalesDocument",
+                  "SalesDocumentItem",
+                  "BillingQuantity",
+                  "NetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load billing items associated with the sales order.",
+                "filter_from_previous": [
+                  {
+                    "field": "SalesDocument",
+                    "source_step_id": "sales_orders",
+                    "source_field": "SalesOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_headers",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentDate",
+                  "BillingDocumentIsCancelled",
+                  "AccountingPostingStatus",
+                  "OverallBillingStatus",
+                  "TotalNetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load billing headers.",
+                "filter_from_previous": [
+                  {
+                    "field": "BillingDocument",
+                    "source_step_id": "billing_items",
+                    "source_field": "BillingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "accounting_items",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "SalesDocument",
+                  "BillingDocument",
+                  "Customer",
+                  "PostingDate",
+                  "NetDueDate",
+                  "IsCleared",
+                  "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "AccountingDocumentType",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load receivable and clearing evidence.",
+                "filter_from_previous": [
+                  {
+                    "field": "SalesDocument",
+                    "source_step_id": "sales_orders",
+                    "source_field": "SalesOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect bounded O2C anomaly evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "order-to-cash-anomaly-monitor",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_o2c_anomaly_evidence": "{{steps.collect_o2c_anomaly_evidence.output}}"
+          },
+          "known_gaps": [
+            "billing_output_and_dispute_evidence"
+          ]
+        }
+      }
+    ]
+  }
 }

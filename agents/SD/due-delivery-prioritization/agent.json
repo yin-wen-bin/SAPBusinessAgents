@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "due-delivery-prioritization",
   "module": "SD",
   "title": {
@@ -8,9 +8,9 @@
   },
   "summary": {
     "zh": "按逾期、SAP交货优先级、临近程度、冻结和库存覆盖率排序交货需求。",
-    "en": "按逾期、SAP交货优先级、临近程度、冻结和库存覆盖率排序交货需求。"
+    "en": "Ranks delivery demand by overdue age, SAP delivery priority, due-date proximity, blocks and stock coverage."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -330,5 +330,252 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_organization": {
+          "type": "string",
+          "title": {
+            "zh": "销售组织",
+            "en": "Sales organization"
+          },
+          "description": {
+            "zh": "请输入销售组织。",
+            "en": "Enter the sales organization."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          },
+          "description": {
+            "zh": "请输入工厂。",
+            "en": "Enter the plant."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "sales_organization",
+        "plant",
+        "date_from",
+        "date_to"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 31
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "collect_due_priority_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_SALES_ORDER_SRV",
+            "entity_set": "A_SalesOrder",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "sales_orders",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrder",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrganization",
+                  "RequestedDeliveryDate",
+                  "TotalBlockStatus",
+                  "TotalCreditCheckStatus",
+                  "DeliveryBlockReason"
+                ],
+                "rationale": "Load sales orders in the requested-delivery range.",
+                "filters": [
+                  {
+                    "field": "SalesOrganization",
+                    "operator": "eq",
+                    "value": "{{input.sales_organization}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "RequestedDeliveryDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "RequestedDeliveryDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              },
+              {
+                "step_id": "sales_order_items",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "RequestedQuantity",
+                  "ConfdDelivQtyInOrderQtyUnit",
+                  "DeliveryPriority",
+                  "DeliveryStatus"
+                ],
+                "rationale": "Load items for selected sales orders.",
+                "filter_from_previous": [
+                  {
+                    "field": "SalesOrder",
+                    "source_step_id": "sales_orders",
+                    "source_field": "SalesOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "schedule_lines",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrderScheduleLine",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "ScheduleLine",
+                  "RequestedDeliveryDate",
+                  "ConfirmedDeliveryDate",
+                  "ScheduleLineOrderQuantity",
+                  "ConfdOrderQtyByMatlAvailCheck",
+                  "DeliveredQtyInOrderQtyUnit",
+                  "DelivBlockReasonForSchedLine"
+                ],
+                "rationale": "Load schedule-line commitment evidence.",
+                "filter_from_previous": [
+                  {
+                    "field": "SalesOrder",
+                    "source_step_id": "sales_order_items",
+                    "source_field": "SalesOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "SalesOrderItem",
+                    "source_step_id": "sales_order_items",
+                    "source_field": "SalesOrderItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "material_stock",
+                "service_name": "API_MATERIAL_STOCK_SRV",
+                "entity_set": "A_MatlStkInAcctMod",
+                "http_method": "GET",
+                "select_fields": [
+                  "Material",
+                  "Plant",
+                  "StorageLocation",
+                  "MaterialBaseUnit",
+                  "MatlWrhsStkQtyInMatlBaseUnit",
+                  "InventoryStockType"
+                ],
+                "rationale": "Load plant stock used as supporting prioritization evidence.",
+                "filters": [
+                  {
+                    "field": "Plant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect due-delivery priority evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "due-delivery-prioritization",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_due_priority_evidence": "{{steps.collect_due_priority_evidence.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
 }

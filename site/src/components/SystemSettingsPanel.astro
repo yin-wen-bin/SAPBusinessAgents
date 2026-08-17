@@ -1,0 +1,220 @@
+---
+import { RefreshCw, Settings } from "@lucide/astro";
+import type { Locale } from "../lib/types";
+
+interface Props { locale: Locale }
+const { locale } = Astro.props;
+const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
+const copy = locale === "zh" ? {
+  eyebrow: "系统配置",
+  title: "SDK 版本与更新",
+  body: "集中查看 SAPBusinessAgents 使用的 SDK。检查更新只访问对应官方包注册表；更新操作仅允许执行系统白名单中预先注册的包。",
+  checkAll: "检查全部更新",
+  loading: "正在读取本机 SDK 信息…",
+  unavailable: "无法连接本机 API，请先启动 SAPBusinessAgents。",
+  current: "当前版本",
+  latest: "最新版本",
+  package: "安装包",
+  ecosystem: "运行环境",
+  checkedAt: "检查时间",
+  notChecked: "尚未检查",
+  notInstalled: "未安装",
+  check: "检查更新",
+  checking: "正在检查…",
+  update: "更新到最新版本",
+  updating: "正在更新…",
+  currentState: "已是最新版本",
+  updateState: "发现新版本",
+  failedState: "检查失败",
+  pendingState: "等待检查",
+  updateDisabled: "此 SDK 只能查看版本，不能由平台更新。",
+  restart: "更新完成。请重启 SAPBusinessAgents，使新 SDK 版本对所有任务生效。",
+  updated: "SDK 更新完成。",
+  confirmUpdate: "将更新本机 SDK 依赖，运行中的任务不会自动切换版本。确定继续吗？",
+} : {
+  eyebrow: "System settings",
+  title: "SDK versions and updates",
+  body: "View the SDKs used by SAPBusinessAgents in one place. Update checks only contact the relevant package registry, and updates are restricted to pre-registered allowlisted packages.",
+  checkAll: "Check all updates",
+  loading: "Reading local SDK information…",
+  unavailable: "Cannot reach the local API. Start SAPBusinessAgents first.",
+  current: "Current version",
+  latest: "Latest version",
+  package: "Package",
+  ecosystem: "Runtime",
+  checkedAt: "Last checked",
+  notChecked: "Not checked",
+  notInstalled: "Not installed",
+  check: "Check for updates",
+  checking: "Checking…",
+  update: "Update to latest",
+  updating: "Updating…",
+  currentState: "Up to date",
+  updateState: "Update available",
+  failedState: "Check failed",
+  pendingState: "Not checked",
+  updateDisabled: "This SDK is version-visible but cannot be updated by the platform.",
+  restart: "Update completed. Restart SAPBusinessAgents so every task uses the new SDK version.",
+  updated: "SDK update completed.",
+  confirmUpdate: "This will update a local SDK dependency. Running tasks will not switch versions automatically. Continue?",
+};
+---
+
+<section class="sdk-manager" data-sdk-manager data-api-base={apiBase}>
+  <header class="plugin-manager-header">
+    <div>
+      <p class="runtime-eyebrow"><Settings size={16} aria-hidden="true" />{copy.eyebrow}</p>
+      <h1>{copy.title}</h1>
+      <p>{copy.body}</p>
+    </div>
+    <button type="button" class="secondary-button" data-check-all>
+      <RefreshCw size={16} aria-hidden="true" />{copy.checkAll}
+    </button>
+  </header>
+
+  <div class="plugin-alert" data-sdk-alert>{copy.loading}</div>
+  <div class="sdk-grid" data-sdk-grid></div>
+</section>
+
+<script is:inline define:vars={{ copy, locale }}>
+  const root = document.querySelector("[data-sdk-manager]");
+  const grid = root?.querySelector("[data-sdk-grid]");
+  const alert = root?.querySelector("[data-sdk-alert]");
+  const apiBase = root?.dataset.apiBase;
+
+  const element = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  };
+
+  const localized = (value) => value?.[locale] || value?.zh || value?.en || "";
+  const checkedTime = (value) => value
+    ? new Date(value).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")
+    : copy.notChecked;
+
+  const responseError = async (response) => {
+    try {
+      const payload = await response.json();
+      return payload?.detail?.message || payload?.detail || response.statusText;
+    } catch {
+      return response.statusText;
+    }
+  };
+
+  const stateFor = (sdk) => {
+    if (sdk.check_status === "failed") return { key: "failed", text: copy.failedState };
+    if (!sdk.installed) return { key: "failed", text: copy.notInstalled };
+    if (sdk.update_available) return { key: "update", text: copy.updateState };
+    if (sdk.check_status === "checked") return { key: "ready", text: copy.currentState };
+    return { key: "pending", text: copy.pendingState };
+  };
+
+  const render = (sdks) => {
+    grid.replaceChildren();
+    alert.hidden = true;
+    for (const sdk of sdks) {
+      const state = stateFor(sdk);
+      const card = element("article", "sdk-card");
+      const heading = element("header", "sdk-card-heading");
+      const titleWrap = element("div");
+      titleWrap.append(
+        element("h2", "", localized(sdk.name) || sdk.sdk_id),
+        element("p", "", localized(sdk.description)),
+      );
+      heading.append(titleWrap, element("span", `sdk-status status-${state.key}`, state.text));
+
+      const versions = element("div", "sdk-version-grid");
+      const current = element("section", "sdk-version-block");
+      current.append(element("span", "", copy.current), element("strong", "", sdk.current_version || copy.notInstalled));
+      const latest = element("section", "sdk-version-block");
+      latest.append(element("span", "", copy.latest), element("strong", "", sdk.latest_version || copy.notChecked));
+      versions.append(current, latest);
+
+      const facts = element("dl", "plugin-facts sdk-facts");
+      facts.append(
+        element("dt", "", copy.package), element("dd", "", sdk.package_name),
+        element("dt", "", copy.ecosystem), element("dd", "", sdk.ecosystem),
+        element("dt", "", copy.checkedAt), element("dd", "", checkedTime(sdk.checked_at)),
+      );
+      if (sdk.error?.message) {
+        facts.append(element("dt", "", copy.failedState), element("dd", "sdk-error", sdk.error.message));
+      }
+
+      const actions = element("footer", "plugin-card-actions sdk-card-actions");
+      const check = element("button", "secondary-button", copy.check);
+      check.type = "button";
+      check.addEventListener("click", async () => {
+        check.disabled = true; check.textContent = copy.checking;
+        try {
+          const response = await fetch(`${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/check`, { method: "POST" });
+          if (!response.ok) throw new Error(await responseError(response));
+          await load();
+        } catch (error) {
+          alert.hidden = false; alert.textContent = String(error.message || error);
+        } finally {
+          check.disabled = false;
+        }
+      });
+      actions.append(check);
+
+      if (sdk.update_available && sdk.update_enabled) {
+        const update = element("button", "sdk-update-button", copy.update);
+        update.type = "button";
+        update.addEventListener("click", async () => {
+          if (!window.confirm(copy.confirmUpdate)) return;
+          update.disabled = true; update.textContent = copy.updating;
+          try {
+            const response = await fetch(`${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/update`, {
+              method: "POST",
+              headers: { "X-SAPBA-Action": "sdk-update" },
+            });
+            if (!response.ok) throw new Error(await responseError(response));
+            const payload = await response.json();
+            alert.hidden = false;
+            alert.dataset.tone = "success";
+            alert.textContent = payload.restart_required ? copy.restart : copy.updated;
+            render([payload.item, ...sdks.filter((item) => item.sdk_id !== sdk.sdk_id)]);
+            alert.hidden = false;
+          } catch (error) {
+            alert.hidden = false; alert.dataset.tone = "error"; alert.textContent = String(error.message || error);
+          } finally {
+            update.disabled = false;
+          }
+        });
+        actions.append(update);
+      } else if (sdk.check_status === "checked" && !sdk.update_enabled) {
+        actions.append(element("small", "sdk-update-note", copy.updateDisabled));
+      }
+
+      card.append(heading, versions, facts, actions);
+      grid.append(card);
+    }
+  };
+
+  const load = async () => {
+    const response = await fetch(`${apiBase}/api/system/sdks`);
+    if (!response.ok) throw new Error(await responseError(response));
+    const payload = await response.json();
+    render(payload.items || []);
+  };
+
+  root?.querySelector("[data-check-all]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    alert.hidden = false; alert.dataset.tone = ""; alert.textContent = copy.checking;
+    try {
+      const response = await fetch(`${apiBase}/api/system/sdks/check`, { method: "POST" });
+      if (!response.ok) throw new Error(await responseError(response));
+      const payload = await response.json();
+      render(payload.items || []);
+    } catch (error) {
+      alert.hidden = false; alert.dataset.tone = "error"; alert.textContent = String(error.message || error);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  load().catch(() => { alert.hidden = false; alert.textContent = copy.unavailable; });
+</script>

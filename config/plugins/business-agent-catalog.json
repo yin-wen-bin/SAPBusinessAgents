@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "plugin_id": "business-agent-catalog",
+  "version": "2.0.0",
+  "name": {
+    "zh": "业务 Agent 包",
+    "en": "Business Agent Packages"
+  },
+  "publisher": "SAPBusinessAgents",
+  "enabled": true,
+  "capabilities": [
+    {
+      "capability": "business_agent.v1",
+      "operations": ["list", "executable", "get", "validate"]
+    }
+  ],
+  "transport": {
+    "type": "builtin",
+    "loopback_only": true
+  },
+  "permissions": {
+    "sap_read": false,
+    "sap_write": false,
+    "arbitrary_shell": false,
+    "arbitrary_code": false,
+    "filesystem_write": false
+  },
+  "health_check": "health"
+}

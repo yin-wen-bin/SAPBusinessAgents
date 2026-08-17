@@ -2,6 +2,7 @@
 import { ChevronRight, Search } from "@lucide/astro";
 import type { AgentDefinition, AgentSearchItem, Locale, SapModule } from "../lib/types";
 import { MODULES } from "../lib/types";
+import { tagLabel } from "../lib/display";
 import { agentPath } from "../lib/urls";
 
 interface Props {
@@ -103,7 +104,7 @@ const items: AgentSearchItem[] = agents.map((agent) => ({
         <p class="skill-summary">{item.summary}</p>
         <span class="module-badge">{item.module}</span>
         <ul class="tag-list" aria-label={labels.tags}>
-          {[...new Set([...item.transactions, ...item.tags])].slice(0, 4).map((tag) => <li>{tag}</li>)}
+          {[...new Set([...item.transactions, ...item.tags])].slice(0, 4).map((tag) => <li>{tagLabel(tag, locale)}</li>)}
         </ul>
         <a class="row-action" href={item.href} aria-label={`${item.title} — ${locale === "zh" ? "查看详情" : "View details"}`}>
           <ChevronRight size={20} stroke-width={1.8} aria-hidden="true" />

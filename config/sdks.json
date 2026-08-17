@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "sdks": [
+    {
+      "sdk_id": "codex-python-sdk",
+      "name": {
+        "zh": "Codex SDK",
+        "en": "Codex SDK"
+      },
+      "description": {
+        "zh": "用于自由 SAP 查询规划、线程恢复和结果解释的 Codex Python SDK。",
+        "en": "Codex Python SDK used for free-query planning, thread continuation, and result explanation."
+      },
+      "ecosystem": "python",
+      "package_name": "openai-codex",
+      "update_enabled": true,
+      "restart_required": true
+    }
+  ]
+}

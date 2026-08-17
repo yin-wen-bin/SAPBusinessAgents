@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "shortage-allocation-advisor",
   "module": "SD",
   "title": {
@@ -8,9 +8,9 @@
   },
   "summary": {
     "zh": "结合确认数量、物料库存和ATP，生成严格只读的短缺分配建议。",
-    "en": "结合确认数量、物料库存和ATP，生成严格只读的短缺分配建议。"
+    "en": "Combines confirmed quantities, material stock and ATP evidence to produce strictly read-only shortage-allocation recommendations."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -324,5 +324,228 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          },
+          "description": {
+            "zh": "请输入工厂。",
+            "en": "Enter the plant."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          },
+          "description": {
+            "zh": "请输入物料。",
+            "en": "Enter the material."
+          },
+          "placeholder": {
+            "zh": "例如：SG21",
+            "en": "Example: SG21"
+          },
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "plant",
+        "material",
+        "date_from",
+        "date_to"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 31
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "collect_shortage_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_SALES_ORDER_SRV",
+            "entity_set": "A_SalesOrderItem",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "sales_order_items",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "RequestedQuantity",
+                  "ConfdDelivQtyInOrderQtyUnit",
+                  "DeliveryPriority"
+                ],
+                "rationale": "Load demand for the selected material and plant.",
+                "filters": [
+                  {
+                    "field": "ProductionPlant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "Material",
+                    "operator": "eq",
+                    "value": "{{input.material}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "schedule_lines",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrderScheduleLine",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "ScheduleLine",
+                  "RequestedDeliveryDate",
+                  "ConfirmedDeliveryDate",
+                  "ScheduleLineOrderQuantity",
+                  "ConfdOrderQtyByMatlAvailCheck",
+                  "DeliveredQtyInOrderQtyUnit"
+                ],
+                "rationale": "Load schedule-line demand and confirmations.",
+                "filter_from_previous": [
+                  {
+                    "field": "SalesOrder",
+                    "source_step_id": "sales_order_items",
+                    "source_field": "SalesOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "SalesOrderItem",
+                    "source_step_id": "sales_order_items",
+                    "source_field": "SalesOrderItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "material_stock",
+                "service_name": "API_MATERIAL_STOCK_SRV",
+                "entity_set": "A_MatlStkInAcctMod",
+                "http_method": "GET",
+                "select_fields": [
+                  "Material",
+                  "Plant",
+                  "StorageLocation",
+                  "MaterialBaseUnit",
+                  "MatlWrhsStkQtyInMatlBaseUnit",
+                  "InventoryStockType"
+                ],
+                "rationale": "Load the current stock snapshot.",
+                "filters": [
+                  {
+                    "field": "Plant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "Material",
+                    "operator": "eq",
+                    "value": "{{input.material}}",
+                    "value_type": "string"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect demand and stock evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "shortage-allocation-advisor",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_shortage_evidence": "{{steps.collect_shortage_evidence.output}}"
+          },
+          "known_gaps": [
+            "atp_availability_evidence"
+          ]
+        }
+      }
+    ]
+  }
 }

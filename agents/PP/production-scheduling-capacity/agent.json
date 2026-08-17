@@ -1,26 +1,653 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "production-scheduling-capacity",
   "module": "PP",
-  "title": { "zh": "Production Scheduling & Capacity Assistant", "en": "Production Scheduling & Capacity Assistant" },
-  "summary": { "zh": "关联计划订单、生产订单、工序和工作中心产能，识别负荷冲突并提出受约束的排程建议。", "en": "Links planned orders, production operations and work-center capacity to identify overloads and recommend constrained schedules." },
-  "status": "Live-tested design",
+  "title": {
+    "zh": "生产排程与产能助手",
+    "en": "Production Scheduling & Capacity Assistant"
+  },
+  "summary": {
+    "zh": "关联计划订单、生产订单、工序和工作中心产能，识别负荷冲突并提出受约束的排程建议。",
+    "en": "Links planned orders, production operations and work-center capacity to identify overloads and recommend constrained schedules."
+  },
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "PP-SFC / Capacity Planning",
-  "tags": ["Scheduling", "Capacity", "Work Center", "Planned Order"],
-  "sapModules": ["PP-CRP", "PP-SFC"],
-  "transactions": ["CM01", "CM21", "CM25", "MD04"],
-  "tables": ["PLAF", "CRHD", "KAKO", "KBED", "AFVC"],
-  "systems": ["SAP ECC", "SAP S/4HANA"],
-  "inputs": { "zh": ["工厂与排程期间", "工作中心或产能类别", "计划订单和生产订单", "优先级、换线和班次约束"], "en": ["Plant and scheduling horizon", "Work center or capacity category", "Planned and production orders", "Priority, changeover and shift constraints"] },
-  "outputs": { "zh": ["工作中心负荷与瓶颈", "订单冲突", "候选排程方案", "影响与人工审批清单"], "en": ["Work-center load and bottlenecks", "Order conflicts", "Candidate schedules", "Impact and human approval list"] },
-  "guardrails": { "zh": ["默认不调度或修改订单", "仅在产能需求与可用产能单位一致时比较", "空产能记录不得解释为无限产能", "冻结区和已下达订单必须保留"], "en": ["Do not dispatch or change orders by default", "Compare capacity only with compatible units", "Never interpret missing capacity rows as unlimited capacity", "Preserve frozen horizons and released orders"] },
+  "tags": [
+    "Scheduling",
+    "Capacity",
+    "Work Center",
+    "Planned Order"
+  ],
+  "sapModules": [
+    "PP-CRP",
+    "PP-SFC"
+  ],
+  "transactions": [
+    "CM01",
+    "CM21",
+    "CM25",
+    "MD04"
+  ],
+  "tables": [
+    "PLAF",
+    "CRHD",
+    "KAKO",
+    "KBED",
+    "AFVC"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "工厂与排程期间",
+      "工作中心或产能类别",
+      "计划订单和生产订单",
+      "优先级、换线和班次约束"
+    ],
+    "en": [
+      "Plant and scheduling horizon",
+      "Work center or capacity category",
+      "Planned and production orders",
+      "Priority, changeover and shift constraints"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "工作中心负荷与瓶颈",
+      "订单冲突",
+      "候选排程方案",
+      "影响与人工审批清单"
+    ],
+    "en": [
+      "Work-center load and bottlenecks",
+      "Order conflicts",
+      "Candidate schedules",
+      "Impact and human approval list"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "默认不调度或修改订单",
+      "仅在产能需求与可用产能单位一致时比较",
+      "空产能记录不得解释为无限产能",
+      "冻结区和已下达订单必须保留"
+    ],
+    "en": [
+      "Do not dispatch or change orders by default",
+      "Compare capacity only with compatible units",
+      "Never interpret missing capacity rows as unlimited capacity",
+      "Preserve frozen horizons and released orders"
+    ]
+  },
   "workflow": [
-    { "id": "define-scheduling-scope", "title": { "zh": "确定排程范围", "en": "Define scheduling scope" }, "description": { "zh": "解析工厂、期间、工作中心、订单集合和业务约束。", "en": "Parse plant, horizon, work centers, order set and business constraints." }, "operations": { "zh": ["识别冻结区、优先订单和不可移动工序。", "统一日期、时区、产能单位和班次日历。"], "en": ["Identify frozen horizons, priority orders and immovable operations.", "Normalize dates, time zone, capacity unit and shift calendar."] }, "tools": [{ "name": "Scheduling scope validator", "kind": "Agent component", "purpose": { "zh": "生成受约束排程范围。", "en": "Creates the constrained scheduling scope." } }] },
-    { "id": "check-runtime-and-schema", "title": { "zh": "检查运行时与 schema", "en": "Check runtime and schema" }, "description": { "zh": "验证计划订单、生产订单和工作中心服务的只读能力。", "en": "Validate read-only planned-order, production-order and work-center services." }, "operations": { "zh": ["检查 Thin Runtime 健康和服务可执行性。", "验证计划订单产能、工作中心和订单工序字段。"], "en": ["Check Thin Runtime health and service executability.", "Validate planned-order capacity, work-center and order-operation fields."] }, "tools": [{ "name": "sapclaw_runtime_health", "kind": "Thin SAPClaw", "purpose": { "zh": "检查运行时。", "en": "Checks the runtime." } }, { "name": "sapclaw_schema", "kind": "Thin SAPClaw", "purpose": { "zh": "验证排程字段。", "en": "Validates scheduling fields." } }] },
-    { "id": "load-orders-and-operations", "title": { "zh": "读取订单与工序", "en": "Load orders and operations" }, "description": { "zh": "读取计划订单、生产订单工序、日期、数量和工作中心。", "en": "Read planned orders and production operations with dates, quantities and work centers." }, "operations": { "zh": ["按工厂和期间读取计划订单，保存固定和可转换标志。", "按订单键读取工序，避免全工厂宽查询。"], "en": ["Read planned orders by plant and horizon and retain firm/convertible flags.", "Read operations by order key rather than broad plant scans."] }, "tools": [{ "name": "API_PLANNED_ORDERS", "kind": "SAP OData API", "purpose": { "zh": "提供计划订单及产能需求。", "en": "Provides planned orders and capacity requirements." } }, { "name": "API_PRODUCTION_ORDER_2_SRV", "kind": "SAP OData API", "purpose": { "zh": "提供生产订单工序。", "en": "Provides production-order operations." } }] },
-    { "id": "load-work-center-capacity", "title": { "zh": "读取工作中心产能", "en": "Load work-center capacity" }, "description": { "zh": "读取工作中心、产能分配、班次和负荷桶。", "en": "Read work centers, capacity assignments, shifts and load buckets." }, "operations": { "zh": ["先按工厂和工作中心读取主数据及有效期。", "只有参数化产能桶完整返回时才计算利用率。"], "en": ["Read master data and validity by plant and work center first.", "Calculate utilization only when parameterized capacity buckets are complete."] }, "tools": [{ "name": "API_WORK_CENTERS", "kind": "SAP OData API", "purpose": { "zh": "提供工作中心和产能证据。", "en": "Provides work-center and capacity evidence." } }, { "name": "sapclaw_execute_get", "kind": "Thin SAPClaw", "purpose": { "zh": "执行受控查询。", "en": "Executes controlled queries." } }] },
-    { "id": "cross-check-sap-tables", "title": { "zh": "核对计划与工作中心表", "en": "Cross-check planning tables" }, "description": { "zh": "通过 SAPSkillhub 读取 PLAF、CRHD、KAKO/KBED 证据。", "en": "Use SAPSkillhub to read PLAF, CRHD and KAKO/KBED evidence." }, "operations": { "zh": ["低行数验证订单和工作中心键。", "发现导出超时或缺少选择条件时标记证据限制。"], "en": ["Validate order and work-center keys with low row counts.", "Record evidence limits when export times out or lacks filters."] }, "tools": [{ "name": "sap-se16n-export", "kind": "SAPSkillhub", "purpose": { "zh": "提供独立表级证据。", "en": "Provides independent table-level evidence." } }] },
-    { "id": "optimize-and-present", "title": { "zh": "优化并展示候选方案", "en": "Optimize and present candidates" }, "description": { "zh": "在明确约束下生成候选方案和影响分析。", "en": "Generate candidate schedules and impact analysis under explicit constraints." }, "operations": { "zh": ["比较延迟、换线、加班和在制品影响。", "输出候选方案、不可满足约束和审批项，不自动派工。"], "en": ["Compare lateness, changeovers, overtime and WIP impact.", "Present candidates, infeasible constraints and approvals without dispatching."] }, "tools": [{ "name": "Constraint scheduler", "kind": "AI optimization", "purpose": { "zh": "生成可解释候选排程。", "en": "Generates explainable candidate schedules." } }, { "name": "Production planner approval", "kind": "Human control", "purpose": { "zh": "保留最终派工权。", "en": "Retains final dispatch authority." } }] }
-  ]
+    {
+      "id": "define-scheduling-scope",
+      "title": {
+        "zh": "确定排程范围",
+        "en": "Define scheduling scope"
+      },
+      "description": {
+        "zh": "解析工厂、期间、工作中心、订单集合和业务约束。",
+        "en": "Parse plant, horizon, work centers, order set and business constraints."
+      },
+      "operations": {
+        "zh": [
+          "识别冻结区、优先订单和不可移动工序。",
+          "统一日期、时区、产能单位和班次日历。"
+        ],
+        "en": [
+          "Identify frozen horizons, priority orders and immovable operations.",
+          "Normalize dates, time zone, capacity unit and shift calendar."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Scheduling scope validator",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "生成受约束排程范围。",
+            "en": "Creates the constrained scheduling scope."
+          }
+        }
+      ]
+    },
+    {
+      "id": "check-runtime-and-schema",
+      "title": {
+        "zh": "检查运行时与 schema",
+        "en": "Check runtime and schema"
+      },
+      "description": {
+        "zh": "验证计划订单、生产订单和工作中心服务的只读能力。",
+        "en": "Validate read-only planned-order, production-order and work-center services."
+      },
+      "operations": {
+        "zh": [
+          "检查 Thin Runtime 健康和服务可执行性。",
+          "验证计划订单产能、工作中心和订单工序字段。"
+        ],
+        "en": [
+          "Check Thin Runtime health and service executability.",
+          "Validate planned-order capacity, work-center and order-operation fields."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sapclaw_runtime_health",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "检查运行时。",
+            "en": "Checks the runtime."
+          }
+        },
+        {
+          "name": "sapclaw_schema",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "验证排程字段。",
+            "en": "Validates scheduling fields."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-orders-and-operations",
+      "title": {
+        "zh": "读取订单与工序",
+        "en": "Load orders and operations"
+      },
+      "description": {
+        "zh": "读取计划订单、生产订单工序、日期、数量和工作中心。",
+        "en": "Read planned orders and production operations with dates, quantities and work centers."
+      },
+      "operations": {
+        "zh": [
+          "按工厂和期间读取计划订单，保存固定和可转换标志。",
+          "按订单键读取工序，避免全工厂宽查询。"
+        ],
+        "en": [
+          "Read planned orders by plant and horizon and retain firm/convertible flags.",
+          "Read operations by order key rather than broad plant scans."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_PLANNED_ORDERS",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供计划订单及产能需求。",
+            "en": "Provides planned orders and capacity requirements."
+          }
+        },
+        {
+          "name": "API_PRODUCTION_ORDER_2_SRV",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供生产订单工序。",
+            "en": "Provides production-order operations."
+          }
+        }
+      ]
+    },
+    {
+      "id": "load-work-center-capacity",
+      "title": {
+        "zh": "读取工作中心产能",
+        "en": "Load work-center capacity"
+      },
+      "description": {
+        "zh": "读取工作中心、产能分配、班次和负荷桶。",
+        "en": "Read work centers, capacity assignments, shifts and load buckets."
+      },
+      "operations": {
+        "zh": [
+          "先按工厂和工作中心读取主数据及有效期。",
+          "只有参数化产能桶完整返回时才计算利用率。"
+        ],
+        "en": [
+          "Read master data and validity by plant and work center first.",
+          "Calculate utilization only when parameterized capacity buckets are complete."
+        ]
+      },
+      "tools": [
+        {
+          "name": "API_WORK_CENTERS",
+          "kind": "SAP OData API",
+          "purpose": {
+            "zh": "提供工作中心和产能证据。",
+            "en": "Provides work-center and capacity evidence."
+          }
+        },
+        {
+          "name": "sapclaw_execute_get",
+          "kind": "Thin SAPClaw",
+          "purpose": {
+            "zh": "执行受控查询。",
+            "en": "Executes controlled queries."
+          }
+        }
+      ]
+    },
+    {
+      "id": "cross-check-sap-tables",
+      "title": {
+        "zh": "核对计划与工作中心表",
+        "en": "Cross-check planning tables"
+      },
+      "description": {
+        "zh": "通过 SAPSkillhub 读取 PLAF、CRHD、KAKO/KBED 证据。",
+        "en": "Use SAPSkillhub to read PLAF, CRHD and KAKO/KBED evidence."
+      },
+      "operations": {
+        "zh": [
+          "低行数验证订单和工作中心键。",
+          "发现导出超时或缺少选择条件时标记证据限制。"
+        ],
+        "en": [
+          "Validate order and work-center keys with low row counts.",
+          "Record evidence limits when export times out or lacks filters."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-se16n-export",
+          "kind": "SAPSkillhub",
+          "purpose": {
+            "zh": "提供独立表级证据。",
+            "en": "Provides independent table-level evidence."
+          }
+        }
+      ]
+    },
+    {
+      "id": "optimize-and-present",
+      "title": {
+        "zh": "优化并展示候选方案",
+        "en": "Optimize and present candidates"
+      },
+      "description": {
+        "zh": "在明确约束下生成候选方案和影响分析。",
+        "en": "Generate candidate schedules and impact analysis under explicit constraints."
+      },
+      "operations": {
+        "zh": [
+          "比较延迟、换线、加班和在制品影响。",
+          "输出候选方案、不可满足约束和审批项，不自动派工。"
+        ],
+        "en": [
+          "Compare lateness, changeovers, overtime and WIP impact.",
+          "Present candidates, infeasible constraints and approvals without dispatching."
+        ]
+      },
+      "tools": [
+        {
+          "name": "Constraint scheduler",
+          "kind": "AI optimization",
+          "purpose": {
+            "zh": "生成可解释候选排程。",
+            "en": "Generates explainable candidate schedules."
+          }
+        },
+        {
+          "name": "Production planner approval",
+          "kind": "Human control",
+          "purpose": {
+            "zh": "保留最终派工权。",
+            "en": "Retains final dispatch authority."
+          }
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          },
+          "description": {
+            "zh": "请输入工厂。",
+            "en": "Enter the plant."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "work_center": {
+          "type": "string",
+          "title": {
+            "zh": "工作中心",
+            "en": "Work center"
+          },
+          "description": {
+            "zh": "请输入工作中心。",
+            "en": "Enter the work center."
+          },
+          "placeholder": {
+            "zh": "例如：ASSEMBLY",
+            "en": "Example: ASSEMBLY"
+          },
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "plant",
+        "work_center",
+        "date_from",
+        "date_to"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 31
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "collect_scheduling_objects",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_PLANNED_ORDERS",
+            "entity_set": "A_PlannedOrder",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "planned_orders",
+                "service_name": "API_PLANNED_ORDERS",
+                "entity_set": "A_PlannedOrder",
+                "http_method": "GET",
+                "select_fields": [
+                  "PlannedOrder",
+                  "Material",
+                  "ProductionPlant",
+                  "TotalQuantity",
+                  "PlndOrderPlannedStartDate",
+                  "PlndOrderPlannedEndDate",
+                  "PlannedOrderIsFirm",
+                  "PlannedOrderIsConvertible",
+                  "CapacityRequirement"
+                ],
+                "rationale": "Load planned orders in the scheduling horizon.",
+                "filters": [
+                  {
+                    "field": "ProductionPlant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "PlndOrderPlannedStartDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "PlndOrderPlannedStartDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              },
+              {
+                "step_id": "planned_capacities",
+                "service_name": "API_PLANNED_ORDERS",
+                "entity_set": "A_PlannedOrderCapacity",
+                "http_method": "GET",
+                "select_fields": [
+                  "CapacityRequirement",
+                  "CapacityRequirementItem",
+                  "CapacityRqmtItemCapacity",
+                  "PlannedOrder",
+                  "WorkCenter",
+                  "CapacityCategoryCode",
+                  "Capacity",
+                  "OperationEarliestStartDate",
+                  "OperationEarliestEndDate",
+                  "CapacityRequirementUnit",
+                  "ScheduledCapReqOpSegProcgDurn",
+                  "RemainingCapReqOpSegProcgDurn"
+                ],
+                "rationale": "Load planned-order capacity requirements.",
+                "filter_from_previous": [
+                  {
+                    "field": "PlannedOrder",
+                    "source_step_id": "planned_orders",
+                    "source_field": "PlannedOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "production_operations",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "entity_set": "A_ProductionOrderOperation_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderOperation",
+                  "ProductionPlant",
+                  "WorkCenter",
+                  "OperationIsConfirmed",
+                  "OpPlannedTotalQuantity",
+                  "OpTotalConfirmedYieldQty",
+                  "OpActualExecutionStartDate",
+                  "OpActualExecutionEndDate"
+                ],
+                "rationale": "Load production operations for the selected work center.",
+                "filters": [
+                  {
+                    "field": "ProductionPlant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "WorkCenter",
+                    "operator": "eq",
+                    "value": "{{input.work_center}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "work_centers",
+                "service_name": "API_WORK_CENTERS",
+                "entity_set": "A_WorkCenters",
+                "http_method": "GET",
+                "select_fields": [
+                  "WorkCenterInternalID",
+                  "WorkCenterTypeCode",
+                  "WorkCenter",
+                  "Plant",
+                  "CapacityInternalID",
+                  "ValidityStartDate",
+                  "ValidityEndDate"
+                ],
+                "rationale": "Load work-center master data.",
+                "filters": [
+                  {
+                    "field": "Plant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "WorkCenter",
+                    "operator": "eq",
+                    "value": "{{input.work_center}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "work_center_capacities",
+                "service_name": "API_WORK_CENTERS",
+                "entity_set": "A_WorkCenterCapacity",
+                "http_method": "GET",
+                "select_fields": [
+                  "CapacityInternalID",
+                  "Capacity",
+                  "CapacityCategoryCode",
+                  "CapacityNumberOfCapacities",
+                  "CapacityPlanUtilizationPercent",
+                  "CapacityStartTime",
+                  "CapacityEndTime",
+                  "Plant"
+                ],
+                "rationale": "Load work-center capacity master data.",
+                "filter_from_previous": [
+                  {
+                    "field": "CapacityInternalID",
+                    "source_step_id": "work_centers",
+                    "source_field": "CapacityInternalID",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect orders, operations, and work-center evidence."
+          }
+        }
+      },
+      {
+        "id": "collect_capacity_buckets",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_WORK_CENTERS",
+            "entity_set": "A_WorkCenterCapPerBucketSet",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "P_CapEvalStartDate",
+              "P_CapEvalEndDate",
+              "P_CapEvalBucketType",
+              "Plant",
+              "WorkCenter",
+              "CapacityInternalID",
+              "CapacityEvaluationTimePeriod",
+              "WorkCenterAvailableCapacity",
+              "WorkCenterCapRqmtInCapUnit",
+              "WrkCtrRmngCapInCapUnit",
+              "WorkCenterTotUtilznInTmePerd",
+              "WorkCenterCapacityUnit"
+            ],
+            "filters": [
+              {
+                "field": "P_CapEvalStartDate",
+                "operator": "eq",
+                "value": "{{input.date_from}}",
+                "value_type": "date_start"
+              },
+              {
+                "field": "P_CapEvalEndDate",
+                "operator": "eq",
+                "value": "{{input.date_to}}",
+                "value_type": "date_end"
+              },
+              {
+                "field": "P_CapEvalBucketType",
+                "operator": "eq",
+                "value": "D",
+                "value_type": "string"
+              },
+              {
+                "field": "Plant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              },
+              {
+                "field": "WorkCenter",
+                "operator": "eq",
+                "value": "{{input.work_center}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Collect parameterized capacity buckets."
+          }
+        },
+        "failurePolicy": "record_gap"
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "production-scheduling-capacity",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_scheduling_objects": "{{steps.collect_scheduling_objects.output}}",
+            "collect_capacity_buckets": "{{steps.collect_capacity_buckets.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
 }

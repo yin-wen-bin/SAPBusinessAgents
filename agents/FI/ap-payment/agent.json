@@ -1,73 +1,369 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "ap-payment",
   "module": "FI",
-  "title": { "zh": "AP Payment Assistant", "en": "AP Payment Assistant" },
+  "title": {
+    "zh": "应付账款付款助手",
+    "en": "AP Payment Assistant"
+  },
   "summary": {
     "zh": "查询供应商未清项目与付款状态，并用可解释规则识别重复、冻结、异常账户和逾期风险。",
     "en": "Checks vendor open items and payment status, then explains duplicate, block, bank-account and overdue risks."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "FI-AP",
-  "tags": ["Accounts Payable", "Payment Risk", "Open Items", "Explainable Rules"],
-  "sapModules": ["FI-AP", "MM-IV", "Bank Accounting"],
-  "transactions": ["FBL1N", "FK10N", "FB03", "F110", "MIR4", "ME23N"],
-  "tables": ["BSIK", "BSAK", "BKPF", "BSEG", "LFA1", "LFB1", "REGUH", "REGUP"],
-  "systems": ["SAP ECC", "SAP S/4HANA"],
+  "tags": [
+    "Accounts Payable",
+    "Payment Risk",
+    "Open Items",
+    "Explainable Rules"
+  ],
+  "sapModules": [
+    "FI-AP",
+    "MM-IV",
+    "Bank Accounting"
+  ],
+  "transactions": [
+    "FBL1N",
+    "FK10N",
+    "FB03",
+    "F110",
+    "MIR4",
+    "ME23N"
+  ],
+  "tables": [
+    "BSIK",
+    "BSAK",
+    "BKPF",
+    "BSEG",
+    "LFA1",
+    "LFB1",
+    "REGUH",
+    "REGUP"
+  ],
+  "systems": [
+    "SAP ECC",
+    "SAP S/4HANA"
+  ],
   "inputs": {
-    "zh": ["自然语言问题", "供应商或发票标识", "公司代码（可选）", "查询基准日或日期范围"],
-    "en": ["Natural-language question", "Vendor or invoice identifier", "Optional company code", "As-of date or date range"]
+    "zh": [
+      "自然语言问题",
+      "供应商或发票标识",
+      "公司代码（可选）",
+      "查询基准日或日期范围"
+    ],
+    "en": [
+      "Natural-language question",
+      "Vendor or invoice identifier",
+      "Optional company code",
+      "As-of date or date range"
+    ]
   },
   "outputs": {
-    "zh": ["付款状态摘要", "未清项目明细", "风险证据与等级", "建议处理动作", "数据来源追踪"],
-    "en": ["Payment status summary", "Open-item details", "Risk evidence and severity", "Suggested actions", "Data lineage"]
+    "zh": [
+      "付款状态摘要",
+      "未清项目明细",
+      "风险证据与等级",
+      "建议处理动作",
+      "数据来源追踪"
+    ],
+    "en": [
+      "Payment status summary",
+      "Open-item details",
+      "Risk evidence and severity",
+      "Suggested actions",
+      "Data lineage"
+    ]
   },
   "guardrails": {
-    "zh": ["只读查询，不执行付款或清账", "银行账户只显示掩码", "计划付款不等同于已清账"],
-    "en": ["Read-only; never pays or clears items", "Bank accounts remain masked", "Scheduled payment is not reported as cleared"]
+    "zh": [
+      "只读查询，不执行付款或清账",
+      "银行账户只显示掩码",
+      "计划付款不等同于已清账"
+    ],
+    "en": [
+      "Read-only; never pays or clears items",
+      "Bank accounts remain masked",
+      "Scheduled payment is not reported as cleared"
+    ]
   },
   "workflow": [
     {
       "id": "understand-request",
-      "title": { "zh": "理解付款问题", "en": "Understand the payment question" },
-      "description": { "zh": "识别到期、未清、发票状态或风险检查意图，并抽取供应商、公司代码、凭证和日期范围。", "en": "Classifies due-date, open-item, invoice-status or risk intent and extracts scope." },
+      "title": {
+        "zh": "理解付款问题",
+        "en": "Understand the payment question"
+      },
+      "description": {
+        "zh": "识别到期、未清、发票状态或风险检查意图，并抽取供应商、公司代码、凭证和日期范围。",
+        "en": "Classifies due-date, open-item, invoice-status or risk intent and extracts scope."
+      },
       "tools": [
-        { "name": "ApIntentParser", "kind": "Agent component", "purpose": { "zh": "确定性意图和参数抽取", "en": "Deterministic intent and parameter extraction" } }
+        {
+          "name": "ApIntentParser",
+          "kind": "Agent component",
+          "purpose": {
+            "zh": "确定性意图和参数抽取",
+            "en": "Deterministic intent and parameter extraction"
+          }
+        }
       ]
     },
     {
       "id": "load-ap-data",
-      "title": { "zh": "读取应付证据", "en": "Load AP evidence" },
-      "description": { "zh": "通过可替换的只读端口获取未清、已清、付款运行和主数据。", "en": "Loads open, cleared, payment-run and master data through a replaceable read-only port." },
+      "title": {
+        "zh": "读取应付证据",
+        "en": "Load AP evidence"
+      },
+      "description": {
+        "zh": "通过可替换的只读端口获取未清、已清、付款运行和主数据。",
+        "en": "Loads open, cleared, payment-run and master data through a replaceable read-only port."
+      },
       "tools": [
-        { "name": "SapApDataAdapter", "kind": "Data port", "purpose": { "zh": "隔离 RFC、OData、CDS 或 fixture", "en": "Isolates RFC, OData, CDS or fixtures" } },
-        { "name": "FBL1N / F110 / FB03", "kind": "SAP read", "purpose": { "zh": "人工核对未清项、付款运行和凭证", "en": "Human verification of open items, payment runs and documents" } }
+        {
+          "name": "SapApDataAdapter",
+          "kind": "Data port",
+          "purpose": {
+            "zh": "隔离 RFC、OData、CDS 或 fixture",
+            "en": "Isolates RFC, OData, CDS or fixtures"
+          }
+        },
+        {
+          "name": "FBL1N / F110 / FB03",
+          "kind": "SAP read",
+          "purpose": {
+            "zh": "人工核对未清项、付款运行和凭证",
+            "en": "Human verification of open items, payment runs and documents"
+          }
+        }
       ]
     },
     {
       "id": "determine-status",
-      "title": { "zh": "判定付款状态", "en": "Determine payment status" },
-      "description": { "zh": "区分未清、已计划、已付款和已清账，避免把付款运行误报为最终付款。", "en": "Separates open, scheduled, paid and cleared states without overstating payment-run evidence." },
+      "title": {
+        "zh": "判定付款状态",
+        "en": "Determine payment status"
+      },
+      "description": {
+        "zh": "区分未清、已计划、已付款和已清账，避免把付款运行误报为最终付款。",
+        "en": "Separates open, scheduled, paid and cleared states without overstating payment-run evidence."
+      },
       "tools": [
-        { "name": "ApPaymentAssistant", "kind": "Orchestrator", "purpose": { "zh": "范围校验、查询编排和状态聚合", "en": "Scope validation, query orchestration and status aggregation" } }
+        {
+          "name": "ApPaymentAssistant",
+          "kind": "Orchestrator",
+          "purpose": {
+            "zh": "范围校验、查询编排和状态聚合",
+            "en": "Scope validation, query orchestration and status aggregation"
+          }
+        }
       ]
     },
     {
       "id": "evaluate-risk",
-      "title": { "zh": "执行付款风险规则", "en": "Evaluate payment risks" },
-      "description": { "zh": "检查重复参考号、重复金额、付款冻结、异常银行账户和逾期。", "en": "Checks duplicate references, duplicate amounts, blocks, unusual bank data and overdue items." },
+      "title": {
+        "zh": "执行付款风险规则",
+        "en": "Evaluate payment risks"
+      },
+      "description": {
+        "zh": "检查重复参考号、重复金额、付款冻结、异常银行账户和逾期。",
+        "en": "Checks duplicate references, duplicate amounts, blocks, unusual bank data and overdue items."
+      },
       "tools": [
-        { "name": "PaymentRiskEngine", "kind": "Rule engine", "purpose": { "zh": "产生可追踪规则编号、证据和建议", "en": "Produces traceable rule IDs, evidence and recommendations" } }
+        {
+          "name": "PaymentRiskEngine",
+          "kind": "Rule engine",
+          "purpose": {
+            "zh": "产生可追踪规则编号、证据和建议",
+            "en": "Produces traceable rule IDs, evidence and recommendations"
+          }
+        }
       ]
     },
     {
       "id": "present-result",
-      "title": { "zh": "生成业务回答", "en": "Present the business answer" },
-      "description": { "zh": "返回按币种汇总、项目、风险和数据追踪，并保留机器可读 JSON。", "en": "Returns currency-aware summaries, items, risks and lineage as business text and JSON." },
+      "title": {
+        "zh": "生成业务回答",
+        "en": "Present the business answer"
+      },
+      "description": {
+        "zh": "返回按币种汇总、项目、风险和数据追踪，并保留机器可读 JSON。",
+        "en": "Returns currency-aware summaries, items, risks and lineage as business text and JSON."
+      },
       "tools": [
-        { "name": "AssistantResponse / CLI", "kind": "Output", "purpose": { "zh": "结构化 JSON 与中文业务摘要", "en": "Structured JSON and business-readable summary" } }
+        {
+          "name": "AssistantResponse / CLI",
+          "kind": "Output",
+          "purpose": {
+            "zh": "结构化 JSON 与中文业务摘要",
+            "en": "Structured JSON and business-readable summary"
+          }
+        }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "title": {
+            "zh": "公司代码",
+            "en": "Company code"
+          },
+          "description": {
+            "zh": "请输入公司代码。",
+            "en": "Enter the company code."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "supplier": {
+          "type": "string",
+          "title": {
+            "zh": "供应商编号",
+            "en": "Supplier"
+          },
+          "description": {
+            "zh": "请输入供应商编号。",
+            "en": "Enter the supplier."
+          },
+          "placeholder": {
+            "zh": "例如：1000123",
+            "en": "Example: 1000123"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "as_of": {
+          "type": "string",
+          "title": {
+            "zh": "查询基准日",
+            "en": "As-of date"
+          },
+          "description": {
+            "zh": "请输入查询基准日。",
+            "en": "Enter the as-of date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "company_code",
+        "supplier",
+        "as_of"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": { "type": "string" },
+        "supplier": { "type": "string" },
+        "as_of": { "type": "string" },
+        "business_status": { "type": "string" },
+        "source_complete": { "type": "boolean" },
+        "business_report": { "type": "object" }
+      },
+      "required": ["company_code", "supplier", "as_of", "business_status", "source_complete", "business_report"],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "company_code": "{{steps.evaluate_business_result.output.workflow_output.company_code}}",
+      "supplier": "{{steps.evaluate_business_result.output.workflow_output.supplier}}",
+      "as_of": "{{steps.evaluate_business_result.output.workflow_output.as_of}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "steps": [
+      {
+        "id": "collect_ap_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "CompanyCode",
+              "FiscalYear",
+              "FiscalPeriod",
+              "AccountingDocument",
+              "AccountingDocumentItem",
+              "Supplier",
+              "Customer",
+              "GLAccount",
+              "OperationalGLAccount",
+              "PurchasingDocument",
+              "PurchasingDocumentItem",
+              "PostingDate",
+              "NetDueDate",
+              "IsCleared",
+              "ClearingAccountingDocument",
+              "ClearingDocFiscalYear",
+              "PaymentMethod",
+              "PaymentBlockingReason",
+              "HouseBank",
+              "HouseBankAccount",
+              "AccountingDocumentType",
+              "AmountInTransactionCurrency",
+              "TransactionCurrency",
+              "OrderID"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "Supplier",
+                "operator": "eq",
+                "value": "{{input.supplier}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Collect supplier payment evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "ap-payment",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_ap_evidence": "{{steps.collect_ap_evidence.output}}"
+          },
+          "known_gaps": [
+            "payment_run_and_bank_master_evidence"
+          ]
+        }
+      }
+    ]
+  }
 }

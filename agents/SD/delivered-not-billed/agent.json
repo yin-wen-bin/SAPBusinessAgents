@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "delivered-not-billed",
   "module": "SD",
   "title": {
@@ -8,9 +8,9 @@
   },
   "summary": {
     "zh": "识别已完成PGI但尚未完全开票的外向交货，并按滞留时间分级。",
-    "en": "识别已完成PGI但尚未完全开票的外向交货，并按滞留时间分级。"
+    "en": "Identifies outbound deliveries with completed goods issue that are not fully billed, and grades them by aging."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -330,5 +330,204 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_organization": {
+          "type": "string",
+          "title": {
+            "zh": "销售组织",
+            "en": "Sales organization"
+          },
+          "description": {
+            "zh": "请输入销售组织。",
+            "en": "Enter the sales organization."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "sales_organization",
+        "date_from",
+        "date_to"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 31
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "collect_delivered_not_billed",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_OUTBOUND_DELIVERY_SRV",
+            "entity_set": "A_OutbDeliveryHeader",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "delivery_headers",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "entity_set": "A_OutbDeliveryHeader",
+                "http_method": "GET",
+                "select_fields": [
+                  "DeliveryDocument",
+                  "SalesOrganization",
+                  "ActualGoodsMovementDate",
+                  "OverallGoodsMovementStatus",
+                  "OverallDelivReltdBillgStatus",
+                  "DeliveryBlockReason",
+                  "HeaderBillingBlockReason",
+                  "PlannedGoodsIssueDate"
+                ],
+                "rationale": "Load deliveries in the selected PGI period.",
+                "filters": [
+                  {
+                    "field": "SalesOrganization",
+                    "operator": "eq",
+                    "value": "{{input.sales_organization}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "ActualGoodsMovementDate",
+                    "operator": "ge",
+                    "value": "{{input.date_from}}",
+                    "value_type": "date_start"
+                  },
+                  {
+                    "field": "ActualGoodsMovementDate",
+                    "operator": "le",
+                    "value": "{{input.date_to}}",
+                    "value_type": "date_end"
+                  }
+                ]
+              },
+              {
+                "step_id": "delivery_items",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "entity_set": "A_OutbDeliveryItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "DeliveryDocument",
+                  "DeliveryDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "Plant",
+                  "Material",
+                  "ActualDeliveryQuantity",
+                  "GoodsMovementStatus",
+                  "DeliveryRelatedBillingStatus"
+                ],
+                "rationale": "Load items for selected deliveries.",
+                "filter_from_previous": [
+                  {
+                    "field": "DeliveryDocument",
+                    "source_step_id": "delivery_headers",
+                    "source_field": "DeliveryDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_items",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "BillingQuantity",
+                  "NetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load billing items referencing selected deliveries.",
+                "filter_from_previous": [
+                  {
+                    "field": "ReferenceSDDocument",
+                    "source_step_id": "delivery_items",
+                    "source_field": "DeliveryDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect delivered-not-billed evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "delivered-not-billed",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_delivered_not_billed": "{{steps.collect_delivered_not_billed.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
 }

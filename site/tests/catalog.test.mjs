@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { loadAgentCatalog, validateAgent } from "../scripts/generate-agent-catalog.mjs";
+
+test("Astro React development runtime stays on supported Vite 7", () => {
+  const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+  assert.match(packageJson.overrides?.vite ?? "", /^\^?7\./);
+});
 
 test("catalog discovers twenty-one valid agents with step-level tools", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
@@ -35,6 +41,9 @@ test("catalog discovers twenty-one valid agents with step-level tools", () => {
   for (const agent of records) {
     assert.ok(agent.workflow.length > 0);
     assert.ok(agent.workflow.every((step) => step.tools.length > 0));
+    assert.match(agent.title.zh, /[\u3400-\u9fff]/);
+    assert.doesNotMatch(agent.title.en, /[\u3400-\u9fff]/);
+    assert.doesNotMatch(agent.summary.en, /[\u3400-\u9fff]/);
   }
 
   const sdAgents = records.filter((agent) => agent.module === "SD");
@@ -50,6 +59,9 @@ test("catalog discovers twenty-one valid agents with step-level tools", () => {
   }
 
   const p2p = records.find((agent) => agent.slug === "procure-to-pay-status");
+  assert.equal(p2p.schemaVersion, 2);
+  assert.equal(p2p.execution.mode, "deterministic");
+  assert.ok(p2p.execution.steps.every((step) => step.executor === "rule" || step.readOnly === true));
   assert.equal(p2p.workflow.length, 8);
   assert.ok(p2p.workflow.every((step) => step.operations.zh.length > 0));
   assert.ok(p2p.workflow.every((step) => step.operations.zh.length === step.operations.en.length));
@@ -63,13 +75,18 @@ test("catalog discovers twenty-one valid agents with step-level tools", () => {
     assert.ok(p2pTools.includes(api));
   }
 
+  const o2c = records.find((agent) => agent.slug === "order-to-cash-status");
+  assert.equal(o2c.schemaVersion, 2);
+  assert.equal(o2c.execution.mode, "deterministic");
+
   const ppAgents = records.filter((agent) => agent.module === "PP");
   assert.equal(ppAgents.length, 5);
-  assert.ok(ppAgents.every((agent) => agent.status === "Live-tested design"));
+  assert.ok(ppAgents.every((agent) => agent.status === "Live-tested deterministic prototype"));
   assert.ok(ppAgents.every((agent) => agent.workflow.length === 6));
   assert.ok(ppAgents.every((agent) => agent.workflow.every((step) => step.operations.zh.length === step.operations.en.length)));
-  assert.ok(ppAgents.every((agent) => agent.workflow.some((step) => step.tools.some((tool) => tool.kind === "Thin SAPClaw"))));
-  assert.ok(ppAgents.every((agent) => agent.workflow.some((step) => step.tools.some((tool) => tool.kind === "SAPSkillhub"))));
+  assert.ok(ppAgents.every((agent) => agent.schemaVersion === 2));
+  assert.ok(ppAgents.every((agent) => agent.execution.mode === "deterministic"));
+  assert.ok(ppAgents.every((agent) => agent.execution.steps.every((step) => step.executor === "rule" || step.readOnly === true)));
 });
 
 test("manifest validation rejects a workflow step without tools", () => {
@@ -78,6 +95,15 @@ test("manifest validation rejects a workflow step without tools", () => {
   assert.throws(
     () => validateAgent(example, example.module, example.slug, "example/agent.json"),
     /tools must be a non-empty array/,
+  );
+});
+
+test("manifest validation rejects a schema v2 non-GET execution step", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "procure-to-pay-status"));
+  example.execution.steps[0].request.plan.http_method = "POST";
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /non-GET SAP operation/,
   );
 });
 

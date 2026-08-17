@@ -1,0 +1,144 @@
+---
+import { Plug, RefreshCw } from "@lucide/astro";
+import type { Locale } from "../lib/types";
+
+interface Props { locale: Locale }
+const { locale } = Astro.props;
+const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
+const copy = locale === "zh" ? {
+  eyebrow: "本机插件平台",
+  title: "插件与能力",
+  body: "核心只按版本化能力路由。插件清单不能申请 SAP 写入、任意 Shell、任意代码或远程传输。",
+  refresh: "重新扫描",
+  loading: "正在读取本机插件注册表…",
+  unavailable: "无法连接 127.0.0.1:8765，请先启动本地 API。",
+  capability: "能力",
+  transport: "传输",
+  permissions: "安全边界",
+  health: "健康检查",
+  disable: "停用",
+  enable: "启用",
+  readOnly: "SAP 只读",
+  noWrite: "禁止 SAP 写入",
+} : {
+  eyebrow: "Local plugin platform",
+  title: "Plugins and capabilities",
+  body: "The core routes only by versioned capability. Manifests cannot request SAP writes, arbitrary shell, arbitrary code, or remote transport.",
+  refresh: "Rescan",
+  loading: "Reading the local plugin registry…",
+  unavailable: "Cannot reach 127.0.0.1:8765. Start the local API first.",
+  capability: "Capabilities",
+  transport: "Transport",
+  permissions: "Safety boundary",
+  health: "Health check",
+  disable: "Disable",
+  enable: "Enable",
+  readOnly: "SAP read-only",
+  noWrite: "SAP writes forbidden",
+};
+---
+
+<section class="plugin-manager" data-plugin-manager data-api-base={apiBase}>
+  <header class="plugin-manager-header">
+    <div>
+      <p class="runtime-eyebrow"><Plug size={16} aria-hidden="true" />{copy.eyebrow}</p>
+      <h1>{copy.title}</h1>
+      <p>{copy.body}</p>
+    </div>
+    <button type="button" class="secondary-button" data-rescan>
+      <RefreshCw size={16} aria-hidden="true" />{copy.refresh}
+    </button>
+  </header>
+
+  <div class="plugin-alert" data-plugin-alert>{copy.loading}</div>
+  <div class="plugin-grid" data-plugin-grid></div>
+</section>
+
+<script is:inline define:vars={{ copy, locale }}>
+  const root = document.querySelector("[data-plugin-manager]");
+  const grid = root?.querySelector("[data-plugin-grid]");
+  const alert = root?.querySelector("[data-plugin-alert]");
+  const apiBase = root?.dataset.apiBase;
+
+  const element = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  };
+
+  const render = (plugins) => {
+    grid.replaceChildren();
+    alert.hidden = true;
+    for (const plugin of plugins) {
+      const card = element("article", "plugin-card");
+      const heading = element("header", "plugin-card-heading");
+      const titleWrap = element("div");
+      titleWrap.append(
+        element("h2", "", plugin.name?.[locale] || plugin.name?.en || plugin.plugin_id),
+        element("code", "", `${plugin.plugin_id}@${plugin.version}`),
+      );
+      heading.append(titleWrap, element("span", `plugin-status status-${plugin.status}`, plugin.status));
+
+      const capabilities = element("section", "plugin-card-section");
+      capabilities.append(element("h3", "", copy.capability));
+      const capabilityList = element("ul", "plugin-capabilities");
+      for (const item of plugin.capabilities || []) {
+        capabilityList.append(element("li", "", `${item.capability} · ${item.operations.join(", ")}`));
+      }
+      capabilities.append(capabilityList);
+
+      const facts = element("dl", "plugin-facts");
+      facts.append(
+        element("dt", "", copy.transport),
+        element("dd", "", plugin.transport?.type || "—"),
+        element("dt", "", copy.permissions),
+        element("dd", "", `${plugin.permissions?.sap_read ? copy.readOnly : "—"} · ${copy.noWrite}`),
+      );
+
+      const actions = element("footer", "plugin-card-actions");
+      const health = element("button", "secondary-button", copy.health);
+      const toggle = element("button", "secondary-button", plugin.enabled ? copy.disable : copy.enable);
+      health.addEventListener("click", async () => {
+        health.disabled = true;
+        await fetch(`${apiBase}/api/plugins/${encodeURIComponent(plugin.plugin_id)}/health`, { method: "POST" });
+        await load();
+      });
+      toggle.addEventListener("click", async () => {
+        toggle.disabled = true;
+        await fetch(`${apiBase}/api/plugins/${encodeURIComponent(plugin.plugin_id)}/enabled`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: !plugin.enabled }),
+        });
+        await load();
+      });
+      actions.append(health, toggle);
+      card.append(heading, capabilities, facts, actions);
+      grid.append(card);
+    }
+  };
+
+  const load = async () => {
+    try {
+      const response = await fetch(`${apiBase}/api/plugins`);
+      if (!response.ok) throw new Error(await response.text());
+      render(await response.json());
+    } catch {
+      alert.hidden = false;
+      alert.textContent = copy.unavailable;
+    }
+  };
+
+  root?.querySelector("[data-rescan]")?.addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      await fetch(`${apiBase}/api/plugins/rescan`, { method: "POST" });
+      await load();
+    } finally {
+      event.currentTarget.disabled = false;
+    }
+  });
+
+  load();
+</script>

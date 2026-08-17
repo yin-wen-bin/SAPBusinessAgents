@@ -1,14 +1,14 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "order-to-cash-status",
   "module": "SD",
   "title": {
-    "zh": "Order-to-Cash状态助手",
+    "zh": "订单到收款状态助手",
     "en": "Order-to-Cash Status"
   },
   "summary": {
     "zh": "从销售订单、客户PO、交货或发票出发，追踪到FI清账和回款状态。",
-    "en": "从销售订单、客户PO、交货或发票出发，追踪到FI清账和回款状态。"
+    "en": "Traces a sales order, customer PO, delivery or invoice through FI clearing and collection status."
   },
   "status": "Runnable prototype",
   "version": "0.1.0",
@@ -119,8 +119,8 @@
     {
       "id": "check-thin-runtime",
       "title": {
-        "zh": "检查Thin Runtime",
-        "en": "Check Thin Runtime"
+        "zh": "检查SAP只读Provider",
+        "en": "Check the SAP read Provider"
       },
       "description": {
         "zh": "确认Runtime健康、启用、只读且schema可执行。",
@@ -136,8 +136,8 @@
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health / sapclaw_schema",
-          "kind": "sapclaw_runtime MCP",
+          "name": "sap_read.health / sap_read.schema",
+          "kind": "SAP Read Provider",
           "purpose": {
             "zh": "执行健康和权威schema检查。",
             "en": "Run health and authoritative schema checks."
@@ -166,7 +166,7 @@
       "tools": [
         {
           "name": "API_SALES_ORDER_SRV + API_OUTBOUND_DELIVERY_SRV + API_BILLING_DOCUMENT_SRV + API_OPLACCTGDOCITEMCUBE_SRV",
-          "kind": "SAP OData via sapclaw_execute_get",
+          "kind": "SAP OData via sap_read.execute_get",
           "purpose": {
             "zh": "执行批准的只读GET。",
             "en": "Execute approved read-only GET requests."
@@ -344,5 +344,210 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_order": {
+          "type": "string",
+          "title": { "zh": "销售订单号", "en": "Sales order" },
+          "description": { "zh": "只输入销售订单号，例如 5814；不要输入完整句子。", "en": "Enter only the sales-order number, for example 5814; do not enter a sentence." },
+          "placeholder": { "zh": "例如：5814", "en": "Example: 5814" },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": ["sales_order"],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_order": { "type": "string" },
+        "company_code": { "type": "string" },
+        "customer": { "type": "string" },
+        "business_status": { "type": "string" },
+        "source_complete": { "type": "boolean" },
+        "business_report": { "type": "object" }
+      },
+      "required": ["sales_order", "business_status", "source_complete", "business_report"],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "sales_order": "{{steps.validate_o2c_evidence.output.workflow_output.sales_order}}",
+      "company_code": "{{steps.validate_o2c_evidence.output.workflow_output.company_code}}",
+      "customer": "{{steps.validate_o2c_evidence.output.workflow_output.customer}}",
+      "business_status": "{{steps.validate_o2c_evidence.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.validate_o2c_evidence.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.validate_o2c_evidence.output.workflow_output.business_report}}"
+    },
+    "steps": [
+      {
+        "id": "collect_o2c_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_SALES_ORDER_SRV",
+            "entity_set": "A_SalesOrder",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "target_entity_set": "A_OperationalAcctgDocItemCube",
+            "steps": [
+              {
+                "step_id": "sales_order",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrder",
+                "http_method": "GET",
+                "filters": [{ "field": "SalesOrder", "operator": "eq", "value": "{{input.sales_order}}", "value_type": "string" }],
+                "rationale": "Load the requested sales order."
+              },
+              {
+                "step_id": "sales_order_items",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrderItem",
+                "http_method": "GET",
+                "filters": [{ "field": "SalesOrder", "operator": "eq", "value": "{{input.sales_order}}", "value_type": "string" }],
+                "rationale": "Load every sales-order item."
+              },
+              {
+                "step_id": "delivery_items",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "entity_set": "A_OutbDeliveryItem",
+                "http_method": "GET",
+                "select_fields": ["DeliveryDocument", "DeliveryDocumentItem", "ReferenceSDDocument", "ReferenceSDDocumentItem", "ActualDeliveryQuantity", "GoodsMovementStatus", "DeliveryRelatedBillingStatus"],
+                "filters": [{ "field": "ReferenceSDDocument", "operator": "eq", "value": "{{input.sales_order}}", "value_type": "string" }],
+                "rationale": "Load outbound-delivery items referencing the sales order."
+              },
+              {
+                "step_id": "delivery_headers",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "entity_set": "A_OutbDeliveryHeader",
+                "http_method": "GET",
+                "select_fields": ["DeliveryDocument", "ActualGoodsMovementDate", "OverallGoodsMovementStatus", "OverallSDProcessStatus"],
+                "filter_from_previous": [
+                  { "field": "DeliveryDocument", "source_step_id": "delivery_items", "source_field": "DeliveryDocument", "fanout": true, "fetch_all_for_binding": true }
+                ],
+                "rationale": "Load delivery-header PGI evidence for every related delivery."
+              },
+              {
+                "step_id": "billing_items_by_order",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": ["BillingDocument", "BillingDocumentItem", "ReferenceSDDocument", "ReferenceSDDocumentItem", "SalesDocument", "SalesDocumentItem"],
+                "filters": [{ "field": "ReferenceSDDocument", "operator": "eq", "value": "{{input.sales_order}}", "value_type": "string" }],
+                "rationale": "Load order-related billing items that directly reference the sales order."
+              },
+              {
+                "step_id": "billing_items_by_delivery",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": ["BillingDocument", "BillingDocumentItem", "ReferenceSDDocument", "ReferenceSDDocumentItem", "SalesDocument", "SalesDocumentItem"],
+                "filter_from_previous": [
+                  { "field": "ReferenceSDDocument", "source_step_id": "delivery_items", "source_field": "DeliveryDocument", "fanout": true, "fetch_all_for_binding": true }
+                ],
+                "rationale": "Load delivery-related billing items by binding each delivery document to ReferenceSDDocument."
+              },
+              {
+                "step_id": "billing_headers_by_order",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": ["BillingDocument", "BillingDocumentType", "BillingDocumentDate", "AccountingDocument", "OverallBillingStatus"],
+                "filter_from_previous": [
+                  { "field": "BillingDocument", "source_step_id": "billing_items_by_order", "source_field": "BillingDocument", "fanout": true, "fetch_all_for_binding": true }
+                ],
+                "rationale": "Load headers for direct order-related billing documents."
+              },
+              {
+                "step_id": "billing_headers_by_delivery",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": ["BillingDocument", "BillingDocumentType", "BillingDocumentDate", "AccountingDocument", "OverallBillingStatus"],
+                "filter_from_previous": [
+                  { "field": "BillingDocument", "source_step_id": "billing_items_by_delivery", "source_field": "BillingDocument", "fanout": true, "fetch_all_for_binding": true }
+                ],
+                "rationale": "Load headers for delivery-related billing documents."
+              },
+              {
+                "step_id": "accounting_items_by_sales_order",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "BillingDocument", "SalesDocument", "Customer", "AccountingDocumentType", "ClearingAccountingDocument", "ClearingDocFiscalYear", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount"],
+                "filters": [{ "field": "SalesDocument", "operator": "eq", "value": "{{input.sales_order}}", "value_type": "string" }],
+                "rationale": "Load FI evidence directly associated with the sales order."
+              },
+              {
+                "step_id": "accounting_by_order_billing",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "BillingDocument", "SalesDocument", "Customer", "AccountingDocumentType", "ClearingAccountingDocument", "ClearingDocFiscalYear", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount"],
+                "filter_from_previous": [
+                  { "field": "BillingDocument", "source_step_id": "billing_items_by_order", "source_field": "BillingDocument", "fanout": true, "fetch_all_for_binding": true }
+                ],
+                "rationale": "Load FI receivable and clearing evidence for direct order-related billing documents."
+              },
+              {
+                "step_id": "accounting_by_delivery_billing",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "BillingDocument", "SalesDocument", "Customer", "AccountingDocumentType", "ClearingAccountingDocument", "ClearingDocFiscalYear", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount"],
+                "filter_from_previous": [
+                  { "field": "BillingDocument", "source_step_id": "billing_items_by_delivery", "source_field": "BillingDocument", "fanout": true, "fetch_all_for_binding": true }
+                ],
+                "rationale": "Load FI receivable and clearing evidence for delivery-related billing documents."
+              },
+              {
+                "step_id": "clearing_documents_by_order_billing",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "AccountingDocumentType", "ClearingAccountingDocument", "IsCleared", "Customer", "PaymentMethod", "HouseBank", "HouseBankAccount"],
+                "filter_from_previous": [
+                  { "field": "AccountingDocument", "source_step_id": "accounting_by_order_billing", "source_field": "ClearingAccountingDocument", "fanout": true, "fetch_all_for_binding": true },
+                  { "field": "CompanyCode", "source_step_id": "accounting_by_order_billing", "source_field": "CompanyCode", "fanout": true, "fetch_all_for_binding": true },
+                  { "field": "FiscalYear", "source_step_id": "accounting_by_order_billing", "source_field": "ClearingDocFiscalYear", "fanout": true, "fetch_all_for_binding": true }
+                ],
+                "rationale": "Load clearing-document evidence for direct order-related billing."
+              },
+              {
+                "step_id": "clearing_documents_by_delivery_billing",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "AccountingDocumentType", "ClearingAccountingDocument", "IsCleared", "Customer", "PaymentMethod", "HouseBank", "HouseBankAccount"],
+                "filter_from_previous": [
+                  { "field": "AccountingDocument", "source_step_id": "accounting_by_delivery_billing", "source_field": "ClearingAccountingDocument", "fanout": true, "fetch_all_for_binding": true },
+                  { "field": "CompanyCode", "source_step_id": "accounting_by_delivery_billing", "source_field": "CompanyCode", "fanout": true, "fetch_all_for_binding": true },
+                  { "field": "FiscalYear", "source_step_id": "accounting_by_delivery_billing", "source_field": "ClearingDocFiscalYear", "fanout": true, "fetch_all_for_binding": true }
+                ],
+                "rationale": "Load clearing-document evidence for delivery-related billing without treating clearing as bank receipt."
+              }
+            ],
+            "rationale": "Trace the selected sales order through delivery, billing and FI clearing using GET-only SAP APIs."
+          }
+        }
+      },
+      {
+        "id": "validate_o2c_evidence",
+        "executor": "rule",
+        "operation": "evaluate_o2c_status",
+        "inputMapping": {
+          "run_input": "{{input}}",
+          "sap_read": "{{steps.collect_o2c_evidence.output}}"
+        }
+      }
+    ]
+  }
 }

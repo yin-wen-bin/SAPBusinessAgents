@@ -1,8 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "procure-to-pay-status",
   "module": "MM",
-  "title": { "zh": "Procure-to-Pay Status Assistant", "en": "Procure-to-Pay Status Assistant" },
+  "title": { "zh": "采购到付款状态助手", "en": "Procure-to-Pay Status Assistant" },
   "summary": {
     "zh": "从采购订单出发，跨 PO、收货、发票、FI 与付款凭证逐行项目判断端到端状态和阻塞原因。",
     "en": "Traces each PO item across receipt, invoice, FI and payment documents to explain end-to-end status and blockers."
@@ -54,23 +54,23 @@
     },
     {
       "id": "check-thin-runtime",
-      "title": { "zh": "检查 Thin Runtime", "en": "Check Thin Runtime" },
-      "description": { "zh": "在访问真实 SAP 前确认 Thin Runtime 健康、启用且严格只读，并验证目标服务 schema。", "en": "Confirms that Thin Runtime is healthy, enabled and strictly read-only before validating the target service schemas." },
+      "title": { "zh": "检查 SAP 只读 Provider", "en": "Check the SAP read Provider" },
+      "description": { "zh": "在访问真实 SAP 前确认所选 Provider 配置有效且严格只读，并验证目标服务 schema。", "en": "Confirms that the selected Provider is configured and strictly read-only before validating the target service schemas." },
       "operations": {
         "zh": [
-          "调用 sapclaw_runtime_health，要求 ok=true、runtime_enabled=true 且 read_only=true。",
-          "调用 sapclaw_schema，确认采购订单、物料凭证、供应商发票和会计凭证四个服务及必要字段可执行。",
-          "健康或 schema 检查失败时停止；主路径不启用 LLM-first，也不调用 sapclaw MCP。"
+          "检查当前 SAP 只读 Provider，要求配置有效且 read_only=true。",
+          "调用 sap_read.schema，确认采购订单、物料凭证、供应商发票和会计凭证四个服务及必要字段可执行。",
+          "健康或 schema 检查失败时停止；主路径不启用 LLM-first。"
         ],
         "en": [
-          "Call sapclaw_runtime_health and require ok=true, runtime_enabled=true and read_only=true.",
-          "Call sapclaw_schema to verify executable schemas and required fields for purchase orders, material documents, supplier invoices and accounting documents.",
-          "Stop when health or schema validation fails; the primary path does not enable LLM-first or call the sapclaw MCP."
+          "Check the selected SAP read Provider and require valid configuration with read_only=true.",
+          "Call sap_read.schema to verify executable schemas and required fields for purchase orders, material documents, supplier invoices and accounting documents.",
+          "Stop when health or schema validation fails; the primary path does not enable LLM-first."
         ]
       },
       "tools": [
-        { "name": "sapclaw_runtime_health", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "验证 Thin Runtime、索引、SAP 配置和只读状态。", "en": "Validates Thin Runtime, index, SAP configuration and read-only state." } },
-        { "name": "sapclaw_schema", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "读取权威实体、字段、类型和可执行性。", "en": "Reads authoritative entities, fields, types and executability." } }
+        { "name": "sap_read.health", "kind": "SAP Read Provider", "purpose": { "zh": "验证 Provider、SAP 配置和只读状态。", "en": "Validates the Provider, SAP configuration, and read-only state." } },
+        { "name": "sap_read.schema", "kind": "SAP Read Provider", "purpose": { "zh": "读取权威实体、字段、类型和可执行性。", "en": "Reads authoritative entities, fields, types and executability." } }
       ]
     },
     {
@@ -93,7 +93,7 @@
       },
       "tools": [
         { "name": "API_PURCHASEORDER_PROCESS_SRV", "kind": "SAP OData API", "purpose": { "zh": "通过 A_PurchaseOrder 和 A_PurchaseOrderItem 获取 PO 范围。", "en": "Provides PO scope through A_PurchaseOrder and A_PurchaseOrderItem." } },
-        { "name": "sapclaw_execute_get", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "执行字段受控、服务端过滤的只读 GET。", "en": "Executes field-controlled, server-filtered read-only GET requests." } }
+        { "name": "sap_read.execute_get", "kind": "SAP Read Provider", "purpose": { "zh": "执行字段受控、服务端过滤的只读 GET。", "en": "Executes field-controlled, server-filtered read-only GET requests." } }
       ]
     },
     {
@@ -116,7 +116,7 @@
       },
       "tools": [
         { "name": "API_MATERIAL_DOCUMENT_SRV", "kind": "SAP OData API", "purpose": { "zh": "通过 A_MaterialDocumentItem 和 A_MaterialDocumentHeader 提供 GR、退货和冲销证据。", "en": "Provides GR, return and reversal evidence through A_MaterialDocumentItem and A_MaterialDocumentHeader." } },
-        { "name": "sapclaw_execute_get", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "按 PO 和物料凭证技术键执行完整分页查询。", "en": "Executes complete paged queries by PO and material-document keys." } }
+        { "name": "sap_read.execute_get", "kind": "SAP Read Provider", "purpose": { "zh": "按 PO 和物料凭证技术键执行完整分页查询。", "en": "Executes complete paged queries by PO and material-document keys." } }
       ]
     },
     {
@@ -139,7 +139,7 @@
       },
       "tools": [
         { "name": "API_SUPPLIERINVOICE_PROCESS_SRV", "kind": "SAP OData API", "purpose": { "zh": "通过 A_SuplrInvcItemPurOrdRef 和 A_SupplierInvoice 提供 PO 发票证据。", "en": "Provides PO invoice evidence through A_SuplrInvcItemPurOrdRef and A_SupplierInvoice." } },
-        { "name": "sapclaw_execute_get", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "按 PO 引用和发票技术键执行只读查询。", "en": "Executes read-only queries by PO reference and invoice technical keys." } }
+        { "name": "sap_read.execute_get", "kind": "SAP Read Provider", "purpose": { "zh": "按 PO 引用和发票技术键执行只读查询。", "en": "Executes read-only queries by PO reference and invoice technical keys." } }
       ]
     },
     {
@@ -168,7 +168,7 @@
       },
       "tools": [
         { "name": "API_OPLACCTGDOCITEMCUBE_SRV", "kind": "SAP OData API", "purpose": { "zh": "通过 A_OperationalAcctgDocItemCube 提供 FI 发票行、清账和付款凭证证据。", "en": "Provides FI invoice-line, clearing and payment-document evidence through A_OperationalAcctgDocItemCube." } },
-        { "name": "sapclaw_execute_get", "kind": "sapclaw_runtime MCP", "purpose": { "zh": "按 PO、原始参考凭证、FI 凭证和清账凭证键执行串联查询。", "en": "Executes chained queries by PO, original reference, FI document and clearing-document keys." } }
+        { "name": "sap_read.execute_get", "kind": "SAP Read Provider", "purpose": { "zh": "按 PO、原始参考凭证、FI 凭证和清账凭证键执行串联查询。", "en": "Executes chained queries by PO, original reference, FI document and clearing-document keys." } }
       ]
     },
     {
@@ -219,5 +219,129 @@
         { "name": "MarkdownFormatter / JSON CLI", "kind": "Output", "purpose": { "zh": "生成人类可读和机器可读结果。", "en": "Produces human-readable and machine-readable results." } }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "purchase_order": {
+          "type": "string",
+          "title": { "zh": "采购订单号", "en": "Purchase order" },
+          "description": { "zh": "只输入采购订单号，例如 4500000030；不要输入完整句子。", "en": "Enter only the purchase-order number, for example 4500000030; do not enter a sentence." },
+          "placeholder": { "zh": "例如：4500000030", "en": "Example: 4500000030" },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": ["purchase_order"],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "purchase_order": { "type": "string" },
+        "company_code": { "type": "string" },
+        "supplier": { "type": "string" },
+        "business_status": { "type": "string" },
+        "source_complete": { "type": "boolean" },
+        "business_report": { "type": "object" }
+      },
+      "required": ["purchase_order", "business_status", "source_complete", "business_report"],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "purchase_order": "{{steps.validate_p2p_evidence.output.workflow_output.purchase_order}}",
+      "company_code": "{{steps.validate_p2p_evidence.output.workflow_output.company_code}}",
+      "supplier": "{{steps.validate_p2p_evidence.output.workflow_output.supplier}}",
+      "business_status": "{{steps.validate_p2p_evidence.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.validate_p2p_evidence.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.validate_p2p_evidence.output.workflow_output.business_report}}"
+    },
+    "steps": [
+      {
+        "id": "collect_p2p_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+            "entity_set": "A_PurchaseOrder",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "target_entity_set": "A_OperationalAcctgDocItemCube",
+            "steps": [
+              {
+                "step_id": "purchase_order",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "entity_set": "A_PurchaseOrder",
+                "http_method": "GET",
+                "filters": [{ "field": "PurchaseOrder", "operator": "eq", "value": "{{input.purchase_order}}", "value_type": "string" }],
+                "rationale": "Load the requested PO header."
+              },
+              {
+                "step_id": "purchase_order_items",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "entity_set": "A_PurchaseOrderItem",
+                "http_method": "GET",
+                "filters": [{ "field": "PurchaseOrder", "operator": "eq", "value": "{{input.purchase_order}}", "value_type": "string" }],
+                "rationale": "Load every item for the requested PO."
+              },
+              {
+                "step_id": "material_documents",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "entity_set": "A_MaterialDocumentItem",
+                "http_method": "GET",
+                "filters": [{ "field": "PurchaseOrder", "operator": "eq", "value": "{{input.purchase_order}}", "value_type": "string" }],
+                "rationale": "Load receipt, return and reversal evidence."
+              },
+              {
+                "step_id": "supplier_invoice_items",
+                "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+                "entity_set": "A_SuplrInvcItemPurOrdRef",
+                "http_method": "GET",
+                "filters": [{ "field": "PurchaseOrder", "operator": "eq", "value": "{{input.purchase_order}}", "value_type": "string" }],
+                "rationale": "Load supplier-invoice references for the PO."
+              },
+              {
+                "step_id": "accounting_items",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "PurchasingDocument", "Supplier", "AccountingDocumentType", "ClearingAccountingDocument", "ClearingDocFiscalYear", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount"],
+                "filters": [{ "field": "PurchasingDocument", "operator": "eq", "value": "{{input.purchase_order}}", "value_type": "string" }],
+                "rationale": "Load FI clearing and payment evidence linked to the PO."
+              },
+              {
+                "step_id": "clearing_documents",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "AccountingDocumentType", "ClearingAccountingDocument", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount", "Supplier"],
+                "filter_from_previous": [
+                  { "field": "AccountingDocument", "source_step_id": "accounting_items", "source_field": "ClearingAccountingDocument", "fanout": true, "fetch_all_for_binding": true },
+                  { "field": "CompanyCode", "source_step_id": "accounting_items", "source_field": "CompanyCode", "fanout": true, "fetch_all_for_binding": true },
+                  { "field": "FiscalYear", "source_step_id": "accounting_items", "source_field": "ClearingDocFiscalYear", "fanout": true, "fetch_all_for_binding": true }
+                ],
+                "rationale": "Load the clearing document itself so payment is never inferred from a clearing reference alone."
+              }
+            ],
+            "rationale": "Follow the PO through goods receipt, supplier invoice and FI evidence using GET-only SAP APIs."
+          }
+        }
+      },
+      {
+        "id": "validate_p2p_evidence",
+        "executor": "rule",
+        "operation": "evaluate_p2p_status",
+        "inputMapping": {
+          "run_input": "{{input}}",
+          "sap_read": "{{steps.collect_p2p_evidence.output}}"
+        }
+      }
+    ]
+  }
 }

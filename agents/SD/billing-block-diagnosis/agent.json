@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "billing-block-diagnosis",
   "module": "SD",
   "title": {
@@ -8,9 +8,9 @@
   },
   "summary": {
     "zh": "诊断销售订单、项目与交货层的开票冻结、信用检查及不完整状态。",
-    "en": "诊断销售订单、项目与交货层的开票冻结、信用检查及不完整状态。"
+    "en": "Diagnoses billing blocks, credit checks and incompletion statuses at sales-order header, item and delivery levels."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -330,5 +330,223 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_order": {
+          "type": "string",
+          "title": {
+            "zh": "销售订单号",
+            "en": "Sales order"
+          },
+          "description": {
+            "zh": "请输入销售订单号。",
+            "en": "Enter the sales order."
+          },
+          "placeholder": {
+            "zh": "例如：5814",
+            "en": "Example: 5814"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "sales_order"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_billing_block_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_SALES_ORDER_SRV",
+            "entity_set": "A_SalesOrder",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "sales_orders",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrder",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrganization",
+                  "RequestedDeliveryDate",
+                  "TotalBlockStatus",
+                  "TotalCreditCheckStatus",
+                  "HeaderBillingBlockReason",
+                  "DeliveryBlockReason",
+                  "OverallDeliveryStatus",
+                  "OverallOrdReltdBillgStatus"
+                ],
+                "rationale": "Load the requested sales order.",
+                "filters": [
+                  {
+                    "field": "SalesOrder",
+                    "operator": "eq",
+                    "value": "{{input.sales_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "sales_order_items",
+                "service_name": "API_SALES_ORDER_SRV",
+                "entity_set": "A_SalesOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "RequestedQuantity",
+                  "ConfdDelivQtyInOrderQtyUnit",
+                  "DeliveryPriority",
+                  "ItemBillingBlockReason",
+                  "DeliveryStatus"
+                ],
+                "rationale": "Load sales-order items.",
+                "filters": [
+                  {
+                    "field": "SalesOrder",
+                    "operator": "eq",
+                    "value": "{{input.sales_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "delivery_items",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "entity_set": "A_OutbDeliveryItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "DeliveryDocument",
+                  "DeliveryDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "Plant",
+                  "Material",
+                  "ActualDeliveryQuantity",
+                  "GoodsMovementStatus",
+                  "DeliveryRelatedBillingStatus",
+                  "ItemBillingBlockReason"
+                ],
+                "rationale": "Load deliveries referencing the sales order.",
+                "filters": [
+                  {
+                    "field": "ReferenceSDDocument",
+                    "operator": "eq",
+                    "value": "{{input.sales_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "delivery_headers",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "entity_set": "A_OutbDeliveryHeader",
+                "http_method": "GET",
+                "select_fields": [
+                  "DeliveryDocument",
+                  "ActualGoodsMovementDate",
+                  "OverallGoodsMovementStatus",
+                  "OverallDelivReltdBillgStatus",
+                  "DeliveryBlockReason",
+                  "HeaderBillingBlockReason",
+                  "TotalCreditCheckStatus"
+                ],
+                "rationale": "Load delivery header status.",
+                "filter_from_previous": [
+                  {
+                    "field": "DeliveryDocument",
+                    "source_step_id": "delivery_items",
+                    "source_field": "DeliveryDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_items",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "SalesDocument",
+                  "SalesDocumentItem",
+                  "BillingQuantity",
+                  "NetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load billing items associated with the sales order.",
+                "filters": [
+                  {
+                    "field": "SalesDocument",
+                    "operator": "eq",
+                    "value": "{{input.sales_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_headers",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentDate",
+                  "BillingDocumentIsCancelled",
+                  "AccountingPostingStatus",
+                  "OverallBillingStatus",
+                  "TotalNetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load billing headers.",
+                "filter_from_previous": [
+                  {
+                    "field": "BillingDocument",
+                    "source_step_id": "billing_items",
+                    "source_field": "BillingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect sales-order and delivery block evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "billing-block-diagnosis",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_billing_block_evidence": "{{steps.collect_billing_block_evidence.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ]
+  }
 }

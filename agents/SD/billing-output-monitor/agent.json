@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "billing-output-monitor",
   "module": "SD",
   "title": {
@@ -8,9 +8,9 @@
   },
   "summary": {
     "zh": "检查发票输出是否生成、发送和成功送达，并明确GUI补证缺口。",
-    "en": "检查发票输出是否生成、发送和成功送达，并明确GUI补证缺口。"
+    "en": "Checks whether invoice output was generated, sent and delivered successfully, and identifies GUI evidence gaps."
   },
-  "status": "Runnable prototype",
+  "status": "Live-tested deterministic prototype",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -324,5 +324,125 @@
         }
       ]
     }
-  ]
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "billing_document": {
+          "type": "string",
+          "title": {
+            "zh": "开票凭证号",
+            "en": "Billing document"
+          },
+          "description": {
+            "zh": "请输入开票凭证号。",
+            "en": "Enter the billing document."
+          },
+          "placeholder": {
+            "zh": "例如：90000025",
+            "en": "Example: 90000025"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "billing_document"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_billing_output_base",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_BILLING_DOCUMENT_SRV",
+            "entity_set": "A_BillingDocument",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "billing_headers",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "SalesOrganization",
+                  "BillingDocumentDate",
+                  "BillingDocumentIsCancelled",
+                  "AccountingPostingStatus",
+                  "OverallBillingStatus",
+                  "TotalNetAmount",
+                  "TransactionCurrency",
+                  "TaxAmount"
+                ],
+                "rationale": "Load the requested billing header.",
+                "filters": [
+                  {
+                    "field": "BillingDocument",
+                    "operator": "eq",
+                    "value": "{{input.billing_document}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_items",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "SalesDocument",
+                  "SalesDocumentItem",
+                  "BillingQuantity",
+                  "NetAmount",
+                  "TransactionCurrency",
+                  "TaxAmount",
+                  "Plant",
+                  "Material"
+                ],
+                "rationale": "Load billing items and source references.",
+                "filters": [
+                  {
+                    "field": "BillingDocument",
+                    "operator": "eq",
+                    "value": "{{input.billing_document}}",
+                    "value_type": "string"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect the base billing document."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "billing-output-monitor",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_billing_output_base": "{{steps.collect_billing_output_base.output}}"
+          },
+          "known_gaps": [
+            "billing_output_status_evidence"
+          ]
+        }
+      }
+    ]
+  }
 }

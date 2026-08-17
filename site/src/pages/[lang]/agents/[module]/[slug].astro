@@ -2,7 +2,9 @@
 import { Database, ExternalLink, FolderGit2, ListChecks, ShieldCheck, Wrench } from "@lucide/astro";
 import SiteLayout from "../../../../layouts/SiteLayout.astro";
 import Sidebar from "../../../../components/Sidebar.astro";
+import AgentRunPanel from "../../../../components/AgentRunPanel.astro";
 import { getAgents, moduleCounts } from "../../../../lib/catalog";
+import { statusLabel } from "../../../../lib/display";
 import type { AgentDefinition, Locale } from "../../../../lib/types";
 import { agentPath, homePath, sourceUrl } from "../../../../lib/urls";
 
@@ -100,11 +102,12 @@ const labels = locale === "zh" ? {
           </a>
 
           <div class="markdown-body agent-document-body">
+            <AgentRunPanel locale={locale} agent={agent} />
             <section id="agent-profile">
               <h2>{labels.profile}</h2>
               <dl class="profile-grid">
                 <div><dt>{labels.owner}</dt><dd>{agent.owner}</dd></div>
-                <div><dt>{labels.status}</dt><dd>{agent.status}</dd></div>
+                <div><dt>{labels.status}</dt><dd>{statusLabel(agent.status, locale)}</dd></div>
                 <div><dt>{labels.version}</dt><dd>{agent.version}</dd></div>
                 <div><dt>{labels.systems}</dt><dd>{agent.systems.join(" · ")}</dd></div>
               </dl>
