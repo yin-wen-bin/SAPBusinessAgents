@@ -125,26 +125,26 @@
       },
       "operations": {
         "zh": [
-          "检查 Thin Runtime 健康和只读状态。",
+          "检查 Embedded Provider 健康和只读状态。",
           "验证 A_MRPMaterial、SupplyDemandItems 和 MaterialCoverages 字段。"
         ],
         "en": [
-          "Check Thin Runtime health and read-only state.",
+          "Check Embedded Provider health and read-only state.",
           "Validate fields for A_MRPMaterial, SupplyDemandItems and MaterialCoverages."
         ]
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_provider_health",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "验证运行环境。",
             "en": "Validates the runtime."
           }
         },
         {
-          "name": "sapclaw_schema",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_schema",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "提供权威字段契约。",
             "en": "Provides the authoritative field contract."
@@ -182,8 +182,8 @@
           }
         },
         {
-          "name": "sapclaw_execute_get",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_execute_get",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "执行精确只读查询。",
             "en": "Executes exact read-only queries."

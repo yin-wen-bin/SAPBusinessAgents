@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -14,7 +15,16 @@ from jsonschema.exceptions import SchemaError, ValidationError
 
 
 class SkillError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "run_failed",
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = detail
 
 
 class SkillRegistry:
@@ -68,9 +78,10 @@ class SkillRegistry:
             raise SkillError(f"Skill {skill_id} is allowlisted but its entrypoint is unavailable.")
         if skill.get("read_only") is not True or skill.get("validated") is not True:
             raise SkillError(f"Skill {skill_id} is not approved for read-only automation.")
-        _validate_json_contract(input_payload, skill.get("input_schema"), "input")
         if skill_id == "sap-adt-table-export":
             _validate_adt_input(input_payload)
+            _validate_adt_connection_contract(skill.get("input_schema"))
+        _validate_json_contract(input_payload, skill.get("input_schema"), "input")
         timeout = max(1, int(skill.get("timeout") or 300))
         with tempfile.TemporaryDirectory(prefix="sapba-skill-") as temporary:
             temporary_root = Path(temporary)
@@ -88,6 +99,7 @@ class SkillRegistry:
                 str(output_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=_skill_subprocess_environment(skill_id),
             )
             try:
                 _stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
@@ -146,10 +158,21 @@ def _validate_json_contract(value: dict[str, Any], schema: Any, label: str) -> N
 
 
 _ADT_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,59}$")
-_ADT_OBJECT = re.compile(r"^[A-Za-z][A-Za-z0-9_/]{0,59}$")
-_ADT_PROFILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_ADT_OBJECT = re.compile(r"^(?=.{1,60}$)(?:[A-Za-z][A-Za-z0-9_]*|/[A-Za-z0-9_]+/[A-Za-z0-9_/]+)$")
 _ADT_FILTER_KEYS = {"field", "sign", "option", "operator", "value", "low", "high", "values"}
 _ADT_OPERATORS = {"eq", "ne", "gt", "ge", "lt", "le", "bt", "in"}
+_SAP_CONNECTION_ENV_KEYS = {
+    "SAP_AUTH_TYPE",
+    "SAP_BASE_URL",
+    "SAP_CLIENT",
+    "SAP_ODATA_BASE_URL",
+    "SAP_ODATA_TIMEOUT_MS",
+    "SAP_PASSWORD",
+    "SAP_SYSTEM",
+    "SAP_USERNAME",
+    "SAP_VERIFY_SSL",
+    "SAPBA_SAP_ENV_FILE",
+}
 _SENSITIVE_KEYS = {
     "url",
     "endpoint",
@@ -170,16 +193,19 @@ _SENSITIVE_KEYS = {
 def _validate_adt_input(value: dict[str, Any]) -> None:
     """Fail closed before invoking ADT with a strictly bounded declarative task."""
 
+    if "connection_profile" in value:
+        raise SkillError(
+            "ADT connection selection is owned by SAPSkillhub and cannot be supplied by the caller.",
+            code="skill_input_connection_forbidden",
+            detail={"field": "connection_profile", "connection_owner": "SAPSkillhub"},
+        )
     if value.get("schema_version") != 1:
         raise SkillError("ADT input schema_version must be 1.")
-    profile = value.get("connection_profile")
-    if not isinstance(profile, str) or not _ADT_PROFILE.fullmatch(profile):
-        raise SkillError("ADT connection_profile must be one fixed non-sensitive profile name.")
     if value.get("source_type") not in {"table", "cds"}:
         raise SkillError("ADT source_type must be table or cds.")
     object_name = value.get("object")
     if not isinstance(object_name, str) or not _ADT_OBJECT.fullmatch(object_name):
-        raise SkillError("ADT object must be one static approved identifier.")
+        raise SkillError("ADT object must be one valid table or CDS identifier.")
     fields = value.get("fields")
     if (
         not isinstance(fields, list)
@@ -188,7 +214,7 @@ def _validate_adt_input(value: dict[str, Any]) -> None:
         or len(set(fields)) != len(fields)
         or any(not isinstance(field, str) or not _ADT_IDENTIFIER.fullmatch(field) for field in fields)
     ):
-        raise SkillError("ADT fields must be a non-empty unique list of static identifiers.")
+        raise SkillError("ADT fields must be a non-empty unique list of identifiers.")
     filters = value.get("filters")
     if not isinstance(filters, list) or not filters or len(filters) > 20:
         raise SkillError("ADT filters must be non-empty and bounded.")
@@ -224,11 +250,46 @@ def _validate_adt_input(value: dict[str, Any]) -> None:
         else:
             raise SkillError(f"ADT order_by {index} is invalid.")
         if not isinstance(field, str) or not _ADT_IDENTIFIER.fullmatch(field) or direction != "asc":
-            raise SkillError("ADT order_by must use static ascending stable keys only.")
+            raise SkillError("ADT order_by must use ascending stable-key identifiers only.")
     max_rows = value.get("max_rows")
-    if isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= 10_000:
-        raise SkillError("ADT max_rows must be between 1 and 10000.")
+    if isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= 30_000:
+        raise SkillError("ADT max_rows must be between 1 and 30000.")
     _reject_sensitive_adt_keys(value)
+
+
+def _validate_adt_connection_contract(schema: Any) -> None:
+    """Require an ADT Skill contract whose connection is selected inside SAPSkillhub."""
+
+    if not isinstance(schema, dict):
+        return
+    properties = schema.get("properties")
+    required = schema.get("required")
+    exposes_profile = isinstance(properties, dict) and "connection_profile" in properties
+    requires_profile = isinstance(required, list) and "connection_profile" in required
+    if exposes_profile or requires_profile:
+        raise SkillError(
+            "Installed sap-adt-table-export contract still exposes caller-managed connection selection.",
+            code="skill_contract_incompatible",
+            detail={
+                "skill_id": "sap-adt-table-export",
+                "expected_contract": "skill_managed_default_connection",
+                "caller_connection_profile_exposed": exposes_profile,
+                "caller_connection_profile_required": requires_profile,
+            },
+        )
+
+
+def _skill_subprocess_environment(skill_id: str) -> dict[str, str]:
+    """Build an isolated child environment without caller-owned SAP connection settings."""
+
+    environment = dict(os.environ)
+    if skill_id != "sap-adt-table-export":
+        return environment
+    for key in list(environment):
+        normalized = key.upper()
+        if normalized in _SAP_CONNECTION_ENV_KEYS or normalized.startswith("SAP_ADT_"):
+            environment.pop(key, None)
+    return environment
 
 
 def _reject_sensitive_adt_keys(value: Any) -> None:

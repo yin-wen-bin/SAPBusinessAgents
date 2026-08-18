@@ -1,4 +1,4 @@
-"""Map a sanitized SAPClaw evidence snapshot to the P2P table contract."""
+"""Map a sanitized SAP read evidence snapshot to the P2P table contract."""
 
 from __future__ import annotations
 

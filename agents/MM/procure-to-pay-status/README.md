@@ -12,7 +12,7 @@
 - 付款识别：通过发票 FI 供应商行的 `AUGBL/AUGGJ` 追踪清账凭证并校验付款凭证类型；也支持通过 `REBZG/REBZJ` 识别部分付款。
 - 人类可读 Markdown 与稳定 JSON 两种输出。
 - 无真实 SAP 时使用包内 SAP-like JSON fixture；生产适配器只需实现一个协议。
-- 可读取由 `sapclaw_runtime` 或受控 SAPSkillhub skill 生成的脱敏 evidence 快照；MCP 调用与业务分析保持解耦。
+- 可读取由 Embedded Provider 或受控 SAPSkillhub Skill 生成的脱敏 evidence 快照；数据采集与业务分析保持解耦。
 
 ## 快速运行
 
@@ -41,7 +41,7 @@ p2p-status "PO 4500001234 item 50" --json
 ```powershell
 p2p-status "PO 4500001234 是否已经收货、发票校验和付款？" `
   --source evidence `
-  --evidence D:\SAPBusinessAgents\.local\runs\procure-to-pay-status\RUN_ID\sapclaw-evidence.json `
+  --evidence D:\SAPBusinessAgents\.local\runs\procure-to-pay-status\RUN_ID\sap-read-evidence.json `
   --payment-document-types KZ,ZP,PY `
   --as-of 2026-08-09 `
   --json

@@ -72,14 +72,14 @@
       "全部 SAP 访问严格只读",
       "Embedded OData 为唯一主 provider",
       "仅 schema 能力缺口触发 ADT",
-      "不使用 SAPClaw 或 SE16N",
+      "不启用自动 Provider 回退或 SE16N",
       "不完整证据不得生成确定结论"
     ],
     "en": [
       "All SAP access is strictly read-only",
       "Embedded OData is the sole primary provider",
       "Only schema capability gaps trigger ADT",
-      "Never use SAPClaw or SE16N",
+      "Never use automatic Provider fallback or SE16N",
       "Incomplete evidence cannot produce a confirmed conclusion"
     ]
   },
@@ -517,7 +517,6 @@
         },
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "AUFK",
           "fields": [
@@ -554,7 +553,6 @@
         },
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "ACDOCA",
           "fields": [
@@ -614,7 +612,6 @@
         },
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "CKMLHD",
           "fields": [
@@ -664,7 +661,6 @@
         },
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "CKMLCR",
           "fields": [

@@ -88,13 +88,13 @@ agents/<模块>/<agent-slug>/
 
 站点在构建前校验全部清单。新增或修改 `agent.json` 后，目录页和详情页会自动更新。
 
-`schemaVersion: 2` 还必须声明 `execution.mode: deterministic` 以及顺序执行的 `sap_read`、`skill` 或 `rule` 步骤。`sap_read` 只能使用 `GET`；运行时不会让 Codex 改写固定 Agent 的工具和步骤。旧的 `sapclaw` 执行器仅作为迁移期兼容别名。
+`schemaVersion: 2` 还必须声明 `execution.mode: deterministic` 以及顺序执行的 `sap_read`、`skill` 或 `rule` 步骤。`sap_read` 只能使用 `GET`；运行时不会让 Codex 改写固定 Agent 的工具和步骤。
 
 ### 单机双模式原型
 
 原型的 FastAPI 服务只监听 `127.0.0.1`。固定 Agent 由确定性工作流引擎运行；自由查询由 Codex SDK 生成结构化的有界计划，之后每个 SAP 请求仍需通过实时元数据、业务关系和 GET-only 校验。默认最多允许 20 个受控工具子步骤，以覆盖当前 13 步固定 O2C 及最多 18 步的自由查询分支，同时保留硬上限。运行状态、SSE 事件和结果保存在 `.local-data/`，Agent 草稿只写入 `.prototype/authoring/`。
 
-本机运行时采用不依赖 Cordis 的 Python/FastAPI 微内核。核心只负责运行状态、SSE、确定性工作流、证据完整性和只读策略；能力通过 `config/plugins/` 中的版本化清单注册。默认 SAP 数据通道是进程内的 Embedded OData Provider；SAPClaw Runtime 作为默认禁用的迁移期可选 Provider。另有 SAPSkillhub、Codex Runtime 和业务 Agent 包。运行记录会保存实际 `plugin_id`、版本、能力、调用编号和耗时。
+本机运行时采用不依赖 Cordis 的 Python/FastAPI 微内核。核心只负责运行状态、SSE、确定性工作流、证据完整性和只读策略；能力通过 `config/plugins/` 中的版本化清单注册。SAP 数据通道固定为进程内的 Embedded OData Provider，另有 SAPSkillhub、Codex Runtime 和业务 Agent 包。运行记录会保存实际 `plugin_id`、版本、能力、调用编号和耗时。
 
 ```mermaid
 flowchart LR
@@ -109,10 +109,8 @@ flowchart LR
     FIXED --> BROKER
     FREE --> BROKER
     CORE --> DB["SQLite / SSE / 本地制品"]
-    SAPREAD --> EMBEDDED["Embedded OData Provider（默认）"]
-    SAPREAD -.-> CLAW["SAPClaw Provider（可选）"]
+    SAPREAD --> EMBEDDED["Embedded OData Provider"]
     EMBEDDED --> SAP["SAP OData GET-only"]
-    CLAW -.-> SAP
 ```
 
 首次启动：
@@ -124,8 +122,8 @@ Copy-Item .env.example .env
 ```
 
 完成首次安装和 `.env` 配置后，可直接双击仓库根目录的
-`start-sap-business-agents.cmd`。默认启动器只检查或启动 SAPBusinessAgents API 和
-Astro Web UI，不再要求 SAPClaw Runtime。日志写入 `.local-data/startup/<timestamp>/`，
+`start-sap-business-agents.cmd`。启动器只检查或启动 SAPBusinessAgents API 和
+Astro Web UI。日志写入 `.local-data/startup/<timestamp>/`，
 已健康的服务不会重复启动。
 
 也可以从 PowerShell 启动而不自动打开浏览器：
@@ -138,7 +136,7 @@ Astro Web UI，不再要求 SAPClaw Runtime。日志写入 `.local-data/startup/
 路径不属于 SAPBusinessAgents 的端口占用进程。
 
 如需手动启动，请在 `.env` 中填写 `SAP_BASE_URL`、`SAP_USERNAME`、`SAP_PASSWORD`、
-`SAP_CLIENT`，并保持 `SAP_READ_PROVIDER=embedded`，然后分别启动后端和站点：
+`SAP_CLIENT`，然后分别启动后端和站点：
 
 ```powershell
 .\.venv\Scripts\sap-business-agents.exe --port 8765
@@ -148,15 +146,7 @@ npm ci
 npm run dev
 ```
 
-打开站点后可从 25 个 Agent 详情页执行 Schema v2 确定性工作流，也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。
-
-如需迁移期回退到 SAPClaw，可显式运行：
-
-```powershell
-.\scripts\Start-SAPBusinessAgents.ps1 -SapReadProvider sapclaw
-```
-
-Provider 不会在单次运行中自动切换；这保证每次运行的证据来源可审计。
+打开站点后可从 30 个 Agent 详情页执行 Schema v2 确定性工作流，也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。SAP 读取固定由 Embedded Provider 完成，不存在自动或手动 Provider 回退。
 
 插件页显示本机注册表、健康状态、能力、传输方式和安全权限。对应接口为 `GET /api/plugins`、`GET /api/capabilities`、`POST /api/plugins/rescan`、`POST /api/plugins/{plugin_id}/health` 和 `PUT /api/plugins/{plugin_id}/enabled`。详细契约见 [本机插件平台设计](docs/local-plugin-platform.md)。
 
@@ -273,7 +263,7 @@ config/plugins/                # Trusted local plugin manifests and versioned ca
 
 ### Agent manifest contract
 
-An `agent.json` may use catalog-only schema version 1 or executable schema version 2. Both provide localized metadata, SAP scope, inputs, outputs, guardrails, and workflow steps. Schema v2 additionally declares a deterministic execution graph whose `sap_read`, `skill`, and `rule` steps are validated before execution; SAP read steps are GET-only. The legacy `sapclaw` executor remains a migration alias. The build validates all manifests before generating the catalog.
+An `agent.json` may use catalog-only schema version 1 or executable schema version 2. Both provide localized metadata, SAP scope, inputs, outputs, guardrails, and workflow steps. Schema v2 additionally declares a deterministic execution graph whose `sap_read`, `skill`, and `rule` steps are validated before execution; SAP read steps are GET-only. The build validates all manifests before generating the catalog.
 
 ### Local dual-mode prototype
 
@@ -286,9 +276,9 @@ Copy-Item .env.example .env
 .\.venv\Scripts\sap-business-agents.exe --port 8765
 ```
 
-In another terminal, run `npm run dev` under `site/`. Fixed Agents execute their declared steps without Codex. Free queries use the Codex SDK to create a bounded structured plan, but every SAP request is revalidated and executed by the selected GET-only Provider. Embedded OData is the default; SAPClaw is an explicitly selected compatibility Provider with no automatic fallback. State is stored under `.local-data/`; generated drafts remain isolated under `.prototype/authoring/`. Only read-only, validated Skills explicitly listed in `config/skills.json` can be executed.
+In another terminal, run `npm run dev` under `site/`. Fixed Agents execute their declared steps without Codex. Free queries use the Codex SDK to create a bounded structured plan, but every SAP request is revalidated and executed by the GET-only Embedded Provider. State is stored under `.local-data/`; generated drafts remain isolated under `.prototype/authoring/`. Only read-only, validated Skills explicitly listed in `config/skills.json` can be executed.
 
-The local runtime is a Python/FastAPI microkernel without Cordis. It routes versioned capabilities from trusted manifests under `config/plugins/`: `business_agent.v1`, `sap_read.v1`, `mcp_tools.v1`, `skill_catalog.v1`, `skill_execute.v1`, `agent_runtime.v1`, and `authoring.v1`. Plugins can be inspected, health-checked, enabled, or disabled through the local plugin page and API; every evidence-producing call records plugin identity and duration. See [Local plugin platform](docs/local-plugin-platform.md).
+The local runtime is a Python/FastAPI microkernel without Cordis. It routes versioned capabilities from trusted manifests under `config/plugins/`: `business_agent.v1`, `sap_read.v1`, `skill_catalog.v1`, `skill_execute.v1`, `agent_runtime.v1`, and `authoring.v1`. Plugins can be inspected, health-checked, enabled, or disabled through the local plugin page and API; every evidence-producing call records plugin identity and duration. See [Local plugin platform](docs/local-plugin-platform.md).
 
 The “My workflows” page provides visual DAG authoring, typed mappings, draft revisions, live GET-only validation, and local Git-branch publishing. The initial validation slices are P2P→AP and O2C→AR. See [User-defined workflows](docs/user-workflows.md).
 

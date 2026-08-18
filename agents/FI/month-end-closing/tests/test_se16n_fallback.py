@@ -84,8 +84,8 @@ def write_manifest(tmp_path: Path) -> Path:
     return path
 
 
-class UnavailableMcpGateway:
-    provider_name = "sapclaw_runtime_mcp"
+class UnavailablePrimaryGateway:
+    provider_name = "embedded_sap_odata"
 
     def report_currency(self, context: ClosingContext) -> str:
         return "EUR"
@@ -94,7 +94,7 @@ class UnavailableMcpGateway:
         raise SapDataUnavailable("service or field is not available")
 
 
-class SuccessfulMcpGateway(UnavailableMcpGateway):
+class SuccessfulPrimaryGateway(UnavailablePrimaryGateway):
     def collect(self, context, check):
         return CheckObservation(
             Decimal("1"),
@@ -118,12 +118,12 @@ class MustNotBeCalledGateway:
         raise AssertionError("fallback currency must not be requested")
 
     def collect(self, context, check):
-        raise AssertionError("fallback must not be read after MCP succeeds")
+        raise AssertionError("fallback must not be read after the primary source succeeds")
 
 
-def test_se16n_manifest_is_used_only_after_mcp_check_failure(tmp_path: Path) -> None:
+def test_se16n_manifest_is_used_only_after_primary_check_failure(tmp_path: Path) -> None:
     fallback = Se16nObservationGateway.from_file(write_manifest(tmp_path))
-    gateway = CompositeSapGateway(UnavailableMcpGateway(), fallback)
+    gateway = CompositeSapGateway(UnavailablePrimaryGateway(), fallback)
 
     assert gateway.report_currency(CONTEXT) == "EUR"
     observation = gateway.collect(CONTEXT, ap_check())
@@ -135,12 +135,12 @@ def test_se16n_manifest_is_used_only_after_mcp_check_failure(tmp_path: Path) -> 
     assert observation.sources[1].artifacts[0].endswith("BSIK_1010_2026_07.xlsx")
 
 
-def test_successful_mcp_observation_never_reads_fallback() -> None:
-    gateway = CompositeSapGateway(SuccessfulMcpGateway(), MustNotBeCalledGateway())
+def test_successful_primary_observation_never_reads_fallback() -> None:
+    gateway = CompositeSapGateway(SuccessfulPrimaryGateway(), MustNotBeCalledGateway())
 
     observation = gateway.collect(CONTEXT, ap_check())
 
-    assert source_mode(observation.sources) == "mcp"
+    assert source_mode(observation.sources) == "embedded"
 
 
 def test_se16n_manifest_rejects_tampered_export(tmp_path: Path) -> None:

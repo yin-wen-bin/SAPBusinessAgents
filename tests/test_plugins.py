@@ -14,34 +14,14 @@ from sap_business_agents_platform.plugins import (
     PluginManager,
     PluginManifest,
     PluginStatus,
-    SapClawPluginProvider,
     official_plugin_manifests,
 )
-from sap_business_agents_platform.sap_read import EmbeddedODataProvider, SapReadError
+from sap_business_agents_platform.sap_read import EmbeddedODataProvider
 
 
 class HealthyProvider:
     async def health(self) -> dict[str, Any]:
         return {"ok": True, "data": {"read_only": True}}
-
-
-class SapClawV2HealthClient:
-    async def health(self) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "data": {"runtime_ready": True, "read_only": True},
-        }
-
-
-class SapClawFailedEnvelopeClient:
-    async def execute_plan(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {
-            "ok": False,
-            "error": {
-                "code": "stable_paging_key_unavailable",
-                "message": "No stable paging key is available.",
-            },
-        }
 
 
 def _manager(tmp_path: Path) -> PluginManager:
@@ -74,22 +54,6 @@ def test_manifest_rejects_sap_write_and_non_loopback_transport() -> None:
     base["transport"]["loopback_only"] = False
     with pytest.raises(ValidationError, match="loopback-only"):
         PluginManifest.model_validate(base)
-
-
-def test_sapclaw_provider_accepts_v2_runtime_ready_health_contract() -> None:
-    result = asyncio.run(SapClawPluginProvider(SapClawV2HealthClient()).health())
-    assert result["ok"] is True
-    assert result["data"]["runtime_ready"] is True
-
-
-def test_sapclaw_provider_rejects_http_200_failure_envelope() -> None:
-    with pytest.raises(SapReadError) as exc_info:
-        asyncio.run(
-            SapClawPluginProvider(SapClawFailedEnvelopeClient()).execute_plan(
-                {"http_method": "GET"}
-            )
-        )
-    assert exc_info.value.code == "stable_paging_key_unavailable"
 
 
 def test_registry_resolves_versioned_capabilities_and_persists_disable(
@@ -145,7 +109,6 @@ def test_rescan_reports_invalid_manifest_without_loading_code(tmp_path: Path) ->
         "business-agent-catalog",
         "codex-runtime",
         "embedded-sap-odata",
-        "sapclaw-runtime",
         "sapskillhub",
     }
 

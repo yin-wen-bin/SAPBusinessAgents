@@ -39,7 +39,7 @@ class P2PDataSource(Protocol):
 
 适配器可额外返回 `FAEDT` 作为已经正确计算的净到期日。没有可靠到期日时应留空，分析器就不会做逾期断言。分析器不会把 `ZFBDT` 付款基准日当作净到期日。
 
-## SAPClaw evidence 快照
+## SAP read evidence 快照
 
 `EvidenceP2PDataSource` 接受验证编排层生成的 JSON，而不在 Assistant 进程内调用 MCP。根对象至少包含：
 
@@ -48,7 +48,7 @@ class P2PDataSource(Protocol):
   "schema_version": "1.0",
   "metadata": {
     "run_id": "...",
-    "source": "sapclaw_runtime",
+    "source": "embedded_sap_odata",
     "as_of": "2026-08-09"
   },
   "completeness": { "complete": true },

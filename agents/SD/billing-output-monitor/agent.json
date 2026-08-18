@@ -107,7 +107,7 @@
       ]
     },
     {
-      "id": "check-thin-runtime",
+      "id": "check-embedded-provider",
       "title": {
         "zh": "检查Embedded Provider",
         "en": "Check Embedded Provider"
@@ -437,7 +437,6 @@
         "failurePolicy": "record_gap",
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "NAST",
           "fields": ["KAPPL", "OBJKY", "KSCHL", "NACHA", "VSTAT", "ERDAT", "ERUHR", "DATVR", "UHRVR"],
@@ -464,7 +463,6 @@
         "when": {"source": "{{steps.assess_output_preflight.output.proceed}}", "equals": true},
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "NAST",
           "fields": ["KAPPL", "OBJKY", "KSCHL", "NACHA", "VSTAT", "ERDAT", "ERUHR", "DATVR", "UHRVR"],

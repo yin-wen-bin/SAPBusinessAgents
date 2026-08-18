@@ -147,11 +147,11 @@ function validateExecution(execution, source) {
     requireString(step.id, `${location}.id`);
     if (stepIds.has(step.id)) throw new Error(`${source}: duplicate execution step '${step.id}'`);
     stepIds.add(step.id);
-    if (!["sap_read", "sapclaw", "skill", "rule"].includes(step.executor)) {
+    if (!["sap_read", "skill", "rule"].includes(step.executor)) {
       throw new Error(`${location}.executor is not supported`);
     }
     requireString(step.operation, `${location}.operation`);
-    if (["sap_read", "sapclaw", "skill"].includes(step.executor) && step.readOnly !== true) {
+    if (["sap_read", "skill"].includes(step.executor) && step.readOnly !== true) {
       throw new Error(`${location} must declare readOnly=true`);
     }
     if (step.when !== undefined) {
@@ -162,7 +162,7 @@ function validateExecution(execution, source) {
       const match = step.when.source.match(/^\{\{\s*steps\.([a-z][a-z0-9_-]*)\.output(?:\.[A-Za-z0-9_-]+)+\s*\}\}$/);
       if (!match || match[1] === step.id || !stepIds.has(match[1])) throw new Error(`${location}.when must reference a prior step output`);
     }
-    if (["sap_read", "sapclaw"].includes(step.executor)) {
+    if (step.executor === "sap_read") {
       if (!["execute_plan", "execute_get"].includes(step.operation)) {
         throw new Error(`${location}.operation is not allowed for a SAP read Provider`);
       }

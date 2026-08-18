@@ -23,7 +23,7 @@ def _response(step_results: dict[str, list[dict[str, object]]]) -> dict[str, obj
 def test_p2p_rule_never_treats_clearing_reference_as_payment() -> None:
     result = rules.evaluate_p2p_status(
         {
-            "sapclaw": _response(
+            "sap_read": _response(
                 {
                     "purchase_order": [{"PurchaseOrder": "fixture"}],
                     "purchase_order_items": [{"PurchaseOrderItem": "10"}],
@@ -58,7 +58,7 @@ def test_p2p_rule_never_treats_clearing_reference_as_payment() -> None:
 def test_p2p_business_report_explains_receipt_without_invoice_in_business_language() -> None:
     result = rules.evaluate_p2p_status(
         {
-            "sapclaw": _response(
+            "sap_read": _response(
                 {
                     "purchase_order": [{"PurchaseOrder": "fixture"}],
                     "purchase_order_items": [{"PurchaseOrderItem": "10"}],
@@ -86,7 +86,7 @@ def test_p2p_business_report_explains_receipt_without_invoice_in_business_langua
 def test_o2c_rule_separates_ar_clearing_from_bank_receipt() -> None:
     result = rules.evaluate_o2c_status(
         {
-            "sapclaw": _response(
+            "sap_read": _response(
                 {
                     "sales_order": [{"SalesOrder": "fixture"}],
                     "sales_order_items": [{"SalesOrderItem": "10"}],

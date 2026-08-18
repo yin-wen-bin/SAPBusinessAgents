@@ -65,3 +65,73 @@ def test_partial_and_failed_adt_keep_business_result_inconclusive() -> None:
             "mrp_evidence", "pr_evidence", "po_schedule_evidence", "source_evidence"
         }
         _validate_adt_output(_adt(status))
+
+
+def _embedded_response(*rows: dict[str, object]) -> dict[str, object]:
+    return {
+        "ok": True,
+        "status": "completed",
+        "source_complete": True,
+        "source_truncated": False,
+        "data": {
+            "results": list(rows),
+            "source_complete": True,
+            "source_truncated": False,
+        },
+        "step_results": {
+            "step_1": {
+                "results": list(rows),
+                "source_complete": True,
+                "source_truncated": False,
+            }
+        },
+    }
+
+
+def test_inventory_report_consumes_embedded_rows_by_semantic_evidence_alias() -> None:
+    result = evaluate_business_agent(
+        {
+            "agent_id": "inventory-health-balancing",
+            "run_input": {
+                "as_of": "2026-08-17",
+                "slow_moving_days": 180,
+                "obsolete_days": 365,
+                "expiry_days": 90,
+            },
+            "assessment": {
+                "api_complete": {
+                    "stock": True,
+                    "movement": True,
+                    "batch_expiry": True,
+                    "parameters": True,
+                }
+            },
+            "evidence": {
+                "stock": _embedded_response(
+                    {
+                        "MatlWrhsStkQtyInMatlBaseUnit": "100",
+                        "MaterialBaseUnit": "EA",
+                    }
+                ),
+                "movement": _embedded_response({"PostingDate": "2026-08-01"}),
+                "batch": _embedded_response(
+                    {
+                        "ShelfLifeExpirationDate": "2026-09-01",
+                        "MaterialBaseUnit": "EA",
+                    }
+                ),
+                "parameters": _embedded_response({"SafetyStockQuantity": "20"}),
+            },
+            "fallbacks": {},
+            "known_gaps": [],
+        }
+    )
+
+    stages = {
+        item["id"]: item["evidence_count"]
+        for item in result["business_report"]["stages"]
+    }
+    metrics = {item["id"]: item["value"] for item in result["metrics"]}
+    assert stages == {"stock": 1, "movement": 1, "batch": 1, "parameters": 1}
+    assert metrics["unrestricted_stock"] == "100"
+    assert metrics["confirmed_transfer_quantity"] == "80"

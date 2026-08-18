@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-ALLOWED_EXECUTORS = {"sap_read", "sapclaw", "skill", "rule"}
+ALLOWED_EXECUTORS = {"sap_read", "skill", "rule"}
 ALLOWED_SAP_READ_OPERATIONS = {"execute_plan", "execute_get"}
 ALLOWED_RULE_OPERATIONS = {
     "assess_api_evidence",
@@ -102,11 +102,11 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
         failure_policy = step.get("failurePolicy", "fail_run")
         if failure_policy not in ALLOWED_FAILURE_POLICIES:
             raise ManifestError(f"{location}.failurePolicy is not allowed")
-        if failure_policy == "record_gap" and executor not in {"sap_read", "sapclaw", "skill"}:
+        if failure_policy == "record_gap" and executor not in {"sap_read", "skill"}:
             raise ManifestError(
                 f"{location}.failurePolicy=record_gap is only allowed for read-only evidence steps"
             )
-        if executor in {"sap_read", "sapclaw"}:
+        if executor == "sap_read":
             if step.get("operation") not in ALLOWED_SAP_READ_OPERATIONS:
                 raise ManifestError(f"{location}.operation is not allowed")
             if step.get("readOnly") is not True:

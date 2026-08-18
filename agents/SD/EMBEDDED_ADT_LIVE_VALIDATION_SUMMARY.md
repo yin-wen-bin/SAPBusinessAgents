@@ -4,7 +4,7 @@
 - 代码版本：`f392e27`
 - 主数据通道：Embedded SAP Read Provider `1.0.0`（GET-only）
 - ADT Skill版本：`7d72576`
-- SAPClaw调用数：**0**
+- 自动 Provider 回退调用数：**0**
 - ADT平台预检：`blocked`
 - 原始证据：仅保存在被忽略的 `.local-data/live-tests/embedded-adt/`。
 

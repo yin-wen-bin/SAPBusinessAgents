@@ -114,7 +114,7 @@
       ]
     },
     {
-      "id": "check-thin-runtime",
+      "id": "check-embedded-provider",
       "title": {
         "zh": "检查Embedded Provider",
         "en": "Check Embedded Provider"
@@ -659,7 +659,6 @@
         "when": {"source": "{{steps.extract_billing_documents.output.has_values}}", "equals": true},
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "NAST",
           "fields": ["KAPPL", "OBJKY", "KSCHL", "NACHA", "VSTAT", "ERDAT", "ERUHR", "DATVR", "UHRVR"],
@@ -686,7 +685,6 @@
         "when": {"source": "{{steps.assess_output_preflight.output.proceed}}", "equals": true},
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "NAST",
           "fields": ["KAPPL", "OBJKY", "KSCHL", "NACHA", "VSTAT", "ERDAT", "ERUHR", "DATVR", "UHRVR"],
@@ -707,7 +705,6 @@
         "when": {"source": "{{steps.extract_customers.output.has_values}}", "equals": true},
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "UDMCASEATTR00",
           "fields": ["CASE_GUID", "FIN_ROOT_CODE", "FIN_DUE_DATE", "FIN_KUNNR", "FIN_BUKRS", "FIN_ORIGIN"],
@@ -733,7 +730,6 @@
         "when": {"source": "{{steps.assess_dispute_preflight.output.proceed}}", "equals": true},
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "UDMCASEATTR00",
           "fields": ["CASE_GUID", "FIN_ROOT_CODE", "FIN_DUE_DATE", "FIN_KUNNR", "FIN_BUKRS", "FIN_ORIGIN"],

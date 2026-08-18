@@ -1,10 +1,5 @@
 [CmdletBinding()]
 param(
-    [string]$SapClawRoot = "",
-    [ValidateSet("embedded", "sapclaw")]
-    [string]$SapReadProvider = "",
-    [ValidateRange(1, 65535)]
-    [int]$SapClawPort = 8000,
     [ValidateRange(1, 65535)]
     [int]$ApiPort = 8765,
     [ValidateRange(1, 65535)]
@@ -20,26 +15,8 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = (Split-Path -Parent $ScriptDirectory)
-if ([string]::IsNullOrWhiteSpace($SapReadProvider)) {
-    $SapReadProvider = if ($env:SAP_READ_PROVIDER -in @("embedded", "sapclaw")) {
-        $env:SAP_READ_PROVIDER
-    }
-    else {
-        "embedded"
-    }
-}
-if ([string]::IsNullOrWhiteSpace($SapClawRoot)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:SAPCLAW_ROOT)) {
-        $SapClawRoot = $env:SAPCLAW_ROOT
-    }
-    else {
-        $SapClawRoot = Join-Path (Split-Path -Parent $ProjectRoot) "SAPClaw"
-    }
-}
 
 $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
-$SapClawRoot = [System.IO.Path]::GetFullPath($SapClawRoot)
-$SapClawUrl = "http://127.0.0.1:$SapClawPort"
 $ApiUrl = "http://127.0.0.1:$ApiPort"
 $SiteHealthUrl = "http://127.0.0.1:$SitePort/"
 $SiteUrl = "http://127.0.0.1:$SitePort/zh/"
@@ -64,27 +41,13 @@ function Get-ListenerProcessId {
     return [int]$listener.OwningProcess
 }
 
-function Test-SapClawHealth {
-    try {
-        $health = Invoke-RestMethod -Uri "$SapClawUrl/api/v1/runtime/health" -TimeoutSec 5
-        return (
-            $health.ok -eq $true -and
-            $health.data.runtime_ready -eq $true -and
-            $health.data.read_only -eq $true
-        )
-    }
-    catch {
-        return $false
-    }
-}
-
 function Test-PlatformHealth {
     try {
         $health = Invoke-RestMethod -Uri "$ApiUrl/api/health" -TimeoutSec 5
         return (
             $health.ok -eq $true -and
             $health.loopback_only -eq $true -and
-            $health.sap_read.selected_provider -eq $SapReadProvider -and
+            $health.sap_read.selected_provider -eq "embedded" -and
             $health.sap_read.data.read_only -eq $true
         )
     }
@@ -227,11 +190,6 @@ function Start-CheckedProcess {
     return $listenerProcessId
 }
 
-if ($SapReadProvider -eq "sapclaw" -and -not (Test-Path -LiteralPath $SapClawRoot -PathType Container)) {
-    throw "SAPClaw repository was not found at $SapClawRoot. Set SAPCLAW_ROOT or pass -SapClawRoot."
-}
-
-$SapClawPython = Join-Path $SapClawRoot ".venv\Scripts\python.exe"
 $PlatformPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $SiteRoot = Join-Path $ProjectRoot "site"
 $AstroCli = Join-Path $SiteRoot "node_modules\astro\bin\astro.mjs"
@@ -251,33 +209,11 @@ if (-not (Test-Path -LiteralPath $AstroCli -PathType Leaf)) {
 if ($Restart) {
     Stop-ExpectedListener -Name "Web UI" -Port $SitePort -ExpectedRoot $ProjectRoot
     Stop-ExpectedListener -Name "SAPBusinessAgents API" -Port $ApiPort -ExpectedRoot $ProjectRoot
-    if ($SapReadProvider -eq "sapclaw") {
-        Stop-ExpectedListener -Name "SAPClaw Runtime" -Port $SapClawPort -ExpectedRoot $SapClawRoot
-    }
 }
 
-$env:SAP_READ_PROVIDER = $SapReadProvider
-$env:SAPCLAW_RUNTIME_URL = $SapClawUrl
 $env:PUBLIC_SAPBA_API_URL = $ApiUrl
 
-$SapClawProcessId = $null
-if ($SapReadProvider -eq "sapclaw") {
-    $SapClawProcessId = Start-CheckedProcess `
-        -Name "SAPClaw Runtime" `
-        -Port $SapClawPort `
-        -FilePath $SapClawPython `
-        -Arguments @(
-            "-m", "uvicorn", "sap_odata_agent.api.app:create_app", "--factory",
-            "--host", "127.0.0.1", "--port", [string]$SapClawPort
-        ) `
-        -WorkingDirectory $SapClawRoot `
-        -Probe ${function:Test-SapClawHealth} `
-        -StdoutPath (Join-Path $LogRoot "sapclaw.stdout.log") `
-        -StderrPath (Join-Path $LogRoot "sapclaw.stderr.log")
-}
-else {
-    Write-Step "Using the embedded GET-only SAP Provider; SAPClaw Runtime will not be started."
-}
+Write-Step "Using the Embedded GET-only SAP Provider."
 
 $PlatformProcessId = Start-CheckedProcess `
     -Name "SAPBusinessAgents API" `
@@ -328,12 +264,9 @@ else {
 }
 
 $Services = [ordered]@{
-    sap_read = [ordered]@{ provider = $SapReadProvider; healthy = $true }
+    sap_read = [ordered]@{ provider = "embedded"; healthy = $true }
     api = [ordered]@{ pid = $PlatformProcessId; url = $ApiUrl; healthy = $true }
     site = [ordered]@{ pid = $SiteProcessId; url = $SiteUrl; healthy = $true }
-}
-if ($SapReadProvider -eq "sapclaw") {
-    $Services.sapclaw = [ordered]@{ pid = $SapClawProcessId; url = $SapClawUrl; healthy = $true }
 }
 
 $State = [ordered]@{
@@ -348,10 +281,7 @@ Write-Host ""
 Write-Host "SAPBusinessAgents is ready." -ForegroundColor Green
 Write-Host "Web UI:   $SiteUrl"
 Write-Host "Local API: $ApiUrl"
-Write-Host "SAP Read:  $SapReadProvider"
-if ($SapReadProvider -eq "sapclaw") {
-    Write-Host "SAPClaw:   $SapClawUrl"
-}
+Write-Host "SAP Read:  embedded"
 Write-Host "Logs:      $LogRoot"
 
 if (-not $NoBrowser) {

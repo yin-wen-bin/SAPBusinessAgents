@@ -15,9 +15,6 @@ class Settings:
     repository_root: Path = REPOSITORY_ROOT
     data_root: Path = REPOSITORY_ROOT / ".local-data"
     draft_root: Path = REPOSITORY_ROOT / ".prototype" / "authoring"
-    sapclaw_url: str = "http://127.0.0.1:8000"
-    sapclaw_api_key: str = ""
-    sap_read_provider: str = "embedded"
     sap_base_url: str = ""
     sap_username: str = ""
     sap_password: str = ""
@@ -60,17 +57,11 @@ class Settings:
             load_dotenv(sap_env_file, override=False)
         data_root = Path(os.getenv("SAPBA_DATA_ROOT", str(root / ".local-data"))).resolve()
         draft_root = Path(os.getenv("SAPBA_DRAFT_ROOT", str(root / ".prototype" / "authoring"))).resolve()
-        sap_read_provider = os.getenv("SAP_READ_PROVIDER", "embedded").strip().lower()
-        if sap_read_provider not in {"embedded", "sapclaw"}:
-            raise ValueError("SAP_READ_PROVIDER must be 'embedded' or 'sapclaw'")
         timeout_ms = max(1000, int(os.getenv("SAP_ODATA_TIMEOUT_MS", "60000")))
         return cls(
             repository_root=root,
             data_root=data_root,
             draft_root=draft_root,
-            sapclaw_url=os.getenv("SAPCLAW_RUNTIME_URL", "http://127.0.0.1:8000").rstrip("/"),
-            sapclaw_api_key=os.getenv("SAPCLAW_API_KEY", ""),
-            sap_read_provider=sap_read_provider,
             sap_base_url=(os.getenv("SAP_ODATA_BASE_URL") or os.getenv("SAP_BASE_URL", "")).rstrip("/"),
             sap_username=os.getenv("SAP_USERNAME", ""),
             sap_password=os.getenv("SAP_PASSWORD", ""),

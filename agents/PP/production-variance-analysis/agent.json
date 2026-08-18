@@ -126,26 +126,26 @@
       },
       "operations": {
         "zh": [
-          "检查 Thin Runtime 只读状态。",
+          "检查 Embedded Provider 只读状态。",
           "以真机实际 schema 为准，索引字段不兼容时停止该维度。"
         ],
         "en": [
-          "Check Thin Runtime read-only state.",
+          "Check Embedded Provider read-only state.",
           "Use the live schema and stop a dimension when an indexed field is incompatible."
         ]
       },
       "tools": [
         {
-          "name": "sapclaw_schema",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_schema",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "验证偏差字段。",
             "en": "Validates variance fields."
           }
         },
         {
-          "name": "sapclaw_execute_get",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_execute_get",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "执行受控查询。",
             "en": "Executes controlled queries."

@@ -12,8 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .codex_planner import Planner
 from .manifests import AgentRepository, validate_execution
-from .sapclaw import SapClawClient
-from .sap_read import SapReadError
 from .skills import SkillRegistry
 
 
@@ -404,55 +402,6 @@ class PluginManager:
         )
 
 
-class SapClawPluginProvider:
-    def __init__(self, client: SapClawClient) -> None:
-        self.client = client
-
-    async def health(self) -> dict[str, Any]:
-        result = await self.client.health()
-        data = result.get("data") if isinstance(result, dict) else None
-        runtime_ok = isinstance(data, dict) and (
-            data.get("runtime_ready") is True or data.get("runtime_enabled") is True
-        )
-        readonly_ok = isinstance(data, dict) and data.get("read_only") is True
-        return {**result, "ok": result.get("ok") is True and runtime_ok and readonly_ok}
-
-    async def catalog(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self.client.catalog(*args, **kwargs)
-
-    async def guidance(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self.client.guidance(*args, **kwargs)
-
-    async def schema(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self.client.schema(*args, **kwargs)
-
-    async def validate_plan(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self.client.validate_plan(*args, **kwargs)
-
-    async def execute_plan(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._require_success(await self.client.execute_plan(*args, **kwargs))
-
-    async def execute_get(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._require_success(await self.client.execute_get(*args, **kwargs))
-
-    async def page(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._require_success(await self.client.page(*args, **kwargs))
-
-    @staticmethod
-    def _require_success(result: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(result, dict) or result.get("ok") is not True:
-            error = result.get("error") if isinstance(result, dict) else None
-            code = "sapclaw_execution_failed"
-            if isinstance(error, dict) and error.get("code"):
-                code = str(error["code"])
-            raise SapReadError(
-                "SAPClaw returned an unsuccessful runtime envelope.",
-                code=code,
-                detail=result,
-            )
-        return result
-
-
 class SkillhubPluginProvider:
     def __init__(self, registry: SkillRegistry) -> None:
         self.registry = registry
@@ -727,26 +676,6 @@ def official_plugin_manifests() -> list[PluginManifest]:
                 },
             ],
             "transport": {"type": "builtin", "loopback_only": True},
-            "permissions": {"sap_read": True},
-        },
-        {
-            "schema_version": "1.0",
-            "plugin_id": "sapclaw-runtime",
-            "version": "2.0.0",
-            "name": {"zh": "SAPClaw 只读运行时", "en": "SAPClaw Read-only Runtime"},
-            "publisher": "SAPBusinessAgents",
-            "enabled": False,
-            "capabilities": [
-                {
-                    "capability": "sap_read.v1",
-                    "operations": ["health", "catalog", "guidance", "schema", "validate_plan", "execute_plan", "execute_get", "page"],
-                },
-                {
-                    "capability": "mcp_tools.v1",
-                    "operations": ["catalog", "schema", "validate_plan", "execute_plan", "execute_get", "page"],
-                },
-            ],
-            "transport": {"type": "http", "endpoint_config_key": "SAPCLAW_RUNTIME_URL", "loopback_only": True},
             "permissions": {"sap_read": True},
         },
         {

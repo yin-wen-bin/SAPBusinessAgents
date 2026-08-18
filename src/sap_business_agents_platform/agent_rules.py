@@ -704,10 +704,10 @@ def _production_variance(inputs: JsonObject) -> JsonObject:
 
 
 def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
-    mrp = _rows(inputs, "mrp_coverage", "supply_demand") + _adt_rows(inputs, "mrp")
-    requisitions = _rows(inputs, "purchase_requisitions") + _adt_rows(inputs, "pr")
-    orders = _rows(inputs, "purchase_orders") + _adt_rows(inputs, "po_schedule")
-    sources = _rows(inputs, "info_records", "contracts", "suppliers") + _adt_rows(inputs, "source")
+    mrp = _rows(inputs, "mrp", "mrp_coverage", "supply_demand") + _adt_rows(inputs, "mrp")
+    requisitions = _rows(inputs, "pr", "purchase_requisitions") + _adt_rows(inputs, "pr")
+    orders = _rows(inputs, "po_schedule", "purchase_orders") + _adt_rows(inputs, "po_schedule")
+    sources = _rows(inputs, "source", "info_records", "contracts", "suppliers") + _adt_rows(inputs, "source")
     complete, missing = _required_topics(inputs, "mrp", "pr", "po_schedule", "source")
     units = {
         str(row.get(key) or "").strip()
@@ -776,10 +776,17 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
 
 
 def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
-    stock = _rows(inputs, "material_stock") + _adt_rows(inputs, "stock")
-    movements = _rows(inputs, "material_movements") + _adt_rows(inputs, "movement")
-    batches = _rows(inputs, "batches") + _adt_rows(inputs, "batch_expiry")
-    parameters = _rows(inputs, "replenishment_parameters") + _adt_rows(inputs, "parameters")
+    # Fixed-Agent mappings use semantic evidence aliases, while Embedded Provider
+    # responses use generated inner ids such as step_1. Accept both the outer
+    # aliases and legacy fixture names so real rows reach the business report.
+    stock = _rows(inputs, "stock", "material_stock") + _adt_rows(inputs, "stock")
+    movements = _rows(
+        inputs, "movement", "movement_dates", "material_movements"
+    ) + _adt_rows(inputs, "movement")
+    batches = _rows(inputs, "batch", "batches") + _adt_rows(inputs, "batch_expiry")
+    parameters = _rows(
+        inputs, "parameters", "replenishment_parameters"
+    ) + _adt_rows(inputs, "parameters")
     complete, missing = _required_topics(inputs, "stock", "movement", "batch_expiry", "parameters")
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
     as_of = _date(run_input.get("as_of")) or date.today()
@@ -854,9 +861,9 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
 
 def _intelligent_sourcing_rfq(inputs: JsonObject) -> JsonObject:
     rfq = _rows(inputs, "rfq") + _adt_rows(inputs, "rfq")
-    quotations = _rows(inputs, "quotations") + _adt_rows(inputs, "quotation")
-    suppliers = _rows(inputs, "suppliers") + _adt_rows(inputs, "supplier")
-    sources = _rows(inputs, "info_records", "contracts") + _adt_rows(inputs, "source")
+    quotations = _rows(inputs, "quotation", "quotations") + _adt_rows(inputs, "quotation")
+    suppliers = _rows(inputs, "supplier", "suppliers") + _adt_rows(inputs, "supplier")
+    sources = _rows(inputs, "source", "info_records", "contracts") + _adt_rows(inputs, "source")
     complete, missing = _required_topics(inputs, "rfq", "quotation", "supplier", "source")
     active = [
         row for row in quotations
@@ -917,9 +924,9 @@ def _intelligent_sourcing_rfq(inputs: JsonObject) -> JsonObject:
 
 
 def _supplier_performance_risk(inputs: JsonObject) -> JsonObject:
-    schedules = _rows(inputs, "po_schedules") + _adt_rows(inputs, "po_schedule")
-    receipts = _rows(inputs, "receipts") + _adt_rows(inputs, "receipt")
-    suppliers = _rows(inputs, "suppliers") + _adt_rows(inputs, "supplier")
+    schedules = _rows(inputs, "po_schedule", "po_schedules") + _adt_rows(inputs, "po_schedule")
+    receipts = _rows(inputs, "receipt", "receipts") + _adt_rows(inputs, "receipt")
+    suppliers = _rows(inputs, "supplier", "suppliers") + _adt_rows(inputs, "supplier")
     complete, missing = _required_topics(inputs, "po_schedule", "receipt", "supplier")
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
     as_of = _date(run_input.get("date_to")) or date.today()

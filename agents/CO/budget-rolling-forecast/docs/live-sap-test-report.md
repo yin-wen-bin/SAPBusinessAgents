@@ -5,7 +5,7 @@
 - 系统、客户端、凭据和业务标识均已脱敏
 - 主 Provider：`embedded-sap-odata`，严格 GET-only
 - 条件补证：`sap-adt-table-export`
-- SAPClaw 调用：`0`；SE16N 调用：`0`
+- SE16N 调用：`0`
 - Verdict：**PASS**
 
 ## Embedded evidence

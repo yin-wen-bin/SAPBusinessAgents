@@ -135,14 +135,14 @@ def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
             "zh": (
                 "标准 API 证据完整。"
                 if not missing
-                else "实时 schema 确认 API 能力缺口，将按白名单调用 ADT。"
+                else "实时 schema 确认 API 能力缺口，将调用 ADT 并以实时 DDIC 校验对象和字段。"
                 if capability_gaps
                 else "标准 API 执行或完整性不足；保持不确定且不触发 ADT。"
             ),
             "en": (
                 "Standard API evidence is complete."
                 if not missing
-                else "Live schema confirms an API capability gap; allowlisted ADT fallback is required."
+                else "Live schema confirms an API capability gap; ADT fallback will validate the object and fields against live DDIC metadata."
                 if capability_gaps
                 else "Standard API execution or completeness is insufficient; remain inconclusive without ADT fallback."
             ),

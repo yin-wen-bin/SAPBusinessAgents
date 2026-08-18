@@ -292,7 +292,7 @@ def _execution_steps_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:
     execution_steps: list[dict[str, Any]] = []
     for index, step in enumerate(plan.get("steps") or [], start=1):
         step_id = str(step.get("id") or f"step_{index}")
-        if step.get("tool") in {"sap_read", "sapclaw"}:
+        if step.get("tool") == "sap_read":
             execution_steps.append(
                 {
                     "id": step_id,

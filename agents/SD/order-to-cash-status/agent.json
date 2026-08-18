@@ -117,7 +117,7 @@
       ]
     },
     {
-      "id": "check-thin-runtime",
+      "id": "check-embedded-provider",
       "title": {
         "zh": "检查SAP只读Provider",
         "en": "Check the SAP read Provider"
@@ -555,7 +555,6 @@
         "when": {"source": "{{steps.assess_document_flow.output.needs_adt.document_flow}}", "equals": true},
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "VBFA",
           "fields": ["VBELV", "POSNV", "VBELN", "POSNN", "VBTYP_N", "ERDAT"],
@@ -579,7 +578,6 @@
         "when": {"source": "{{steps.assess_document_flow_preflight.output.proceed}}", "equals": true},
         "inputMapping": {
           "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
           "source_type": "table",
           "object": "VBFA",
           "fields": ["VBELV", "POSNV", "VBELN", "POSNN", "VBTYP_N", "ERDAT"],

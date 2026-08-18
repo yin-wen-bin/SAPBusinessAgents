@@ -184,7 +184,7 @@
       },
       "tools": [
         {
-          "name": "SAPClawRuntimeGateway",
+          "name": "EmbeddedODataProvider",
           "kind": "Data port",
           "purpose": {
             "zh": "执行批准的本地只读查询",
@@ -192,7 +192,7 @@
           }
         },
         {
-          "name": "sapclaw_queries.toml",
+          "name": "business-relationships.json",
           "kind": "Control",
           "purpose": {
             "zh": "白名单、字段、分页和生产批准门",

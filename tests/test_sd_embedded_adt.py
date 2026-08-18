@@ -9,7 +9,6 @@ from sap_business_agents_platform.rules import evaluate
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 SD_ROOT = REPOSITORY / "agents" / "SD"
-ADT_PROFILE = "sapba-live-readonly"
 
 
 def _manifests() -> list[dict[str, object]]:
@@ -27,7 +26,7 @@ def _steps(manifest: dict[str, object]) -> list[dict[str, object]]:
     return [step for step in steps if isinstance(step, dict)]
 
 
-def test_all_eleven_sd_agents_use_schema_v2_without_sapclaw() -> None:
+def test_all_eleven_sd_agents_use_schema_v2_embedded_reads() -> None:
     manifests = _manifests()
     assert len(manifests) == 11
     for manifest in manifests:
@@ -37,11 +36,14 @@ def test_all_eleven_sd_agents_use_schema_v2_without_sapclaw() -> None:
             "skill",
             "rule",
         }
-        serialized = json.dumps(manifest, ensure_ascii=False).lower()
-        assert "sapclaw" not in serialized
+        assert all(
+            step.get("readOnly") is True
+            for step in _steps(manifest)
+            if step.get("executor") == "sap_read"
+        )
 
 
-def test_sd_adt_steps_are_allowlisted_bounded_and_profile_only() -> None:
+def test_sd_adt_steps_are_allowlisted_bounded_and_connection_agnostic() -> None:
     expected_objects = {"NAST", "UDMCASEATTR00", "MDKP", "VBFA"}
     found: set[str] = set()
     row_limits: dict[str, set[int]] = {name: set() for name in expected_objects}
@@ -54,7 +56,7 @@ def test_sd_adt_steps_are_allowlisted_bounded_and_profile_only() -> None:
             assert step["failurePolicy"] == "record_gap"
             payload = step["inputMapping"]
             assert isinstance(payload, dict)
-            assert payload["connection_profile"] == ADT_PROFILE
+            assert "connection_profile" not in payload
             assert payload["object"] in expected_objects
             assert payload["filters"]
             assert 1 <= int(payload["max_rows"]) <= 200

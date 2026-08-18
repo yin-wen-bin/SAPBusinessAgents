@@ -126,26 +126,26 @@
       },
       "operations": {
         "zh": [
-          "检查 Thin Runtime 健康和服务可执行性。",
+          "检查 Embedded Provider 健康和服务可执行性。",
           "验证计划订单产能、工作中心和订单工序字段。"
         ],
         "en": [
-          "Check Thin Runtime health and service executability.",
+          "Check Embedded Provider health and service executability.",
           "Validate planned-order capacity, work-center and order-operation fields."
         ]
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_provider_health",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "检查运行时。",
             "en": "Checks the runtime."
           }
         },
         {
-          "name": "sapclaw_schema",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_schema",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "验证排程字段。",
             "en": "Validates scheduling fields."
@@ -222,8 +222,8 @@
           }
         },
         {
-          "name": "sapclaw_execute_get",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_execute_get",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "执行受控查询。",
             "en": "Executes controlled queries."

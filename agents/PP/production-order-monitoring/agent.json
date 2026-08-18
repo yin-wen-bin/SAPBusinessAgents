@@ -121,8 +121,8 @@
         "en": "Validate live services"
       },
       "description": {
-        "zh": "检查 Thin Runtime 并验证生产订单和物料凭证 schema。",
-        "en": "Check Thin Runtime and validate production-order and material-document schemas."
+        "zh": "检查 Embedded Provider 并验证生产订单和物料凭证 schema。",
+        "en": "Check Embedded Provider and validate production-order and material-document schemas."
       },
       "operations": {
         "zh": [
@@ -136,16 +136,16 @@
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_provider_health",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "验证运行环境。",
             "en": "Validates the runtime."
           }
         },
         {
-          "name": "sapclaw_schema",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_schema",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "提供字段契约。",
             "en": "Provides field contracts."
@@ -183,8 +183,8 @@
           }
         },
         {
-          "name": "sapclaw_execute_get",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_execute_get",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "执行精确 GET。",
             "en": "Executes exact GET requests."

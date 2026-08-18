@@ -20,7 +20,6 @@ from .manifests import AgentRepository, ManifestError, validate_execution
 from .models import Completeness, PlannerDecision, RunCreate, RunMode, RunResult, RunStatus, utc_now
 from .plugins import PluginError, SapReadCapability
 from .relationships import RelationshipCatalog
-from .sapclaw import SapClawError
 from .sap_read import SapReadError
 from .skills import SkillError, SkillRegistry
 from .workflows import (
@@ -237,7 +236,7 @@ class RunCoordinator:
             started_monotonic = time.perf_counter()
             call_id = (
                 f"call_{uuid.uuid4().hex[:16]}"
-                if step["executor"] in {"sap_read", "sapclaw", "skill"}
+                if step["executor"] in {"sap_read", "skill"}
                 else None
             )
             rendered = _render_template(step.get("request") or step.get("inputMapping") or {}, context)
@@ -247,7 +246,6 @@ class RunCoordinator:
                 )
             except (
                 SapReadError,
-                SapClawError,
                 SkillError,
                 PluginError,
                 RunExecutionError,
@@ -286,7 +284,7 @@ class RunCoordinator:
                         "payload": output,
                     }
                 )
-                if step["executor"] in {"sap_read", "sapclaw", "skill"}:
+                if step["executor"] in {"sap_read", "skill"}:
                     result.tool_calls.append(
                         {
                             **_plugin_trace(
@@ -303,7 +301,7 @@ class RunCoordinator:
                             "call_id": call_id,
                             "step_id": step_id,
                             "tool": "sap_read"
-                            if step["executor"] in {"sap_read", "sapclaw"}
+                            if step["executor"] in {"sap_read"}
                             else "skill",
                             "operation": step.get("operation"),
                             "status": "capability_blocked",
@@ -333,7 +331,7 @@ class RunCoordinator:
                 "output_reference": f"steps.{step_id}.output",
             }
             result.steps.append(step_record)
-            if step["executor"] in {"sap_read", "sapclaw", "skill"}:
+            if step["executor"] in {"sap_read", "skill"}:
                 operation = "execute" if step["executor"] == "skill" else str(step.get("operation") or "")
                 trace = _plugin_trace(
                     self.skills if step["executor"] == "skill" else self.sap_read,
@@ -345,7 +343,7 @@ class RunCoordinator:
                         **trace,
                         "call_id": call_id,
                         "step_id": step_id,
-                        "tool": "sap_read" if step["executor"] in {"sap_read", "sapclaw"} else step["executor"],
+                        "tool": "sap_read" if step["executor"] in {"sap_read"} else step["executor"],
                         "operation": operation,
                         "status": "completed",
                         "duration_ms": round((time.perf_counter() - started_monotonic) * 1000, 3),
@@ -356,7 +354,7 @@ class RunCoordinator:
                         **trace,
                         "call_id": call_id,
                         "step_id": step_id,
-                        "source": "sap_read" if step["executor"] in {"sap_read", "sapclaw"} else step["executor"],
+                        "source": "sap_read" if step["executor"] in {"sap_read"} else step["executor"],
                         "payload": public_output,
                     }
                 )
@@ -405,7 +403,7 @@ class RunCoordinator:
     ) -> dict[str, Any]:
         executor = step["executor"]
         operation = step.get("operation")
-        if executor in {"sap_read", "sapclaw"}:
+        if executor in {"sap_read"}:
             trace = _plugin_trace(self.sap_read, "sap_read.v1", str(operation or ""))
             self.store.append_event(
                 run_id,
@@ -828,7 +826,7 @@ class RunCoordinator:
                 "step_started",
                 {"step_id": step_id, "tool": tool, "reason": reason},
             )
-            if tool in {"sap_read", "sapclaw"}:
+            if tool in {"sap_read"}:
                 sap_plan = step.get("plan")
                 if not isinstance(sap_plan, dict):
                     raise RunExecutionError(
@@ -916,7 +914,7 @@ class RunCoordinator:
             actual_steps.append(
                 {
                     "step_id": step_id,
-                    "executor": "sap_read" if tool in {"sap_read", "sapclaw"} else tool,
+                    "executor": "sap_read" if tool in {"sap_read"} else tool,
                     "operation": call["operation"],
                     "status": "completed" if output.get("ok", True) else "failed",
                 }
@@ -924,7 +922,7 @@ class RunCoordinator:
             tool_calls.append(call)
             evidence.append(
                 {
-                    "source": "sap_read" if tool in {"sap_read", "sapclaw"} else tool,
+                    "source": "sap_read" if tool in {"sap_read"} else tool,
                     "step_id": step_id,
                     "payload": output,
                     "call_id": call["call_id"],
@@ -938,7 +936,7 @@ class RunCoordinator:
                 "tool_completed",
                 {
                     "step_id": step_id,
-                    "tool": "sap_read" if tool in {"sap_read", "sapclaw"} else tool,
+                    "tool": "sap_read" if tool in {"sap_read"} else tool,
                     "ok": output.get("ok", True),
                     "call_id": call["call_id"],
                     "plugin_id": call["plugin_id"],
@@ -947,7 +945,7 @@ class RunCoordinator:
             self.store.append_event(
                 run_id,
                 "evidence_received",
-                {"step_id": step_id, "source": "sap_read" if tool in {"sap_read", "sapclaw"} else tool, "case_id": output.get("case_id")},
+                {"step_id": step_id, "source": "sap_read" if tool in {"sap_read"} else tool, "case_id": output.get("case_id")},
             )
 
         rule_result = rules.evidence_summary({"evidence": evidence})
@@ -1140,7 +1138,7 @@ class RunCoordinator:
     ) -> list[dict[str, Any]]:
         sap_plans: list[tuple[str, dict[str, Any]]] = []
         for step in _normalize_free_steps(plan):
-            if step.get("tool") not in {"sap_read", "sapclaw"}:
+            if step.get("tool") not in {"sap_read"}:
                 continue
             sap_plan = step.get("plan")
             if isinstance(sap_plan, dict):
@@ -1208,7 +1206,7 @@ class RunCoordinator:
     ) -> list[dict[str, Any]]:
         failures: list[dict[str, Any]] = []
         for step in _normalize_free_steps(plan):
-            if step.get("tool") not in {"sap_read", "sapclaw"}:
+            if step.get("tool") not in {"sap_read"}:
                 continue
             sap_plan = step.get("plan")
             if not isinstance(sap_plan, dict):
@@ -1615,7 +1613,7 @@ def _guided_agent_question(agent: dict[str, Any], query: str) -> str:
 def _collect_sap_entity_refs(plan: dict[str, Any]) -> set[tuple[str, str]]:
     refs: set[tuple[str, str]] = set()
     for harness_step in _normalize_free_steps(plan):
-        if harness_step.get("tool") not in {"sap_read", "sapclaw"}:
+        if harness_step.get("tool") not in {"sap_read"}:
             continue
         sap_plan = harness_step.get("plan")
         if not isinstance(sap_plan, dict):
@@ -1649,7 +1647,7 @@ def _count_free_query_top_bounds(plan: dict[str, Any]) -> int:
 
     count = 0
     for harness_step in _normalize_free_steps(plan):
-        if harness_step.get("tool") not in {"sap_read", "sapclaw"}:
+        if harness_step.get("tool") not in {"sap_read"}:
             continue
         sap_plan = harness_step.get("plan")
         if isinstance(sap_plan, dict):
@@ -1750,7 +1748,7 @@ def _remove_unsupported_order_by(
     copied = copy.deepcopy(decision.plan)
     removed = 0
     for harness_step in _normalize_free_steps(copied):
-        if harness_step.get("tool") not in {"sap_read", "sapclaw"}:
+        if harness_step.get("tool") not in {"sap_read"}:
             continue
         sap_plan = harness_step.get("plan")
         if not isinstance(sap_plan, dict):
@@ -1780,7 +1778,7 @@ def _validate_free_plan_limits(plan: dict[str, Any], max_tool_calls: int) -> Non
     call_count = 0
     for step in _normalize_free_steps(plan):
         tool = step.get("tool")
-        if tool in {"sap_read", "sapclaw"}:
+        if tool in {"sap_read"}:
             sap_plan = step.get("plan")
             if not isinstance(sap_plan, dict):
                 raise RunExecutionError("SAP read harness step has no plan object.", code="invalid_codex_plan")

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,13 +38,11 @@ from .plugins import (
     CodexRuntimePluginProvider,
     PluginError,
     PluginManager,
-    SapClawPluginProvider,
     SapReadCapability,
     SkillCapability,
     SkillhubPluginProvider,
     official_plugin_manifests,
 )
-from .sapclaw import SapClawClient, SapClawError
 from .sap_read import EmbeddedODataProvider, SapReadError, SapReadProvider
 from .sdk_manager import SDKManager, SDKManagerError
 from .skills import SkillRegistry
@@ -66,7 +64,6 @@ def create_app(
     settings: Settings | None = None,
     *,
     planner: Planner | None = None,
-    sapclaw: SapClawClient | None = None,
     embedded_provider: SapReadProvider | None = None,
     sdk_manager: SDKManager | None = None,
 ) -> FastAPI:
@@ -75,11 +72,6 @@ def create_app(
     agents = AgentRepository(settings.repository_root / "agents")
     skill_registry = SkillRegistry(
         settings.skillhub_root, settings.repository_root / "config" / "skills.json"
-    )
-    sapclaw_client = sapclaw or SapClawClient(
-        settings.sapclaw_url,
-        api_key=settings.sapclaw_api_key,
-        timeout_seconds=settings.max_run_seconds,
     )
     embedded = embedded_provider or EmbeddedODataProvider(
         base_url=settings.sap_base_url,
@@ -93,27 +85,17 @@ def create_app(
         page_size=settings.sap_page_size,
         relationship_catalog_path=settings.repository_root / "config" / "business-relationships.json",
     )
-    selected_provider = (
-        "embedded"
-        if embedded_provider is not None
-        else ("sapclaw" if sapclaw is not None else settings.sap_read_provider)
-    )
-    selected_plugin_id = (
-        "embedded-sap-odata" if selected_provider == "embedded" else "sapclaw-runtime"
-    )
+    selected_provider = "embedded"
+    selected_plugin_id = "embedded-sap-odata"
     planner = planner or CodexPlanner(settings.repository_root, model=settings.codex_model)
     plugin_manager = PluginManager(
         settings.plugin_manifest_root,
         settings.plugin_state_path,
         official_plugin_manifests(),
         preferred_plugins={"sap_read.v1": selected_plugin_id},
-        runtime_enabled={
-            "embedded-sap-odata": selected_provider == "embedded",
-            "sapclaw-runtime": selected_provider == "sapclaw",
-        },
+        runtime_enabled={"embedded-sap-odata": True},
     )
     plugin_manager.bind_provider("embedded-sap-odata", embedded)
-    plugin_manager.bind_provider("sapclaw-runtime", SapClawPluginProvider(sapclaw_client))
     plugin_manager.bind_provider("sapskillhub", SkillhubPluginProvider(skill_registry))
     plugin_manager.bind_provider("codex-runtime", CodexRuntimePluginProvider(planner))
     plugin_manager.bind_provider(
@@ -168,7 +150,6 @@ def create_app(
     app.state.business_agents = business_agents
     app.state.plugin_manager = plugin_manager
     app.state.sap_read = sap_read
-    app.state.sapclaw = sap_read  # deprecated compatibility alias
     app.state.sap_read_provider = selected_provider
     app.state.skills = skills
     app.state.agent_runtime = agent_runtime
@@ -185,10 +166,6 @@ def create_app(
             "ok": False,
             "error": {"code": "health_not_run", "message": "Provider health check has not run."},
         }
-        sapclaw_status = plugin_manager.get("sapclaw-runtime").get("health") or {
-            "ok": False,
-            "error": {"code": "health_not_run", "message": "Plugin health check has not run."},
-        }
         return {
             "ok": True,
             "service": "sap-business-agents-local",
@@ -199,7 +176,6 @@ def create_app(
                 "status": sap_read_plugin["status"],
                 **sap_read_status,
             },
-            "sapclaw": sapclaw_status,
             "codex_sdk_installed": importlib.util.find_spec("openai_codex") is not None,
             "executable_agents": len(agents.executable()),
             "published_workflows": len(workflows.list()),
@@ -420,14 +396,8 @@ def create_app(
     async def sap_read_tools(query: str = "") -> dict[str, Any]:
         try:
             return await sap_read.catalog(query=query, limit=100)
-        except (SapReadError, SapClawError, PluginError) as exc:
+        except (SapReadError, PluginError) as exc:
             raise HTTPException(503, {"code": exc.code, "message": str(exc)}) from exc
-
-    @app.get("/api/tools/sapclaw")
-    async def sapclaw_tools(response: Response, query: str = "") -> dict[str, Any]:
-        response.headers["Deprecation"] = "true"
-        response.headers["Warning"] = '299 - "Deprecated; use /api/tools/sap-read"'
-        return await sap_read_tools(query)
 
     @app.get("/api/tools/skills")
     def skill_tools() -> list[dict[str, Any]]:
@@ -582,8 +552,6 @@ def create_app(
             "sap_client_configured": bool(settings.sap_client),
             "sap_verify_ssl": settings.sap_verify_ssl,
             "sap_env_file_configured": bool(settings.sap_env_file),
-            "sapclaw_url": settings.sapclaw_url,
-            "sapclaw_api_key_configured": bool(settings.sapclaw_api_key),
             "skillhub_root": str(settings.skillhub_root),
             "skillhub_available": settings.skillhub_root.is_dir(),
             "codex_sdk_installed": importlib.util.find_spec("openai_codex") is not None,
@@ -627,36 +595,23 @@ def create_app(
 
     @app.put("/api/config/{target}")
     def update_local_config(target: str, payload: LocalConfigUpdate) -> dict[str, Any]:
-        if target not in {"sap", "sapclaw", "skillhub"}:
+        if target != "sap":
             raise HTTPException(404, "Unknown local configuration target")
-        if target == "sap":
-            env_path = settings.repository_root / ".env"
-            allowed = {
-                "SAP_READ_PROVIDER",
-                "SAP_BASE_URL",
-                "SAP_ODATA_BASE_URL",
-                "SAP_USERNAME",
-                "SAP_PASSWORD",
-                "SAP_CLIENT",
-                "SAP_VERIFY_SSL",
-                "SAP_AUTH_TYPE",
-                "SAP_ODATA_TIMEOUT_MS",
-            }
-        elif target == "sapclaw":
-            env_path = settings.repository_root.parent / "SAPClaw" / "env" / ".env"
-            allowed = {"SAP_BASE_URL", "SAP_USERNAME", "SAP_PASSWORD", "SAP_CLIENT", "SAPCLAW_API_KEY"}
-        else:
-            env_path = settings.skillhub_root / ".env"
-            allowed = {"SAP_SYSTEM", "SAP_CLIENT", "SAP_USERNAME", "SAP_PASSWORD"}
+        env_path = settings.repository_root / ".env"
+        allowed = {
+            "SAP_BASE_URL",
+            "SAP_ODATA_BASE_URL",
+            "SAP_USERNAME",
+            "SAP_PASSWORD",
+            "SAP_CLIENT",
+            "SAP_VERIFY_SSL",
+            "SAP_AUTH_TYPE",
+            "SAP_ODATA_TIMEOUT_MS",
+        }
         unknown = sorted(set(payload.values).difference(allowed))
         if unknown:
             raise HTTPException(400, "Unsupported configuration keys: " + ", ".join(unknown))
         _merge_env(env_path, payload.values)
-        if target == "sapclaw" and "SAPCLAW_API_KEY" in payload.values:
-            _merge_env(
-                settings.repository_root / ".env",
-                {"SAPCLAW_API_KEY": payload.values["SAPCLAW_API_KEY"]},
-            )
         return {
             "ok": True,
             "target": target,

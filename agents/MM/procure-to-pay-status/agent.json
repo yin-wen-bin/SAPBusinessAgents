@@ -53,7 +53,7 @@
       ]
     },
     {
-      "id": "check-thin-runtime",
+      "id": "check-embedded-provider",
       "title": { "zh": "检查 SAP 只读 Provider", "en": "Check the SAP read Provider" },
       "description": { "zh": "在访问真实 SAP 前确认所选 Provider 配置有效且严格只读，并验证目标服务 schema。", "en": "Confirms that the selected Provider is configured and strictly read-only before validating the target service schemas." },
       "operations": {

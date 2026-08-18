@@ -1,5 +1,9 @@
 # 智能寻源与 RFQ 评估：真机测试报告
 
+## 2026-08-18 契约解耦说明
+
+SAPBusinessAgents 已停止传递或管理 ADT `connection_profile`。当前已安装的 `sap-adt-table-export` Schema 仍要求调用方传入该字段，因此新的 ADT 补证会在启动 Skill 前明确记录 `skill_contract_incompatible`，不会注入默认 profile，业务结论继续保持 **INCONCLUSIVE**。下方 2026-08-17 的 ADT 结果仅作为历史真机证据保留；新契约发布前不重新执行真机 ADT。
+
 ## 结论 / Verdict
 
 - **BLOCKED**（测试时间：2026-08-17，证据范围：bounded）

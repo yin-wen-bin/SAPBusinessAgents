@@ -110,7 +110,7 @@
       ]
     },
     {
-      "id": "check-thin-runtime",
+      "id": "check-embedded-provider",
       "title": {
         "zh": "检查Embedded Provider",
         "en": "Check Embedded Provider"

@@ -37,7 +37,9 @@ def test_five_schema_v2_co_agents_use_only_embedded_adt_and_rules() -> None:
             if step["executor"] == "sap_read"
         )
         assert all(
-            step["skillId"] == "sap-adt-table-export" and step.get("when")
+            step["skillId"] == "sap-adt-table-export"
+            and step.get("when")
+            and "connection_profile" not in step.get("inputMapping", {})
             for step in steps
             if step["executor"] == "skill"
         )
@@ -53,8 +55,8 @@ def test_co_agents_have_eight_bilingual_workflow_steps_and_reports() -> None:
         assert report.is_file()
 
 
-def test_co_manifests_do_not_add_legacy_runtime_or_gui_executors() -> None:
+def test_co_manifests_use_only_embedded_reads_and_no_gui_executors() -> None:
     for manifest in _manifests():
         serialized = json.dumps(manifest["execution"], ensure_ascii=False).lower()
-        assert "sapclaw" not in serialized
+        assert all(step["executor"] != "sap_read" or step.get("readOnly") is True for step in manifest["execution"]["steps"])
         assert "se16n" not in serialized

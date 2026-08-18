@@ -4,8 +4,8 @@
     {
       "skill_id": "sap-adt-table-export",
       "description": {
-        "zh": "通过受保护连接配置和 ADT Data Preview 导出有界、只读的表或 CDS 证据。",
-        "en": "Exports bounded read-only table or CDS evidence through a protected ADT Data Preview profile."
+        "zh": "通过 SAPSkillhub 自主管理的只读连接和 ADT Data Preview 导出有界的表或 CDS 证据。",
+        "en": "Exports bounded table or CDS evidence through an SAPSkillhub-managed read-only ADT connection."
       },
       "entrypoint": "skills/Common/sap-adt-table-export/run.py",
       "input_schema_path": "skills/Common/sap-adt-table-export/references/input.schema.json",

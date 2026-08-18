@@ -114,10 +114,10 @@
       ]
     },
     {
-      "id": "check-thin-runtime",
+      "id": "check-embedded-provider",
       "title": {
-        "zh": "检查 Thin Runtime",
-        "en": "Check Thin Runtime"
+        "zh": "检查 Embedded Provider",
+        "en": "Check Embedded Provider"
       },
       "description": {
         "zh": "确认运行时健康、只读并验证销售订单和计划订单 schema。",
@@ -135,16 +135,16 @@
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_provider_health",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "检查连接与只读边界。",
             "en": "Checks connectivity and the read-only boundary."
           }
         },
         {
-          "name": "sapclaw_schema",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_schema",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "验证实体和字段。",
             "en": "Validates entities and fields."
@@ -182,8 +182,8 @@
           }
         },
         {
-          "name": "sapclaw_execute_get",
-          "kind": "Thin SAPClaw",
+          "name": "embedded_odata_execute_get",
+          "kind": "Embedded SAP OData",
           "purpose": {
             "zh": "执行受控只读查询。",
             "en": "Executes controlled read-only queries."

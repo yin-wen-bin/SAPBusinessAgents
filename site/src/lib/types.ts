@@ -61,7 +61,7 @@ export interface ExecutionInputSchema {
 
 export interface AgentExecutionStep {
   id: string;
-  executor: "sap_read" | "sapclaw" | "skill" | "rule";
+  executor: "sap_read" | "skill" | "rule";
   operation: string;
   readOnly?: boolean;
   request?: Record<string, unknown>;

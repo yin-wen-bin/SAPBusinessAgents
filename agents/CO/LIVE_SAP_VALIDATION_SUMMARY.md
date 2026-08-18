@@ -3,7 +3,7 @@
 - 测试时间：2026-08-17T11:41:06.839334+00:00
 - 主通道：Embedded GET-only OData
 - ADT 技术预检：`complete`
-- SAPClaw 调用：`0`；SE16N 调用：`0`
+- SE16N 调用：`0`
 - 原始证据仅保存在被忽略的 `.local-data/live-tests/co/`。
 
 | Agent | Verdict | SAP GET | Source complete | Missing evidence |

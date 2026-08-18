@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sap-month-end-closing-assistant"
 version = "0.1.0"
-description = "A safe, SAPClaw MCP-first month-end closing assessment assistant"
+description = "A safe, read-only month-end closing assessment assistant"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
