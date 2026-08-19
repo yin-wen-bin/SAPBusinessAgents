@@ -170,6 +170,7 @@ function validateExecution(execution, source) {
         throw new Error(`${location}.request must be an object`);
       }
       rejectWriteMethods(step.request, location);
+      requireODataVersions(step.request, location);
     }
   }
 }
@@ -186,6 +187,24 @@ function rejectWriteMethods(value, location) {
     }
     rejectWriteMethods(child, location);
   }
+}
+
+function requireODataVersions(value, location) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => requireODataVersions(item, location));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  if (Object.hasOwn(value, "service_name") && Object.hasOwn(value, "entity_set")) {
+    if (!["2.0", "4.0"].includes(value.odata_version)) {
+      throw new Error(`${location} service references must declare odata_version 2.0 or 4.0`);
+    }
+  }
+  const forbidden = ["url", "resource_path", "service_root_path", "metadata_path", "headers", "authorization", "sap_client"];
+  if (forbidden.some((key) => Object.hasOwn(value, key))) {
+    throw new Error(`${location} contains forbidden transport fields`);
+  }
+  Object.values(value).forEach((child) => requireODataVersions(child, location));
 }
 
 export function loadAgentCatalog(root = agentsRoot) {

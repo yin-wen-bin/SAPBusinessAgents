@@ -157,6 +157,7 @@ export interface AgentSearchItem {
   tags: string[];
   transactions: string[];
   sapModules: string[];
+  odataVersions: string[];
   workflowTerms: string[];
   href: string;
 }

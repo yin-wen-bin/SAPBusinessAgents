@@ -92,6 +92,7 @@ def query(
     result: dict[str, Any] = {
         "step_id": step_id,
         "service_name": service,
+        "odata_version": "2.0",
         "entity_set": entity,
         "http_method": "GET",
         "select_fields": fields,
@@ -120,6 +121,7 @@ def sap_step(
         "request": {
             "plan": {
                 "service_name": first["service_name"],
+                "odata_version": first["odata_version"],
                 "entity_set": first["entity_set"],
                 "http_method": "GET",
                 "plan_kind": "multi_step" if len(queries) > 1 else "direct",

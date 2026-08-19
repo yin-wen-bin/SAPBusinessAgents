@@ -212,6 +212,7 @@ if ($Restart) {
 }
 
 $env:PUBLIC_SAPBA_API_URL = $ApiUrl
+$env:SAPBA_INTERNAL_API_URL = $ApiUrl
 
 Write-Step "Using the Embedded GET-only SAP Provider."
 

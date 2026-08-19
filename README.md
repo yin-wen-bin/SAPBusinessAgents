@@ -57,7 +57,9 @@ agents/
 site/                 # Astro 静态目录站点
 src/sap_business_agents_platform/ # FastAPI、SQLite、SSE 与双模式运行时
 config/plugins/   # 可信本机插件清单与版本化能力声明
+config/odata-services.json # 审核后的 OData V2/V4 内部服务注册表
 config/skills.json    # 允许自动执行的只读 Skill 白名单
+data/catalog-seed/    # 去敏、GET-only 的检索与规划 Seed（非执行权威）
 .codex/agents/        # 项目级 Custom Agent 配置
 .github/workflows/    # 校验与 GitHub Pages 部署
 ```
@@ -88,11 +90,11 @@ agents/<模块>/<agent-slug>/
 
 站点在构建前校验全部清单。新增或修改 `agent.json` 后，目录页和详情页会自动更新。
 
-`schemaVersion: 2` 还必须声明 `execution.mode: deterministic` 以及顺序执行的 `sap_read`、`skill` 或 `rule` 步骤。`sap_read` 只能使用 `GET`；运行时不会让 Codex 改写固定 Agent 的工具和步骤。
+`schemaVersion: 2` 还必须声明 `execution.mode: deterministic` 以及顺序执行的 `sap_read`、`skill` 或 `rule` 步骤。`sap_read` 只能使用 `GET`，并且每个服务/实体引用必须显式声明 `odata_version: "2.0" | "4.0"`；运行时不会让 Codex 改写固定 Agent 的工具和步骤。Catalog Seed 只用于检索，目标系统实时 `$metadata` 始终是可执行 Schema 的唯一权威。版本注册、V2/V4 适配、一次性清洁迁移与 BAH 管理员同步流程见 [OData Catalog v2](docs/odata-catalog-v2.md)。
 
 ### 单机双模式原型
 
-原型的 FastAPI 服务只监听 `127.0.0.1`。固定 Agent 由确定性工作流引擎运行；自由查询由 Codex SDK 生成结构化的有界计划，之后每个 SAP 请求仍需通过实时元数据、业务关系和 GET-only 校验。默认最多允许 20 个受控工具子步骤，以覆盖当前 13 步固定 O2C 及最多 18 步的自由查询分支，同时保留硬上限。运行状态、SSE 事件和结果保存在 `.local-data/`，Agent 草稿只写入 `.prototype/authoring/`。
+原型的 FastAPI 服务只监听 `127.0.0.1`。固定 Agent 由确定性工作流引擎运行；“直接询问 SAP”默认创建持久 Codex App Server thread，并通过 Native Web Search、仓库内 SAP Tool Broker MCP 和动态工具准入 Gateway 执行观察—修订循环。所有 SAP 请求仍需通过实时元数据、业务关系和 GET-only 校验。默认限制为 12 turn、40 次平台工具调用和 600 秒；超限保持 `INCONCLUSIVE`，不自动回退旧 Planner。运行状态、SSE 事件和证据引用保存在 `.local-data/`，Agent 草稿只写入 `.prototype/authoring/`。完整契约见 [Codex Harness 自由查询原型](docs/codex-harness.md)。
 
 本机运行时采用不依赖 Cordis 的 Python/FastAPI 微内核。核心只负责运行状态、SSE、确定性工作流、证据完整性和只读策略；能力通过 `config/plugins/` 中的版本化清单注册。SAP 数据通道固定为进程内的 Embedded OData Provider，另有 SAPSkillhub、Codex Runtime 和业务 Agent 包。运行记录会保存实际 `plugin_id`、版本、能力、调用编号和耗时。
 
@@ -103,9 +105,9 @@ flowchart LR
     CORE --> FREE["自由查询 Harness"]
     CORE --> BROKER["能力注册表与路由"]
     BROKER --> AGENT["business_agent.v1"]
-    BROKER --> SAPREAD["sap_read.v1"]
+    BROKER --> SAPREAD["sap_read.v2"]
     BROKER --> SKILL["skill_catalog.v1 / skill_execute.v1"]
-    BROKER --> CODEX["agent_runtime.v1 / authoring.v1"]
+    BROKER --> CODEX["Codex App Server / agent_runtime.v2 / authoring.v1"]
     FIXED --> BROKER
     FREE --> BROKER
     CORE --> DB["SQLite / SSE / 本地制品"]
@@ -257,13 +259,15 @@ site/                          # Astro static catalog and local runtime UI
 src/sap_business_agents_platform/ # FastAPI, SQLite, SSE, and runtime harness
 config/skills.json             # Explicit executable read-only Skill allowlist
 config/plugins/                # Trusted local plugin manifests and versioned capabilities
+config/odata-services.json     # Reviewed internal OData V2/V4 service registry
+data/catalog-seed/             # Sanitized GET-only search/planning Seed, not schema authority
 .codex/agents/                 # Project-scoped Custom Agent definitions
 .github/workflows/             # Validation and GitHub Pages deployment
 ```
 
 ### Agent manifest contract
 
-An `agent.json` may use catalog-only schema version 1 or executable schema version 2. Both provide localized metadata, SAP scope, inputs, outputs, guardrails, and workflow steps. Schema v2 additionally declares a deterministic execution graph whose `sap_read`, `skill`, and `rule` steps are validated before execution; SAP read steps are GET-only. The build validates all manifests before generating the catalog.
+An `agent.json` may use catalog-only schema version 1 or executable schema version 2. Both provide localized metadata, SAP scope, inputs, outputs, guardrails, and workflow steps. Schema v2 additionally declares a deterministic execution graph whose `sap_read`, `skill`, and `rule` steps are validated before execution; SAP read steps are GET-only and every service/entity reference explicitly declares `odata_version: "2.0" | "4.0"`. The Catalog Seed is advisory while live target-system `$metadata` remains the sole executable schema authority. See [OData Catalog v2](docs/odata-catalog-v2.md) for the version registry, V2/V4 adapters, sanitized one-time migration, and administrator BAH sync flow. The build validates all manifests before generating the catalog.
 
 ### Local dual-mode prototype
 
@@ -276,9 +280,9 @@ Copy-Item .env.example .env
 .\.venv\Scripts\sap-business-agents.exe --port 8765
 ```
 
-In another terminal, run `npm run dev` under `site/`. Fixed Agents execute their declared steps without Codex. Free queries use the Codex SDK to create a bounded structured plan, but every SAP request is revalidated and executed by the GET-only Embedded Provider. State is stored under `.local-data/`; generated drafts remain isolated under `.prototype/authoring/`. Only read-only, validated Skills explicitly listed in `config/skills.json` can be executed.
+In another terminal, run `npm run dev` under `site/`. Fixed Agents execute their declared steps without Codex. Free queries default to a persistent Codex App Server Harness with Native Web Search, the repository-owned SAP Tool Broker MCP, and a dynamic read-only tool-admission gateway. Every SAP request is still revalidated and executed by the GET-only Embedded Provider. State and evidence references are stored under `.local-data/`; generated drafts remain isolated under `.prototype/authoring/`. Only read-only, validated Skills explicitly listed in `config/skills.json` can be executed. See [Codex Harness](docs/codex-harness.md).
 
-The local runtime is a Python/FastAPI microkernel without Cordis. It routes versioned capabilities from trusted manifests under `config/plugins/`: `business_agent.v1`, `sap_read.v1`, `skill_catalog.v1`, `skill_execute.v1`, `agent_runtime.v1`, and `authoring.v1`. Plugins can be inspected, health-checked, enabled, or disabled through the local plugin page and API; every evidence-producing call records plugin identity and duration. See [Local plugin platform](docs/local-plugin-platform.md).
+The local runtime is a Python/FastAPI microkernel without Cordis. It routes versioned capabilities from trusted manifests under `config/plugins/`: `business_agent.v1`, `sap_read.v2`, `skill_catalog.v1`, `skill_execute.v1`, `agent_runtime.v2`, and `authoring.v1`. Plugins can be inspected, health-checked, enabled, or disabled through the local plugin page and API; every evidence-producing call records plugin identity and duration. See [Local plugin platform](docs/local-plugin-platform.md).
 
 The “My workflows” page provides visual DAG authoring, typed mappings, draft revisions, live GET-only validation, and local Git-branch publishing. The initial validation slices are P2P→AP and O2C→AR. See [User-defined workflows](docs/user-workflows.md).
 

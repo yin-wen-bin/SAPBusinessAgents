@@ -14,6 +14,7 @@ test("static catalog contains all thirty agents and the GitHub Pages base path",
   assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 11);
+  assert.match(html, /class="odata-version-tag">V2</);
   assert.doesNotMatch(html, /href="\/zh\//);
 });
 
@@ -48,6 +49,7 @@ test("new MM detail pages render eight steps and live validation metadata", asyn
     assert.match(zh, /sap-adt-table-export/);
     assert.match(zh, /真机验收/);
     assert.match(zh, /live-sap-test-report\.md/);
+    assert.match(zh, /class="odata-version-badge">V2</);
   }
 });
 

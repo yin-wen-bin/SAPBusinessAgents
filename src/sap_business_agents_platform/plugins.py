@@ -423,6 +423,9 @@ class SkillhubPluginProvider:
     def get(self, skill_id: str) -> dict[str, Any]:
         return self.registry.get(skill_id)
 
+    def validate_input(self, skill_id: str, input_payload: dict[str, Any]) -> None:
+        self.registry.validate_input(skill_id, input_payload)
+
     async def execute(self, skill_id: str, input_payload: dict[str, Any]) -> dict[str, Any]:
         return await self.registry.execute(skill_id, input_payload)
 
@@ -505,7 +508,7 @@ class BusinessAgentPluginProvider:
 
 
 class SapReadCapability:
-    capability = "sap_read.v1"
+    capability = "sap_read.v2"
 
     def __init__(self, manager: PluginManager) -> None:
         self.manager = manager
@@ -530,6 +533,7 @@ class SapReadCapability:
         entity_sets: list[str] | str,
         query: str = "",
         *,
+        odata_version: str,
         include_fields: bool = True,
         max_fields: int = 5000,
     ) -> dict[str, Any]:
@@ -539,6 +543,7 @@ class SapReadCapability:
             service_name,
             entity_sets,
             query,
+            odata_version=odata_version,
             include_fields=include_fields,
             max_fields=max_fields,
         )
@@ -587,7 +592,9 @@ class SkillCapability:
         self.manager = manager
 
     def plugin_metadata(self, operation: str) -> dict[str, Any]:
-        capability = "skill_execute.v1" if operation == "execute" else "skill_catalog.v1"
+        capability = (
+            "skill_execute.v1" if operation in {"validate_input", "execute"} else "skill_catalog.v1"
+        )
         return self.manager.resolve(capability, operation).trace(operation)
 
     def list(self) -> list[dict[str, Any]]:
@@ -595,6 +602,11 @@ class SkillCapability:
 
     def get(self, skill_id: str) -> dict[str, Any]:
         return self.manager.invoke_sync("skill_catalog.v1", "get", skill_id)
+
+    def validate_input(self, skill_id: str, input_payload: dict[str, Any]) -> None:
+        self.manager.invoke_sync(
+            "skill_execute.v1", "validate_input", skill_id, input_payload
+        )
 
     async def execute(self, skill_id: str, input_payload: dict[str, Any]) -> dict[str, Any]:
         return await self.manager.invoke("skill_execute.v1", "execute", skill_id, input_payload)
@@ -656,13 +668,13 @@ def official_plugin_manifests() -> list[PluginManifest]:
         {
             "schema_version": "1.0",
             "plugin_id": "embedded-sap-odata",
-            "version": "1.0.0",
+            "version": "2.0.0",
             "name": {"zh": "内嵌 SAP 只读连接器", "en": "Embedded SAP Read-only Provider"},
             "publisher": "SAPBusinessAgents",
             "enabled": True,
             "capabilities": [
                 {
-                    "capability": "sap_read.v1",
+                    "capability": "sap_read.v2",
                     "operations": [
                         "health",
                         "catalog",
@@ -686,7 +698,10 @@ def official_plugin_manifests() -> list[PluginManifest]:
             "publisher": "SAPBusinessAgents",
             "capabilities": [
                 {"capability": "skill_catalog.v1", "operations": ["list", "get"]},
-                {"capability": "skill_execute.v1", "operations": ["execute"]},
+                {
+                    "capability": "skill_execute.v1",
+                    "operations": ["validate_input", "execute"],
+                },
             ],
             "transport": {"type": "python_cli", "entrypoint": "python run.py --input input.json --output output.json", "loopback_only": True},
             "permissions": {"sap_read": True},
@@ -698,6 +713,18 @@ def official_plugin_manifests() -> list[PluginManifest]:
             "name": {"zh": "Codex 运行层", "en": "Codex Runtime"},
             "publisher": "OpenAI",
             "capabilities": [
+                {
+                    "capability": "agent_runtime.v2",
+                    "operations": [
+                        "thread_start",
+                        "thread_resume",
+                        "turn",
+                        "steer",
+                        "interrupt",
+                        "web_search",
+                        "tool_call",
+                    ],
+                },
                 {"capability": "agent_runtime.v1", "operations": ["plan", "ground_plan", "summarize"]},
                 {"capability": "authoring.v1", "operations": ["author_draft"]},
                 {

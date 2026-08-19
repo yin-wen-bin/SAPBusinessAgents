@@ -403,6 +403,7 @@
         "request": {
           "plan": {
             "service_name": "API_PRODUCTION_ORDER_2_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_ProductionOrder_2",
             "http_method": "GET",
             "plan_kind": "direct",
@@ -440,6 +441,7 @@
         "request": {
           "plan": {
             "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_OperationalAcctgDocItemCube",
             "http_method": "GET",
             "plan_kind": "direct",

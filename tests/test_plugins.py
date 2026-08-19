@@ -35,6 +35,36 @@ def _manager(tmp_path: Path) -> PluginManager:
     return manager
 
 
+def _odata_registry(tmp_path: Path, *services: tuple[str, str]) -> Path:
+    records = []
+    for service_name, odata_version in services:
+        root = (
+            f"/sap/opu/odata/sap/{service_name}"
+            if odata_version == "2.0"
+            else f"/sap/opu/odata4/sap/{service_name}/0001"
+        )
+        records.append(
+            {
+                "service_name": service_name,
+                "odata_version": odata_version,
+                "service_root_path": root,
+                "metadata_path": f"{root}/$metadata",
+                "artifact_id": None,
+                "artifact_version": None,
+                "openapi_version": None,
+                "catalog_source": "manual",
+                "source_hash": f"sha256:{'0' * 64}",
+                "status": "seed",
+                "enabled": True,
+            }
+        )
+    path = tmp_path / "odata-services.json"
+    path.write_text(
+        json.dumps({"schema_version": "2.0", "services": records}), encoding="utf-8"
+    )
+    return path
+
+
 def test_manifest_rejects_sap_write_and_non_loopback_transport() -> None:
     base = {
         "schema_version": "1.0",
@@ -43,7 +73,7 @@ def test_manifest_rejects_sap_write_and_non_loopback_transport() -> None:
         "name": {"zh": "不安全", "en": "Unsafe"},
         "publisher": "fixture",
         "capabilities": [
-            {"capability": "sap_read.v1", "operations": ["execute_get"]}
+            {"capability": "sap_read.v2", "operations": ["execute_get"]}
         ],
         "transport": {"type": "http", "loopback_only": True},
         "permissions": {"sap_write": True},
@@ -61,14 +91,14 @@ def test_registry_resolves_versioned_capabilities_and_persists_disable(
 ) -> None:
     manager = _manager(tmp_path)
     asyncio.run(manager.start())
-    binding = manager.resolve("sap_read.v1", "execute_plan")
+    binding = manager.resolve("sap_read.v2", "execute_plan")
     assert binding.manifest.plugin_id == "embedded-sap-odata"
-    assert binding.trace("execute_plan")["plugin_version"] == "1.0.0"
+    assert binding.trace("execute_plan")["plugin_version"] == "2.0.0"
 
     disabled = asyncio.run(manager.set_enabled("embedded-sap-odata", False))
     assert disabled["status"] == PluginStatus.disabled.value
     with pytest.raises(PluginError, match="No ready plugin"):
-        manager.resolve("sap_read.v1", "execute_plan")
+        manager.resolve("sap_read.v2", "execute_plan")
 
     restored = PluginManager(
         tmp_path / "manifests",
@@ -90,7 +120,7 @@ def test_rescan_reports_invalid_manifest_without_loading_code(tmp_path: Path) ->
                 "name": {"zh": "远程", "en": "Remote"},
                 "publisher": "fixture",
                 "capabilities": [
-                    {"capability": "sap_read.v1", "operations": ["execute_get"]}
+                    {"capability": "sap_read.v2", "operations": ["execute_get"]}
                 ],
                 "transport": {"type": "http", "loopback_only": False},
                 "permissions": {},
@@ -143,7 +173,7 @@ _METADATA = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
-def test_embedded_provider_validates_live_schema_and_executes_get_only() -> None:
+def test_embedded_provider_validates_live_schema_and_executes_get_only(tmp_path: Path) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -162,9 +192,11 @@ def test_embedded_provider_validates_live_schema_and_executes_get_only() -> None
         client="100",
         page_size=100,
         transport=httpx.MockTransport(handler),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
     )
     plan = {
         "service_name": "API_TEST_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_Order",
         "http_method": "GET",
         "select_fields": ["OrderID", "Amount"],
@@ -174,7 +206,9 @@ def test_embedded_provider_validates_live_schema_and_executes_get_only() -> None
     }
     validation = asyncio.run(provider.validate_plan(plan))
     assert validation["ok"] is True
-    schema = asyncio.run(provider.schema("API_TEST_SRV", ["A_Order"]))
+    schema = asyncio.run(
+        provider.schema("API_TEST_SRV", ["A_Order"], odata_version="2.0")
+    )
     order_id = next(
         field for field in schema["data"]["fields"] if field["field_name"] == "OrderID"
     )
@@ -216,7 +250,7 @@ def test_embedded_provider_rejects_write_before_network_access() -> None:
     assert called is False
 
 
-def test_embedded_provider_executes_live_schema_validated_get_function_import() -> None:
+def test_embedded_provider_executes_live_schema_validated_get_function_import(tmp_path: Path) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -240,9 +274,13 @@ def test_embedded_provider_executes_live_schema_validated_get_function_import() 
         username="fixture-user",
         password="fixture-password",
         transport=httpx.MockTransport(handler),
+        service_registry_path=_odata_registry(
+            tmp_path, ("API_PRODUCT_AVAILY_INFO_BASIC", "2.0")
+        ),
     )
     plan = {
         "service_name": "API_PRODUCT_AVAILY_INFO_BASIC",
+        "odata_version": "2.0",
         "entity_set": "DetermineAvailabilityAt",
         "http_method": "GET",
         "plan_kind": "function_import",
@@ -265,7 +303,7 @@ def test_embedded_provider_executes_live_schema_validated_get_function_import() 
     assert all("fixture-password" not in str(request.url) for request in requests)
 
 
-def test_embedded_provider_uses_metadata_keys_for_complete_manual_paging() -> None:
+def test_embedded_provider_uses_metadata_keys_for_complete_manual_paging(tmp_path: Path) -> None:
     entity_requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -287,11 +325,13 @@ def test_embedded_provider_uses_metadata_keys_for_complete_manual_paging() -> No
         page_size=2,
         max_results=10,
         transport=httpx.MockTransport(handler),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
     )
     result = asyncio.run(
         provider.execute_plan(
             {
                 "service_name": "API_TEST_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_Order",
                 "http_method": "GET",
                 "select_fields": ["OrderID", "Amount"],

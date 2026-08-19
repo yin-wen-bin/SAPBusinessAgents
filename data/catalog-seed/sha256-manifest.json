@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-08-19T10:40:46Z",
+  "algorithm": "SHA-256",
+  "files": {
+    "data/catalog-seed/catalog.json": "sha256:82466025329c0e1afac4897751733ebbee47ea21236b9641a076fafecb98a6f7",
+    "config/odata-services.json": "sha256:d772a15e8733505bcdb384667b762d0bcab48b547d41a1acb988bf082254a583",
+    "data/catalog-seed/migration-report.json": "sha256:fc3cdc34c827d68bab6220ba5e05f0aa52f7c0efd73d06ecdcc1b16c48984f2d"
+  },
+  "manifest_self_hash": "not_applicable"
+}

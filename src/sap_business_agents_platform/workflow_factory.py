@@ -409,12 +409,14 @@ class WorkflowDraftService:
         discovery_specs = {
             "purchase_order": {
                 "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_PurchaseOrder",
                 "field": "PurchaseOrder",
                 "select_fields": ["PurchaseOrder", "CompanyCode", "Supplier"],
             },
             "sales_order": {
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrder",
                 "field": "SalesOrder",
                 "select_fields": ["SalesOrder", "SoldToParty"],
@@ -426,6 +428,7 @@ class WorkflowDraftService:
                 continue
             plan = {
                 "service_name": spec["service_name"],
+                "odata_version": spec["odata_version"],
                 "entity_set": spec["entity_set"],
                 "http_method": "GET",
                 "plan_kind": "direct",

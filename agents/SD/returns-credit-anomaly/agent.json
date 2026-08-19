@@ -413,6 +413,7 @@
         "request": {
           "plan": {
             "service_name": "API_CUSTOMER_RETURN_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_CustomerReturn",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -420,6 +421,7 @@
               {
                 "step_id": "returns",
                 "service_name": "API_CUSTOMER_RETURN_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_CustomerReturn",
                 "http_method": "GET",
                 "select_fields": [
@@ -454,6 +456,7 @@
               {
                 "step_id": "return_items",
                 "service_name": "API_CUSTOMER_RETURN_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_CustomerReturnItem",
                 "http_method": "GET",
                 "select_fields": [
@@ -481,6 +484,7 @@
               {
                 "step_id": "credit_requests",
                 "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_CreditMemoRequest",
                 "http_method": "GET",
                 "select_fields": [
@@ -516,6 +520,7 @@
               {
                 "step_id": "credit_request_items",
                 "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_CreditMemoRequestItem",
                 "http_method": "GET",
                 "select_fields": [
@@ -540,6 +545,7 @@
               {
                 "step_id": "billing_documents",
                 "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_BillingDocumentItem",
                 "http_method": "GET",
                 "select_fields": [

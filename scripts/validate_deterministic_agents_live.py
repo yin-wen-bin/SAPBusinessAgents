@@ -130,6 +130,8 @@ class LiveValidator:
             max_results=self.settings.sap_max_results,
             page_size=self.settings.sap_page_size,
             relationship_catalog_path=root / "config" / "business-relationships.json",
+            service_registry_path=root / "config" / "odata-services.json",
+            catalog_seed_path=root / "data" / "catalog-seed" / "catalog.json",
         )
         self.discovery_observations: list[dict[str, Any]] = []
 
@@ -144,6 +146,7 @@ class LiveValidator:
     ) -> list[dict[str, Any]]:
         plan = {
             "service_name": service,
+            "odata_version": "2.0",
             "entity_set": entity,
             "http_method": "GET",
             "plan_kind": "direct",

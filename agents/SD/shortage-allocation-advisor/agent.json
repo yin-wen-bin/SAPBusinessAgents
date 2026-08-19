@@ -430,6 +430,7 @@
         "request": {
           "plan": {
             "service_name": "API_SALES_ORDER_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_SalesOrderItem",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -437,6 +438,7 @@
               {
                 "step_id": "sales_order_items",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrderItem",
                 "http_method": "GET",
                 "select_fields": [
@@ -467,6 +469,7 @@
               {
                 "step_id": "schedule_lines",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrderScheduleLine",
                 "http_method": "GET",
                 "select_fields": [
@@ -500,6 +503,7 @@
               {
                 "step_id": "material_stock",
                 "service_name": "API_MATERIAL_STOCK_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_MatlStkInAcctMod",
                 "http_method": "GET",
                 "select_fields": [
@@ -540,6 +544,7 @@
         "request": {
           "plan": {
             "service_name": "API_PRODUCT_AVAILY_INFO_BASIC",
+            "odata_version": "2.0",
             "entity_set": "DetermineAvailabilityAt",
             "http_method": "GET",
             "plan_kind": "function_import",

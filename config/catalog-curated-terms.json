@@ -1,0 +1,157 @@
+{
+  "schema_version": "2.0",
+  "entries": [
+    {
+      "topic": "supplier-ap-open-items-payment-status",
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "odata_version": "2.0",
+      "entity_set": "GLAccountLineItem",
+      "terms": {
+        "zh": [
+          "供应商未清项目", "未清应付项目", "供应商应付账款", "应付款状态",
+          "付款状态", "截止日期未清", "关键日期未清", "供应商清账"
+        ],
+        "en": [
+          "supplier open items", "vendor open payables", "accounts payable open items",
+          "payment status", "open at key date", "supplier clearing status"
+        ]
+      },
+      "purpose": {
+        "zh": "检索供应商子分类账未清、清账和付款证据；供应商项目必须以实时元数据确认并使用 FinancialAccountType=K。",
+        "en": "Find supplier subledger open, clearing, and payment evidence; live metadata must confirm the fields and supplier items require FinancialAccountType=K."
+      },
+      "candidate_fields": [
+        "CompanyCode", "Supplier", "FinancialAccountType", "Ledger", "FiscalYear",
+        "AccountingDocument", "AccountingDocumentItem", "PostingDate", "ClearingDate",
+        "ClearingAccountingDocument", "ClearingDocFiscalYear", "IsOpenItemManaged",
+        "SpecialGLCode", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"
+      ]
+    },
+    {
+      "topic": "material-stock-identity",
+      "service_name": "API_MATERIAL_STOCK_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_MaterialStock",
+      "terms": {
+        "zh": ["库存", "物料库存", "库存物料", "库存基本单位"],
+        "en": ["inventory", "material stock", "stocked material", "stock base unit"]
+      },
+      "purpose": {
+        "zh": "检索物料库存身份和基本单位；数量字段必须由实时元数据确认。",
+        "en": "Find material-stock identity and base unit; quantity fields require live metadata confirmation."
+      },
+      "candidate_fields": ["Material", "MaterialBaseUnit"]
+    },
+    {
+      "topic": "inventory-stock-balance",
+      "service_name": "API_MATERIAL_STOCK_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_MatlStkInAcctMod",
+      "terms": {
+        "zh": ["库存余额", "工厂库存", "库存地点库存", "可用库存", "批次库存"],
+        "en": ["inventory balance", "plant stock", "storage location stock", "available stock", "batch stock"]
+      },
+      "purpose": {
+        "zh": "检索按物料、工厂、库存地点、批次和库存类型划分的库存数量候选。",
+        "en": "Find quantity candidates by material, plant, storage location, batch, and stock type."
+      },
+      "candidate_fields": [
+        "Material", "Plant", "StorageLocation", "Batch", "InventoryStockType",
+        "InventorySpecialStockType", "MaterialBaseUnit", "MatlWrhsStkQtyInMatlBaseUnit"
+      ]
+    },
+    {
+      "topic": "material-document-header",
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_MaterialDocumentHeader",
+      "terms": {
+        "zh": ["物料凭证", "物料凭证抬头", "过账日期", "凭证日期"],
+        "en": ["material document", "material document header", "posting date", "document date"]
+      },
+      "purpose": {
+        "zh": "检索物料凭证抬头和过账期间。",
+        "en": "Find material-document headers and posting periods."
+      },
+      "candidate_fields": [
+        "MaterialDocument", "MaterialDocumentYear", "PostingDate", "DocumentDate",
+        "GoodsMovementCode", "InventoryTransactionType"
+      ]
+    },
+    {
+      "topic": "material-document-item",
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_MaterialDocumentItem",
+      "terms": {
+        "zh": ["物料凭证项目", "收货", "退货", "冲销", "移动类型", "物料移动"],
+        "en": ["material document item", "goods receipt", "return", "reversal", "movement type", "material movement"]
+      },
+      "purpose": {
+        "zh": "检索物料移动、收货、退货和冲销项目。",
+        "en": "Find material movements, receipts, returns, and reversal items."
+      },
+      "candidate_fields": [
+        "MaterialDocument", "MaterialDocumentYear", "MaterialDocumentItem", "Material",
+        "Plant", "StorageLocation", "Batch", "GoodsMovementType", "GoodsMovementIsCancelled",
+        "QuantityInBaseUnit", "MaterialBaseUnit", "PostingDate", "PurchaseOrder", "PurchaseOrderItem"
+      ]
+    },
+    {
+      "topic": "mrp-material-master",
+      "service_name": "API_MRP_MATERIALS_SRV_01",
+      "odata_version": "2.0",
+      "entity_set": "A_MRPMaterial",
+      "terms": {
+        "zh": ["MRP 物料", "物料需求计划", "MRP 参数", "安全库存", "补货参数"],
+        "en": ["MRP material", "material requirements planning", "MRP parameters", "safety stock", "replenishment parameters"]
+      },
+      "purpose": {
+        "zh": "检索 MRP 物料主数据、安全库存和补货参数候选。",
+        "en": "Find MRP material master, safety-stock, and replenishment-parameter candidates."
+      },
+      "candidate_fields": [
+        "Material", "MRPPlant", "MRPArea", "MRPController", "BaseUnit",
+        "SafetyStock", "ReorderThresholdQuantity", "LotSizingProcedure", "GoodsReceiptDuration"
+      ]
+    },
+    {
+      "topic": "mrp-material-coverage",
+      "service_name": "API_MRP_MATERIALS_SRV_01",
+      "odata_version": "2.0",
+      "entity_set": "MaterialCoverages",
+      "terms": {
+        "zh": ["物料覆盖", "库存覆盖天数", "物料短缺", "短缺数量", "短缺日期"],
+        "en": ["material coverage", "days of supply", "material shortage", "shortage quantity", "shortage date"]
+      },
+      "purpose": {
+        "zh": "检索 MRP 覆盖、短缺时间和短缺数量候选。",
+        "en": "Find MRP coverage, shortage timing, and shortage-quantity candidates."
+      },
+      "candidate_fields": [
+        "Material", "MRPPlant", "MRPArea", "MaterialBaseUnit", "DaysOfSupplyDuration",
+        "MaterialShortageQuantity", "MaterialShortageStartDate", "MaterialShortageEndDate",
+        "VltdUnrestrictedUseStkQty"
+      ]
+    },
+    {
+      "topic": "mrp-supply-demand",
+      "service_name": "API_MRP_MATERIALS_SRV_01",
+      "odata_version": "2.0",
+      "entity_set": "SupplyDemandItems",
+      "terms": {
+        "zh": ["MRP 供需", "供需项目", "MRP 元素", "需求", "供应", "例外消息"],
+        "en": ["MRP supply demand", "supply demand item", "MRP element", "demand", "supply", "exception message"]
+      },
+      "purpose": {
+        "zh": "检索 MRP 供需元素、数量、日期和例外消息候选。",
+        "en": "Find MRP supply-demand elements, quantities, dates, and exception-message candidates."
+      },
+      "candidate_fields": [
+        "Material", "MRPPlant", "MRPArea", "MRPElement", "MRPElementCategory",
+        "MRPElementAvailyOrRqmtDate", "MRPAvailableQuantity", "MRPElementOpenQuantity",
+        "ExceptionMessageNumber", "ExceptionMessageText"
+      ]
+    }
+  ]
+}

@@ -406,6 +406,7 @@
         "request": {
           "plan": {
             "service_name": "API_SALES_ORDER_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_SalesOrderItem",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -413,6 +414,7 @@
               {
                 "step_id": "sales_demand",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrderItem",
                 "http_method": "GET",
                 "select_fields": [
@@ -442,6 +444,7 @@
               {
                 "step_id": "planned_orders",
                 "service_name": "API_PLANNED_ORDERS",
+                "odata_version": "2.0",
                 "entity_set": "A_PlannedOrder",
                 "http_method": "GET",
                 "select_fields": [

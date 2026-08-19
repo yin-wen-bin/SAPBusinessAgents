@@ -407,6 +407,7 @@
         "request": {
           "plan": {
             "service_name": "API_PLANNED_ORDERS",
+            "odata_version": "2.0",
             "entity_set": "A_PlannedOrder",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -414,6 +415,7 @@
               {
                 "step_id": "planned_orders",
                 "service_name": "API_PLANNED_ORDERS",
+                "odata_version": "2.0",
                 "entity_set": "A_PlannedOrder",
                 "http_method": "GET",
                 "select_fields": [
@@ -452,6 +454,7 @@
               {
                 "step_id": "planned_capacities",
                 "service_name": "API_PLANNED_ORDERS",
+                "odata_version": "2.0",
                 "entity_set": "A_PlannedOrderCapacity",
                 "http_method": "GET",
                 "select_fields": [
@@ -482,6 +485,7 @@
               {
                 "step_id": "production_operations",
                 "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_ProductionOrderOperation_2",
                 "http_method": "GET",
                 "select_fields": [
@@ -514,6 +518,7 @@
               {
                 "step_id": "work_centers",
                 "service_name": "API_WORK_CENTERS",
+                "odata_version": "2.0",
                 "entity_set": "A_WorkCenters",
                 "http_method": "GET",
                 "select_fields": [
@@ -544,6 +549,7 @@
               {
                 "step_id": "work_center_capacities",
                 "service_name": "API_WORK_CENTERS",
+                "odata_version": "2.0",
                 "entity_set": "A_WorkCenterCapacity",
                 "http_method": "GET",
                 "select_fields": [
@@ -580,6 +586,7 @@
         "request": {
           "plan": {
             "service_name": "API_WORK_CENTERS",
+            "odata_version": "2.0",
             "entity_set": "A_WorkCenterCapPerBucketSet",
             "http_method": "GET",
             "plan_kind": "direct",

@@ -115,6 +115,7 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
             if not isinstance(request, dict):
                 raise ManifestError(f"{location}.request must be an object")
             _reject_write_methods(request, location)
+            _require_odata_versions(request, location)
         if executor == "skill":
             if step.get("readOnly") is not True:
                 raise ManifestError(f"{location} skill must declare readOnly=true")
@@ -152,3 +153,28 @@ def _reject_write_methods(value: Any, location: str) -> None:
     elif isinstance(value, list):
         for child in value:
             _reject_write_methods(child, location)
+
+
+def _require_odata_versions(value: Any, location: str) -> None:
+    if isinstance(value, dict):
+        if "service_name" in value and "entity_set" in value:
+            if value.get("odata_version") not in {"2.0", "4.0"}:
+                raise ManifestError(
+                    f"{location} service references must declare odata_version 2.0 or 4.0"
+                )
+        forbidden = {
+            "url",
+            "resource_path",
+            "service_root_path",
+            "metadata_path",
+            "headers",
+            "authorization",
+            "sap_client",
+        }
+        if forbidden.intersection(value):
+            raise ManifestError(f"{location} contains forbidden transport fields")
+        for child in value.values():
+            _require_odata_versions(child, location)
+    elif isinstance(value, list):
+        for child in value:
+            _require_odata_versions(child, location)

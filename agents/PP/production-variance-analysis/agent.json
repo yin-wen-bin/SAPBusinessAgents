@@ -333,6 +333,7 @@
         "request": {
           "plan": {
             "service_name": "API_PRODUCTION_ORDER_2_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_ProductionOrderItem_2",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -340,6 +341,7 @@
               {
                 "step_id": "production_order_items",
                 "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_ProductionOrderItem_2",
                 "http_method": "GET",
                 "select_fields": [
@@ -364,6 +366,7 @@
               {
                 "step_id": "production_operations",
                 "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_ProductionOrderOperation_2",
                 "http_method": "GET",
                 "select_fields": [
@@ -388,6 +391,7 @@
               {
                 "step_id": "production_components",
                 "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_ProductionOrderComponent_2",
                 "http_method": "GET",
                 "select_fields": [
@@ -413,6 +417,7 @@
               {
                 "step_id": "material_documents",
                 "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_MaterialDocumentItem",
                 "http_method": "GET",
                 "select_fields": [

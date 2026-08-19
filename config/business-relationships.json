@@ -1,393 +1,458 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "description": "Approved GET-only business-key semantics and cross-entity joins for deterministic FI, MM, SD, and PP Agents.",
   "field_semantics": [
     {
       "service_name": "API_SALES_ORDER_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_SalesOrder",
       "field": "SalesOrder",
       "semantic": "sales_order_id"
     },
     {
       "service_name": "API_SALES_ORDER_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_SalesOrderItem",
       "field": "SalesOrder",
       "semantic": "sales_order_id"
     },
     {
       "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OutbDeliveryItem",
       "field": "ReferenceSDDocument",
       "semantic": "sd_reference_document_id"
     },
     {
       "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OutbDeliveryItem",
       "field": "DeliveryDocument",
       "semantic": "delivery_document_id"
     },
     {
       "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OutbDeliveryHeader",
       "field": "DeliveryDocument",
       "semantic": "delivery_document_id"
     },
     {
       "service_name": "API_BILLING_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_BillingDocumentItem",
       "field": "ReferenceSDDocument",
       "semantic": "sd_reference_document_id"
     },
     {
       "service_name": "API_BILLING_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_BillingDocumentItem",
       "field": "BillingDocument",
       "semantic": "billing_document_id"
     },
     {
       "service_name": "API_BILLING_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_BillingDocumentItem",
       "field": "OrderID",
       "semantic": "internal_order_id"
     },
     {
       "service_name": "API_BILLING_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_BillingDocument",
       "field": "BillingDocument",
       "semantic": "billing_document_id"
     },
     {
       "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_MaterialDocumentItem",
       "field": "SalesOrder",
       "semantic": "sales_order_id"
     },
     {
       "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_MaterialDocumentItem",
       "field": "PurchaseOrder",
       "semantic": "purchase_order_id"
     },
     {
       "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_MaterialDocumentItem",
       "field": "MaterialDocument",
       "semantic": "material_document_id"
     },
     {
       "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_MaterialDocumentItem",
       "field": "MaterialDocumentYear",
       "semantic": "fiscal_year"
     },
     {
       "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_MaterialDocumentHeader",
       "field": "MaterialDocument",
       "semantic": "material_document_id"
     },
     {
       "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_MaterialDocumentHeader",
       "field": "MaterialDocumentYear",
       "semantic": "fiscal_year"
     },
     {
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "SalesDocument",
       "semantic": "sales_order_id"
     },
     {
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "BillingDocument",
       "semantic": "billing_document_id"
     },
     {
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "PurchasingDocument",
       "semantic": "purchase_order_id"
     },
     {
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "OrderID",
       "semantic": "internal_order_id"
     },
     {
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "AccountingDocument",
       "semantic": "accounting_document_id"
     },
     {
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "ClearingAccountingDocument",
       "semantic": "accounting_document_id"
     },
     {
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "CompanyCode",
       "semantic": "company_code"
     },
     {
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "ClearingDocFiscalYear",
       "semantic": "fiscal_year"
     },
     {
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "FiscalYear",
       "semantic": "fiscal_year"
     },
     {
       "service_name": "API_GLACCOUNTLINEITEM",
+      "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
       "field": "SalesDocument",
       "semantic": "sales_order_id"
     },
     {
       "service_name": "API_GLACCOUNTLINEITEM",
+      "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
       "field": "PurchasingDocument",
       "semantic": "purchase_order_id"
     },
     {
       "service_name": "API_GLACCOUNTLINEITEM",
+      "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
       "field": "OrderID",
       "semantic": "internal_order_id"
     },
     {
       "service_name": "API_GLACCOUNTLINEITEM",
+      "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
       "field": "AccountingDocument",
       "semantic": "accounting_document_id"
     },
     {
       "service_name": "API_GLACCOUNTLINEITEM",
+      "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
       "field": "ClearingAccountingDocument",
       "semantic": "accounting_document_id"
     },
     {
       "service_name": "API_GLACCOUNTLINEITEM",
+      "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
       "field": "CompanyCode",
       "semantic": "company_code"
     },
     {
       "service_name": "API_GLACCOUNTLINEITEM",
+      "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
       "field": "ClearingDocFiscalYear",
       "semantic": "fiscal_year"
     },
     {
       "service_name": "API_GLACCOUNTLINEITEM",
+      "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
       "field": "FiscalYear",
       "semantic": "fiscal_year"
     },
     {
       "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PurchaseOrder",
       "field": "PurchaseOrder",
       "semantic": "purchase_order_id"
     },
     {
       "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PurchaseOrderItem",
       "field": "PurchaseOrder",
       "semantic": "purchase_order_id"
     },
     {
       "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_SuplrInvcItemPurOrdRef",
       "field": "PurchaseOrder",
       "semantic": "purchase_order_id"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PaymentAdviceItem",
       "field": "DeliveryDocument",
       "semantic": "delivery_document_id"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PaymentAdviceItem",
       "field": "PaymentAdvice",
       "semantic": "payment_advice_id"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PaymentAdviceItem",
       "field": "CompanyCode",
       "semantic": "company_code"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PaymentAdviceItem",
       "field": "PaymentAdviceAccount",
       "semantic": "payment_advice_account"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PaymentAdviceItem",
       "field": "PaymentAdviceAccountType",
       "semantic": "payment_advice_account_type"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PaymentAdvice",
       "field": "PaymentAdvice",
       "semantic": "payment_advice_id"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PaymentAdvice",
       "field": "CompanyCode",
       "semantic": "company_code"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PaymentAdvice",
       "field": "PaymentAdviceAccount",
       "semantic": "payment_advice_account"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_PaymentAdvice",
       "field": "PaymentAdviceAccountType",
       "semantic": "payment_advice_account_type"
     },
     {
       "service_name": "API_SALES_ORDER_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_SalesOrderScheduleLine",
       "field": "SalesOrder",
       "semantic": "sales_order_id"
     },
     {
       "service_name": "API_SALES_ORDER_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_SalesOrderItem",
       "field": "SalesOrderItem",
       "semantic": "sales_order_item_id"
     },
     {
       "service_name": "API_SALES_ORDER_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_SalesOrderScheduleLine",
       "field": "SalesOrderItem",
       "semantic": "sales_order_item_id"
     },
     {
       "service_name": "API_BILLING_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_BillingDocumentItem",
       "field": "SalesDocument",
       "semantic": "sales_order_id"
     },
     {
       "service_name": "API_BILLING_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_BillingDocumentItem",
       "field": "SalesDocumentItem",
       "semantic": "sales_order_item_id"
     },
     {
       "service_name": "API_BILLING_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_BillingDocumentItem",
       "field": "ReferenceSDDocumentItem",
       "semantic": "sd_reference_document_item_id"
     },
     {
       "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_OutbDeliveryItem",
       "field": "DeliveryDocumentItem",
       "semantic": "delivery_document_item_id"
     },
     {
       "service_name": "API_CUSTOMER_RETURN_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_CustomerReturn",
       "field": "CustomerReturn",
       "semantic": "customer_return_id"
     },
     {
       "service_name": "API_CUSTOMER_RETURN_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_CustomerReturnItem",
       "field": "CustomerReturn",
       "semantic": "customer_return_id"
     },
     {
       "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_CreditMemoRequest",
       "field": "CreditMemoRequest",
       "semantic": "credit_memo_request_id"
     },
     {
       "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_CreditMemoRequestItem",
       "field": "CreditMemoRequest",
       "semantic": "credit_memo_request_id"
     },
     {
       "service_name": "API_PLANNED_ORDERS",
+      "odata_version": "2.0",
       "entity_set": "A_PlannedOrder",
       "field": "PlannedOrder",
       "semantic": "planned_order_id"
     },
     {
       "service_name": "API_PLANNED_ORDERS",
+      "odata_version": "2.0",
       "entity_set": "A_PlannedOrderCapacity",
       "field": "PlannedOrder",
       "semantic": "planned_order_id"
     },
     {
       "service_name": "API_WORK_CENTERS",
+      "odata_version": "2.0",
       "entity_set": "A_WorkCenters",
       "field": "CapacityInternalID",
       "semantic": "capacity_internal_id"
     },
     {
       "service_name": "API_WORK_CENTERS",
+      "odata_version": "2.0",
       "entity_set": "A_WorkCenterCapacity",
       "field": "CapacityInternalID",
       "semantic": "capacity_internal_id"
     },
     {
       "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_ProductionOrder_2",
       "field": "ManufacturingOrder",
       "semantic": "manufacturing_order_id"
     },
     {
       "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_ProductionOrderItem_2",
       "field": "ManufacturingOrder",
       "semantic": "manufacturing_order_id"
     },
     {
       "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_ProductionOrderStatus_2",
       "field": "ManufacturingOrder",
       "semantic": "manufacturing_order_id"
     },
     {
       "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_ProductionOrderOperation_2",
       "field": "ManufacturingOrder",
       "semantic": "manufacturing_order_id"
     },
     {
       "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_ProductionOrderComponent_2",
       "field": "ManufacturingOrder",
       "semantic": "manufacturing_order_id"
     },
     {
       "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
       "entity_set": "A_MaterialDocumentItem",
       "field": "ManufacturingOrder",
       "semantic": "manufacturing_order_id"
@@ -401,11 +466,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrderItem",
         "field": "SalesOrder"
       }
@@ -417,11 +484,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryItem",
         "field": "ReferenceSDDocument"
       }
@@ -433,11 +502,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "ReferenceSDDocument"
       }
@@ -449,11 +520,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_MaterialDocumentItem",
         "field": "SalesOrder"
       }
@@ -465,11 +538,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "SalesDocument"
       }
@@ -481,11 +556,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "SalesDocument"
       }
@@ -497,11 +574,13 @@
       ],
       "source": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryItem",
         "field": "DeliveryDocument"
       },
       "target": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryHeader",
         "field": "DeliveryDocument"
       }
@@ -513,11 +592,13 @@
       ],
       "source": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryItem",
         "field": "DeliveryDocument"
       },
       "target": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "ReferenceSDDocument"
       }
@@ -529,11 +610,13 @@
       ],
       "source": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryItem",
         "field": "DeliveryDocument"
       },
       "target": {
         "service_name": "API_PAYMENT_ADVICE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PaymentAdviceItem",
         "field": "DeliveryDocument"
       }
@@ -545,11 +628,13 @@
       ],
       "source": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "BillingDocument"
       },
       "target": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocument",
         "field": "BillingDocument"
       }
@@ -561,11 +646,13 @@
       ],
       "source": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "BillingDocument"
       },
       "target": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "BillingDocument"
       }
@@ -577,11 +664,13 @@
       ],
       "source": {
         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PurchaseOrder",
         "field": "PurchaseOrder"
       },
       "target": {
         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PurchaseOrderItem",
         "field": "PurchaseOrder"
       }
@@ -593,11 +682,13 @@
       ],
       "source": {
         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PurchaseOrder",
         "field": "PurchaseOrder"
       },
       "target": {
         "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_MaterialDocumentItem",
         "field": "PurchaseOrder"
       }
@@ -609,11 +700,13 @@
       ],
       "source": {
         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PurchaseOrder",
         "field": "PurchaseOrder"
       },
       "target": {
         "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SuplrInvcItemPurOrdRef",
         "field": "PurchaseOrder"
       }
@@ -625,11 +718,13 @@
       ],
       "source": {
         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PurchaseOrder",
         "field": "PurchaseOrder"
       },
       "target": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "PurchasingDocument"
       }
@@ -641,11 +736,13 @@
       ],
       "source": {
         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PurchaseOrder",
         "field": "PurchaseOrder"
       },
       "target": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "PurchasingDocument"
       }
@@ -657,11 +754,13 @@
       ],
       "source": {
         "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_MaterialDocumentItem",
         "field": "MaterialDocument"
       },
       "target": {
         "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_MaterialDocumentHeader",
         "field": "MaterialDocument"
       }
@@ -673,11 +772,13 @@
       ],
       "source": {
         "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_MaterialDocumentItem",
         "field": "MaterialDocumentYear"
       },
       "target": {
         "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_MaterialDocumentHeader",
         "field": "MaterialDocumentYear"
       }
@@ -689,11 +790,13 @@
       ],
       "source": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "ClearingAccountingDocument"
       },
       "target": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "AccountingDocument"
       }
@@ -705,11 +808,13 @@
       ],
       "source": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "CompanyCode"
       },
       "target": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "CompanyCode"
       }
@@ -721,11 +826,13 @@
       ],
       "source": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "ClearingDocFiscalYear"
       },
       "target": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "FiscalYear"
       }
@@ -737,11 +844,13 @@
       ],
       "source": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "ClearingAccountingDocument"
       },
       "target": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "AccountingDocument"
       }
@@ -753,11 +862,13 @@
       ],
       "source": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "CompanyCode"
       },
       "target": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "CompanyCode"
       }
@@ -769,11 +880,13 @@
       ],
       "source": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "ClearingDocFiscalYear"
       },
       "target": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "FiscalYear"
       }
@@ -785,11 +898,13 @@
       ],
       "source": {
         "service_name": "API_PAYMENT_ADVICE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PaymentAdviceItem",
         "field": "PaymentAdvice"
       },
       "target": {
         "service_name": "API_PAYMENT_ADVICE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PaymentAdvice",
         "field": "PaymentAdvice"
       }
@@ -801,11 +916,13 @@
       ],
       "source": {
         "service_name": "API_PAYMENT_ADVICE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PaymentAdviceItem",
         "field": "CompanyCode"
       },
       "target": {
         "service_name": "API_PAYMENT_ADVICE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PaymentAdvice",
         "field": "CompanyCode"
       }
@@ -817,11 +934,13 @@
       ],
       "source": {
         "service_name": "API_PAYMENT_ADVICE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PaymentAdviceItem",
         "field": "PaymentAdviceAccount"
       },
       "target": {
         "service_name": "API_PAYMENT_ADVICE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PaymentAdvice",
         "field": "PaymentAdviceAccount"
       }
@@ -833,11 +952,13 @@
       ],
       "source": {
         "service_name": "API_PAYMENT_ADVICE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PaymentAdviceItem",
         "field": "PaymentAdviceAccountType"
       },
       "target": {
         "service_name": "API_PAYMENT_ADVICE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PaymentAdvice",
         "field": "PaymentAdviceAccountType"
       }
@@ -849,11 +970,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrderItem",
         "field": "SalesOrder"
       }
@@ -865,11 +988,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrderItem",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrderScheduleLine",
         "field": "SalesOrder"
       }
@@ -881,11 +1006,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrderItem",
         "field": "SalesOrderItem"
       },
       "target": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrderScheduleLine",
         "field": "SalesOrderItem"
       }
@@ -897,11 +1024,13 @@
       ],
       "source": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryHeader",
         "field": "DeliveryDocument"
       },
       "target": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryItem",
         "field": "DeliveryDocument"
       }
@@ -913,11 +1042,13 @@
       ],
       "source": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "SalesDocument"
       },
       "target": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrderItem",
         "field": "SalesOrder"
       }
@@ -929,11 +1060,13 @@
       ],
       "source": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "SalesDocumentItem"
       },
       "target": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrderItem",
         "field": "SalesOrderItem"
       }
@@ -945,11 +1078,13 @@
       ],
       "source": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "ReferenceSDDocument"
       },
       "target": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryItem",
         "field": "DeliveryDocument"
       }
@@ -961,11 +1096,13 @@
       ],
       "source": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "ReferenceSDDocumentItem"
       },
       "target": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryItem",
         "field": "DeliveryDocumentItem"
       }
@@ -977,11 +1114,13 @@
       ],
       "source": {
         "service_name": "API_CUSTOMER_RETURN_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_CustomerReturn",
         "field": "CustomerReturn"
       },
       "target": {
         "service_name": "API_CUSTOMER_RETURN_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_CustomerReturnItem",
         "field": "CustomerReturn"
       }
@@ -993,11 +1132,13 @@
       ],
       "source": {
         "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_CreditMemoRequest",
         "field": "CreditMemoRequest"
       },
       "target": {
         "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_CreditMemoRequestItem",
         "field": "CreditMemoRequest"
       }
@@ -1009,11 +1150,13 @@
       ],
       "source": {
         "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_CreditMemoRequest",
         "field": "CreditMemoRequest"
       },
       "target": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "ReferenceSDDocument"
       }
@@ -1025,11 +1168,13 @@
       ],
       "source": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "PurchasingDocument"
       },
       "target": {
         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_PurchaseOrderItem",
         "field": "PurchaseOrder"
       }
@@ -1041,11 +1186,13 @@
       ],
       "source": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "PurchasingDocument"
       },
       "target": {
         "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_MaterialDocumentItem",
         "field": "PurchaseOrder"
       }
@@ -1057,11 +1204,13 @@
       ],
       "source": {
         "service_name": "API_GLACCOUNTLINEITEM",
+        "odata_version": "2.0",
         "entity_set": "GLAccountLineItem",
         "field": "PurchasingDocument"
       },
       "target": {
         "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SuplrInvcItemPurOrdRef",
         "field": "PurchaseOrder"
       }
@@ -1073,11 +1222,13 @@
       ],
       "source": {
         "service_name": "API_PLANNED_ORDERS",
+        "odata_version": "2.0",
         "entity_set": "A_PlannedOrder",
         "field": "PlannedOrder"
       },
       "target": {
         "service_name": "API_PLANNED_ORDERS",
+        "odata_version": "2.0",
         "entity_set": "A_PlannedOrderCapacity",
         "field": "PlannedOrder"
       }
@@ -1089,11 +1240,13 @@
       ],
       "source": {
         "service_name": "API_WORK_CENTERS",
+        "odata_version": "2.0",
         "entity_set": "A_WorkCenters",
         "field": "CapacityInternalID"
       },
       "target": {
         "service_name": "API_WORK_CENTERS",
+        "odata_version": "2.0",
         "entity_set": "A_WorkCenterCapacity",
         "field": "CapacityInternalID"
       }
@@ -1105,11 +1258,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OutbDeliveryItem",
         "field": "ReferenceSDDocument"
       }
@@ -1121,11 +1276,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "SalesDocument"
       }
@@ -1137,11 +1294,13 @@
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_SalesOrder",
         "field": "SalesOrder"
       },
       "target": {
         "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "SalesDocument"
       }
@@ -1153,11 +1312,13 @@
       ],
       "source": {
         "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_ProductionOrder_2",
         "field": "ManufacturingOrder"
       },
       "target": {
         "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_ProductionOrderItem_2",
         "field": "ManufacturingOrder"
       }
@@ -1169,11 +1330,13 @@
       ],
       "source": {
         "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_ProductionOrder_2",
         "field": "ManufacturingOrder"
       },
       "target": {
         "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_ProductionOrderStatus_2",
         "field": "ManufacturingOrder"
       }
@@ -1185,11 +1348,13 @@
       ],
       "source": {
         "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_ProductionOrder_2",
         "field": "ManufacturingOrder"
       },
       "target": {
         "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_ProductionOrderOperation_2",
         "field": "ManufacturingOrder"
       }
@@ -1201,11 +1366,13 @@
       ],
       "source": {
         "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_ProductionOrder_2",
         "field": "ManufacturingOrder"
       },
       "target": {
         "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_ProductionOrderComponent_2",
         "field": "ManufacturingOrder"
       }
@@ -1217,11 +1384,13 @@
       ],
       "source": {
         "service_name": "API_PRODUCTION_ORDER_2_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_ProductionOrder_2",
         "field": "ManufacturingOrder"
       },
       "target": {
         "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
         "entity_set": "A_MaterialDocumentItem",
         "field": "ManufacturingOrder"
       }

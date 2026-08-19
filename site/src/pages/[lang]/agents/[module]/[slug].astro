@@ -16,7 +16,7 @@ export function getStaticPaths() {
 }
 
 interface Props { locale: Locale; agent: AgentDefinition }
-const { locale, agent } = Astro.props;
+const { locale, agent } = Astro.props as Props;
 const counts = moduleCounts();
 const base = import.meta.env.BASE_URL;
 const alternateLocale: Locale = locale === "zh" ? "en" : "zh";
@@ -26,6 +26,21 @@ const validationReportUrl = agent.validation
   ? `${githubUrl}/${agent.validation.reportPath}`
   : undefined;
 const hasStepSapScope = agent.workflow.some((step) => step.sapScope !== undefined);
+const collectODataRefs = (value: unknown, refs = new Map<string, { service: string; version: string; entity: string }>()) => {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectODataRefs(item, refs));
+    return refs;
+  }
+  if (!value || typeof value !== "object") return refs;
+  const record = value as Record<string, unknown>;
+  if (typeof record.service_name === "string" && typeof record.entity_set === "string" && typeof record.odata_version === "string") {
+    const key = `${record.service_name}|${record.odata_version}|${record.entity_set}`;
+    refs.set(key, { service: record.service_name, version: record.odata_version, entity: record.entity_set });
+  }
+  Object.values(record).forEach((item) => collectODataRefs(item, refs));
+  return refs;
+};
+const odataRefs = [...collectODataRefs(agent.execution).values()];
 const labels = locale === "zh" ? {
   all: "全部 Agents",
   profile: "Agent 信息",
@@ -40,6 +55,7 @@ const labels = locale === "zh" ? {
   modules: "业务模块",
   transactions: "事务码",
   tables: "核心对象 / 表",
+  odataServices: "OData API 与协议版本",
   workflow: "工作流与 Tools",
   workflowLead: "从业务输入到安全输出的完整执行路径。每一步均列出对应 SAP 范围与实际使用的 Tool。",
   step: "步骤",
@@ -67,6 +83,7 @@ const labels = locale === "zh" ? {
   modules: "Business modules",
   transactions: "Transactions",
   tables: "Core objects / tables",
+  odataServices: "OData APIs and protocol versions",
   workflow: "Workflow & Tools",
   workflowLead: "The complete execution path from business input to safe output. Every step identifies its SAP scope and the Tools it uses.",
   step: "Step",
@@ -175,6 +192,20 @@ const labels = locale === "zh" ? {
                     <ul class="tag-list scope-tags">{agent.tables.map((item) => <li><code>{item}</code></li>)}</ul>
                   </div>
                 </div>
+              </section>
+            )}
+
+            {odataRefs.length > 0 && (
+              <section id="odata-api-scope">
+                <h2>{labels.odataServices}</h2>
+                <ul class="tag-list scope-tags odata-api-tags">
+                  {odataRefs.map((item) => (
+                    <li>
+                      <code>{item.service} / {item.entity}</code>
+                      <span class="odata-version-badge">V{item.version.split(".")[0]}</span>
+                    </li>
+                  ))}
+                </ul>
               </section>
             )}
 

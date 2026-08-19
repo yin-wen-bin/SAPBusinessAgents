@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "plugin_id": "embedded-sap-odata",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "name": {
     "zh": "内嵌 SAP 只读连接器",
     "en": "Embedded SAP Read-only Provider"
@@ -10,7 +10,7 @@
   "enabled": true,
   "capabilities": [
     {
-      "capability": "sap_read.v1",
+      "capability": "sap_read.v2",
       "operations": [
         "health",
         "catalog",

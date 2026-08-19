@@ -10,6 +10,10 @@
   "enabled": true,
   "capabilities": [
     {
+      "capability": "agent_runtime.v2",
+      "operations": ["thread_start", "thread_resume", "turn", "steer", "interrupt", "web_search", "tool_call"]
+    },
+    {
       "capability": "agent_runtime.v1",
       "operations": ["plan", "ground_plan", "summarize"]
     },

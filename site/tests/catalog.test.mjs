@@ -53,6 +53,18 @@ test("catalog discovers thirty valid agents with step-level tools", () => {
     assert.match(agent.title.zh, /[\u3400-\u9fff]/);
     assert.doesNotMatch(agent.title.en, /[\u3400-\u9fff]/);
     assert.doesNotMatch(agent.summary.en, /[\u3400-\u9fff]/);
+    const stack = [agent.execution];
+    while (stack.length) {
+      const value = stack.pop();
+      if (Array.isArray(value)) {
+        stack.push(...value);
+      } else if (value && typeof value === "object") {
+        if (Object.hasOwn(value, "service_name") && Object.hasOwn(value, "entity_set")) {
+          assert.ok(["2.0", "4.0"].includes(value.odata_version));
+        }
+        stack.push(...Object.values(value));
+      }
+    }
   }
 
   const sdAgents = records.filter((agent) => agent.module === "SD");
@@ -130,6 +142,15 @@ test("manifest validation rejects a schema v2 non-GET execution step", () => {
   assert.throws(
     () => validateAgent(example, example.module, example.slug, "example/agent.json"),
     /non-GET SAP operation/,
+  );
+});
+
+test("manifest validation rejects a service reference without OData version", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "procure-to-pay-status"));
+  delete example.execution.steps[0].request.plan.odata_version;
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /must declare odata_version/,
   );
 });
 

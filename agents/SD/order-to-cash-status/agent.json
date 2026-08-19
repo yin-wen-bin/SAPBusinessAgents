@@ -394,6 +394,7 @@
         "request": {
           "plan": {
             "service_name": "API_SALES_ORDER_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_SalesOrder",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -402,6 +403,7 @@
               {
                 "step_id": "sales_order",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrder",
                 "http_method": "GET",
                 "filters": [{ "field": "SalesOrder", "operator": "eq", "value": "{{input.sales_order}}", "value_type": "string" }],
@@ -410,6 +412,7 @@
               {
                 "step_id": "sales_order_items",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrderItem",
                 "http_method": "GET",
                 "filters": [{ "field": "SalesOrder", "operator": "eq", "value": "{{input.sales_order}}", "value_type": "string" }],
@@ -418,6 +421,7 @@
               {
                 "step_id": "delivery_items",
                 "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OutbDeliveryItem",
                 "http_method": "GET",
                 "select_fields": ["DeliveryDocument", "DeliveryDocumentItem", "ReferenceSDDocument", "ReferenceSDDocumentItem", "ActualDeliveryQuantity", "GoodsMovementStatus", "DeliveryRelatedBillingStatus"],
@@ -427,6 +431,7 @@
               {
                 "step_id": "delivery_headers",
                 "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OutbDeliveryHeader",
                 "http_method": "GET",
                 "select_fields": ["DeliveryDocument", "ActualGoodsMovementDate", "OverallGoodsMovementStatus", "OverallSDProcessStatus"],
@@ -438,6 +443,7 @@
               {
                 "step_id": "billing_items_by_order",
                 "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_BillingDocumentItem",
                 "http_method": "GET",
                 "select_fields": ["BillingDocument", "BillingDocumentItem", "ReferenceSDDocument", "ReferenceSDDocumentItem", "SalesDocument", "SalesDocumentItem"],
@@ -447,6 +453,7 @@
               {
                 "step_id": "billing_items_by_delivery",
                 "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_BillingDocumentItem",
                 "http_method": "GET",
                 "select_fields": ["BillingDocument", "BillingDocumentItem", "ReferenceSDDocument", "ReferenceSDDocumentItem", "SalesDocument", "SalesDocumentItem"],
@@ -458,6 +465,7 @@
               {
                 "step_id": "billing_headers_by_order",
                 "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_BillingDocument",
                 "http_method": "GET",
                 "select_fields": ["BillingDocument", "BillingDocumentType", "BillingDocumentDate", "AccountingDocument", "OverallBillingStatus"],
@@ -469,6 +477,7 @@
               {
                 "step_id": "billing_headers_by_delivery",
                 "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_BillingDocument",
                 "http_method": "GET",
                 "select_fields": ["BillingDocument", "BillingDocumentType", "BillingDocumentDate", "AccountingDocument", "OverallBillingStatus"],
@@ -480,6 +489,7 @@
               {
                 "step_id": "accounting_items_by_sales_order",
                 "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OperationalAcctgDocItemCube",
                 "http_method": "GET",
                 "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "BillingDocument", "SalesDocument", "Customer", "AccountingDocumentType", "ClearingAccountingDocument", "ClearingDocFiscalYear", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount"],
@@ -489,6 +499,7 @@
               {
                 "step_id": "accounting_by_order_billing",
                 "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OperationalAcctgDocItemCube",
                 "http_method": "GET",
                 "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "BillingDocument", "SalesDocument", "Customer", "AccountingDocumentType", "ClearingAccountingDocument", "ClearingDocFiscalYear", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount"],
@@ -500,6 +511,7 @@
               {
                 "step_id": "accounting_by_delivery_billing",
                 "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OperationalAcctgDocItemCube",
                 "http_method": "GET",
                 "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "BillingDocument", "SalesDocument", "Customer", "AccountingDocumentType", "ClearingAccountingDocument", "ClearingDocFiscalYear", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount"],
@@ -511,6 +523,7 @@
               {
                 "step_id": "clearing_documents_by_order_billing",
                 "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OperationalAcctgDocItemCube",
                 "http_method": "GET",
                 "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "AccountingDocumentType", "ClearingAccountingDocument", "IsCleared", "Customer", "PaymentMethod", "HouseBank", "HouseBankAccount"],
@@ -524,6 +537,7 @@
               {
                 "step_id": "clearing_documents_by_delivery_billing",
                 "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OperationalAcctgDocItemCube",
                 "http_method": "GET",
                 "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "AccountingDocumentType", "ClearingAccountingDocument", "IsCleared", "Customer", "PaymentMethod", "HouseBank", "HouseBankAccount"],

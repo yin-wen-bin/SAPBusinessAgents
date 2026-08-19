@@ -16,8 +16,19 @@ from . import rules
 from .codex_planner import Planner
 from .config import Settings
 from .database import RunStore
+from .harness import CodexHarnessController
 from .manifests import AgentRepository, ManifestError, validate_execution
-from .models import Completeness, PlannerDecision, RunCreate, RunMode, RunResult, RunStatus, utc_now
+from .models import (
+    Completeness,
+    HarnessResult,
+    PlannerDecision,
+    RunCreate,
+    RunMode,
+    RunResult,
+    RunStatus,
+    TERMINAL_STATUSES,
+    utc_now,
+)
 from .plugins import PluginError, SapReadCapability
 from .relationships import RelationshipCatalog
 from .sap_read import SapReadError
@@ -51,6 +62,7 @@ class RunCoordinator:
         skills: SkillRegistry,
         planner: Planner,
         workflows: WorkflowRepository | None = None,
+        harness: CodexHarnessController | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -59,6 +71,7 @@ class RunCoordinator:
         self.skills = skills
         self.planner = planner
         self.workflows = workflows
+        self.harness = harness
         self.relationships = RelationshipCatalog.load(
             settings.repository_root / "config" / "business-relationships.json"
         )
@@ -68,6 +81,19 @@ class RunCoordinator:
     async def start(self) -> None:
         if self._worker_task is None:
             self._worker_task = asyncio.create_task(self._worker(), name="sapba-local-worker")
+            if self.harness is not None:
+                for record in self.store.list_recoverable_free_query_runs():
+                    self.store.update_run(record.run_id, status=RunStatus.queued, error_json=None)
+                    self.store.append_event(
+                        record.run_id,
+                        "harness_resumed",
+                        {
+                            "thread_id": record.thread_id,
+                            "reason": "runtime_restart",
+                            "sap_queries_replayed": False,
+                        },
+                    )
+                    await self._queue.put(record.run_id)
 
     async def stop(self) -> None:
         if self._worker_task is not None:
@@ -120,6 +146,13 @@ class RunCoordinator:
 
     async def provide_input(self, run_id: str, value: str) -> None:
         record = self.store.get_run(run_id)
+        if (
+            record.mode == RunMode.free_query
+            and self.harness is not None
+            and record.status not in TERMINAL_STATUSES
+            and await self.harness.steer(run_id, value)
+        ):
+            return
         if record.status != RunStatus.waiting_input:
             raise RunExecutionError("This run is not waiting for input.", code="run_not_waiting_input")
         query = f"{record.query or ''}\nAdditional user information / 用户补充：{value}".strip()
@@ -127,12 +160,14 @@ class RunCoordinator:
         self.store.append_event(run_id, "input_received", {"input": value})
         await self._queue.put(run_id)
 
-    def cancel(self, run_id: str) -> None:
+    async def cancel(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
         if record.status in {RunStatus.completed, RunStatus.inconclusive, RunStatus.failed, RunStatus.cancelled}:
             return
         self.store.update_run(run_id, cancel_requested=True)
         self.store.append_event(run_id, "cancellation_requested", {})
+        if record.mode == RunMode.free_query and self.harness is not None:
+            await self.harness.interrupt(run_id)
 
     async def _worker(self) -> None:
         while True:
@@ -293,7 +328,7 @@ class RunCoordinator:
                                 else self.sap_read,
                                 "skill_execute.v1"
                                 if step["executor"] == "skill"
-                                else "sap_read.v1",
+                                else "sap_read.v2",
                                 "execute"
                                 if step["executor"] == "skill"
                                 else str(step.get("operation") or ""),
@@ -333,9 +368,16 @@ class RunCoordinator:
             result.steps.append(step_record)
             if step["executor"] in {"sap_read", "skill"}:
                 operation = "execute" if step["executor"] == "skill" else str(step.get("operation") or "")
+                plan_trace = (
+                    _sap_plan_trace_fields(
+                        rendered.get("plan") if isinstance(rendered.get("plan"), dict) else rendered
+                    )
+                    if step["executor"] == "sap_read"
+                    else {}
+                )
                 trace = _plugin_trace(
                     self.skills if step["executor"] == "skill" else self.sap_read,
-                    "skill_execute.v1" if step["executor"] == "skill" else "sap_read.v1",
+                    "skill_execute.v1" if step["executor"] == "skill" else "sap_read.v2",
                     operation,
                 )
                 result.tool_calls.append(
@@ -345,6 +387,7 @@ class RunCoordinator:
                         "step_id": step_id,
                         "tool": "sap_read" if step["executor"] in {"sap_read"} else step["executor"],
                         "operation": operation,
+                        **plan_trace,
                         "status": "completed",
                         "duration_ms": round((time.perf_counter() - started_monotonic) * 1000, 3),
                     }
@@ -404,7 +447,8 @@ class RunCoordinator:
         executor = step["executor"]
         operation = step.get("operation")
         if executor in {"sap_read"}:
-            trace = _plugin_trace(self.sap_read, "sap_read.v1", str(operation or ""))
+            trace = _plugin_trace(self.sap_read, "sap_read.v2", str(operation or ""))
+            candidate_plan = rendered.get("plan") if isinstance(rendered.get("plan"), dict) else rendered
             self.store.append_event(
                 run_id,
                 "tool_started",
@@ -413,6 +457,7 @@ class RunCoordinator:
                     "tool": "sap_read",
                     "operation": operation,
                     "call_id": call_id,
+                    **_sap_plan_trace_fields(candidate_plan),
                     **trace,
                 },
             )
@@ -740,6 +785,115 @@ class RunCoordinator:
         )
 
     async def _execute_free_query(self, run_id: str) -> None:
+        if self.harness is not None and self.settings.free_query_runtime == "harness":
+            await self._execute_free_query_harness(run_id)
+            return
+        await self._execute_free_query_legacy(run_id)
+
+    async def _execute_free_query_harness(self, run_id: str) -> None:
+        record = self.store.get_run(run_id)
+        query = str(record.query or "").strip()
+        harness_query = query
+        if record.agent_id:
+            try:
+                guided_agent = self.agents.get(str(record.agent_id))
+            except (KeyError, PluginError) as exc:
+                raise RunExecutionError(
+                    f"Guided Agent context is unavailable: {record.agent_id}",
+                    code="guided_agent_not_found",
+                ) from exc
+            harness_query = _guided_agent_question(guided_agent, query)
+        self.store.update_run(run_id, status=RunStatus.planning)
+        self.store.append_event(
+            run_id,
+            "planning_started",
+            {"query": query, "agent_id": record.agent_id, "runtime": "codex_app_server"},
+        )
+        outcome = await self.harness.run(run_id, harness_query, record.thread_id)
+        self.store.update_run(run_id, thread_id=outcome.thread_id)
+        if outcome.status == "waiting_input":
+            question = outcome.clarification_question or "请补充完成查询所必需的信息。"
+            self.store.update_run(
+                run_id,
+                status=RunStatus.waiting_input,
+                error_json={"code": "clarification_required", "message": question},
+            )
+            self.store.append_event(
+                run_id, "waiting_input", {"question": question, "runtime": "codex_app_server"}
+            )
+            return
+        if outcome.stop_reason == "interrupted" and self.store.get_run(run_id).cancel_requested:
+            self._finish_cancelled(run_id)
+            return
+        plan = {
+            "kind": "sap_business_agents_harness",
+            "runtime": "codex_app_server",
+            "steps": outcome.executed_plans,
+        }
+        result = RunResult(
+            run_id=run_id,
+            mode=RunMode.free_query,
+            agent_id=record.agent_id,
+            query=query,
+            plan=plan,
+            steps=[
+                {
+                    "step_id": call["call_id"],
+                    "executor": "codex_harness",
+                    "operation": call["tool"],
+                    "status": call["status"],
+                }
+                for call in outcome.tool_calls
+            ],
+            tool_calls=outcome.tool_calls,
+            evidence=outcome.evidence,
+            rule_results=[
+                {
+                    "rule_id": "harness_evidence_contract",
+                    "business_complete": outcome.business_complete,
+                    "missing_evidence": outcome.missing_evidence,
+                    "evidence_refs": outcome.evidence_refs,
+                }
+            ],
+            summary=outcome.summary,
+            errors=(
+                []
+                if outcome.status == "completed"
+                else [
+                    {
+                        "code": "harness_inconclusive",
+                        "message": "The Codex Harness could not establish a complete conclusion.",
+                        "missing_evidence": outcome.missing_evidence,
+                    }
+                ]
+            ),
+            thread_id=outcome.thread_id,
+            harness=HarnessResult(
+                thread_id=outcome.thread_id,
+                turn_count=outcome.turn_count,
+                tool_call_count=len(outcome.tool_calls),
+                web_search_count=outcome.web_search_count,
+                discovered_tool_count=outcome.discovered_tool_count,
+                activated_tool_count=outcome.activated_tool_count,
+                stop_reason=outcome.stop_reason,
+            ),
+            started_at=record.started_at,
+        )
+        self.store.update_run(run_id, status=RunStatus.running, plan_json=plan)
+        self.store.append_event(
+            run_id,
+            "harness_completed",
+            {
+                "thread_id": outcome.thread_id,
+                "turn_count": outcome.turn_count,
+                "tool_call_count": len(outcome.tool_calls),
+                "web_search_count": outcome.web_search_count,
+                "stop_reason": outcome.stop_reason,
+            },
+        )
+        self._complete_result(run_id, result)
+
+    async def _execute_free_query_legacy(self, run_id: str) -> None:
         free_query_started = time.monotonic()
         record = self.store.get_run(run_id)
         query = str(record.query or "").strip()
@@ -848,7 +1002,8 @@ class RunCoordinator:
                         "tool": "sap_read.execute-plan",
                         "reason": reason,
                         "call_id": call_id,
-                        **_plugin_trace(self.sap_read, "sap_read.v1", "execute_plan"),
+                        **_sap_plan_trace_fields(sap_plan),
+                        **_plugin_trace(self.sap_read, "sap_read.v2", "execute_plan"),
                     },
                 )
                 output = await self.sap_read.execute_plan(
@@ -857,12 +1012,11 @@ class RunCoordinator:
                 output = _redact_sensitive(output)
                 last_sap_response = output
                 call = {
-                    **_plugin_trace(self.sap_read, "sap_read.v1", "execute_plan"),
+                    **_plugin_trace(self.sap_read, "sap_read.v2", "execute_plan"),
                     "step_id": step_id,
                     "tool": "sap_read",
                     "operation": "execute_plan",
-                    "service": sap_plan.get("service_name"),
-                    "entity": sap_plan.get("entity_set"),
+                    **_sap_plan_trace_fields(sap_plan),
                     "reason": reason or sap_plan.get("rationale"),
                 }
             elif tool == "skill":
@@ -1042,7 +1196,7 @@ class RunCoordinator:
             run_id,
             "schema_received",
             {
-                "services": len({service for service, _entity in original_refs}),
+                "services": len({(service, version) for service, version, _entity in original_refs}),
                 "entities": len(original_refs),
                 "authoritative": True,
             },
@@ -1148,19 +1302,20 @@ class RunCoordinator:
     async def _load_live_schemas(
         self,
         query: str,
-        refs: set[tuple[str, str]],
+        refs: set[tuple[str, str, str]],
     ) -> list[dict[str, Any]]:
-        grouped: dict[str, list[str]] = {}
-        for service_name, entity_set in sorted(refs):
-            grouped.setdefault(service_name, []).append(entity_set)
+        grouped: dict[tuple[str, str], list[str]] = {}
+        for service_name, odata_version, entity_set in sorted(refs):
+            grouped.setdefault((service_name, odata_version), []).append(entity_set)
         responses: list[dict[str, Any]] = []
-        confirmed: set[tuple[str, str]] = set()
+        confirmed: set[tuple[str, str, str]] = set()
         issues: list[dict[str, Any]] = []
-        for service_name, entity_sets in grouped.items():
+        for (service_name, odata_version), entity_sets in grouped.items():
             response = await self.sap_read.schema(
                 service_name,
                 entity_sets,
                 query,
+                odata_version=odata_version,
                 include_fields=True,
                 max_fields=5000,
             )
@@ -1170,6 +1325,7 @@ class RunCoordinator:
                 issues.append(
                     {
                         "service_name": service_name,
+                        "odata_version": odata_version,
                         "entity_sets": entity_sets,
                         "validation_issues": response.get("validation_issues") or [],
                     }
@@ -1179,6 +1335,7 @@ class RunCoordinator:
                 issues.append(
                     {
                         "service_name": service_name,
+                        "odata_version": odata_version,
                         "entity_sets": entity_sets,
                         "schema_authority": data.get("schema_authority"),
                         "fields_truncated": data.get("fields_truncated"),
@@ -1188,7 +1345,11 @@ class RunCoordinator:
             for entity in data.get("entities") or []:
                 if isinstance(entity, dict) and entity.get("runtime_available") is not False:
                     confirmed.add(
-                        (str(entity.get("service_name") or service_name), str(entity.get("entity_set") or ""))
+                        (
+                            str(entity.get("service_name") or service_name),
+                            str(entity.get("odata_version") or odata_version),
+                            str(entity.get("entity_set") or ""),
+                        )
                     )
         missing = sorted(refs.difference(confirmed))
         if issues or missing:
@@ -1610,8 +1771,8 @@ def _guided_agent_question(agent: dict[str, Any], query: str) -> str:
     )
 
 
-def _collect_sap_entity_refs(plan: dict[str, Any]) -> set[tuple[str, str]]:
-    refs: set[tuple[str, str]] = set()
+def _collect_sap_entity_refs(plan: dict[str, Any]) -> set[tuple[str, str, str]]:
+    refs: set[tuple[str, str, str]] = set()
     for harness_step in _normalize_free_steps(plan):
         if harness_step.get("tool") not in {"sap_read"}:
             continue
@@ -1624,10 +1785,51 @@ def _collect_sap_entity_refs(plan: dict[str, Any]) -> set[tuple[str, str]]:
             candidates.extend(item for item in nested if isinstance(item, dict))
         for candidate in candidates:
             service_name = str(candidate.get("service_name") or "").strip()
+            odata_version = str(candidate.get("odata_version") or "").strip()
             entity_set = str(candidate.get("entity_set") or "").strip()
-            if service_name and entity_set:
-                refs.add((service_name, entity_set))
+            if service_name and odata_version and entity_set:
+                refs.add((service_name, odata_version, entity_set))
     return refs
+
+
+def _sap_plan_trace_fields(plan: dict[str, Any]) -> dict[str, Any]:
+    """Return only versioned public identities; never return paths or transport data."""
+
+    refs: list[tuple[str, str, str]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            service = str(value.get("service_name") or "")
+            version = str(value.get("odata_version") or "")
+            entity = str(value.get("entity_set") or "")
+            if service and version and entity and (service, version, entity) not in refs:
+                refs.append((service, version, entity))
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(plan)
+    if not refs:
+        return {}
+    result: dict[str, Any] = {
+        "odata_versions": sorted({version for _service, version, _entity in refs}),
+        "odata_refs": [
+            {"service_name": service, "odata_version": version, "entity_set": entity}
+            for service, version, entity in refs
+        ],
+    }
+    if len(refs) == 1:
+        service, version, entity = refs[0]
+        result.update(
+            {
+                "service_name": service,
+                "odata_version": version,
+                "entity_set": entity,
+            }
+        )
+    return result
 
 
 def _count_free_query_top_bounds(plan: dict[str, Any]) -> int:
@@ -1657,7 +1859,7 @@ def _count_free_query_top_bounds(plan: dict[str, Any]) -> int:
 
 def _require_grounded_decision(
     decision: PlannerDecision,
-    allowed_refs: set[tuple[str, str]],
+    allowed_refs: set[tuple[str, str, str]],
 ) -> PlannerDecision:
     if decision.needs_clarification or not isinstance(decision.plan, dict):
         raise RunExecutionError(
@@ -1730,20 +1932,22 @@ def _remove_unsupported_order_by(
 
     if not isinstance(decision.plan, dict):
         return decision, 0
-    field_sortability: dict[tuple[str, str, str], bool] = {}
+    field_sortability: dict[tuple[str, str, str, str], bool] = {}
     for response in schemas:
         data = response.get("data") if isinstance(response, dict) else None
         if not isinstance(data, dict):
             continue
         default_service = str((data.get("service") or {}).get("service_name") or "")
+        default_version = str((data.get("service") or {}).get("odata_version") or "")
         for field in data.get("fields") or []:
             if not isinstance(field, dict):
                 continue
             service = str(field.get("service_name") or default_service)
+            version = str(field.get("odata_version") or default_version)
             entity = str(field.get("entity_set") or "")
             name = str(field.get("field_name") or "")
-            if service and entity and name:
-                field_sortability[(service, entity, name)] = field.get("sortable") is not False
+            if service and version and entity and name:
+                field_sortability[(service, version, entity, name)] = field.get("sortable") is not False
 
     copied = copy.deepcopy(decision.plan)
     removed = 0
@@ -1759,6 +1963,7 @@ def _remove_unsupported_order_by(
             candidates.extend(item for item in nested if isinstance(item, dict))
         for candidate in candidates:
             service = str(candidate.get("service_name") or sap_plan.get("service_name") or "")
+            version = str(candidate.get("odata_version") or sap_plan.get("odata_version") or "")
             entity = str(candidate.get("entity_set") or "")
             order_by = candidate.get("order_by")
             if not isinstance(order_by, list):
@@ -1766,7 +1971,7 @@ def _remove_unsupported_order_by(
             kept: list[str] = []
             for field in order_by:
                 name = str(field)
-                if field_sortability.get((service, entity, name)) is False:
+                if field_sortability.get((service, version, entity, name)) is False:
                     removed += 1
                 else:
                     kept.append(name)

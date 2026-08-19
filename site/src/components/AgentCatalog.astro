@@ -13,6 +13,19 @@ interface Props {
 
 const { locale, agents, counts } = Astro.props;
 const base = import.meta.env.BASE_URL;
+const collectODataVersions = (value: unknown, versions = new Set<string>()) => {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectODataVersions(item, versions));
+    return versions;
+  }
+  if (!value || typeof value !== "object") return versions;
+  const record = value as Record<string, unknown>;
+  if (record.odata_version === "2.0" || record.odata_version === "4.0") {
+    versions.add(`V${record.odata_version.split(".")[0]}`);
+  }
+  Object.values(record).forEach((item) => collectODataVersions(item, versions));
+  return versions;
+};
 const labels = {
   title: locale === "zh" ? "发现并使用 SAP 业务 Agents" : "Discover and use SAP business agents",
   intro:
@@ -43,6 +56,7 @@ const items: AgentSearchItem[] = agents.map((agent) => ({
   tags: agent.tags,
   transactions: agent.transactions,
   sapModules: agent.sapModules,
+  odataVersions: [...collectODataVersions(agent.execution)].sort(),
   workflowTerms: agent.workflow.flatMap((step) => [
     step.title.zh,
     step.title.en,
@@ -104,7 +118,10 @@ const items: AgentSearchItem[] = agents.map((agent) => ({
         <p class="skill-summary">{item.summary}</p>
         <span class="module-badge">{item.module}</span>
         <ul class="tag-list" aria-label={labels.tags}>
-          {[...new Set([...item.transactions, ...item.tags])].slice(0, 4).map((tag) => <li>{tagLabel(tag, locale)}</li>)}
+          {item.odataVersions.map((version) => <li class="odata-version-tag">{version}</li>)}
+          {[...new Set([...item.transactions, ...item.tags])]
+            .slice(0, Math.max(0, 4 - item.odataVersions.length))
+            .map((tag) => <li>{tagLabel(tag, locale)}</li>)}
         </ul>
         <a class="row-action" href={item.href} aria-label={`${item.title} — ${locale === "zh" ? "查看详情" : "View details"}`}>
           <ChevronRight size={20} stroke-width={1.8} aria-hidden="true" />

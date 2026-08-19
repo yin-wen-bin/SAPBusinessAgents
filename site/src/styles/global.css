@@ -926,6 +926,14 @@ select {
   }
 }
 
+.tag-list li.odata-version-tag {
+  background: var(--accent-soft, #e6f4ff);
+  border-color: color-mix(in srgb, var(--accent, #0a6ed1) 34%, transparent);
+  color: var(--accent, #0a6ed1);
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
 /* Local dual-mode runtime */
 .runtime-main {
   width: 100%;
@@ -2083,6 +2091,23 @@ button:disabled {
   background: transparent;
   padding: 0;
   font-size: 11px;
+}
+
+.odata-api-tags li {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.5rem;
+}
+
+.odata-version-badge {
+  background: var(--accent-soft, #e6f4ff);
+  border: 1px solid color-mix(in srgb, var(--accent, #0a6ed1) 34%, transparent);
+  border-radius: 999px;
+  color: var(--accent, #0a6ed1);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.42rem;
 }
 
 .agent-workflow {

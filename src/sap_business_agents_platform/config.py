@@ -27,8 +27,11 @@ class Settings:
     sap_env_file: Path | None = None
     skillhub_root: Path = Path(r"C:\Users\wenbi\Documents\SAPSkillhub")
     codex_model: str | None = None
-    max_tool_calls: int = 20
-    max_run_seconds: int = 300
+    free_query_runtime: str = "harness"
+    internal_api_url: str = "http://127.0.0.1:8765"
+    max_harness_turns: int = 12
+    max_tool_calls: int = 40
+    max_run_seconds: int = 600
 
     @property
     def database_path(self) -> Path:
@@ -41,6 +44,14 @@ class Settings:
     @property
     def plugin_state_path(self) -> Path:
         return self.data_root / "plugins" / "registry.json"
+
+    @property
+    def odata_service_registry_path(self) -> Path:
+        return self.repository_root / "config" / "odata-services.json"
+
+    @property
+    def catalog_seed_path(self) -> Path:
+        return self.repository_root / "data" / "catalog-seed" / "catalog.json"
 
     @classmethod
     def from_env(cls, repository_root: Path | None = None) -> "Settings":
@@ -76,8 +87,15 @@ class Settings:
                 os.getenv("SAPSKILLHUB_ROOT", r"C:\Users\wenbi\Documents\SAPSkillhub")
             ).resolve(),
             codex_model=os.getenv("SAPBA_CODEX_MODEL") or None,
-            max_tool_calls=max(1, int(os.getenv("SAPBA_MAX_TOOL_CALLS", "20"))),
-            max_run_seconds=max(10, int(os.getenv("SAPBA_MAX_RUN_SECONDS", "300"))),
+            free_query_runtime=_env_choice(
+                "SAPBA_FREE_QUERY_RUNTIME", "harness", {"harness", "planner_legacy"}
+            ),
+            internal_api_url=os.getenv(
+                "SAPBA_INTERNAL_API_URL", "http://127.0.0.1:8765"
+            ).rstrip("/"),
+            max_harness_turns=max(1, int(os.getenv("SAPBA_MAX_HARNESS_TURNS", "12"))),
+            max_tool_calls=max(1, int(os.getenv("SAPBA_MAX_TOOL_CALLS", "40"))),
+            max_run_seconds=max(10, int(os.getenv("SAPBA_MAX_RUN_SECONDS", "600"))),
         )
 
 
@@ -86,3 +104,10 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None or not value.strip():
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_choice(name: str, default: str, allowed: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    if value not in allowed:
+        raise ValueError(f"{name} must be one of: {', '.join(sorted(allowed))}")
+    return value

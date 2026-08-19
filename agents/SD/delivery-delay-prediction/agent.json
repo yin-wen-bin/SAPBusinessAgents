@@ -415,6 +415,7 @@
         "request": {
           "plan": {
             "service_name": "API_SALES_ORDER_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_SalesOrder",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -422,6 +423,7 @@
               {
                 "step_id": "sales_orders",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrder",
                 "http_method": "GET",
                 "select_fields": [
@@ -457,6 +459,7 @@
               {
                 "step_id": "sales_order_items",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrderItem",
                 "http_method": "GET",
                 "select_fields": [
@@ -483,6 +486,7 @@
               {
                 "step_id": "schedule_lines",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrderScheduleLine",
                 "http_method": "GET",
                 "select_fields": [
@@ -517,6 +521,7 @@
               {
                 "step_id": "delivery_headers",
                 "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OutbDeliveryHeader",
                 "http_method": "GET",
                 "select_fields": [

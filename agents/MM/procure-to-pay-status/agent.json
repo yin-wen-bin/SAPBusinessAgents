@@ -269,6 +269,7 @@
         "request": {
           "plan": {
             "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_PurchaseOrder",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -277,6 +278,7 @@
               {
                 "step_id": "purchase_order",
                 "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_PurchaseOrder",
                 "http_method": "GET",
                 "filters": [{ "field": "PurchaseOrder", "operator": "eq", "value": "{{input.purchase_order}}", "value_type": "string" }],
@@ -285,6 +287,7 @@
               {
                 "step_id": "purchase_order_items",
                 "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_PurchaseOrderItem",
                 "http_method": "GET",
                 "filters": [{ "field": "PurchaseOrder", "operator": "eq", "value": "{{input.purchase_order}}", "value_type": "string" }],
@@ -293,6 +296,7 @@
               {
                 "step_id": "material_documents",
                 "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_MaterialDocumentItem",
                 "http_method": "GET",
                 "filters": [{ "field": "PurchaseOrder", "operator": "eq", "value": "{{input.purchase_order}}", "value_type": "string" }],
@@ -301,6 +305,7 @@
               {
                 "step_id": "supplier_invoice_items",
                 "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SuplrInvcItemPurOrdRef",
                 "http_method": "GET",
                 "filters": [{ "field": "PurchaseOrder", "operator": "eq", "value": "{{input.purchase_order}}", "value_type": "string" }],
@@ -309,6 +314,7 @@
               {
                 "step_id": "accounting_items",
                 "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OperationalAcctgDocItemCube",
                 "http_method": "GET",
                 "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "PurchasingDocument", "Supplier", "AccountingDocumentType", "ClearingAccountingDocument", "ClearingDocFiscalYear", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount"],
@@ -318,6 +324,7 @@
               {
                 "step_id": "clearing_documents",
                 "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OperationalAcctgDocItemCube",
                 "http_method": "GET",
                 "select_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "AccountingDocumentType", "ClearingAccountingDocument", "IsCleared", "PaymentMethod", "HouseBank", "HouseBankAccount", "Supplier"],

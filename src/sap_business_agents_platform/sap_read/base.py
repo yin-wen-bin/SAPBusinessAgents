@@ -31,6 +31,7 @@ class SapReadProvider(Protocol):
         entity_sets: list[str] | str,
         query: str = "",
         *,
+        odata_version: str,
         include_fields: bool = True,
         max_fields: int = 5000,
     ) -> dict[str, Any]: ...

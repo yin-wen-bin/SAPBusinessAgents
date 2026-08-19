@@ -87,6 +87,7 @@ class FakeEmbeddedProvider:
                 "items": [
                     {
                         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                        "odata_version": "2.0",
                         "entity_sets": ["A_PurchaseOrder"],
                         "read_only": True,
                         "query": query,
@@ -104,6 +105,7 @@ class FakeEmbeddedProvider:
         entity_sets: list[str] | str,
         query: str = "",
         *,
+        odata_version: str,
         include_fields: bool = True,
         max_fields: int = 5000,
     ) -> dict[str, Any]:
@@ -113,10 +115,11 @@ class FakeEmbeddedProvider:
         return {
             "ok": True,
             "data": {
-                "service": {"service_name": service_name},
+                "service": {"service_name": service_name, "odata_version": odata_version},
                 "entities": [
                     {
                         "service_name": service_name,
+                        "odata_version": odata_version,
                         "entity_set": entity,
                         "runtime_available": True,
                         "executable": True,
@@ -126,6 +129,7 @@ class FakeEmbeddedProvider:
                 "fields": [
                     {
                         "service_name": service_name,
+                        "odata_version": odata_version,
                         "entity_set": entity,
                         "field_name": "PurchaseOrder",
                         "selectable": True,
@@ -209,6 +213,7 @@ class FakePlanner:
             )
         plan = {
             "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_PurchaseOrder",
             "http_method": self.method,
             "plan_kind": "direct",
@@ -254,6 +259,7 @@ class HarnessPlanner(FakePlanner):
                         "reason": "Collect source evidence",
                         "plan": {
                             "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                            "odata_version": "2.0",
                             "entity_set": "A_PurchaseOrder",
                             "http_method": "GET",
                             "plan_kind": "direct",
@@ -349,6 +355,7 @@ class O2CRelationshipEmbeddedProvider(FakeEmbeddedProvider):
         entity_sets: list[str] | str,
         query: str = "",
         *,
+        odata_version: str,
         include_fields: bool = True,
         max_fields: int = 5000,
     ) -> dict[str, Any]:
@@ -362,10 +369,11 @@ class O2CRelationshipEmbeddedProvider(FakeEmbeddedProvider):
         return {
             "ok": True,
             "data": {
-                "service": {"service_name": service_name},
+                "service": {"service_name": service_name, "odata_version": odata_version},
                 "entities": [
                     {
                         "service_name": service_name,
+                        "odata_version": odata_version,
                         "entity_set": entity,
                         "runtime_available": True,
                         "executable": True,
@@ -375,6 +383,7 @@ class O2CRelationshipEmbeddedProvider(FakeEmbeddedProvider):
                 "fields": [
                     {
                         "service_name": service_name,
+                        "odata_version": odata_version,
                         "entity_set": entity,
                         "field_name": field,
                         "selectable": True,
@@ -412,6 +421,7 @@ class O2CRelationshipPlanner(FakePlanner):
                     "reason": "Collect O2C evidence",
                     "plan": {
                         "service_name": "API_SALES_ORDER_SRV",
+                        "odata_version": "2.0",
                         "entity_set": "A_SalesOrder",
                         "http_method": "GET",
                         "plan_kind": "multi_step",
@@ -419,6 +429,7 @@ class O2CRelationshipPlanner(FakePlanner):
                             {
                                 "step_id": "sales_order",
                                 "service_name": "API_SALES_ORDER_SRV",
+                                "odata_version": "2.0",
                                 "entity_set": "A_SalesOrder",
                                 "http_method": "GET",
                                 "filters": [
@@ -433,6 +444,7 @@ class O2CRelationshipPlanner(FakePlanner):
                             {
                                 "step_id": "fi_evidence",
                                 "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                                "odata_version": "2.0",
                                 "entity_set": "A_OperationalAcctgDocItemCube",
                                 "http_method": "GET",
                                 "filters": [
@@ -581,6 +593,40 @@ def test_manifest_rejects_non_get_plan() -> None:
         raise AssertionError("A non-GET plan passed manifest validation")
 
 
+def test_manifest_rejects_non_get_inside_multi_step_array() -> None:
+    manifest = {
+        "execution": {
+            "mode": "deterministic",
+            "inputSchema": {"type": "object", "properties": {}},
+            "steps": [
+                {
+                    "id": "write",
+                    "executor": "sap_read",
+                    "operation": "execute_plan",
+                    "readOnly": True,
+                    "request": {
+                        "plan_kind": "multi_step",
+                        "steps": [
+                            {
+                                "service_name": "API_TEST_SRV",
+                                "odata_version": "2.0",
+                                "entity_set": "A_Test",
+                                "http_method": "PATCH",
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+    }
+    try:
+        validate_execution(manifest)
+    except ManifestError as exc:
+        assert "non-GET" in str(exc)
+    else:
+        raise AssertionError("A nested non-GET plan passed manifest validation")
+
+
 def test_fixed_agent_runs_without_codex_and_persists_events(tmp_path: Path) -> None:
     embedded = FakeEmbeddedProvider()
     planner = FakePlanner()
@@ -603,7 +649,8 @@ def test_fixed_agent_runs_without_codex_and_persists_events(tmp_path: Path) -> N
         assert run["result"]["rule_results"][0]["rule_id"] == "p2p_deterministic_status_v1"
         assert run["result"]["summary"]["zh"]
         assert run["result"]["tool_calls"][0]["plugin_id"] == "embedded-sap-odata"
-        assert run["result"]["tool_calls"][0]["capability"] == "sap_read.v1"
+        assert run["result"]["tool_calls"][0]["capability"] == "sap_read.v2"
+        assert run["result"]["tool_calls"][0]["odata_versions"] == ["2.0"]
         assert run["result"]["evidence"][0]["call_id"].startswith("call_")
         artifact_names = {artifact["name"] for artifact in run["result"]["artifacts"]}
         assert {"report.md", "business-stages.csv", "evidence.csv", "result.json"}.issubset(
@@ -793,10 +840,11 @@ def test_plugin_api_exposes_lifecycle_and_capability_inventory(tmp_path: Path) -
         }
         capabilities = client.get("/api/capabilities").json()
         assert {
+            "agent_runtime.v2",
             "agent_runtime.v1",
             "authoring.v1",
             "business_agent.v1",
-            "sap_read.v1",
+            "sap_read.v2",
             "skill_catalog.v1",
             "skill_execute.v1",
         }.issubset({item["capability"] for item in capabilities})
@@ -858,6 +906,7 @@ def test_free_query_uses_codex_plan_then_embedded_validation(tmp_path: Path) -> 
             ("API_PURCHASEORDER_PROCESS_SRV", ("A_PurchaseOrder",))
         ]
         assert run["result"]["summary"]["zh"] == "One read-only SAP record was found."
+        assert run["result"]["tool_calls"][0]["odata_version"] == "2.0"
         assert client.get(
             f"/api/runs/{run['run_id']}/artifacts/result.json"
         ).status_code == 200

@@ -408,6 +408,7 @@
         "request": {
           "plan": {
             "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
             "entity_set": "A_MRPMaterial",
             "http_method": "GET",
             "plan_kind": "direct",
@@ -445,6 +446,7 @@
         "request": {
           "plan": {
             "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
             "entity_set": "MaterialCoverages",
             "http_method": "GET",
             "plan_kind": "direct",
@@ -505,6 +507,7 @@
         "request": {
           "plan": {
             "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
             "entity_set": "SupplyDemandItems",
             "http_method": "GET",
             "plan_kind": "direct",

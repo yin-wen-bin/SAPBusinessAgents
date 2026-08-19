@@ -30,6 +30,7 @@ const labels = locale === "zh" ? {
   inputHelp: "请直接回答下面的具体问题；不要只重复已经提供的订单号。",
   inputPlaceholder: "请输入系统要求的业务编号、日期范围或其他条件",
   clarificationPlaceholder: "例如：这是销售订单，订单号是5814",
+  steerPlaceholder: "可在执行中补充方向，例如：优先核对清账凭证",
   send: "继续查询",
   cancel: "取消查询",
   draft: "保存为 Agent 草稿",
@@ -61,6 +62,15 @@ const labels = locale === "zh" ? {
     summary_started: "正在整理业务结论", run_completed: "查询已完成",
     run_inconclusive: "查询结束，但现有证据不足以确认结论", run_failed: "查询未能完成",
     cancellation_requested: "正在取消查询", run_cancelled: "查询已取消",
+    harness_started: "Codex Harness 已启动", harness_resumed: "Codex Harness 已从持久线程恢复", codex_turn_started: "Codex 开始新的分析轮次",
+    assistant_message: "Codex 已更新查询判断", web_search_started: "正在联网检索参考资料",
+    web_search_completed: "联网检索完成", tool_discovery_started: "正在发现可用工具",
+    tool_discovery_completed: "工具发现完成", tool_admission_passed: "只读工具已通过准入",
+    tool_admission_rejected: "候选工具未通过准入", external_tool_started: "开始执行外部只读工具",
+    external_tool_completed: "外部只读工具执行完成", external_tool_failed: "外部只读工具执行失败",
+    tool_requested: "Codex 请求调用工具", tool_failed: "工具调用失败",
+    evidence_gap_assessed: "已评估 API 证据缺口", codex_turn_completed: "Codex 分析轮次完成",
+    codex_turn_failed: "Codex 分析轮次失败", harness_completed: "Codex Harness 查询完成", harness_interrupted: "Codex Harness 已中断",
   },
   table: { stage: "业务阶段", state: "状态", detail: "说明", metric: "指标", value: "结果", object: "查询对象", purpose: "用途", result: "结果", count: "记录数" },
   evidenceState: { found: "已找到", not_found: "未找到", limited: "范围受限", failed: "读取失败" },
@@ -103,6 +113,7 @@ const labels = locale === "zh" ? {
   inputHelp: "Answer the specific question below; do not only repeat a document number that was already provided.",
   inputPlaceholder: "Enter the requested business ID, date range, or other condition",
   clarificationPlaceholder: "Example: This is sales order 5814",
+  steerPlaceholder: "Add guidance while the query runs, for example: prioritize clearing documents",
   send: "Continue query",
   cancel: "Cancel query",
   draft: "Save as Agent draft",
@@ -134,6 +145,15 @@ const labels = locale === "zh" ? {
     summary_started: "Preparing the business conclusion", run_completed: "Query completed",
     run_inconclusive: "Query ended without enough evidence for a firm conclusion", run_failed: "Query could not be completed",
     cancellation_requested: "Cancelling the query", run_cancelled: "Query cancelled",
+    harness_started: "Codex Harness started", harness_resumed: "Codex Harness resumed from its persistent thread", codex_turn_started: "Codex analysis turn started",
+    assistant_message: "Codex updated its query assessment", web_search_started: "Searching public references",
+    web_search_completed: "Web search completed", tool_discovery_started: "Discovering useful tools",
+    tool_discovery_completed: "Tool discovery completed", tool_admission_passed: "Read-only tool admitted",
+    tool_admission_rejected: "Candidate tool was not admitted", external_tool_started: "External read-only tool started",
+    external_tool_completed: "External read-only tool completed", external_tool_failed: "External read-only tool failed",
+    tool_requested: "Codex requested a tool", tool_failed: "Tool call failed",
+    evidence_gap_assessed: "API evidence gap assessed", codex_turn_completed: "Codex analysis turn completed",
+    codex_turn_failed: "Codex analysis turn failed", harness_completed: "Codex Harness completed", harness_interrupted: "Codex Harness interrupted",
   },
   table: { stage: "Business stage", state: "Status", detail: "Explanation", metric: "Metric", value: "Result", object: "Query object", purpose: "Purpose", result: "Result", count: "Rows" },
   evidenceState: { found: "Found", not_found: "Not found", limited: "Limited scope", failed: "Read failed" },
@@ -315,10 +335,16 @@ const labels = locale === "zh" ? {
     return names[id] || titleCase(id) || labels.empty;
   };
   const sourceName = (step) => {
-    const service = step.service_name || step.api || "";
-    const entity = step.entity_set || step.entity || "";
-    if (entity) return friendlyId(step.step_id || step.id || entity);
-    return service ? titleCase(service) : labels.empty;
+    const refs = Array.isArray(step.odata_refs) ? step.odata_refs : [];
+    const service = step.service_name || step.api || refs[0]?.service_name || "";
+    const entity = step.entity_set || step.entity || refs[0]?.entity_set || "";
+    const versions = step.odata_version
+      ? [String(step.odata_version)]
+      : Array.isArray(step.odata_versions) ? step.odata_versions.map(String) : [];
+    const protocol = [...new Set(versions)].map((version) => `V${version.split(".")[0]}`).join(" / ");
+    const friendly = friendlyId(step.step_id || step.id || entity);
+    const technical = [service, entity].filter(Boolean).join(" / ");
+    return [friendly, technical, protocol].filter(Boolean).join(" · ") || labels.empty;
   };
   const businessPurpose = (step) => {
     const id = String(step.step_id || step.id || "");
@@ -608,10 +634,11 @@ const labels = locale === "zh" ? {
     renderProgress(run); renderBusinessReport(run); renderPlanTable(run); renderEvidenceTable(run); renderCompleteness(run);
     const inputForm = root.querySelector("[data-input-form]");
     const waitingForInput = run.status === "waiting_input";
-    inputForm.hidden = !waitingForInput;
+    const steerable = run.mode === "free_query" && Boolean(run.thread_id) && ["planning", "validating", "running"].includes(run.status);
+    inputForm.hidden = !(waitingForInput || steerable);
     const clarificationQuestion = localized(run.error?.message) || labels.input;
     root.querySelector("[data-input-question]").textContent = waitingForInput ? clarificationQuestion : labels.input;
-    inputForm.querySelector("textarea").placeholder = waitingForInput ? labels.clarificationPlaceholder : labels.inputPlaceholder;
+    inputForm.querySelector("textarea").placeholder = waitingForInput ? labels.clarificationPlaceholder : (steerable ? labels.steerPlaceholder : labels.inputPlaceholder);
     root.querySelector("[data-draft]").hidden = run.mode !== "free_query" || !terminal.has(run.status) || !run.plan;
     const downloads = root.querySelector("[data-downloads]");
     downloads.querySelectorAll("a").forEach((node) => node.remove());
@@ -637,6 +664,10 @@ const labels = locale === "zh" ? {
     "mapping_failed", "candidate_discovery_completed", "codex_repair_applied",
     "tool_started", "tool_completed", "evidence_received", "rule_completed", "summary_started", "run_completed",
     "run_inconclusive", "run_failed", "cancellation_requested", "run_cancelled",
+    "harness_started", "harness_resumed", "codex_turn_started", "codex_turn_failed", "assistant_message", "web_search_started", "web_search_completed",
+    "tool_discovery_started", "tool_discovery_completed", "tool_admission_passed", "tool_admission_rejected",
+    "external_tool_started", "external_tool_completed", "external_tool_failed", "tool_requested", "tool_failed",
+    "evidence_gap_assessed", "codex_turn_completed", "harness_completed", "harness_interrupted",
   ];
   const connect = () => {
     source?.close();

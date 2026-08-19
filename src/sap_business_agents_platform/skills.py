@@ -72,16 +72,22 @@ class SkillRegistry:
                 return item
         raise KeyError(skill_id)
 
+    def validate_input(self, skill_id: str, input_payload: dict[str, Any]) -> None:
+        """Validate a trusted Skill contract without starting its subprocess."""
+
+        skill = self.get(skill_id)
+        if skill_id == "sap-adt-table-export":
+            _validate_adt_input(input_payload)
+            _validate_adt_connection_contract(skill.get("input_schema"))
+        _validate_json_contract(input_payload, skill.get("input_schema"), "input")
+
     async def execute(self, skill_id: str, input_payload: dict[str, Any]) -> dict[str, Any]:
         skill = self.get(skill_id)
         if not skill.get("available"):
             raise SkillError(f"Skill {skill_id} is allowlisted but its entrypoint is unavailable.")
         if skill.get("read_only") is not True or skill.get("validated") is not True:
             raise SkillError(f"Skill {skill_id} is not approved for read-only automation.")
-        if skill_id == "sap-adt-table-export":
-            _validate_adt_input(input_payload)
-            _validate_adt_connection_contract(skill.get("input_schema"))
-        _validate_json_contract(input_payload, skill.get("input_schema"), "input")
+        self.validate_input(skill_id, input_payload)
         timeout = max(1, int(skill.get("timeout") or 300))
         with tempfile.TemporaryDirectory(prefix="sapba-skill-") as temporary:
             temporary_root = Path(temporary)

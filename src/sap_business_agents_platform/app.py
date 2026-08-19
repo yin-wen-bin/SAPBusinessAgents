@@ -18,6 +18,7 @@ from .config import Settings
 from .database import RunStore
 from .engine import RunCoordinator, RunExecutionError
 from .factory import AgentDraftService, DraftError
+from .harness import CodexHarnessController, HarnessToolBroker
 from .manifests import AgentRepository
 from .models import (
     DraftAuthoringCreate,
@@ -84,15 +85,18 @@ def create_app(
         max_results=settings.sap_max_results,
         page_size=settings.sap_page_size,
         relationship_catalog_path=settings.repository_root / "config" / "business-relationships.json",
+        service_registry_path=settings.odata_service_registry_path,
+        catalog_seed_path=settings.catalog_seed_path,
     )
     selected_provider = "embedded"
     selected_plugin_id = "embedded-sap-odata"
+    planner_supplied = planner is not None
     planner = planner or CodexPlanner(settings.repository_root, model=settings.codex_model)
     plugin_manager = PluginManager(
         settings.plugin_manifest_root,
         settings.plugin_state_path,
         official_plugin_manifests(),
-        preferred_plugins={"sap_read.v1": selected_plugin_id},
+        preferred_plugins={"sap_read.v2": selected_plugin_id},
         runtime_enabled={"embedded-sap-odata": True},
     )
     plugin_manager.bind_provider("embedded-sap-odata", embedded)
@@ -106,8 +110,21 @@ def create_app(
     agent_runtime = AgentRuntimeCapability(plugin_manager)
     business_agents = BusinessAgentCapability(plugin_manager)
     workflows = WorkflowRepository(settings.repository_root / "workflows", business_agents)
+    harness_broker = HarnessToolBroker(settings, store, sap_read, skills)
+    harness = (
+        CodexHarnessController(settings, store, harness_broker)
+        if settings.free_query_runtime == "harness" and not planner_supplied
+        else None
+    )
     coordinator = RunCoordinator(
-        settings, store, business_agents, sap_read, skills, agent_runtime, workflows
+        settings,
+        store,
+        business_agents,
+        sap_read,
+        skills,
+        agent_runtime,
+        workflows,
+        harness=harness,
     )
     drafts = AgentDraftService(settings, store, agent_runtime)
     workflow_drafts = WorkflowDraftService(
@@ -146,6 +163,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.store = store
+    app.state.harness_broker = harness_broker
     app.state.agents = agents
     app.state.business_agents = business_agents
     app.state.plugin_manager = plugin_manager
@@ -177,6 +195,13 @@ def create_app(
                 **sap_read_status,
             },
             "codex_sdk_installed": importlib.util.find_spec("openai_codex") is not None,
+            "free_query_runtime": {
+                "selected": settings.free_query_runtime,
+                "harness_enabled": harness is not None,
+                "protocol": "agent_runtime.v2" if harness is not None else "agent_runtime.v1",
+                "native_web_search": harness is not None,
+                "automatic_fallback": False,
+            },
             "executable_agents": len(agents.executable()),
             "published_workflows": len(workflows.list()),
             "approved_skills": len(skill_registry.list()),
@@ -209,7 +234,7 @@ def create_app(
             item
             for item in plugin_manager.list()
             if any(
-                capability.get("capability") == "sap_read.v1"
+                capability.get("capability") == "sap_read.v2"
                 for capability in item.get("capabilities") or []
             )
         ]
@@ -225,7 +250,7 @@ def create_app(
         try:
             plugin = plugin_manager.get(provider_id)
             if not any(
-                capability.get("capability") == "sap_read.v1"
+                capability.get("capability") == "sap_read.v2"
                 for capability in plugin.get("capabilities") or []
             ):
                 raise HTTPException(404, "Not a SAP read Provider")
@@ -385,12 +410,32 @@ def create_app(
         return {"run_id": run_id, "status": "queued"}
 
     @app.post("/api/runs/{run_id}/cancel", status_code=202)
-    def cancel_run(run_id: str) -> dict[str, str]:
+    async def cancel_run(run_id: str) -> dict[str, str]:
         try:
-            coordinator.cancel(run_id)
+            await coordinator.cancel(run_id)
         except KeyError as exc:
             raise HTTPException(404, "Run not found") from exc
         return {"run_id": run_id, "status": "cancellation_requested"}
+
+    @app.post(
+        "/api/internal/harness/tools/{tool_name}",
+        include_in_schema=False,
+    )
+    async def harness_tool_call(
+        tool_name: str,
+        payload: dict[str, Any],
+        x_sapba_run: str = Header(default=""),
+        x_sapba_capability: str = Header(default=""),
+    ) -> dict[str, Any]:
+        arguments = payload.get("arguments")
+        if not isinstance(arguments, dict):
+            raise HTTPException(422, "arguments must be an object")
+        result = await harness_broker.handle(
+            x_sapba_run, x_sapba_capability, tool_name, dict(arguments)
+        )
+        if result.get("code") == "harness_capability_denied":
+            raise HTTPException(403, "Harness capability denied")
+        return result
 
     @app.get("/api/tools/sap-read")
     async def sap_read_tools(query: str = "") -> dict[str, Any]:

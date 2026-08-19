@@ -69,6 +69,24 @@ class Completeness(BaseModel):
     missing_evidence: list[str] = Field(default_factory=list)
 
 
+class HarnessResult(BaseModel):
+    runtime: Literal["codex_app_server"] = "codex_app_server"
+    protocol: Literal["agent_runtime.v2"] = "agent_runtime.v2"
+    thread_id: str | None = None
+    turn_count: int = 0
+    tool_call_count: int = 0
+    web_search_count: int = 0
+    discovered_tool_count: int = 0
+    activated_tool_count: int = 0
+    stop_reason: Literal[
+        "completed",
+        "waiting_input",
+        "interrupted",
+        "limit_reached",
+        "capability_unavailable",
+    ] = "capability_unavailable"
+
+
 class RunResult(BaseModel):
     run_id: str
     mode: RunMode
@@ -89,6 +107,7 @@ class RunResult(BaseModel):
     summary: dict[str, str] = Field(default_factory=dict)
     errors: list[dict[str, Any]] = Field(default_factory=list)
     thread_id: str | None = None
+    harness: HarnessResult | None = None
     started_at: str | None = None
     completed_at: str | None = None
 

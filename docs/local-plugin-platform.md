@@ -5,7 +5,7 @@
 本机原型采用 Python/FastAPI 微内核，不引入 Cordis。插件化用于隔离能力和依赖，不改变执行语义：
 
 - 固定 Agent 由核心确定性工作流引擎执行，Codex Runtime 不参与工具选择。
-- 自由查询通过 `agent_runtime.v1` 取得结构化计划，再由核心调用 Embedded SAP 只读能力。
+- 自由查询默认通过 `agent_runtime.v2` 的 Codex App Server Harness 进行多轮工具调用、观察和查询修订；SAP 查询仍只能由核心 Embedded Provider 执行。
 - SAP 写入、任意 Shell、任意代码、远程插件地址和运行时下载依赖全部被清单校验拒绝。
 - 插件扫描只读取 JSON 清单；可执行 Provider 必须由可信核心显式绑定。
 
@@ -19,9 +19,9 @@ flowchart TB
     CORE --> FREE["自由查询 Harness"]
     CORE --> REGISTRY["PluginManager / 能力路由"]
     REGISTRY --> AGENT["Business Agent Packages"]
-    REGISTRY --> EMBEDDED["Embedded SAP OData / sap_read.v1"]
+    REGISTRY --> EMBEDDED["Embedded SAP OData / sap_read.v2"]
     REGISTRY --> SKILLS["SAPSkillhub / skill_catalog.v1 / skill_execute.v1"]
-    REGISTRY --> CODEX["Codex Runtime / agent_runtime.v1 / authoring.v1"]
+    REGISTRY --> CODEX["Codex App Server / agent_runtime.v2 / authoring.v1"]
     EMBEDDED -->|"进程内、GET-only"| SAP["SAP S/4HANA"]
     SKILLS -->|"受控 Python CLI 子进程"| LOCAL["SAPSkillhub 自主管理的连接与制品"]
 ```
@@ -35,13 +35,13 @@ Embedded Provider 保存 SAP `$metadata` 中的 `sap:filterable` 原始注解，
 | 插件 | 能力 | 当前操作 |
 |---|---|---|
 | Business Agent Packages | `business_agent.v1` | `list`, `executable`, `get`, `validate` |
-| Embedded SAP OData | `sap_read.v1` | `health`, `catalog`, `guidance`, `schema`, `validate_plan`, `execute_plan`, `execute_get`, `page` |
+| Embedded SAP OData | `sap_read.v2` | `health`, `catalog`, `guidance`, `schema`, `validate_plan`, `execute_plan`, `execute_get`, `page` |
 | SAPSkillhub | `skill_catalog.v1` | `list`, `get` |
 | SAPSkillhub | `skill_execute.v1` | `execute` |
-| Codex Runtime | `agent_runtime.v1` | `plan`, `ground_plan`, `summarize` |
+| Codex Harness | `agent_runtime.v2` | persistent thread、steer、interrupt、Web Search、MCP 工具循环 |
 | Codex Runtime | `authoring.v1` | `author_draft` |
 
-固定 Agent 和自由查询统一面向 `sap_read.v1`；唯一实现是 `embedded-sap-odata`。
+固定 Agent 和自由查询统一面向 `sap_read.v2`；唯一实现是 `embedded-sap-odata`。
 
 ## 清单与生命周期
 

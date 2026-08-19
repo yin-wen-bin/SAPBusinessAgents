@@ -383,7 +383,8 @@ Exact SAP read query-plan contract (extra fields are rejected):
 {_RUNTIME_PLAN_CONTRACT}
 
 Rules:
-1. Use only service_name/entity_set/fields evidenced above.
+1. Use only service_name/odata_version/entity_set/fields evidenced above. Preserve the
+   catalog-declared OData protocol version exactly; never infer it from the service name.
 2. Build cross-entity filters and bindings only from the approved relationship contract. Field
    existence alone is not semantic compatibility. Prefer the listed delivery-to-billing and
    billing-to-FI chain when the question asks for O2C billing or receivables evidence.
@@ -473,8 +474,8 @@ Exact SAP read query-plan contract (extra fields are rejected):
 {_RUNTIME_PLAN_CONTRACT}
 
 Rules:
-1. Return the same harness shape and preserve the candidate service_name/entity_set pairs. Never
-   add a service or entity that is absent from the authoritative schemas.
+1. Return the same harness shape and preserve the candidate service_name/odata_version/entity_set
+   triples. Never add a service, protocol version, or entity absent from the authoritative schemas.
 2. Every selected, summarized, filtered, ordered, output-contract, binding-source, and
    binding-target field must exist on its own entity in the authoritative schemas and support the
    requested use where that capability is supplied.
@@ -510,6 +511,7 @@ def _schema_snapshot(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entities = [
             {
                 "service_name": item.get("service_name"),
+                "odata_version": item.get("odata_version"),
                 "entity_set": item.get("entity_set"),
                 "key_fields": item.get("key_fields") or [],
                 "supports_filter": item.get("supports_filter"),
@@ -547,6 +549,7 @@ def _schema_snapshot(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "ok": response.get("ok") is True,
                 "service_name": ((data.get("service") or {}).get("service_name")),
+                "odata_version": ((data.get("service") or {}).get("odata_version")),
                 "schema_authority": data.get("schema_authority"),
                 "compatibility_status": data.get("compatibility_status"),
                 "fields_truncated": data.get("fields_truncated"),
@@ -560,13 +563,13 @@ def _schema_snapshot(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 _RUNTIME_PLAN_CONTRACT = """
-Top level required: service_name:string, entity_set:string. Optional:
+Top level required: service_name:string, odata_version:"2.0"|"4.0", entity_set:string. Optional:
 http_method:"GET"; select_fields:string[]; response_summary_fields:string[];
 filters:[{field:string, operator:eq|ne|gt|ge|lt|le|contains|in, value:string,
 value_type:string}]; order_by:string[]; top:positive integer; plan_kind:direct|lookup|multi_step|
-function_import; response_directive:string; rationale:string.
+function|function_import; response_directive:string; rationale:string.
 lookup/multi_step also require steps:[{step_id:string, entity_set:string,
-service_name:string|null, http_method:"GET", select_fields:string[],
+service_name:string, odata_version:"2.0"|"4.0", http_method:"GET", select_fields:string[],
 response_summary_fields:string[], filters:<same filter objects>,
 filter_from_previous:[{field:string,source_step_id:string,source_field:string,fanout:boolean,
 fetch_all_for_binding:boolean}], order_by:string[], top:positive integer|null, rationale:string}].
