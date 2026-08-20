@@ -11,14 +11,8 @@ from typing import Sequence
 
 from .config import load_checklist
 from .engine import MonthEndClosingAssistant
-from .gateway import CompositeSapGateway, FixtureSapGateway, SapGateway
-from .mcp_export import SapClawMcpExportGateway
+from .gateway import FixtureSapGateway, SapGateway
 from .models import ClosingContext
-from .sapclaw_runtime import (
-    SapClawRuntimeClient,
-    SapClawRuntimeGateway,
-    load_sapclaw_queries,
-)
 from .se16n_fallback import Se16nObservationGateway
 
 
@@ -40,37 +34,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=Path("config/month_end_checklist.toml"))
     parser.add_argument(
         "--gateway",
-        choices=("fixture", "sapclaw", "mcp-export"),
+        choices=("fixture", "se16n"),
         default="fixture",
     )
     parser.add_argument("--fixture", type=Path, default=Path("fixtures/1010_2026_07.json"))
     parser.add_argument(
-        "--sapclaw-config", type=Path, default=Path("config/sapclaw_queries.toml")
-    )
-    parser.add_argument("--sapclaw-base-url", default="http://127.0.0.1:8000")
-    parser.add_argument("--sapclaw-timeout", type=float, default=180)
-    parser.add_argument(
         "--sap-client",
         default="100",
-        help="必须与 SAPClaw 和 SE16N 证据一致的三位 SAP 客户端。",
-    )
-    parser.add_argument(
-        "--mcp-export",
-        type=Path,
-        help="SAPClaw_runtime MCP 导出的 scope-bound JSON bundle。",
+        help="必须与 SE16N 证据一致的三位 SAP 客户端。",
     )
     parser.add_argument(
         "--se16n-manifest",
         type=Path,
         help=(
-            "可选：经复核且绑定导出文件 SHA-256 的 SE16N 补充清单；"
-            "仅在对应 MCP 检查不可用时使用。"
+            "经复核且绑定导出文件 SHA-256 的 SE16N 清单；"
+            "使用 --gateway se16n 时必须提供。"
         ),
-    )
-    parser.add_argument(
-        "--reviewed-observations",
-        type=Path,
-        help="兼容选项：经人工复核的标准化观测 JSON；建议改用 --se16n-manifest。",
     )
     parser.add_argument("--output", type=Path, help="可选 JSON 报告输出路径")
     return parser
@@ -90,34 +69,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.gateway == "fixture":
         gateway = FixtureSapGateway.from_file(args.fixture)
     else:
-        if args.gateway == "mcp-export":
-            if args.mcp_export is None:
-                raise SystemExit("--gateway mcp-export 必须提供 --mcp-export")
-            primary_gateway: SapGateway = SapClawMcpExportGateway.from_file(
-                args.mcp_export, expected_client=args.sap_client
-            )
-        else:
-            primary_gateway = SapClawRuntimeGateway(
-                SapClawRuntimeClient(args.sapclaw_base_url, args.sapclaw_timeout),
-                load_sapclaw_queries(args.sapclaw_config),
-                expected_client=args.sap_client,
-            )
-        if args.se16n_manifest and args.reviewed_observations:
-            raise SystemExit("--se16n-manifest 与 --reviewed-observations 不能同时使用")
-        if args.se16n_manifest:
-            gateway = CompositeSapGateway(
-                primary_gateway,
-                Se16nObservationGateway.from_file(
-                    args.se16n_manifest, expected_client=args.sap_client
-                ),
-            )
-        elif args.reviewed_observations:
-            gateway = CompositeSapGateway(
-                primary_gateway,
-                FixtureSapGateway.from_file(args.reviewed_observations),
-            )
-        else:
-            gateway = primary_gateway
+        if args.se16n_manifest is None:
+            raise SystemExit("--gateway se16n 必须提供 --se16n-manifest")
+        gateway = Se16nObservationGateway.from_file(
+            args.se16n_manifest, expected_client=args.sap_client
+        )
     assistant = MonthEndClosingAssistant(load_checklist(args.config), gateway)
     payload = json.dumps(assistant.assess(context).to_dict(), ensure_ascii=False, indent=2)
     if args.output:

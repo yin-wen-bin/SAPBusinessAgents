@@ -14,7 +14,8 @@ const FUSE_OPTIONS: IFuseOptions<AgentSearchItem> = {
     { name: "workflowTerms", weight: 0.12 },
     { name: "slug", weight: 0.07 },
     { name: "sapModules", weight: 0.04 },
-    { name: "module", weight: 0.02 },
+    { name: "odataVersions", weight: 0.04 },
+    { name: "module", weight: 0.01 },
   ],
 };
 

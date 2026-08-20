@@ -227,11 +227,14 @@ def _manifest_from_run(
         "owner": "Unassigned",
         "tags": ["Generated draft", "Read-only"],
         "sapModules": ["Common"],
-        "transactions": ["N/A"],
+        "transactions": [],
         "tables": [str(plan.get("entity_set") or "SAP OData entity")],
         "systems": ["SAP S/4HANA"],
         "inputs": {"zh": ["原始自然语言查询"], "en": ["Original natural-language query"]},
-        "outputs": {"zh": ["SAP 查询证据"], "en": ["SAP query evidence"]},
+        "outputs": {
+            "zh": ["执行状态", "查询源完整性", "成功数据源数量"],
+            "en": ["Execution status", "Query-source completeness", "Successful source count"],
+        },
         "guardrails": {
             "zh": ["严格只读；发布前必须由业务与SAP负责人复核。"],
             "en": ["Strictly read-only; requires business and SAP review before publication."],
@@ -251,13 +254,36 @@ def _manifest_from_run(
                         "purpose": {"zh": "执行只读 SAP 查询。", "en": "Execute the read-only SAP query."},
                     }
                 ],
-            }
+                "executionStepIds": [step["id"] for step in execution_steps],
+            },
+            {
+                "id": "validate-evidence",
+                "title": {"zh": "验证证据完整性", "en": "Validate evidence completeness"},
+                "description": {
+                    "zh": "执行本地确定性完整性规则，不访问或修改 SAP。",
+                    "en": "Run the local deterministic completeness rule without accessing or changing SAP.",
+                },
+                "tools": [
+                    {
+                        "name": "evidence_summary",
+                        "kind": "Local deterministic rule",
+                        "purpose": {"zh": "汇总证据完整性。", "en": "Summarize evidence completeness."},
+                    }
+                ],
+                "executionStepIds": ["validate_evidence"],
+            },
         ],
         "execution": {
             "mode": "deterministic",
             "inputSchema": {
                 "type": "object",
-                "properties": {"query": {"type": "string", "default": query}},
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "default": query,
+                        "title": {"zh": "原始自然语言查询", "en": "Original natural-language query"},
+                    }
+                },
                 "required": ["query"],
                 "additionalProperties": False,
             },
@@ -273,6 +299,29 @@ def _manifest_from_run(
                     },
                 },
             ],
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "title": {"zh": "执行状态", "en": "Execution status"}},
+                    "source_complete": {"type": "boolean", "title": {"zh": "查询源完整性", "en": "Query-source completeness"}},
+                    "successful_source_count": {"type": "integer", "title": {"zh": "成功数据源数量", "en": "Successful source count"}},
+                },
+                "required": ["status", "source_complete", "successful_source_count"],
+                "additionalProperties": False,
+            },
+            "outputMapping": {
+                "status": "{{steps.validate_evidence.output.status}}",
+                "source_complete": "{{steps.validate_evidence.output.source_complete}}",
+                "successful_source_count": "{{steps.validate_evidence.output.successful_source_count}}",
+            },
+            "acceptance": {
+                "comparisonMode": "business_semantic",
+                "businessKeys": ["query"],
+                "facts": ["status"],
+                "metrics": ["successful_source_count"],
+                "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+                "requiredLimitations": ["source_completeness_not_overstated"],
+            },
         },
         "authoring": {"source": "validated_free_query", "correction": correction},
     }
@@ -292,7 +341,7 @@ def _execution_steps_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:
     execution_steps: list[dict[str, Any]] = []
     for index, step in enumerate(plan.get("steps") or [], start=1):
         step_id = str(step.get("id") or f"step_{index}")
-        if step.get("tool") in {"sap_read", "sapclaw"}:
+        if step.get("tool") == "sap_read":
             execution_steps.append(
                 {
                     "id": step_id,

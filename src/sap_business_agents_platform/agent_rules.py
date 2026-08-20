@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any, Callable
 
 
 JsonObject = dict[str, Any]
+SAP_V2_DATE = re.compile(r"^/Date\((-?\d+)(?:[+-]\d{4})?\)/$")
 
 
 def evaluate_business_agent(inputs: JsonObject) -> JsonObject:
@@ -37,26 +39,27 @@ def _rows(inputs: JsonObject, *step_ids: str) -> list[JsonObject]:
     for evidence_name, payload in entries:
         if not isinstance(payload, dict):
             continue
+        data = payload.get("data")
         step_results = payload.get("step_results")
         if not isinstance(step_results, dict):
-            data = payload.get("data")
             step_results = data.get("step_results") if isinstance(data, dict) else None
-            if str(evidence_name) in wanted and isinstance(data, dict):
+        matched_step_result = False
+        if isinstance(step_results, dict):
+            for step_id, result in step_results.items():
+                if wanted and step_id not in wanted and str(evidence_name) not in wanted:
+                    continue
+                if not isinstance(result, dict):
+                    continue
+                matched_step_result = True
+                for row in result.get("results") or []:
+                    if isinstance(row, dict):
+                        found.append(row)
+        if not matched_step_result and str(evidence_name) in wanted:
+            if isinstance(data, dict):
                 for row in data.get("results") or []:
                     if isinstance(row, dict):
                         found.append(row)
-            if str(evidence_name) in wanted:
-                for row in payload.get("results") or []:
-                    if isinstance(row, dict):
-                        found.append(row)
-        if not isinstance(step_results, dict):
-            continue
-        for step_id, result in step_results.items():
-            if wanted and step_id not in wanted and str(evidence_name) not in wanted:
-                continue
-            if not isinstance(result, dict):
-                continue
-            for row in result.get("results") or []:
+            for row in payload.get("results") or []:
                 if isinstance(row, dict):
                     found.append(row)
     return found
@@ -125,6 +128,40 @@ def _topic_complete(inputs: JsonObject, topic: str) -> bool:
     api = assessment.get("api_complete") if isinstance(assessment, dict) else None
     if isinstance(api, dict) and api.get(topic) is True:
         return True
+    needs_adt = assessment.get("needs_adt") if isinstance(assessment, dict) else None
+    if (
+        isinstance(api, dict)
+        and api.get(topic) is False
+        and isinstance(needs_adt, dict)
+        and needs_adt.get(topic) is True
+    ):
+        fallback = _fallback(inputs, topic)
+        if fallback.get("status") == "skipped" and fallback.get("reason") == "condition_false":
+            return False
+    # Some deterministic manifests execute a direct, exact OData read without
+    # a separate assess_api_evidence step.  In that shape the evidence topic is
+    # itself authoritative for query-source completeness.  Do not require an
+    # ADT fallback merely because the optional assessment envelope is absent.
+    evidence = inputs.get("evidence")
+    direct_payload = evidence.get(topic) if isinstance(evidence, dict) else None
+    if isinstance(direct_payload, dict) and not (
+        isinstance(api, dict) and api.get(topic) is False
+    ):
+        flags: list[bool] = []
+
+        def collect_flags(value: Any) -> None:
+            if isinstance(value, dict):
+                if isinstance(value.get("source_complete"), bool):
+                    flags.append(bool(value["source_complete"]))
+                for child in value.values():
+                    collect_flags(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect_flags(child)
+
+        collect_flags(direct_payload)
+        if flags:
+            return all(flags) and direct_payload.get("ok") is not False
     return _adt_complete(_fallback(inputs, topic))
 
 
@@ -154,9 +191,10 @@ def _date(value: Any) -> date | None:
     if value in {None, ""}:
         return None
     text = str(value)
-    if text.startswith("/Date("):
+    match = SAP_V2_DATE.fullmatch(text)
+    if match:
         try:
-            return datetime.fromtimestamp(int(text[6:].split("+")[0].split("-")[0]) / 1000).date()
+            return datetime.fromtimestamp(int(match.group(1)) / 1000).date()
         except (ValueError, OSError):
             return None
     try:
@@ -171,6 +209,37 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {
         "1", "true", "x", "yes", "c", "complete", "completed", "fully_billed"
     }
+
+
+def _text(row: JsonObject, *fields: str) -> str:
+    for field in fields:
+        value = row.get(field)
+        if value not in {None, ""}:
+            return str(value)
+    return ""
+
+
+def _date_text(row: JsonObject, *fields: str) -> str:
+    parsed = _date(_text(row, *fields))
+    return parsed.isoformat() if parsed is not None else ""
+
+
+def _record_columns(records: list[JsonObject]) -> list[JsonObject]:
+    keys: list[str] = []
+    for record in records:
+        for key in record:
+            if key not in keys:
+                keys.append(key)
+    return [
+        {
+            "key": key,
+            "label": {
+                "zh": key.replace("_", " "),
+                "en": key.replace("_", " ").title(),
+            },
+        }
+        for key in keys
+    ]
 
 
 def _stage(
@@ -215,9 +284,13 @@ def _result(
     findings: list[JsonObject] | None = None,
     metrics: list[JsonObject] | None = None,
     gaps: list[str] | None = None,
+    limitations: list[str] | None = None,
     actions_zh: list[str] | None = None,
     actions_en: list[str] | None = None,
     source_complete_override: bool | None = None,
+    records: list[JsonObject] | None = None,
+    record_columns: list[JsonObject] | None = None,
+    allow_empty_records: bool = False,
 ) -> JsonObject:
     missing = sorted(set(gaps or []))
     source_complete = (
@@ -242,23 +315,36 @@ def _result(
         "findings": findings or [],
         "metrics": metrics or [],
         "missing_evidence": missing,
+        "limitations": sorted(set(limitations or [])),
         "next_actions": {
             "zh": actions_zh or [],
             "en": actions_en or [],
         },
         "summary": {"zh": headline_zh, "en": headline_en},
+        "records": [],
+        "record_columns": record_columns or [],
     }
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    effective_status = "capability_blocked" if missing else business_status
+    normalized_records = [dict(item) for item in records or [] if isinstance(item, dict)]
+    if not normalized_records and not allow_empty_records:
+        normalized_records = [{**run_input, "business_status": effective_status}]
+    else:
+        for record in normalized_records:
+            record.setdefault("business_status", effective_status)
+    report["records"] = normalized_records
+    if not report["record_columns"]:
+        report["record_columns"] = _record_columns(normalized_records)
     workflow_output = {
         **{str(key): value for key, value in run_input.items()},
-        "business_status": "capability_blocked" if missing else business_status,
+        "business_status": effective_status,
         "source_complete": source_complete,
         "business_report": report,
     }
     return {
         "rule_id": f"{str(inputs.get('agent_id') or '').replace('-', '_')}_deterministic_v1",
         "status": conclusive_status,
-        "business_status": "capability_blocked" if missing else business_status,
+        "business_status": effective_status,
         "business_complete": business_complete,
         "source_complete": source_complete,
         "missing_evidence": missing,
@@ -286,6 +372,18 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
         if str(row.get(field) or "").strip() not in {"", "0", "C"}
     ]
     blocked = bool(findings)
+    records = [
+        {
+            "sales_order": _text(row, "SalesOrder"),
+            "sales_order_item": _text(row, "SalesOrderItem"),
+            "billing_block_reason": _text(row, "ItemBillingBlockReason", "HeaderBillingBlockReason"),
+            "delivery_block_reason": _text(row, "DeliveryBlockReason"),
+            "credit_status": _text(row, "TotalCreditCheckStatus"),
+            "incompletion_status": _text(row, "HdrGeneralIncompletionStatus"),
+        }
+        for row in items
+        if _text(row, "SalesOrder") and _text(row, "SalesOrderItem")
+    ]
     return _result(
         inputs,
         business_status="blocked" if blocked else "normal",
@@ -295,6 +393,9 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
         overview_en="Order, item, delivery, credit, and incompletion statuses were checked.",
         stages=[_stage("sales_order", "销售订单", "Sales order", len(orders)), _stage("items", "订单项目", "Order items", len(items)), _stage("delivery", "交货", "Delivery", len(deliveries))],
         findings=findings,
+        metrics=[{"id": "blocked_findings", "value": len(findings)}],
+        records=records,
+        gaps=_gaps(inputs),
         actions_zh=["按冻结所在层级交由销售、信用或主数据人员处理。"] if blocked else [],
         actions_en=["Route the block to sales, credit, or master-data owners."] if blocked else [],
     )
@@ -314,6 +415,26 @@ def _billing_completeness(inputs: JsonObject) -> JsonObject:
     if len(referenced) < len(items):
         findings.append({"code": "DUPLICATE_REFERENCE", "severity": "medium"})
     attention = bool(findings) or not items
+    header_by_document = {_text(row, "BillingDocument"): row for row in headers}
+    records = [
+        {
+            "billing_document": _text(row, "BillingDocument"),
+            "billing_document_item": _text(row, "BillingDocumentItem"),
+            "reference_document": _text(row, "ReferenceSDDocument"),
+            "reference_document_item": _text(row, "ReferenceSDDocumentItem"),
+            "accounting_posting_status": _text(
+                header_by_document.get(_text(row, "BillingDocument"), {}),
+                "AccountingPostingStatus",
+            ),
+            "cancelled": _truthy(
+                header_by_document.get(_text(row, "BillingDocument"), {}).get(
+                    "BillingDocumentIsCancelled"
+                )
+            ),
+        }
+        for row in items
+        if _text(row, "BillingDocument") and _text(row, "BillingDocumentItem")
+    ]
     return _result(
         inputs,
         business_status="attention" if attention else "normal",
@@ -323,6 +444,12 @@ def _billing_completeness(inputs: JsonObject) -> JsonObject:
         overview_en="Billing status, cancellation, source references, and accounting posting were checked.",
         stages=[_stage("billing", "开票凭证", "Billing document", len(headers) + len(items)), _stage("source", "来源订单或交货", "Source order or delivery", len(sources))],
         findings=findings,
+        metrics=[
+            {"id": "billing_items", "value": len(items)},
+            {"id": "source_rows", "value": len(sources)},
+            {"id": "finding_count", "value": len(findings)},
+        ],
+        records=records,
         actions_zh=["复核取消、重复引用或尚未过账的开票项目。"] if attention else [],
         actions_en=["Review cancelled, duplicate, or unposted billing items."] if attention else [],
     )
@@ -339,6 +466,21 @@ def _delivered_not_billed(inputs: JsonObject) -> JsonObject:
         and str(row.get("DeliveryDocument") or "") not in billed_refs
     ]
     findings = [{"code": "DELIVERED_NOT_BILLED", "severity": "high", "delivery": str(row.get("DeliveryDocument") or "")} for row in candidates]
+    candidate_ids = {_text(row, "DeliveryDocument") for row in candidates}
+    header_by_delivery = {_text(row, "DeliveryDocument"): row for row in deliveries}
+    records = [
+        {
+            "delivery_document": _text(row, "DeliveryDocument"),
+            "delivery_document_item": _text(row, "DeliveryDocumentItem"),
+            "actual_goods_movement_date": _date_text(
+                header_by_delivery.get(_text(row, "DeliveryDocument"), {}),
+                "ActualGoodsMovementDate",
+            ),
+            "is_billed": _text(row, "DeliveryDocument") not in candidate_ids,
+        }
+        for row in delivery_items
+        if _text(row, "DeliveryDocument") and _text(row, "DeliveryDocumentItem")
+    ]
     return _result(
         inputs,
         business_status="attention" if candidates else "normal",
@@ -348,6 +490,8 @@ def _delivered_not_billed(inputs: JsonObject) -> JsonObject:
         overview_en="Only deliveries with PGI evidence and no linked billing document are flagged.",
         stages=[_stage("delivery", "已发货交货", "PGI deliveries", len(deliveries) + len(delivery_items)), _stage("billing", "关联开票", "Linked billing", len(billing))],
         findings=findings,
+        metrics=[{"id": "delivered_not_billed", "value": len(candidates)}],
+        records=records,
         actions_zh=["检查开票到期清单、开票冻结和凭证完整性。"] if candidates else [],
         actions_en=["Review billing due lists, billing blocks, and document completeness."] if candidates else [],
     )
@@ -356,17 +500,80 @@ def _delivered_not_billed(inputs: JsonObject) -> JsonObject:
 def _delivery_delay(inputs: JsonObject) -> JsonObject:
     orders = _rows(inputs, "sales_orders")
     schedules = _rows(inputs, "schedule_lines")
+    delivery_items = _rows(inputs, "delivery_items")
     deliveries = _rows(inputs, "delivery_headers")
-    as_of = _date((inputs.get("run_input") or {}).get("date_to")) or date.today()
+    run_input = inputs.get("run_input") or {}
+    date_from = _date(run_input.get("date_from"))
+    date_to = _date(run_input.get("date_to")) or date.today()
+    schedules = [
+        row
+        for row in schedules
+        if (
+            (due := _date(row.get("ConfirmedDeliveryDate") or row.get("RequestedDeliveryDate")))
+            and (date_from is None or due >= date_from)
+            and due <= date_to
+        )
+    ]
+    header_by_delivery = {
+        _text(row, "DeliveryDocument"): row for row in deliveries
+    }
+    deliveries_by_order_item: dict[tuple[str, str], list[JsonObject]] = {}
+    for row in delivery_items:
+        key = (
+            _text(row, "ReferenceSDDocument"),
+            _text(row, "ReferenceSDDocumentItem").lstrip("0") or "0",
+        )
+        header = header_by_delivery.get(_text(row, "DeliveryDocument"), {})
+        deliveries_by_order_item.setdefault(key, []).append(header)
     scores: list[int] = []
     for row in schedules:
         due = _date(row.get("ConfirmedDeliveryDate") or row.get("RequestedDeliveryDate"))
-        score = 40 if due and due < as_of else 20 if due and (due - as_of).days <= 2 else 0
+        key = (
+            _text(row, "SalesOrder"),
+            _text(row, "SalesOrderItem").lstrip("0") or "0",
+        )
+        actual_dates = [
+            actual
+            for header in deliveries_by_order_item.get(key, [])
+            if (actual := _date(header.get("ActualGoodsMovementDate"))) is not None
+        ]
+        actual = max(actual_dates, default=None)
+        if due and actual:
+            delay_days = (actual - due).days
+            score = 100 if delay_days > 30 else 70 if delay_days > 7 else 40 if delay_days > 0 else 0
+        elif due and due <= date_to:
+            score = 100
+        elif due and (due - date_to).days <= 2:
+            score = 20
+        else:
+            score = 0
         if row.get("DelivBlockReasonForSchedLine"):
-            score += 20
-        scores.append(min(score, 100))
+            score = max(score, 70)
+        scores.append(score)
     maximum = max(scores, default=0)
+    evidence_discrepancy = any(
+        _decimal(row.get("DeliveredQtyInOrderQtyUnit")) == 0
+        and deliveries_by_order_item.get(
+            (
+                _text(row, "SalesOrder"),
+                _text(row, "SalesOrderItem").lstrip("0") or "0",
+            )
+        )
+        for row in schedules
+    )
     findings = [{"code": "DELIVERY_DELAY_RISK", "severity": "high" if score >= 60 else "medium", "score": score} for score in scores if score]
+    records = [
+        {
+            "sales_order": _text(row, "SalesOrder"),
+            "sales_order_item": _text(row, "SalesOrderItem"),
+            "schedule_line": _text(row, "ScheduleLine"),
+            "due_date": _date_text(row, "ConfirmedDeliveryDate", "RequestedDeliveryDate"),
+            "delivery_block_reason": _text(row, "DelivBlockReasonForSchedLine"),
+            "risk_score": score,
+        }
+        for row, score in zip(schedules, scores)
+        if _text(row, "SalesOrder") and _text(row, "SalesOrderItem") and _text(row, "ScheduleLine")
+    ]
     return _result(
         inputs,
         business_status="attention" if maximum else "normal",
@@ -374,9 +581,11 @@ def _delivery_delay(inputs: JsonObject) -> JsonObject:
         headline_en=f"The highest delivery-delay risk score is {maximum}",
         overview_zh="评分仅使用到期日期、交货完成情况和冻结证据，不进行机器学习预测。",
         overview_en="The score uses due dates, delivery completion, and block evidence; it is not an ML forecast.",
-        stages=[_stage("orders", "销售需求", "Sales demand", len(orders) + len(schedules)), _stage("delivery", "交货执行", "Delivery execution", len(deliveries))],
+        stages=[_stage("orders", "销售需求", "Sales demand", len(orders) + len(schedules)), _stage("delivery", "交货执行", "Delivery execution", len(delivery_items) + len(deliveries))],
         findings=findings,
         metrics=[{"id": "maximum_risk_score", "value": maximum}],
+        limitations=["schedule_line_delivery_evidence_discrepancy"] if evidence_discrepancy else [],
+        records=records,
         actions_zh=["优先复核高分订单的承诺日期和交货冻结。"] if maximum else [],
         actions_en=["Review commitment dates and delivery blocks for high-score orders."] if maximum else [],
     )
@@ -386,6 +595,49 @@ def _due_priority(inputs: JsonObject) -> JsonObject:
     schedules = _rows(inputs, "schedule_lines")
     items = _rows(inputs, "sales_order_items")
     stock = _rows(inputs, "material_stock")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    date_from = _date(run_input.get("date_from"))
+    date_to = _date(run_input.get("date_to"))
+    schedules = [
+        row
+        for row in schedules
+        if (
+            (due_date := _date(row.get("ConfirmedDeliveryDate") or row.get("RequestedDeliveryDate")))
+            and (date_from is None or due_date >= date_from)
+            and (date_to is None or due_date <= date_to)
+        )
+    ]
+    item_by_key = {
+        (_text(row, "SalesOrder"), _text(row, "SalesOrderItem")): row
+        for row in items
+    }
+    records = [
+        {
+            "sales_order": _text(row, "SalesOrder"),
+            "sales_order_item": _text(row, "SalesOrderItem"),
+            "schedule_line": _text(row, "ScheduleLine"),
+            "material": _text(
+                item_by_key.get((_text(row, "SalesOrder"), _text(row, "SalesOrderItem")), {}),
+                "Material",
+            ),
+            "plant": _text(
+                item_by_key.get((_text(row, "SalesOrder"), _text(row, "SalesOrderItem")), {}),
+                "ProductionPlant",
+                "Plant",
+            ),
+            "due_date": _date_text(row, "ConfirmedDeliveryDate", "RequestedDeliveryDate"),
+            "requested_quantity": _text(row, "ScheduleLineOrderQuantity", "RequestedQuantity"),
+            "confirmed_quantity": _text(row, "ConfdOrderQtyByMatlAvailCheck", "ConfdDelivQtyInOrderQtyUnit"),
+            "unit": _text(
+                item_by_key.get((_text(row, "SalesOrder"), _text(row, "SalesOrderItem")), {}),
+                "RequestedQuantityUnit",
+                "OrderQuantityUnit",
+                "BaseUnit",
+            ),
+        }
+        for row in schedules
+        if _text(row, "SalesOrder") and _text(row, "SalesOrderItem") and _text(row, "ScheduleLine")
+    ]
     return _result(
         inputs,
         business_status="attention" if schedules else "normal",
@@ -395,30 +647,101 @@ def _due_priority(inputs: JsonObject) -> JsonObject:
         overview_en="Ranking uses due dates, delivery priority, blocks, and current stock evidence and is never written back to SAP.",
         stages=[_stage("demand", "到期需求", "Due demand", len(schedules) + len(items)), _stage("stock", "库存", "Stock", len(stock))],
         metrics=[{"id": "ranked_requirements", "value": len(schedules)}],
+        records=records,
+        limitations=["current_stock_not_historical_atp"] if stock else [],
         actions_zh=["由销售和仓库人员按优先级清单复核并执行。"] if schedules else [],
         actions_en=["Have sales and warehouse users review and act on the ranking."] if schedules else [],
     )
 
 
 def _returns_credit(inputs: JsonObject) -> JsonObject:
-    returns = _rows(inputs, "returns", "return_items")
+    return_headers = _rows(inputs, "returns")
+    return_items = _rows(inputs, "return_items")
     credits = _rows(inputs, "credit_requests", "credit_request_items")
     billing = _rows(inputs, "billing_documents")
+    billing_by_return_item = {
+        (_text(row, "SalesDocument"), _text(row, "SalesDocumentItem")): row
+        for row in billing
+        if _text(row, "SalesDocument") and _text(row, "SalesDocumentItem")
+    }
     findings = []
-    for row in returns:
+    missing_receipt = False
+    missing_refund_type = False
+    for row in return_items:
         if not row.get("ReferenceSDDocument"):
             findings.append({"code": "RETURN_REFERENCE_MISSING", "severity": "medium"})
-        if row.get("ReturnsRefundType") and not _truthy(row.get("ReturnsMaterialHasBeenReceived")):
+        receipt_value = row.get("ReturnsMaterialHasBeenReceived")
+        refund_value = row.get("ReturnsRefundType")
+        if receipt_value in {None, ""}:
+            missing_receipt = True
+        if refund_value in {None, ""}:
+            missing_refund_type = True
+        if refund_value not in {None, ""} and receipt_value not in {None, ""} and not _truthy(receipt_value):
             findings.append({"code": "REFUND_BEFORE_RECEIPT", "severity": "medium"})
+    records = [
+        {
+            "customer_return": _text(row, "CustomerReturn"),
+            "customer_return_item": _text(row, "CustomerReturnItem"),
+            "reference_document": (
+                "/".join(
+                    item
+                    for item in (
+                        _text(
+                            billing_by_return_item.get(
+                                (
+                                    _text(row, "CustomerReturn"),
+                                    _text(row, "CustomerReturnItem"),
+                                ),
+                                {},
+                            ),
+                            "BillingDocument",
+                        ),
+                        _text(
+                            billing_by_return_item.get(
+                                (
+                                    _text(row, "CustomerReturn"),
+                                    _text(row, "CustomerReturnItem"),
+                                ),
+                                {},
+                            ),
+                            "BillingDocumentItem",
+                        ),
+                    )
+                    if item
+                )
+                or _text(row, "ReferenceSDDocument")
+            ),
+            "material_received": (
+                None
+                if row.get("ReturnsMaterialHasBeenReceived") in {None, ""}
+                else _truthy(row.get("ReturnsMaterialHasBeenReceived"))
+            ),
+            "refund_type": _text(row, "ReturnsRefundType"),
+        }
+        for row in return_items
+        if _text(row, "CustomerReturn") and _text(row, "CustomerReturnItem")
+    ]
+    business_gaps = [
+        *(["return_receipt_evidence"] if missing_receipt else []),
+        *(["return_refund_type_evidence"] if missing_refund_type else []),
+    ]
     return _result(
         inputs,
-        business_status="attention" if findings else "normal",
+        business_status=(
+            "capability_blocked"
+            if business_gaps
+            else "attention" if findings else "normal"
+        ),
         headline_zh=f"退货与贷项检查发现 {len(findings)} 项需要复核",
         headline_en=f"Returns and credit checks found {len(findings)} item(s) requiring review",
         overview_zh="已检查退货引用、收货状态、退款处理和后续贷项凭证。",
         overview_en="Return references, receipt status, refund handling, and follow-on credit documents were checked.",
-        stages=[_stage("returns", "客户退货", "Customer returns", len(returns)), _stage("credits", "贷项请求", "Credit requests", len(credits)), _stage("billing", "后续开票", "Follow-on billing", len(billing))],
+        stages=[_stage("returns", "客户退货", "Customer returns", len(return_headers) + len(return_items)), _stage("credits", "贷项请求", "Credit requests", len(credits)), _stage("billing", "后续开票", "Follow-on billing", len(billing))],
         findings=findings,
+        metrics=[{"id": "finding_count", "value": len(findings)}],
+        records=records,
+        gaps=_gaps(inputs, *business_gaps),
+        source_complete_override=_source_complete(inputs),
         actions_zh=["复核缺少原单引用或未收货已退款的业务单据。"] if findings else [],
         actions_en=["Review documents with missing source references or refunds before receipt."] if findings else [],
     )
@@ -427,24 +750,89 @@ def _returns_credit(inputs: JsonObject) -> JsonObject:
 def _shortage_allocation(inputs: JsonObject) -> JsonObject:
     items = _rows(inputs, "sales_order_items")
     schedules = _rows(inputs, "schedule_lines")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    date_from = _date(run_input.get("date_from"))
+    date_to = _date(run_input.get("date_to"))
+    if date_from or date_to:
+        schedules = [
+            row
+            for row in schedules
+            if (due := _date(row.get("RequestedDeliveryDate") or row.get("ConfirmedDeliveryDate")))
+            and (date_from is None or due >= date_from)
+            and (date_to is None or due <= date_to)
+        ]
     stock = _rows(inputs, "material_stock")
     atp = _rows(inputs, "atp_availability")
-    available = sum((_decimal(row.get("MatlWrhsStkQtyInMatlBaseUnit") or row.get("MaterialBaseUnit")) for row in stock), Decimal(0))
-    requested = sum((_decimal(row.get("ScheduleLineOrderQuantity") or row.get("RequestedQuantity")) for row in schedules + items), Decimal(0))
-    confirmed = sum((_decimal(row.get("ConfdOrderQtyByMatlAvailCheck") or row.get("ConfdDelivQtyInOrderQtyUnit")) for row in schedules + items), Decimal(0))
-    shortage = max(requested - confirmed - available, Decimal(0))
+    available = sum(
+        (_decimal(row.get("MatlWrhsStkQtyInMatlBaseUnit")) for row in stock),
+        Decimal(0),
+    )
+    requested = sum(
+        (_decimal(row.get("ScheduleLineOrderQuantity")) for row in schedules),
+        Decimal(0),
+    )
+    confirmed = sum(
+        (_decimal(row.get("ConfdOrderQtyByMatlAvailCheck")) for row in schedules),
+        Decimal(0),
+    )
+    unconfirmed = max(requested - confirmed, Decimal(0))
+    key_date_is_current = (
+        (date_from is None or date_from <= date.today())
+        and (date_to is None or date.today() <= date_to)
+    )
+    stock_metric = available if key_date_is_current else None
     atp_complete = bool(atp) and _source_complete(inputs)
+    shortage = max(unconfirmed - available, Decimal(0)) if atp_complete else unconfirmed
     gaps = _gaps(inputs, *(() if atp_complete else ("atp_availability_evidence",)))
+    item_by_key = {
+        (_text(row, "SalesOrder"), _text(row, "SalesOrderItem")): row
+        for row in items
+    }
+    records = [
+        {
+            "sales_order": _text(row, "SalesOrder"),
+            "sales_order_item": _text(row, "SalesOrderItem"),
+            "schedule_line": _text(row, "ScheduleLine"),
+            "material": _text(
+                item_by_key.get((_text(row, "SalesOrder"), _text(row, "SalesOrderItem")), {}),
+                "Material",
+            ),
+            "plant": _text(
+                item_by_key.get((_text(row, "SalesOrder"), _text(row, "SalesOrderItem")), {}),
+                "ProductionPlant",
+                "Plant",
+            ),
+            "requested_quantity": _text(row, "ScheduleLineOrderQuantity", "RequestedQuantity"),
+            "confirmed_quantity": _text(row, "ConfdOrderQtyByMatlAvailCheck", "ConfdDelivQtyInOrderQtyUnit"),
+            "unit": _text(
+                item_by_key.get((_text(row, "SalesOrder"), _text(row, "SalesOrderItem")), {}),
+                "RequestedQuantityUnit",
+                "OrderQuantityUnit",
+                "BaseUnit",
+            ),
+        }
+        for row in schedules
+        if _text(row, "SalesOrder") and _text(row, "SalesOrderItem") and _text(row, "ScheduleLine")
+    ]
     return _result(
         inputs,
-        business_status="attention" if shortage else "partial",
-        headline_zh=f"基于当前库存的未覆盖需求为 {shortage}",
-        headline_en=f"Uncovered demand based on current stock is {shortage}",
+        business_status=("attention" if shortage else "normal") if atp_complete else "capability_blocked",
+        headline_zh=(f"ATP 证据下的未覆盖需求为 {shortage}" if atp_complete else "缺少完整 ATP 证据，未覆盖需求量无法确定"),
+        headline_en=(f"Uncovered demand under complete ATP evidence is {shortage}" if atp_complete else "Uncovered demand is inconclusive without complete ATP evidence"),
         overview_zh="优先使用 Released ATP API；MDKP/MDTB 只作为 MRP 上下文，绝不冒充 ATP 结果。",
         overview_en="The Released ATP API is authoritative; MDKP/MDTB may add MRP context but never substitute for ATP.",
         stages=[_stage("demand", "订单需求", "Order demand", len(items) + len(schedules)), _stage("stock", "库存快照", "Stock snapshot", len(stock)), _stage("atp", "ATP 可用量", "ATP availability", len(atp), state="confirmed" if atp_complete else "unknown")],
-        metrics=[{"id": "requested", "value": str(requested)}, {"id": "confirmed", "value": str(confirmed)}, {"id": "stock", "value": str(available)}, {"id": "uncovered", "value": str(shortage)}],
+        metrics=[
+            {"id": "requested", "value": str(requested)},
+            {"id": "confirmed", "value": str(confirmed)},
+            {"id": "stock", "value": str(stock_metric) if stock_metric is not None else None},
+            # Requested minus confirmed is observable even without Released ATP.
+            # It is not a recommended allocation quantity while the ATP gap remains.
+            {"id": "uncovered", "value": str(shortage)},
+        ],
+        records=records,
         gaps=gaps,
+        source_complete_override=_source_complete(inputs),
         actions_zh=["由计划人员在 SAP 中执行 ATP 复核后再决定分配。"],
         actions_en=["Have a planner run an ATP review in SAP before deciding allocations."],
     )
@@ -452,9 +840,26 @@ def _shortage_allocation(inputs: JsonObject) -> JsonObject:
 
 def _o2c_anomaly(inputs: JsonObject) -> JsonObject:
     orders = _rows(inputs, "sales_orders")
+    order_items = _rows(inputs, "sales_order_items")
     deliveries = _rows(inputs, "delivery_headers")
     billing = _rows(inputs, "billing_headers")
-    accounting = _rows(inputs, "accounting_items")
+    accounting_by_key: dict[tuple[str, str, str, str], JsonObject] = {}
+    for row in _rows(inputs, "accounting_items", "accounting_items_by_billing"):
+        key = (
+            _text(row, "CompanyCode"),
+            _text(row, "FiscalYear"),
+            _text(row, "AccountingDocument"),
+            _text(row, "AccountingDocumentItem"),
+        )
+        accounting_by_key[key] = row
+    # O2C receivable anomalies belong to the customer subledger.  The
+    # accounting document also contains GL lines, which must not be counted as
+    # three separate open-receivable anomalies.
+    accounting = [
+        row
+        for row in accounting_by_key.values()
+        if _text(row, "FinancialAccountType") == "D"
+    ]
     anomalies = sum(1 for row in orders if row.get("TotalBlockStatus"))
     anomalies += sum(1 for row in billing if _truthy(row.get("BillingDocumentIsCancelled")))
     anomalies += sum(1 for row in accounting if not _truthy(row.get("IsCleared")))
@@ -468,6 +873,30 @@ def _o2c_anomaly(inputs: JsonObject) -> JsonObject:
     if not dispute_complete:
         missing.append("billing_dispute_case_evidence")
     gaps = _gaps(inputs, *missing)
+    order_by_id = {_text(row, "SalesOrder"): row for row in orders}
+    records = [
+        {
+            "sales_order": _text(row, "SalesOrder"),
+            "sales_order_item": _text(row, "SalesOrderItem"),
+            "material": _text(row, "Material"),
+            "item_billing_status": _text(
+                row,
+                "OverallBillingStatus",
+                "OverallOrdReltdBillgStatus",
+            )
+            or _text(
+                order_by_id.get(_text(row, "SalesOrder"), {}),
+                "OverallOrdReltdBillgStatus",
+            ),
+            "item_delivery_status": _text(row, "DeliveryStatus", "OverallDeliveryStatus")
+            or _text(
+                order_by_id.get(_text(row, "SalesOrder"), {}),
+                "OverallDeliveryStatus",
+            ),
+        }
+        for row in order_items
+        if _text(row, "SalesOrder") and _text(row, "SalesOrderItem")
+    ]
     return _result(
         inputs,
         business_status="attention" if anomalies else "partial",
@@ -477,6 +906,7 @@ def _o2c_anomaly(inputs: JsonObject) -> JsonObject:
         overview_en="The result covers orders, deliveries, billing, and receivables and reuses completeness- and hash-verified output and dispute ADT evidence.",
         stages=[_stage("orders", "销售订单", "Sales orders", len(orders)), _stage("deliveries", "交货", "Deliveries", len(deliveries)), _stage("billing", "开票", "Billing", len(billing)), _stage("accounting", "应收", "Receivables", len(accounting)), _stage("output", "输出状态", "Output status", len(output_rows), state="confirmed" if output_complete else "unknown"), _stage("dispute", "争议案件", "Dispute cases", len(dispute_rows), state="confirmed" if dispute_complete else "unknown")],
         metrics=[{"id": "anomaly_count", "value": anomalies}],
+        records=records,
         gaps=gaps,
         actions_zh=["按冻结、取消和未清应收分别分派责任人。"] if anomalies else [],
         actions_en=["Assign owners for blocks, cancellations, and open receivables."] if anomalies else [],
@@ -488,6 +918,27 @@ def _billing_output(inputs: JsonObject) -> JsonObject:
     output_rows = _adt_rows(inputs, "output_status")
     complete = _adt_complete(_fallback(inputs, "output_status")) and bool(output_rows)
     failures = [row for row in output_rows if str(row.get("VSTAT") or "").strip() not in {"", "1"}]
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    records = [
+        {
+            "billing_document": _text(row, "OBJKY", "BillingDocument") or str(run_input.get("billing_document") or ""),
+            "output_request": "|".join(
+                filter(
+                    None,
+                    (
+                        _text(row, "KAPPL", "Application"),
+                        _text(row, "KSCHL", "OutputType"),
+                        _text(row, "SPRAS", "Language"),
+                        _text(row, "NACHA", "TransmissionMedium"),
+                    ),
+                )
+            ),
+            "output_status": _text(row, "VSTAT", "ProcessingStatus"),
+            "output_type": _text(row, "KSCHL", "OutputType"),
+            "transmission_medium": _text(row, "NACHA", "TransmissionMedium"),
+        }
+        for row in output_rows
+    ]
     return _result(
         inputs,
         business_status="attention" if failures else "normal",
@@ -497,10 +948,16 @@ def _billing_output(inputs: JsonObject) -> JsonObject:
         overview_en="Only NAST or approved structured output status is read; recipients, message bodies, and attachments are excluded. A complete zero-row result does not prove that no output occurred.",
         stages=[_stage("base_document", "开票凭证", "Billing document", len(billing)), _stage("output_status", "结构化输出状态", "Structured output status", len(output_rows), state="confirmed" if complete else "unknown")],
         findings=[{"code": "OUTPUT_STATUS_REQUIRES_REVIEW", "severity": "medium"} for _ in failures],
+        metrics=[
+            {"id": "output_rows", "value": len(output_rows) if complete else None},
+            {"id": "failed_outputs", "value": len(failures) if complete else None},
+        ],
+        records=records,
         gaps=_gaps(inputs, *(() if complete else ("billing_output_status_evidence",))),
         actions_zh=["由开票输出负责人复核失败或未处理状态。"] if failures else [],
         actions_en=["Have the billing-output owner review failed or unprocessed statuses."] if failures else [],
-        source_complete_override=_source_complete(inputs) and complete,
+        source_complete_override=_source_complete(inputs),
+        allow_empty_records=True,
     )
 
 
@@ -512,6 +969,16 @@ def _billing_dispute(inputs: JsonObject) -> JsonObject:
     for row in cases:
         code = str(row.get("FIN_ROOT_CODE") or "UNCLASSIFIED").strip() or "UNCLASSIFIED"
         categories[code] = categories.get(code, 0) + 1
+    records = [
+        {
+            "billing_document": _text(row, "BillingDocument"),
+            "billing_document_item": _text(row, "BillingDocumentItem"),
+            "dispute_case_count": len(cases) if complete else "",
+            "root_cause_codes": ",".join(sorted(categories)),
+        }
+        for row in billing
+        if _text(row, "BillingDocument") and _text(row, "BillingDocumentItem")
+    ]
     return _result(
         inputs,
         business_status="attention" if cases else "partial",
@@ -520,19 +987,61 @@ def _billing_dispute(inputs: JsonObject) -> JsonObject:
         overview_zh="仅使用已批准的案件GUID、根因码、到期日、客户、公司代码和来源；不导出自由文本或客户通信。",
         overview_en="Only approved case GUID, root-cause code, due date, customer, company code, and origin are used; free text and customer communications are excluded.",
         stages=[_stage("base_document", "开票与 FI 凭证", "Billing and FI documents", len(billing)), _stage("dispute_case", "结构化争议案件", "Structured dispute cases", len(cases), state="confirmed" if complete else "unknown")],
-        metrics=[{"id": "case_count", "value": len(cases)}, {"id": "root_cause_counts", "value": categories}],
+        metrics=[
+            {"id": "case_count", "value": len(cases) if complete else None},
+            {"id": "root_cause_counts", "value": categories if complete else None},
+        ],
+        records=records,
         gaps=_gaps(inputs, *(() if complete else ("billing_dispute_case_evidence",))),
         actions_zh=["由应收争议负责人按根因码复核并补充业务处置。"] if cases else [],
         actions_en=["Have the AR dispute owner review root-cause codes and determine follow-up actions."] if cases else [],
-        source_complete_override=_source_complete(inputs) and complete,
+        source_complete_override=_source_complete(inputs),
     )
 
 
 def _ap_payment(inputs: JsonObject) -> JsonObject:
-    items = _rows(inputs, "supplier_items", "clearing_documents")
-    open_items = [row for row in items if not _truthy(row.get("IsCleared"))]
+    items = [
+        row
+        for row in _rows(inputs, "collect_ap_evidence", "supplier_items", "clearing_documents")
+        if str(row.get("FinancialAccountType") or "K") == "K"
+        and _truthy(row.get("IsOpenItemManaged"))
+    ]
+    cutoff = _date((inputs.get("run_input") or {}).get("as_of"))
+    open_items: list[JsonObject] = []
+    normalized_records: list[JsonObject] = []
+    for row in items:
+        clearing_date = _date(row.get("ClearingDate"))
+        if cutoff is None or clearing_date is None or clearing_date > cutoff:
+            open_items.append(row)
+            normalized_records.append(
+                {
+                    "company_code": str(row.get("CompanyCode") or ""),
+                    "fiscal_year": str(row.get("FiscalYear") or ""),
+                    "accounting_document": str(row.get("AccountingDocument") or ""),
+                    "accounting_document_item": str(row.get("AccountingDocumentItem") or ""),
+                    "ledger": str(row.get("Ledger") or ""),
+                    "posting_date": (
+                        _date(row.get("PostingDate")).isoformat()
+                        if _date(row.get("PostingDate")) is not None
+                        else ""
+                    ),
+                    "debit_credit": str(row.get("DebitCreditCode") or ""),
+                    "amount": str(row.get("AmountInTransactionCurrency") or ""),
+                    "currency": str(row.get("TransactionCurrency") or ""),
+                    "as_of_status": (
+                        "open_subsequently_cleared" if clearing_date is not None else "open"
+                    ),
+                    "clearing_date": clearing_date.isoformat() if clearing_date is not None else "",
+                    "clearing_document": str(row.get("ClearingAccountingDocument") or ""),
+                    "payment_evidence_status": "bank_settlement_not_proven",
+                }
+            )
     blocked = [row for row in open_items if row.get("PaymentBlockingReason")]
-    gaps = _gaps(inputs, "payment_run_and_bank_master_evidence")
+    gaps = _gaps(
+        inputs,
+        "bank_settlement_not_proven",
+        "payment_run_and_bank_master_evidence",
+    )
     return _result(
         inputs,
         business_status="attention" if open_items else "partial",
@@ -543,27 +1052,109 @@ def _ap_payment(inputs: JsonObject) -> JsonObject:
         stages=[_stage("supplier_items", "供应商行项目", "Supplier items", len(items)), _stage("payment_run", "付款运行与银行证据", "Payment run and bank evidence", 0, state="unknown")],
         metrics=[{"id": "open_items", "value": len(open_items)}, {"id": "payment_blocked", "value": len(blocked)}],
         gaps=gaps,
+        records=normalized_records,
+        record_columns=[
+            {"key": "accounting_document", "label": {"zh": "会计凭证", "en": "Accounting document"}},
+            {"key": "accounting_document_item", "label": {"zh": "行项目", "en": "Item"}},
+            {"key": "posting_date", "label": {"zh": "过账日期", "en": "Posting date"}, "format": "date"},
+            {"key": "debit_credit", "label": {"zh": "借贷方向", "en": "Debit/Credit"}},
+            {"key": "amount", "label": {"zh": "金额", "en": "Amount"}, "format": "decimal"},
+            {"key": "currency", "label": {"zh": "币种", "en": "Currency"}},
+            {"key": "as_of_status", "label": {"zh": "截止日状态", "en": "As-of status"}, "format": "status"},
+            {"key": "clearing_document", "label": {"zh": "当前清账凭证", "en": "Current clearing document"}},
+            {"key": "payment_evidence_status", "label": {"zh": "付款证据", "en": "Payment evidence"}, "format": "status"},
+        ],
         actions_zh=["由应付人员复核到期日、付款冻结和付款运行。"],
         actions_en=["Have AP review due dates, payment blocks, and the payment run."],
     )
 
 
 def _ar_collection(inputs: JsonObject) -> JsonObject:
-    items = _rows(inputs, "customer_items", "clearing_documents")
-    open_items = [row for row in items if not _truthy(row.get("IsCleared"))]
-    gaps = _gaps(inputs, "bank_receipt_matching_evidence")
+    items = [
+        row
+        for row in _rows(inputs, "customer_items", "clearing_documents")
+        if str(row.get("FinancialAccountType") or "D") == "D"
+        and _truthy(row.get("IsOpenItemManaged"))
+    ]
+    cutoff = _date((inputs.get("run_input") or {}).get("as_of"))
+    dunning_master = _rows(inputs, "customer_dunning")
+    open_items = []
+    records: list[JsonObject] = []
+    dunned_items = 0
+    historical_dunning_unknown = 0
+    for row in items:
+        posting_date = _date(row.get("PostingDate"))
+        clearing_date = _date(row.get("ClearingDate"))
+        if cutoff is not None and posting_date is not None and posting_date > cutoff:
+            continue
+        if cutoff is None or clearing_date is None or clearing_date > cutoff:
+            open_items.append(row)
+            dunning_level = _text(row, "DunningLevel") or "0"
+            last_dunning_date = _date(row.get("LastDunningDate"))
+            if (
+                dunning_level not in {"", "0"}
+                and last_dunning_date is not None
+                and cutoff is not None
+                and last_dunning_date <= cutoff
+            ):
+                dunning_status = "confirmed_before_cutoff"
+                dunned_items += 1
+            elif last_dunning_date is not None and cutoff is not None and last_dunning_date > cutoff:
+                dunning_status = "historical_status_unknown"
+                historical_dunning_unknown += 1
+            else:
+                # The current line-item snapshot cannot prove that a blank
+                # last-dunning date also was blank at the historical cutoff.
+                # Without complete dunning-run history, fail closed.
+                dunning_status = "historical_status_unknown"
+                historical_dunning_unknown += 1
+            records.append(
+                {
+                    "company_code": _text(row, "CompanyCode"),
+                    "fiscal_year": _text(row, "FiscalYear"),
+                    "accounting_document": _text(row, "AccountingDocument"),
+                    "accounting_document_item": _text(row, "AccountingDocumentItem"),
+                    "ledger": _text(row, "Ledger"),
+                    "customer": _text(row, "Customer"),
+                    "posting_date": posting_date.isoformat() if posting_date else "",
+                    "due_date": _date_text(row, "NetDueDate", "DueCalculationBaseDate"),
+                    "amount": _text(row, "AmountInTransactionCurrency"),
+                    "currency": _text(row, "TransactionCurrency"),
+                    "as_of_status": "open_subsequently_cleared" if clearing_date else "open",
+                    "clearing_date": clearing_date.isoformat() if clearing_date else "",
+                    "clearing_document": _text(row, "ClearingAccountingDocument"),
+                    "dunning_level": dunning_level,
+                    "last_dunning_date": last_dunning_date.isoformat() if last_dunning_date else "",
+                    "dunning_blocking_reason": _text(row, "DunningBlockingReason"),
+                    "dunning_as_of_status": dunning_status,
+                }
+            )
+    current_master_has_only_later_state = any(
+        cutoff is not None
+        and (last_dunned := _date(row.get("LastDunnedOn"))) is not None
+        and last_dunned > cutoff
+        for row in dunning_master
+    )
+    gaps = _gaps(inputs)
+    if current_master_has_only_later_state or historical_dunning_unknown:
+        gaps = sorted({*gaps, "historical_dunning_evidence"})
     return _result(
         inputs,
-        business_status="attention" if open_items else "partial",
+        business_status="inconclusive" if gaps else ("attention" if open_items else "complete"),
         headline_zh=f"发现 {len(open_items)} 条客户未清应收",
         headline_en=f"Found {len(open_items)} customer open receivable item(s)",
-        overview_zh="已形成账龄和催收范围；缺少银行流水时不能确认到账匹配。",
-        overview_en="The aging and collection scope is available; bank-receipt matching cannot be confirmed without bank evidence.",
-        stages=[_stage("receivables", "客户应收", "Customer receivables", len(items)), _stage("bank_match", "银行到账匹配", "Bank receipt matching", 0, state="unknown")],
-        metrics=[{"id": "open_items", "value": len(open_items)}],
+        overview_zh="已按清账日期重建截止日未清状态，并区分逐项催款日期证据与当前客户催款主数据；当前主数据不能替代历史快照。",
+        overview_en="As-of open status was reconstructed from clearing dates, with item-level dunning dates separated from the current customer dunning master; current master data is not a historical snapshot.",
+        stages=[_stage("receivables", "客户应收", "Customer receivables", len(items)), _stage("customer_dunning", "客户催款主数据", "Customer dunning master", len(dunning_master))],
+        metrics=[
+            {"id": "open_items", "value": len(open_items)},
+            {"id": "dunned_items", "value": dunned_items},
+            {"id": "historical_dunning_unknown", "value": historical_dunning_unknown},
+        ],
+        records=records,
         gaps=gaps,
-        actions_zh=["按到期日和金额安排催收，并由财务复核银行到账。"],
-        actions_en=["Prioritize collection by due date and amount and have finance verify bank receipts."],
+        actions_zh=["按到期日和金额安排催收；对缺少截止日历史催款快照的项目复核催款日志。"],
+        actions_en=["Prioritize collection by due date and amount; review the dunning log where an as-of historical snapshot is unavailable."],
     )
 
 
@@ -573,6 +1164,54 @@ def _grir(inputs: JsonObject) -> JsonObject:
     invoices = _rows(inputs, "supplier_invoice_items")
     gl = _rows(inputs, "gl_items")
     attention = bool(gl) or len(receipts) != len(invoices)
+    po_items = [
+        row
+        for row in pos
+        if _text(row, "PurchaseOrder") and _text(row, "PurchaseOrderItem")
+    ]
+    records: list[JsonObject] = []
+    for row in po_items:
+        po = _text(row, "PurchaseOrder")
+        item = _text(row, "PurchaseOrderItem")
+        item_receipts = [
+            value
+            for value in receipts
+            if _text(value, "PurchaseOrder") == po
+            and _text(value, "PurchaseOrderItem") == item
+        ]
+        item_invoices = [
+            value
+            for value in invoices
+            if _text(value, "PurchaseOrder") == po
+            and _text(value, "PurchaseOrderItem") == item
+        ]
+        records.append(
+            {
+                "purchase_order": po,
+                "purchase_order_item": item,
+                "material": _text(row, "Material"),
+                "receipt_rows": len(item_receipts),
+                "invoice_rows": len(item_invoices),
+                "receipt_quantity": str(
+                    sum(
+                        (_decimal(value.get("QuantityInEntryUnit") or value.get("QuantityInBaseUnit")))
+                        for value in item_receipts
+                    )
+                ),
+                "invoice_quantity": str(
+                    sum(
+                        (_decimal(value.get("QuantityInPurchaseOrderUnit")))
+                        for value in item_invoices
+                    )
+                ),
+                "unit": _text(
+                    row,
+                    "PurchaseOrderQuantityUnit",
+                    "OrderQuantityUnit",
+                    "OrderPriceUnit",
+                ),
+            }
+        )
     return _result(
         inputs,
         business_status="attention" if attention else "normal",
@@ -582,6 +1221,7 @@ def _grir(inputs: JsonObject) -> JsonObject:
         overview_en="Receipt, reversal, invoice, and G/L evidence is retained by purchase-order item for netting and aging.",
         stages=[_stage("purchase_order", "采购订单", "Purchase orders", len(pos)), _stage("receipt", "收货与冲销", "Receipts and reversals", len(receipts)), _stage("invoice", "供应商发票", "Supplier invoices", len(invoices)), _stage("gl", "GR/IR 总账", "GR/IR G/L", len(gl))],
         metrics=[{"id": "receipt_rows", "value": len(receipts)}, {"id": "invoice_rows", "value": len(invoices)}, {"id": "gl_rows", "value": len(gl)}],
+        records=records,
         actions_zh=["复核收货与发票不一致的采购项目。"] if attention else [],
         actions_en=["Review purchase-order items whose receipt and invoice evidence does not align."] if attention else [],
     )
@@ -598,6 +1238,7 @@ def _month_end(inputs: JsonObject) -> JsonObject:
         overview_zh="当前只覆盖已发布的 FI 行项目；期间控制、固定资产折旧和专项关账检查缺失。",
         overview_en="Only published FI line items are covered; period control, asset depreciation, and specialized closing checks are missing.",
         stages=[_stage("fi", "FI 期间凭证", "FI period documents", len(fi)), _stage("closing_checks", "完整关账检查清单", "Complete closing checklist", 0, state="unknown")],
+        metrics=[{"id": "fi_rows", "value": len(fi)}],
         gaps=gaps,
         actions_zh=["补充公司代码和期间绑定的只读关账检查接口后再判断。"],
         actions_en=["Add company-code and period-bound read-only closing checks before assessing readiness."],
@@ -608,6 +1249,49 @@ def _demand_forecast(inputs: JsonObject) -> JsonObject:
     demand = _rows(inputs, "sales_demand")
     planned = _rows(inputs, "planned_orders")
     gaps = _gaps(inputs, "pir_evidence")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    demand_period_attributable = not demand or all(
+        _date_text(row, "RequirementDate", "RequestedDeliveryDate")
+        for row in demand
+    )
+    attributable_demand = demand if demand_period_attributable else []
+    grouped: dict[tuple[str, str, str], JsonObject] = {}
+    for row, kind in [(row, "demand") for row in attributable_demand] + [(row, "planned") for row in planned]:
+        key = (
+            _text(row, "Material"),
+            _text(row, "Plant", "ProductionPlant"),
+            _date_text(
+                row,
+                "RequirementDate",
+                "PlannedOrderOpeningDate",
+                "PlannedOrderEndDate",
+                "PlndOrderPlannedStartDate",
+                "PlndOrderPlannedEndDate",
+            )
+            or str(run_input.get("date_from") or ""),
+        )
+        if not all(key):
+            continue
+        record = grouped.setdefault(
+            key,
+            {
+                "material": key[0],
+                "plant": key[1],
+                "requirement_date": key[2],
+                "demand_quantity": "0",
+                "planned_quantity": "0",
+                "unit": _text(row, "RequestedQuantityUnit", "ProductionUnit", "BaseUnit"),
+            },
+        )
+        field = "demand_quantity" if kind == "demand" else "planned_quantity"
+        record[field] = str(
+            _decimal(record[field])
+            + _decimal(
+                row.get("RequestedQuantity")
+                or row.get("OrderQuantity")
+                or row.get("TotalQuantity")
+            )
+        )
     return _result(
         inputs,
         business_status="capability_blocked",
@@ -616,7 +1300,13 @@ def _demand_forecast(inputs: JsonObject) -> JsonObject:
         overview_zh="缺少同物料、工厂和期间的 PIR 只读证据；本次不训练模型也不写回 PIR。",
         overview_en="Read-only PIR evidence for the same material, plant, and period is missing; no model is trained and no PIR is written.",
         stages=[_stage("demand", "销售需求", "Sales demand", len(demand)), _stage("planned", "计划订单", "Planned orders", len(planned)), _stage("pir", "独立需求 PIR", "Planned independent requirements", 0, state="unknown")],
+        metrics=[
+            {"id": "demand_rows", "value": len(demand) if demand_period_attributable else None},
+            {"id": "planned_order_rows", "value": len(planned)},
+        ],
         gaps=gaps,
+        limitations=["sales_demand_period_evidence"],
+        records=list(grouped.values()),
         actions_zh=["增加经过审批的 PBIM/PBED 只读 Skill 后再运行。"],
         actions_en=["Add an approved PBIM/PBED read-only Skill and rerun."],
     )
@@ -625,9 +1315,51 @@ def _demand_forecast(inputs: JsonObject) -> JsonObject:
 def _mrp_exception(inputs: JsonObject) -> JsonObject:
     master = _rows(inputs, "mrp_material")
     coverage = _rows(inputs, "material_coverages")
-    elements = _rows(inputs, "supply_demand_items")
-    dynamic = [] if coverage and elements else ["mrp_coverage_or_supply_demand_evidence"]
+    raw_elements = _rows(inputs, "supply_demand_items")
+    elements_complete = _topic_complete(inputs, "supply_demand_items")
+    # Duplicate/non-monotonic stable keys make the supply-demand list unsafe
+    # for deterministic business comparison even when SAP returned rows.
+    elements = raw_elements if elements_complete else []
+    dynamic = (
+        []
+        if _topic_complete(inputs, "material_coverages") and coverage and elements
+        else ["mrp_coverage_or_supply_demand_evidence"]
+    )
     gaps = _gaps(inputs, *dynamic)
+    records: list[JsonObject] = []
+    for row in elements:
+        material = _text(row, "Material")
+        plant = _text(row, "Plant", "MRPPlant", "MRPArea")
+        category = _text(row, "MRPElementCategory")
+        element = _text(row, "MRPElement", "MRPElementType")
+        if not element and category == "WB":
+            element = "_STOCK"
+        elif not element:
+            element = category
+        if not material or not plant or not element:
+            continue
+        messages = []
+        for number_field, text_field in (
+            ("ExceptionMessageNumber", "ExceptionMessageText"),
+            ("ExceptionMessageNumber2", "ExceptionMessageText2"),
+        ):
+            number = _text(row, number_field)
+            message = _text(row, text_field)
+            if number or message:
+                messages.append(" ".join(item for item in (number, message) if item))
+        records.append(
+            {
+                "material": material,
+                "plant": plant,
+                "mrp_element": element,
+                "requirement_date": _date_text(row, "MRPElementAvailyOrRqmtDate", "RequirementDate"),
+                "quantity": _text(row, "MRPElementOpenQuantity", "AvailableQuantity"),
+                "unit": _text(row, "MaterialBaseUnit", "BaseUnit"),
+                "exception_message": "; ".join(messages) or _text(
+                    row, "MRPElementReschedulingProposal", "ExceptionMessage"
+                ),
+            }
+        )
     return _result(
         inputs,
         business_status="attention" if coverage or elements else "capability_blocked",
@@ -636,7 +1368,13 @@ def _mrp_exception(inputs: JsonObject) -> JsonObject:
         overview_zh="只有覆盖和供需明细均完整时，才能判断没有短缺或重排异常。",
         overview_en="Both coverage and supply-demand details must be complete before concluding that no shortage or rescheduling exception exists.",
         stages=[_stage("master", "MRP 主数据", "MRP master", len(master)), _stage("coverage", "物料覆盖", "Material coverage", len(coverage)), _stage("elements", "供需项目", "Supply-demand items", len(elements))],
+        metrics=[
+            {"id": "coverage_rows", "value": len(coverage)},
+            {"id": "supply_demand_rows", "value": len(elements)},
+        ],
         gaps=gaps,
+        records=records,
+        allow_empty_records=True,
         actions_zh=["复核 MRP 服务超时、短缺参数文件和供需异常消息。"],
         actions_en=["Review MRP timeouts, shortage profile parameters, and exception messages."],
     )
@@ -649,6 +1387,19 @@ def _production_monitor(inputs: JsonObject) -> JsonObject:
     components = _rows(inputs, "production_components")
     movements = _rows(inputs, "material_documents")
     attention = any(not _truthy(row.get("OperationIsConfirmed")) for row in operations)
+    records = [
+        {
+            "manufacturing_order": _text(row, "ManufacturingOrder", "ProductionOrder"),
+            "operation": _text(row, "ManufacturingOrderOperation", "Operation"),
+            "work_center": _text(row, "WorkCenter", "WorkCenterInternalID"),
+            "confirmed": _truthy(row.get("OperationIsConfirmed")),
+            "planned_start": _date_text(row, "OpErlstSchedldExecStrtDte", "OpPlannedStartDate", "OperationPlannedStartDate"),
+            "planned_end": _date_text(row, "OpErlstSchedldExecEndDte", "OpPlannedEndDate", "OperationPlannedEndDate"),
+        }
+        for row in operations
+        if _text(row, "ManufacturingOrder", "ProductionOrder")
+        and _text(row, "ManufacturingOrderOperation", "Operation")
+    ]
     return _result(
         inputs,
         business_status="attention" if attention else "normal",
@@ -657,17 +1408,53 @@ def _production_monitor(inputs: JsonObject) -> JsonObject:
         overview_zh="已核对订单状态、工序确认、组件领料和物料凭证，不执行确认、发料、收货或 TECO。",
         overview_en="Order status, operation confirmation, component withdrawal, and material documents were checked without confirmation, issue, receipt, or TECO actions.",
         stages=[_stage("order", "生产订单", "Production order", len(orders)), _stage("status", "订单状态", "Order status", len(statuses)), _stage("operations", "生产工序", "Operations", len(operations)), _stage("components", "组件", "Components", len(components)), _stage("movements", "物料凭证", "Material documents", len(movements))],
+        metrics=[
+            {"id": "operation_rows", "value": len(operations)},
+            {"id": "unconfirmed_operations", "value": sum(1 for row in operations if not _truthy(row.get("OperationIsConfirmed")))},
+            {"id": "movement_rows", "value": len(movements)},
+        ],
+        records=records,
         actions_zh=["由生产人员复核未确认工序、缺料和待收货状态。"] if attention else [],
         actions_en=["Have production review unconfirmed operations, shortages, and pending receipts."] if attention else [],
     )
 
 
 def _production_schedule(inputs: JsonObject) -> JsonObject:
-    planned = _rows(inputs, "planned_orders", "planned_capacities")
+    planned = _rows(inputs, "planned_orders", "planned_capacities", "planned_pipeline_operations")
     operations = _rows(inputs, "production_operations")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    date_from = _date(run_input.get("date_from"))
+    date_to = _date(run_input.get("date_to"))
+    if date_from and date_to:
+        operations = [
+            row
+            for row in operations
+            if any(
+                value is not None and date_from <= value <= date_to
+                for value in (
+                    _date(row.get("OpActualExecutionStartDate")),
+                    _date(row.get("OpActualExecutionEndDate")),
+                )
+            )
+        ]
     centers = _rows(inputs, "work_centers", "work_center_capacities")
     buckets = _rows(inputs, "capacity_buckets")
     gaps = _gaps(inputs, *("complete_capacity_bucket_evidence",) if not buckets else ())
+    record_source = buckets if buckets else planned
+    records = [
+        {
+            "plant": _text(row, "Plant"),
+            "work_center": _text(row, "WorkCenter", "WorkCenterInternalID"),
+            "capacity_date": _date_text(row, "CapacityEvaluationTimePeriod", "OperationLatestStartDate", "CapacityDate", "StartDate", "ValidityStartDate"),
+            "required_capacity": _text(row, "RemainingCapReqExecutionDurn", "CapacityRequirement", "RequiredCapacity"),
+            "available_capacity": _text(row, "WorkCenterAvailableCapacity", "AvailableCapacity"),
+            "unit": _text(row, "CapacityRequirementUnit", "WorkCenterCapacityUnit", "CapacityUnit", "Unit"),
+        }
+        for row in record_source
+        if _text(row, "Plant")
+        and _text(row, "WorkCenter", "WorkCenterInternalID")
+        and _date_text(row, "CapacityEvaluationTimePeriod", "OperationLatestStartDate", "CapacityDate", "StartDate", "ValidityStartDate")
+    ]
     return _result(
         inputs,
         business_status="attention" if buckets else "capability_blocked",
@@ -676,7 +1463,14 @@ def _production_schedule(inputs: JsonObject) -> JsonObject:
         overview_zh="只有计划负荷和可用产能按同一工作中心、日期及单位完整返回时才计算利用率。",
         overview_en="Utilization is calculated only when planned load and available capacity are complete for the same work center, dates, and units.",
         stages=[_stage("planned", "计划订单与产能需求", "Planned orders and requirements", len(planned)), _stage("operations", "生产工序", "Production operations", len(operations)), _stage("centers", "工作中心", "Work centers", len(centers)), _stage("buckets", "产能桶", "Capacity buckets", len(buckets), state="confirmed" if buckets else "unknown")],
+        metrics=[
+            {"id": "planned_rows", "value": 0},
+            {"id": "operation_rows", "value": len(planned) + len(operations)},
+            {"id": "capacity_bucket_rows", "value": len(buckets)},
+        ],
         gaps=gaps,
+        records=records,
+        allow_empty_records=True,
         actions_zh=["补齐产能桶后由计划人员人工比较排程方案。"],
         actions_en=["Complete capacity-bucket evidence and have planners compare scheduling scenarios."],
     )
@@ -689,6 +1483,17 @@ def _production_variance(inputs: JsonObject) -> JsonObject:
     movements = _rows(inputs, "material_documents")
     costs = _rows(inputs, "cost_items")
     gaps = _gaps(inputs, *("production_cost_evidence",) if not costs else ())
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    records = [
+        {
+            "manufacturing_order": _text(row, "ManufacturingOrder", "OrderID") or str(run_input.get("manufacturing_order") or ""),
+            "cost_element": _text(row, "CostElement", "GLAccount"),
+            "actual_amount": _text(row, "AmountInCompanyCodeCurrency", "AmountInObjectCurrency"),
+            "currency": _text(row, "CompanyCodeCurrency", "ControllingObjectCurrency"),
+        }
+        for row in costs
+        if _text(row, "CostElement", "GLAccount")
+    ]
     return _result(
         inputs,
         business_status="attention" if movements or costs else "partial",
@@ -697,17 +1502,24 @@ def _production_variance(inputs: JsonObject) -> JsonObject:
         overview_zh="没有实际活动时只报告“尚无过账证据”，不会解释为零偏差或表现正常。",
         overview_en="No actual activity is reported as no posting evidence, not as zero variance or good performance.",
         stages=[_stage("quantity", "订单数量", "Order quantity", len(items)), _stage("operations", "工序确认", "Operation confirmation", len(operations)), _stage("materials", "组件与领料", "Components and issues", len(components) + len(movements)), _stage("costs", "成本行项目", "Cost items", len(costs), state="confirmed" if costs else "unknown")],
+        metrics=[
+            {"id": "operation_rows", "value": len(operations)},
+            {"id": "movement_rows", "value": len(movements)},
+            {"id": "cost_rows", "value": len(costs)},
+        ],
         gaps=gaps,
+        records=records,
+        allow_empty_records=True,
         actions_zh=["对缺少实际活动或成本证据的订单补充过账与结算核查。"],
         actions_en=["Add posting and settlement checks for orders without actual-activity or cost evidence."],
     )
 
 
 def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
-    mrp = _rows(inputs, "mrp_coverage", "supply_demand") + _adt_rows(inputs, "mrp")
-    requisitions = _rows(inputs, "purchase_requisitions") + _adt_rows(inputs, "pr")
-    orders = _rows(inputs, "purchase_orders") + _adt_rows(inputs, "po_schedule")
-    sources = _rows(inputs, "info_records", "contracts", "suppliers") + _adt_rows(inputs, "source")
+    mrp = _rows(inputs, "mrp", "mrp_coverage", "supply_demand") + _adt_rows(inputs, "mrp")
+    requisitions = _rows(inputs, "pr", "purchase_requisitions") + _adt_rows(inputs, "pr")
+    orders = _rows(inputs, "po_schedule", "purchase_orders") + _adt_rows(inputs, "po_schedule")
+    sources = _rows(inputs, "source", "info_records", "contracts", "suppliers") + _adt_rows(inputs, "source")
     complete, missing = _required_topics(inputs, "mrp", "pr", "po_schedule", "source")
     units = {
         str(row.get(key) or "").strip()
@@ -724,14 +1536,16 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
     pending_pr = [
         row for row in requisitions
         if not _truthy(row.get("IsDeleted"))
-        and str(row.get("ProcessingStatus") or row.get("ReleaseStatus") or "").upper()
-        not in {"05", "C", "RELEASED", "COMPLETED"}
+        and not _truthy(row.get("IsClosed"))
+        and str(row.get("ProcessingStatus") or "").upper() == "N"
+        and str(row.get("PurReqnReleaseStatus") or row.get("ReleaseStatus") or "").upper()
+        not in {"05", "08", "C", "RELEASED", "COMPLETED"}
     ]
     today = _date((inputs.get("run_input") or {}).get("as_of")) or date.today()
     expediting = [
         row for row in orders
         if (_date(row.get("ScheduleLineDeliveryDate") or row.get("DeliveryDate")) or date.max) < today
-        and _decimal(row.get("OpenPurchaseOrderQuantity") or row.get("ScheduleLineOrderQuantity")) > 0
+        and _open_po_quantity(row) > 0
     ]
     findings = [
         {"code": "UNIT_NOT_COMPARABLE", "severity": "high"}
@@ -740,6 +1554,68 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
     ]
     if not complete:
         findings.append({"code": "REQUIRED_EVIDENCE_INCOMPLETE", "severity": "high"})
+    records: list[JsonObject] = []
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    for index, row in enumerate(mrp):
+        material = _text(row, "Material") or str(run_input.get("material") or "")
+        plant = _text(row, "MRPPlant", "Plant", "MRPArea") or str(run_input.get("plant") or "")
+        profile = _text(row, "MaterialShortageProfile")
+        counter = _text(row, "MaterialShortageProfileCount")
+        segment_type = _text(row, "MRPPlanningSegmentType")
+        segment_number = _text(row, "MRPPlanningSegmentNumber") or "EMPTY"
+        requirement_id = (
+            "|".join(
+                (
+                    profile,
+                    counter,
+                    _text(row, "MRPArea") or plant,
+                    "(blank)" if segment_number == "EMPTY" else segment_number,
+                    segment_type,
+                )
+            )
+            if profile and counter
+            else "|".join(
+                filter(
+                    None,
+                    (
+                        _text(row, "MRPElement", "MRPElementType"),
+                        _text(row, "MRPElementDocument", "PurchaseRequisition", "PurchaseOrder"),
+                        _text(row, "MRPElementDocumentItem", "PurchaseRequisitionItem", "PurchaseOrderItem"),
+                        _date_text(row, "MRPElementAvailyOrRqmtDate", "RequirementDate"),
+                    ),
+                )
+            ) or f"row-{index + 1}"
+        )
+        if material and plant:
+            records.append(
+                {
+                    "material": material,
+                    "plant": plant,
+                    "requirement_id": requirement_id,
+                    "requirement_date": _date_text(row, "MaterialShortageStartDate", "MRPElementAvailyOrRqmtDate", "RequirementDate"),
+                    "mrp_element_type": "material_coverage" if profile else _text(row, "MRPElement", "MRPElementType"),
+                    "shortage_quantity": _text(row, "MaterialShortageQuantity", "MRPElementOpenQuantity"),
+                    "unit": _text(row, "MaterialBaseUnit", "BaseUnit", "Unit"),
+                }
+            )
+    if not records:
+        for row in pending_pr:
+            material = _text(row, "Material") or str(run_input.get("material") or "")
+            plant = _text(row, "Plant") or str(run_input.get("plant") or "")
+            requisition = _text(row, "PurchaseRequisition", "BANFN")
+            item = _text(row, "PurchaseRequisitionItem", "BNFPO")
+            if material and plant and requisition and item:
+                records.append(
+                    {
+                        "material": material,
+                        "plant": plant,
+                        "requirement_id": f"PR:{requisition}/{item}",
+                        "requirement_date": _date_text(row, "DeliveryDate", "RequirementDate", "PurchaseRequisitionReleaseDate"),
+                        "mrp_element_type": "purchase_requisition",
+                        "shortage_quantity": "",
+                        "unit": _text(row, "BaseUnit", "PurchaseRequisitionQuantityUnit"),
+                    }
+                )
     return _result(
         inputs,
         business_status="attention" if shortage or pending_pr or expediting else "normal",
@@ -768,6 +1644,7 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
             {"id": "expedite_po", "value": len(expediting)},
             {"id": "valid_source_candidates", "value": len(sources)},
         ],
+        records=records,
         gaps=_gaps(inputs, *missing),
         actions_zh=["释放或转换合格 PR，并由采购员复核逾期 PO 与有效货源。"],
         actions_en=["Release or convert eligible PRs and have purchasing review overdue POs and valid sources."],
@@ -776,13 +1653,21 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
 
 
 def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
-    stock = _rows(inputs, "material_stock") + _adt_rows(inputs, "stock")
-    movements = _rows(inputs, "material_movements") + _adt_rows(inputs, "movement")
-    batches = _rows(inputs, "batches") + _adt_rows(inputs, "batch_expiry")
-    parameters = _rows(inputs, "replenishment_parameters") + _adt_rows(inputs, "parameters")
+    # Fixed-Agent mappings use semantic evidence aliases, while Embedded Provider
+    # responses use generated inner ids such as step_1. Accept both the outer
+    # aliases and legacy fixture names so real rows reach the business report.
+    stock = _rows(inputs, "stock", "material_stock") + _adt_rows(inputs, "stock")
+    movements = _rows(
+        inputs, "movement", "movement_dates", "material_movements"
+    ) + _adt_rows(inputs, "movement")
+    batches = _rows(inputs, "batch", "batches") + _adt_rows(inputs, "batch_expiry")
+    parameters = _rows(
+        inputs, "parameters", "replenishment_parameters"
+    ) + _adt_rows(inputs, "parameters")
     complete, missing = _required_topics(inputs, "stock", "movement", "batch_expiry", "parameters")
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
     as_of = _date(run_input.get("as_of")) or date.today()
+    stock_key_date_mismatch = as_of != date.today()
     slow_days = int(run_input.get("slow_moving_days") or 180)
     obsolete_days = int(run_input.get("obsolete_days") or 365)
     expiry_days = int(run_input.get("expiry_days") or 90)
@@ -812,7 +1697,7 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         for key in ("MaterialBaseUnit", "BaseUnit", "MEINS")
         if str(row.get(key) or "").strip()
     }
-    can_quantify = complete and bool(safety_values) and len(units) <= 1 and all(
+    can_quantify = complete and not stock_key_date_mismatch and bool(safety_values) and len(units) <= 1 and all(
         any(key in row for key in ("MatlWrhsStkQtyInMatlBaseUnit", "UnrestrictedUseStock", "LABST"))
         for row in stock
     )
@@ -825,9 +1710,46 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
     findings.extend({"code": "EXPIRY_RISK", "severity": "high"} for _row in expiry_candidates)
     if not can_quantify:
         findings.append({"code": "TRANSFER_QUANTITY_SUPPRESSED", "severity": "medium"})
+    batch_by_key = {
+        (
+            _text(row, "Material", "MATNR"),
+            _text(row, "Plant", "WERKS"),
+            _text(row, "StorageLocation", "LGORT"),
+            _text(row, "Batch", "CHARG") or "_NO_BATCH",
+        ): row
+        for row in batches
+    }
+    records: list[JsonObject] = []
+    for row in stock:
+        material = _text(row, "Material", "MATNR") or str(run_input.get("material") or "")
+        plant = _text(row, "Plant", "WERKS") or str(run_input.get("plant") or "")
+        storage = _text(row, "StorageLocation", "LGORT") or str(run_input.get("storage_location") or "")
+        matching_batches = [
+            (key, batch)
+            for key, batch in batch_by_key.items()
+            if key[:3] == (material, plant, storage)
+        ] or [((material, plant, storage, "_NO_BATCH"), {})]
+        for key, batch in matching_batches:
+            records.append(
+                {
+                    "material": material,
+                    "plant": plant,
+                    "storage_location": storage,
+                    "batch": key[3],
+                    "unrestricted_stock": _text(row, "MatlWrhsStkQtyInMatlBaseUnit", "UnrestrictedUseStock", "LABST"),
+                    "unit": _text(row, "MaterialBaseUnit", "BaseUnit", "MEINS"),
+                    "last_movement_date": max(movement_dates).isoformat() if movement_dates else "",
+                    "shelf_life_expiration_date": _date_text(batch, "ShelfLifeExpirationDate", "VFDAT"),
+                    "safety_stock": str(sum(safety_values, Decimal(0))) if safety_values else "",
+                }
+            )
     return _result(
         inputs,
-        business_status="attention" if findings else "normal",
+        business_status=(
+            "capability_blocked"
+            if stock_key_date_mismatch or not can_quantify
+            else "attention" if findings else "normal"
+        ),
         headline_zh=f"发现 {len(expiry_candidates)} 个临期批次；调拨量为 {excess if excess is not None else '候选，无法确定'}",
         headline_en=f"Found {len(expiry_candidates)} expiring batch(es); transfer quantity is {excess if excess is not None else 'candidate-only and inconclusive'}",
         overview_zh="仅 unrestricted/available 库存参与平衡；缺少安全库存、单位或批次数量时不输出确定调拨量。",
@@ -845,7 +1767,15 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
             {"id": "expiry_candidates", "value": len(expiry_candidates)},
             {"id": "confirmed_transfer_quantity", "value": str(excess) if excess is not None else None},
         ],
-        gaps=_gaps(inputs, *missing),
+        records=records,
+        gaps=_gaps(
+            inputs,
+            *missing,
+            *(["historical_stock_balance_evidence"] if stock_key_date_mismatch else []),
+        ),
+        limitations=(
+            ["historical_stock_balance_evidence"] if stock_key_date_mismatch else []
+        ),
         actions_zh=["由库存计划员复核慢动、呆滞和临期候选，并在 SAP 中人工决定调拨。"],
         actions_en=["Have inventory planning review slow-moving, obsolete, and expiring candidates and decide transfers in SAP."],
         source_complete_override=complete,
@@ -854,10 +1784,22 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
 
 def _intelligent_sourcing_rfq(inputs: JsonObject) -> JsonObject:
     rfq = _rows(inputs, "rfq") + _adt_rows(inputs, "rfq")
-    quotations = _rows(inputs, "quotations") + _adt_rows(inputs, "quotation")
-    suppliers = _rows(inputs, "suppliers") + _adt_rows(inputs, "supplier")
-    sources = _rows(inputs, "info_records", "contracts") + _adt_rows(inputs, "source")
+    quotation_evidence = _rows(inputs, "quotation", "quotations") + _adt_rows(inputs, "quotation")
+    suppliers = _rows(inputs, "supplier", "suppliers") + _adt_rows(inputs, "supplier")
+    sources = _rows(inputs, "source", "info_records", "contracts") + _adt_rows(inputs, "source")
     complete, missing = _required_topics(inputs, "rfq", "quotation", "supplier", "source")
+    quotation_headers = {
+        _text(row, "SupplierQuotation", "PurchasingDocument"): row
+        for row in quotation_evidence
+        if _text(row, "SupplierQuotation", "PurchasingDocument")
+        and not _text(row, "SupplierQuotationItem", "PurchasingDocumentItem")
+    }
+    quotations = []
+    for row in quotation_evidence:
+        quotation = _text(row, "SupplierQuotation", "PurchasingDocument")
+        if not quotation or not _text(row, "SupplierQuotationItem", "PurchasingDocumentItem"):
+            continue
+        quotations.append({**quotation_headers.get(quotation, {}), **row})
     active = [
         row for row in quotations
         if not _truthy(row.get("IsDeleted"))
@@ -880,12 +1822,23 @@ def _intelligent_sourcing_rfq(inputs: JsonObject) -> JsonObject:
     eligible = [row for row in active if str(row.get("Supplier") or row.get("Bidder") or "") not in blocked_suppliers]
     comparable = complete and len(comparable_keys) == 1 and bool(eligible)
     prices = [_decimal(row.get("NetPriceAmount") or row.get("QuotationPrice")) for row in eligible]
-    max_price = max(prices, default=Decimal(0))
+    positive_prices = [price for price in prices if price > 0]
+    best_price = min(positive_prices, default=Decimal(0))
     ranked: list[JsonObject] = []
-    if comparable and max_price > 0:
+    if comparable and best_price > 0:
         for row, price in zip(eligible, prices):
-            price_score = float((max_price - price) / max_price * Decimal(60)) if price >= 0 else 0
-            delivery_score = 25.0 if row.get("DeliveryDate") or row.get("PerformancePeriodStartDate") else 0.0
+            # The lowest comparable positive price receives all 60 price
+            # points; higher prices receive a proportional share.  This keeps
+            # the documented 60/25/15 weighting on a true 100-point scale.
+            price_score = float(best_price / price * Decimal(60)) if price > 0 else 0
+            delivery_score = 25.0 if any(
+                row.get(field)
+                for field in (
+                    "ScheduleLineDeliveryDate",
+                    "DeliveryDate",
+                    "PerformancePeriodStartDate",
+                )
+            ) else 0.0
             completeness_score = 15.0 if all(row.get(field) not in {None, ""} for field in ("Supplier", "NetPriceAmount")) else 7.5
             ranked.append({
                 "supplier": str(row.get("Supplier") or row.get("Bidder") or ""),
@@ -894,6 +1847,33 @@ def _intelligent_sourcing_rfq(inputs: JsonObject) -> JsonObject:
             })
         ranked.sort(key=lambda item: (-float(item["score"]), item["supplier"], item["quotation"]))
     findings = [] if comparable else [{"code": "QUOTATIONS_NOT_COMPARABLE", "severity": "high"}]
+    score_by_quotation = {
+        (str(item.get("quotation") or ""), str(item.get("supplier") or "")): item.get("score")
+        for item in ranked
+    }
+    records = [
+        {
+            "rfq": _text(row, "RequestForQuotation", "RFQ", "PurchasingDocument"),
+            "rfq_item": _text(row, "RequestForQuotationItem", "RFQItem", "PurchasingDocumentItem"),
+            "supplier": _text(row, "Supplier", "Bidder"),
+            "quotation": _text(row, "SupplierQuotation", "PurchasingDocument"),
+            "net_price": _text(row, "NetPriceAmount", "QuotationPrice"),
+            "currency": _text(row, "DocumentCurrency", "Currency"),
+            "unit": _text(row, "PurchaseOrderQuantityUnit", "OrderQuantityUnit", "Unit"),
+            "price_unit": _text(row, "PriceUnitQty", "PriceUnit") or "1",
+            "score": score_by_quotation.get(
+                (
+                    _text(row, "SupplierQuotation", "PurchasingDocument"),
+                    _text(row, "Supplier", "Bidder"),
+                )
+            ),
+            "eligible": row in eligible,
+        }
+        for row in active
+        if _text(row, "RequestForQuotation", "RFQ", "PurchasingDocument")
+        and _text(row, "RequestForQuotationItem", "RFQItem", "PurchasingDocumentItem")
+        and _text(row, "Supplier", "Bidder")
+    ]
     return _result(
         inputs,
         business_status="attention" if not comparable or blocked_suppliers else "normal",
@@ -909,6 +1889,7 @@ def _intelligent_sourcing_rfq(inputs: JsonObject) -> JsonObject:
         ],
         findings=findings,
         metrics=[{"id": "eligible_quotations", "value": len(eligible)}, {"id": "ranked_quotations", "value": len(ranked)}, {"id": "ranking", "value": ranked}],
+        records=records,
         gaps=_gaps(inputs, *missing),
         actions_zh=["由采购员复核评分、商务条款和供应商资格后在 SAP 中决策。"],
         actions_en=["Have purchasing review scores, commercial terms, and supplier eligibility before deciding in SAP."],
@@ -917,9 +1898,37 @@ def _intelligent_sourcing_rfq(inputs: JsonObject) -> JsonObject:
 
 
 def _supplier_performance_risk(inputs: JsonObject) -> JsonObject:
-    schedules = _rows(inputs, "po_schedules") + _adt_rows(inputs, "po_schedule")
-    receipts = _rows(inputs, "receipts") + _adt_rows(inputs, "receipt")
-    suppliers = _rows(inputs, "suppliers") + _adt_rows(inputs, "supplier")
+    schedules = _rows(inputs, "po_schedule", "po_schedules") + _adt_rows(inputs, "po_schedule")
+    receipt_evidence = _rows(inputs, "receipt", "receipts", "receipt_dates") + _adt_rows(inputs, "receipt")
+    receipt_dates = {
+        (_text(row, "MaterialDocumentYear", "MJAHR"), _text(row, "MaterialDocument", "MBLNR")):
+            _date_text(row, "PostingDate", "BUDAT")
+        for row in receipt_evidence
+        if _date_text(row, "PostingDate", "BUDAT")
+    }
+    receipt_items_by_key: dict[tuple[str, str, str, str], JsonObject] = {}
+    for index, row in enumerate(receipt_evidence):
+        if not _text(row, "PurchaseOrder", "EBELN") or not _text(row, "PurchaseOrderItem", "EBELP"):
+            continue
+        document_year = _text(row, "MaterialDocumentYear", "MJAHR")
+        document = _text(row, "MaterialDocument", "MBLNR")
+        document_item = _text(row, "MaterialDocumentItem", "ZEILE")
+        key = (
+            document_year,
+            document,
+            document_item,
+            "" if document_year and document and document_item else str(index),
+        )
+        receipt_items_by_key[key] = {**receipt_items_by_key.get(key, {}), **row}
+    receipts = [
+        {
+            **row,
+            "PostingDate": _text(row, "PostingDate", "BUDAT")
+            or receipt_dates.get((key[0], key[1]), ""),
+        }
+        for key, row in receipt_items_by_key.items()
+    ]
+    suppliers = _rows(inputs, "supplier", "suppliers") + _adt_rows(inputs, "supplier")
     complete, missing = _required_topics(inputs, "po_schedule", "receipt", "supplier")
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
     as_of = _date(run_input.get("date_to")) or date.today()
@@ -928,8 +1937,8 @@ def _supplier_performance_risk(inputs: JsonObject) -> JsonObject:
     formal = complete and len(due) >= 5
     if formal:
         for schedule in due:
-            po = str(schedule.get("PurchaseOrder") or schedule.get("EBELN") or "")
-            item = str(schedule.get("PurchaseOrderItem") or schedule.get("EBELP") or "")
+            po = str(schedule.get("PurchaseOrder") or schedule.get("PurchasingDocument") or schedule.get("EBELN") or "")
+            item = str(schedule.get("PurchaseOrderItem") or schedule.get("PurchasingDocumentItem") or schedule.get("EBELP") or "")
             delivery = _date(schedule.get("ScheduleLineDeliveryDate") or schedule.get("EINDT"))
             scheduled_qty = _decimal(schedule.get("ScheduleLineOrderQuantity") or schedule.get("MENGE"))
             matching = [
@@ -953,6 +1962,36 @@ def _supplier_performance_risk(inputs: JsonObject) -> JsonObject:
         findings.append({"code": "OTIF_SUPPRESSED_INCOMPLETE_EVIDENCE", "severity": "high"})
     if blocked:
         findings.append({"code": "SUPPLIER_BLOCKED", "severity": "high"})
+    records: list[JsonObject] = []
+    for schedule in due:
+        po = _text(schedule, "PurchaseOrder", "PurchasingDocument", "EBELN")
+        item = _text(schedule, "PurchaseOrderItem", "PurchasingDocumentItem", "EBELP")
+        line = _text(schedule, "ScheduleLine", "ETENR")
+        delivery = _date(schedule.get("ScheduleLineDeliveryDate") or schedule.get("EINDT"))
+        scheduled_qty = _decimal(schedule.get("ScheduleLineOrderQuantity") or schedule.get("MENGE"))
+        matching = [
+            row for row in receipts
+            if _text(row, "PurchaseOrder", "EBELN") == po
+            and _text(row, "PurchaseOrderItem", "EBELP") == item
+        ]
+        net = sum(
+            (-_decimal(row.get("QuantityInEntryUnit") or row.get("MENGE")) if _text(row, "DebitCreditCode", "SHKZG").upper() in {"H", "C"} else _decimal(row.get("QuantityInEntryUnit") or row.get("MENGE")))
+            for row in matching
+            if (_date(row.get("PostingDate") or row.get("BUDAT")) or date.max) <= (delivery or date.min)
+        )
+        if po and item and line:
+            records.append(
+                {
+                    "purchase_order": po,
+                    "purchase_order_item": item,
+                    "schedule_line": line,
+                    "delivery_date": delivery.isoformat() if delivery else "",
+                    "scheduled_quantity": str(scheduled_qty),
+                    "net_receipt_by_due": str(net),
+                    "unit": _text(schedule, "PurchaseOrderQuantityUnit", "MEINS"),
+                    "on_time_in_full": bool(scheduled_qty > 0 and net >= scheduled_qty),
+                }
+            )
     return _result(
         inputs,
         business_status="attention" if findings or (otif is not None and otif < 95) else "normal",
@@ -967,11 +2006,22 @@ def _supplier_performance_risk(inputs: JsonObject) -> JsonObject:
         ],
         findings=findings,
         metrics=[{"id": "due_schedule_lines", "value": len(due)}, {"id": "on_time_in_full", "value": on_time if formal else None}, {"id": "otif_percent", "value": otif}],
+        records=records,
         gaps=_gaps(inputs, *missing),
+        limitations=["low_sample_confidence"] if len(due) < 5 else [],
         actions_zh=["由采购员复核迟交、退货、冲销和供应商冻结后安排改善。"],
         actions_en=["Have purchasing review late deliveries, returns, reversals, and supplier blocks before taking improvement action."],
         source_complete_override=complete,
     )
+
+
+def _open_po_quantity(row: JsonObject) -> Decimal:
+    if row.get("OpenPurchaseOrderQuantity") not in {None, ""}:
+        return _decimal(row.get("OpenPurchaseOrderQuantity"))
+    ordered = _decimal(row.get("ScheduleLineOrderQuantity"))
+    if row.get("ScheduleLineCommittedQuantity") not in {None, ""}:
+        return max(ordered - _decimal(row.get("ScheduleLineCommittedQuantity")), Decimal(0))
+    return ordered
 
 
 def _amount(row: JsonObject) -> Decimal:
@@ -1023,10 +2073,11 @@ def _cost_center_expense_anomaly(inputs: JsonObject) -> JsonObject:
     threshold = _decimal(run_input.get("variance_threshold_pct") or 20)
     actual_total = _sum_amount(actual)
     plan_total = _sum_amount(plan)
-    variance = actual_total - plan_total
+    plan_available = bool(plan)
+    variance = actual_total - plan_total if plan_available else None
     currencies = _currency_set(actual + plan)
-    comparable = complete and len(currencies) <= 1 and plan_total != 0
-    variance_pct = (variance / abs(plan_total) * Decimal(100)) if comparable else None
+    comparable = complete and plan_available and len(currencies) <= 1 and plan_total != 0
+    variance_pct = (variance / abs(plan_total) * Decimal(100)) if comparable and variance is not None else None
     findings: list[JsonObject] = []
     blocked = any(
         _truthy(row.get(field))
@@ -1042,7 +2093,9 @@ def _cost_center_expense_anomaly(inputs: JsonObject) -> JsonObject:
         findings.append({"code": "COST_CENTER_POSTING_BLOCK", "severity": "high"})
     if len(currencies) > 1:
         findings.append({"code": "CURRENCY_NOT_COMPARABLE", "severity": "high"})
-    if plan_total == 0:
+    if not plan_available:
+        findings.append({"code": "PLAN_EVIDENCE_MISSING", "severity": "high"})
+    elif plan_total == 0:
         findings.append({"code": "PLAN_BASE_MISSING_OR_ZERO", "severity": "medium"})
     if variance_pct is not None and abs(variance_pct) >= threshold:
         findings.append(
@@ -1054,7 +2107,7 @@ def _cost_center_expense_anomaly(inputs: JsonObject) -> JsonObject:
         )
     return _result(
         inputs,
-        business_status="attention" if findings else "normal",
+        business_status="capability_blocked" if not plan_available else ("attention" if findings else "normal"),
         headline_zh=(
             f"成本中心费用偏差为 {variance_pct.quantize(Decimal('0.01'))}%"
             if variance_pct is not None
@@ -1075,12 +2128,13 @@ def _cost_center_expense_anomaly(inputs: JsonObject) -> JsonObject:
         findings=findings,
         metrics=[
             {"id": "actual_amount", "value": str(actual_total)},
-            {"id": "plan_amount", "value": str(plan_total)},
-            {"id": "variance_amount", "value": str(variance)},
+            {"id": "plan_amount", "value": str(plan_total) if plan_available else None},
+            {"id": "variance_amount", "value": str(variance) if variance is not None else None},
             {"id": "variance_pct", "value": str(variance_pct.quantize(Decimal("0.01"))) if variance_pct is not None else None},
             {"id": "currency", "value": next(iter(currencies), None) if len(currencies) <= 1 else None},
         ],
-        gaps=_gaps(inputs, *missing),
+        gaps=_gaps(inputs, *missing, *([] if plan_available else ["plan_evidence_missing"])),
+        limitations=["plan_evidence_missing"] if not plan_available else [],
         actions_zh=["由成本中心负责人按科目和期间复核超阈值偏差、一次性费用及错配成本中心。"],
         actions_en=["Have the cost-center owner review threshold breaches, one-off expenses, and misassigned cost centers by account and period."],
         source_complete_override=complete,
@@ -1101,6 +2155,7 @@ def _co_month_end_allocation_settlement(inputs: JsonObject) -> JsonObject:
         for field in ("LOEKZ", "PHAS3", "OrderIsClosed", "OrderIsMarkedForDeletion")
     )
     ready = complete and bool(cycles) and bool(settlement) and bool(objects) and not deleted_or_closed
+    ready_value = ready if complete else None
     findings: list[JsonObject] = []
     if not cycles:
         findings.append({"code": "ALLOCATION_CYCLE_NOT_CONFIRMED", "severity": "high"})
@@ -1112,7 +2167,7 @@ def _co_month_end_allocation_settlement(inputs: JsonObject) -> JsonObject:
         findings.append({"code": "CO_OBJECT_CLOSED_OR_DELETED", "severity": "high"})
     return _result(
         inputs,
-        business_status="ready" if ready else "blocked",
+        business_status=("ready" if ready else "blocked") if complete else "capability_blocked",
         headline_zh="分配与结算只读检查具备执行条件" if ready else "分配或结算前置证据不足",
         headline_en="Allocation and settlement evidence is ready" if ready else "Allocation or settlement prerequisites are not confirmed",
         overview_zh="本 Agent 只判断单个 CO 对象和周期的只读准备度，不运行分配、分摊、结算或财务关账。",
@@ -1126,14 +2181,14 @@ def _co_month_end_allocation_settlement(inputs: JsonObject) -> JsonObject:
         findings=findings,
         metrics=[
             {"id": "posting_rows", "value": len(postings)},
-            {"id": "allocation_cycle_rows", "value": len(cycles)},
-            {"id": "settlement_rule_rows", "value": len(settlement)},
-            {"id": "ready", "value": ready},
+            {"id": "allocation_cycle_rows", "value": len(cycles) if _topic_complete(inputs, "allocation_cycle") else None},
+            {"id": "settlement_rule_rows", "value": len(settlement) if _topic_complete(inputs, "settlement_rule") else None},
+            {"id": "ready", "value": ready_value},
         ],
         gaps=_gaps(inputs, *missing),
         actions_zh=["由 CO 月结负责人确认周期有效期、发送方/接收方规则和结算对象状态后，再在 SAP 中人工执行。"],
         actions_en=["Have the CO close owner confirm cycle validity, sender/receiver rules, and settlement-object status before manually executing in SAP."],
-        source_complete_override=complete,
+        source_complete_override=_topic_complete(inputs, "posting"),
     )
 
 
@@ -1143,6 +2198,7 @@ def _product_cost_variance(inputs: JsonObject) -> JsonObject:
     costing = _adt_rows(inputs, "standard_cost")
     complete, missing = _required_topics(inputs, "order", "actual_cost", "standard_cost")
     actual_total = _sum_amount(actual)
+    actual_available = bool(actual)
     periodic_prices = [
         _decimal(row.get("PVPRS"))
         for row in costing
@@ -1165,7 +2221,11 @@ def _product_cost_variance(inputs: JsonObject) -> JsonObject:
         findings.append({"code": "PRODUCT_COST_VARIANCE", "severity": "medium", "value": str(price_variance)})
     return _result(
         inputs,
-        business_status="attention" if findings else "normal",
+        business_status=(
+            "capability_blocked"
+            if not complete or not orders or standard is None or periodic is None
+            else "attention" if findings else "normal"
+        ),
         headline_zh=(f"周期价格与标准价格差异为 {price_variance}" if price_variance is not None else "产品成本差异证据不可比较"),
         headline_en=(f"Periodic-to-standard price variance is {price_variance}" if price_variance is not None else "Product-cost variance evidence is not comparable"),
         overview_zh="产品成本结论区分订单实际发生额与物料分类账单位价格；两者不在单位和归属完整前混合汇总。",
@@ -1177,15 +2237,18 @@ def _product_cost_variance(inputs: JsonObject) -> JsonObject:
         ],
         findings=findings,
         metrics=[
-            {"id": "order_actual_amount", "value": str(actual_total)},
+            {"id": "order_actual_amount", "value": str(actual_total) if actual_available else None},
             {"id": "standard_unit_price", "value": str(standard) if standard is not None else None},
             {"id": "periodic_unit_price", "value": str(periodic) if periodic is not None else None},
             {"id": "unit_price_variance", "value": str(price_variance) if price_variance is not None else None},
         ],
         gaps=_gaps(inputs, *missing),
+        limitations=["standard_cost_evidence"] if standard is None or periodic is None else [],
         actions_zh=["由产品成本会计复核物料分类账期间、价格单位、订单归属和结算状态。"],
         actions_en=["Have product-cost accounting review the Material Ledger period, price unit, order attribution, and settlement status."],
-        source_complete_override=complete,
+        source_complete_override=(
+            _topic_complete(inputs, "order") and _topic_complete(inputs, "actual_cost")
+        ),
     )
 
 
@@ -1211,13 +2274,17 @@ def _budget_rolling_forecast(inputs: JsonObject) -> JsonObject:
     findings: list[JsonObject] = []
     if len(currencies) > 1:
         findings.append({"code": "CURRENCY_NOT_COMPARABLE", "severity": "high"})
-    if plan_total == 0:
-        findings.append({"code": "ANNUAL_PLAN_MISSING_OR_ZERO", "severity": "high"})
+    if not plan:
+        findings.append({"code": "ANNUAL_PLAN_MISSING", "severity": "high"})
     if forecast_pct is not None and forecast_pct > threshold:
         findings.append({"code": "FORECAST_OVER_PLAN", "severity": "high", "variance_pct": str(forecast_pct.quantize(Decimal("0.01")))})
     return _result(
         inputs,
-        business_status="attention" if findings else "normal",
+        business_status=(
+            "capability_blocked"
+            if not plan or not complete or len(currencies) > 1
+            else "attention" if findings else "normal"
+        ),
         headline_zh=(f"全年滚动预测相对计划偏差 {forecast_pct.quantize(Decimal('0.01'))}%" if forecast_pct is not None else "滚动预测因证据不可比而被抑制"),
         headline_en=(f"Full-year rolling forecast variance is {forecast_pct.quantize(Decimal('0.01'))}% versus plan" if forecast_pct is not None else "Rolling forecast is suppressed because evidence is not comparable"),
         overview_zh="预测使用截至当前期间的简单月均外推，是透明基线而非机器学习预测；不自动回写预算。",
@@ -1229,11 +2296,12 @@ def _budget_rolling_forecast(inputs: JsonObject) -> JsonObject:
         findings=findings,
         metrics=[
             {"id": "actual_ytd", "value": str(actual_total)},
-            {"id": "annual_plan", "value": str(plan_total)},
+            {"id": "annual_plan", "value": str(plan_total) if plan else None},
             {"id": "full_year_forecast", "value": str(forecast) if forecast is not None else None},
             {"id": "forecast_variance_pct", "value": str(forecast_pct.quantize(Decimal("0.01"))) if forecast_pct is not None else None},
         ],
         gaps=_gaps(inputs, *missing),
+        limitations=["budget_evidence_missing"] if not plan else [],
         actions_zh=["由预算负责人复核季节性、一次性项目和计划版本后决定是否调整预测。"],
         actions_en=["Have the budget owner review seasonality, one-off items, and the planning version before adjusting the forecast."],
         source_complete_override=complete,
@@ -1262,25 +2330,38 @@ def _internal_order_project_control(inputs: JsonObject) -> JsonObject:
     plan_total = _sum_amount(plan)
     budget_total = _sum_period_fields(budgets)
     commitment_total = _sum_period_fields(commitments)
-    eac = actual_total + commitment_total
-    variance = budget_total - eac
+    plan_available = bool(plan)
+    budget_available = bool(budgets)
+    commitment_available = bool(commitments)
+    eac = actual_total + commitment_total if commitment_available else None
+    variance = budget_total - eac if budget_available and eac is not None else None
     currencies = _currency_set(actual + plan + budgets + commitments)
-    comparable = complete and len(currencies) <= 1 and budget_total != 0
-    consumption_pct = eac / abs(budget_total) * Decimal(100) if comparable else None
+    comparable = complete and budget_available and eac is not None and len(currencies) <= 1 and budget_total != 0
+    consumption_pct = eac / abs(budget_total) * Decimal(100) if comparable and eac is not None else None
     findings: list[JsonObject] = []
     business_gaps: list[str] = []
     if not masters:
         findings.append({"code": "CONTROL_OBJECT_NOT_CONFIRMED", "severity": "high"})
+        business_gaps.append("master_evidence")
         business_gaps.append("control_object_not_found")
     if len(currencies) > 1:
         findings.append({"code": "CURRENCY_NOT_COMPARABLE", "severity": "high"})
-    if budget_total == 0:
+    if not plan_available:
+        findings.append({"code": "PLAN_EVIDENCE_MISSING", "severity": "high"})
+        business_gaps.append("plan_evidence")
+    if not commitment_available:
+        findings.append({"code": "COMMITMENT_EVIDENCE_MISSING", "severity": "high"})
+        business_gaps.append("commitment_evidence")
+    if not budget_available:
+        findings.append({"code": "BUDGET_EVIDENCE_MISSING", "severity": "high"})
+        business_gaps.append("budget_evidence")
+    elif budget_total == 0:
         findings.append({"code": "BUDGET_MISSING_OR_ZERO", "severity": "high"})
-    if comparable and eac > budget_total:
+    if comparable and eac is not None and eac > budget_total:
         findings.append({"code": "EAC_EXCEEDS_BUDGET", "severity": "high", "variance": str(-variance)})
     return _result(
         inputs,
-        business_status="attention" if findings else "normal",
+        business_status="capability_blocked" if not complete else ("attention" if findings else "normal"),
         headline_zh=(f"预计完工成本占预算 {consumption_pct.quantize(Decimal('0.01'))}%" if consumption_pct is not None else "订单/项目预算控制证据不可比较"),
         headline_en=(f"Estimate at completion consumes {consumption_pct.quantize(Decimal('0.01'))}% of budget" if consumption_pct is not None else "Order/project budget-control evidence is not comparable"),
         overview_zh="EAC 仅按实际加承诺计算；计划、预算、币种或对象归属不完整时不输出确定超预算结论。",
@@ -1295,11 +2376,11 @@ def _internal_order_project_control(inputs: JsonObject) -> JsonObject:
         findings=findings,
         metrics=[
             {"id": "actual_amount", "value": str(actual_total)},
-            {"id": "plan_amount", "value": str(plan_total)},
-            {"id": "budget_amount", "value": str(budget_total)},
-            {"id": "commitment_amount", "value": str(commitment_total)},
-            {"id": "estimate_at_completion", "value": str(eac)},
-            {"id": "remaining_budget", "value": str(variance)},
+            {"id": "plan_amount", "value": str(plan_total) if plan_available else None},
+            {"id": "budget_amount", "value": str(budget_total) if budget_available else None},
+            {"id": "commitment_amount", "value": str(commitment_total) if commitment_available else None},
+            {"id": "estimate_at_completion", "value": str(eac) if eac is not None else None},
+            {"id": "remaining_budget", "value": str(variance) if variance is not None else None},
             {"id": "budget_consumption_pct", "value": str(consumption_pct.quantize(Decimal("0.01"))) if consumption_pct is not None else None},
         ],
         gaps=_gaps(inputs, *missing, *business_gaps),

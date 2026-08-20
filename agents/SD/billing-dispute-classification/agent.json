@@ -10,7 +10,7 @@
     "zh": "将客户拒票与争议文本分类，并关联FI、POD及开票证据。",
     "en": "Classifies customer invoice rejections and dispute text, then links FI, proof-of-delivery and billing evidence."
   },
-  "status": "Live-tested deterministic prototype",
+  "status": "Three-stage live acceptance blocked",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -23,47 +23,31 @@
     "SD",
     "FI-AR"
   ],
-  "transactions": [
-    "UDM_DISPUTE",
-    "FBL5N",
-    "VF03"
-  ],
-  "tables": [
-    "VBRK",
-    "VBRP",
-    "BSID",
-    "BSAD"
-  ],
+  "transactions": [],
+  "tables": [],
   "systems": [
-    "SAP ECC",
     "SAP S/4HANA"
   ],
   "inputs": {
     "zh": [
-      "自然语言业务问题",
-      "可选业务对象标识",
-      "查询基准日",
-      "SAP只读证据"
+      "开票凭证号"
     ],
     "en": [
-      "Natural-language business question",
-      "Optional business-object identifier",
-      "As-of date",
-      "Read-only SAP evidence"
+      "Billing document"
     ]
   },
   "outputs": {
     "zh": [
-      "状态与可解释分析",
-      "异常和阻塞原因",
-      "建议动作",
-      "Markdown或JSON"
+      "开票凭证号",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
     ],
     "en": [
-      "Status and explainable analysis",
-      "Anomalies and blockers",
-      "Recommended actions",
-      "Markdown or JSON"
+      "Billing document",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
     ]
   },
   "guardrails": {
@@ -80,252 +64,71 @@
   },
   "workflow": [
     {
-      "id": "parse-user-input",
+      "id": "execute-collect_dispute_base_evidence",
       "title": {
-        "zh": "解析输入和范围",
-        "en": "Parse input and scope"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "解析自然语言对象标识、日期和组织范围。",
-        "en": "Parse natural-language identifiers, dates and organizational scope."
+        "zh": "执行清单步骤 `collect_dispute_base_evidence`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_dispute_base_evidence` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "解析自然语言对象标识、日期和组织范围。"
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocument",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem",
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
         ],
         "en": [
-          "Parse natural-language identifiers, dates and organizational scope."
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocument",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem",
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
         ]
       },
       "tools": [
         {
-          "name": "QueryExtractor",
-          "kind": "Agent component",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "提取查询对象并保留歧义。",
-            "en": "Extract query objects while preserving ambiguity."
-          }
-        }
-      ]
-    },
-    {
-      "id": "check-thin-runtime",
-      "title": {
-        "zh": "检查Embedded Provider",
-        "en": "Check Embedded Provider"
-      },
-      "description": {
-        "zh": "确认Runtime健康、启用、只读且schema可执行。",
-        "en": "Require a healthy, enabled, read-only runtime and executable schemas."
-      },
-      "operations": {
-        "zh": [
-          "确认Runtime健康、启用、只读且schema可执行。"
-        ],
-        "en": [
-          "Require a healthy, enabled, read-only runtime and executable schemas."
-        ]
-      },
-      "tools": [
-        {
-          "name": "sap_read_provider_health / sap_read_schema",
-          "kind": "Embedded SAP Read Provider",
-          "purpose": {
-            "zh": "执行健康和权威schema检查。",
-            "en": "Run health and authoritative schema checks."
-          }
-        }
-      ]
-    },
-    {
-      "id": "load-sap-data",
-      "title": {
-        "zh": "读取SAP证据",
-        "en": "Load SAP evidence"
-      },
-      "description": {
-        "zh": "使用服务端过滤、窄字段和完整分页读取业务证据。",
-        "en": "Read business evidence with server filters, narrow fields and complete pagination."
-      },
-      "operations": {
-        "zh": [
-          "使用服务端过滤、窄字段和完整分页读取业务证据。"
-        ],
-        "en": [
-          "Read business evidence with server filters, narrow fields and complete pagination."
-        ]
-      },
-      "tools": [
-        {
-          "name": "API_BILLING_DOCUMENT_SRV + API_OPLACCTGDOCITEMCUBE_SRV",
-          "kind": "SAP OData via sap_read_execute_get",
-          "purpose": {
-            "zh": "执行批准的只读GET。",
-            "en": "Execute approved read-only GET requests."
+            "zh": "执行 `collect_dispute_base_evidence` / `execute_plan`",
+            "en": "Execute `collect_dispute_base_evidence` / `execute_plan`"
           }
         }
       ],
-      "sapScope": {
-        "modules": [
-          "SD",
-          "FI-AR"
-        ],
-        "transactions": [
-          "UDM_DISPUTE",
-          "FBL5N",
-          "VF03"
-        ],
-        "tables": [
-          "VBRK",
-          "VBRP",
-          "BSID",
-          "BSAD"
-        ]
-      }
-    },
-    {
-      "id": "supplement-with-skill",
-      "title": {
-        "zh": "按需补充SAPSkillhub证据",
-        "en": "Supplement with SAPSkillhub"
-      },
-      "description": {
-        "zh": "仅当标准OData缺少必要证据时调用明确匹配的只读skill。",
-        "en": "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
-      },
-      "operations": {
-        "zh": [
-          "仅当标准OData缺少必要证据时调用明确匹配的只读skill。"
-        ],
-        "en": [
-          "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
-        ]
-      },
-      "tools": [
-        {
-          "name": "SAPSkillhub read-only skill",
-          "kind": "SAPSkill",
-          "purpose": {
-            "zh": "补充GUI、CDS或输出管理证据。",
-            "en": "Supplement GUI, CDS or output-management evidence."
-          }
-        }
+      "executionStepIds": [
+        "collect_dispute_base_evidence"
       ]
     },
     {
-      "id": "assemble-evidence",
+      "id": "execute-evaluate_business_result",
       "title": {
-        "zh": "组装脱敏证据",
-        "en": "Assemble sanitized evidence"
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "生成带run id、来源、只读标志和分页状态的evidence。",
-        "en": "Create evidence with run id, provenance, read-only flag and pagination state."
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
       },
       "operations": {
         "zh": [
-          "生成带run id、来源、只读标志和分页状态的evidence。"
+          "rule.evaluate_business_agent"
         ],
         "en": [
-          "Create evidence with run id, provenance, read-only flag and pagination state."
+          "rule.evaluate_business_agent"
         ]
       },
       "tools": [
         {
-          "name": "Evidence snapshot builder",
-          "kind": "Agent component",
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "验证并脱敏证据快照。",
-            "en": "Validate and sanitize the evidence snapshot."
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
           }
         }
-      ]
-    },
-    {
-      "id": "validate-evidence",
-      "title": {
-        "zh": "校验证据质量",
-        "en": "Validate evidence quality"
-      },
-      "description": {
-        "zh": "检查必填字段、单位、币种、冲销、重复与来源完整性。",
-        "en": "Check required fields, units, currencies, reversals, duplicates and provenance."
-      },
-      "operations": {
-        "zh": [
-          "检查必填字段、单位、币种、冲销、重复与来源完整性。"
-        ],
-        "en": [
-          "Check required fields, units, currencies, reversals, duplicates and provenance."
-        ]
-      },
-      "tools": [
-        {
-          "name": "EvidenceValidator",
-          "kind": "Agent component",
-          "purpose": {
-            "zh": "阻止不完整证据被误判为正常。",
-            "en": "Prevent incomplete evidence from being treated as normal."
-          }
-        }
-      ]
-    },
-    {
-      "id": "analyze-business-rule",
-      "title": {
-        "zh": "执行可解释分析",
-        "en": "Run explainable analysis"
-      },
-      "description": {
-        "zh": "运行确定性规则、分类或版本化评分，不生成SAP写操作。",
-        "en": "Run deterministic rules, classification or versioned scoring without SAP writes."
-      },
-      "operations": {
-        "zh": [
-          "运行确定性规则、分类或版本化评分，不生成SAP写操作。"
-        ],
-        "en": [
-          "Run deterministic rules, classification or versioned scoring without SAP writes."
-        ]
-      },
-      "tools": [
-        {
-          "name": "SD O2C analyzer",
-          "kind": "Agent component",
-          "purpose": {
-            "zh": "生成状态、评分、发现和建议动作。",
-            "en": "Produce status, score, findings and recommended actions."
-          }
-        }
-      ]
-    },
-    {
-      "id": "present-report",
-      "title": {
-        "zh": "输出报告",
-        "en": "Present report"
-      },
-      "description": {
-        "zh": "输出Markdown和JSON，并区分真机、Fixture与推断证据。",
-        "en": "Output Markdown and JSON while separating live, fixture and inferred evidence."
-      },
-      "operations": {
-        "zh": [
-          "输出Markdown和JSON，并区分真机、Fixture与推断证据。"
-        ],
-        "en": [
-          "Output Markdown and JSON while separating live, fixture and inferred evidence."
-        ]
-      },
-      "tools": [
-        {
-          "name": "Markdown / JSON formatter",
-          "kind": "Presentation",
-          "purpose": {
-            "zh": "生成可审计的双格式结果。",
-            "en": "Generate auditable dual-format results."
-          }
-        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
       ]
     }
   ],
@@ -368,6 +171,7 @@
         "request": {
           "plan": {
             "service_name": "API_BILLING_DOCUMENT_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_BillingDocument",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -375,6 +179,7 @@
               {
                 "step_id": "billing_headers",
                 "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_BillingDocument",
                 "http_method": "GET",
                 "select_fields": [
@@ -401,6 +206,7 @@
               {
                 "step_id": "billing_items",
                 "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_BillingDocumentItem",
                 "http_method": "GET",
                 "select_fields": [
@@ -430,22 +236,29 @@
               {
                 "step_id": "accounting_items",
                 "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_OperationalAcctgDocItemCube",
                 "http_method": "GET",
                 "select_fields": [
                   "CompanyCode",
                   "FiscalYear",
                   "FiscalPeriod",
+                  "Ledger",
                   "AccountingDocument",
                   "AccountingDocumentItem",
                   "Supplier",
                   "Customer",
+                  "FinancialAccountType",
                   "GLAccount",
                   "OperationalGLAccount",
                   "PurchasingDocument",
                   "PurchasingDocumentItem",
                   "PostingDate",
                   "NetDueDate",
+                  "ClearingDate",
+                  "ClearingIsReversed",
+                  "IsOpenItemManaged",
+                  "DebitCreditCode",
                   "IsCleared",
                   "ClearingAccountingDocument",
                   "ClearingDocFiscalYear",
@@ -456,6 +269,8 @@
                   "AccountingDocumentType",
                   "AmountInTransactionCurrency",
                   "TransactionCurrency",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
                   "OrderID"
                 ],
                 "rationale": "Load accounting evidence for the billing document.",
@@ -474,62 +289,6 @@
         }
       },
       {
-        "id": "extract_dispute_customers",
-        "executor": "rule",
-        "operation": "extract_bounded_values",
-        "inputMapping": {
-          "payload": "{{steps.collect_dispute_base_evidence.output}}",
-          "field": "Customer",
-          "max_values": 100
-        }
-      },
-      {
-        "id": "preflight_structured_dispute_cases",
-        "executor": "skill",
-        "operation": "execute",
-        "skillId": "sap-adt-table-export",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "when": {"source": "{{steps.extract_dispute_customers.output.has_values}}", "equals": true},
-        "inputMapping": {
-          "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
-          "source_type": "table",
-          "object": "UDMCASEATTR00",
-          "fields": ["CASE_GUID", "FIN_ROOT_CODE", "FIN_DUE_DATE", "FIN_KUNNR", "FIN_BUKRS", "FIN_ORIGIN"],
-          "filters": [
-            {"field": "FIN_KUNNR", "operator": "in", "values": "{{steps.extract_dispute_customers.output.values}}"}
-          ],
-          "max_rows": 2
-        }
-      },
-      {
-        "id": "assess_dispute_preflight",
-        "executor": "rule",
-        "operation": "assess_adt_preflight",
-        "inputMapping": {"payload": "{{steps.preflight_structured_dispute_cases.output}}"}
-      },
-      {
-        "id": "read_structured_dispute_cases",
-        "executor": "skill",
-        "operation": "execute",
-        "skillId": "sap-adt-table-export",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "when": {"source": "{{steps.assess_dispute_preflight.output.proceed}}", "equals": true},
-        "inputMapping": {
-          "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
-          "source_type": "table",
-          "object": "UDMCASEATTR00",
-          "fields": ["CASE_GUID", "FIN_ROOT_CODE", "FIN_DUE_DATE", "FIN_KUNNR", "FIN_BUKRS", "FIN_ORIGIN"],
-          "filters": [
-            {"field": "FIN_KUNNR", "operator": "in", "values": "{{steps.extract_dispute_customers.output.values}}"}
-          ],
-          "max_rows": 200
-        }
-      },
-      {
         "id": "evaluate_business_result",
         "executor": "rule",
         "operation": "evaluate_business_agent",
@@ -539,12 +298,223 @@
           "evidence": {
             "collect_dispute_base_evidence": "{{steps.collect_dispute_base_evidence.output}}"
           },
-          "fallbacks": {
-            "dispute_case": "{{steps.read_structured_dispute_cases.output}}"
-          },
-          "known_gaps": []
+          "known_gaps": [
+            "billing_dispute_case_evidence"
+          ]
         }
       }
-    ]
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "billing_document": {
+          "type": "string",
+          "title": {
+            "zh": "开票凭证号",
+            "en": "Billing document"
+          },
+          "description": {
+            "zh": "请输入开票凭证号。",
+            "en": "Enter the billing document."
+          },
+          "placeholder": {
+            "zh": "例如：90000025",
+            "en": "Example: 90000025"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "billing_document",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "billing_document": "{{steps.evaluate_business_result.output.workflow_output.billing_document}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "billing_document",
+        "billing_document_item"
+      ],
+      "facts": [
+        "dispute_case_count",
+        "root_cause_codes",
+        "business_status"
+      ],
+      "metrics": [
+        "case_count",
+        "root_cause_counts"
+      ],
+      "decimalFields": [],
+      "decimalMetricIds": [],
+      "currencyFields": [],
+      "unitFields": [],
+      "dateFields": [],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {},
+      "constantDefaults": {
+        "business_status": "capability_blocked"
+      },
+      "fieldAliases": {
+        "billing_document": [
+          "Billing Document",
+          "开票凭证"
+        ],
+        "billing_document_item": [
+          "Billing Document Item",
+          "开票凭证项目",
+          "Item"
+        ],
+        "dispute_case_count": [
+          "Dispute Case Count",
+          "争议案件数"
+        ],
+        "root_cause_codes": [
+          "Root Cause Codes",
+          "根因码"
+        ],
+        "case_count": [
+          "Case Count",
+          "案件数"
+        ],
+        "root_cause_counts": [
+          "Root Cause Counts",
+          "根因统计"
+        ]
+      },
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "billing_dispute_case_evidence": [
+          "billing dispute case",
+          "dispute case evidence",
+          "structured dispute case",
+          "争议案件证据",
+          "结构化争议案件",
+          "structured dispute-case",
+          "dispute_case_count must not be reported"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [
+        "billing_dispute_case_evidence"
+      ],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {
+        "dispute_case_count": [
+          "unknown",
+          "unavailable",
+          "undetermined",
+          "无法确认",
+          "不可用"
+        ],
+        "root_cause_codes": [
+          "unknown",
+          "unavailable",
+          "undetermined",
+          "无法确认",
+          "不可用"
+        ]
+      },
+      "blockingLimitations": [
+        "billing_dispute_case_evidence"
+      ],
+      "ignoredNoticeKeywords": [
+        "bank settlement",
+        "bank receipt",
+        "银行结算",
+        "银行到账"
+      ],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "BLOCKED",
+    "testedAt": "2026-08-20T05:19:32.404578+00:00",
+    "evidenceScope": "bounded",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
+      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": false,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": [
+      "billing_dispute_case_evidence"
+    ],
+    "codexDirectBaselineHash": "sha256:a211de071e62a23d22c3947666a091aa5df3c1d1719b610d1ec9197172a6374a",
+    "freeQueryHash": "sha256:47fe70278151cdc93b04c88fd791526c9a8507dc2da4c9505bc8a89610c1abca",
+    "adjudicatedResultHash": "sha256:a211de071e62a23d22c3947666a091aa5df3c1d1719b610d1ec9197172a6374a",
+    "fixedAgentHash": "sha256:a211de071e62a23d22c3947666a091aa5df3c1d1719b610d1ec9197172a6374a",
+    "comparisonHash": "sha256:220285cec908fcde461373343c09f8169a4e698665be39f75e77d723b7fb7c5a"
   }
 }

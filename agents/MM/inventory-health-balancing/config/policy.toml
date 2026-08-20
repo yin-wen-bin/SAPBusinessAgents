@@ -1,9 +1,7 @@
 read_only = true
 selected_provider = "embedded"
-automatic_sapclaw_fallback = false
 adt_skill = "sap-adt-table-export"
-adt_connection_profile = "mm-read-only"
-max_rows = 10000
+max_rows = 30000
 slow_moving_days = 180
 obsolete_days = 365
 expiry_days = 90

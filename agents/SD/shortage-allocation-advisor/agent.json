@@ -10,7 +10,7 @@
     "zh": "结合确认数量、物料库存和ATP，生成严格只读的短缺分配建议。",
     "en": "Combines confirmed quantities, material stock and ATP evidence to produce strictly read-only shortage-allocation recommendations."
   },
-  "status": "Live-tested deterministic prototype",
+  "status": "Three-stage live acceptance blocked",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -22,46 +22,43 @@
   "sapModules": [
     "SD"
   ],
-  "transactions": [
-    "CO09",
-    "MD04",
-    "VA03"
-  ],
-  "tables": [
-    "VBAP",
-    "VBEP",
-    "MARD"
-  ],
+  "transactions": [],
+  "tables": [],
   "systems": [
-    "SAP ECC",
     "SAP S/4HANA"
   ],
   "inputs": {
     "zh": [
-      "自然语言业务问题",
-      "可选业务对象标识",
-      "查询基准日",
-      "SAP只读证据"
+      "工厂",
+      "物料",
+      "开始日期",
+      "结束日期"
     ],
     "en": [
-      "Natural-language business question",
-      "Optional business-object identifier",
-      "As-of date",
-      "Read-only SAP evidence"
+      "Plant",
+      "Material",
+      "Start date",
+      "End date"
     ]
   },
   "outputs": {
     "zh": [
-      "状态与可解释分析",
-      "异常和阻塞原因",
-      "建议动作",
-      "Markdown或JSON"
+      "工厂",
+      "物料",
+      "开始日期",
+      "结束日期",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
     ],
     "en": [
-      "Status and explainable analysis",
-      "Anomalies and blockers",
-      "Recommended actions",
-      "Markdown or JSON"
+      "Plant",
+      "Material",
+      "Start date",
+      "End date",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
     ]
   },
   "guardrails": {
@@ -78,250 +75,71 @@
   },
   "workflow": [
     {
-      "id": "parse-user-input",
+      "id": "execute-collect_shortage_evidence",
       "title": {
-        "zh": "解析输入和范围",
-        "en": "Parse input and scope"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "解析自然语言对象标识、日期和组织范围。",
-        "en": "Parse natural-language identifiers, dates and organizational scope."
+        "zh": "执行清单步骤 `collect_shortage_evidence`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_shortage_evidence` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "解析自然语言对象标识、日期和组织范围。"
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderItem",
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderScheduleLine",
+          "GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"
         ],
         "en": [
-          "Parse natural-language identifiers, dates and organizational scope."
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderItem",
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderScheduleLine",
+          "GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"
         ]
       },
       "tools": [
         {
-          "name": "QueryExtractor",
-          "kind": "Agent component",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "提取查询对象并保留歧义。",
-            "en": "Extract query objects while preserving ambiguity."
-          }
-        }
-      ]
-    },
-    {
-      "id": "check-thin-runtime",
-      "title": {
-        "zh": "检查Embedded Provider",
-        "en": "Check Embedded Provider"
-      },
-      "description": {
-        "zh": "确认Runtime健康、启用、只读且schema可执行。",
-        "en": "Require a healthy, enabled, read-only runtime and executable schemas."
-      },
-      "operations": {
-        "zh": [
-          "确认Runtime健康、启用、只读且schema可执行。"
-        ],
-        "en": [
-          "Require a healthy, enabled, read-only runtime and executable schemas."
-        ]
-      },
-      "tools": [
-        {
-          "name": "sap_read_provider_health / sap_read_schema",
-          "kind": "Embedded SAP Read Provider",
-          "purpose": {
-            "zh": "执行健康和权威schema检查。",
-            "en": "Run health and authoritative schema checks."
-          }
-        }
-      ]
-    },
-    {
-      "id": "load-sap-data",
-      "title": {
-        "zh": "读取SAP证据",
-        "en": "Load SAP evidence"
-      },
-      "description": {
-        "zh": "使用服务端过滤、窄字段和完整分页读取业务证据。",
-        "en": "Read business evidence with server filters, narrow fields and complete pagination."
-      },
-      "operations": {
-        "zh": [
-          "使用服务端过滤、窄字段和完整分页读取业务证据。"
-        ],
-        "en": [
-          "Read business evidence with server filters, narrow fields and complete pagination."
-        ]
-      },
-      "tools": [
-        {
-          "name": "API_SALES_ORDER_SRV + API_MATERIAL_STOCK_SRV + API_PRODUCT_AVAILY_INFO_BASIC",
-          "kind": "SAP OData via sap_read_execute_get",
-          "purpose": {
-            "zh": "执行批准的只读GET。",
-            "en": "Execute approved read-only GET requests."
+            "zh": "执行 `collect_shortage_evidence` / `execute_plan`",
+            "en": "Execute `collect_shortage_evidence` / `execute_plan`"
           }
         }
       ],
-      "sapScope": {
-        "modules": [
-          "SD"
-        ],
-        "transactions": [
-          "CO09",
-          "MD04",
-          "VA03"
-        ],
-        "tables": [
-          "VBAP",
-          "VBEP",
-          "MARD"
-        ]
-      }
-    },
-    {
-      "id": "supplement-with-skill",
-      "title": {
-        "zh": "按需补充SAPSkillhub证据",
-        "en": "Supplement with SAPSkillhub"
-      },
-      "description": {
-        "zh": "仅当标准OData缺少必要证据时调用明确匹配的只读skill。",
-        "en": "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
-      },
-      "operations": {
-        "zh": [
-          "仅当标准OData缺少必要证据时调用明确匹配的只读skill。"
-        ],
-        "en": [
-          "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
-        ]
-      },
-      "tools": [
-        {
-          "name": "SAPSkillhub read-only skill",
-          "kind": "SAPSkill",
-          "purpose": {
-            "zh": "补充GUI、CDS或输出管理证据。",
-            "en": "Supplement GUI, CDS or output-management evidence."
-          }
-        }
+      "executionStepIds": [
+        "collect_shortage_evidence"
       ]
     },
     {
-      "id": "assemble-evidence",
+      "id": "execute-evaluate_business_result",
       "title": {
-        "zh": "组装脱敏证据",
-        "en": "Assemble sanitized evidence"
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "生成带run id、来源、只读标志和分页状态的evidence。",
-        "en": "Create evidence with run id, provenance, read-only flag and pagination state."
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
       },
       "operations": {
         "zh": [
-          "生成带run id、来源、只读标志和分页状态的evidence。"
+          "rule.evaluate_business_agent"
         ],
         "en": [
-          "Create evidence with run id, provenance, read-only flag and pagination state."
+          "rule.evaluate_business_agent"
         ]
       },
       "tools": [
         {
-          "name": "Evidence snapshot builder",
-          "kind": "Agent component",
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "验证并脱敏证据快照。",
-            "en": "Validate and sanitize the evidence snapshot."
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
           }
         }
-      ]
-    },
-    {
-      "id": "validate-evidence",
-      "title": {
-        "zh": "校验证据质量",
-        "en": "Validate evidence quality"
-      },
-      "description": {
-        "zh": "检查必填字段、单位、币种、冲销、重复与来源完整性。",
-        "en": "Check required fields, units, currencies, reversals, duplicates and provenance."
-      },
-      "operations": {
-        "zh": [
-          "检查必填字段、单位、币种、冲销、重复与来源完整性。"
-        ],
-        "en": [
-          "Check required fields, units, currencies, reversals, duplicates and provenance."
-        ]
-      },
-      "tools": [
-        {
-          "name": "EvidenceValidator",
-          "kind": "Agent component",
-          "purpose": {
-            "zh": "阻止不完整证据被误判为正常。",
-            "en": "Prevent incomplete evidence from being treated as normal."
-          }
-        }
-      ]
-    },
-    {
-      "id": "analyze-business-rule",
-      "title": {
-        "zh": "执行可解释分析",
-        "en": "Run explainable analysis"
-      },
-      "description": {
-        "zh": "运行确定性规则、分类或版本化评分，不生成SAP写操作。",
-        "en": "Run deterministic rules, classification or versioned scoring without SAP writes."
-      },
-      "operations": {
-        "zh": [
-          "运行确定性规则、分类或版本化评分，不生成SAP写操作。"
-        ],
-        "en": [
-          "Run deterministic rules, classification or versioned scoring without SAP writes."
-        ]
-      },
-      "tools": [
-        {
-          "name": "SD O2C analyzer",
-          "kind": "Agent component",
-          "purpose": {
-            "zh": "生成状态、评分、发现和建议动作。",
-            "en": "Produce status, score, findings and recommended actions."
-          }
-        }
-      ]
-    },
-    {
-      "id": "present-report",
-      "title": {
-        "zh": "输出报告",
-        "en": "Present report"
-      },
-      "description": {
-        "zh": "输出Markdown和JSON，并区分真机、Fixture与推断证据。",
-        "en": "Output Markdown and JSON while separating live, fixture and inferred evidence."
-      },
-      "operations": {
-        "zh": [
-          "输出Markdown和JSON，并区分真机、Fixture与推断证据。"
-        ],
-        "en": [
-          "Output Markdown and JSON while separating live, fixture and inferred evidence."
-        ]
-      },
-      "tools": [
-        {
-          "name": "Markdown / JSON formatter",
-          "kind": "Presentation",
-          "purpose": {
-            "zh": "生成可审计的双格式结果。",
-            "en": "Generate auditable dual-format results."
-          }
-        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
       ]
     }
   ],
@@ -430,6 +248,7 @@
         "request": {
           "plan": {
             "service_name": "API_SALES_ORDER_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_SalesOrderItem",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -437,6 +256,7 @@
               {
                 "step_id": "sales_order_items",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrderItem",
                 "http_method": "GET",
                 "select_fields": [
@@ -445,6 +265,7 @@
                   "Material",
                   "ProductionPlant",
                   "RequestedQuantity",
+                  "RequestedQuantityUnit",
                   "ConfdDelivQtyInOrderQtyUnit",
                   "DeliveryPriority"
                 ],
@@ -467,6 +288,7 @@
               {
                 "step_id": "schedule_lines",
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrderScheduleLine",
                 "http_method": "GET",
                 "select_fields": [
@@ -500,6 +322,7 @@
               {
                 "step_id": "material_stock",
                 "service_name": "API_MATERIAL_STOCK_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_MatlStkInAcctMod",
                 "http_method": "GET",
                 "select_fields": [
@@ -532,82 +355,6 @@
         }
       },
       {
-        "id": "read_released_atp",
-        "executor": "sap_read",
-        "operation": "execute_plan",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "request": {
-          "plan": {
-            "service_name": "API_PRODUCT_AVAILY_INFO_BASIC",
-            "entity_set": "DetermineAvailabilityAt",
-            "http_method": "GET",
-            "plan_kind": "function_import",
-            "function_parameters": [
-              {"name": "Material", "value": "{{input.material}}", "value_type": "string"},
-              {"name": "SupplyingPlant", "value": "{{input.plant}}", "value_type": "string"},
-              {"name": "ATPCheckingRule", "value": "A", "value_type": "string"},
-              {"name": "RequestedUTCDateTime", "value": "{{input.date_to}}T23:59:59Z", "value_type": "datetimeoffset"}
-            ],
-            "rationale": "Call the released ATP function import with an exact material, plant, checking rule, and horizon."
-          }
-        }
-      },
-      {
-        "id": "assess_atp_evidence",
-        "executor": "rule",
-        "operation": "assess_api_evidence",
-        "inputMapping": {"checks": {"atp": "{{steps.read_released_atp.output}}"}}
-      },
-      {
-        "id": "preflight_mrp_context",
-        "executor": "skill",
-        "operation": "execute",
-        "skillId": "sap-adt-table-export",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "when": {"source": "{{steps.assess_atp_evidence.output.needs_adt.atp}}", "equals": true},
-        "inputMapping": {
-          "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
-          "source_type": "table",
-          "object": "MDKP",
-          "fields": ["DTNUM", "MATNR", "PLWRK"],
-          "filters": [
-            {"field": "MATNR", "operator": "eq", "value": "{{input.material}}"},
-            {"field": "PLWRK", "operator": "eq", "value": "{{input.plant}}"}
-          ],
-          "max_rows": 2
-        }
-      },
-      {
-        "id": "assess_mrp_preflight",
-        "executor": "rule",
-        "operation": "assess_adt_preflight",
-        "inputMapping": {"payload": "{{steps.preflight_mrp_context.output}}"}
-      },
-      {
-        "id": "read_mrp_context",
-        "executor": "skill",
-        "operation": "execute",
-        "skillId": "sap-adt-table-export",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "when": {"source": "{{steps.assess_mrp_preflight.output.proceed}}", "equals": true},
-        "inputMapping": {
-          "schema_version": 1,
-          "connection_profile": "sapba-live-readonly",
-          "source_type": "table",
-          "object": "MDKP",
-          "fields": ["DTNUM", "MATNR", "PLWRK"],
-          "filters": [
-            {"field": "MATNR", "operator": "eq", "value": "{{input.material}}"},
-            {"field": "PLWRK", "operator": "eq", "value": "{{input.plant}}"}
-          ],
-          "max_rows": 200
-        }
-      },
-      {
         "id": "evaluate_business_result",
         "executor": "rule",
         "operation": "evaluate_business_agent",
@@ -615,13 +362,258 @@
           "agent_id": "shortage-allocation-advisor",
           "run_input": "{{input}}",
           "evidence": {
-            "collect_shortage_evidence": "{{steps.collect_shortage_evidence.output}}",
-            "atp_availability": "{{steps.read_released_atp.output}}"
+            "collect_shortage_evidence": "{{steps.collect_shortage_evidence.output}}"
           },
-          "fallbacks": {"mrp_context": "{{steps.read_mrp_context.output}}"},
-          "known_gaps": []
+          "known_gaps": [
+            "atp_availability_evidence"
+          ]
         }
       }
-    ]
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          },
+          "description": {
+            "zh": "请输入工厂。",
+            "en": "Enter the plant."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          },
+          "description": {
+            "zh": "请输入物料。",
+            "en": "Enter the material."
+          },
+          "placeholder": {
+            "zh": "例如：SG21",
+            "en": "Example: SG21"
+          },
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "plant",
+        "material",
+        "date_from",
+        "date_to",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "plant": "{{steps.evaluate_business_result.output.workflow_output.plant}}",
+      "material": "{{steps.evaluate_business_result.output.workflow_output.material}}",
+      "date_from": "{{steps.evaluate_business_result.output.workflow_output.date_from}}",
+      "date_to": "{{steps.evaluate_business_result.output.workflow_output.date_to}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "sales_order",
+        "sales_order_item",
+        "schedule_line"
+      ],
+      "facts": [
+        "material",
+        "plant",
+        "business_status"
+      ],
+      "metrics": [
+        "requested",
+        "confirmed",
+        "stock",
+        "uncovered"
+      ],
+      "decimalFields": [
+        "requested_quantity",
+        "confirmed_quantity"
+      ],
+      "decimalMetricIds": [
+        "requested",
+        "confirmed",
+        "stock",
+        "uncovered"
+      ],
+      "currencyFields": [],
+      "unitFields": [
+        "unit"
+      ],
+      "dateFields": [],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {},
+      "constantDefaults": {
+        "business_status": "capability_blocked"
+      },
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "atp_availability_evidence": [
+          "atp availability",
+          "released atp",
+          "availability evidence",
+          "historical key date",
+          "historical stock evidence",
+          "not aligned to the historical",
+          "atp 可用量",
+          "atp 能力",
+          "atp 证据",
+          "历史库存证据",
+          "历史关键日期"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [
+        "atp_availability_evidence"
+      ],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [
+        "atp_availability_evidence"
+      ],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "BLOCKED",
+    "testedAt": "2026-08-20T08:57:26.766047+00:00",
+    "evidenceScope": "bounded",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
+      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": false,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": [
+      "atp_availability_evidence"
+    ],
+    "codexDirectBaselineHash": "sha256:620331ab68cd243a953059e8990e383663c4a65ccdf807e1b871a091c64eb553",
+    "freeQueryHash": "sha256:d92460daae1a3e934fdb45c788f718aebb77fbfc3ff7e570140a0cba50732b03",
+    "adjudicatedResultHash": "sha256:620331ab68cd243a953059e8990e383663c4a65ccdf807e1b871a091c64eb553",
+    "fixedAgentHash": "sha256:4d320452b0ecf71dbde59de79468d0444bd2999067c3187b7a36c5f644ca0200",
+    "comparisonHash": "sha256:6aa6a24486c8e8e68d5fc51160ff221829b3fa9e8797d1b10b2538f63c93897a"
   }
 }

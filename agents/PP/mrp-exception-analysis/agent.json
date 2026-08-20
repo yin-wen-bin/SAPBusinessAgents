@@ -10,7 +10,7 @@
     "zh": "分析物料覆盖、供需项目和 MRP 异常消息，解释缺料与重排原因并给出处理优先级。",
     "en": "Analyzes material coverage, supply-demand items and MRP exception messages to explain shortages, rescheduling needs and priorities."
   },
-  "status": "Live-tested deterministic prototype",
+  "status": "Three-stage live acceptance passed",
   "version": "0.1.0",
   "owner": "PP-MRP / Material Planning",
   "tags": [
@@ -23,48 +23,47 @@
     "PP-MRP",
     "MM-IM"
   ],
-  "transactions": [
-    "MD04",
-    "MD05",
-    "MD06",
-    "MD07"
-  ],
-  "tables": [
-    "MARC",
-    "MDKP",
-    "MDTB",
-    "PLAF"
-  ],
+  "transactions": [],
+  "tables": [],
   "systems": [
-    "SAP ECC",
     "SAP S/4HANA"
   ],
   "inputs": {
     "zh": [
-      "工厂或 MRP 控制员",
-      "物料或物料组",
-      "短缺参数文件与计数器",
-      "评估期间"
+      "MRP 工厂",
+      "MRP 范围",
+      "物料",
+      "短缺参数文件",
+      "短缺计数器"
     ],
     "en": [
-      "Plant or MRP controller",
-      "Material or material group",
-      "Shortage profile and counter",
-      "Evaluation horizon"
+      "MRP plant",
+      "MRP area",
+      "Material",
+      "Shortage profile",
+      "Shortage profile counter"
     ]
   },
   "outputs": {
     "zh": [
-      "短缺物料清单",
-      "供需缺口与异常消息",
-      "重排和催办建议",
-      "优先级及证据"
+      "MRP 工厂",
+      "MRP 范围",
+      "物料",
+      "短缺参数文件",
+      "短缺计数器",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
     ],
     "en": [
-      "Shortage material list",
-      "Supply-demand gaps and exception messages",
-      "Rescheduling and expediting recommendations",
-      "Priority and evidence"
+      "MRP plant",
+      "MRP area",
+      "Material",
+      "Shortage profile",
+      "Shortage profile counter",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
     ]
   },
   "guardrails": {
@@ -83,213 +82,131 @@
   },
   "workflow": [
     {
-      "id": "scope-mrp-run",
+      "id": "execute-collect_mrp_master",
       "title": {
-        "zh": "确定 MRP 范围",
-        "en": "Scope the MRP analysis"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "确定物料、工厂、MRP 范围、控制员和短缺定义。",
-        "en": "Resolve material, plant, MRP area, controller and shortage definition."
+        "zh": "执行清单步骤 `collect_mrp_master`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_mrp_master` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "要求至少提供物料、工厂或控制员之一。",
-          "默认标准短缺参数文件也必须显式记录。"
+          "GET API_MRP_MATERIALS_SRV_01@2.0/A_MRPMaterial"
         ],
         "en": [
-          "Require at least a material, plant or controller.",
-          "Record even the standard shortage profile explicitly."
+          "GET API_MRP_MATERIALS_SRV_01@2.0/A_MRPMaterial"
         ]
       },
       "tools": [
         {
-          "name": "MRP scope validator",
-          "kind": "Agent component",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "防止无界 MRP 查询。",
-            "en": "Prevents unbounded MRP queries."
+            "zh": "执行 `collect_mrp_master` / `execute_plan`",
+            "en": "Execute `collect_mrp_master` / `execute_plan`"
           }
         }
+      ],
+      "executionStepIds": [
+        "collect_mrp_master"
       ]
     },
     {
-      "id": "validate-runtime-schema",
+      "id": "execute-collect_mrp_coverage",
       "title": {
-        "zh": "验证运行时和 schema",
-        "en": "Validate runtime and schema"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "确认只读连接并验证 MRP 三类实体。",
-        "en": "Confirm read-only connectivity and the three MRP entity contracts."
+        "zh": "执行清单步骤 `collect_mrp_coverage`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_mrp_coverage` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "检查 Thin Runtime 健康和只读状态。",
-          "验证 A_MRPMaterial、SupplyDemandItems 和 MaterialCoverages 字段。"
+          "GET API_MRP_MATERIALS_SRV_01@2.0/MaterialCoverages"
         ],
         "en": [
-          "Check Thin Runtime health and read-only state.",
-          "Validate fields for A_MRPMaterial, SupplyDemandItems and MaterialCoverages."
+          "GET API_MRP_MATERIALS_SRV_01@2.0/MaterialCoverages"
         ]
       },
       "tools": [
         {
-          "name": "sapclaw_runtime_health",
-          "kind": "Thin SAPClaw",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "验证运行环境。",
-            "en": "Validates the runtime."
-          }
-        },
-        {
-          "name": "sapclaw_schema",
-          "kind": "Thin SAPClaw",
-          "purpose": {
-            "zh": "提供权威字段契约。",
-            "en": "Provides the authoritative field contract."
+            "zh": "执行 `collect_mrp_coverage` / `execute_plan`",
+            "en": "Execute `collect_mrp_coverage` / `execute_plan`"
           }
         }
+      ],
+      "executionStepIds": [
+        "collect_mrp_coverage"
       ]
     },
     {
-      "id": "load-mrp-master",
+      "id": "execute-collect_mrp_elements",
       "title": {
-        "zh": "读取 MRP 主数据",
-        "en": "Load MRP master data"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "读取 MRP 类型、控制员、安全库存和计划策略。",
-        "en": "Read MRP type, controller, safety stock and planning strategy."
+        "zh": "执行清单步骤 `collect_mrp_elements`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_mrp_elements` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "按物料、工厂和 MRP 范围精确过滤。",
-          "保存主数据键和删除标识。"
+          "GET API_MRP_MATERIALS_SRV_01@2.0/SupplyDemandItems"
         ],
         "en": [
-          "Filter exactly by material, plant and MRP area.",
-          "Preserve master-data keys and deletion indicators."
+          "GET API_MRP_MATERIALS_SRV_01@2.0/SupplyDemandItems"
         ]
       },
       "tools": [
         {
-          "name": "API_MRP_MATERIALS_SRV_01",
-          "kind": "SAP OData API",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "读取 A_MRPMaterial。",
-            "en": "Reads A_MRPMaterial."
-          }
-        },
-        {
-          "name": "sapclaw_execute_get",
-          "kind": "Thin SAPClaw",
-          "purpose": {
-            "zh": "执行精确只读查询。",
-            "en": "Executes exact read-only queries."
+            "zh": "执行 `collect_mrp_elements` / `execute_plan`",
+            "en": "Execute `collect_mrp_elements` / `execute_plan`"
           }
         }
+      ],
+      "executionStepIds": [
+        "collect_mrp_elements"
       ]
     },
     {
-      "id": "load-coverage-and-elements",
+      "id": "execute-evaluate_business_result",
       "title": {
-        "zh": "读取覆盖与供需项目",
-        "en": "Load coverage and supply-demand items"
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "读取短缺数量、覆盖天数、MRP 元素和异常消息。",
-        "en": "Read shortage quantity, days of supply, MRP elements and exception messages."
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
       },
       "operations": {
         "zh": [
-          "MaterialCoverages 必须带短缺参数文件和计数器。",
-          "SupplyDemandItems 按物料和工厂收窄并读取完整分页。"
+          "rule.evaluate_business_agent"
         ],
         "en": [
-          "MaterialCoverages must include shortage profile and counter.",
-          "Narrow SupplyDemandItems by material and plant and read all pages."
+          "rule.evaluate_business_agent"
         ]
       },
       "tools": [
         {
-          "name": "API_MRP_MATERIALS_SRV_01",
-          "kind": "SAP OData API",
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "提供覆盖与供需证据。",
-            "en": "Provides coverage and supply-demand evidence."
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
           }
         }
-      ]
-    },
-    {
-      "id": "cross-check-mrp-list",
-      "title": {
-        "zh": "核对 MRP 清单",
-        "en": "Cross-check the MRP list"
-      },
-      "description": {
-        "zh": "通过 SAPSkillhub 读取 MDKP/MDTB 作为独立证据。",
-        "en": "Use SAPSkillhub to read MDKP/MDTB as independent evidence."
-      },
-      "operations": {
-        "zh": [
-          "仅导出低行数验证样本并记录查询时间。",
-          "把权限、空表和导出超时与业务无短缺区分。"
-        ],
-        "en": [
-          "Export only a low-row validation sample and record timing.",
-          "Distinguish authorization, empty-table and export timeouts from no shortage."
-        ]
-      },
-      "tools": [
-        {
-          "name": "sap-se16n-export",
-          "kind": "SAPSkillhub",
-          "purpose": {
-            "zh": "导出 MRP 清单只读证据。",
-            "en": "Exports read-only MRP-list evidence."
-          }
-        }
-      ]
-    },
-    {
-      "id": "rank-and-present",
-      "title": {
-        "zh": "排序并解释异常",
-        "en": "Rank and explain exceptions"
-      },
-      "description": {
-        "zh": "按缺口、日期、异常码和业务影响形成优先级。",
-        "en": "Prioritize by shortage, date, exception code and business impact."
-      },
-      "operations": {
-        "zh": [
-          "合并同一物料的短缺、重排和计划订单证据。",
-          "输出原因、建议责任方、技术键和可信度。"
-        ],
-        "en": [
-          "Combine shortage, rescheduling and planned-order evidence per material.",
-          "Present cause, suggested owner, technical keys and confidence."
-        ]
-      },
-      "tools": [
-        {
-          "name": "MRP exception classifier",
-          "kind": "AI analysis",
-          "purpose": {
-            "zh": "生成可解释优先级。",
-            "en": "Generates explainable priorities."
-          }
-        },
-        {
-          "name": "Evidence completeness gate",
-          "kind": "Control",
-          "purpose": {
-            "zh": "将超时或缺页标为 INCONCLUSIVE。",
-            "en": "Marks timeouts or missing pages as INCONCLUSIVE."
-          }
-        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
       ]
     }
   ],
@@ -408,9 +325,11 @@
         "request": {
           "plan": {
             "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
             "entity_set": "A_MRPMaterial",
             "http_method": "GET",
             "plan_kind": "direct",
+            "step_id": "mrp_material",
             "select_fields": [
               "Material",
               "MRPArea",
@@ -445,9 +364,11 @@
         "request": {
           "plan": {
             "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
             "entity_set": "MaterialCoverages",
             "http_method": "GET",
             "plan_kind": "direct",
+            "step_id": "material_coverages",
             "select_fields": [
               "Material",
               "MaterialShortageProfile",
@@ -505,9 +426,11 @@
         "request": {
           "plan": {
             "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
             "entity_set": "SupplyDemandItems",
             "http_method": "GET",
             "plan_kind": "direct",
+            "step_id": "supply_demand_items",
             "select_fields": [
               "Material",
               "MRPArea",
@@ -519,8 +442,11 @@
               "MRPElementAvailyOrRqmtDate",
               "MRPElementOpenQuantity",
               "MRPAvailableQuantity",
+              "MaterialBaseUnit",
               "ExceptionMessageNumber",
-              "ExceptionMessageText"
+              "ExceptionMessageText",
+              "ExceptionMessageNumber2",
+              "ExceptionMessageText2"
             ],
             "filters": [
               {
@@ -567,13 +493,279 @@
           "agent_id": "mrp-exception-analysis",
           "run_input": "{{input}}",
           "evidence": {
-            "collect_mrp_master": "{{steps.collect_mrp_master.output}}",
-            "collect_mrp_coverage": "{{steps.collect_mrp_coverage.output}}",
-            "collect_mrp_elements": "{{steps.collect_mrp_elements.output}}"
+            "mrp_material": "{{steps.collect_mrp_master.output}}",
+            "material_coverages": "{{steps.collect_mrp_coverage.output}}",
+            "supply_demand_items": "{{steps.collect_mrp_elements.output}}"
           },
           "known_gaps": []
         }
       }
-    ]
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "MRP 工厂",
+            "en": "MRP plant"
+          },
+          "description": {
+            "zh": "请输入MRP 工厂。",
+            "en": "Enter the mrp plant."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "mrp_area": {
+          "type": "string",
+          "title": {
+            "zh": "MRP 范围",
+            "en": "MRP area"
+          },
+          "description": {
+            "zh": "请输入MRP 范围。",
+            "en": "Enter the mrp area."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          },
+          "description": {
+            "zh": "请输入物料。",
+            "en": "Enter the material."
+          },
+          "placeholder": {
+            "zh": "例如：SG21",
+            "en": "Example: SG21"
+          },
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "shortage_profile": {
+          "type": "string",
+          "title": {
+            "zh": "短缺参数文件",
+            "en": "Shortage profile"
+          },
+          "description": {
+            "zh": "请输入短缺参数文件。",
+            "en": "Enter the shortage profile."
+          },
+          "placeholder": {
+            "zh": "例如：SAP000000001",
+            "en": "Example: SAP000000001"
+          },
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "shortage_counter": {
+          "type": "string",
+          "title": {
+            "zh": "短缺计数器",
+            "en": "Shortage profile counter"
+          },
+          "description": {
+            "zh": "请输入短缺计数器。",
+            "en": "Enter the shortage profile counter."
+          },
+          "placeholder": {
+            "zh": "例如：001",
+            "en": "Example: 001"
+          },
+          "minLength": 1,
+          "maxLength": 3,
+          "pattern": "^[0-9]+$"
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "plant",
+        "mrp_area",
+        "material",
+        "shortage_profile",
+        "shortage_counter",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "plant": "{{steps.evaluate_business_result.output.workflow_output.plant}}",
+      "mrp_area": "{{steps.evaluate_business_result.output.workflow_output.mrp_area}}",
+      "material": "{{steps.evaluate_business_result.output.workflow_output.material}}",
+      "shortage_profile": "{{steps.evaluate_business_result.output.workflow_output.shortage_profile}}",
+      "shortage_counter": "{{steps.evaluate_business_result.output.workflow_output.shortage_counter}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "material",
+        "plant",
+        "mrp_element"
+      ],
+      "facts": [
+        "requirement_date",
+        "exception_message",
+        "business_status"
+      ],
+      "metrics": [
+        "coverage_rows",
+        "supply_demand_rows"
+      ],
+      "decimalFields": [
+        "quantity"
+      ],
+      "decimalMetricIds": [],
+      "currencyFields": [],
+      "unitFields": [
+        "unit"
+      ],
+      "dateFields": [
+        "requirement_date"
+      ],
+      "codeSetFields": [
+        "exception_message"
+      ],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {},
+      "constantDefaults": {},
+      "fieldAliases": {
+        "quantity": [
+          "open_quantity"
+        ],
+        "unit": [
+          "base_unit"
+        ]
+      },
+      "fieldExtractors": {
+        "mrp_element": {
+          "source": "mrp_element_category",
+          "contains": {
+            "WB": "_STOCK"
+          },
+          "default": ""
+        }
+      },
+      "currencyFromDecimal": {},
+      "valueMappings": {
+        "business_status": {
+          "no_exception_detected": "attention",
+          "supply_exception_detected": "attention"
+        }
+      },
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "mrp_coverage_or_supply_demand_evidence": [
+          "supply-demand",
+          "supply demand",
+          "mrp coverage",
+          "供需",
+          "mrp 覆盖"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [],
+      "ignoredNoticeKeywords": [
+        "source_complete=true"
+      ],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-08-20T08:17:30.484764+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
+      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "codexDirectBaselineHash": "sha256:af574435c1605118eb406f5263eb80725237f15d47bc7392dd62e3169e0c06ac",
+    "freeQueryHash": "sha256:79fb90a73ee2adcf59556190ca73e3b13a42f0f25c15b60a24e69c713623b19b",
+    "adjudicatedResultHash": "sha256:af574435c1605118eb406f5263eb80725237f15d47bc7392dd62e3169e0c06ac",
+    "fixedAgentHash": "sha256:af574435c1605118eb406f5263eb80725237f15d47bc7392dd62e3169e0c06ac",
+    "comparisonHash": "sha256:59cdb8d2dbee8272c29b65f5f982d62b66db73229ff3ed3b8190846fe190aca8"
   }
 }

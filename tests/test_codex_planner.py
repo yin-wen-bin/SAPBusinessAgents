@@ -32,19 +32,23 @@ def test_plan_turn_repairs_malformed_plan_json_exactly_once() -> None:
                 "intent": "fixture",
                 "needs_clarification": False,
                 "clarification_question": "",
-                "plan_json": '{"service_name":"API_FIXTURE_SRV" "entity_set":"A_Fixture"}',
+                "plan_json": '{"service_name":"API_FIXTURE_SRV","odata_version":"2.0" "entity_set":"A_Fixture"}',
             },
             {
                 "intent": "fixture",
                 "needs_clarification": False,
                 "clarification_question": "",
-                "plan_json": '{"service_name":"API_FIXTURE_SRV","entity_set":"A_Fixture"}',
+                "plan_json": '{"service_name":"API_FIXTURE_SRV","odata_version":"2.0","entity_set":"A_Fixture"}',
             },
         ]
     )
     raw, plan = asyncio.run(_run_plan_turn(thread, "initial", phase="test"))
     assert raw["intent"] == "fixture"
-    assert plan == {"service_name": "API_FIXTURE_SRV", "entity_set": "A_Fixture"}
+    assert plan == {
+        "service_name": "API_FIXTURE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_Fixture",
+    }
     assert len(thread.prompts) == 2
     assert "Change only the JSON syntax" in thread.prompts[1]
 
@@ -54,6 +58,7 @@ def test_order_by_is_canonicalized_to_guarded_bare_field_contract() -> None:
         intent="fixture",
         plan={
             "service_name": "API_FIXTURE_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_Fixture",
             "order_by": ["Document asc", "Document asc", "Item"],
         },
@@ -69,6 +74,7 @@ def test_order_by_desc_fails_closed_instead_of_changing_semantics() -> None:
         intent="fixture",
         plan={
             "service_name": "API_FIXTURE_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_Fixture",
             "order_by": ["Document desc"],
         },

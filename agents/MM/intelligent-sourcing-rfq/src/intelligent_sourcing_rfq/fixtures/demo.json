@@ -3,7 +3,7 @@
   "assessment": {"api_complete": {"rfq": true, "quotation": true, "supplier": true, "source": true}},
   "evidence": {
     "rfq": {"source_complete": true, "step_results": {"rfq": {"results": [{"RequestForQuotation": "6000000001"}]}}},
-    "quotation": {"source_complete": true, "step_results": {"quotations": {"results": [{"SupplierQuotation": "6500000001", "Supplier": "100001", "NetPriceAmount": "90", "DocumentCurrency": "EUR", "OrderQuantityUnit": "EA", "PriceUnitQty": "1", "DeliveryDate": "2026-08-25"}, {"SupplierQuotation": "6500000002", "Supplier": "100002", "NetPriceAmount": "100", "DocumentCurrency": "EUR", "OrderQuantityUnit": "EA", "PriceUnitQty": "1", "DeliveryDate": "2026-08-24"}]}}},
+    "quotation": {"source_complete": true, "step_results": {"quotations": {"results": [{"SupplierQuotation": "6500000001", "SupplierQuotationItem": "10", "RequestForQuotation": "6000000001", "RequestForQuotationItem": "10", "Supplier": "100001", "NetPriceAmount": "90", "DocumentCurrency": "EUR", "OrderQuantityUnit": "EA", "PriceUnitQty": "1", "DeliveryDate": "2026-08-25"}, {"SupplierQuotation": "6500000002", "SupplierQuotationItem": "10", "RequestForQuotation": "6000000001", "RequestForQuotationItem": "10", "Supplier": "100002", "NetPriceAmount": "100", "DocumentCurrency": "EUR", "OrderQuantityUnit": "EA", "PriceUnitQty": "1", "DeliveryDate": "2026-08-24"}]}}},
     "source": {"source_complete": true, "step_results": {"suppliers": {"results": [{"Supplier": "100001"}, {"Supplier": "100002"}]}, "info_records": {"results": []}}}
   },
   "fallbacks": {}, "known_gaps": []

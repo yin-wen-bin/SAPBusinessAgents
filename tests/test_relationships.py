@@ -19,6 +19,7 @@ def _plan(steps: list[dict[str, object]]) -> list[tuple[str, dict[str, object]]]
             "o2c",
             {
                 "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_SalesOrder",
                 "plan_kind": "multi_step",
                 "steps": steps,
@@ -37,6 +38,7 @@ def _literal_step(
     return {
         "step_id": step_id,
         "service_name": service,
+        "odata_version": "2.0",
         "entity_set": entity,
         "filters": [
             {"field": field, "operator": "eq", "value": value, "value_type": "string"}
@@ -82,6 +84,7 @@ def test_relationship_catalog_accepts_o2c_delivery_billing_fi_chain() -> None:
         {
             "step_id": "billing",
             "service_name": "API_BILLING_DOCUMENT_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_BillingDocumentItem",
             "filter_from_previous": [
                 {
@@ -94,6 +97,7 @@ def test_relationship_catalog_accepts_o2c_delivery_billing_fi_chain() -> None:
         {
             "step_id": "fi",
             "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_OperationalAcctgDocItemCube",
             "filter_from_previous": [
                 {
@@ -115,6 +119,7 @@ def test_relationship_catalog_rejects_unregistered_cross_entity_binding() -> Non
         {
             "step_id": "billing",
             "service_name": "API_BILLING_DOCUMENT_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_BillingDocumentItem",
             "filter_from_previous": [
                 {
@@ -135,6 +140,7 @@ def test_relationship_catalog_accepts_p2p_business_key_semantics() -> None:
             "p2p",
             {
                 "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_PurchaseOrder",
                 "plan_kind": "multi_step",
                 "steps": [

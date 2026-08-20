@@ -96,6 +96,36 @@ class RunStore:
                     validation_revision INTEGER,
                     FOREIGN KEY(run_id) REFERENCES runs(run_id)
                 );
+                CREATE TABLE IF NOT EXISTS harness_tool_calls (
+                    call_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    safe_input_json TEXT NOT NULL,
+                    output_json TEXT,
+                    evidence_ref TEXT,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    UNIQUE(run_id, tool_name, request_hash),
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
+                CREATE INDEX IF NOT EXISTS harness_calls_run
+                    ON harness_tool_calls(run_id, created_at);
+                CREATE TABLE IF NOT EXISTS harness_state (
+                    run_id TEXT PRIMARY KEY,
+                    state_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
+                CREATE TABLE IF NOT EXISTS harness_tool_candidates (
+                    run_id TEXT NOT NULL,
+                    candidate_id TEXT NOT NULL,
+                    candidate_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(run_id, candidate_id),
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
                 """
             )
             columns = {
@@ -146,6 +176,23 @@ class RunStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 200)),)
+            ).fetchall()
+        return [_run_from_row(row) for row in rows]
+
+    def list_recoverable_free_query_runs(self) -> list[RunRecord]:
+        statuses = (
+            RunStatus.queued.value,
+            RunStatus.planning.value,
+            RunStatus.validating.value,
+            RunStatus.running.value,
+        )
+        placeholders = ",".join("?" for _ in statuses)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT * FROM runs
+                WHERE mode = ? AND status IN ({placeholders})
+                ORDER BY created_at""",
+                (RunMode.free_query.value, *statuses),
             ).fetchall()
         return [_run_from_row(row) for row in rows]
 
@@ -202,6 +249,99 @@ class RunStore:
             )
             for row in rows
         ]
+
+    def save_harness_state(self, run_id: str, state: dict[str, Any]) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO harness_state (run_id, state_json, updated_at)
+                VALUES (?, ?, ?)""",
+                (run_id, _dump(state), utc_now()),
+            )
+
+    def get_harness_state(self, run_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT state_json FROM harness_state WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return _load(row["state_json"], {}) if row is not None else {}
+
+    def save_harness_tool_candidates(
+        self, run_id: str, candidates: list[dict[str, Any]]
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            for candidate in candidates:
+                candidate_id = str(candidate.get("candidate_id") or "")
+                if not candidate_id:
+                    continue
+                connection.execute(
+                    """INSERT OR REPLACE INTO harness_tool_candidates
+                    (run_id, candidate_id, candidate_json, updated_at)
+                    VALUES (?, ?, ?, ?)""",
+                    (run_id, candidate_id, _dump(candidate), utc_now()),
+                )
+
+    def list_harness_tool_candidates(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT candidate_json FROM harness_tool_candidates
+                WHERE run_id = ? ORDER BY candidate_id""",
+                (run_id,),
+            ).fetchall()
+        return [
+            value
+            for row in rows
+            if isinstance((value := _load(row["candidate_json"], None)), dict)
+        ]
+
+    def begin_harness_tool_call(
+        self,
+        *,
+        call_id: str,
+        run_id: str,
+        tool_name: str,
+        request_hash: str,
+        safe_input: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Create a call record, returning a completed identical call for idempotency."""
+        with self._lock, self._connect() as connection:
+            existing = connection.execute(
+                """SELECT * FROM harness_tool_calls
+                WHERE run_id = ? AND tool_name = ? AND request_hash = ?""",
+                (run_id, tool_name, request_hash),
+            ).fetchone()
+            if existing is not None:
+                return _harness_call_from_row(existing)
+            connection.execute(
+                """INSERT INTO harness_tool_calls
+                (call_id, run_id, tool_name, request_hash, status, safe_input_json, created_at)
+                VALUES (?, ?, ?, ?, 'running', ?, ?)""",
+                (call_id, run_id, tool_name, request_hash, _dump(safe_input), utc_now()),
+            )
+        return None
+
+    def complete_harness_tool_call(
+        self,
+        call_id: str,
+        *,
+        status: str,
+        output: dict[str, Any],
+        evidence_ref: str | None = None,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """UPDATE harness_tool_calls
+                SET status = ?, output_json = ?, evidence_ref = ?, completed_at = ?
+                WHERE call_id = ?""",
+                (status, _dump(output), evidence_ref, utc_now(), call_id),
+            )
+
+    def list_harness_tool_calls(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM harness_tool_calls WHERE run_id = ? ORDER BY created_at",
+                (run_id,),
+            ).fetchall()
+        return [_harness_call_from_row(row) for row in rows]
 
     def save_draft(self, draft: DraftRecord) -> None:
         with self._lock, self._connect() as connection:
@@ -367,3 +507,18 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         started_at=row["started_at"],
         completed_at=row["completed_at"],
     )
+
+
+def _harness_call_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "call_id": row["call_id"],
+        "run_id": row["run_id"],
+        "tool_name": row["tool_name"],
+        "request_hash": row["request_hash"],
+        "status": row["status"],
+        "safe_input": _load(row["safe_input_json"], {}),
+        "output": _load(row["output_json"], None),
+        "evidence_ref": row["evidence_ref"],
+        "created_at": row["created_at"],
+        "completed_at": row["completed_at"],
+    }

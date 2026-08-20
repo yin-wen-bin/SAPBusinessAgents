@@ -10,7 +10,7 @@
     "zh": "串联客户退货、贷项申请和后续凭证，识别超量、重复和引用异常。",
     "en": "Links customer returns, credit-memo requests and subsequent documents to identify excess quantities, duplicates and reference anomalies."
   },
-  "status": "Live-tested deterministic prototype",
+  "status": "Three-stage live acceptance blocked",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -22,47 +22,39 @@
   "sapModules": [
     "SD"
   ],
-  "transactions": [
-    "VA03",
-    "VF03"
-  ],
-  "tables": [
-    "VBAK",
-    "VBAP",
-    "VBRK",
-    "VBRP",
-    "VBFA"
-  ],
+  "transactions": [],
+  "tables": [],
   "systems": [
-    "SAP ECC",
     "SAP S/4HANA"
   ],
   "inputs": {
     "zh": [
-      "自然语言业务问题",
-      "可选业务对象标识",
-      "查询基准日",
-      "SAP只读证据"
+      "销售组织",
+      "开始日期",
+      "结束日期"
     ],
     "en": [
-      "Natural-language business question",
-      "Optional business-object identifier",
-      "As-of date",
-      "Read-only SAP evidence"
+      "Sales organization",
+      "Start date",
+      "End date"
     ]
   },
   "outputs": {
     "zh": [
-      "状态与可解释分析",
-      "异常和阻塞原因",
-      "建议动作",
-      "Markdown或JSON"
+      "销售组织",
+      "开始日期",
+      "结束日期",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
     ],
     "en": [
-      "Status and explainable analysis",
-      "Anomalies and blockers",
-      "Recommended actions",
-      "Markdown or JSON"
+      "Sales organization",
+      "Start date",
+      "End date",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
     ]
   },
   "guardrails": {
@@ -79,251 +71,75 @@
   },
   "workflow": [
     {
-      "id": "parse-user-input",
+      "id": "execute-collect_returns_credit_evidence",
       "title": {
-        "zh": "解析输入和范围",
-        "en": "Parse input and scope"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "解析自然语言对象标识、日期和组织范围。",
-        "en": "Parse natural-language identifiers, dates and organizational scope."
+        "zh": "执行清单步骤 `collect_returns_credit_evidence`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_returns_credit_evidence` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "解析自然语言对象标识、日期和组织范围。"
+          "GET API_CUSTOMER_RETURN_SRV@2.0/A_CustomerReturn",
+          "GET API_CUSTOMER_RETURN_SRV@2.0/A_CustomerReturnItem",
+          "GET API_CREDIT_MEMO_REQUEST_SRV@2.0/A_CreditMemoRequest",
+          "GET API_CREDIT_MEMO_REQUEST_SRV@2.0/A_CreditMemoRequestItem",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem"
         ],
         "en": [
-          "Parse natural-language identifiers, dates and organizational scope."
+          "GET API_CUSTOMER_RETURN_SRV@2.0/A_CustomerReturn",
+          "GET API_CUSTOMER_RETURN_SRV@2.0/A_CustomerReturnItem",
+          "GET API_CREDIT_MEMO_REQUEST_SRV@2.0/A_CreditMemoRequest",
+          "GET API_CREDIT_MEMO_REQUEST_SRV@2.0/A_CreditMemoRequestItem",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem"
         ]
       },
       "tools": [
         {
-          "name": "QueryExtractor",
-          "kind": "Agent component",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "提取查询对象并保留歧义。",
-            "en": "Extract query objects while preserving ambiguity."
-          }
-        }
-      ]
-    },
-    {
-      "id": "check-thin-runtime",
-      "title": {
-        "zh": "检查Embedded Provider",
-        "en": "Check Embedded Provider"
-      },
-      "description": {
-        "zh": "确认Runtime健康、启用、只读且schema可执行。",
-        "en": "Require a healthy, enabled, read-only runtime and executable schemas."
-      },
-      "operations": {
-        "zh": [
-          "确认Runtime健康、启用、只读且schema可执行。"
-        ],
-        "en": [
-          "Require a healthy, enabled, read-only runtime and executable schemas."
-        ]
-      },
-      "tools": [
-        {
-          "name": "sap_read_provider_health / sap_read_schema",
-          "kind": "Embedded SAP Read Provider",
-          "purpose": {
-            "zh": "执行健康和权威schema检查。",
-            "en": "Run health and authoritative schema checks."
-          }
-        }
-      ]
-    },
-    {
-      "id": "load-sap-data",
-      "title": {
-        "zh": "读取SAP证据",
-        "en": "Load SAP evidence"
-      },
-      "description": {
-        "zh": "使用服务端过滤、窄字段和完整分页读取业务证据。",
-        "en": "Read business evidence with server filters, narrow fields and complete pagination."
-      },
-      "operations": {
-        "zh": [
-          "使用服务端过滤、窄字段和完整分页读取业务证据。"
-        ],
-        "en": [
-          "Read business evidence with server filters, narrow fields and complete pagination."
-        ]
-      },
-      "tools": [
-        {
-          "name": "API_CUSTOMER_RETURN_SRV + API_CREDIT_MEMO_REQUEST_SRV + API_BILLING_DOCUMENT_SRV",
-          "kind": "SAP OData via sap_read_execute_get",
-          "purpose": {
-            "zh": "执行批准的只读GET。",
-            "en": "Execute approved read-only GET requests."
+            "zh": "执行 `collect_returns_credit_evidence` / `execute_plan`",
+            "en": "Execute `collect_returns_credit_evidence` / `execute_plan`"
           }
         }
       ],
-      "sapScope": {
-        "modules": [
-          "SD"
-        ],
-        "transactions": [
-          "VA03",
-          "VF03"
-        ],
-        "tables": [
-          "VBAK",
-          "VBAP",
-          "VBRK",
-          "VBRP",
-          "VBFA"
-        ]
-      }
-    },
-    {
-      "id": "supplement-with-skill",
-      "title": {
-        "zh": "按需补充SAPSkillhub证据",
-        "en": "Supplement with SAPSkillhub"
-      },
-      "description": {
-        "zh": "仅当标准OData缺少必要证据时调用明确匹配的只读skill。",
-        "en": "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
-      },
-      "operations": {
-        "zh": [
-          "仅当标准OData缺少必要证据时调用明确匹配的只读skill。"
-        ],
-        "en": [
-          "Call an explicitly matched read-only skill only when standard OData lacks required evidence."
-        ]
-      },
-      "tools": [
-        {
-          "name": "SAPSkillhub read-only skill",
-          "kind": "SAPSkill",
-          "purpose": {
-            "zh": "补充GUI、CDS或输出管理证据。",
-            "en": "Supplement GUI, CDS or output-management evidence."
-          }
-        }
+      "executionStepIds": [
+        "collect_returns_credit_evidence"
       ]
     },
     {
-      "id": "assemble-evidence",
+      "id": "execute-evaluate_business_result",
       "title": {
-        "zh": "组装脱敏证据",
-        "en": "Assemble sanitized evidence"
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "生成带run id、来源、只读标志和分页状态的evidence。",
-        "en": "Create evidence with run id, provenance, read-only flag and pagination state."
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
       },
       "operations": {
         "zh": [
-          "生成带run id、来源、只读标志和分页状态的evidence。"
+          "rule.evaluate_business_agent"
         ],
         "en": [
-          "Create evidence with run id, provenance, read-only flag and pagination state."
+          "rule.evaluate_business_agent"
         ]
       },
       "tools": [
         {
-          "name": "Evidence snapshot builder",
-          "kind": "Agent component",
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "验证并脱敏证据快照。",
-            "en": "Validate and sanitize the evidence snapshot."
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
           }
         }
-      ]
-    },
-    {
-      "id": "validate-evidence",
-      "title": {
-        "zh": "校验证据质量",
-        "en": "Validate evidence quality"
-      },
-      "description": {
-        "zh": "检查必填字段、单位、币种、冲销、重复与来源完整性。",
-        "en": "Check required fields, units, currencies, reversals, duplicates and provenance."
-      },
-      "operations": {
-        "zh": [
-          "检查必填字段、单位、币种、冲销、重复与来源完整性。"
-        ],
-        "en": [
-          "Check required fields, units, currencies, reversals, duplicates and provenance."
-        ]
-      },
-      "tools": [
-        {
-          "name": "EvidenceValidator",
-          "kind": "Agent component",
-          "purpose": {
-            "zh": "阻止不完整证据被误判为正常。",
-            "en": "Prevent incomplete evidence from being treated as normal."
-          }
-        }
-      ]
-    },
-    {
-      "id": "analyze-business-rule",
-      "title": {
-        "zh": "执行可解释分析",
-        "en": "Run explainable analysis"
-      },
-      "description": {
-        "zh": "运行确定性规则、分类或版本化评分，不生成SAP写操作。",
-        "en": "Run deterministic rules, classification or versioned scoring without SAP writes."
-      },
-      "operations": {
-        "zh": [
-          "运行确定性规则、分类或版本化评分，不生成SAP写操作。"
-        ],
-        "en": [
-          "Run deterministic rules, classification or versioned scoring without SAP writes."
-        ]
-      },
-      "tools": [
-        {
-          "name": "SD O2C analyzer",
-          "kind": "Agent component",
-          "purpose": {
-            "zh": "生成状态、评分、发现和建议动作。",
-            "en": "Produce status, score, findings and recommended actions."
-          }
-        }
-      ]
-    },
-    {
-      "id": "present-report",
-      "title": {
-        "zh": "输出报告",
-        "en": "Present report"
-      },
-      "description": {
-        "zh": "输出Markdown和JSON，并区分真机、Fixture与推断证据。",
-        "en": "Output Markdown and JSON while separating live, fixture and inferred evidence."
-      },
-      "operations": {
-        "zh": [
-          "输出Markdown和JSON，并区分真机、Fixture与推断证据。"
-        ],
-        "en": [
-          "Output Markdown and JSON while separating live, fixture and inferred evidence."
-        ]
-      },
-      "tools": [
-        {
-          "name": "Markdown / JSON formatter",
-          "kind": "Presentation",
-          "purpose": {
-            "zh": "生成可审计的双格式结果。",
-            "en": "Generate auditable dual-format results."
-          }
-        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
       ]
     }
   ],
@@ -413,6 +229,7 @@
         "request": {
           "plan": {
             "service_name": "API_CUSTOMER_RETURN_SRV",
+            "odata_version": "2.0",
             "entity_set": "A_CustomerReturn",
             "http_method": "GET",
             "plan_kind": "multi_step",
@@ -420,6 +237,7 @@
               {
                 "step_id": "returns",
                 "service_name": "API_CUSTOMER_RETURN_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_CustomerReturn",
                 "http_method": "GET",
                 "select_fields": [
@@ -454,6 +272,7 @@
               {
                 "step_id": "return_items",
                 "service_name": "API_CUSTOMER_RETURN_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_CustomerReturnItem",
                 "http_method": "GET",
                 "select_fields": [
@@ -481,6 +300,7 @@
               {
                 "step_id": "credit_requests",
                 "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_CreditMemoRequest",
                 "http_method": "GET",
                 "select_fields": [
@@ -516,6 +336,7 @@
               {
                 "step_id": "credit_request_items",
                 "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_CreditMemoRequestItem",
                 "http_method": "GET",
                 "select_fields": [
@@ -540,23 +361,26 @@
               {
                 "step_id": "billing_documents",
                 "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
                 "entity_set": "A_BillingDocumentItem",
                 "http_method": "GET",
                 "select_fields": [
                   "BillingDocument",
                   "BillingDocumentItem",
+                  "SalesDocument",
+                  "SalesDocumentItem",
                   "ReferenceSDDocument",
                   "ReferenceSDDocumentItem",
                   "BillingQuantity",
                   "NetAmount",
                   "TransactionCurrency"
                 ],
-                "rationale": "Load follow-on billing for credit requests.",
+                "rationale": "Load follow-on billing whose sales-document source is the selected customer return.",
                 "filter_from_previous": [
                   {
-                    "field": "ReferenceSDDocument",
-                    "source_step_id": "credit_requests",
-                    "source_field": "CreditMemoRequest",
+                    "field": "SalesDocument",
+                    "source_step_id": "returns",
+                    "source_field": "CustomerReturn",
                     "fanout": true,
                     "fetch_all_for_binding": true
                   }
@@ -580,6 +404,249 @@
           "known_gaps": []
         }
       }
-    ]
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_organization": {
+          "type": "string",
+          "title": {
+            "zh": "销售组织",
+            "en": "Sales organization"
+          },
+          "description": {
+            "zh": "请输入销售组织。",
+            "en": "Enter the sales organization."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "sales_organization",
+        "date_from",
+        "date_to",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "sales_organization": "{{steps.evaluate_business_result.output.workflow_output.sales_organization}}",
+      "date_from": "{{steps.evaluate_business_result.output.workflow_output.date_from}}",
+      "date_to": "{{steps.evaluate_business_result.output.workflow_output.date_to}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "customer_return",
+        "customer_return_item"
+      ],
+      "facts": [
+        "reference_document",
+        "material_received",
+        "refund_type",
+        "business_status"
+      ],
+      "metrics": [
+        "finding_count"
+      ],
+      "decimalFields": [],
+      "decimalMetricIds": [],
+      "currencyFields": [],
+      "unitFields": [],
+      "dateFields": [],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {},
+      "constantDefaults": {},
+      "fieldAliases": {},
+      "fieldExtractors": {
+        "reference_document": {
+          "source": "reference_document",
+          "pattern": "(\\d{8,10}/\\d+)",
+          "default": "",
+          "always": true
+        }
+      },
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "return_receipt_evidence": [
+          "receipt field is blank",
+          "receipt status unavailable",
+          "return_receipt_evidence",
+          "收货字段为空",
+          "收货状态不可用"
+        ],
+        "return_refund_type_evidence": [
+          "refund-type field is blank",
+          "refund type unavailable",
+          "return_refund_type_evidence",
+          "退款类型字段为空",
+          "退款类型不可用"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [],
+      "businessStatusFromMetric": {
+        "metric": "finding_count",
+        "zero": "normal",
+        "nonzero": "attention"
+      },
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {
+        "reference_document": [
+          "no follow-on",
+          "not found",
+          "billingdocumenttype",
+          "blank",
+          "未找到",
+          "为空"
+        ],
+        "material_received": [
+          "unknown",
+          "unavailable",
+          "未知",
+          "不可用"
+        ],
+        "refund_type": [
+          "unknown",
+          "unavailable",
+          "未知",
+          "不可用"
+        ]
+      },
+      "blockingLimitations": [
+        "return_receipt_evidence",
+        "return_refund_type_evidence"
+      ],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "BLOCKED",
+    "testedAt": "2026-08-20T08:39:52.862210+00:00",
+    "evidenceScope": "bounded",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
+      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": false,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": [
+      "return_receipt_evidence",
+      "return_refund_type_evidence"
+    ],
+    "codexDirectBaselineHash": "sha256:67266901a77c59887e38c8abcdaf957f5ecad29d4f77a63feefe47e3dcfd0a26",
+    "freeQueryHash": "sha256:619a72fb6b4e8361938d361e37461e3302c7e43e540bfe1098c8a22952ee9058",
+    "adjudicatedResultHash": "sha256:67266901a77c59887e38c8abcdaf957f5ecad29d4f77a63feefe47e3dcfd0a26",
+    "fixedAgentHash": "sha256:67266901a77c59887e38c8abcdaf957f5ecad29d4f77a63feefe47e3dcfd0a26",
+    "comparisonHash": "sha256:55845a37d886d7c5e02e706f1b1d1c30912c3d9dd5579f03b363c8b457faf42e"
   }
 }

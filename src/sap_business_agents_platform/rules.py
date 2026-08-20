@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .agent_rules import evaluate_business_agent
@@ -135,14 +136,14 @@ def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
             "zh": (
                 "标准 API 证据完整。"
                 if not missing
-                else "实时 schema 确认 API 能力缺口，将按白名单调用 ADT。"
+                else "实时 schema 确认 API 能力缺口，将调用 ADT 并以实时 DDIC 校验对象和字段。"
                 if capability_gaps
                 else "标准 API 执行或完整性不足；保持不确定且不触发 ADT。"
             ),
             "en": (
                 "Standard API evidence is complete."
                 if not missing
-                else "Live schema confirms an API capability gap; allowlisted ADT fallback is required."
+                else "Live schema confirms an API capability gap; ADT fallback will validate the object and fields against live DDIC metadata."
                 if capability_gaps
                 else "Standard API execution or completeness is insufficient; remain inconclusive without ADT fallback."
             ),
@@ -311,7 +312,33 @@ def evaluate_p2p_status(inputs: dict[str, Any]) -> dict[str, Any]:
         clearing_count=len(cleared_rows),
         payment_count=len(payment_rows),
     )
+    if not payment_rows:
+        missing_evidence = business_report.setdefault("missing_evidence", [])
+        if "bank_settlement_not_proven" not in missing_evidence:
+            missing_evidence.append("bank_settlement_not_proven")
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    purchase_order = str(run_input.get("purchase_order") or "")
+    business_report["records"] = [
+        {
+            "purchase_order": str(row.get("PurchaseOrder") or purchase_order),
+            "purchase_order_item": str(row.get("PurchaseOrderItem") or ""),
+            "material": str(row.get("Material") or ""),
+            "plant": str(row.get("Plant") or ""),
+            "order_quantity": str(row.get("OrderQuantity") or ""),
+            "unit": str(row.get("PurchaseOrderQuantityUnit") or ""),
+            "business_status": business_status,
+        }
+        for row in item_rows
+        if str(row.get("PurchaseOrder") or purchase_order).strip()
+        and str(row.get("PurchaseOrderItem") or "").strip()
+    ]
+    business_report["metrics"] = [
+        {"id": key, "value": value} for key, value in counts.items()
+    ] + [
+        {"id": "active_receipts", "value": active_receipts},
+        {"id": "cleared_items", "value": len(cleared_rows)},
+        {"id": "payment_evidence", "value": len(payment_rows)},
+    ]
     company_code = _first_non_empty(order_rows + accounting_rows, "CompanyCode")
     supplier = _first_non_empty(order_rows + accounting_rows, "Supplier")
     return {
@@ -361,12 +388,12 @@ def evaluate_o2c_status(inputs: dict[str, Any]) -> dict[str, Any]:
         if isinstance(row, dict)
     ]
 
+    # A delivery item is the business grain used for the PGI metric.  Header
+    # status is useful context but must not be added as a second PGI record.
     pgi_rows = [
         row
-        for row in delivery_rows + delivery_header_rows
+        for row in delivery_rows
         if _completed_status(row.get("GoodsMovementStatus"))
-        or _completed_status(row.get("OverallGoodsMovementStatus"))
-        or bool(str(row.get("ActualGoodsMovementDate") or "").strip())
     ]
     cleared_rows = [
         row
@@ -430,6 +457,51 @@ def evaluate_o2c_status(inputs: dict[str, Any]) -> dict[str, Any]:
         bank_count=len(bank_rows),
     )
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    sales_order = str(run_input.get("sales_order") or "")
+    business_report["records"] = [
+        {
+            "sales_order": str(row.get("SalesOrder") or sales_order),
+            "sales_order_item": str(row.get("SalesOrderItem") or ""),
+            "material": str(row.get("Material") or ""),
+            "requested_quantity": str(row.get("RequestedQuantity") or ""),
+            "unit": str(row.get("RequestedQuantityUnit") or row.get("OrderQuantityUnit") or ""),
+            "business_status": business_status,
+        }
+        for row in item_rows
+        if str(row.get("SalesOrder") or sales_order).strip()
+        and str(row.get("SalesOrderItem") or "").strip()
+    ]
+    business_report["metrics"] = [
+        {"id": key, "value": value} for key, value in counts.items()
+    ] + [
+        {"id": "pgi_items", "value": len(pgi_rows)},
+        {"id": "cleared_items", "value": len(cleared_rows)},
+        {"id": "bank_receipt_evidence", "value": len(bank_rows)},
+    ]
+    limitations: list[str] = []
+    if not bank_rows:
+        limitations.append("bank_settlement_not_proven")
+
+    def _amount_total(rows: list[dict[str, Any]], field: str) -> Decimal:
+        total = Decimal("0")
+        for row in rows:
+            raw = row.get(field)
+            if raw in {None, ""}:
+                continue
+            try:
+                total += Decimal(str(raw))
+            except (InvalidOperation, ValueError):
+                continue
+        return total
+
+    if (
+        billing_rows
+        and billing_header_rows
+        and _amount_total(billing_rows, "NetAmount")
+        != _amount_total(billing_header_rows, "TotalNetAmount")
+    ):
+        limitations.append("shared_document_amount_attribution")
+    business_report["limitations"] = limitations
     company_code = _first_non_empty(accounting_rows, "CompanyCode")
     customer = _first_non_empty(accounting_rows, "Customer") or _first_non_empty(
         order_rows, "SoldToParty", "Customer"
@@ -663,6 +735,9 @@ def _p2p_business_report(
             "en": f"{headline['en']}. {overview['en']}",
         },
         "stages": stage_rows,
+        "missing_evidence": (
+            [] if first_gap is None else [f"p2p_{first_gap}_evidence"]
+        ),
         "next_actions": {"zh": actions_zh, "en": actions_en},
     }
 
@@ -742,6 +817,10 @@ def _o2c_business_report(
             "en": f"{headline['en']}. {overview['en']}",
         },
         "stages": stage_rows,
+        # An unconfirmed process stage is a business state when all planned
+        # reads are complete; it is not an evidence-source failure.  Bank
+        # settlement remains a separate evidentiary boundary.
+        "missing_evidence": [] if bank_count else ["bank_settlement_not_proven"],
         "next_actions": {"zh": actions_zh, "en": actions_en},
     }
 

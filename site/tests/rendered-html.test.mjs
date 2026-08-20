@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 const readPage = (...segments) => readFile(path.join("dist", ...segments, "index.html"), "utf8");
+const readManifest = async (module, slug) =>
+  JSON.parse(await readFile(path.join("..", "agents", module, slug, "agent.json"), "utf8"));
 
 test("static catalog contains all thirty agents and the GitHub Pages base path", async () => {
   const html = await readPage("zh");
@@ -14,10 +16,11 @@ test("static catalog contains all thirty agents and the GitHub Pages base path",
   assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 11);
+  assert.match(html, /class="odata-version-tag">V2</);
   assert.doesNotMatch(html, /href="\/zh\//);
 });
 
-test("CO detail pages render five independent eight-step Embedded and ADT workflows", async () => {
+test("CO detail pages render the exact manifest execution workflows", async () => {
   for (const slug of [
     "cost-center-expense-anomaly",
     "co-month-end-allocation-settlement",
@@ -27,15 +30,18 @@ test("CO detail pages render five independent eight-step Embedded and ADT workfl
   ]) {
     const zh = await readPage("zh", "agents", "CO", slug);
     const en = await readPage("en", "agents", "CO", slug);
-    assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
-    assert.equal((en.match(/class="workflow-step"/g) ?? []).length, 8);
-    assert.match(zh, /Embedded API schema/);
-    assert.match(zh, /sap-adt-table-export/);
-    assert.match(zh, /live-sap-test-report\.md/);
+    const manifest = await readManifest("CO", slug);
+    assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, manifest.execution.steps.length);
+    assert.equal((en.match(/class="workflow-step"/g) ?? []).length, manifest.execution.steps.length);
+    assert.match(zh, /Embedded SAP OData Provider/);
+    if (manifest.execution.steps.some((step) => step.executor === "skill")) {
+      assert.match(zh, /sap-adt-table-export/);
+    }
+    assert.match(zh, /three-stage-live-acceptance\.md/);
   }
 });
 
-test("new MM detail pages render eight steps and live validation metadata", async () => {
+test("new MM detail pages render exact steps and fail-closed validation metadata", async () => {
   for (const slug of [
     "material-shortage-procurement-response",
     "inventory-health-balancing",
@@ -43,15 +49,17 @@ test("new MM detail pages render eight steps and live validation metadata", asyn
     "supplier-performance-risk",
   ]) {
     const zh = await readPage("zh", "agents", "MM", slug);
-    assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
-    assert.match(zh, /Embedded Provider/);
+    const manifest = await readManifest("MM", slug);
+    assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, manifest.execution.steps.length);
+    assert.match(zh, /Embedded SAP OData Provider/);
     assert.match(zh, /sap-adt-table-export/);
-    assert.match(zh, /真机验收/);
-    assert.match(zh, /live-sap-test-report\.md/);
+    assert.match(zh, new RegExp(manifest.validation.verdict));
+    assert.match(zh, /three-stage-live-acceptance\.md/);
+    assert.match(zh, /class="odata-version-badge">V2</);
   }
 });
 
-test("SD detail pages render eleven independent eight-step workflows", async () => {
+test("SD detail pages render eleven execution-mapped workflows", async () => {
   const slugs = [
     "delivered-not-billed", "billing-block-diagnosis", "billing-completeness-check",
     "billing-output-monitor", "delivery-delay-prediction", "due-delivery-prioritization",
@@ -60,10 +68,12 @@ test("SD detail pages render eleven independent eight-step workflows", async () 
   ];
   for (const slug of slugs) {
     const zh = await readPage("zh", "agents", "SD", slug);
-    assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
-    assert.match(zh, /sap_read\.health|sap_read_provider_health/);
-    assert.doesNotMatch(zh, /SAPClaw|sapclaw/);
-    assert.match(zh, /SAPSkillhub read-only skill/);
+    const manifest = await readManifest("SD", slug);
+    assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, manifest.execution.steps.length);
+    assert.match(zh, /Embedded SAP OData Provider/);
+    if (manifest.execution.steps.some((step) => step.executor === "skill")) {
+      assert.match(zh, /sap-adt-table-export/);
+    }
     assert.match(zh, /严格只读/);
   }
 });
@@ -110,6 +120,14 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /查询结果明细/);
   assert.match(run, /data-input-question/);
   assert.match(run, /请直接回答下面的具体问题/);
+  assert.match(run, /data-input-disclosure/);
+  assert.match(run, /调整查询方向（可选）/);
+  assert.match(run, /data-presentation-blocks/);
+  assert.match(run, /presentation-block-/);
+  assert.match(run, /预算型/);
+  assert.match(run, /const pageSize = 20/);
+  assert.match(run, /cell\.textContent = localized\(value\)/);
+  assert.doesNotMatch(run, /\.innerHTML\s*=/);
   assert.match(run, /技术详情（供 IT 支持和审计使用）/);
   assert.match(run, /<details class="run-technical-details">/);
   assert.match(run, /原始 SAP 证据/);
@@ -141,20 +159,19 @@ test("detail pages render workflow and step-level tools", async () => {
   assert.doesNotMatch(ap, /本页目录/);
   assert.doesNotMatch(ap, /class="tag-list detail-tags"/);
   assert.match(ap, /id="sap-scope"/);
+  assert.doesNotMatch(ap, /<h3>事务码<\/h3>/);
+  assert.doesNotMatch(ap, /<h3>核心对象 \/ 表<\/h3>/);
   assert.match(ap, /class="source-button detail-source-button"/);
-  assert.match(ap, /ApIntentParser/);
-  assert.match(ap, /SapApDataAdapter/);
-  assert.match(ap, /PaymentRiskEngine/);
+  assert.match(ap, /GET API_OPLACCTGDOCITEMCUBE_SRV@2\.0/);
+  assert.match(ap, /evaluate_business_agent/);
 
   const closing = await readPage("zh", "agents", "FI", "month-end-closing");
   const grir = await readPage("zh", "agents", "FI", "gr-ir-clearing");
   assert.match(closing, /class="detail-module-badge">FI</);
-  assert.match(closing, /SAP S\/4HANA On-Premise/);
-  assert.doesNotMatch(closing, /id="sap-scope"/);
-  assert.match(closing, /class="step-sap-scope"/);
-  assert.match(closing, /业务模块/);
-  assert.match(closing, /事务码/);
-  assert.match(closing, /核心对象 \/ 表/);
+  assert.match(closing, /SAP S\/4HANA/);
+  assert.doesNotMatch(closing, /SAP ECC/);
+  assert.doesNotMatch(closing, /class="step-sap-scope"/);
+  assert.match(closing, /evaluate_business_agent/);
   assert.match(grir, /class="detail-module-badge">FI</);
 });
 
@@ -162,27 +179,23 @@ test("P2P detail page renders the complete bilingual API workflow", async () => 
   const zh = await readPage("zh", "agents", "MM", "procure-to-pay-status");
   const en = await readPage("en", "agents", "MM", "procure-to-pay-status");
 
-  assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, 8);
-  assert.equal((zh.match(/class="step-operations"/g) ?? []).length, 8);
+  const manifest = await readManifest("MM", "procure-to-pay-status");
+  assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, manifest.execution.steps.length);
+  assert.equal((zh.match(/class="step-operations"/g) ?? []).length, manifest.execution.steps.length);
   assert.match(zh, /详细操作/);
   assert.match(zh, /本步骤 API \/ SAPSkill \/ Tools/);
-  assert.match(zh, /sap_read\.health/);
-  assert.match(zh, /sap_read\.schema/);
+  assert.match(zh, /Embedded SAP OData Provider/);
   assert.match(zh, /API_PURCHASEORDER_PROCESS_SRV/);
   assert.match(zh, /API_MATERIAL_DOCUMENT_SRV/);
   assert.match(zh, /API_SUPPLIERINVOICE_PROCESS_SRV/);
   assert.match(zh, /API_OPLACCTGDOCITEMCUBE_SRV/);
-  assert.match(zh, /OriginalReferenceDocument/);
-  assert.match(zh, /ClearingAccountingDocument/);
-  assert.match(zh, /本次验证主路径未使用/);
+  assert.match(zh, /three-stage-live-acceptance\.md/);
   assert.match(zh, /执行这个 Agent/);
   assert.match(zh, /purchase_order/);
 
-  assert.equal((en.match(/class="workflow-step"/g) ?? []).length, 8);
-  assert.equal((en.match(/class="step-operations"/g) ?? []).length, 8);
+  assert.equal((en.match(/class="workflow-step"/g) ?? []).length, manifest.execution.steps.length);
+  assert.equal((en.match(/class="step-operations"/g) ?? []).length, manifest.execution.steps.length);
   assert.match(en, /Detailed operations/);
   assert.match(en, /APIs, SAPSkills &amp; tools used at this step/);
-  assert.match(en, /OriginalReferenceDocument/);
-  assert.match(en, /ClearingAccountingDocument/);
-  assert.match(en, /none was used in the live validation/);
+  assert.match(en, /three-stage-live-acceptance\.md/);
 });

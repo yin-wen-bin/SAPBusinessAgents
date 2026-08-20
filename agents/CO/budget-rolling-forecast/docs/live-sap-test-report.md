@@ -1,21 +1,21 @@
 # budget-rolling-forecast 真机测试报告
 
-- 测试时间：2026-08-17T11:41:06.839334+00:00
-- 代码版本：`b650df2+working-tree`
+- 测试时间：2026-08-19T16:25:21.378132+00:00
+- 代码版本：`1b8cc4a+working-tree`
 - 系统、客户端、凭据和业务标识均已脱敏
 - 主 Provider：`embedded-sap-odata`，严格 GET-only
 - 条件补证：`sap-adt-table-export`
-- SAPClaw 调用：`0`；SE16N 调用：`0`
+- 自动 Provider 回退调用：`0`；SE16N 调用：`0`
 - Verdict：**PASS**
 
 ## Embedded evidence
 
 - 自动发现输入（脱敏）：`{"company_code": "sha256:7a5df5ffa0de", "cost_center": "sha256:332b10fcbae8", "fiscal_year": "2016", "current_period": "sha256:7a3e6b16cb75", "planning_category": "sha256:0ff15403106f", "risk_threshold_pct": "sha256:4a44dc153642"}`
 - 服务/实体：`API_FINPLANNINGENTRYITEM_SRV/A_FinPlanningEntryItem`, `API_OPLACCTGDOCITEMCUBE_SRV/A_OperationalAcctgDocItemCube`
-- SAP GET：2；证据行计数：4；耗时：13164.551 ms
+- SAP GET：2；证据行计数：4；耗时：11454.554 ms
 - 查询源完整：`true`；业务完整：`true`
 - 错误代码：none
-- 证据 SHA-256：`4e02dd552459957ddaa5c16986cf3176fbb2c593e236dc44d1398f441ffffd6e`
+- 证据 SHA-256：`1f1b4b5f1db12afc6b3001bac9f7b0b719be59e5537bcc23137196bf4fc7e5ab`
 
 ## Step status
 

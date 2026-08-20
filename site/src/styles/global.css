@@ -926,6 +926,14 @@ select {
   }
 }
 
+.tag-list li.odata-version-tag {
+  background: var(--accent-soft, #e6f4ff);
+  border-color: color-mix(in srgb, var(--accent, #0a6ed1) 34%, transparent);
+  color: var(--accent, #0a6ed1);
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
 /* Local dual-mode runtime */
 .runtime-main {
   width: 100%;
@@ -1052,7 +1060,7 @@ select {
 }
 
 button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.55;
 }
 
@@ -1060,6 +1068,12 @@ button:disabled {
 .run-alert {
   color: #a12121;
   font-size: 12px;
+}
+
+.runtime-validation-required {
+  color: #7a4b00;
+  font-size: 12px;
+  margin-right: auto;
 }
 
 .agent-run-panel {
@@ -1172,6 +1186,50 @@ button:disabled {
   border-radius: 5px;
   background: #fffaf0;
   padding: 15px;
+}
+
+.run-input-disclosure {
+  margin-bottom: 18px;
+  border: 1px solid #b9cff7;
+  border-radius: 6px;
+  background: #f6f9ff;
+}
+
+.run-input-disclosure[data-mode="clarification"] {
+  border-color: #e0b34f;
+  background: #fffaf0;
+}
+
+.run-input-disclosure > summary {
+  cursor: pointer;
+  padding: 12px 15px;
+  color: #24558e;
+  font-size: 13px;
+  font-weight: 730;
+}
+
+.run-input-disclosure .run-input-form {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid #d9e3f3;
+  border-radius: 0;
+  background: transparent;
+}
+
+.run-input-feedback {
+  margin: 0;
+  color: #176936;
+  font-size: 12px;
+}
+
+.run-input-feedback[data-state="error"] {
+  color: #a12121;
+}
+
+.run-limit-summary {
+  display: block;
+  margin-top: 5px;
+  color: var(--color-text-muted);
 }
 
 .run-progress-card {
@@ -1429,6 +1487,113 @@ button:disabled {
 .business-result-card .run-table-wrap,
 .business-next-actions {
   margin-top: 20px;
+}
+
+.presentation-blocks {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.presentation-block {
+  min-width: 0;
+}
+
+.presentation-block > p,
+.presentation-block > ul {
+  margin: 8px 0 0;
+  color: #3c4a5d;
+  line-height: 1.65;
+}
+
+.presentation-block-notice {
+  border-left: 4px solid #c28618;
+  background: #fff7e5;
+  padding: 12px 14px;
+}
+
+.presentation-block-notice[data-tone="error"] {
+  border-left-color: #b43b3b;
+  background: #fff1f1;
+}
+
+.presentation-key-values {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
+  margin: 8px 0 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.presentation-key-values dt,
+.presentation-key-values dd {
+  margin: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: 9px 10px;
+}
+
+.presentation-key-values dt {
+  color: var(--color-text-muted);
+  font-weight: 700;
+}
+
+.presentation-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.presentation-metric {
+  border: 1px solid #d8e2ef;
+  border-radius: 5px;
+  background: #fff;
+  padding: 12px;
+}
+
+.presentation-metric span,
+.presentation-metric strong {
+  display: block;
+}
+
+.presentation-metric span {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.presentation-metric strong {
+  margin-top: 5px;
+  color: var(--color-text);
+  font-size: 20px;
+}
+
+.presentation-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.presentation-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.presentation-pagination button {
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--color-primary);
+  padding: 5px 9px;
+}
+
+.presentation-scope-note {
+  display: block;
+  margin-top: 8px;
+  color: #8a5700;
 }
 
 .business-next-actions ol {
@@ -1962,6 +2127,19 @@ button:disabled {
   .run-technical-grid {
     grid-template-columns: 1fr;
   }
+  .presentation-key-values {
+    grid-template-columns: 1fr;
+  }
+  .presentation-key-values dt {
+    border-bottom: 0;
+    padding-bottom: 2px;
+  }
+  .presentation-key-values dd {
+    padding-top: 2px;
+  }
+  .presentation-pagination {
+    justify-content: space-between;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2083,6 +2261,23 @@ button:disabled {
   background: transparent;
   padding: 0;
   font-size: 11px;
+}
+
+.odata-api-tags li {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.5rem;
+}
+
+.odata-version-badge {
+  background: var(--accent-soft, #e6f4ff);
+  border: 1px solid color-mix(in srgb, var(--accent, #0a6ed1) 34%, transparent);
+  border-radius: 999px;
+  color: var(--accent, #0a6ed1);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.42rem;
 }
 
 .agent-workflow {

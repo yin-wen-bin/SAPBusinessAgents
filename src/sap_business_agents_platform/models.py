@@ -69,6 +69,127 @@ class Completeness(BaseModel):
     missing_evidence: list[str] = Field(default_factory=list)
 
 
+class LocalizedText(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    zh: str = ""
+    en: str = ""
+
+
+class PresentationColumn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, pattern=r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+    label: LocalizedText
+    format: Literal["text", "date", "datetime", "integer", "decimal", "currency", "status"] = "text"
+
+
+class PresentationEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: LocalizedText
+    value: LocalizedText
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class PresentationMetric(PresentationEntry):
+    id: str = Field(min_length=1, pattern=r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+    tone: Literal["neutral", "success", "warning", "error"] = "neutral"
+
+
+class PresentationRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    values: list[LocalizedText]
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class PresentationBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["text", "key_value", "metrics", "table", "bullet_list", "notice"]
+    title: LocalizedText | None = None
+    tone: Literal["neutral", "success", "warning", "error", "info"] = "neutral"
+    claim_scope: Literal[
+        "customer_business_fact", "product_documentation", "business_semantics", "diagnostic"
+    ] = "diagnostic"
+    evidence_refs: list[str] = Field(default_factory=list)
+    text: LocalizedText | None = None
+    entries: list[PresentationEntry] = Field(default_factory=list)
+    metrics: list[PresentationMetric] = Field(default_factory=list)
+    columns: list[PresentationColumn] = Field(default_factory=list)
+    rows: list[PresentationRow] = Field(default_factory=list, max_length=200)
+    items: list[LocalizedText] = Field(default_factory=list)
+    total_rows: int | None = Field(default=None, ge=0)
+    display_truncated: bool = False
+    source_complete: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "PresentationBlock":
+        populated = {
+            "text": self.text is not None,
+            "key_value": bool(self.entries),
+            "metrics": bool(self.metrics),
+            "table": bool(self.columns),
+            "bullet_list": bool(self.items),
+            "notice": self.text is not None,
+        }
+        if not populated[self.type]:
+            raise ValueError(f"presentation block {self.type} has no display content")
+        if self.type == "table":
+            if any(len(row.values) != len(self.columns) for row in self.rows):
+                raise ValueError("presentation table rows must match the declared column count")
+            if self.total_rows is None:
+                self.total_rows = len(self.rows)
+            if self.total_rows < len(self.rows):
+                raise ValueError("presentation table total_rows cannot be smaller than displayed rows")
+            if self.total_rows > len(self.rows):
+                self.display_truncated = True
+        return self
+
+
+class RunPresentation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"] = "1.0"
+    title: LocalizedText
+    blocks: list[PresentationBlock]
+    validation_ref: str | None = None
+
+
+class HarnessLimitUsage(BaseModel):
+    limit: int | None = None
+    used: int = 0
+    reached: bool = False
+
+
+class HarnessLimits(BaseModel):
+    tool_calls: HarnessLimitUsage = Field(default_factory=HarnessLimitUsage)
+    turns: HarnessLimitUsage = Field(default_factory=HarnessLimitUsage)
+    runtime_seconds: HarnessLimitUsage = Field(default_factory=HarnessLimitUsage)
+    reached_kind: Literal["tool_calls", "turns", "runtime_seconds"] | None = None
+
+
+class HarnessResult(BaseModel):
+    runtime: Literal["codex_app_server"] = "codex_app_server"
+    protocol: Literal["agent_runtime.v2"] = "agent_runtime.v2"
+    thread_id: str | None = None
+    turn_count: int = 0
+    tool_call_count: int = 0
+    budgeted_tool_call_count: int = 0
+    web_search_count: int = 0
+    discovered_tool_count: int = 0
+    activated_tool_count: int = 0
+    limits: HarnessLimits = Field(default_factory=HarnessLimits)
+    stop_reason: Literal[
+        "completed",
+        "waiting_input",
+        "interrupted",
+        "limit_reached",
+        "capability_unavailable",
+    ] = "capability_unavailable"
+
+
 class RunResult(BaseModel):
     run_id: str
     mode: RunMode
@@ -87,8 +208,10 @@ class RunResult(BaseModel):
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     completeness: Completeness = Field(default_factory=Completeness)
     summary: dict[str, str] = Field(default_factory=dict)
+    presentation: RunPresentation | None = None
     errors: list[dict[str, Any]] = Field(default_factory=list)
     thread_id: str | None = None
+    harness: HarnessResult | None = None
     started_at: str | None = None
     completed_at: str | None = None
 

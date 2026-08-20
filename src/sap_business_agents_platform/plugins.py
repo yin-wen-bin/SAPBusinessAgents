@@ -12,8 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .codex_planner import Planner
 from .manifests import AgentRepository, validate_execution
-from .sapclaw import SapClawClient
-from .sap_read import SapReadError
 from .skills import SkillRegistry
 
 
@@ -404,55 +402,6 @@ class PluginManager:
         )
 
 
-class SapClawPluginProvider:
-    def __init__(self, client: SapClawClient) -> None:
-        self.client = client
-
-    async def health(self) -> dict[str, Any]:
-        result = await self.client.health()
-        data = result.get("data") if isinstance(result, dict) else None
-        runtime_ok = isinstance(data, dict) and (
-            data.get("runtime_ready") is True or data.get("runtime_enabled") is True
-        )
-        readonly_ok = isinstance(data, dict) and data.get("read_only") is True
-        return {**result, "ok": result.get("ok") is True and runtime_ok and readonly_ok}
-
-    async def catalog(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self.client.catalog(*args, **kwargs)
-
-    async def guidance(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self.client.guidance(*args, **kwargs)
-
-    async def schema(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self.client.schema(*args, **kwargs)
-
-    async def validate_plan(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self.client.validate_plan(*args, **kwargs)
-
-    async def execute_plan(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._require_success(await self.client.execute_plan(*args, **kwargs))
-
-    async def execute_get(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._require_success(await self.client.execute_get(*args, **kwargs))
-
-    async def page(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._require_success(await self.client.page(*args, **kwargs))
-
-    @staticmethod
-    def _require_success(result: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(result, dict) or result.get("ok") is not True:
-            error = result.get("error") if isinstance(result, dict) else None
-            code = "sapclaw_execution_failed"
-            if isinstance(error, dict) and error.get("code"):
-                code = str(error["code"])
-            raise SapReadError(
-                "SAPClaw returned an unsuccessful runtime envelope.",
-                code=code,
-                detail=result,
-            )
-        return result
-
-
 class SkillhubPluginProvider:
     def __init__(self, registry: SkillRegistry) -> None:
         self.registry = registry
@@ -473,6 +422,9 @@ class SkillhubPluginProvider:
 
     def get(self, skill_id: str) -> dict[str, Any]:
         return self.registry.get(skill_id)
+
+    def validate_input(self, skill_id: str, input_payload: dict[str, Any]) -> None:
+        self.registry.validate_input(skill_id, input_payload)
 
     async def execute(self, skill_id: str, input_payload: dict[str, Any]) -> dict[str, Any]:
         return await self.registry.execute(skill_id, input_payload)
@@ -556,7 +508,7 @@ class BusinessAgentPluginProvider:
 
 
 class SapReadCapability:
-    capability = "sap_read.v1"
+    capability = "sap_read.v2"
 
     def __init__(self, manager: PluginManager) -> None:
         self.manager = manager
@@ -581,6 +533,7 @@ class SapReadCapability:
         entity_sets: list[str] | str,
         query: str = "",
         *,
+        odata_version: str,
         include_fields: bool = True,
         max_fields: int = 5000,
     ) -> dict[str, Any]:
@@ -590,6 +543,7 @@ class SapReadCapability:
             service_name,
             entity_sets,
             query,
+            odata_version=odata_version,
             include_fields=include_fields,
             max_fields=max_fields,
         )
@@ -638,7 +592,9 @@ class SkillCapability:
         self.manager = manager
 
     def plugin_metadata(self, operation: str) -> dict[str, Any]:
-        capability = "skill_execute.v1" if operation == "execute" else "skill_catalog.v1"
+        capability = (
+            "skill_execute.v1" if operation in {"validate_input", "execute"} else "skill_catalog.v1"
+        )
         return self.manager.resolve(capability, operation).trace(operation)
 
     def list(self) -> list[dict[str, Any]]:
@@ -646,6 +602,11 @@ class SkillCapability:
 
     def get(self, skill_id: str) -> dict[str, Any]:
         return self.manager.invoke_sync("skill_catalog.v1", "get", skill_id)
+
+    def validate_input(self, skill_id: str, input_payload: dict[str, Any]) -> None:
+        self.manager.invoke_sync(
+            "skill_execute.v1", "validate_input", skill_id, input_payload
+        )
 
     async def execute(self, skill_id: str, input_payload: dict[str, Any]) -> dict[str, Any]:
         return await self.manager.invoke("skill_execute.v1", "execute", skill_id, input_payload)
@@ -707,13 +668,13 @@ def official_plugin_manifests() -> list[PluginManifest]:
         {
             "schema_version": "1.0",
             "plugin_id": "embedded-sap-odata",
-            "version": "1.0.0",
+            "version": "2.0.0",
             "name": {"zh": "内嵌 SAP 只读连接器", "en": "Embedded SAP Read-only Provider"},
             "publisher": "SAPBusinessAgents",
             "enabled": True,
             "capabilities": [
                 {
-                    "capability": "sap_read.v1",
+                    "capability": "sap_read.v2",
                     "operations": [
                         "health",
                         "catalog",
@@ -731,33 +692,16 @@ def official_plugin_manifests() -> list[PluginManifest]:
         },
         {
             "schema_version": "1.0",
-            "plugin_id": "sapclaw-runtime",
-            "version": "2.0.0",
-            "name": {"zh": "SAPClaw 只读运行时", "en": "SAPClaw Read-only Runtime"},
-            "publisher": "SAPBusinessAgents",
-            "enabled": False,
-            "capabilities": [
-                {
-                    "capability": "sap_read.v1",
-                    "operations": ["health", "catalog", "guidance", "schema", "validate_plan", "execute_plan", "execute_get", "page"],
-                },
-                {
-                    "capability": "mcp_tools.v1",
-                    "operations": ["catalog", "schema", "validate_plan", "execute_plan", "execute_get", "page"],
-                },
-            ],
-            "transport": {"type": "http", "endpoint_config_key": "SAPCLAW_RUNTIME_URL", "loopback_only": True},
-            "permissions": {"sap_read": True},
-        },
-        {
-            "schema_version": "1.0",
             "plugin_id": "sapskillhub",
             "version": "1.0.0",
             "name": {"zh": "SAPSkillhub 只读技能", "en": "SAPSkillhub Read-only Skills"},
             "publisher": "SAPBusinessAgents",
             "capabilities": [
                 {"capability": "skill_catalog.v1", "operations": ["list", "get"]},
-                {"capability": "skill_execute.v1", "operations": ["execute"]},
+                {
+                    "capability": "skill_execute.v1",
+                    "operations": ["validate_input", "execute"],
+                },
             ],
             "transport": {"type": "python_cli", "entrypoint": "python run.py --input input.json --output output.json", "loopback_only": True},
             "permissions": {"sap_read": True},
@@ -769,6 +713,18 @@ def official_plugin_manifests() -> list[PluginManifest]:
             "name": {"zh": "Codex 运行层", "en": "Codex Runtime"},
             "publisher": "OpenAI",
             "capabilities": [
+                {
+                    "capability": "agent_runtime.v2",
+                    "operations": [
+                        "thread_start",
+                        "thread_resume",
+                        "turn",
+                        "steer",
+                        "interrupt",
+                        "web_search",
+                        "tool_call",
+                    ],
+                },
                 {"capability": "agent_runtime.v1", "operations": ["plan", "ground_plan", "summarize"]},
                 {"capability": "authoring.v1", "operations": ["author_draft"]},
                 {

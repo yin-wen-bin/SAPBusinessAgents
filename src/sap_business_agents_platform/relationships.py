@@ -7,22 +7,24 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-EndpointKey = tuple[str, str, str]
+EndpointKey = tuple[str, str, str, str]
 
 
 @dataclass(frozen=True, slots=True)
 class RelationshipEndpoint:
     service_name: str
+    odata_version: str
     entity_set: str
     field: str
 
     @property
     def key(self) -> EndpointKey:
-        return (self.service_name, self.entity_set, self.field)
+        return (self.service_name, self.odata_version, self.entity_set, self.field)
 
     def as_dict(self) -> dict[str, str]:
         return {
             "service_name": self.service_name,
+            "odata_version": self.odata_version,
             "entity_set": self.entity_set,
             "field": self.field,
         }
@@ -67,15 +69,15 @@ class RelationshipCatalog:
 
     @classmethod
     def empty(cls) -> "RelationshipCatalog":
-        return cls(schema_version="1.0", field_semantics={}, relationships=[])
+        return cls(schema_version="2.0", field_semantics={}, relationships=[])
 
     @classmethod
     def load(cls, path: Path) -> "RelationshipCatalog":
         if not path.is_file():
             return cls.empty()
         raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or raw.get("schema_version") != "1.0":
-            raise ValueError("Business relationship catalog must use schema_version 1.0.")
+        if not isinstance(raw, dict) or raw.get("schema_version") != "2.0":
+            raise ValueError("Business relationship catalog must use schema_version 2.0.")
         semantics: dict[EndpointKey, str] = {}
         fields = raw.get("field_semantics") or []
         if not isinstance(fields, list):
@@ -98,26 +100,27 @@ class RelationshipCatalog:
             relationships=[dict(item) for item in relationships if isinstance(item, dict)],
         )
 
-    def snapshot_for(self, refs: set[tuple[str, str]]) -> dict[str, Any]:
+    def snapshot_for(self, refs: set[tuple[str, str, str]]) -> dict[str, Any]:
         fields = [
             {
                 "service_name": service_name,
+                "odata_version": odata_version,
                 "entity_set": entity_set,
                 "field": field,
                 "semantic": semantic,
             }
-            for (service_name, entity_set, field), semantic in sorted(
+            for (service_name, odata_version, entity_set, field), semantic in sorted(
                 self.field_semantics.items()
             )
-            if (service_name, entity_set) in refs
+            if (service_name, odata_version, entity_set) in refs
         ]
         relationships: list[dict[str, Any]] = []
         for relationship in self.relationships:
             source = _endpoint(relationship.get("source"), "relationship source")
             target = _endpoint(relationship.get("target"), "relationship target")
             if (
-                (source.service_name, source.entity_set) in refs
-                and (target.service_name, target.entity_set) in refs
+                (source.service_name, source.odata_version, source.entity_set) in refs
+                and (target.service_name, target.odata_version, target.entity_set) in refs
             ):
                 relationships.append(relationship)
         return {
@@ -127,7 +130,10 @@ class RelationshipCatalog:
         }
 
     def snapshot(self) -> dict[str, Any]:
-        refs = {(service_name, entity_set) for service_name, entity_set, _field in self.field_semantics}
+        refs = {
+            (service_name, odata_version, entity_set)
+            for service_name, odata_version, entity_set, _field in self.field_semantics
+        }
         return self.snapshot_for(refs)
 
     def validate_plans(
@@ -157,11 +163,13 @@ class RelationshipCatalog:
                     continue
                 source_endpoint = RelationshipEndpoint(
                     source.endpoint.service_name,
+                    source.endpoint.odata_version,
                     source.endpoint.entity_set,
                     source_field,
                 )
                 target_endpoint = RelationshipEndpoint(
                     node.endpoint.service_name,
+                    node.endpoint.odata_version,
                     node.endpoint.entity_set,
                     target_field,
                 )
@@ -187,6 +195,7 @@ class RelationshipCatalog:
                 field = str(item.get("field") or "").strip()
                 endpoint = RelationshipEndpoint(
                     node.endpoint.service_name,
+                    node.endpoint.odata_version,
                     node.endpoint.entity_set,
                     field,
                 )
@@ -201,6 +210,7 @@ class RelationshipCatalog:
                     continue
                 if (
                     origin_endpoint.service_name == endpoint.service_name
+                    and origin_endpoint.odata_version == endpoint.odata_version
                     and origin_endpoint.entity_set == endpoint.entity_set
                 ):
                     continue
@@ -261,6 +271,7 @@ def _endpoint(value: Any, label: str) -> RelationshipEndpoint:
         raise ValueError(f"Invalid {label}.")
     endpoint = RelationshipEndpoint(
         str(value.get("service_name") or "").strip(),
+        str(value.get("odata_version") or "").strip(),
         str(value.get("entity_set") or "").strip(),
         str(value.get("field") or "").strip(),
     )
@@ -291,13 +302,16 @@ def _flatten_plans(
             service_name = str(
                 candidate.get("service_name") or plan.get("service_name") or ""
             ).strip()
+            odata_version = str(
+                candidate.get("odata_version") or plan.get("odata_version") or ""
+            ).strip()
             entity_set = str(candidate.get("entity_set") or "").strip()
             node_id = f"{scope_id}/{local_step_id}" if candidate is not plan else scope_id
             node = _PlanNode(
                 node_id=node_id,
                 scope_id=scope_id,
                 local_step_id=local_step_id,
-                endpoint=RelationshipEndpoint(service_name, entity_set, ""),
+                endpoint=RelationshipEndpoint(service_name, odata_version, entity_set, ""),
                 filters=tuple(
                     item for item in (candidate.get("filters") or []) if isinstance(item, dict)
                 ),

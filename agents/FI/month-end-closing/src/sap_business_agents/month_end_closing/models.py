@@ -274,12 +274,12 @@ def _decimal(value: Decimal | None) -> str | None:
 def source_mode(sources: tuple[DataSourceTrace, ...]) -> str:
     used = {item.provider for item in sources if item.status == "used"}
     unavailable = {item.provider for item in sources if item.status == "unavailable"}
-    if "sapclaw_runtime_mcp" in used and "sap_se16n_export" in used:
-        return "mcp+se16n"
-    if "sap_se16n_export" in used and "sapclaw_runtime_mcp" in unavailable:
+    if "embedded_sap_odata" in used and "sap_se16n_export" in used:
+        return "embedded+se16n"
+    if "sap_se16n_export" in used and "embedded_sap_odata" in unavailable:
         return "se16n_fallback"
-    if "sapclaw_runtime_mcp" in used:
-        return "mcp"
+    if "embedded_sap_odata" in used:
+        return "embedded"
     if "sap_se16n_export" in used:
         return "se16n"
     if "fixture" in used:

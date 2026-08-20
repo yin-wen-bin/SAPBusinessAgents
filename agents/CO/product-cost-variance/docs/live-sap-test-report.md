@@ -1,21 +1,21 @@
 # product-cost-variance 真机测试报告
 
-- 测试时间：2026-08-17T11:41:06.839334+00:00
-- 代码版本：`b650df2+working-tree`
+- 测试时间：2026-08-19T16:25:21.378132+00:00
+- 代码版本：`1b8cc4a+working-tree`
 - 系统、客户端、凭据和业务标识均已脱敏
 - 主 Provider：`embedded-sap-odata`，严格 GET-only
 - 条件补证：`sap-adt-table-export`
-- SAPClaw 调用：`0`；SE16N 调用：`0`
+- 自动 Provider 回退调用：`0`；SE16N 调用：`0`
 - Verdict：**PARTIAL**
 
 ## Embedded evidence
 
 - 自动发现输入（脱敏）：`{"company_code": "sha256:6cc83ed544a5", "fiscal_year": "2026", "period": "8", "manufacturing_order": "sha256:353fd555c457", "material": "sha256:215048e5a25b", "valuation_area": "sha256:dd7786fd66f8"}`
 - 服务/实体：`API_OPLACCTGDOCITEMCUBE_SRV/A_OperationalAcctgDocItemCube`, `API_PRODUCTION_ORDER_2_SRV/A_ProductionOrder_2`
-- SAP GET：2；证据行计数：1；耗时：17547.898 ms
+- SAP GET：2；证据行计数：1；耗时：11147.791 ms
 - 查询源完整：`false`；业务完整：`false`
 - 错误代码：run_failed
-- 证据 SHA-256：`db5e536dd143bbfc0988fad988da549cd453df472f84ce0b23838b4ec8695e0d`
+- 证据 SHA-256：`f48cb0e62a28c8bf2d0257f55373d5d84c562866716601842c0b6dfcd2ff247b`
 
 ## Step status
 

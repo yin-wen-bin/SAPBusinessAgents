@@ -14,7 +14,7 @@ from procure_to_pay_status.model import ItemStatus, QueryParameters
 def _payload(*, currency: str = "CNY", complete: bool = True, payment_type: str = "KZ") -> dict:
     return {
         "schema_version": "1.0",
-        "metadata": {"run_id": "test-run", "source": "sapclaw_runtime", "as_of": "2026-08-09"},
+        "metadata": {"run_id": "test-run", "source": "embedded_sap_odata", "as_of": "2026-08-09"},
         "completeness": {"complete": complete},
         "entities": {
             "A_PurchaseOrder": [

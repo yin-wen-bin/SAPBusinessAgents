@@ -16,11 +16,30 @@ from . import rules
 from .codex_planner import Planner
 from .config import Settings
 from .database import RunStore
-from .manifests import AgentRepository, ManifestError, validate_execution
-from .models import Completeness, PlannerDecision, RunCreate, RunMode, RunResult, RunStatus, utc_now
+from .harness import CodexHarnessController
+from .manifests import AgentRepository, ManifestError, is_agent_executable, validate_execution
+from .models import (
+    Completeness,
+    HarnessLimits,
+    HarnessLimitUsage,
+    HarnessResult,
+    LocalizedText,
+    PlannerDecision,
+    PresentationBlock,
+    PresentationColumn,
+    PresentationEntry,
+    PresentationMetric,
+    PresentationRow,
+    RunCreate,
+    RunMode,
+    RunPresentation,
+    RunResult,
+    RunStatus,
+    TERMINAL_STATUSES,
+    utc_now,
+)
 from .plugins import PluginError, SapReadCapability
 from .relationships import RelationshipCatalog
-from .sapclaw import SapClawError
 from .sap_read import SapReadError
 from .skills import SkillError, SkillRegistry
 from .workflows import (
@@ -52,6 +71,7 @@ class RunCoordinator:
         skills: SkillRegistry,
         planner: Planner,
         workflows: WorkflowRepository | None = None,
+        harness: CodexHarnessController | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -60,15 +80,30 @@ class RunCoordinator:
         self.skills = skills
         self.planner = planner
         self.workflows = workflows
+        self.harness = harness
         self.relationships = RelationshipCatalog.load(
             settings.repository_root / "config" / "business-relationships.json"
         )
         self._queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._worker_task: asyncio.Task[None] | None = None
+        self._acceptance_runs: set[str] = set()
 
     async def start(self) -> None:
         if self._worker_task is None:
             self._worker_task = asyncio.create_task(self._worker(), name="sapba-local-worker")
+            if self.harness is not None:
+                for record in self.store.list_recoverable_free_query_runs():
+                    self.store.update_run(record.run_id, status=RunStatus.queued, error_json=None)
+                    self.store.append_event(
+                        record.run_id,
+                        "harness_resumed",
+                        {
+                            "thread_id": record.thread_id,
+                            "reason": "runtime_restart",
+                            "sap_queries_replayed": False,
+                        },
+                    )
+                    await self._queue.put(record.run_id)
 
     async def stop(self) -> None:
         if self._worker_task is not None:
@@ -77,6 +112,20 @@ class RunCoordinator:
             self._worker_task = None
 
     async def submit(self, request: RunCreate) -> str:
+        if request.mode == RunMode.agent:
+            try:
+                agent = self.agents.get(str(request.agent_id))
+            except (KeyError, PluginError) as exc:
+                raise RunExecutionError("Agent not found.", code="agent_not_found") from exc
+            if self.settings.enforce_agent_acceptance and not is_agent_executable(agent):
+                raise RunExecutionError(
+                    "The fixed Agent has not passed live three-stage acceptance.",
+                    code="agent_live_validation_required",
+                    detail={
+                        "agent_id": request.agent_id,
+                        "verdict": (agent.get("validation") or {}).get("verdict", "NOT_TESTED"),
+                    },
+                )
         run_id = f"run_{uuid.uuid4().hex[:16]}"
         workflow: dict[str, Any] | None = None
         if request.mode == RunMode.workflow:
@@ -87,6 +136,25 @@ class RunCoordinator:
         if workflow is not None:
             self.store.save_workflow_snapshot(run_id, workflow)
         self.store.append_event(run_id, "run_queued", {"mode": request.mode.value})
+        await self._queue.put(run_id)
+        return run_id
+
+    async def submit_acceptance(self, request: RunCreate) -> str:
+        """Run an unaccepted fixed Agent only from an in-process validation campaign."""
+
+        if request.mode != RunMode.agent:
+            raise RunExecutionError(
+                "Acceptance submission only supports fixed Agents.",
+                code="acceptance_mode_invalid",
+            )
+        run_id = f"acceptance_{uuid.uuid4().hex[:16]}"
+        self._acceptance_runs.add(run_id)
+        self.store.create_run(run_id, request)
+        self.store.append_event(
+            run_id,
+            "run_queued",
+            {"mode": request.mode.value, "acceptance_campaign": True},
+        )
         await self._queue.put(run_id)
         return run_id
 
@@ -119,21 +187,33 @@ class RunCoordinator:
         await self._queue.put(run_id)
         return run_id
 
-    async def provide_input(self, run_id: str, value: str) -> None:
+    async def provide_input(self, run_id: str, value: str) -> str:
         record = self.store.get_run(run_id)
+        if (
+            record.mode == RunMode.free_query
+            and self.harness is not None
+            and record.status not in TERMINAL_STATUSES
+            and await self.harness.steer(run_id, value)
+        ):
+            return "steer"
         if record.status != RunStatus.waiting_input:
             raise RunExecutionError("This run is not waiting for input.", code="run_not_waiting_input")
         query = f"{record.query or ''}\nAdditional user information / 用户补充：{value}".strip()
         self.store.update_run(run_id, query=query, status=RunStatus.queued, error_json=None)
-        self.store.append_event(run_id, "input_received", {"input": value})
+        self.store.append_event(
+            run_id, "input_received", {"input": value, "mode": "clarification"}
+        )
         await self._queue.put(run_id)
+        return "clarification"
 
-    def cancel(self, run_id: str) -> None:
+    async def cancel(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
         if record.status in {RunStatus.completed, RunStatus.inconclusive, RunStatus.failed, RunStatus.cancelled}:
             return
         self.store.update_run(run_id, cancel_requested=True)
         self.store.append_event(run_id, "cancellation_requested", {})
+        if record.mode == RunMode.free_query and self.harness is not None:
+            await self.harness.interrupt(run_id)
 
     async def _worker(self) -> None:
         while True:
@@ -157,6 +237,8 @@ class RunCoordinator:
                 if run_id is not None:
                     self._finish_error(run_id, exc, RunStatus.failed)
             finally:
+                if run_id is not None:
+                    self._acceptance_runs.discard(run_id)
                 self._queue.task_done()
 
     async def _execute(self, run_id: str) -> None:
@@ -181,6 +263,19 @@ class RunCoordinator:
         try:
             agent = self.agents.get(str(record.agent_id))
             validate_execution(agent, f"agent:{record.agent_id}")
+            if (
+                self.settings.enforce_agent_acceptance
+                and run_id not in self._acceptance_runs
+                and not is_agent_executable(agent)
+            ):
+                raise RunExecutionError(
+                    "The fixed Agent has not passed live three-stage acceptance.",
+                    code="agent_live_validation_required",
+                    detail={
+                        "agent_id": record.agent_id,
+                        "verdict": (agent.get("validation") or {}).get("verdict", "NOT_TESTED"),
+                    },
+                )
             _validate_input(record.input, agent["execution"]["inputSchema"])
         except (KeyError, ManifestError, PluginError, ValueError) as exc:
             raise RunExecutionError(str(exc), code="agent_validation_failed") from exc
@@ -237,7 +332,7 @@ class RunCoordinator:
             started_monotonic = time.perf_counter()
             call_id = (
                 f"call_{uuid.uuid4().hex[:16]}"
-                if step["executor"] in {"sap_read", "sapclaw", "skill"}
+                if step["executor"] in {"sap_read", "skill"}
                 else None
             )
             rendered = _render_template(step.get("request") or step.get("inputMapping") or {}, context)
@@ -247,7 +342,6 @@ class RunCoordinator:
                 )
             except (
                 SapReadError,
-                SapClawError,
                 SkillError,
                 PluginError,
                 RunExecutionError,
@@ -286,7 +380,7 @@ class RunCoordinator:
                         "payload": output,
                     }
                 )
-                if step["executor"] in {"sap_read", "sapclaw", "skill"}:
+                if step["executor"] in {"sap_read", "skill"}:
                     result.tool_calls.append(
                         {
                             **_plugin_trace(
@@ -295,7 +389,7 @@ class RunCoordinator:
                                 else self.sap_read,
                                 "skill_execute.v1"
                                 if step["executor"] == "skill"
-                                else "sap_read.v1",
+                                else "sap_read.v2",
                                 "execute"
                                 if step["executor"] == "skill"
                                 else str(step.get("operation") or ""),
@@ -303,7 +397,7 @@ class RunCoordinator:
                             "call_id": call_id,
                             "step_id": step_id,
                             "tool": "sap_read"
-                            if step["executor"] in {"sap_read", "sapclaw"}
+                            if step["executor"] in {"sap_read"}
                             else "skill",
                             "operation": step.get("operation"),
                             "status": "capability_blocked",
@@ -333,11 +427,18 @@ class RunCoordinator:
                 "output_reference": f"steps.{step_id}.output",
             }
             result.steps.append(step_record)
-            if step["executor"] in {"sap_read", "sapclaw", "skill"}:
+            if step["executor"] in {"sap_read", "skill"}:
                 operation = "execute" if step["executor"] == "skill" else str(step.get("operation") or "")
+                plan_trace = (
+                    _sap_plan_trace_fields(
+                        rendered.get("plan") if isinstance(rendered.get("plan"), dict) else rendered
+                    )
+                    if step["executor"] == "sap_read"
+                    else {}
+                )
                 trace = _plugin_trace(
                     self.skills if step["executor"] == "skill" else self.sap_read,
-                    "skill_execute.v1" if step["executor"] == "skill" else "sap_read.v1",
+                    "skill_execute.v1" if step["executor"] == "skill" else "sap_read.v2",
                     operation,
                 )
                 result.tool_calls.append(
@@ -345,8 +446,9 @@ class RunCoordinator:
                         **trace,
                         "call_id": call_id,
                         "step_id": step_id,
-                        "tool": "sap_read" if step["executor"] in {"sap_read", "sapclaw"} else step["executor"],
+                        "tool": "sap_read" if step["executor"] in {"sap_read"} else step["executor"],
                         "operation": operation,
+                        **plan_trace,
                         "status": "completed",
                         "duration_ms": round((time.perf_counter() - started_monotonic) * 1000, 3),
                     }
@@ -356,7 +458,7 @@ class RunCoordinator:
                         **trace,
                         "call_id": call_id,
                         "step_id": step_id,
-                        "source": "sap_read" if step["executor"] in {"sap_read", "sapclaw"} else step["executor"],
+                        "source": "sap_read" if step["executor"] in {"sap_read"} else step["executor"],
                         "payload": public_output,
                     }
                 )
@@ -393,6 +495,7 @@ class RunCoordinator:
                     str(exc), code=exc.code, detail=exc.detail
                 ) from exc
         self._complete_result(run_id, result)
+        self._acceptance_runs.discard(run_id)
 
     async def _execute_step(
         self,
@@ -405,8 +508,9 @@ class RunCoordinator:
     ) -> dict[str, Any]:
         executor = step["executor"]
         operation = step.get("operation")
-        if executor in {"sap_read", "sapclaw"}:
-            trace = _plugin_trace(self.sap_read, "sap_read.v1", str(operation or ""))
+        if executor in {"sap_read"}:
+            trace = _plugin_trace(self.sap_read, "sap_read.v2", str(operation or ""))
+            candidate_plan = rendered.get("plan") if isinstance(rendered.get("plan"), dict) else rendered
             self.store.append_event(
                 run_id,
                 "tool_started",
@@ -415,6 +519,7 @@ class RunCoordinator:
                     "tool": "sap_read",
                     "operation": operation,
                     "call_id": call_id,
+                    **_sap_plan_trace_fields(candidate_plan),
                     **trace,
                 },
             )
@@ -742,6 +847,135 @@ class RunCoordinator:
         )
 
     async def _execute_free_query(self, run_id: str) -> None:
+        if self.harness is not None and self.settings.free_query_runtime == "harness":
+            await self._execute_free_query_harness(run_id)
+            return
+        await self._execute_free_query_legacy(run_id)
+
+    async def _execute_free_query_harness(self, run_id: str) -> None:
+        record = self.store.get_run(run_id)
+        query = str(record.query or "").strip()
+        harness_query = query
+        if record.agent_id:
+            try:
+                guided_agent = self.agents.get(str(record.agent_id))
+            except (KeyError, PluginError) as exc:
+                raise RunExecutionError(
+                    f"Guided Agent context is unavailable: {record.agent_id}",
+                    code="guided_agent_not_found",
+                ) from exc
+            harness_query = _guided_agent_question(guided_agent, query)
+        self.store.update_run(run_id, status=RunStatus.planning)
+        self.store.append_event(
+            run_id,
+            "planning_started",
+            {"query": query, "agent_id": record.agent_id, "runtime": "codex_app_server"},
+        )
+        outcome = await self.harness.run(run_id, harness_query, record.thread_id)
+        self.store.update_run(run_id, thread_id=outcome.thread_id)
+        if outcome.status == "waiting_input":
+            question = outcome.clarification_question or "请补充完成查询所必需的信息。"
+            self.store.update_run(
+                run_id,
+                status=RunStatus.waiting_input,
+                error_json={"code": "clarification_required", "message": question},
+            )
+            self.store.append_event(
+                run_id, "waiting_input", {"question": question, "runtime": "codex_app_server"}
+            )
+            return
+        if outcome.stop_reason == "interrupted" and self.store.get_run(run_id).cancel_requested:
+            self._finish_cancelled(run_id)
+            return
+        plan = {
+            "kind": "sap_business_agents_harness",
+            "runtime": "codex_app_server",
+            "steps": outcome.executed_plans,
+        }
+        result = RunResult(
+            run_id=run_id,
+            mode=RunMode.free_query,
+            agent_id=record.agent_id,
+            query=query,
+            plan=plan,
+            steps=[
+                {
+                    "step_id": call["call_id"],
+                    "executor": "codex_harness",
+                    "operation": call["tool"],
+                    "status": call["status"],
+                }
+                for call in outcome.tool_calls
+            ],
+            tool_calls=outcome.tool_calls,
+            evidence=outcome.evidence,
+            rule_results=[
+                {
+                    "rule_id": "harness_evidence_contract",
+                    "business_complete": outcome.business_complete,
+                    "missing_evidence": outcome.missing_evidence,
+                    "evidence_refs": outcome.evidence_refs,
+                }
+            ],
+            summary=outcome.summary,
+            presentation=outcome.presentation,
+            errors=(
+                []
+                if outcome.status == "completed"
+                else [
+                    {
+                        "code": "harness_inconclusive",
+                        "message": "The Codex Harness could not establish a complete conclusion.",
+                        "missing_evidence": outcome.missing_evidence,
+                    }
+                ]
+            ),
+            thread_id=outcome.thread_id,
+            harness=HarnessResult(
+                thread_id=outcome.thread_id,
+                turn_count=outcome.turn_count,
+                tool_call_count=len(outcome.tool_calls),
+                budgeted_tool_call_count=outcome.budgeted_tool_call_count,
+                web_search_count=outcome.web_search_count,
+                discovered_tool_count=outcome.discovered_tool_count,
+                activated_tool_count=outcome.activated_tool_count,
+                stop_reason=outcome.stop_reason,
+                limits=HarnessLimits(
+                    tool_calls=HarnessLimitUsage(
+                        limit=self.settings.max_tool_calls,
+                        used=outcome.budgeted_tool_call_count,
+                        reached=outcome.limit_kind == "tool_calls",
+                    ),
+                    turns=HarnessLimitUsage(
+                        limit=self.settings.max_harness_turns,
+                        used=outcome.turn_count,
+                        reached=outcome.limit_kind == "turns",
+                    ),
+                    runtime_seconds=HarnessLimitUsage(
+                        limit=self.settings.max_run_seconds,
+                        used=outcome.elapsed_seconds,
+                        reached=outcome.limit_kind == "runtime_seconds",
+                    ),
+                    reached_kind=outcome.limit_kind,
+                ),
+            ),
+            started_at=record.started_at,
+        )
+        self.store.update_run(run_id, status=RunStatus.running, plan_json=plan)
+        self.store.append_event(
+            run_id,
+            "harness_completed",
+            {
+                "thread_id": outcome.thread_id,
+                "turn_count": outcome.turn_count,
+                "tool_call_count": len(outcome.tool_calls),
+                "web_search_count": outcome.web_search_count,
+                "stop_reason": outcome.stop_reason,
+            },
+        )
+        self._complete_result(run_id, result)
+
+    async def _execute_free_query_legacy(self, run_id: str) -> None:
         free_query_started = time.monotonic()
         record = self.store.get_run(run_id)
         query = str(record.query or "").strip()
@@ -763,7 +997,7 @@ class RunCoordinator:
         )
         catalog = await self.sap_read.catalog(
             query=planner_query,
-            limit=min(self.settings.max_tool_calls * 4, 100),
+            limit=min((self.settings.max_tool_calls or 25) * 4, 100),
         )
         guidance = await self.sap_read.guidance(planner_query)
         guidance_data = guidance.get("data") if isinstance(guidance, dict) else None
@@ -828,7 +1062,7 @@ class RunCoordinator:
                 "step_started",
                 {"step_id": step_id, "tool": tool, "reason": reason},
             )
-            if tool in {"sap_read", "sapclaw"}:
+            if tool in {"sap_read"}:
                 sap_plan = step.get("plan")
                 if not isinstance(sap_plan, dict):
                     raise RunExecutionError(
@@ -850,7 +1084,8 @@ class RunCoordinator:
                         "tool": "sap_read.execute-plan",
                         "reason": reason,
                         "call_id": call_id,
-                        **_plugin_trace(self.sap_read, "sap_read.v1", "execute_plan"),
+                        **_sap_plan_trace_fields(sap_plan),
+                        **_plugin_trace(self.sap_read, "sap_read.v2", "execute_plan"),
                     },
                 )
                 output = await self.sap_read.execute_plan(
@@ -859,12 +1094,11 @@ class RunCoordinator:
                 output = _redact_sensitive(output)
                 last_sap_response = output
                 call = {
-                    **_plugin_trace(self.sap_read, "sap_read.v1", "execute_plan"),
+                    **_plugin_trace(self.sap_read, "sap_read.v2", "execute_plan"),
                     "step_id": step_id,
                     "tool": "sap_read",
                     "operation": "execute_plan",
-                    "service": sap_plan.get("service_name"),
-                    "entity": sap_plan.get("entity_set"),
+                    **_sap_plan_trace_fields(sap_plan),
                     "reason": reason or sap_plan.get("rationale"),
                 }
             elif tool == "skill":
@@ -916,7 +1150,7 @@ class RunCoordinator:
             actual_steps.append(
                 {
                     "step_id": step_id,
-                    "executor": "sap_read" if tool in {"sap_read", "sapclaw"} else tool,
+                    "executor": "sap_read" if tool in {"sap_read"} else tool,
                     "operation": call["operation"],
                     "status": "completed" if output.get("ok", True) else "failed",
                 }
@@ -924,7 +1158,7 @@ class RunCoordinator:
             tool_calls.append(call)
             evidence.append(
                 {
-                    "source": "sap_read" if tool in {"sap_read", "sapclaw"} else tool,
+                    "source": "sap_read" if tool in {"sap_read"} else tool,
                     "step_id": step_id,
                     "payload": output,
                     "call_id": call["call_id"],
@@ -938,7 +1172,7 @@ class RunCoordinator:
                 "tool_completed",
                 {
                     "step_id": step_id,
-                    "tool": "sap_read" if tool in {"sap_read", "sapclaw"} else tool,
+                    "tool": "sap_read" if tool in {"sap_read"} else tool,
                     "ok": output.get("ok", True),
                     "call_id": call["call_id"],
                     "plugin_id": call["plugin_id"],
@@ -947,7 +1181,7 @@ class RunCoordinator:
             self.store.append_event(
                 run_id,
                 "evidence_received",
-                {"step_id": step_id, "source": "sap_read" if tool in {"sap_read", "sapclaw"} else tool, "case_id": output.get("case_id")},
+                {"step_id": step_id, "source": "sap_read" if tool in {"sap_read"} else tool, "case_id": output.get("case_id")},
             )
 
         rule_result = rules.evidence_summary({"evidence": evidence})
@@ -1044,7 +1278,7 @@ class RunCoordinator:
             run_id,
             "schema_received",
             {
-                "services": len({service for service, _entity in original_refs}),
+                "services": len({(service, version) for service, version, _entity in original_refs}),
                 "entities": len(original_refs),
                 "authoritative": True,
             },
@@ -1140,7 +1374,7 @@ class RunCoordinator:
     ) -> list[dict[str, Any]]:
         sap_plans: list[tuple[str, dict[str, Any]]] = []
         for step in _normalize_free_steps(plan):
-            if step.get("tool") not in {"sap_read", "sapclaw"}:
+            if step.get("tool") not in {"sap_read"}:
                 continue
             sap_plan = step.get("plan")
             if isinstance(sap_plan, dict):
@@ -1150,19 +1384,20 @@ class RunCoordinator:
     async def _load_live_schemas(
         self,
         query: str,
-        refs: set[tuple[str, str]],
+        refs: set[tuple[str, str, str]],
     ) -> list[dict[str, Any]]:
-        grouped: dict[str, list[str]] = {}
-        for service_name, entity_set in sorted(refs):
-            grouped.setdefault(service_name, []).append(entity_set)
+        grouped: dict[tuple[str, str], list[str]] = {}
+        for service_name, odata_version, entity_set in sorted(refs):
+            grouped.setdefault((service_name, odata_version), []).append(entity_set)
         responses: list[dict[str, Any]] = []
-        confirmed: set[tuple[str, str]] = set()
+        confirmed: set[tuple[str, str, str]] = set()
         issues: list[dict[str, Any]] = []
-        for service_name, entity_sets in grouped.items():
+        for (service_name, odata_version), entity_sets in grouped.items():
             response = await self.sap_read.schema(
                 service_name,
                 entity_sets,
                 query,
+                odata_version=odata_version,
                 include_fields=True,
                 max_fields=5000,
             )
@@ -1172,6 +1407,7 @@ class RunCoordinator:
                 issues.append(
                     {
                         "service_name": service_name,
+                        "odata_version": odata_version,
                         "entity_sets": entity_sets,
                         "validation_issues": response.get("validation_issues") or [],
                     }
@@ -1181,6 +1417,7 @@ class RunCoordinator:
                 issues.append(
                     {
                         "service_name": service_name,
+                        "odata_version": odata_version,
                         "entity_sets": entity_sets,
                         "schema_authority": data.get("schema_authority"),
                         "fields_truncated": data.get("fields_truncated"),
@@ -1190,7 +1427,11 @@ class RunCoordinator:
             for entity in data.get("entities") or []:
                 if isinstance(entity, dict) and entity.get("runtime_available") is not False:
                     confirmed.add(
-                        (str(entity.get("service_name") or service_name), str(entity.get("entity_set") or ""))
+                        (
+                            str(entity.get("service_name") or service_name),
+                            str(entity.get("odata_version") or odata_version),
+                            str(entity.get("entity_set") or ""),
+                        )
                     )
         missing = sorted(refs.difference(confirmed))
         if issues or missing:
@@ -1208,7 +1449,7 @@ class RunCoordinator:
     ) -> list[dict[str, Any]]:
         failures: list[dict[str, Any]] = []
         for step in _normalize_free_steps(plan):
-            if step.get("tool") not in {"sap_read", "sapclaw"}:
+            if step.get("tool") not in {"sap_read"}:
                 continue
             sap_plan = step.get("plan")
             if not isinstance(sap_plan, dict):
@@ -1230,8 +1471,13 @@ class RunCoordinator:
         return failures
 
     def _complete_result(self, run_id: str, result: RunResult) -> None:
-        flags = rules._collect_source_complete(result.evidence)
-        evidence_source_complete = bool(flags) and all(flags)
+        completeness_evidence, evidence_scope = _completeness_evidence_scope(result)
+        flags = rules._collect_source_complete(completeness_evidence)
+        evidence_source_complete = (
+            bool(flags)
+            and all(flags)
+            and evidence_scope["missing_reference_count"] == 0
+        )
         explicit_top_bounds = (
             _count_free_query_top_bounds(result.plan)
             if result.mode == RunMode.free_query and isinstance(result.plan, dict)
@@ -1244,8 +1490,28 @@ class RunCoordinator:
                 "bounded evidence cannot establish source completeness even when the SAP Provider "
                 "reports no next page."
             )
+        elif source_complete and evidence_scope["final_report_scoped"]:
+            completeness_reason = (
+                "All final-report evidence sources report source_complete=true."
+            )
+            audit_only_count = evidence_scope["audit_only_count"]
+            if audit_only_count:
+                completeness_reason += (
+                    f" {audit_only_count} non-final diagnostic evidence source(s) remain "
+                    "available in the audit log and do not affect the final report scope."
+                )
         elif source_complete:
             completeness_reason = "All SAP evidence sources report source_complete=true."
+        elif evidence_scope["missing_reference_count"]:
+            completeness_reason = (
+                "At least one final-report evidence reference is unavailable; source "
+                "completeness cannot be established."
+            )
+        elif evidence_scope["final_report_scoped"]:
+            completeness_reason = (
+                "At least one final-report evidence source is bounded, incomplete, or "
+                "lacks a completeness assertion."
+            )
         else:
             completeness_reason = (
                 "At least one evidence source is bounded, incomplete, or lacks a "
@@ -1284,6 +1550,8 @@ class RunCoordinator:
             reason=completeness_reason,
             missing_evidence=missing_evidence,
         )
+        if result.presentation is None:
+            result.presentation = _default_presentation(result)
         result.completed_at = utc_now()
         result.artifacts = self._write_artifacts(result)
         status = (
@@ -1301,7 +1569,11 @@ class RunCoordinator:
         self.store.append_event(
             run_id,
             "run_completed" if status == RunStatus.completed else "run_inconclusive",
-            {"status": status.value, "completeness": result.completeness.model_dump()},
+            {
+                "status": status.value,
+                "completeness": result.completeness.model_dump(),
+                "evidence_scope": evidence_scope,
+            },
         )
 
     def _write_artifacts(self, result: RunResult) -> list[dict[str, Any]]:
@@ -1612,10 +1884,10 @@ def _guided_agent_question(agent: dict[str, Any], query: str) -> str:
     )
 
 
-def _collect_sap_entity_refs(plan: dict[str, Any]) -> set[tuple[str, str]]:
-    refs: set[tuple[str, str]] = set()
+def _collect_sap_entity_refs(plan: dict[str, Any]) -> set[tuple[str, str, str]]:
+    refs: set[tuple[str, str, str]] = set()
     for harness_step in _normalize_free_steps(plan):
-        if harness_step.get("tool") not in {"sap_read", "sapclaw"}:
+        if harness_step.get("tool") not in {"sap_read"}:
             continue
         sap_plan = harness_step.get("plan")
         if not isinstance(sap_plan, dict):
@@ -1626,10 +1898,51 @@ def _collect_sap_entity_refs(plan: dict[str, Any]) -> set[tuple[str, str]]:
             candidates.extend(item for item in nested if isinstance(item, dict))
         for candidate in candidates:
             service_name = str(candidate.get("service_name") or "").strip()
+            odata_version = str(candidate.get("odata_version") or "").strip()
             entity_set = str(candidate.get("entity_set") or "").strip()
-            if service_name and entity_set:
-                refs.add((service_name, entity_set))
+            if service_name and odata_version and entity_set:
+                refs.add((service_name, odata_version, entity_set))
     return refs
+
+
+def _sap_plan_trace_fields(plan: dict[str, Any]) -> dict[str, Any]:
+    """Return only versioned public identities; never return paths or transport data."""
+
+    refs: list[tuple[str, str, str]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            service = str(value.get("service_name") or "")
+            version = str(value.get("odata_version") or "")
+            entity = str(value.get("entity_set") or "")
+            if service and version and entity and (service, version, entity) not in refs:
+                refs.append((service, version, entity))
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(plan)
+    if not refs:
+        return {}
+    result: dict[str, Any] = {
+        "odata_versions": sorted({version for _service, version, _entity in refs}),
+        "odata_refs": [
+            {"service_name": service, "odata_version": version, "entity_set": entity}
+            for service, version, entity in refs
+        ],
+    }
+    if len(refs) == 1:
+        service, version, entity = refs[0]
+        result.update(
+            {
+                "service_name": service,
+                "odata_version": version,
+                "entity_set": entity,
+            }
+        )
+    return result
 
 
 def _count_free_query_top_bounds(plan: dict[str, Any]) -> int:
@@ -1647,9 +1960,15 @@ def _count_free_query_top_bounds(plan: dict[str, Any]) -> int:
             return sum(visit(child) for child in value)
         return 0
 
+    # An inconclusive Harness run can legitimately reach its time/turn limit
+    # before any SAP execute plan succeeds.  Its audit plan then has an empty
+    # ``steps`` array.  Completion must preserve that controlled INCONCLUSIVE
+    # outcome instead of reclassifying it as an invalid Codex plan.
+    if plan.get("kind") == "sap_business_agents_harness" and plan.get("steps") == []:
+        return 0
     count = 0
     for harness_step in _normalize_free_steps(plan):
-        if harness_step.get("tool") not in {"sap_read", "sapclaw"}:
+        if harness_step.get("tool") not in {"sap_read"}:
             continue
         sap_plan = harness_step.get("plan")
         if isinstance(sap_plan, dict):
@@ -1659,7 +1978,7 @@ def _count_free_query_top_bounds(plan: dict[str, Any]) -> int:
 
 def _require_grounded_decision(
     decision: PlannerDecision,
-    allowed_refs: set[tuple[str, str]],
+    allowed_refs: set[tuple[str, str, str]],
 ) -> PlannerDecision:
     if decision.needs_clarification or not isinstance(decision.plan, dict):
         raise RunExecutionError(
@@ -1732,25 +2051,27 @@ def _remove_unsupported_order_by(
 
     if not isinstance(decision.plan, dict):
         return decision, 0
-    field_sortability: dict[tuple[str, str, str], bool] = {}
+    field_sortability: dict[tuple[str, str, str, str], bool] = {}
     for response in schemas:
         data = response.get("data") if isinstance(response, dict) else None
         if not isinstance(data, dict):
             continue
         default_service = str((data.get("service") or {}).get("service_name") or "")
+        default_version = str((data.get("service") or {}).get("odata_version") or "")
         for field in data.get("fields") or []:
             if not isinstance(field, dict):
                 continue
             service = str(field.get("service_name") or default_service)
+            version = str(field.get("odata_version") or default_version)
             entity = str(field.get("entity_set") or "")
             name = str(field.get("field_name") or "")
-            if service and entity and name:
-                field_sortability[(service, entity, name)] = field.get("sortable") is not False
+            if service and version and entity and name:
+                field_sortability[(service, version, entity, name)] = field.get("sortable") is not False
 
     copied = copy.deepcopy(decision.plan)
     removed = 0
     for harness_step in _normalize_free_steps(copied):
-        if harness_step.get("tool") not in {"sap_read", "sapclaw"}:
+        if harness_step.get("tool") not in {"sap_read"}:
             continue
         sap_plan = harness_step.get("plan")
         if not isinstance(sap_plan, dict):
@@ -1761,6 +2082,7 @@ def _remove_unsupported_order_by(
             candidates.extend(item for item in nested if isinstance(item, dict))
         for candidate in candidates:
             service = str(candidate.get("service_name") or sap_plan.get("service_name") or "")
+            version = str(candidate.get("odata_version") or sap_plan.get("odata_version") or "")
             entity = str(candidate.get("entity_set") or "")
             order_by = candidate.get("order_by")
             if not isinstance(order_by, list):
@@ -1768,7 +2090,7 @@ def _remove_unsupported_order_by(
             kept: list[str] = []
             for field in order_by:
                 name = str(field)
-                if field_sortability.get((service, entity, name)) is False:
+                if field_sortability.get((service, version, entity, name)) is False:
                     removed += 1
                 else:
                     kept.append(name)
@@ -1776,11 +2098,11 @@ def _remove_unsupported_order_by(
     return decision.model_copy(update={"plan": copied}), removed
 
 
-def _validate_free_plan_limits(plan: dict[str, Any], max_tool_calls: int) -> None:
+def _validate_free_plan_limits(plan: dict[str, Any], max_tool_calls: int | None) -> None:
     call_count = 0
     for step in _normalize_free_steps(plan):
         tool = step.get("tool")
-        if tool in {"sap_read", "sapclaw"}:
+        if tool in {"sap_read"}:
             sap_plan = step.get("plan")
             if not isinstance(sap_plan, dict):
                 raise RunExecutionError("SAP read harness step has no plan object.", code="invalid_codex_plan")
@@ -1797,12 +2119,93 @@ def _validate_free_plan_limits(plan: dict[str, Any], max_tool_calls: int) -> Non
             raise RunExecutionError(
                 f"Codex selected an unsupported tool: {tool}", code="unregistered_tool_rejected"
             )
-    if call_count > max_tool_calls:
+    if max_tool_calls is not None and call_count > max_tool_calls:
         raise RunExecutionError(
             f"Codex plan exceeds the {max_tool_calls}-call prototype limit.",
             code="tool_call_limit_exceeded",
             detail={"planned_call_count": call_count, "max_tool_calls": max_tool_calls},
         )
+
+
+def _completeness_evidence_scope(
+    result: RunResult,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select evidence that can affect the final report's source completeness.
+
+    Harness investigations intentionally retain superseded and failed diagnostic
+    reads for audit.  Once a presentation has passed the run-scoped final-report
+    validator, only evidence cited by that presentation or its final evidence
+    contract should determine the public report's source range.  Unknown final
+    references fail closed.
+    """
+
+    scope = {
+        "final_report_scoped": False,
+        "referenced_count": 0,
+        "audit_only_count": 0,
+        "missing_reference_count": 0,
+    }
+    presentation = result.presentation
+    if (
+        result.mode != RunMode.free_query
+        or result.harness is None
+        or presentation is None
+        or not presentation.validation_ref
+    ):
+        return result.evidence, scope
+
+    references = _collect_final_evidence_refs(presentation.model_dump(mode="json"))
+    for rule_result in result.rule_results:
+        if not isinstance(rule_result, dict):
+            continue
+        if rule_result.get("rule_id") != "harness_evidence_contract":
+            continue
+        references.update(
+            str(item)
+            for item in rule_result.get("evidence_refs") or []
+            if str(item)
+        )
+    if not references:
+        return result.evidence, scope
+
+    selected = [
+        item
+        for item in result.evidence
+        if isinstance(item, dict) and str(item.get("evidence_ref") or "") in references
+    ]
+    available = {
+        str(item.get("evidence_ref"))
+        for item in selected
+        if item.get("evidence_ref")
+    }
+    scope.update(
+        {
+            "final_report_scoped": True,
+            "referenced_count": len(references),
+            "audit_only_count": sum(
+                1
+                for item in result.evidence
+                if not isinstance(item, dict)
+                or str(item.get("evidence_ref") or "") not in references
+            ),
+            "missing_reference_count": len(references - available),
+        }
+    )
+    return selected, scope
+
+
+def _collect_final_evidence_refs(value: Any) -> set[str]:
+    references: set[str] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "evidence_refs" and isinstance(child, list):
+                references.update(str(item) for item in child if str(item))
+            else:
+                references.update(_collect_final_evidence_refs(child))
+    elif isinstance(value, list):
+        for child in value:
+            references.update(_collect_final_evidence_refs(child))
+    return references
 
 
 def _reject_non_get(value: Any) -> None:
@@ -1824,6 +2227,200 @@ def _find_business_report(rule_results: list[dict[str, Any]]) -> dict[str, Any] 
         if isinstance(report, dict):
             return report
     return None
+
+
+def _text_pair(value: Any, fallback: str = "") -> LocalizedText:
+    if isinstance(value, LocalizedText):
+        return value
+    if isinstance(value, dict):
+        zh = str(value.get("zh") or value.get("en") or fallback)
+        en = str(value.get("en") or value.get("zh") or fallback)
+        return LocalizedText(zh=zh, en=en)
+    text = str(value or fallback)
+    return LocalizedText(zh=text, en=text)
+
+
+def _default_presentation(result: RunResult) -> RunPresentation:
+    report = _find_business_report(result.rule_results)
+    summary = _text_pair(result.summary, "查询已经结束。")
+    title = summary
+    blocks: list[PresentationBlock] = []
+    if report:
+        title = _text_pair(report.get("headline"), summary.zh)
+        overview = _text_pair(report.get("overview"))
+        if overview.zh or overview.en:
+            blocks.append(
+                PresentationBlock(
+                    type="text",
+                    text=overview,
+                    claim_scope="customer_business_fact",
+                    tone=str(report.get("tone") or "neutral"),
+                )
+            )
+        stages = [item for item in report.get("stages") or [] if isinstance(item, dict)]
+        if stages:
+            columns = [
+                PresentationColumn(
+                    key="stage", label=LocalizedText(zh="业务阶段", en="Business stage")
+                ),
+                PresentationColumn(
+                    key="status", label=LocalizedText(zh="状态", en="Status"), format="status"
+                ),
+                PresentationColumn(
+                    key="detail", label=LocalizedText(zh="说明", en="Explanation")
+                ),
+            ]
+            rows = [
+                PresentationRow(
+                    values=[
+                        _text_pair(item.get("label") or item.get("id")),
+                        _text_pair(item.get("state_label") or item.get("state")),
+                        _text_pair(item.get("detail")),
+                    ]
+                )
+                for item in stages
+            ]
+            blocks.append(
+                PresentationBlock(
+                    type="table",
+                    title=LocalizedText(zh="各阶段结果", en="Results by stage"),
+                    claim_scope="customer_business_fact",
+                    columns=columns,
+                    rows=rows,
+                    total_rows=len(rows),
+                )
+            )
+        metrics = [item for item in report.get("metrics") or [] if isinstance(item, dict)]
+        if metrics:
+            blocks.append(
+                PresentationBlock(
+                    type="metrics",
+                    title=LocalizedText(zh="关键业务指标", en="Key business metrics"),
+                    claim_scope="customer_business_fact",
+                    metrics=[
+                        PresentationMetric(
+                            id=str(item.get("id") or item.get("name") or f"metric_{index + 1}"),
+                            label=_text_pair(item.get("label") or item.get("id")),
+                            value=_text_pair(item.get("value")),
+                        )
+                        for index, item in enumerate(metrics)
+                    ],
+                )
+            )
+        record_columns = [
+            item for item in report.get("record_columns") or [] if isinstance(item, dict)
+        ]
+        records = [item for item in report.get("records") or [] if isinstance(item, dict)]
+        if record_columns and records:
+            columns = [
+                PresentationColumn(
+                    key=str(item.get("key") or f"column_{index + 1}"),
+                    label=_text_pair(item.get("label") or item.get("key")),
+                    format=str(item.get("format") or "text"),
+                )
+                for index, item in enumerate(record_columns)
+            ]
+            rows = [
+                PresentationRow(
+                    values=[_text_pair(record.get(column.key)) for column in columns]
+                )
+                for record in records[:200]
+            ]
+            blocks.append(
+                PresentationBlock(
+                    type="table",
+                    title=LocalizedText(zh="业务记录", en="Business records"),
+                    claim_scope="customer_business_fact",
+                    columns=columns,
+                    rows=rows,
+                    total_rows=len(records),
+                    source_complete=result.completeness.source_complete,
+                )
+            )
+        findings = [
+            _text_pair(item.get("detail") or item.get("text") or item.get("label"))
+            if isinstance(item, dict)
+            else _text_pair(item)
+            for item in report.get("findings") or []
+        ]
+        if findings:
+            blocks.append(
+                PresentationBlock(
+                    type="bullet_list",
+                    title=LocalizedText(zh="业务发现", en="Business findings"),
+                    claim_scope="customer_business_fact",
+                    items=findings,
+                )
+            )
+        gaps = [_text_pair(item) for item in report.get("missing_evidence") or []]
+        if gaps:
+            blocks.append(
+                PresentationBlock(
+                    type="bullet_list",
+                    title=LocalizedText(zh="尚缺少的证据或能力", en="Missing evidence or capability"),
+                    tone="warning",
+                    claim_scope="diagnostic",
+                    items=gaps,
+                )
+            )
+        actions_value = report.get("next_actions") or []
+        if isinstance(actions_value, dict):
+            actions_value = actions_value.get("zh") or actions_value.get("en") or []
+        actions = [_text_pair(item) for item in actions_value]
+        if actions:
+            blocks.append(
+                PresentationBlock(
+                    type="bullet_list",
+                    title=LocalizedText(zh="建议下一步", en="Recommended next steps"),
+                    claim_scope="diagnostic",
+                    items=actions,
+                )
+            )
+    elif result.mode == RunMode.workflow and result.node_results:
+        rows: list[PresentationRow] = []
+        for node in result.node_results:
+            if not isinstance(node, dict):
+                continue
+            node_summary = node.get("summary") or node.get("result", {}).get("summary") or ""
+            rows.append(
+                PresentationRow(
+                    values=[
+                        _text_pair(node.get("node_id") or node.get("agent_id")),
+                        _text_pair(node.get("status")),
+                        _text_pair(node_summary),
+                    ]
+                )
+            )
+        if rows:
+            blocks.append(
+                PresentationBlock(
+                    type="table",
+                    title=LocalizedText(zh="工作流节点结果", en="Workflow node results"),
+                    columns=[
+                        PresentationColumn(
+                            key="node", label=LocalizedText(zh="节点", en="Node")
+                        ),
+                        PresentationColumn(
+                            key="status", label=LocalizedText(zh="状态", en="Status"), format="status"
+                        ),
+                        PresentationColumn(
+                            key="conclusion", label=LocalizedText(zh="结论", en="Conclusion")
+                        ),
+                    ],
+                    rows=rows,
+                    total_rows=len(rows),
+                )
+            )
+    if not blocks:
+        blocks.append(
+            PresentationBlock(
+                type="text",
+                text=summary,
+                tone="error" if result.errors else "neutral",
+                claim_scope="diagnostic" if result.errors else "customer_business_fact",
+            )
+        )
+    return RunPresentation(schema_version="1.0", title=title, blocks=blocks)
 
 
 def _localized_text(value: Any, locale: str = "zh") -> str:

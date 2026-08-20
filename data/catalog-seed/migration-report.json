@@ -1,0 +1,1820 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-08-19T07:19:46+00:00",
+  "source_manifest_hash": "sha256:07adece53b2dc1a31b8dc4d3194e5e1385dc72eeb5a3fe97e40ec82be438cb57",
+  "source_files": [
+    {
+      "path": "data/api_skills/API_BATCH_SRV/skill.md",
+      "sha256": "sha256:01850ed94fd95d1cd0597c6f27d44879be29dca811cee3dfab4a5fbd0cbb54e8",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_BILL_OF_MATERIAL_SRV_0002/skill.md",
+      "sha256": "sha256:7823a44e4c9932b2d1974d2fc6c416da8b6556c547f0f28aeec0fe9cae11a7e0",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_BILLING_DOCUMENT_SRV/skill.md",
+      "sha256": "sha256:c29d4456ac1db02e7056f8209a792449319bf399f92d9211b22228365c82374c",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_BUSINESS_PARTNER/skill.md",
+      "sha256": "sha256:87b7c5cf8fc8c761558b33a00b9e5165019cd98911b1e7699f7af58c5a2fd9e0",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_COMPANYCODE_SRV/skill.md",
+      "sha256": "sha256:f021545c3076478729597434ac165805dfbc1596fc25067ce25679e76651eb62",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_COSTCENTER_SRV/skill.md",
+      "sha256": "sha256:38799f70bb18a0e0cd4e3564625c747b928e74faca64b031342bb6588ab568c8",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_CREDIT_MEMO_REQUEST_SRV/skill.md",
+      "sha256": "sha256:30c79d7cda52691c1cedec63272b4b51044e772910de0e96f1b25553983c13a5",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_CUSTOMER_MATERIAL_SRV/skill.md",
+      "sha256": "sha256:b5f88c57a300e65b92f47329f815245d1650c1729fd26f4c52eb902a63a12913",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_CUSTOMER_RETURN_SRV/skill.md",
+      "sha256": "sha256:067bbf012f97393e3cbf64579007243519b6f8bdae6d8befa1224f42b8922bf7",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_DEBIT_MEMO_REQUEST_SRV/skill.md",
+      "sha256": "sha256:df6060f756b5342cd4ae4e784d76b9f662f944bb6aae68a89eee8378649de8e7",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_GLACCOUNTINCHARTOFACCOUNTS_SRV/skill.md",
+      "sha256": "sha256:80eb17819dd16509364146686d26f4b161ede2d7c2e77966b78c4c998a4b3036",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_GLACCOUNTLINEITEM/skill.md",
+      "sha256": "sha256:597dc1acc1a3cd7b322346b6448ae817ae14c4509fa789369ec8778e7fb01da7",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_INFORECORD_PROCESS_SRV/skill.md",
+      "sha256": "sha256:367dc8549c4972dc329844a5d86447e99bd9d62eafb7fdd26c3364402a189442",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_JOURNALENTRYITEMBASIC_SRV/skill.md",
+      "sha256": "sha256:f26a85f7cef1efba49a14a653fbd6c2bb6ce85edba7763d7b9fe480b874a6b50",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_LEDGER_SRV/skill.md",
+      "sha256": "sha256:85e85f49527c66de45cf6732d2e098aa1d5a7f4576aa796f1132b05d557b3add",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_MASTER_RECIPE/skill.md",
+      "sha256": "sha256:90ed14f6275ca1ee62a05defc987002c92c8d7cc407c9c23f10ee1a5e21b0943",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_MATERIAL_DOCUMENT_SRV/skill.md",
+      "sha256": "sha256:cf5835201f9752364b4837c8094104224ef0ac5bf01ba833e0b3e6cc713cc3ff",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_MATERIAL_STOCK_SRV/skill.md",
+      "sha256": "sha256:e9041850103ff98ed957cb965673fd23ce3d0ae6a83068eac5b13fa313aaa510",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_MRP_MATERIALS_SRV_01/skill.md",
+      "sha256": "sha256:f0dc7c3dde05798e4722f29a99476d55eadbeb80f274dcfd5f07e5e0301d8b77",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_OPLACCTGDOCITEMCUBE_SRV/skill.md",
+      "sha256": "sha256:8891912b7c56ab73b6b6bafa46b6f099f1546ded4c21499e756ee55a0a6621f3",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_OUTBOUND_DELIVERY_SRV/skill.md",
+      "sha256": "sha256:cd722d2a98a49ddc6527813bf6da67d2009b26a2b5b7b73b99b82097c675efeb",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PARTNERCOMPANY_SRV/skill.md",
+      "sha256": "sha256:96efc69c49a1d8dffce87503c7caa83af79ec4a43934e42c17c0a2875831e7ce",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PAYMENT_ADVICE_SRV/skill.md",
+      "sha256": "sha256:d87de43fbb95743836bab7e80e58a4246e5dc1f8dcf7139300762e3639d96fda",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PHYSICAL_INVENTORY_DOC_SRV/skill.md",
+      "sha256": "sha256:d9cccf67910a897075a8b6297da870900ecfe6a6e3c9e5dba86982cdb993337e",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PLANNED_ORDERS/skill.md",
+      "sha256": "sha256:d29f26874b8872bc06449c70536ca7fc094ce902ec934e0713ff7243d9181b15",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PLND_INDEP_RQMT_SRV/skill.md",
+      "sha256": "sha256:1c4b78cc93601ef6dc927ed331d4a9cf0fb162e376dfd1b3f1d2dd360e3c926f",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PROCESS_ORDER_2_SRV/skill.md",
+      "sha256": "sha256:5404f87fcbf0209c66961b15071a3e61951b3a82121eece58a5d2da01db2d9e3",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PRODUCT_AVAILY_INFO_BASIC/skill.md",
+      "sha256": "sha256:238e0cd0bba0105197a837368c4e516a1cd184a3639ec94052bd52370f4f66e1",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PRODUCT_SRV/skill.md",
+      "sha256": "sha256:79e358b4405274eff151e860366a014a84e78fb4ba1a33bb68efb87d450e6536",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PRODUCTGROUP_SRV/skill.md",
+      "sha256": "sha256:3ec6b76d0e583e82f7a3d18d845441df06a0063986d8183f43cd1cf2c0f9e504",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PRODUCTION_ORDER_2_SRV/skill.md",
+      "sha256": "sha256:ba5df8d5fbf1489ab17b59dcfb067850d64fcd5c9aec223afe5b9e0a32766da8",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PRODUCTION_ROUTING/skill.md",
+      "sha256": "sha256:b0265bd2f8d449c118a16aab48be73b3c2ec6f93530cf9d708735f51f6d3ff68",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PROFITCENTER_SRV/skill.md",
+      "sha256": "sha256:be77464e12cd3cdcc3d236cab6a60a597a26c4d738ca3d55104d2d0adf6b0c70",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PUR_QUOTA_ARRANGEMENT_SRV/skill.md",
+      "sha256": "sha256:3fe9cb727a32be8473fd1abc620a2d1771bec4a47e95f3eee69d9e728ee7f29b",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PURCHASECONTRACT_PROCESS_SRV_0002/skill.md",
+      "sha256": "sha256:0125cdd7adfae65bdf7a5003c635232822aedd3a35234b6ee781d955036aa503",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PURCHASEORDER_PROCESS_SRV/skill.md",
+      "sha256": "sha256:b47942292e1f26b1b0372a5781e5fe89b8674c2c254c4403c882344c11f6d397",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PURCHASEREQ_PROCESS_SRV/skill.md",
+      "sha256": "sha256:bf83ece4b30291bae16013af36a66b2c093f1d3af088ddfcaf772d7e86033e89",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_PURGPRCGCONDITIONRECORD_SRV/skill.md",
+      "sha256": "sha256:86a0e7038dfd7b94a9c4a9a5c2e819953b95bb2d6b23e945cadd627b22603fb6",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_QTN_PROCESS_SRV/skill.md",
+      "sha256": "sha256:0dfaba8374138b792e47a608ea9056415a075e2ab7da47f2837e83aad62cde71",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_RESERVATION_DOCUMENT_SRV/skill.md",
+      "sha256": "sha256:254ec31a052c7587b4c6ced86e35bcaa9ac5cf254841cd703c2e1e76b235cf8a",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_RFQ_PROCESS_SRV/skill.md",
+      "sha256": "sha256:45d60e545e9748e67d6603cf88eed0b19892b5dea09ee08ee39d81a97290f51f",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_SALES_CONTRACT_SRV/skill.md",
+      "sha256": "sha256:de10e2990ae20d3eb2e8efffeccb17a4dd819bfe2888f2c8f65ef5aa9fb2aa58",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_SALES_ORDER_SRV/skill.md",
+      "sha256": "sha256:9049f3f6d8f35914d5c2695dd3870484d7b8a5fe4444ad77c40975ac588ac8a5",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_SALES_QUOTATION_SRV/skill.md",
+      "sha256": "sha256:3bc2e4feeb8c8dc194954b0f174d2d2550f405ea93f45ca4f37d8c65d3c1ab57",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_SCHED_AGRMT_PROCESS_SRV/skill.md",
+      "sha256": "sha256:14cd0bb93ee6b6b6b143ea83288912621a1726562e88c46155f308460665f62b",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_SEGMENT_SRV/skill.md",
+      "sha256": "sha256:6718cea119e7cead91c1154d5b322679acadcde3b8bf5212b7397c89419c2cb5",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_SERVICE_ENTRY_SHEET_SRV/skill.md",
+      "sha256": "sha256:df5dd24c440f9d02f17dea67dbc53c83931cf10ca9d9832943b381dc5a10053d",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_SLSPRICINGCONDITIONRECORD_SRV/skill.md",
+      "sha256": "sha256:a40672b22c7abe732b0c3443bf1dd065151c6c5305590591a0ec55bd73d62d25",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_SUPPLIERINVOICE_PROCESS_SRV/skill.md",
+      "sha256": "sha256:7edcd38fe493bac2cc0b9cbc684ce4b5be2a4fc4251f9b3cad5750ca529b2f35",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/API_WORK_CENTERS/skill.md",
+      "sha256": "sha256:0f13f34ee9da5677f556392c68f92b51bbf1cd559ee610ec63ec458f6ceab0bc",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/C_TRIALBALANCE_CDS/skill.md",
+      "sha256": "sha256:672b432c6526ab1ea13f8e5399cb965f3fd6ca32007a121f91c6110616370077",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/I_ProductionVersion/skill.md",
+      "sha256": "sha256:48fd001e13260ecb3e71541c0f7339ed20d2bbc29ab36ad164d3482ab8345903",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/api_skills/I_PurchaseOrderHistoryAPI01/skill.md",
+      "sha256": "sha256:8dbf9a002f8c74f293594f4e1d5fa65168dd3bef6771e702f43a529389fcd69d",
+      "source_type": "guidance"
+    },
+    {
+      "path": "data/index/API_BATCH_SRV/business_terms.json",
+      "sha256": "sha256:d121699c73ee56dbf682f2502f34f46b1018f1ebffb418c3c35444ba6c31e88e",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BATCH_SRV/entities.json",
+      "sha256": "sha256:141e0314e57e6b8d6069c69d8010bc8a882ca6b60f08749f3cf0684aa110070c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BATCH_SRV/fields.json",
+      "sha256": "sha256:e6d14b7c842727d3fa5d1a2f420ad9ab7e8e3440120b0a41909781d4102246c7",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BATCH_SRV/services.json",
+      "sha256": "sha256:79a6d28469d22a3e609e96a89946f844b86b21786cd83e3ca0a8457b5362024d",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BILL_OF_MATERIAL_SRV_0002/business_terms.json",
+      "sha256": "sha256:dbad2dd8858c31b88549e11f4a25c074a74b7dd474c999fe94ae3726814ff8ef",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BILL_OF_MATERIAL_SRV_0002/entities.json",
+      "sha256": "sha256:42b8552d57e2825ea3c6a954c61a79c7e24163574d95636b36104b1a3c06bc40",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BILL_OF_MATERIAL_SRV_0002/fields.json",
+      "sha256": "sha256:5acc945f1821ea964265b98e47e05671ce34314ffef4b48da203359a9840dafb",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BILL_OF_MATERIAL_SRV_0002/services.json",
+      "sha256": "sha256:2f1b97167a61628dbcb519e3ea1e51f522bc0702700a6c723f8ea733131ee8dd",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BILLING_DOCUMENT_SRV/business_terms.json",
+      "sha256": "sha256:2070bd44e0ae80514f3fa01d86cfc88604a96081cc413669a8ce000c6eca394b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BILLING_DOCUMENT_SRV/entities.json",
+      "sha256": "sha256:d23b1ecadc5ec627c66f784d161ce674e068f1920273f14c8eba6e87ce504a04",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BILLING_DOCUMENT_SRV/fields.json",
+      "sha256": "sha256:0ba03baccd96536e626574a5ce4e4cac49059094d0f0c29dc947efdcc61f9b53",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BILLING_DOCUMENT_SRV/services.json",
+      "sha256": "sha256:349c2f895b74776bb5f5c9c80425afff451b3353ac9530a2e975e689b06a91a2",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BUSINESS_PARTNER/business_terms.json",
+      "sha256": "sha256:d9509fb510399450ccf8a5a416d2d932ab9185c50e54808c9e1a7419fa595d83",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BUSINESS_PARTNER/entities.json",
+      "sha256": "sha256:0412c83721dc1d9cac40ed74eb05b6cfccaadde87d4f19e7d5f3e9c3d3aca7c9",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BUSINESS_PARTNER/fields.json",
+      "sha256": "sha256:ab537d1e6bebf6edb3a1909f1c63649cc076685b00dc579c098506087f9af2d2",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_BUSINESS_PARTNER/services.json",
+      "sha256": "sha256:b7ba08b171fa9dee015de6ef2d683bb4dcf272798003031ef54eaa19b7b8a26d",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_COMPANYCODE_SRV/business_terms.json",
+      "sha256": "sha256:30ef27ac9d3297579ea517e7b91a5c53aa798b7ffe6a71c760c02693cb51f05a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_COMPANYCODE_SRV/entities.json",
+      "sha256": "sha256:f777977eca604d2241ef8da36190813e736ea06b7079f256cbb5bc5d7e733eb8",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_COMPANYCODE_SRV/fields.json",
+      "sha256": "sha256:ed903b5e8175f6fad502b37db63ab09956c473a6d3797fdd411e5c6c3e482c0b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_COMPANYCODE_SRV/services.json",
+      "sha256": "sha256:7bc766f55704d3d3229bd7939a0313908658dd7b75777d56d4e5838b9b6eab91",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_COSTCENTER_SRV/business_terms.json",
+      "sha256": "sha256:ef63d0bd598bac3029b217245f6d171ba64bdf35456adb9f2ab13318dc8c79e3",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_COSTCENTER_SRV/entities.json",
+      "sha256": "sha256:aaccdbcaf315e979fa6fdc9c8c312af874b9ab9e77195bf53284d0ff96ae6989",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_COSTCENTER_SRV/fields.json",
+      "sha256": "sha256:87971659f39dc6d82b6e327b6c0098aed7e54ceb4c3b1e7c84c040b66cea9fe9",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_COSTCENTER_SRV/services.json",
+      "sha256": "sha256:fa1a6badc893e0add1f2ba32ad431290154c7665b1e2148beab76ca815b315c6",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CREDIT_MEMO_REQUEST_SRV/business_terms.json",
+      "sha256": "sha256:3538ea1be586ff0743b59efd8847752ab934cb1adda8a5b006f2f6e7193cd5ed",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CREDIT_MEMO_REQUEST_SRV/entities.json",
+      "sha256": "sha256:953b58a275f9ab70442d64b3fb4be8103930a67da11235ec76223f6f2d3a4a22",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CREDIT_MEMO_REQUEST_SRV/fields.json",
+      "sha256": "sha256:46e8259eae2b460bf3469f110057cd0eedcc2451e815e7fd6c6fd452d831badb",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CREDIT_MEMO_REQUEST_SRV/services.json",
+      "sha256": "sha256:694b664597f19ac9915ad092aa07b4037fae7b4ab273133e69f4e5da008a44bc",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CUSTOMER_MATERIAL_SRV/business_terms.json",
+      "sha256": "sha256:6eb704644765b76ef14b4bd614081e8f56947b8b950a8014f37ddec143976f06",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CUSTOMER_MATERIAL_SRV/entities.json",
+      "sha256": "sha256:11c0cbcc58bbf88310d736a9ac3b8733acb4b2b06cbad6fce1becd4ca3d394dd",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CUSTOMER_MATERIAL_SRV/fields.json",
+      "sha256": "sha256:d3f0dae9adc8ffacc05be39f5ac3aa3933161a45187d11528be08fa4497715ee",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CUSTOMER_MATERIAL_SRV/services.json",
+      "sha256": "sha256:c7305f0956df42957de127cc0032e7b35f4fc5684845bae9bc366c371ec4be57",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CUSTOMER_RETURN_SRV/business_terms.json",
+      "sha256": "sha256:36aeecd8ce910a553d51eaf2e96d9d80d5cebb6b2114b7402c6812a07774278f",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CUSTOMER_RETURN_SRV/entities.json",
+      "sha256": "sha256:3c147931ec63533ecc83da4bdc7b00babf5452283389eabb80d0a5114686ddcc",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CUSTOMER_RETURN_SRV/fields.json",
+      "sha256": "sha256:304d1391d7955a33be34ebc6c3ff3a876c0178617f764a4ad94e3f4c7cf8c1e3",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_CUSTOMER_RETURN_SRV/services.json",
+      "sha256": "sha256:1f2fdbfe0809b38f0933832a970e5bb793fe12384244cda54837f09e8f2f3879",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_DEBIT_MEMO_REQUEST_SRV/business_terms.json",
+      "sha256": "sha256:bdf61397adadfa8a02e4543d9c7a2b53746c227b23687cf2d2c7fb24f35d317a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_DEBIT_MEMO_REQUEST_SRV/entities.json",
+      "sha256": "sha256:40b40e53f187d21d3eca619dc810d7c85bd668bfdcc4fac0344c7e57e5bb43ea",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_DEBIT_MEMO_REQUEST_SRV/fields.json",
+      "sha256": "sha256:6c175cc74316a2cddf4ea92d72ebc9a0c33459a4177da09a952ccbe9d6e57f48",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_DEBIT_MEMO_REQUEST_SRV/services.json",
+      "sha256": "sha256:2a44a72e11b39dd1f72b297aca3d568ebec3d653ca3ea55fd3402a8c0f239168",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_GLACCOUNTINCHARTOFACCOUNTS_SRV/business_terms.json",
+      "sha256": "sha256:e5f5129a7590c9c5b43d4d2ddbfe9eaa21a03a105deefc7d7b422fac0ff008ae",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_GLACCOUNTINCHARTOFACCOUNTS_SRV/entities.json",
+      "sha256": "sha256:dea5112158946028caf6de6bf6bf0691fa39aef3fa2d15cc41268fc33d50f419",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_GLACCOUNTINCHARTOFACCOUNTS_SRV/fields.json",
+      "sha256": "sha256:62e91c8e17ccf14773460e6ed214206026b6babb842b238d5f17db0a5ab60a72",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_GLACCOUNTINCHARTOFACCOUNTS_SRV/services.json",
+      "sha256": "sha256:b9f688132fb6fcebe146950f4aeb0f42f621a894f79ffd1c2ce22325e3cdb1b4",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_GLACCOUNTLINEITEM/business_terms.json",
+      "sha256": "sha256:3e513753071a63ae48f80c21db20349ba0fe6756626f95aa26aca7b0fa2f97e0",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_GLACCOUNTLINEITEM/entities.json",
+      "sha256": "sha256:e7167224c785dc9dc18e6dd408859d84c50600ce4183684c438872a157749425",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_GLACCOUNTLINEITEM/fields.json",
+      "sha256": "sha256:c7964b67b2522d8858df7ece34b92196367f5d7a3cf0320d6b6950ea94c75e80",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_GLACCOUNTLINEITEM/services.json",
+      "sha256": "sha256:41ec4f38cea959c2d6bfb3d8f6616567d44855c8b2fe3b16bcc44454936a6806",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_INFORECORD_PROCESS_SRV/business_terms.json",
+      "sha256": "sha256:a59fc089694b8c78d30165ae7276785c31b4a5f6d77c1d1d4f00c93ee11b3fbe",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_INFORECORD_PROCESS_SRV/entities.json",
+      "sha256": "sha256:cc92fd3dc3bb37826053fda5550cab19eec219527d6844452b1aa9b0a11fba2a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_INFORECORD_PROCESS_SRV/fields.json",
+      "sha256": "sha256:b0ded3a1a94a237c67a231b4ac266f068ee3b5b1035e14b69a45ef2a32a0c13b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_INFORECORD_PROCESS_SRV/services.json",
+      "sha256": "sha256:b00db090cfe9e61c3da5687b11c0e80618ab7b69cda77ddc40e433c5d277f93a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_JOURNALENTRYITEMBASIC_SRV/business_terms.json",
+      "sha256": "sha256:b70c6a89562aa6e2515ea4fff062ada5de3b94e709359431df872c9e9a238018",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_JOURNALENTRYITEMBASIC_SRV/entities.json",
+      "sha256": "sha256:e4cb4dc09cc7fa0db247d6ecff3b00cbb2ccca85662323ecb796265418a99872",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_JOURNALENTRYITEMBASIC_SRV/fields.json",
+      "sha256": "sha256:df240868509d018defb1a33959d1ea079669f019c6571919ee0679e9794bc117",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_JOURNALENTRYITEMBASIC_SRV/services.json",
+      "sha256": "sha256:b7b93454c9347f76ed952c2ef744cb856491980618a29e1db044325c1e7d9d89",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_LEDGER_SRV/business_terms.json",
+      "sha256": "sha256:a6d60cfec8dc4711cd8440e08bad30cd019e18d81f58996e6bf4eece4c2f6f75",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_LEDGER_SRV/entities.json",
+      "sha256": "sha256:e4ce9ab9a61af97e97859a4083fdcae3396d1d7e27ba0259461e1403baa0dd6c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_LEDGER_SRV/fields.json",
+      "sha256": "sha256:10fb42757a32c567fc8e7a7be90cb471f9585f26c73b86902fa6ecdc87374255",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_LEDGER_SRV/services.json",
+      "sha256": "sha256:3442c50dc2aebbefaca36a41ec49c5161be3093f060d81074af7157334150d9e",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MASTER_RECIPE/business_terms.json",
+      "sha256": "sha256:99b37a01842b03cc6867dd0ccd6ee61d7271ea076927236c97736dceb3755c84",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MASTER_RECIPE/entities.json",
+      "sha256": "sha256:8df2720496a1b6fb94a062c2a95cf13073c047da92152f544b7a51feb243fa5c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MASTER_RECIPE/fields.json",
+      "sha256": "sha256:414c028e2328e74487529dd39cfa823c47eb07a78f2a67a127b3d6c3a5038778",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MASTER_RECIPE/services.json",
+      "sha256": "sha256:9d88b8de2504c526e7ffe1dfd617779e9ec0b985f83b0a83b3e349b44ba05e85",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MATERIAL_DOCUMENT_SRV/business_terms.json",
+      "sha256": "sha256:78028db6f2f70eb84f39efc04e3e7aa946fa92003f01c3c31acc72db7b40a266",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MATERIAL_DOCUMENT_SRV/entities.json",
+      "sha256": "sha256:7871b7e33ffece41d446111ec581fbf353b03570c34cf9ef291c70d08456c25e",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MATERIAL_DOCUMENT_SRV/fields.json",
+      "sha256": "sha256:a9347cb8985af143161effe00b6abc634c7ddbb30fbffaf5988bd3d12717feaa",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MATERIAL_DOCUMENT_SRV/services.json",
+      "sha256": "sha256:d01577dd6d2a920c41e889210116863f694ea0b3c173126998767c201ef16b1a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MATERIAL_STOCK_SRV/business_terms.json",
+      "sha256": "sha256:5071828d98bf72507747ac70d76df607526a2c390bba259d1a205372fd429a4d",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MATERIAL_STOCK_SRV/entities.json",
+      "sha256": "sha256:5a0462d2df1de11b4838324db1ea1de35af29d808d948c308164522d0ed3c568",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MATERIAL_STOCK_SRV/fields.json",
+      "sha256": "sha256:3b140e729df13325c8312167da07865ba3bcdab0845475ba3072fba6025bee91",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MATERIAL_STOCK_SRV/services.json",
+      "sha256": "sha256:eb5ffb50c14e02be61caf6df640782b668d6f207ba2386b7f6b526aad854c681",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MRP_MATERIALS_SRV_01/business_terms.json",
+      "sha256": "sha256:e7afb50a5f47b42ab8c57230aad1742b9c56bc66899d80912a0b2ccc55e96860",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MRP_MATERIALS_SRV_01/entities.json",
+      "sha256": "sha256:8b61f7594df73fe5be23fd167f48bdb1e2f82d9eb251d9c9a21ee151cd46c8ea",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MRP_MATERIALS_SRV_01/fields.json",
+      "sha256": "sha256:a2a6a89b68600e6fe5b10dfb0bce03f2c4b16c30c6a393b160fdccbc5b8b4a95",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_MRP_MATERIALS_SRV_01/services.json",
+      "sha256": "sha256:5b1579ea342a2713902cb06ac9220a4956cc763f6809a410b509a15b42e22a0e",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_OPLACCTGDOCITEMCUBE_SRV/business_terms.json",
+      "sha256": "sha256:22760c1e639f9eaab18c91beae252703bce5d8d3bc0475e02348ce474116cb97",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_OPLACCTGDOCITEMCUBE_SRV/entities.json",
+      "sha256": "sha256:9b585ec643d99051163c770a85096505ec0599422765ca685d12a94378f1b99b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_OPLACCTGDOCITEMCUBE_SRV/fields.json",
+      "sha256": "sha256:61ccc1deade64af496912337df44f51cd17c87bcc41c4c47c83e7de7f31bbb82",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_OPLACCTGDOCITEMCUBE_SRV/services.json",
+      "sha256": "sha256:2c2f18f157cd987cf34eed0009c9d536039a448d96e875a761afc63656ad44f2",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_OUTBOUND_DELIVERY_SRV/business_terms.json",
+      "sha256": "sha256:8bdf2e3f9369266abe211a61efff46386cf33aa1382b0607d5528183e6075e9a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_OUTBOUND_DELIVERY_SRV/entities.json",
+      "sha256": "sha256:5766c3e76b3c805d37b3cedab3af5416a570f33ce824fc619f310e1f650a97a1",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_OUTBOUND_DELIVERY_SRV/fields.json",
+      "sha256": "sha256:2143fc16bbb9f4b4a93928fcade38c5ae85244e7d17b7736d1dbc54678fbb61a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_OUTBOUND_DELIVERY_SRV/services.json",
+      "sha256": "sha256:7882a66e5eb02d180d0d71d272ef33b943aa92ace47ff2cfc158537da7211560",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PARTNERCOMPANY_SRV/business_terms.json",
+      "sha256": "sha256:79cdf052b51c8963b9b30026a63572082189085aadc1d8b6fc1e50aa5fc7bfee",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PARTNERCOMPANY_SRV/entities.json",
+      "sha256": "sha256:0f1ed55ea9eec028cd6681073804d854095700f5e7816ea1c41f9242135dc894",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PARTNERCOMPANY_SRV/fields.json",
+      "sha256": "sha256:c4645955753941c2c0a53868211d86bd75a8f6cc4026a724bbc88595eeaf5e26",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PARTNERCOMPANY_SRV/services.json",
+      "sha256": "sha256:d95372592bbe1913a7ebe888d86ba5156d82e9bd4e5a8844e96ef6ee01ec0958",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PAYMENT_ADVICE_SRV/business_terms.json",
+      "sha256": "sha256:122cb8c4e2d3fb81399924fe8d0462a89c8a8a6d9e051c6c123c01c482865410",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PAYMENT_ADVICE_SRV/entities.json",
+      "sha256": "sha256:b8febf16eee33932f9c4361e5d73598c0b3ada87dfbf6af7f0f4ba3920da08b2",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PAYMENT_ADVICE_SRV/fields.json",
+      "sha256": "sha256:03aa537b331508cbf7610b5d91767dd4e8accedabb6d795c5dbfad2a52559e06",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PAYMENT_ADVICE_SRV/services.json",
+      "sha256": "sha256:aa0b5426df134fcd5b42fa6fb038b42fa940d71f96f2391f6a36bb21d4e22d39",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PHYSICAL_INVENTORY_DOC_SRV/business_terms.json",
+      "sha256": "sha256:72ce485077590b98738f43c26d1831fc7e02c09d095e69ddef64a9bc80c92a05",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PHYSICAL_INVENTORY_DOC_SRV/entities.json",
+      "sha256": "sha256:9b7683cbea800e56edb140bd71c28403292f12dac1db4daf591b036be23e678b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PHYSICAL_INVENTORY_DOC_SRV/fields.json",
+      "sha256": "sha256:408340612e649ed436e9be23ceff583031ca384eab2d67ccef7affd878cced03",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PHYSICAL_INVENTORY_DOC_SRV/services.json",
+      "sha256": "sha256:d27c78f55bcc8ba1d84e67b00440f033e5c0062c48f10e6289be46474dde04c1",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PLANNED_ORDERS/business_terms.json",
+      "sha256": "sha256:da227d4e0b859c29fe8959a20e0ab0ee5e2fcaa8992215aa15d910d6f707818f",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PLANNED_ORDERS/entities.json",
+      "sha256": "sha256:d63ae5e0aed810d109bdaeb2931c6969d115b3db59bd998c04673a5f2ea47acb",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PLANNED_ORDERS/fields.json",
+      "sha256": "sha256:0cd44dc518bfbe385ec9519808a52b2229c7557aa072bf9dded29926ed34fe07",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PLANNED_ORDERS/services.json",
+      "sha256": "sha256:4c6140f5ff21a8e0f776cf9892676f4bb0fe01a8fefb58a3c8a71543abd80c98",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PLND_INDEP_RQMT_SRV/business_terms.json",
+      "sha256": "sha256:fad14f9a96fe957ed1919a5824fdeac91625020ae2a30ea9c78a0c9e0db8ddf8",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PLND_INDEP_RQMT_SRV/entities.json",
+      "sha256": "sha256:9c30b8ddd7a43c0899ce6a5845a1b6675ab9f037cd0f860d6dd1e2bfa11bbf8c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PLND_INDEP_RQMT_SRV/fields.json",
+      "sha256": "sha256:366f3053a066f121c787492b46716905298ea6da07b8fd67b70edaeeace6c4e1",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PLND_INDEP_RQMT_SRV/services.json",
+      "sha256": "sha256:80503ee49118bc37676e9ca8cae3704343dd3b15733ea4e9c1aade2c473a16b1",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PROCESS_ORDER_2_SRV/business_terms.json",
+      "sha256": "sha256:318d80e90800baa6862c7678003408169e65c563f7dfa609413d1706972ba7e4",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PROCESS_ORDER_2_SRV/entities.json",
+      "sha256": "sha256:82dec218d04809f888240925a538bfcb07810fe65f4f1c5946781369f3bfa30e",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PROCESS_ORDER_2_SRV/fields.json",
+      "sha256": "sha256:0ace73450b96d5d2cd7d0d21f2e4f0d91a0b2d2bde3b61d04018317ad92a21e1",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PROCESS_ORDER_2_SRV/services.json",
+      "sha256": "sha256:88a3932d4fc32112aeb2a731885462037924174947919c7900e81188b85bfb83",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCT_AVAILY_INFO_BASIC/business_terms.json",
+      "sha256": "sha256:240b62f04d92d4d1717787d9a8234be873c81461e925f55db856196fe4610db3",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCT_AVAILY_INFO_BASIC/entities.json",
+      "sha256": "sha256:96a301d4697b21b01d9a24609d83c7bc150a70949e2be70ff6bca7fb61a6cfcc",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCT_AVAILY_INFO_BASIC/fields.json",
+      "sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCT_AVAILY_INFO_BASIC/services.json",
+      "sha256": "sha256:f5ae6a13bd5027a711d87a7b41716b067af8549f2377538ea1ccb9d659cbcebd",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCT_SRV/business_terms.json",
+      "sha256": "sha256:f8811845d2cd6515a89ec4609da39ef56794b77d8c350aa5ef8f37b9cd896069",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCT_SRV/entities.json",
+      "sha256": "sha256:f4432de50f44473afa006f71e367d8565b60548a812e5e3ae4debd597d0bb5a5",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCT_SRV/fields.json",
+      "sha256": "sha256:03938ce6abc3019214fe6e6c251900abd640de0642b7ce7137599da7db99156f",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCT_SRV/services.json",
+      "sha256": "sha256:083b751d1a118d3cac8ffaaa47bd130c8ae0227dfdbaeb62baff835c20166c45",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTGROUP_SRV/business_terms.json",
+      "sha256": "sha256:1ba55c9f7b2765eb4f1e4a74584c8d2dfc3bbbead008138ddb4471c45205241d",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTGROUP_SRV/entities.json",
+      "sha256": "sha256:d0cfbecc089e4397a24b7d8a5926ab3dbae79e0374bf689f8119edf954efdf95",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTGROUP_SRV/fields.json",
+      "sha256": "sha256:0c22d1c4b45cc8ce2f5c2b101a5b98b68fca436d1faa73f84450d5a67d46ac59",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTGROUP_SRV/services.json",
+      "sha256": "sha256:5ac660f28c3a2284aeab309bd58defe852c1b44345047e44aa81b6a83658db2b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTION_ORDER_2_SRV/business_terms.json",
+      "sha256": "sha256:a1aa330cfd518b89cc8544b00de7463bbb00c4ddbcf770760164e928131c65fe",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTION_ORDER_2_SRV/entities.json",
+      "sha256": "sha256:ccdb58813905012ddc0388be8aeabf4e9588a19fd79a04929b91e67f69669025",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTION_ORDER_2_SRV/fields.json",
+      "sha256": "sha256:db68d2c3da41509101083329d67943e89218d0d01a8630da5becd4f7b5d0f5bd",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTION_ORDER_2_SRV/services.json",
+      "sha256": "sha256:85185bcebec6b6b585981fa6df5800421cdec0418efc0a134b0bd6aee15d2781",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTION_ROUTING/business_terms.json",
+      "sha256": "sha256:11f78fe007c129535d11df4abe90044506d8e10544373fb4411c1266d572916b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTION_ROUTING/entities.json",
+      "sha256": "sha256:7d18164198cd809612d23cddf1cc68e761bd49401c3e6d9444ea4617258a11ed",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTION_ROUTING/fields.json",
+      "sha256": "sha256:53dd11a7d5d80f8d5a51a13b0f75a60c94e030b5f3103a7dab8f0502372a60d1",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PRODUCTION_ROUTING/services.json",
+      "sha256": "sha256:6c71691eafaf1c4ff0e51e527c0a69d6fad48e247c5d0c2728c34d5b2e6a01b6",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PROFITCENTER_SRV/business_terms.json",
+      "sha256": "sha256:c300c9021c9d028a18057861326521daeacb0920967351c98e5e5c0d87fae080",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PROFITCENTER_SRV/entities.json",
+      "sha256": "sha256:f46aff7e6949a135cfbe373f9a21d3dce15aeb81c6fe2edce36a67ab2aedc54d",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PROFITCENTER_SRV/fields.json",
+      "sha256": "sha256:d2c6f75790714937ab024806df8bf3f93190f1ce181bb2d3969a3ff78ae53a12",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PROFITCENTER_SRV/services.json",
+      "sha256": "sha256:54b241060c5ac279e61e100b0b1cf0c00235e96357bb44d765a7a2ccb3dbae34",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PUR_QUOTA_ARRANGEMENT_SRV/business_terms.json",
+      "sha256": "sha256:0d302253fb744154eb62921d20703b58042a51d6ba18ea1b92700d3bd47ce306",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PUR_QUOTA_ARRANGEMENT_SRV/entities.json",
+      "sha256": "sha256:e9fe7677670ff91b52f3a78e6456c9de20868d0eee3ce2f7de6b909f732ec461",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PUR_QUOTA_ARRANGEMENT_SRV/fields.json",
+      "sha256": "sha256:a9c95cd706f4262ac81b8c54b30f931a352de2d487f077b2d1db1ad45e8d6d94",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PUR_QUOTA_ARRANGEMENT_SRV/services.json",
+      "sha256": "sha256:64fa9b2ac1449e1fcbae77097b709719eb38d8f954e39ff5bcf9712c8d7f8472",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASECONTRACT_PROCESS_SRV_0002/business_terms.json",
+      "sha256": "sha256:62f5dbb8789c7c512d501815f6abd3b5416a832b6e251b1f14d585e6d72e813c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASECONTRACT_PROCESS_SRV_0002/entities.json",
+      "sha256": "sha256:99ee10797e80a586b6583c6085118c11352f4822242350605e9422acda2b3173",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASECONTRACT_PROCESS_SRV_0002/fields.json",
+      "sha256": "sha256:2bcb6bc905ad97743471fb3106943c3e09559053dca93efe0c17ea7e9f14a9b1",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASECONTRACT_PROCESS_SRV_0002/services.json",
+      "sha256": "sha256:6a92eea6392fe9d0f902f4e52cdad6ba8f38d324cac2a2b64222cdd0c4c345e0",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASEORDER_PROCESS_SRV/business_terms.json",
+      "sha256": "sha256:63090c580dfc2a4a528be7fa4b23b180148ddeeceb54c7d9adc4dea229e2d995",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASEORDER_PROCESS_SRV/entities.json",
+      "sha256": "sha256:f3bc818c13162c5fb2f3fe1ab046ac75cfb26f3a6e81cdb2b1051e444b63238c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASEORDER_PROCESS_SRV/fields.json",
+      "sha256": "sha256:9683045b79ae8604a6fd225253e3f53baa11817e0b3b6578231d549e2bd37425",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASEORDER_PROCESS_SRV/services.json",
+      "sha256": "sha256:ae08dce890264c3f3650b15a21e7afe659f4555b438cbab30ef8ebdaaeb414a7",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASEREQ_PROCESS_SRV/business_terms.json",
+      "sha256": "sha256:eeedb40784607f84110c4d3b5941d05e9d605bff595d68267468402d5a8bb42a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASEREQ_PROCESS_SRV/entities.json",
+      "sha256": "sha256:523ee2353d09751843a7a3992a7f424da63e672dc3f4b7eabba77589bc5f4f52",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASEREQ_PROCESS_SRV/fields.json",
+      "sha256": "sha256:29f4105952737cb92ab1f0bc832afc3e4e75cf2863e082ec52d03a484efd2e71",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURCHASEREQ_PROCESS_SRV/services.json",
+      "sha256": "sha256:4aa266c73cd30465467e65381eb20ddde7fd8f6cfd544ac0602ae5a9df757df7",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURGPRCGCONDITIONRECORD_SRV/business_terms.json",
+      "sha256": "sha256:5f7f0a7266bdededc978ea1f302352526dc85e039e662da6fde60f2b4cc21eec",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURGPRCGCONDITIONRECORD_SRV/entities.json",
+      "sha256": "sha256:899f233fb111b6ce7857c74fc4c4e6cff30faa160293c3da69f5c4da2883d317",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURGPRCGCONDITIONRECORD_SRV/fields.json",
+      "sha256": "sha256:ff72fca1c985e928a0c7311706e12d74a006079d84926a1d90d7c2b52d88d62a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_PURGPRCGCONDITIONRECORD_SRV/services.json",
+      "sha256": "sha256:3ea30e977519ed2465c7a02c954668d44e26c0bb64c73789325234f471cb704c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_QTN_PROCESS_SRV/business_terms.json",
+      "sha256": "sha256:506647f1d5c58a5dcbaa21f5cb471beeace248e3193eb7a0b41a6489622da060",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_QTN_PROCESS_SRV/entities.json",
+      "sha256": "sha256:e2c9df2b1ba1fdb4933437cefbf48ee42e5b6dde81a6acd1bbd29b23c1a2883b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_QTN_PROCESS_SRV/fields.json",
+      "sha256": "sha256:846244a660014fa02857e18f2d37649fc61c6cc3ed0f278be581dbc61c0fae07",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_QTN_PROCESS_SRV/services.json",
+      "sha256": "sha256:ffae0c7703d0ea6af1c74de77bb1e3bfbf6fa264f05f54b2196ccd8ef00d198c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_RESERVATION_DOCUMENT_SRV/business_terms.json",
+      "sha256": "sha256:c3503fb8158ab47a6389f22584c7e669071df48e3048dc5b88b7c99931804716",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_RESERVATION_DOCUMENT_SRV/entities.json",
+      "sha256": "sha256:c84f387f53056ec3fa65d08b394e5b5757a60d4dde4871f12a72f1ef41a8945b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_RESERVATION_DOCUMENT_SRV/fields.json",
+      "sha256": "sha256:1fdea8b84fc936bbe41ea774d2cc2159170d9daf2c0bcb2b33272e088bfefc3d",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_RESERVATION_DOCUMENT_SRV/services.json",
+      "sha256": "sha256:dc20d46324f799fef5b5c2e915ef5013399d9bc3acd07bac7fbd885928156583",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_RFQ_PROCESS_SRV/business_terms.json",
+      "sha256": "sha256:bb4dc945cb8bcc17b17ec5334f42a706dd1cd3c93d2c717d3979fe0946e9d1e7",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_RFQ_PROCESS_SRV/entities.json",
+      "sha256": "sha256:f399688d532c5b042c2daeac1c823d1aae447d7e3ffceed81f4d1bb7331545b3",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_RFQ_PROCESS_SRV/fields.json",
+      "sha256": "sha256:494bf53e3cd47f3f593dd6633b0ea3e6164f7d1c73147c2f86b830c495b80336",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_RFQ_PROCESS_SRV/services.json",
+      "sha256": "sha256:cafbbd33ceafe12d41230eceffb2f6f584382f37294345e9074855b37be1ede9",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_CONTRACT_SRV/business_terms.json",
+      "sha256": "sha256:538b1313367745817c001ea04d7afd769b32d7a8d29c67c58f861dcd6cb0f36c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_CONTRACT_SRV/entities.json",
+      "sha256": "sha256:d2cdc8d33e57d690adf2a49e410717db26b7f19ec104cb24cd567462723db2c3",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_CONTRACT_SRV/fields.json",
+      "sha256": "sha256:f9a78e71493b5d9cbbc500fc5ad2d8dc2acf355d13a459d21ba1676630254ecd",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_CONTRACT_SRV/services.json",
+      "sha256": "sha256:c2f10eab2361f4b31448c3035d892098b1244cfa2a2c7369cddc671dbb9637a7",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_ORDER_SRV/business_terms.json",
+      "sha256": "sha256:dfe4f1bf8cab9e514a87a434d4376957d411a19e21fbdabed7e16e8c3bd9cb31",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_ORDER_SRV/entities.json",
+      "sha256": "sha256:0e03119320937507275e27291c8e702bd0c47d3269a054e18d5c2b0a82e7a407",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_ORDER_SRV/fields.json",
+      "sha256": "sha256:1df828357497a5fcaa4202f4f3f8accf8bc7d71b525e69023d090bf86f40151f",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_ORDER_SRV/services.json",
+      "sha256": "sha256:d8849ae3f0576439ca2ef8142efdc524c1dd12759b6b46dad1bb595bb3ff5db1",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_QUOTATION_SRV/business_terms.json",
+      "sha256": "sha256:a2b9b1c09747905c4bda19de44d3b3d300ff634ceb4df2aa37fa278a3681c9b8",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_QUOTATION_SRV/entities.json",
+      "sha256": "sha256:64b65add5a3e0579e9656bf48b87519151bed02b9469a808bf156014e2031cea",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_QUOTATION_SRV/fields.json",
+      "sha256": "sha256:3e717ce41510814fa92e5ce46e9482d56823e6bf070fe1d85f5196224174d0b5",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SALES_QUOTATION_SRV/services.json",
+      "sha256": "sha256:2cfd1c63c16cde536a9a9f79f923eb39621aedcff23527ac895e178514884c9d",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SCHED_AGRMT_PROCESS_SRV/business_terms.json",
+      "sha256": "sha256:4dc77c35ad1c449d29c3fb767801b22ae649b64271c1f12388e6e6e1a9544b9b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SCHED_AGRMT_PROCESS_SRV/entities.json",
+      "sha256": "sha256:c99934be2e1cc8737d14d8c1d53c234d2e2164e0742a59550590a0a91bb07ee9",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SCHED_AGRMT_PROCESS_SRV/fields.json",
+      "sha256": "sha256:d003cdd1dac2f5815b86057e43508667f069bc8d7c7b297321a18fffd5a3acb2",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SCHED_AGRMT_PROCESS_SRV/services.json",
+      "sha256": "sha256:a5bee3a34ccab9dd67f632fb585e5ce24362f9749932a1573305e67f062518c1",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SEGMENT_SRV/business_terms.json",
+      "sha256": "sha256:ce2f87bf9be6932b402411ab33fafcbdbd27fe157d2630519393921f11715c4b",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SEGMENT_SRV/entities.json",
+      "sha256": "sha256:50fac9de22a97471045a06d512d2bc1882374416e291ba54364ed1a76cd2a889",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SEGMENT_SRV/fields.json",
+      "sha256": "sha256:78f1859bab61f00ba0fef59ca64572b79b7ee033a427294968ce8a92ca5e6504",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SEGMENT_SRV/services.json",
+      "sha256": "sha256:46b6f6367c3abb45e30120afe96e5b5220b398fe1ae939586031eb97deb6ac83",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SERVICE_ENTRY_SHEET_SRV/business_terms.json",
+      "sha256": "sha256:ab9c32a5cfc514124a1e64aad5e4e0bdc8d2e6ac31a390a72d077d746551aa9c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SERVICE_ENTRY_SHEET_SRV/entities.json",
+      "sha256": "sha256:87a3508b376bbdb8457edfef6553bd3a801e83d3d5035e593a3d9eb409fbf2b3",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SERVICE_ENTRY_SHEET_SRV/fields.json",
+      "sha256": "sha256:d35ef248301c92396188e99d18b088178a1a8fd64d25c4cb20d8ad8482ed22db",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SERVICE_ENTRY_SHEET_SRV/services.json",
+      "sha256": "sha256:d501c00e1c76ca151c290f2e1ebbe0101fb18d962074639ee609788587c9b342",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SLSPRICINGCONDITIONRECORD_SRV/business_terms.json",
+      "sha256": "sha256:7825a26a9800aec201741aca834ecf81bdf42cbec5eff0d917e055b8170308d5",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SLSPRICINGCONDITIONRECORD_SRV/entities.json",
+      "sha256": "sha256:65f92f7c6a8745776333ec0871430d1f54f63d82a1d44f7da5f837f9b6d99b7f",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SLSPRICINGCONDITIONRECORD_SRV/fields.json",
+      "sha256": "sha256:7f7331ced94533f697fd7d85cfa2c9bc3e976902c6054305275f2aa43d848795",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SLSPRICINGCONDITIONRECORD_SRV/services.json",
+      "sha256": "sha256:817f144ac35477af2aaedf5f223e3560c6f71529eca633abc5e21bd808791a19",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SUPPLIERINVOICE_PROCESS_SRV/business_terms.json",
+      "sha256": "sha256:89fc11e0a40d387e95c8aa44f60bc86fab746794bf67722f879179545ca7646c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SUPPLIERINVOICE_PROCESS_SRV/entities.json",
+      "sha256": "sha256:7ac757b2bc0c3468330bbdc84da42b21002692768f643740213e7f896cb8d68a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SUPPLIERINVOICE_PROCESS_SRV/fields.json",
+      "sha256": "sha256:ef6770171ff0fb3b13fffc0e5302524642d7e7e8031ba475930ef8a48ff1a88c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_SUPPLIERINVOICE_PROCESS_SRV/services.json",
+      "sha256": "sha256:09dc348b7fa4f026b2ccfc48cead7f810988f3094ffdfcf1e5a0a5055b49fcee",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_WORK_CENTERS/business_terms.json",
+      "sha256": "sha256:084c94120ca9a14e29482a70e363afdc4c723ee572c9077fa411936e9c12ef8a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_WORK_CENTERS/entities.json",
+      "sha256": "sha256:c465b6e718cd4dad8c31f7816439baa0af132a31282643f8c3f66b892395ecf6",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_WORK_CENTERS/fields.json",
+      "sha256": "sha256:957bbab040011e5768b9b95faf9c248e4a28fa94126228a483ee88461864b196",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/API_WORK_CENTERS/services.json",
+      "sha256": "sha256:66beab6bbe225cfba09d8d0fb98f2cde1faa388dfe58ca9899dfa44a7cac6148",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/C_TRIALBALANCE_CDS/business_terms.json",
+      "sha256": "sha256:4b7a2de92883016fb462f67acef742058f66caee1fbc68b6cb55c8627df5a332",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/C_TRIALBALANCE_CDS/entities.json",
+      "sha256": "sha256:b7baa4f9e62d78013bcd2fcf4f5784bd5b5868dd2254ba59cbc78a2e63b7f0a5",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/C_TRIALBALANCE_CDS/fields.json",
+      "sha256": "sha256:5f48c90db322265a4b46629a87d015c809a8240128b401802d706c24988c2b2a",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/C_TRIALBALANCE_CDS/services.json",
+      "sha256": "sha256:2fccf36f55391184e81b275da8e62b93d44c9e9016e296b20cbdf7e7a02cce5f",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/I_ProductionVersion/business_terms.json",
+      "sha256": "sha256:2668938fb2c840a435af3d37ff6e19df18c4e24b283c3001ed280b546ed80352",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/I_ProductionVersion/entities.json",
+      "sha256": "sha256:90d842863b6427c68cf492a5e9c080dfdafb8c73dfc8c63f05fed3496f4cf08c",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/I_ProductionVersion/fields.json",
+      "sha256": "sha256:a9bbd6710ebd1d92c3aa429a9a719443bc6cceb4040e9219fd299c183b5ce0c6",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/I_ProductionVersion/services.json",
+      "sha256": "sha256:3e9b21b6e23f15ac2980fd7da71f6e30266fdec360d4537751cf996b07e8a18e",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/I_PurchaseOrderHistoryAPI01/business_terms.json",
+      "sha256": "sha256:d593ac3098f07dfc211dfb5d5b30430e306ce7b2b4124811b9dffb6d1b27cc14",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/I_PurchaseOrderHistoryAPI01/entities.json",
+      "sha256": "sha256:8a4e5cd0c9a561e6c4b8c3d2cca7b2052d5ef121b8d86e829e7fbcececdaa8dd",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/I_PurchaseOrderHistoryAPI01/fields.json",
+      "sha256": "sha256:66e6e3b4501602340a0dcb7bc2170cef4ffaeb25160d24bcef30dafe2ee38d02",
+      "source_type": "structured_index"
+    },
+    {
+      "path": "data/index/I_PurchaseOrderHistoryAPI01/services.json",
+      "sha256": "sha256:329ad1a7e1cfd033dec09aa411f4ffac12e7b055cacaf6cc46f8e08e1e67e7b1",
+      "source_type": "structured_index"
+    }
+  ],
+  "source_inventory": {
+    "services": 53,
+    "entities": 784,
+    "fields": 39712,
+    "business_terms": 45668
+  },
+  "included": {
+    "services": 53,
+    "entities": 666,
+    "fields": 39049,
+    "business_terms": 43949,
+    "guidance_services": 53
+  },
+  "transformed": {
+    "get_only": true,
+    "manual_existing_v2_bindings": [
+      "API_FINPLANNINGENTRYITEM_SRV"
+    ],
+    "unresolved_odata_version_services": [
+      "I_ProductionVersion",
+      "I_PurchaseOrderHistoryAPI01"
+    ],
+    "curated_search_entries": 7,
+    "confidence_clamped": true,
+    "urls_and_transport_details_removed": true
+  },
+  "quarantined": [
+    {
+      "service_name": "API_BATCH_SRV",
+      "relations": 10,
+      "lookup_paths": 21,
+      "entity_graph_items": 10,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_BILL_OF_MATERIAL_SRV_0002",
+      "relations": 12,
+      "lookup_paths": 0,
+      "entity_graph_items": 12,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_BILLING_DOCUMENT_SRV",
+      "relations": 14,
+      "lookup_paths": 26,
+      "entity_graph_items": 14,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_BUSINESS_PARTNER",
+      "relations": 62,
+      "lookup_paths": 43,
+      "entity_graph_items": 82,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_COMPANYCODE_SRV",
+      "relations": 0,
+      "lookup_paths": 0,
+      "entity_graph_items": 0,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_COSTCENTER_SRV",
+      "relations": 2,
+      "lookup_paths": 0,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_CREDIT_MEMO_REQUEST_SRV",
+      "relations": 22,
+      "lookup_paths": 86,
+      "entity_graph_items": 22,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_CUSTOMER_MATERIAL_SRV",
+      "relations": 0,
+      "lookup_paths": 22,
+      "entity_graph_items": 0,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_CUSTOMER_RETURN_SRV",
+      "relations": 30,
+      "lookup_paths": 117,
+      "entity_graph_items": 30,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_DEBIT_MEMO_REQUEST_SRV",
+      "relations": 19,
+      "lookup_paths": 26,
+      "entity_graph_items": 19,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_GLACCOUNTINCHARTOFACCOUNTS_SRV",
+      "relations": 2,
+      "lookup_paths": 0,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_GLACCOUNTLINEITEM",
+      "relations": 0,
+      "lookup_paths": 498,
+      "entity_graph_items": 0,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_INFORECORD_PROCESS_SRV",
+      "relations": 13,
+      "lookup_paths": 97,
+      "entity_graph_items": 13,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_JOURNALENTRYITEMBASIC_SRV",
+      "relations": 4,
+      "lookup_paths": 157,
+      "entity_graph_items": 4,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_LEDGER_SRV",
+      "relations": 2,
+      "lookup_paths": 0,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_MASTER_RECIPE",
+      "relations": 8,
+      "lookup_paths": 207,
+      "entity_graph_items": 8,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "relations": 3,
+      "lookup_paths": 184,
+      "entity_graph_items": 3,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_MATERIAL_STOCK_SRV",
+      "relations": 4,
+      "lookup_paths": 56,
+      "entity_graph_items": 4,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_MRP_MATERIALS_SRV_01",
+      "relations": 0,
+      "lookup_paths": 0,
+      "entity_graph_items": 0,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "relations": 0,
+      "lookup_paths": 542,
+      "entity_graph_items": 0,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "relations": 12,
+      "lookup_paths": 128,
+      "entity_graph_items": 12,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PARTNERCOMPANY_SRV",
+      "relations": 0,
+      "lookup_paths": 0,
+      "entity_graph_items": 0,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PAYMENT_ADVICE_SRV",
+      "relations": 1,
+      "lookup_paths": 0,
+      "entity_graph_items": 1,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PHYSICAL_INVENTORY_DOC_SRV",
+      "relations": 3,
+      "lookup_paths": 92,
+      "entity_graph_items": 3,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PLANNED_ORDERS",
+      "relations": 2,
+      "lookup_paths": 59,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PLND_INDEP_RQMT_SRV",
+      "relations": 2,
+      "lookup_paths": 0,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PROCESS_ORDER_2_SRV",
+      "relations": 5,
+      "lookup_paths": 33,
+      "entity_graph_items": 5,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PRODUCT_AVAILY_INFO_BASIC",
+      "relations": 0,
+      "lookup_paths": 0,
+      "entity_graph_items": 0,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PRODUCT_SRV",
+      "relations": 32,
+      "lookup_paths": 0,
+      "entity_graph_items": 32,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PRODUCTGROUP_SRV",
+      "relations": 2,
+      "lookup_paths": 0,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PRODUCTION_ORDER_2_SRV",
+      "relations": 8,
+      "lookup_paths": 33,
+      "entity_graph_items": 8,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PRODUCTION_ROUTING",
+      "relations": 37,
+      "lookup_paths": 221,
+      "entity_graph_items": 37,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PROFITCENTER_SRV",
+      "relations": 3,
+      "lookup_paths": 0,
+      "entity_graph_items": 3,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PUR_QUOTA_ARRANGEMENT_SRV",
+      "relations": 2,
+      "lookup_paths": 22,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PURCHASECONTRACT_PROCESS_SRV_0002",
+      "relations": 24,
+      "lookup_paths": 62,
+      "entity_graph_items": 24,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "relations": 8,
+      "lookup_paths": 174,
+      "entity_graph_items": 8,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PURCHASEREQ_PROCESS_SRV",
+      "relations": 5,
+      "lookup_paths": 110,
+      "entity_graph_items": 5,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_PURGPRCGCONDITIONRECORD_SRV",
+      "relations": 10,
+      "lookup_paths": 45,
+      "entity_graph_items": 10,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_QTN_PROCESS_SRV",
+      "relations": 2,
+      "lookup_paths": 37,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_RESERVATION_DOCUMENT_SRV",
+      "relations": 1,
+      "lookup_paths": 51,
+      "entity_graph_items": 1,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_RFQ_PROCESS_SRV",
+      "relations": 2,
+      "lookup_paths": 4,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_SALES_CONTRACT_SRV",
+      "relations": 17,
+      "lookup_paths": 26,
+      "entity_graph_items": 17,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_SALES_ORDER_SRV",
+      "relations": 54,
+      "lookup_paths": 42,
+      "entity_graph_items": 54,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_SALES_QUOTATION_SRV",
+      "relations": 32,
+      "lookup_paths": 26,
+      "entity_graph_items": 32,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_SCHED_AGRMT_PROCESS_SRV",
+      "relations": 8,
+      "lookup_paths": 137,
+      "entity_graph_items": 8,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_SEGMENT_SRV",
+      "relations": 2,
+      "lookup_paths": 0,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_SERVICE_ENTRY_SHEET_SRV",
+      "relations": 2,
+      "lookup_paths": 25,
+      "entity_graph_items": 2,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_SLSPRICINGCONDITIONRECORD_SRV",
+      "relations": 14,
+      "lookup_paths": 346,
+      "entity_graph_items": 14,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+      "relations": 11,
+      "lookup_paths": 0,
+      "entity_graph_items": 11,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "API_WORK_CENTERS",
+      "relations": 21,
+      "lookup_paths": 0,
+      "entity_graph_items": 21,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "C_TRIALBALANCE_CDS",
+      "relations": 35,
+      "lookup_paths": 56386,
+      "entity_graph_items": 35,
+      "derived_documents": 2,
+      "raw_metadata_files": 1
+    },
+    {
+      "service_name": "I_ProductionVersion",
+      "relations": 0,
+      "lookup_paths": 0,
+      "entity_graph_items": 0,
+      "derived_documents": 2,
+      "raw_metadata_files": 0
+    },
+    {
+      "service_name": "I_PurchaseOrderHistoryAPI01",
+      "relations": 0,
+      "lookup_paths": 0,
+      "entity_graph_items": 0,
+      "derived_documents": 2,
+      "raw_metadata_files": 0
+    }
+  ],
+  "rejected": [],
+  "excluded_classes": [
+    "cases_and_feedback",
+    "raw_metadata",
+    "response_rows",
+    "relations",
+    "entity_graph",
+    "lookup_paths",
+    "business_paths",
+    "doc_chunks",
+    "vector_documents",
+    "runtime_frontend_mcp_and_skills"
+  ],
+  "quality": {
+    "service_count": 53,
+    "registry_binding_count": 52,
+    "unresolved_odata_version_count": 2,
+    "live_metadata_required": true,
+    "source_replacement_character_count": 0,
+    "published_replacement_character_count": 0
+  },
+  "license": {
+    "spdx": "MIT",
+    "source_file": "LICENSE",
+    "sha256": "sha256:60ef35b404d1d14e028947f51b5e01d45cd8c12a6caac8b3cbbc2b505d32bc45",
+    "attribution": "SAPClaw contributors"
+  },
+  "curated_search_source_hash": "sha256:e9effb66a2132150b066b48f5243d3e4497b3625027d5d6f0a35eac1da56ebb6",
+  "privacy_scan": {
+    "passed": true,
+    "issue_count": 0
+  },
+  "output_hashes": {
+    "data/catalog-seed/catalog.json": "sha256:19e24cee0fe409fc0fc280924717c44b192e9a747bd8a404030dbeaddb740117",
+    "config/odata-services.json": "sha256:d772a15e8733505bcdb384667b762d0bcab48b547d41a1acb988bf082254a583"
+  }
+}

@@ -122,6 +122,7 @@ def _settings(tmp_path: Path) -> Settings:
         draft_root=tmp_path / "drafts",
         skillhub_root=tmp_path / "skillhub",
         max_run_seconds=10,
+        enforce_agent_acceptance=False,
     )
 
 
@@ -340,7 +341,7 @@ def test_o2c_ar_workflow_propagates_business_keys(tmp_path: Path) -> None:
         )
         assert validation.status_code == 202, validation.text
         run = _wait(client, validation.json()["validation_run_id"])
-        assert run["status"] == "inconclusive"
+        assert run["status"] == "completed"
         assert run["result"]["node_results"][1]["input"] == {
             "company_code": "1010",
             "customer": "17100001",

@@ -9,7 +9,7 @@
 - `internal-order-project-control`：内部订单与项目预算控制
 
 统一数据链为 Embedded GET-only OData → API 能力缺口评估 → 条件执行
-`sap-adt-table-export` → 显式 `DATA_GAP`。本模块不使用 SAPClaw 或 SE16N。
+`sap-adt-table-export` → 显式 `DATA_GAP`。本模块不启用自动 Provider 回退或 SE16N。
 
 真机结论见 [CO 五类 Agent 校验总览](LIVE_SAP_VALIDATION_SUMMARY.md)，每个 Agent
 页面同时链接自己的脱敏测试报告。

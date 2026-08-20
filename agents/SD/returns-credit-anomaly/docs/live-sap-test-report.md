@@ -5,7 +5,7 @@
 - 系统与客户端：已脱敏；连接配置和凭据不落库
 - Embedded Provider：`embedded` `1.0.0`，严格GET-only
 - ADT Skill版本：`7d72576`
-- SAPClaw调用数：`0`
+- 自动 Provider 回退调用数：`0`
 - 技术状态：`failed`
 - 业务结论：`阻塞`
 

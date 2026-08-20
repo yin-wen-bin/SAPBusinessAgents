@@ -15,9 +15,6 @@ class Settings:
     repository_root: Path = REPOSITORY_ROOT
     data_root: Path = REPOSITORY_ROOT / ".local-data"
     draft_root: Path = REPOSITORY_ROOT / ".prototype" / "authoring"
-    sapclaw_url: str = "http://127.0.0.1:8000"
-    sapclaw_api_key: str = ""
-    sap_read_provider: str = "embedded"
     sap_base_url: str = ""
     sap_username: str = ""
     sap_password: str = ""
@@ -30,8 +27,16 @@ class Settings:
     sap_env_file: Path | None = None
     skillhub_root: Path = Path(r"C:\Users\wenbi\Documents\SAPSkillhub")
     codex_model: str | None = None
-    max_tool_calls: int = 20
-    max_run_seconds: int = 300
+    free_query_runtime: str = "harness"
+    internal_api_url: str = "http://127.0.0.1:8765"
+    max_harness_turns: int = 12
+    # ``None`` means that run-scoped tool calls are bounded only by the turn and
+    # elapsed-time limits.  Environment value ``0`` selects this mode.
+    max_tool_calls: int | None = 40
+    max_run_seconds: int = 600
+    # Always true for the local product runtime. Tests and the in-process live
+    # acceptance campaign may construct Settings with this disabled explicitly.
+    enforce_agent_acceptance: bool = True
 
     @property
     def database_path(self) -> Path:
@@ -44,6 +49,14 @@ class Settings:
     @property
     def plugin_state_path(self) -> Path:
         return self.data_root / "plugins" / "registry.json"
+
+    @property
+    def odata_service_registry_path(self) -> Path:
+        return self.repository_root / "config" / "odata-services.json"
+
+    @property
+    def catalog_seed_path(self) -> Path:
+        return self.repository_root / "data" / "catalog-seed" / "catalog.json"
 
     @classmethod
     def from_env(cls, repository_root: Path | None = None) -> "Settings":
@@ -60,17 +73,11 @@ class Settings:
             load_dotenv(sap_env_file, override=False)
         data_root = Path(os.getenv("SAPBA_DATA_ROOT", str(root / ".local-data"))).resolve()
         draft_root = Path(os.getenv("SAPBA_DRAFT_ROOT", str(root / ".prototype" / "authoring"))).resolve()
-        sap_read_provider = os.getenv("SAP_READ_PROVIDER", "embedded").strip().lower()
-        if sap_read_provider not in {"embedded", "sapclaw"}:
-            raise ValueError("SAP_READ_PROVIDER must be 'embedded' or 'sapclaw'")
         timeout_ms = max(1000, int(os.getenv("SAP_ODATA_TIMEOUT_MS", "60000")))
         return cls(
             repository_root=root,
             data_root=data_root,
             draft_root=draft_root,
-            sapclaw_url=os.getenv("SAPCLAW_RUNTIME_URL", "http://127.0.0.1:8000").rstrip("/"),
-            sapclaw_api_key=os.getenv("SAPCLAW_API_KEY", ""),
-            sap_read_provider=sap_read_provider,
             sap_base_url=(os.getenv("SAP_ODATA_BASE_URL") or os.getenv("SAP_BASE_URL", "")).rstrip("/"),
             sap_username=os.getenv("SAP_USERNAME", ""),
             sap_password=os.getenv("SAP_PASSWORD", ""),
@@ -85,8 +92,15 @@ class Settings:
                 os.getenv("SAPSKILLHUB_ROOT", r"C:\Users\wenbi\Documents\SAPSkillhub")
             ).resolve(),
             codex_model=os.getenv("SAPBA_CODEX_MODEL") or None,
-            max_tool_calls=max(1, int(os.getenv("SAPBA_MAX_TOOL_CALLS", "20"))),
-            max_run_seconds=max(10, int(os.getenv("SAPBA_MAX_RUN_SECONDS", "300"))),
+            free_query_runtime=_env_choice(
+                "SAPBA_FREE_QUERY_RUNTIME", "harness", {"harness", "planner_legacy"}
+            ),
+            internal_api_url=os.getenv(
+                "SAPBA_INTERNAL_API_URL", "http://127.0.0.1:8765"
+            ).rstrip("/"),
+            max_harness_turns=max(1, int(os.getenv("SAPBA_MAX_HARNESS_TURNS", "12"))),
+            max_tool_calls=_env_optional_limit("SAPBA_MAX_TOOL_CALLS", 40),
+            max_run_seconds=max(10, int(os.getenv("SAPBA_MAX_RUN_SECONDS", "600"))),
         )
 
 
@@ -95,3 +109,21 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None or not value.strip():
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_choice(name: str, default: str, allowed: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    if value not in allowed:
+        raise ValueError(f"{name} must be one of: {', '.join(sorted(allowed))}")
+    return value
+
+
+def _env_optional_limit(name: str, default: int) -> int | None:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return None if value == 0 else value

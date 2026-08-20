@@ -27,9 +27,17 @@ const labels = locale === "zh" ? {
   rawCalls: "原始插件调用记录",
   rawEvidence: "原始 SAP 证据",
   input: "请补充查询条件",
-  inputHelp: "请直接回答下面的具体问题；不要只重复已经提供的订单号。",
+  inputHelp: "请直接回答下面的具体问题；查询会在收到必需条件后继续。",
+  clarificationSend: "提交条件",
+  steerTitle: "调整查询方向（可选）",
+  steerHelp: "查询正在执行，无需输入也会继续；只有需要改变核对方向时才发送。",
+  steerSend: "调整方向",
+  clarificationReceived: "已收到补充条件，查询正在继续。",
+  steerReceived: "查询方向已更新，Harness 正在继续执行。",
+  inputFailed: "发送失败，请保留当前输入并稍后重试。",
   inputPlaceholder: "请输入系统要求的业务编号、日期范围或其他条件",
   clarificationPlaceholder: "例如：这是销售订单，订单号是5814",
+  steerPlaceholder: "可在执行中补充方向，例如：优先核对清账凭证",
   send: "继续查询",
   cancel: "取消查询",
   draft: "保存为 Agent 草稿",
@@ -45,7 +53,7 @@ const labels = locale === "zh" ? {
   },
   events: {
     run_queued: "查询已进入队列", run_started: "开始处理查询",
-    planning_started: "正在理解问题并准备查询步骤", plan_created: "查询步骤已经准备好",
+    planning_started: "正在理解问题并准备查询步骤", plan_created: "查询步骤已经准备好", run_phase_changed: "查询阶段已更新",
     validation_started: "正在检查 API、字段和只读限制", schema_received: "已读取 SAP 数据结构",
     plan_grounded: "查询步骤已与 SAP 数据结构核对", plan_canonicalized: "查询参数已规范化",
     plan_repaired: "已在安全范围内调整查询步骤", waiting_input: "需要补充查询条件",
@@ -61,8 +69,18 @@ const labels = locale === "zh" ? {
     summary_started: "正在整理业务结论", run_completed: "查询已完成",
     run_inconclusive: "查询结束，但现有证据不足以确认结论", run_failed: "查询未能完成",
     cancellation_requested: "正在取消查询", run_cancelled: "查询已取消",
+    harness_started: "Codex Harness 已启动", harness_resumed: "Codex Harness 已从持久线程恢复", codex_turn_started: "Codex 开始新的分析轮次",
+    assistant_message: "Codex 已更新查询判断", web_search_started: "正在联网检索参考资料",
+    web_search_completed: "联网检索完成", tool_discovery_started: "正在发现可用工具",
+    tool_discovery_completed: "工具发现完成", tool_admission_passed: "只读工具已通过准入",
+    tool_admission_rejected: "候选工具未通过准入", external_tool_started: "开始执行外部只读工具",
+    external_tool_completed: "外部只读工具执行完成", external_tool_failed: "外部只读工具执行失败",
+    tool_requested: "Codex 请求调用工具", tool_failed: "工具调用失败",
+    evidence_gap_assessed: "已评估 API 证据缺口", codex_turn_completed: "Codex 分析轮次完成",
+    codex_turn_failed: "Codex 分析轮次失败", harness_completed: "Codex Harness 查询完成", harness_interrupted: "Codex Harness 已中断",
   },
   table: { stage: "业务阶段", state: "状态", detail: "说明", metric: "指标", value: "结果", object: "查询对象", purpose: "用途", result: "结果", count: "记录数" },
+  presentation: { showing: "显示", of: "共", previous: "上一页", next: "下一页", displayed: "展示范围", unlimited: "不限", calls: "工具调用", budgeted: "预算型", turns: "轮次", runtime: "运行时间", seconds: "秒" },
   evidenceState: { found: "已找到", not_found: "未找到", limited: "范围受限", failed: "读取失败" },
   reportState: { success: "流程已确认", warning: "需要继续处理", info: "现有证据不足", error: "查询失败", running: "查询中" },
   complete: "当前查询范围已完整返回",
@@ -100,9 +118,17 @@ const labels = locale === "zh" ? {
   rawCalls: "Raw plugin call trace",
   rawEvidence: "Raw SAP evidence",
   input: "Provide more query details",
-  inputHelp: "Answer the specific question below; do not only repeat a document number that was already provided.",
+  inputHelp: "Answer the required question below. The query will continue after the required detail is received.",
+  clarificationSend: "Submit details",
+  steerTitle: "Adjust query direction (optional)",
+  steerHelp: "The query is already running and needs no input. Send only if you want to change its focus.",
+  steerSend: "Adjust direction",
+  clarificationReceived: "The additional details were received and the query is continuing.",
+  steerReceived: "The query direction was updated and the Harness is continuing.",
+  inputFailed: "The input could not be sent. Your text has been preserved; try again.",
   inputPlaceholder: "Enter the requested business ID, date range, or other condition",
   clarificationPlaceholder: "Example: This is sales order 5814",
+  steerPlaceholder: "Add guidance while the query runs, for example: prioritize clearing documents",
   send: "Continue query",
   cancel: "Cancel query",
   draft: "Save as Agent draft",
@@ -118,7 +144,7 @@ const labels = locale === "zh" ? {
   },
   events: {
     run_queued: "Query queued", run_started: "Query processing started",
-    planning_started: "Understanding the request and preparing steps", plan_created: "Query steps prepared",
+    planning_started: "Understanding the request and preparing steps", plan_created: "Query steps prepared", run_phase_changed: "Query phase updated",
     validation_started: "Checking APIs, fields, and read-only restrictions", schema_received: "SAP schema received",
     plan_grounded: "Query steps checked against the SAP schema", plan_canonicalized: "Query parameters normalized",
     plan_repaired: "Query steps adjusted within the safe scope", waiting_input: "More query details are required",
@@ -134,8 +160,18 @@ const labels = locale === "zh" ? {
     summary_started: "Preparing the business conclusion", run_completed: "Query completed",
     run_inconclusive: "Query ended without enough evidence for a firm conclusion", run_failed: "Query could not be completed",
     cancellation_requested: "Cancelling the query", run_cancelled: "Query cancelled",
+    harness_started: "Codex Harness started", harness_resumed: "Codex Harness resumed from its persistent thread", codex_turn_started: "Codex analysis turn started",
+    assistant_message: "Codex updated its query assessment", web_search_started: "Searching public references",
+    web_search_completed: "Web search completed", tool_discovery_started: "Discovering useful tools",
+    tool_discovery_completed: "Tool discovery completed", tool_admission_passed: "Read-only tool admitted",
+    tool_admission_rejected: "Candidate tool was not admitted", external_tool_started: "External read-only tool started",
+    external_tool_completed: "External read-only tool completed", external_tool_failed: "External read-only tool failed",
+    tool_requested: "Codex requested a tool", tool_failed: "Tool call failed",
+    evidence_gap_assessed: "API evidence gap assessed", codex_turn_completed: "Codex analysis turn completed",
+    codex_turn_failed: "Codex analysis turn failed", harness_completed: "Codex Harness completed", harness_interrupted: "Codex Harness interrupted",
   },
   table: { stage: "Business stage", state: "Status", detail: "Explanation", metric: "Metric", value: "Result", object: "Query object", purpose: "Purpose", result: "Result", count: "Rows" },
+  presentation: { showing: "Showing", of: "of", previous: "Previous", next: "Next", displayed: "Display scope", unlimited: "unlimited", calls: "Tool calls", budgeted: "budgeted", turns: "Turns", runtime: "Runtime", seconds: "s" },
   evidenceState: { found: "Found", not_found: "Not found", limited: "Limited scope", failed: "Read failed" },
   reportState: { success: "Process confirmed", warning: "Follow-up required", info: "Evidence is incomplete", error: "Query failed", running: "Query in progress" },
   complete: "The current query scope was returned in full",
@@ -173,14 +209,18 @@ const labels = locale === "zh" ? {
     <span class="run-downloads" data-downloads hidden><Download size={16} aria-hidden="true" /><span>{labels.downloads}</span></span>
   </div>
 
-  <form class="run-input-form" data-input-form hidden>
-    <label>
-      <span class="run-input-question" data-input-question aria-live="polite">{labels.input}</span>
-      <small>{labels.inputHelp}</small>
-      <textarea name="input" required rows="3" placeholder={labels.inputPlaceholder}></textarea>
-    </label>
-    <button type="submit"><Send size={16} aria-hidden="true" />{labels.send}</button>
-  </form>
+  <details class="run-input-disclosure" data-input-disclosure hidden>
+    <summary data-input-summary>{labels.steerTitle}</summary>
+    <form class="run-input-form" data-input-form>
+      <label>
+        <span class="run-input-question" data-input-question aria-live="polite">{labels.input}</span>
+        <small data-input-help>{labels.inputHelp}</small>
+        <textarea name="input" required rows="3" placeholder={labels.inputPlaceholder}></textarea>
+      </label>
+      <p class="run-input-feedback" data-input-feedback aria-live="polite" hidden></p>
+      <button type="submit"><Send size={16} aria-hidden="true" /><span data-input-submit>{labels.send}</span></button>
+    </form>
+  </details>
 
   <section class="run-progress-card" aria-labelledby="run-progress-title">
     <div class="run-progress-summary">
@@ -189,6 +229,7 @@ const labels = locale === "zh" ? {
         <h2 id="run-progress-title">{labels.progress}</h2>
         <p data-progress-message>{labels.connecting}</p>
         <small>{labels.progressHint}</small>
+        <small class="run-limit-summary" data-limit-summary hidden></small>
       </div>
     </div>
     <div class="run-progress-track" aria-hidden="true"><span data-progress-bar></span></div>
@@ -206,6 +247,7 @@ const labels = locale === "zh" ? {
       <span class="business-result-state" data-business-state></span>
     </div>
     <p class="business-result-overview" data-business-overview></p>
+    <div class="presentation-blocks" data-presentation-blocks hidden></div>
     <div class="run-table-wrap" data-business-stages-wrap hidden>
       <h3>{labels.stages}</h3>
       <table class="run-business-table">
@@ -282,6 +324,7 @@ const labels = locale === "zh" ? {
   const seenEvents = new Set();
   let source;
   let currentRun;
+  let inputDisplayMode = "";
 
   const showAlert = (message) => {
     const alert = root?.querySelector("[data-run-alert]");
@@ -315,10 +358,16 @@ const labels = locale === "zh" ? {
     return names[id] || titleCase(id) || labels.empty;
   };
   const sourceName = (step) => {
-    const service = step.service_name || step.api || "";
-    const entity = step.entity_set || step.entity || "";
-    if (entity) return friendlyId(step.step_id || step.id || entity);
-    return service ? titleCase(service) : labels.empty;
+    const refs = Array.isArray(step.odata_refs) ? step.odata_refs : [];
+    const service = step.service_name || step.api || refs[0]?.service_name || "";
+    const entity = step.entity_set || step.entity || refs[0]?.entity_set || "";
+    const versions = step.odata_version
+      ? [String(step.odata_version)]
+      : Array.isArray(step.odata_versions) ? step.odata_versions.map(String) : [];
+    const protocol = [...new Set(versions)].map((version) => `V${version.split(".")[0]}`).join(" / ");
+    const friendly = friendlyId(step.step_id || step.id || entity);
+    const technical = [service, entity].filter(Boolean).join(" / ");
+    return [friendly, technical, protocol].filter(Boolean).join(" · ") || labels.empty;
   };
   const businessPurpose = (step) => {
     const id = String(step.step_id || step.id || "");
@@ -413,7 +462,120 @@ const labels = locale === "zh" ? {
   };
 
   const businessReportFor = (run) => firstRule(run)?.business_report || fallbackBusinessReport(run);
+  const legacyBusinessSections = () => [
+    "[data-business-stages-wrap]", "[data-business-metrics-wrap]", "[data-business-findings-wrap]",
+    "[data-missing-evidence-wrap]", "[data-next-actions-wrap]",
+  ].map((selector) => root.querySelector(selector));
+
+  const presentationTone = (run, presentation) => {
+    const tones = (presentation?.blocks || []).map((block) => block?.tone);
+    if (tones.includes("error") || run.status === "failed") return "error";
+    if (tones.includes("warning") || run.status === "inconclusive") return "warning";
+    return run.status === "completed" ? "success" : "info";
+  };
+
+  const appendBlockTitle = (section, block) => {
+    const title = localized(block?.title);
+    if (!title) return;
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    section.append(heading);
+  };
+
+  const renderPresentationTable = (section, block) => {
+    const wrap = document.createElement("div"); wrap.className = "run-table-wrap";
+    const table = document.createElement("table"); table.className = "run-business-table presentation-table";
+    const head = document.createElement("thead"); const headRow = document.createElement("tr");
+    (block.columns || []).forEach((column) => {
+      const cell = document.createElement("th"); cell.scope = "col";
+      cell.textContent = localized(column.label) || friendlyId(column.key);
+      cell.dataset.format = column.format || "text"; headRow.append(cell);
+    });
+    head.append(headRow); const body = document.createElement("tbody");
+    table.append(head, body); wrap.append(table); section.append(wrap);
+    const rows = Array.isArray(block.rows) ? block.rows : [];
+    const pageSize = 20; let page = 0;
+    const controls = document.createElement("div"); controls.className = "presentation-pagination";
+    const status = document.createElement("span");
+    const previous = document.createElement("button"); previous.type = "button"; previous.textContent = labels.presentation.previous;
+    const next = document.createElement("button"); next.type = "button"; next.textContent = labels.presentation.next;
+    const renderPage = () => {
+      body.replaceChildren();
+      const start = page * pageSize; const end = Math.min(rows.length, start + pageSize);
+      rows.slice(start, end).forEach((item) => {
+        const row = document.createElement("tr");
+        (item.values || []).forEach((value, index) => {
+          const cell = document.createElement("td"); cell.textContent = localized(value) || labels.empty;
+          cell.dataset.format = block.columns?.[index]?.format || "text"; row.append(cell);
+        });
+        body.append(row);
+      });
+      const total = Number.isInteger(block.total_rows) ? block.total_rows : rows.length;
+      status.textContent = labels.presentation.showing + " " + (rows.length ? start + 1 : 0) + "–" + end + " " + labels.presentation.of + " " + total;
+      previous.disabled = page === 0; next.disabled = end >= rows.length;
+    };
+    previous.addEventListener("click", () => { if (page > 0) { page -= 1; renderPage(); } });
+    next.addEventListener("click", () => { if ((page + 1) * pageSize < rows.length) { page += 1; renderPage(); } });
+    controls.append(previous, status, next);
+    if (rows.length > pageSize || block.display_truncated) section.append(controls);
+    if (block.display_truncated) {
+      const note = document.createElement("small"); note.className = "presentation-scope-note";
+      note.textContent = labels.presentation.displayed + ": " + rows.length + "/" + (block.total_rows ?? rows.length);
+      section.append(note);
+    }
+    renderPage();
+  };
+
+  const renderPresentation = (run, presentation) => {
+    const container = root.querySelector("[data-presentation-blocks]"); container.replaceChildren();
+    (presentation.blocks || []).forEach((block) => {
+      const section = document.createElement("section");
+      section.className = "presentation-block presentation-block-" + (block.type || "text");
+      section.dataset.tone = block.tone || "neutral"; appendBlockTitle(section, block);
+      if (block.type === "text" || block.type === "notice") {
+        const paragraph = document.createElement("p"); paragraph.textContent = localized(block.text) || labels.empty;
+        section.append(paragraph);
+      } else if (block.type === "key_value") {
+        const list = document.createElement("dl"); list.className = "presentation-key-values";
+        (block.entries || []).forEach((entry) => {
+          const term = document.createElement("dt"); term.textContent = localized(entry.label) || labels.empty;
+          const value = document.createElement("dd"); value.textContent = localized(entry.value) || labels.empty;
+          list.append(term, value);
+        }); section.append(list);
+      } else if (block.type === "metrics") {
+        const grid = document.createElement("div"); grid.className = "presentation-metrics";
+        (block.metrics || []).forEach((metric) => {
+          const item = document.createElement("div"); item.className = "presentation-metric"; item.dataset.tone = metric.tone || "neutral";
+          const label = document.createElement("span"); label.textContent = localized(metric.label) || friendlyId(metric.id);
+          const value = document.createElement("strong"); value.textContent = localized(metric.value) || labels.empty;
+          item.append(label, value); grid.append(item);
+        }); section.append(grid);
+      } else if (block.type === "table") {
+        renderPresentationTable(section, block);
+      } else if (block.type === "bullet_list") {
+        const list = document.createElement("ul");
+        (block.items || []).forEach((value) => {
+          const item = document.createElement("li"); item.textContent = localized(value) || labels.empty; list.append(item);
+        }); section.append(list);
+      }
+      container.append(section);
+    });
+    container.hidden = false;
+    legacyBusinessSections().forEach((node) => { node.hidden = true; });
+    root.querySelector("[data-business-headline]").textContent = localized(presentation.title) || localized(run.result?.summary) || labels.fallbackSummary;
+    root.querySelector("[data-business-overview]").textContent = "";
+    const card = root.querySelector("[data-business-result]"); card.dataset.tone = presentationTone(run, presentation);
+    const state = root.querySelector("[data-business-state]");
+    state.textContent = terminal.has(run.status) ? (labels.reportState[card.dataset.tone] || labels.reportState.info) : labels.reportState.running;
+  };
+
   const renderBusinessReport = (run) => {
+    if (run.result?.presentation) {
+      renderPresentation(run, run.result.presentation);
+      root.querySelector("[data-business-result]").hidden = false;
+      return;
+    }
+    root.querySelector("[data-presentation-blocks]").hidden = true;
     const report = businessReportFor(run);
     const card = root.querySelector("[data-business-result]");
     card.hidden = false;
@@ -556,6 +718,8 @@ const labels = locale === "zh" ? {
     if (name.startsWith("node_") || name === "mapping_failed") return friendlyId(data.node_id || data.agent_id);
     if (name === "tool_started" || name === "tool_completed") return friendlyId(data.step_id || data.operation || data.plugin_id);
     if (name === "waiting_input") return localized(data.prompt || data.question || data.message);
+    if (name === "input_received") return data.mode === "steer" ? labels.steerReceived : labels.clarificationReceived;
+    if (name === "run_phase_changed") return labels.status[data.status] || data.status;
     if (name === "run_failed") return localized(data.message || currentRun?.error?.message);
     return localized(data.reason || data.purpose || data.message);
   };
@@ -595,6 +759,21 @@ const labels = locale === "zh" ? {
     });
   };
 
+  const renderLimits = (run) => {
+    const node = root.querySelector("[data-limit-summary]");
+    const harness = run.result?.harness; const limits = harness?.limits;
+    if (!harness || !limits) { node.hidden = true; node.textContent = ""; return; }
+    const toolLimit = limits.tool_calls?.limit == null ? labels.presentation.unlimited : limits.tool_calls.limit;
+    const totalCalls = harness.tool_call_count ?? limits.tool_calls?.used ?? 0;
+    const budgetedCalls = limits.tool_calls?.used ?? harness.budgeted_tool_call_count ?? totalCalls;
+    const parts = [
+      labels.presentation.calls + ": " + totalCalls + " (" + labels.presentation.budgeted + " " + budgetedCalls + "/" + toolLimit + ")",
+      labels.presentation.turns + ": " + (limits.turns?.used ?? harness.turn_count ?? 0) + "/" + (limits.turns?.limit ?? labels.presentation.unlimited),
+      labels.presentation.runtime + ": " + (limits.runtime_seconds?.used ?? 0) + "/" + (limits.runtime_seconds?.limit ?? labels.presentation.unlimited) + labels.presentation.seconds,
+    ];
+    node.textContent = parts.join(" · "); node.hidden = false;
+  };
+
   const renderRun = (run) => {
     currentRun = run;
     const modeLabel = run.mode === "free_query" && run.agent_id ? labels.mode.guided : (labels.mode[run.mode] || run.mode);
@@ -605,13 +784,25 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-rules]").textContent = format(run.result?.rule_results);
     root.querySelector("[data-tool-calls]").textContent = format(run.result?.tool_calls);
     root.querySelector("[data-evidence]").textContent = format(run.result?.evidence);
-    renderProgress(run); renderBusinessReport(run); renderPlanTable(run); renderEvidenceTable(run); renderCompleteness(run);
+    renderProgress(run); renderLimits(run); renderBusinessReport(run); renderPlanTable(run); renderEvidenceTable(run); renderCompleteness(run);
     const inputForm = root.querySelector("[data-input-form]");
+    const disclosure = root.querySelector("[data-input-disclosure]");
     const waitingForInput = run.status === "waiting_input";
-    inputForm.hidden = !waitingForInput;
+    const steerable = run.mode === "free_query" && Boolean(run.thread_id) && ["planning", "validating", "running"].includes(run.status);
+    const displayMode = waitingForInput ? "clarification" : (steerable ? "steer" : "");
+    disclosure.hidden = !displayMode;
+    disclosure.dataset.mode = displayMode;
+    if (displayMode !== inputDisplayMode) {
+      disclosure.open = waitingForInput;
+      root.querySelector("[data-input-feedback]").hidden = true;
+      inputDisplayMode = displayMode;
+    }
     const clarificationQuestion = localized(run.error?.message) || labels.input;
-    root.querySelector("[data-input-question]").textContent = waitingForInput ? clarificationQuestion : labels.input;
-    inputForm.querySelector("textarea").placeholder = waitingForInput ? labels.clarificationPlaceholder : labels.inputPlaceholder;
+    root.querySelector("[data-input-summary]").textContent = waitingForInput ? labels.input : labels.steerTitle;
+    root.querySelector("[data-input-question]").textContent = waitingForInput ? clarificationQuestion : labels.steerTitle;
+    root.querySelector("[data-input-help]").textContent = waitingForInput ? labels.inputHelp : labels.steerHelp;
+    root.querySelector("[data-input-submit]").textContent = waitingForInput ? labels.clarificationSend : labels.steerSend;
+    inputForm.querySelector("textarea").placeholder = waitingForInput ? labels.clarificationPlaceholder : (steerable ? labels.steerPlaceholder : labels.inputPlaceholder);
     root.querySelector("[data-draft]").hidden = run.mode !== "free_query" || !terminal.has(run.status) || !run.plan;
     const downloads = root.querySelector("[data-downloads]");
     downloads.querySelectorAll("a").forEach((node) => node.remove());
@@ -637,6 +828,10 @@ const labels = locale === "zh" ? {
     "mapping_failed", "candidate_discovery_completed", "codex_repair_applied",
     "tool_started", "tool_completed", "evidence_received", "rule_completed", "summary_started", "run_completed",
     "run_inconclusive", "run_failed", "cancellation_requested", "run_cancelled",
+    "harness_started", "harness_resumed", "codex_turn_started", "codex_turn_failed", "assistant_message", "web_search_started", "web_search_completed",
+    "tool_discovery_started", "tool_discovery_completed", "tool_admission_passed", "tool_admission_rejected",
+    "external_tool_started", "external_tool_completed", "external_tool_failed", "tool_requested", "tool_failed",
+    "evidence_gap_assessed", "codex_turn_completed", "harness_completed", "harness_interrupted",
   ];
   const connect = () => {
     source?.close();
@@ -657,10 +852,16 @@ const labels = locale === "zh" ? {
   root?.querySelector("[data-input-form]")?.addEventListener("submit", async (event) => {
     event.preventDefault(); const form = event.currentTarget; const input = String(new FormData(form).get("input") || "").trim();
     const button = form.querySelector("button[type=submit]"); if (button) button.disabled = true;
+    const feedback = root.querySelector("[data-input-feedback]"); feedback.hidden = true;
     try {
       const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/input`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input }) });
       if (!response.ok) throw new Error(await response.text());
-      form.reset(); await loadRun(); connect();
+      const payload = await response.json();
+      form.reset(); feedback.textContent = payload.mode === "steer" ? labels.steerReceived : labels.clarificationReceived;
+      feedback.dataset.state = "success"; feedback.hidden = false; await loadRun(); connect();
+    } catch (error) {
+      feedback.textContent = labels.inputFailed + (error?.message ? " " + error.message : "");
+      feedback.dataset.state = "error"; feedback.hidden = false;
     } finally {
       if (button) button.disabled = false;
     }
