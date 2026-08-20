@@ -10,7 +10,7 @@
     "zh": "按公司代码、年度和期间执行 FI/CO/MM/SD 月结检查，汇总异常、数据缺口、阻塞项和可追踪待办。",
     "en": "Runs FI/CO/MM/SD closing checks by company, year and period, then reports findings, data gaps, blockers and traceable tasks."
   },
-  "status": "Live-tested deterministic prototype",
+  "status": "Three-stage live acceptance passed",
   "version": "0.1.0",
   "owner": "Financial Closing",
   "tags": [
@@ -28,64 +28,39 @@
     "MM",
     "SD"
   ],
-  "transactions": [
-    "FBL1N",
-    "FBL5N",
-    "FBL3N",
-    "MB5S",
-    "MR11",
-    "AFAB",
-    "F.05",
-    "F.13",
-    "OB52",
-    "MMPV",
-    "KSB1",
-    "VF03"
-  ],
-  "tables": [
-    "BKPF",
-    "BSEG",
-    "BSIK",
-    "BSID",
-    "BSIS",
-    "EKBE",
-    "ANLC",
-    "ANEP",
-    "COEP"
-  ],
+  "transactions": [],
+  "tables": [],
   "systems": [
-    "SAP S/4HANA On-Premise"
+    "SAP S/4HANA"
   ],
   "inputs": {
     "zh": [
       "公司代码",
       "会计年度",
-      "期间",
-      "SAP 客户端",
-      "月结检查清单与只读证据"
+      "会计期间"
     ],
     "en": [
       "Company code",
       "Fiscal year",
-      "Period",
-      "SAP client",
-      "Closing checklist and read-only evidence"
+      "Fiscal period"
     ]
   },
   "outputs": {
     "zh": [
-      "可关账/不建议关账/存在阻塞项",
-      "12 项检查结果",
-      "异常与数据缺口",
-      "稳定待办 ID",
-      "JSON 与 Markdown 报告"
+      "公司代码",
+      "会计年度",
+      "会计期间",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
     ],
     "en": [
-      "Close / not recommended / blocked conclusion",
-      "12 check results",
-      "Findings and data gaps",
-      "Stable task IDs",
-      "JSON and Markdown reports"
+      "Company code",
+      "Fiscal year",
+      "Fiscal period",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
     ]
   },
   "guardrails": {
@@ -104,284 +79,67 @@
   },
   "workflow": [
     {
-      "id": "validate-scope",
+      "id": "execute-collect_month_end_evidence",
       "title": {
-        "zh": "校验关账范围",
-        "en": "Validate closing scope"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "要求公司代码、年度、期间和 SAP client 完整一致，并读取版本化 checklist。",
-        "en": "Requires a consistent company, year, period and SAP client, then loads the versioned checklist."
+        "zh": "执行清单步骤 `collect_month_end_evidence`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_month_end_evidence` using GET requests validated against live schema."
       },
-      "sapScope": {
-        "modules": [
-          "FI-GL",
-          "MM"
+      "operations": {
+        "zh": [
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
         ],
-        "transactions": [
-          "OB52",
-          "MMPV"
-        ],
-        "tables": [
-          "BKPF"
+        "en": [
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
         ]
       },
       "tools": [
         {
-          "name": "CLI scope parser",
-          "kind": "Agent component",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "解析并拒绝歧义范围",
-            "en": "Parses scope and rejects ambiguity"
-          }
-        },
-        {
-          "name": "month_end_checklist.toml",
-          "kind": "Control",
-          "purpose": {
-            "zh": "定义 12 项检查、阈值和阻塞规则",
-            "en": "Defines 12 checks, thresholds and blocker rules"
+            "zh": "执行 `collect_month_end_evidence` / `execute_plan`",
+            "en": "Execute `collect_month_end_evidence` / `execute_plan`"
           }
         }
+      ],
+      "executionStepIds": [
+        "collect_month_end_evidence"
       ]
     },
     {
-      "id": "collect-mcp-evidence",
+      "id": "execute-evaluate_business_result",
       "title": {
-        "zh": "优先收集 Runtime 证据",
-        "en": "Collect Runtime evidence first"
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "检查健康状态、目录、schema、计划和完整分页，只接收范围绑定且验证通过的只读结果。",
-        "en": "Checks health, catalog, schema, plans and pagination, accepting only validated scope-bound read-only results."
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
       },
-      "sapScope": {
-        "modules": [
-          "FI-AP",
-          "FI-AR",
-          "FI-GL",
-          "CO",
-          "MM",
-          "SD"
+      "operations": {
+        "zh": [
+          "rule.evaluate_business_agent"
         ],
-        "transactions": [
-          "FBL1N",
-          "FBL5N",
-          "FBL3N",
-          "MB5S",
-          "KSB1",
-          "VF03"
-        ],
-        "tables": [
-          "BKPF",
-          "BSEG",
-          "BSIK",
-          "BSID",
-          "BSIS",
-          "EKBE",
-          "COEP"
+        "en": [
+          "rule.evaluate_business_agent"
         ]
       },
       "tools": [
         {
-          "name": "EmbeddedODataProvider",
-          "kind": "Data port",
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "执行批准的本地只读查询",
-            "en": "Runs approved local read-only queries"
-          }
-        },
-        {
-          "name": "business-relationships.json",
-          "kind": "Control",
-          "purpose": {
-            "zh": "白名单、字段、分页和生产批准门",
-            "en": "Allowlist, fields, pagination and production approval gate"
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
           }
         }
-      ]
-    },
-    {
-      "id": "fill-controlled-gaps",
-      "title": {
-        "zh": "受控补充数据缺口",
-        "en": "Fill controlled evidence gaps"
-      },
-      "description": {
-        "zh": "仅在 MCP 缺数时接收经 scope、SAP client、行数和 SHA-256 复核的 GUI/SE16N 证据。",
-        "en": "Accepts GUI/SE16N evidence only for MCP gaps after scope, client, row-count and SHA-256 review."
-      },
-      "sapScope": {
-        "modules": [
-          "FI-AA",
-          "FI-GL",
-          "MM"
-        ],
-        "transactions": [
-          "MR11",
-          "AFAB",
-          "F.05",
-          "F.13"
-        ],
-        "tables": [
-          "BKPF",
-          "BSEG",
-          "BSIS",
-          "EKBE",
-          "ANLC",
-          "ANEP"
-        ]
-      },
-      "tools": [
-        {
-          "name": "MCPExportGateway",
-          "kind": "Adapter",
-          "purpose": {
-            "zh": "验证 MCP bundle 与 case ID",
-            "en": "Validates MCP bundles and case IDs"
-          }
-        },
-        {
-          "name": "SE16NFallbackGateway",
-          "kind": "Adapter",
-          "purpose": {
-            "zh": "验证 manifest、允许表和文件哈希",
-            "en": "Validates manifests, allowed tables and file hashes"
-          }
-        },
-        {
-          "name": "sap-windowsgui-logon / sap-se16n-export",
-          "kind": "SAP read",
-          "purpose": {
-            "zh": "由人员触发的受控只读补证",
-            "en": "Human-triggered controlled read-only fallback"
-          }
-        }
-      ]
-    },
-    {
-      "id": "run-checks",
-      "title": {
-        "zh": "执行模块化检查",
-        "en": "Run modular checks"
-      },
-      "description": {
-        "zh": "执行 AP、AR、GL、AA、CO、MM 与 SD 的 12 项检查，区分通过、异常和 DATA_GAP。",
-        "en": "Runs 12 AP, AR, GL, AA, CO, MM and SD checks and separates pass, finding and DATA_GAP."
-      },
-      "sapScope": {
-        "modules": [
-          "FI-GL",
-          "FI-AP",
-          "FI-AR",
-          "FI-AA",
-          "CO",
-          "MM",
-          "SD"
-        ],
-        "transactions": [
-          "FBL1N",
-          "FBL5N",
-          "FBL3N",
-          "MB5S",
-          "MR11",
-          "AFAB",
-          "F.05",
-          "F.13",
-          "OB52",
-          "MMPV",
-          "KSB1",
-          "VF03"
-        ],
-        "tables": [
-          "BKPF",
-          "BSEG",
-          "BSIK",
-          "BSID",
-          "BSIS",
-          "EKBE",
-          "ANLC",
-          "ANEP",
-          "COEP"
-        ]
-      },
-      "tools": [
-        {
-          "name": "CheckerRegistry",
-          "kind": "Rule engine",
-          "purpose": {
-            "zh": "模块检查器和统一阈值求值",
-            "en": "Module checkers and unified threshold evaluation"
-          }
-        }
-      ]
-    },
-    {
-      "id": "decide-closing-state",
-      "title": {
-        "zh": "生成关账结论",
-        "en": "Decide closing state"
-      },
-      "description": {
-        "zh": "根据阻塞与严重度规则输出三态结论，期间结束前仅标记预关账快照。",
-        "en": "Produces the three-state conclusion from blockers and severity; pre-period-end results remain snapshots."
-      },
-      "sapScope": {
-        "modules": [
-          "FI-GL",
-          "MM"
-        ],
-        "transactions": [
-          "OB52",
-          "MMPV"
-        ],
-        "tables": [
-          "BKPF"
-        ]
-      },
-      "tools": [
-        {
-          "name": "ClosingEngine",
-          "kind": "Decision engine",
-          "purpose": {
-            "zh": "异常聚合、fail-closed 和三态结论",
-            "en": "Finding aggregation, fail-closed behavior and three-state decision"
-          }
-        }
-      ]
-    },
-    {
-      "id": "publish-report",
-      "title": {
-        "zh": "输出报告与待办",
-        "en": "Publish reports and tasks"
-      },
-      "description": {
-        "zh": "生成结构化报告、人工可读报告和稳定 todo ID，并声明未执行任何关账动作。",
-        "en": "Creates structured and human-readable reports with stable task IDs and an explicit no-action declaration."
-      },
-      "sapScope": {
-        "modules": [
-          "FI-GL",
-          "FI-AP",
-          "FI-AR",
-          "FI-AA",
-          "CO",
-          "MM",
-          "SD"
-        ],
-        "transactions": [],
-        "tables": []
-      },
-      "tools": [
-        {
-          "name": "Report models / CLI",
-          "kind": "Output",
-          "purpose": {
-            "zh": "JSON、Markdown、证据引用和责任待办",
-            "en": "JSON, Markdown, evidence references and owned tasks"
-          }
-        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
       ]
     }
   ],
@@ -444,31 +202,12 @@
           "minLength": 1,
           "maxLength": 3,
           "pattern": "^[0-9]+$"
-        },
-        "sap_client": {
-          "type": "string",
-          "title": {
-            "zh": "SAP Client",
-            "en": "SAP client"
-          },
-          "description": {
-            "zh": "请输入SAP Client。",
-            "en": "Enter the sap client."
-          },
-          "placeholder": {
-            "zh": "例如：100",
-            "en": "Example: 100"
-          },
-          "minLength": 1,
-          "maxLength": 3,
-          "pattern": "^[0-9]+$"
         }
       },
       "required": [
         "company_code",
         "fiscal_year",
-        "period",
-        "sap_client"
+        "period"
       ],
       "additionalProperties": false
     },
@@ -485,20 +224,27 @@
             "entity_set": "A_OperationalAcctgDocItemCube",
             "http_method": "GET",
             "plan_kind": "direct",
+            "step_id": "fi_period_items",
             "select_fields": [
               "CompanyCode",
               "FiscalYear",
               "FiscalPeriod",
+              "Ledger",
               "AccountingDocument",
               "AccountingDocumentItem",
               "Supplier",
               "Customer",
+              "FinancialAccountType",
               "GLAccount",
               "OperationalGLAccount",
               "PurchasingDocument",
               "PurchasingDocumentItem",
               "PostingDate",
               "NetDueDate",
+              "ClearingDate",
+              "ClearingIsReversed",
+              "IsOpenItemManaged",
+              "DebitCreditCode",
               "IsCleared",
               "ClearingAccountingDocument",
               "ClearingDocFiscalYear",
@@ -509,6 +255,8 @@
               "AccountingDocumentType",
               "AmountInTransactionCurrency",
               "TransactionCurrency",
+              "AmountInCompanyCodeCurrency",
+              "CompanyCodeCurrency",
               "OrderID"
             ],
             "filters": [
@@ -531,6 +279,13 @@
                 "value_type": "string"
               }
             ],
+            "order_by": [
+              "PostingDate",
+              "CompanyCode",
+              "FiscalYear",
+              "AccountingDocument",
+              "AccountingDocumentItem"
+            ],
             "rationale": "Collect available month-end evidence."
           }
         }
@@ -543,13 +298,241 @@
           "agent_id": "month-end-closing",
           "run_input": "{{input}}",
           "evidence": {
-            "collect_month_end_evidence": "{{steps.collect_month_end_evidence.output}}"
+            "fi_period_items": "{{steps.collect_month_end_evidence.output}}"
           },
           "known_gaps": [
             "period_control_asset_depreciation_and_specialized_closing_checks"
           ]
         }
       }
-    ]
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "title": {
+            "zh": "公司代码",
+            "en": "Company code"
+          },
+          "description": {
+            "zh": "请输入公司代码。",
+            "en": "Enter the company code."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "fiscal_year": {
+          "type": "string",
+          "title": {
+            "zh": "会计年度",
+            "en": "Fiscal year"
+          },
+          "description": {
+            "zh": "请输入会计年度。",
+            "en": "Enter the fiscal year."
+          },
+          "placeholder": {
+            "zh": "例如：2026",
+            "en": "Example: 2026"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9]+$"
+        },
+        "period": {
+          "type": "string",
+          "title": {
+            "zh": "会计期间",
+            "en": "Fiscal period"
+          },
+          "description": {
+            "zh": "请输入会计期间。",
+            "en": "Enter the fiscal period."
+          },
+          "placeholder": {
+            "zh": "例如：08",
+            "en": "Example: 08"
+          },
+          "minLength": 1,
+          "maxLength": 3,
+          "pattern": "^[0-9]+$"
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "company_code",
+        "fiscal_year",
+        "period",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "company_code": "{{steps.evaluate_business_result.output.workflow_output.company_code}}",
+      "fiscal_year": "{{steps.evaluate_business_result.output.workflow_output.fiscal_year}}",
+      "period": "{{steps.evaluate_business_result.output.workflow_output.period}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "company_code",
+        "fiscal_year",
+        "period"
+      ],
+      "facts": [
+        "business_status"
+      ],
+      "metrics": [
+        "fi_rows"
+      ],
+      "decimalFields": [],
+      "decimalMetricIds": [
+        "fi_rows"
+      ],
+      "currencyFields": [],
+      "unitFields": [],
+      "dateFields": [],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {
+        "company_code": "company_code",
+        "fiscal_year": "fiscal_year",
+        "period": "period"
+      },
+      "constantDefaults": {
+        "business_status": "capability_blocked"
+      },
+      "fieldAliases": {
+        "company_code": [
+          "Company Code",
+          "公司代码"
+        ],
+        "fiscal_year": [
+          "Fiscal Year",
+          "会计年度"
+        ],
+        "period": [
+          "Fiscal Period",
+          "Period",
+          "会计期间"
+        ],
+        "fi_rows": [
+          "FI Rows",
+          "Accounting Rows",
+          "accounting_posting_line_count",
+          "FI行数",
+          "会计行数"
+        ]
+      },
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "period_control_asset_depreciation_and_specialized_closing_checks": [
+          "period control",
+          "period was closed",
+          "close completion",
+          "asset depreciation",
+          "closing checklist",
+          "specialized close checks",
+          "期间控制",
+          "资产折旧",
+          "关账检查"
+        ]
+      },
+      "summaryRecord": true,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [
+        "period_control_asset_depreciation_and_specialized_closing_checks"
+      ],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-08-20T05:18:59.094337+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
+      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "codexDirectBaselineHash": "sha256:8fb9e50de541e7b067598e6c9a2b43b41254924fe756ec7ac7c922e6ff102189",
+    "freeQueryHash": "sha256:044493fed970cb5bad536720d6eeddd73ac1a56a5e93c883b728e65950c67e88",
+    "adjudicatedResultHash": "sha256:8fb9e50de541e7b067598e6c9a2b43b41254924fe756ec7ac7c922e6ff102189",
+    "fixedAgentHash": "sha256:8fb9e50de541e7b067598e6c9a2b43b41254924fe756ec7ac7c922e6ff102189",
+    "comparisonHash": "sha256:14b3db192dee2d5a952b91506caf91ec47f7923d22386b1996b9da6f642fdbd4"
   }
 }

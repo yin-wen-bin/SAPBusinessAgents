@@ -43,7 +43,7 @@ class AgentRepository:
         raise KeyError(agent_id)
 
     def executable(self) -> list[dict[str, Any]]:
-        return [item for item in self.list() if item.get("execution")]
+        return [item for item in self.list() if is_agent_executable(item)]
 
     def _load_path(self, path: Path) -> dict[str, Any]:
         try:
@@ -125,6 +125,160 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
                 raise ManifestError(f"{location} skill input must be an object")
         if executor == "rule" and step.get("operation") not in ALLOWED_RULE_OPERATIONS:
             raise ManifestError(f"{location}.operation is not an approved local rule")
+    if agent.get("schemaVersion") == 2:
+        _validate_page_contract(agent, inputs, source)
+        _validate_workflow_mapping(agent, seen, source)
+        _validate_acceptance(execution.get("acceptance"), source)
+        _validate_live_acceptance(agent.get("validation"), source)
+
+
+def is_agent_executable(agent: dict[str, Any]) -> bool:
+    validation = agent.get("validation")
+    return bool(
+        agent.get("execution")
+        and isinstance(validation, dict)
+        and validation.get("verdict") == "PASS"
+        and validation.get("executable") is True
+        and validation.get("freeQueryComparison") == "MATCH"
+        and validation.get("fixedAgentComparison") == "MATCH"
+    )
+
+
+def _localized_titles(properties: Any, source: str) -> dict[str, list[str]]:
+    if not isinstance(properties, dict):
+        raise ManifestError(f"{source}.properties must be an object")
+    values = {"zh": [], "en": []}
+    for name, schema in properties.items():
+        if not isinstance(schema, dict):
+            raise ManifestError(f"{source}.properties.{name} must be an object")
+        title = schema.get("title")
+        if not isinstance(title, dict) or not all(str(title.get(locale) or "").strip() for locale in values):
+            raise ManifestError(f"{source}.properties.{name}.title must be bilingual")
+        for locale in values:
+            values[locale].append(str(title[locale]))
+    return values
+
+
+def _validate_page_contract(agent: dict[str, Any], inputs: dict[str, Any], source: str) -> None:
+    if "SAP ECC" in (agent.get("systems") or []):
+        raise ManifestError(f"{source}.systems must not advertise SAP ECC")
+    expected_inputs = _localized_titles(inputs.get("properties"), f"{source}.execution.inputSchema")
+    if agent.get("inputs") != expected_inputs:
+        raise ManifestError(f"{source}.inputs must mirror execution.inputSchema titles")
+    outputs = (agent.get("execution") or {}).get("outputSchema")
+    if not isinstance(outputs, dict):
+        raise ManifestError(f"{source}.execution.outputSchema is required")
+    expected_outputs = _localized_titles(
+        outputs.get("properties"), f"{source}.execution.outputSchema"
+    )
+    if agent.get("outputs") != expected_outputs:
+        raise ManifestError(f"{source}.outputs must mirror execution.outputSchema titles")
+
+
+def _validate_workflow_mapping(agent: dict[str, Any], step_ids: set[str], source: str) -> None:
+    mapped: list[str] = []
+    workflow = agent.get("workflow")
+    if not isinstance(workflow, list) or not workflow:
+        raise ManifestError(f"{source}.workflow must be non-empty")
+    for index, step in enumerate(workflow):
+        execution_ids = step.get("executionStepIds") if isinstance(step, dict) else None
+        if not isinstance(execution_ids, list) or not execution_ids:
+            raise ManifestError(f"{source}.workflow[{index}].executionStepIds is required")
+        for step_id in execution_ids:
+            if str(step_id) not in step_ids:
+                raise ManifestError(
+                    f"{source}.workflow[{index}] references unknown execution step {step_id}"
+                )
+            mapped.append(str(step_id))
+    if len(mapped) != len(set(mapped)):
+        raise ManifestError(f"{source}.workflow maps an execution step more than once")
+    if set(mapped) != step_ids:
+        raise ManifestError(f"{source}.workflow must map every execution step exactly once")
+
+
+def _validate_acceptance(value: Any, source: str) -> None:
+    if not isinstance(value, dict):
+        raise ManifestError(f"{source}.execution.acceptance is required")
+    if value.get("comparisonMode") != "business_semantic":
+        raise ManifestError(f"{source}.execution.acceptance.comparisonMode is invalid")
+    keys = value.get("businessKeys")
+    if not isinstance(keys, list) or not keys or any(not str(item).strip() for item in keys):
+        raise ManifestError(f"{source}.execution.acceptance.businessKeys is required")
+    for field in ("facts", "metrics", "requiredLimitations"):
+        if not isinstance(value.get(field), list):
+            raise ManifestError(f"{source}.execution.acceptance.{field} must be an array")
+    if value.get("schemaVersion") == "2.0":
+        for field in (
+            "decimalFields",
+            "decimalMetricIds",
+            "currencyFields",
+            "unitFields",
+            "dateFields",
+        ):
+            if not isinstance(value.get(field), list):
+                raise ManifestError(
+                    f"{source}.execution.acceptance.{field} must be an array"
+                )
+        for field in (
+            "inputDefaults",
+            "constantDefaults",
+            "fieldAliases",
+            "fieldExtractors",
+            "currencyFromDecimal",
+            "valueMappings",
+            "limitationKeywords",
+            "zeroFactWhenMetricZero",
+        ):
+            if not isinstance(value.get(field), dict):
+                raise ManifestError(
+                    f"{source}.execution.acceptance.{field} must be an object"
+                )
+        if not isinstance(value.get("summaryRecord"), bool):
+            raise ManifestError(
+                f"{source}.execution.acceptance.summaryRecord must be boolean"
+            )
+        if not isinstance(value.get("recordScope", ""), str):
+            raise ManifestError(
+                f"{source}.execution.acceptance.recordScope must be text"
+            )
+        if not isinstance(value.get("metricDefinitions", {}), dict):
+            raise ManifestError(
+                f"{source}.execution.acceptance.metricDefinitions must be an object"
+            )
+        if not isinstance(value.get("businessStatusDefinition", ""), str):
+            raise ManifestError(
+                f"{source}.execution.acceptance.businessStatusDefinition must be text"
+            )
+        if not isinstance(value.get("businessStatusFromAnyPositiveMetric", {}), dict):
+            raise ManifestError(
+                f"{source}.execution.acceptance.businessStatusFromAnyPositiveMetric must be an object"
+            )
+
+
+def _validate_live_acceptance(value: Any, source: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise ManifestError(f"{source}.validation must be an object")
+    if value.get("executable") is not None and not isinstance(value.get("executable"), bool):
+        raise ManifestError(f"{source}.validation.executable must be boolean")
+    for field in ("freeQueryComparison", "fixedAgentComparison"):
+        if value.get(field) is not None and value.get(field) not in {
+            "MATCH",
+            "MISMATCH",
+            "BLOCKED",
+            "NOT_TESTED",
+        }:
+            raise ManifestError(f"{source}.validation.{field} is invalid")
+    for field in (
+        "codexDirectBaselineHash",
+        "freeQueryHash",
+        "adjudicatedResultHash",
+        "fixedAgentHash",
+        "comparisonHash",
+    ):
+        if value.get(field) is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", str(value[field])):
+            raise ManifestError(f"{source}.validation.{field} must be a full SHA-256")
 
 
 def _validate_when(value: Any, prior_step_ids: set[str], location: str) -> None:

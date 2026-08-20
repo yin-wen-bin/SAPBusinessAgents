@@ -10,7 +10,7 @@
     "zh": "基于成本中心累计实际与全年计划形成透明的月均滚动预测。",
     "en": "Builds a transparent monthly-average rolling forecast from cost-center year-to-date actuals and full-year plan."
   },
-  "status": "Deterministic prototype with bounded live validation",
+  "status": "Three-stage live acceptance blocked",
   "version": "0.1.0",
   "owner": "CO Planning / FP&A",
   "tags": [
@@ -23,10 +23,7 @@
     "CO-OM-CCA",
     "FI-GL"
   ],
-  "transactions": [
-    "KP06",
-    "S_ALR_87013611"
-  ],
+  "transactions": [],
   "tables": [
     "ACDOCA",
     "ACDOCP"
@@ -37,33 +34,31 @@
   "inputs": {
     "zh": [
       "公司代码",
-      "成本中心",
-      "会计年度",
-      "当前期间",
-      "计划类别",
-      "风险阈值"
+      "fiscal year",
+      "cost center",
+      "current period",
+      "planning category",
+      "risk threshold pct"
     ],
     "en": [
       "Company code",
-      "Cost center",
-      "Fiscal year",
-      "Current period",
-      "Planning category",
-      "Risk threshold"
+      "Fiscal Year",
+      "Cost Center",
+      "Current Period",
+      "Planning Category",
+      "Risk Threshold Pct"
     ]
   },
   "outputs": {
     "zh": [
-      "累计实际",
-      "全年计划",
-      "全年预测",
-      "预测偏差"
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
     ],
     "en": [
-      "Year-to-date actual",
-      "Full-year plan",
-      "Full-year forecast",
-      "Forecast variance"
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
     ]
   },
   "guardrails": {
@@ -84,235 +79,195 @@
   },
   "workflow": [
     {
-      "id": "validate-scope",
+      "id": "execute-read_actual",
       "title": {
-        "zh": "1. 校验 CO 范围",
-        "en": "1. Validate CO scope"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "校验公司代码、成本中心、年度、当前期间和计划类别。",
-        "en": "Validate company code, cost center, year, current period, and planning category."
+        "zh": "执行清单步骤 `read_actual`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_actual` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "拒绝无界或格式错误的范围。"
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
         ],
         "en": [
-          "Reject unbounded or malformed scope."
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
         ]
       },
       "tools": [
         {
-          "name": "Input schema",
-          "kind": "Control",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "限制真机读取范围。",
-            "en": "Bounds live reads."
+            "zh": "执行 `read_actual` / `execute_plan`",
+            "en": "Execute `read_actual` / `execute_plan`"
           }
         }
+      ],
+      "executionStepIds": [
+        "read_actual"
       ]
     },
     {
-      "id": "check-schema",
+      "id": "execute-read_plan",
       "title": {
-        "zh": "2. 校验 Embedded API schema",
-        "en": "2. Validate Embedded API schema"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "从目标系统实时 metadata 校验实体、字段、筛选和稳定键。",
-        "en": "Validate entities, fields, filters, and stable keys against live target metadata."
+        "zh": "执行清单步骤 `read_plan`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_plan` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "同名字段和静态目录不能替代实时 schema。"
+          "GET API_FINPLANNINGENTRYITEM_SRV@2.0/A_FinPlanningEntryItem"
         ],
         "en": [
-          "Same-named fields and static catalogs do not replace live schema."
+          "GET API_FINPLANNINGENTRYITEM_SRV@2.0/A_FinPlanningEntryItem"
         ]
       },
       "tools": [
         {
-          "name": "embedded-sap-odata",
-          "kind": "SAP read Provider",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "提供 GET-only schema 权威来源。",
-            "en": "Provides the authoritative GET-only schema."
+            "zh": "执行 `read_plan` / `execute_plan`",
+            "en": "Execute `read_plan` / `execute_plan`"
           }
         }
+      ],
+      "executionStepIds": [
+        "read_plan"
       ]
     },
     {
-      "id": "read-api",
+      "id": "execute-assess",
       "title": {
-        "zh": "3. 分页读取标准 API",
-        "en": "3. Read released APIs with paging"
+        "zh": "评估证据完整性",
+        "en": "Assess evidence completeness"
       },
       "description": {
-        "zh": "读取累计实际和全年财务计划行项目。",
-        "en": "Read year-to-date actual and full-year financial planning entries."
+        "zh": "执行清单步骤 `assess`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `assess` and interpret collected evidence without accessing or changing SAP."
       },
       "operations": {
         "zh": [
-          "不使用显式 top 作为完整性证据。"
+          "rule.assess_api_evidence"
         ],
         "en": [
-          "Do not use explicit top as completeness evidence."
-        ]
-      },
-      "tools": [
-        {
-          "name": "Released SAP OData APIs",
-          "kind": "SAP API",
-          "purpose": {
-            "zh": "提供首选业务证据。",
-            "en": "Provides preferred business evidence."
-          }
-        }
-      ]
-    },
-    {
-      "id": "assess-gap",
-      "title": {
-        "zh": "4. 评估 API 能力缺口",
-        "en": "4. Assess API capability gaps"
-      },
-      "description": {
-        "zh": "仅实时 schema 的实体、字段或关系缺口可以触发 ADT。",
-        "en": "Only live-schema entity, field, or relationship gaps can trigger ADT."
-      },
-      "operations": {
-        "zh": [
-          "超时、权限、截断和完整空结果不触发 ADT。"
-        ],
-        "en": [
-          "Timeouts, authorization failures, truncation, and complete empty results do not trigger ADT."
+          "rule.assess_api_evidence"
         ]
       },
       "tools": [
         {
           "name": "assess_api_evidence",
-          "kind": "Deterministic rule",
+          "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "区分能力缺口和操作故障。",
-            "en": "Separates capability gaps from operational failures."
+            "zh": "执行 `assess` / `assess_api_evidence`",
+            "en": "Execute `assess` / `assess_api_evidence`"
           }
         }
+      ],
+      "executionStepIds": [
+        "assess"
       ]
     },
     {
-      "id": "adt-fallback",
+      "id": "execute-adt_actual",
       "title": {
-        "zh": "5. 条件调用 sap-adt-table-export",
-        "en": "5. Conditionally call sap-adt-table-export"
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
       },
       "description": {
-        "zh": "仅在 schema 缺口时读取 ACDOCA 或 ACDOCP。",
-        "en": "Read ACDOCA or ACDOCP only for schema gaps."
+        "zh": "仅在清单条件成立时执行 `adt_actual`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_actual` only when its manifest condition is true; otherwise record skipped without calling the Skill."
       },
       "operations": {
         "zh": [
-          "仅使用静态对象、白名单字段、有界过滤和升序稳定键。"
+          "sap-adt-table-export.execute"
         ],
         "en": [
-          "Use only static objects, allowlisted fields, bounded filters, and ascending stable keys."
+          "sap-adt-table-export.execute"
         ]
       },
       "tools": [
         {
           "name": "sap-adt-table-export",
-          "kind": "SAPSkillhub Skill",
+          "kind": "Read-only SAPSkillhub Skill",
           "purpose": {
-            "zh": "提供受保护的表级补证。",
-            "en": "Provides protected table-level supplemental evidence."
+            "zh": "执行 `adt_actual` / `execute`",
+            "en": "Execute `adt_actual` / `execute`"
           }
         }
+      ],
+      "executionStepIds": [
+        "adt_actual"
       ]
     },
     {
-      "id": "merge-evidence",
+      "id": "execute-adt_plan",
       "title": {
-        "zh": "6. 合并并验证证据",
-        "en": "6. Merge and validate evidence"
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
       },
       "description": {
-        "zh": "校验业务键、币种、单位、期间、分页和 SHA-256 manifest。",
-        "en": "Validate business keys, currency, units, periods, paging, and the SHA-256 manifest."
+        "zh": "仅在清单条件成立时执行 `adt_plan`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_plan` only when its manifest condition is true; otherwise record skipped without calling the Skill."
       },
       "operations": {
         "zh": [
-          "冲突不覆盖；达到行数上限保持 partial。"
+          "sap-adt-table-export.execute"
         ],
         "en": [
-          "Do not overwrite conflicts; retain partial at the row limit."
+          "sap-adt-table-export.execute"
         ]
       },
       "tools": [
         {
-          "name": "Evidence gate",
-          "kind": "Control",
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
           "purpose": {
-            "zh": "保护完整性语义。",
-            "en": "Protects completeness semantics."
+            "zh": "执行 `adt_plan` / `execute`",
+            "en": "Execute `adt_plan` / `execute`"
           }
         }
+      ],
+      "executionStepIds": [
+        "adt_plan"
       ]
     },
     {
-      "id": "analyze",
+      "id": "execute-evaluate",
       "title": {
-        "zh": "7. 执行确定性 CO 分析",
-        "en": "7. Run deterministic CO analysis"
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "以当前期间月均外推全年，并与全年计划比较。",
-        "en": "Extrapolate the current-period monthly average to full year and compare it with plan."
+        "zh": "执行清单步骤 `evaluate`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate` and interpret collected evidence without accessing or changing SAP."
       },
       "operations": {
         "zh": [
-          "规则透明、可复现且不回写 SAP。"
+          "rule.evaluate_business_agent"
         ],
         "en": [
-          "Rules are transparent, reproducible, and never write to SAP."
+          "rule.evaluate_business_agent"
         ]
       },
       "tools": [
         {
-          "name": "Rolling forecast evaluator",
-          "kind": "Rule engine",
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "生成确定性业务结论。",
-            "en": "Produces deterministic business conclusions."
+            "zh": "执行 `evaluate` / `evaluate_business_agent`",
+            "en": "Execute `evaluate` / `evaluate_business_agent`"
           }
         }
-      ]
-    },
-    {
-      "id": "present",
-      "title": {
-        "zh": "8. 输出结论和限制",
-        "en": "8. Present conclusions and limits"
-      },
-      "description": {
-        "zh": "输出状态、指标、证据范围、缺口和人工复核动作。",
-        "en": "Present status, metrics, evidence scope, gaps, and human-review actions."
-      },
-      "operations": {
-        "zh": [
-          "必需证据不完整时输出 INCONCLUSIVE。"
-        ],
-        "en": [
-          "Return INCONCLUSIVE when required evidence is incomplete."
-        ]
-      },
-      "tools": [
-        {
-          "name": "Business report",
-          "kind": "Output",
-          "purpose": {
-            "zh": "形成双语、可审计报告。",
-            "en": "Creates a bilingual auditable report."
-          }
-        }
+      ],
+      "executionStepIds": [
+        "evaluate"
       ]
     }
   ],
@@ -326,32 +281,56 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 4,
-          "pattern": "^[0-9A-Za-z_-]+$"
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "公司代码",
+            "en": "Company code"
+          }
         },
         "fiscal_year": {
           "type": "string",
           "minLength": 4,
           "maxLength": 4,
-          "pattern": "^[0-9]{4}$"
+          "pattern": "^[0-9]{4}$",
+          "title": {
+            "zh": "fiscal year",
+            "en": "Fiscal Year"
+          }
         },
         "cost_center": {
           "type": "string",
           "minLength": 1,
           "maxLength": 10,
-          "pattern": "^[0-9A-Za-z_-]+$"
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "cost center",
+            "en": "Cost Center"
+          }
         },
         "current_period": {
           "type": "string",
-          "pattern": "^[0-9]{3}$"
+          "pattern": "^[0-9]{3}$",
+          "title": {
+            "zh": "current period",
+            "en": "Current Period"
+          }
         },
         "planning_category": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 10
+          "maxLength": 10,
+          "title": {
+            "zh": "planning category",
+            "en": "Planning Category"
+          }
         },
         "risk_threshold_pct": {
           "type": "number",
-          "default": 10
+          "default": 10,
+          "title": {
+            "zh": "risk threshold pct",
+            "en": "Risk Threshold Pct"
+          }
         }
       },
       "required": [
@@ -367,13 +346,25 @@
       "type": "object",
       "properties": {
         "business_status": {
-          "type": "string"
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
         },
         "source_complete": {
-          "type": "boolean"
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
         },
         "business_report": {
-          "type": "object"
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
         }
       },
       "required": [
@@ -651,20 +642,159 @@
           "known_gaps": []
         }
       }
-    ]
+    ],
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "company_code",
+        "cost_center",
+        "fiscal_year",
+        "current_period"
+      ],
+      "facts": [
+        "business_status"
+      ],
+      "metrics": [
+        "actual_ytd",
+        "annual_plan",
+        "full_year_forecast",
+        "forecast_variance_pct"
+      ],
+      "decimalFields": [],
+      "decimalMetricIds": [
+        "actual_ytd",
+        "annual_plan",
+        "full_year_forecast",
+        "forecast_variance_pct"
+      ],
+      "currencyFields": [],
+      "unitFields": [],
+      "dateFields": [],
+      "codeSetFields": [],
+      "zeroPadFields": {
+        "current_period": 3
+      },
+      "booleanFields": [],
+      "inputDefaults": {
+        "company_code": "company_code",
+        "cost_center": "cost_center",
+        "fiscal_year": "fiscal_year",
+        "current_period": "current_period"
+      },
+      "constantDefaults": {},
+      "fieldAliases": {
+        "actual_ytd": [
+          "net_amount",
+          "actual amount",
+          "actual ytd amount",
+          "累计实际"
+        ],
+        "annual_plan": [
+          "annual budget",
+          "annual plan amount",
+          "全年计划",
+          "年度预算"
+        ],
+        "full_year_forecast": [
+          "forecast",
+          "forecast amount",
+          "全年预测"
+        ],
+        "forecast_variance_pct": [
+          "forecast variance",
+          "forecast variance percent",
+          "预测差异率"
+        ]
+      },
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "budget_evidence_missing": [
+          "annual plan missing",
+          "budget evidence",
+          "plan is zero",
+          "年度计划缺失",
+          "预算证据",
+          "plan unavailable",
+          "annual plan unavailable",
+          "no plan rows",
+          "计划不可用",
+          "无计划行"
+        ]
+      },
+      "summaryRecord": true,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [
+        "budget_evidence_missing"
+      ],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [
+        "budget_evidence_missing"
+      ],
+      "ignoredNoticeKeywords": [
+        "monthly-average extrapolation",
+        "monthly average extrapolation",
+        "forecast method",
+        "月均外推",
+        "预测方法"
+      ],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
   },
   "validation": {
-    "verdict": "PASS",
-    "testedAt": "2026-08-17T11:41:06.839334+00:00",
-    "evidenceScope": "complete",
+    "verdict": "BLOCKED",
+    "testedAt": "2026-08-20T07:45:39.722374+00:00",
+    "evidenceScope": "bounded",
     "providers": [
-      "embedded-sap-odata",
-      "sap-adt-table-export"
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
     ],
     "summary": {
-      "zh": "真机查询源与必需证据完整。",
-      "en": "Live query sources and required evidence are complete."
+      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
+      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
     },
-    "reportPath": "docs/live-sap-test-report.md"
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": false,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": [
+      "budget_evidence_missing"
+    ],
+    "codexDirectBaselineHash": "sha256:198d6907df94f0a7b9c085509aad7c3d3a866cbf9c44f0d310f5c09594eeb1b4",
+    "freeQueryHash": "sha256:2302bd42a14de21267a4c146d3bffa9cb3b6c21630cc0dc59a9ec546188a894c",
+    "adjudicatedResultHash": "sha256:198d6907df94f0a7b9c085509aad7c3d3a866cbf9c44f0d310f5c09594eeb1b4",
+    "fixedAgentHash": "sha256:79c53bab4e46b4b1d758637fc1e863e8f9182c5e0afd5880dd4bc2a61f260e2a",
+    "comparisonHash": "sha256:3a17dade4ef20f5408e21404a83bcdd1acc796d3174fc7f0caa8c889c38aa9b0"
   }
 }

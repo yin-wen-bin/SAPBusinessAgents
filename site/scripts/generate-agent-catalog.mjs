@@ -23,6 +23,10 @@ function requireList(value, location) {
   if (!Array.isArray(value) || value.length === 0) throw new Error(`${location} must be a non-empty array`);
 }
 
+function requireArray(value, location) {
+  if (!Array.isArray(value)) throw new Error(`${location} must be an array`);
+}
+
 export function validateAgent(agent, expectedModule, expectedSlug, source) {
   if (![1, 2].includes(agent.schemaVersion)) throw new Error(`${source}: unsupported schemaVersion`);
   if (!SLUG_PATTERN.test(expectedSlug)) throw new Error(`${source}: directory must use a lowercase kebab-case slug`);
@@ -31,7 +35,10 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
   requireLocalized(agent.title, `${source}.title`);
   requireLocalized(agent.summary, `${source}.summary`);
   for (const field of ["status", "version", "owner"]) requireString(agent[field], `${source}.${field}`);
-  for (const field of ["tags", "sapModules", "transactions", "tables", "systems"]) requireList(agent[field], `${source}.${field}`);
+  for (const field of ["tags", "sapModules", "systems"]) requireList(agent[field], `${source}.${field}`);
+  // OData-only Agents do not execute SAP GUI transactions or read raw tables.
+  // Empty arrays are truthful scope declarations, not missing catalog data.
+  for (const field of ["transactions", "tables"]) requireArray(agent[field], `${source}.${field}`);
   for (const field of ["inputs", "outputs", "guardrails"]) {
     requireList(agent[field]?.zh, `${source}.${field}.zh`);
     requireList(agent[field]?.en, `${source}.${field}.en`);
@@ -55,6 +62,7 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
     stepIds.add(step.id);
     requireLocalized(step.title, `${source}.workflow[${index}].title`);
     requireLocalized(step.description, `${source}.workflow[${index}].description`);
+    requireList(step.executionStepIds, `${source}.workflow[${index}].executionStepIds`);
     if (step.operations !== undefined) {
       requireList(step.operations?.zh, `${source}.workflow[${index}].operations.zh`);
       requireList(step.operations?.en, `${source}.workflow[${index}].operations.en`);
@@ -103,7 +111,32 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
       }
     }
   }
+  const executionStepIds = new Set((agent.execution?.steps ?? []).map((step) => step.id));
+  const mappedExecutionStepIds = agent.workflow.flatMap((step) => step.executionStepIds ?? []);
+  if (mappedExecutionStepIds.length !== new Set(mappedExecutionStepIds).size) {
+    throw new Error(`${source}: workflow maps an execution step more than once`);
+  }
+  if (mappedExecutionStepIds.length !== executionStepIds.size || mappedExecutionStepIds.some((id) => !executionStepIds.has(id))) {
+    throw new Error(`${source}: workflow must map every execution step exactly once`);
+  }
   if (agent.schemaVersion === 2) validateExecution(agent.execution, source);
+  if (agent.systems.includes("SAP ECC")) throw new Error(`${source}.systems must not advertise SAP ECC`);
+  const localizedSchemaTitles = (schema, location) => {
+    const result = { zh: [], en: [] };
+    for (const [name, property] of Object.entries(schema?.properties ?? {})) {
+      requireLocalized(property.title, `${location}.properties.${name}.title`);
+      result.zh.push(property.title.zh);
+      result.en.push(property.title.en);
+    }
+    return result;
+  };
+  if (JSON.stringify(agent.inputs) !== JSON.stringify(localizedSchemaTitles(agent.execution.inputSchema, `${source}.execution.inputSchema`))) {
+    throw new Error(`${source}.inputs must mirror execution.inputSchema titles`);
+  }
+  if (!agent.execution.outputSchema) throw new Error(`${source}.execution.outputSchema is required`);
+  if (JSON.stringify(agent.outputs) !== JSON.stringify(localizedSchemaTitles(agent.execution.outputSchema, `${source}.execution.outputSchema`))) {
+    throw new Error(`${source}.outputs must mirror execution.outputSchema titles`);
+  }
   if (agent.validation !== undefined) validateLiveValidation(agent.validation, source);
 }
 
@@ -127,6 +160,19 @@ function validateLiveValidation(validation, source) {
   if (!/^docs\/[a-z0-9][a-z0-9._/-]*\.md$/.test(validation.reportPath)) {
     throw new Error(`${source}.validation.reportPath must be a relative docs Markdown path`);
   }
+  if (validation.executable !== undefined && typeof validation.executable !== "boolean") {
+    throw new Error(`${source}.validation.executable must be boolean`);
+  }
+  for (const field of ["freeQueryComparison", "fixedAgentComparison"]) {
+    if (validation[field] !== undefined && !["MATCH", "MISMATCH", "BLOCKED", "NOT_TESTED"].includes(validation[field])) {
+      throw new Error(`${source}.validation.${field} is invalid`);
+    }
+  }
+  for (const field of ["codexDirectBaselineHash", "freeQueryHash", "adjudicatedResultHash", "fixedAgentHash", "comparisonHash"]) {
+    if (validation[field] !== undefined && !/^sha256:[0-9a-f]{64}$/.test(validation[field])) {
+      throw new Error(`${source}.validation.${field} must be a full SHA-256`);
+    }
+  }
 }
 
 function validateExecution(execution, source) {
@@ -141,6 +187,26 @@ function validateExecution(execution, source) {
     throw new Error(`${source}.execution.inputSchema.properties must be an object`);
   }
   requireList(execution.steps, `${source}.execution.steps`);
+  if (!execution.acceptance || execution.acceptance.comparisonMode !== "business_semantic") {
+    throw new Error(`${source}.execution.acceptance.comparisonMode is invalid`);
+  }
+  requireList(execution.acceptance.businessKeys, `${source}.execution.acceptance.businessKeys`);
+  for (const field of ["facts", "metrics", "requiredLimitations"]) {
+    if (!Array.isArray(execution.acceptance[field])) throw new Error(`${source}.execution.acceptance.${field} must be an array`);
+  }
+  if (execution.acceptance.schemaVersion === "2.0") {
+    for (const field of ["decimalFields", "decimalMetricIds", "currencyFields", "unitFields", "dateFields"]) {
+      if (!Array.isArray(execution.acceptance[field])) throw new Error(`${source}.execution.acceptance.${field} must be an array`);
+    }
+    for (const field of ["inputDefaults", "constantDefaults", "fieldAliases", "fieldExtractors", "currencyFromDecimal", "valueMappings", "limitationKeywords"]) {
+      if (!execution.acceptance[field] || typeof execution.acceptance[field] !== "object" || Array.isArray(execution.acceptance[field])) {
+        throw new Error(`${source}.execution.acceptance.${field} must be an object`);
+      }
+    }
+    if (typeof execution.acceptance.summaryRecord !== "boolean") {
+      throw new Error(`${source}.execution.acceptance.summaryRecord must be boolean`);
+    }
+  }
   const stepIds = new Set();
   for (const [index, step] of execution.steps.entries()) {
     const location = `${source}.execution.steps[${index}]`;

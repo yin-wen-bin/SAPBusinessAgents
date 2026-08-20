@@ -11,9 +11,22 @@ from fastapi.testclient import TestClient
 
 from sap_business_agents_platform.app import create_app
 from sap_business_agents_platform.config import Settings
-from sap_business_agents_platform.engine import _count_free_query_top_bounds, _validate_input
+from sap_business_agents_platform.engine import (
+    _completeness_evidence_scope,
+    _count_free_query_top_bounds,
+    _validate_input,
+)
 from sap_business_agents_platform.manifests import AgentRepository, ManifestError, validate_execution
-from sap_business_agents_platform.models import PlannerDecision
+from sap_business_agents_platform.models import (
+    HarnessResult,
+    LocalizedText,
+    PlannerDecision,
+    PresentationBlock,
+    RunCreate,
+    RunMode,
+    RunPresentation,
+    RunResult,
+)
 from sap_business_agents_platform.skills import SkillError, SkillRegistry
 
 
@@ -510,6 +523,7 @@ def _settings(tmp_path: Path) -> Settings:
         draft_root=tmp_path / "drafts",
         skillhub_root=tmp_path / "skillhub",
         max_run_seconds=10,
+        enforce_agent_acceptance=False,
     )
 
 
@@ -526,7 +540,24 @@ def _wait(client: TestClient, run_id: str, statuses: set[str] | None = None) -> 
 
 def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
     root = Path(__file__).resolve().parents[1]
-    records = AgentRepository(root / "agents").executable()
+    repository = AgentRepository(root / "agents")
+    records = repository.list()
+    assert [record["slug"] for record in repository.executable()] == [
+        "ap-payment",
+        "ar-collection",
+            "gr-ir-clearing",
+            "month-end-closing",
+            "intelligent-sourcing-rfq",
+            "procure-to-pay-status",
+            "supplier-performance-risk",
+            "mrp-exception-analysis",
+            "production-order-monitoring",
+            "billing-completeness-check",
+        "delivered-not-billed",
+        "delivery-delay-prediction",
+        "due-delivery-prioritization",
+        "order-to-cash-status",
+    ]
     assert {record["slug"] for record in records} == {
         "ap-payment",
         "ar-collection",
@@ -567,6 +598,29 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
             for step in record["execution"]["steps"]
             if step["executor"] in {"sap_read", "skill"}
         )
+
+
+def test_public_runtime_rejects_agent_without_three_stage_acceptance(tmp_path: Path) -> None:
+    settings = replace(_settings(tmp_path), enforce_agent_acceptance=True)
+    app = create_app(
+        settings,
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "mode": "agent",
+                "agentId": "billing-block-diagnosis",
+                "input": {
+                    "sales_order": "2",
+                },
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "agent_live_validation_required"
 
 
 def test_manifest_rejects_non_get_plan() -> None:
@@ -648,6 +702,11 @@ def test_fixed_agent_runs_without_codex_and_persists_events(tmp_path: Path) -> N
         assert planner.calls == 0
         assert run["result"]["rule_results"][0]["rule_id"] == "p2p_deterministic_status_v1"
         assert run["result"]["summary"]["zh"]
+        assert run["result"]["presentation"]["schema_version"] == "1.0"
+        assert any(
+            block["type"] == "table"
+            for block in run["result"]["presentation"]["blocks"]
+        )
         assert run["result"]["tool_calls"][0]["plugin_id"] == "embedded-sap-odata"
         assert run["result"]["tool_calls"][0]["capability"] == "sap_read.v2"
         assert run["result"]["tool_calls"][0]["odata_versions"] == ["2.0"]
@@ -906,6 +965,7 @@ def test_free_query_uses_codex_plan_then_embedded_validation(tmp_path: Path) -> 
             ("API_PURCHASEORDER_PROCESS_SRV", ("A_PurchaseOrder",))
         ]
         assert run["result"]["summary"]["zh"] == "One read-only SAP record was found."
+        assert run["result"]["presentation"]["blocks"][0]["type"] == "text"
         assert run["result"]["tool_calls"][0]["odata_version"] == "2.0"
         assert client.get(
             f"/api/runs/{run['run_id']}/artifacts/result.json"
@@ -944,6 +1004,171 @@ def test_free_query_with_explicit_top_is_inconclusive_even_when_embedded_is_comp
         assert run["result"]["completeness"]["source_complete"] is False
         assert "1 explicit top bound" in run["result"]["completeness"]["reason"]
         assert embedded.executed_plans[0]["top"] == 1
+
+
+def test_harness_completeness_uses_validated_final_evidence_scope(tmp_path: Path) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    run_id = "run_final_scope"
+    app.state.store.create_run(
+        run_id,
+        RunCreate(mode=RunMode.free_query, query="supplier open items"),
+    )
+    final_ref = "ev_111111111111111111111111"
+    diagnostic_ref = "ev_222222222222222222222222"
+    result = RunResult(
+        run_id=run_id,
+        mode=RunMode.free_query,
+        query="supplier open items",
+        plan={
+            "kind": "sap_business_agents_harness",
+            "steps": [
+                {
+                    "id": "final_query",
+                    "tool": "sap_read",
+                    "plan": {
+                        "service_name": "API_TEST_SRV",
+                        "odata_version": "2.0",
+                        "entity_set": "A_Test",
+                    },
+                }
+            ],
+        },
+        evidence=[
+            {
+                "evidence_ref": diagnostic_ref,
+                "source_type": "sap_live",
+                "source_complete": False,
+                "row_count": 1000,
+            },
+            {
+                "evidence_ref": final_ref,
+                "source_type": "sap_live",
+                "source_complete": True,
+                "row_count": 6,
+            },
+        ],
+        rule_results=[
+            {
+                "rule_id": "harness_evidence_contract",
+                "business_complete": True,
+                "missing_evidence": [],
+                "evidence_refs": [final_ref],
+            }
+        ],
+        presentation=RunPresentation(
+            title=LocalizedText(zh="供应商项目", en="Supplier items"),
+            blocks=[
+                PresentationBlock(
+                    type="notice",
+                    text=LocalizedText(zh="最终范围完整。", en="Final scope is complete."),
+                    claim_scope="customer_business_fact",
+                    evidence_refs=[final_ref],
+                    source_complete=True,
+                )
+            ],
+            validation_ref="validation_final_scope",
+        ),
+        harness=HarnessResult(stop_reason="completed"),
+    )
+
+    selected, scope = _completeness_evidence_scope(result)
+    assert [item["evidence_ref"] for item in selected] == [final_ref]
+    assert scope == {
+        "final_report_scoped": True,
+        "referenced_count": 1,
+        "audit_only_count": 1,
+        "missing_reference_count": 0,
+    }
+    unknown_reference = result.model_copy(deep=True)
+    unknown_reference.rule_results[0]["evidence_refs"].append(
+        "ev_999999999999999999999999"
+    )
+    _, unknown_scope = _completeness_evidence_scope(unknown_reference)
+    assert unknown_scope["missing_reference_count"] == 1
+
+    app.state.coordinator._complete_result(run_id, result)
+    completed = app.state.store.get_run(run_id)
+    assert completed.status.value == "completed"
+    assert completed.result is not None
+    assert completed.result.completeness.source_complete is True
+    assert "final-report evidence sources" in completed.result.completeness.reason
+    assert "1 non-final diagnostic evidence source" in completed.result.completeness.reason
+    assert len(completed.result.evidence) == 2
+
+
+def test_harness_completeness_remains_inconclusive_for_cited_incomplete_evidence(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    run_id = "run_incomplete_final_scope"
+    app.state.store.create_run(
+        run_id,
+        RunCreate(mode=RunMode.free_query, query="supplier open items"),
+    )
+    incomplete_ref = "ev_333333333333333333333333"
+    result = RunResult(
+        run_id=run_id,
+        mode=RunMode.free_query,
+        plan={
+            "kind": "sap_business_agents_harness",
+            "steps": [
+                {
+                    "id": "final_query",
+                    "tool": "sap_read",
+                    "plan": {
+                        "service_name": "API_TEST_SRV",
+                        "odata_version": "2.0",
+                        "entity_set": "A_Test",
+                    },
+                }
+            ],
+        },
+        evidence=[
+            {
+                "evidence_ref": incomplete_ref,
+                "source_type": "sap_live",
+                "source_complete": False,
+                "row_count": 1000,
+            }
+        ],
+        rule_results=[
+            {
+                "rule_id": "harness_evidence_contract",
+                "business_complete": True,
+                "missing_evidence": [],
+                "evidence_refs": [incomplete_ref],
+            }
+        ],
+        presentation=RunPresentation(
+            title=LocalizedText(zh="供应商项目", en="Supplier items"),
+            blocks=[
+                PresentationBlock(
+                    type="notice",
+                    text=LocalizedText(zh="范围不完整。", en="Scope is incomplete."),
+                    claim_scope="customer_business_fact",
+                    evidence_refs=[incomplete_ref],
+                    source_complete=False,
+                )
+            ],
+            validation_ref="validation_incomplete_scope",
+        ),
+        harness=HarnessResult(stop_reason="completed"),
+    )
+
+    app.state.coordinator._complete_result(run_id, result)
+    completed = app.state.store.get_run(run_id)
+    assert completed.status.value == "inconclusive"
+    assert completed.result is not None
+    assert completed.result.completeness.source_complete is False
+    assert "final-report evidence source is bounded" in completed.result.completeness.reason
 
 
 def test_nested_embedded_top_bounds_are_counted_without_counting_skill_limits() -> None:
@@ -1050,7 +1275,11 @@ def test_free_query_can_pause_for_clarification_and_resume_thread(tmp_path: Path
         run_id = response.json()["run_id"]
         waiting = _wait(client, run_id, {"waiting_input"})
         assert waiting["thread_id"] == "thread-001"
-        assert client.post(f"/api/runs/{run_id}/input", json={"input": "4500000001"}).status_code == 202
+        input_response = client.post(
+            f"/api/runs/{run_id}/input", json={"input": "4500000001"}
+        )
+        assert input_response.status_code == 202
+        assert input_response.json()["mode"] == "clarification"
         completed = _wait(client, run_id, {"completed", "inconclusive", "failed"})
         assert completed["status"] == "completed"
         assert planner.calls == 2

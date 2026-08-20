@@ -44,7 +44,7 @@ def test_all_eleven_sd_agents_use_schema_v2_embedded_reads() -> None:
 
 
 def test_sd_adt_steps_are_allowlisted_bounded_and_connection_agnostic() -> None:
-    expected_objects = {"NAST", "UDMCASEATTR00", "MDKP", "VBFA"}
+    expected_objects = {"VBFA"}
     found: set[str] = set()
     row_limits: dict[str, set[int]] = {name: set() for name in expected_objects}
     for manifest in _manifests():
@@ -136,6 +136,45 @@ def test_mrp_context_never_substitutes_for_released_atp() -> None:
     )
     assert result["status"] == "inconclusive"
     assert "atp_availability_evidence" in result["missing_evidence"]
+
+
+def test_historical_shortage_does_not_treat_current_stock_as_key_date_stock() -> None:
+    result = evaluate_business_agent(
+        {
+            "agent_id": "shortage-allocation-advisor",
+            "run_input": {
+                "material": "TG11",
+                "plant": "1710",
+                "date_from": "2017-10-06",
+                "date_to": "2017-10-06",
+            },
+            "evidence": {
+                "demand": {
+                    "source_complete": True,
+                    "step_results": {
+                        "sales_order_items": {
+                            "source_complete": True,
+                            "results": [{"SalesOrder": "2", "SalesOrderItem": "10", "Material": "TG11", "ProductionPlant": "1710", "RequestedQuantityUnit": "PC"}],
+                        },
+                        "schedule_lines": {
+                            "source_complete": True,
+                            "results": [{"SalesOrder": "2", "SalesOrderItem": "10", "ScheduleLine": "1", "RequestedDeliveryDate": "2017-10-06", "ScheduleLineOrderQuantity": "10", "ConfdOrderQtyByMatlAvailCheck": "0"}],
+                        },
+                        "material_stock": {
+                            "source_complete": True,
+                            "results": [{"MatlWrhsStkQtyInMatlBaseUnit": "99"}],
+                        },
+                    },
+                }
+            },
+        }
+    )
+
+    metrics = {item["id"]: item["value"] for item in result["metrics"]}
+    assert metrics["stock"] is None
+    assert metrics["uncovered"] == "10"
+    assert result["source_complete"] is True
+    assert result["business_status"] == "capability_blocked"
 
 
 def test_adt_preflight_gates_formal_query_on_complete_verified_result() -> None:

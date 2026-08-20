@@ -53,4 +53,7 @@ SAPBA_MAX_RUN_SECONDS=600
 # SAPBA_CODEX_MODEL=
 ```
 
+`SAPBA_MAX_TOOL_CALLS` 接受正整数形式的 run 级调用预算。设置为 `0` 时只取消
+工具调用次数上限，轮次和运行时间限制仍然生效；负数和非整数会在启动时被拒绝。
+
 只有人工设置 `SAPBA_FREE_QUERY_RUNTIME=planner_legacy` 才使用旧 Planner；Harness 初始化或隔离失败时不自动降级。第一版不实现登录、RBAC、租户隔离、配额或审批界面，复用当前机器的 Codex 登录。

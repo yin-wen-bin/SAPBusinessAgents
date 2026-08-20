@@ -1,21 +1,21 @@
 # cost-center-expense-anomaly 真机测试报告
 
-- 测试时间：2026-08-17T11:41:06.839334+00:00
-- 代码版本：`b650df2+working-tree`
+- 测试时间：2026-08-19T16:25:21.378132+00:00
+- 代码版本：`1b8cc4a+working-tree`
 - 系统、客户端、凭据和业务标识均已脱敏
 - 主 Provider：`embedded-sap-odata`，严格 GET-only
 - 条件补证：`sap-adt-table-export`
-- SE16N 调用：`0`
+- 自动 Provider 回退调用：`0`；SE16N 调用：`0`
 - Verdict：**PASS**
 
 ## Embedded evidence
 
 - 自动发现输入（脱敏）：`{"controlling_area": "sha256:27ea6673d96e", "company_code": "sha256:7a5df5ffa0de", "cost_center": "sha256:332b10fcbae8", "fiscal_year": "2016", "period_from": "sha256:6b86b273ff34", "period_to": "sha256:6b86b273ff34", "planning_category": "sha256:0ff15403106f", "variance_threshold_pct": "sha256:f5ca38f748a1"}`
 - 服务/实体：`API_COSTCENTER_SRV/A_CostCenter`, `API_FINPLANNINGENTRYITEM_SRV/A_FinPlanningEntryItem`, `API_OPLACCTGDOCITEMCUBE_SRV/A_OperationalAcctgDocItemCube`
-- SAP GET：3；证据行计数：5；耗时：17988.063 ms
+- SAP GET：3；证据行计数：5；耗时：17822.726 ms
 - 查询源完整：`true`；业务完整：`true`
 - 错误代码：none
-- 证据 SHA-256：`68db3c8ee1c5c8f2f47024884fcc081c92265674de0ce71356bb317070b35277`
+- 证据 SHA-256：`73265ab660e2055315339373f91f8dd8d4d2f35a007ae7acb2c1c129c813bf01`
 
 ## Step status
 

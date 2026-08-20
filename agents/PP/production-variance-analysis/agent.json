@@ -10,7 +10,7 @@
     "zh": "比较生产订单计划与实际产量、废品、用料和成本，定位数量及成本偏差的候选根因。",
     "en": "Compares planned and actual yield, scrap, consumption and cost to identify candidate root causes of production variance."
   },
-  "status": "Live-tested deterministic prototype",
+  "status": "Three-stage live acceptance blocked",
   "version": "0.1.0",
   "owner": "PP-SFC / CO-PC",
   "tags": [
@@ -24,48 +24,31 @@
     "CO-PC",
     "MM-IM"
   ],
-  "transactions": [
-    "CO03",
-    "COOIS",
-    "CO14",
-    "KOB1",
-    "KKBC_ORD"
-  ],
-  "tables": [
-    "AFPO",
-    "AFRU",
-    "RESB",
-    "MATDOC",
-    "ACDOCA"
-  ],
+  "transactions": [],
+  "tables": [],
   "systems": [
-    "SAP ECC",
     "SAP S/4HANA"
   ],
   "inputs": {
     "zh": [
-      "生产订单或订单集合",
-      "偏差阈值与比较期间",
-      "数量、工时、用料和成本维度"
+      "生产订单号"
     ],
     "en": [
-      "Production order or order set",
-      "Variance thresholds and comparison period",
-      "Quantity, activity, consumption and cost dimensions"
+      "Manufacturing order"
     ]
   },
   "outputs": {
     "zh": [
-      "产量与废品偏差",
-      "组件用量偏差",
-      "成本偏差分解",
-      "候选根因与证据等级"
+      "生产订单号",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
     ],
     "en": [
-      "Yield and scrap variance",
-      "Component consumption variance",
-      "Cost variance decomposition",
-      "Candidate root causes and evidence grade"
+      "Manufacturing order",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
     ]
   },
   "guardrails": {
@@ -84,213 +67,73 @@
   },
   "workflow": [
     {
-      "id": "define-variance-scope",
+      "id": "execute-collect_production_variance",
       "title": {
-        "zh": "确定偏差范围",
-        "en": "Define variance scope"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "确定订单、基准、维度、阈值和截止日期。",
-        "en": "Resolve orders, baseline, dimensions, thresholds and cutoff date."
+        "zh": "执行清单步骤 `collect_production_variance`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_production_variance` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "明确比较计划值、标准值还是上期实际。",
-          "分开记录数量、工时、用料和金额单位。"
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderItem_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderOperation_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderComponent_2",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem"
         ],
         "en": [
-          "Specify whether the baseline is plan, standard or prior actual.",
-          "Track quantity, activity, consumption and currency units separately."
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderItem_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderOperation_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderComponent_2",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem"
         ]
       },
       "tools": [
         {
-          "name": "Variance scope validator",
-          "kind": "Agent component",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "建立可审计比较口径。",
-            "en": "Establishes an auditable comparison basis."
+            "zh": "执行 `collect_production_variance` / `execute_plan`",
+            "en": "Execute `collect_production_variance` / `execute_plan`"
           }
         }
+      ],
+      "executionStepIds": [
+        "collect_production_variance"
       ]
     },
     {
-      "id": "validate-source-contracts",
+      "id": "execute-evaluate_business_result",
       "title": {
-        "zh": "验证来源契约",
-        "en": "Validate source contracts"
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "验证生产订单、物料凭证和会计行项目字段。",
-        "en": "Validate production-order, material-document and accounting-line-item fields."
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
       },
       "operations": {
         "zh": [
-          "检查 Embedded Provider 只读状态。",
-          "以真机实际 schema 为准，索引字段不兼容时停止该维度。"
+          "rule.evaluate_business_agent"
         ],
         "en": [
-          "Check Embedded Provider read-only state.",
-          "Use the live schema and stop a dimension when an indexed field is incompatible."
+          "rule.evaluate_business_agent"
         ]
       },
       "tools": [
         {
-          "name": "embedded_odata_schema",
-          "kind": "Embedded SAP OData",
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "验证偏差字段。",
-            "en": "Validates variance fields."
-          }
-        },
-        {
-          "name": "embedded_odata_execute_get",
-          "kind": "Embedded SAP OData",
-          "purpose": {
-            "zh": "执行受控查询。",
-            "en": "Executes controlled queries."
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
           }
         }
-      ]
-    },
-    {
-      "id": "load-plan-and-confirmation",
-      "title": {
-        "zh": "读取计划与确认",
-        "en": "Load plan and confirmation"
-      },
-      "description": {
-        "zh": "读取计划数量、确认产量、实际偏差和废品。",
-        "en": "Read planned quantity, confirmed yield, actual deviation and scrap."
-      },
-      "operations": {
-        "zh": [
-          "按订单读取 AFPO 语义项目和 AFRU 语义工序。",
-          "字段不可执行时记录 schema 漂移，不用零值代替。"
-        ],
-        "en": [
-          "Read AFPO-semantic items and AFRU-semantic operations by order.",
-          "Record schema drift for non-executable fields instead of substituting zero."
-        ]
-      },
-      "tools": [
-        {
-          "name": "API_PRODUCTION_ORDER_2_SRV",
-          "kind": "SAP OData API",
-          "purpose": {
-            "zh": "提供计划、确认和废品字段。",
-            "en": "Provides plan, confirmation and scrap fields."
-          }
-        }
-      ]
-    },
-    {
-      "id": "load-consumption-and-cost",
-      "title": {
-        "zh": "读取用料与成本",
-        "en": "Load consumption and cost"
-      },
-      "description": {
-        "zh": "读取组件需求、领料、物料移动和订单成本行。",
-        "en": "Read component requirements, withdrawals, goods movements and order cost lines."
-      },
-      "operations": {
-        "zh": [
-          "用组件需求量与领料/移动净数量计算用量偏差。",
-          "成本维度按订单、成本要素、币种和期间汇总。"
-        ],
-        "en": [
-          "Calculate usage variance from requirements and net issues/movements.",
-          "Aggregate cost by order, cost element, currency and period."
-        ]
-      },
-      "tools": [
-        {
-          "name": "API_MATERIAL_DOCUMENT_SRV",
-          "kind": "SAP OData API",
-          "purpose": {
-            "zh": "提供实际物料移动。",
-            "en": "Provides actual goods movements."
-          }
-        },
-        {
-          "name": "API_GLACCOUNTLINEITEM",
-          "kind": "SAP OData API",
-          "purpose": {
-            "zh": "在可关联时提供订单成本行。",
-            "en": "Provides order cost lines when a supported relationship exists."
-          }
-        }
-      ]
-    },
-    {
-      "id": "cross-check-confirmations",
-      "title": {
-        "zh": "核对确认与订单表",
-        "en": "Cross-check confirmations and order tables"
-      },
-      "description": {
-        "zh": "通过 SAPSkillhub 核对 AFPO、AFRU、RESB 等表。",
-        "en": "Use SAPSkillhub to cross-check AFPO, AFRU and RESB."
-      },
-      "operations": {
-        "zh": [
-          "只导出低行数、不含敏感字段的验证样本。",
-          "脚本卡住时只停止导出脚本，不关闭 SAP GUI。"
-        ],
-        "en": [
-          "Export only low-row, non-sensitive validation samples.",
-          "If the script hangs, stop only the exporter and keep SAP GUI open."
-        ]
-      },
-      "tools": [
-        {
-          "name": "sap-se16n-export",
-          "kind": "SAPSkillhub",
-          "purpose": {
-            "zh": "提供表级确认和用料证据。",
-            "en": "Provides table-level confirmation and consumption evidence."
-          }
-        }
-      ]
-    },
-    {
-      "id": "explain-root-causes",
-      "title": {
-        "zh": "解释候选根因",
-        "en": "Explain candidate root causes"
-      },
-      "description": {
-        "zh": "把偏差与组件、工序、日期和成本证据关联并分级。",
-        "en": "Link variance to component, operation, timing and cost evidence and grade confidence."
-      },
-      "operations": {
-        "zh": [
-          "区分尚未发生、数据缺失、真实偏差和已冲销偏差。",
-          "输出候选根因、反证、证据等级和后续核查。"
-        ],
-        "en": [
-          "Distinguish not-yet-posted, missing data, actual variance and reversed variance.",
-          "Present candidate causes, counter-evidence, evidence grade and follow-up checks."
-        ]
-      },
-      "tools": [
-        {
-          "name": "Variance root-cause model",
-          "kind": "AI analysis",
-          "purpose": {
-            "zh": "生成可解释候选根因。",
-            "en": "Generates explainable candidate root causes."
-          }
-        },
-        {
-          "name": "Evidence grading",
-          "kind": "Control",
-          "purpose": {
-            "zh": "限制因果断言。",
-            "en": "Constrains causal claims."
-          }
-        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
       ]
     }
   ],
@@ -376,9 +219,11 @@
                   "OperationIsConfirmed",
                   "OperationIsPartiallyConfirmed",
                   "OpPlannedTotalQuantity",
-                  "OpTotalConfirmedYieldQty"
+                  "OpTotalConfirmedYieldQty",
+                  "OpErlstSchedldExecStrtDte",
+                  "OpErlstSchedldExecEndDte"
                 ],
-                "rationale": "Load production operations and confirmations.",
+                "rationale": "Load production operations, planned dates, and confirmations.",
                 "filters": [
                   {
                     "field": "ManufacturingOrder",
@@ -461,6 +306,185 @@
           ]
         }
       }
-    ]
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "manufacturing_order": {
+          "type": "string",
+          "title": {
+            "zh": "生产订单号",
+            "en": "Manufacturing order"
+          },
+          "description": {
+            "zh": "请输入生产订单号。",
+            "en": "Enter the manufacturing order."
+          },
+          "placeholder": {
+            "zh": "例如：1000000",
+            "en": "Example: 1000000"
+          },
+          "minLength": 1,
+          "maxLength": 12,
+          "pattern": "^[0-9]+$"
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "manufacturing_order",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "manufacturing_order": "{{steps.evaluate_business_result.output.workflow_output.manufacturing_order}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "manufacturing_order",
+        "cost_element"
+      ],
+      "facts": [
+        "business_status"
+      ],
+      "metrics": [
+        "operation_rows",
+        "movement_rows",
+        "cost_rows"
+      ],
+      "decimalFields": [
+        "actual_amount"
+      ],
+      "decimalMetricIds": [],
+      "currencyFields": [
+        "currency"
+      ],
+      "unitFields": [],
+      "dateFields": [],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {
+        "manufacturing_order": "manufacturing_order"
+      },
+      "constantDefaults": {},
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "production_cost_evidence": [
+          "production cost evidence",
+          "cost items",
+          "成本证据",
+          "成本行项目"
+        ],
+        "production_cost_relationship": [
+          "production cost relationship",
+          "fi orderid",
+          "cost attribution",
+          "成本关系",
+          "成本归属"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [
+        "production_cost_evidence",
+        "production_cost_relationship"
+      ],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [
+        "production_cost_evidence",
+        "production_cost_relationship"
+      ],
+      "ignoredNoticeKeywords": [
+        "empty cost table does not mean actual cost is zero",
+        "空成本表不表示实际成本为零"
+      ],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "BLOCKED",
+    "testedAt": "2026-08-20T07:45:35.827526+00:00",
+    "evidenceScope": "bounded",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
+      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": false,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": [
+      "production_cost_evidence",
+      "production_cost_relationship"
+    ],
+    "codexDirectBaselineHash": "sha256:cdb2f30a571e1f8bc14b56bfc0fbb9b1c1243c88b43e90b06cd4929e231eef00",
+    "freeQueryHash": "sha256:4d9afe1a85b0fc094d152253e5d821d0ca2fdcb24d9149be0cef65f845b9bd62",
+    "adjudicatedResultHash": "sha256:cdb2f30a571e1f8bc14b56bfc0fbb9b1c1243c88b43e90b06cd4929e231eef00",
+    "fixedAgentHash": "sha256:cdb2f30a571e1f8bc14b56bfc0fbb9b1c1243c88b43e90b06cd4929e231eef00",
+    "comparisonHash": "sha256:0c05e5c9d4503335a5758cad8356027298006e33bf566540e918665b84ac936d"
   }
 }

@@ -10,7 +10,7 @@
     "zh": "汇总销售需求、历史订单与计划独立需求，识别预测偏差并形成可审计的 PIR 调整建议。",
     "en": "Combines sales demand, order history and planned independent requirements to explain forecast gaps and recommend auditable PIR adjustments."
   },
-  "status": "Live-tested deterministic prototype",
+  "status": "Three-stage live acceptance blocked",
   "version": "0.1.0",
   "owner": "PP Demand Planning / Sales Planning",
   "tags": [
@@ -23,48 +23,43 @@
     "PP-MP",
     "SD-SLS"
   ],
-  "transactions": [
-    "MD61",
-    "MD62",
-    "MD63",
-    "VA05"
-  ],
-  "tables": [
-    "VBAP",
-    "PBIM",
-    "PBED",
-    "PLAF"
-  ],
+  "transactions": [],
+  "tables": [],
   "systems": [
-    "SAP ECC",
     "SAP S/4HANA"
   ],
   "inputs": {
     "zh": [
-      "工厂、物料与预测期间",
-      "销售订单需求",
-      "现有 PIR 与计划版本",
-      "预测模型参数和业务事件"
+      "工厂",
+      "物料",
+      "开始日期",
+      "结束日期"
     ],
     "en": [
-      "Plant, material and forecast horizon",
-      "Sales-order demand",
-      "Existing PIRs and planning version",
-      "Forecast parameters and business events"
+      "Plant",
+      "Material",
+      "Start date",
+      "End date"
     ]
   },
   "outputs": {
     "zh": [
-      "需求趋势与异常",
-      "预测值和置信区间",
-      "PIR 调整建议",
-      "来源与审批证据"
+      "工厂",
+      "物料",
+      "开始日期",
+      "结束日期",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
     ],
     "en": [
-      "Demand trends and anomalies",
-      "Forecast and confidence interval",
-      "PIR adjustment recommendation",
-      "Source and approval evidence"
+      "Plant",
+      "Material",
+      "Start date",
+      "End date",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
     ]
   },
   "guardrails": {
@@ -83,221 +78,69 @@
   },
   "workflow": [
     {
-      "id": "define-forecast-scope",
+      "id": "execute-collect_forecast_evidence",
       "title": {
-        "zh": "确定预测范围",
-        "en": "Define forecast scope"
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "解析工厂、物料、期间、粒度和计划版本。",
-        "en": "Parse plant, material, horizon, granularity and planning version."
+        "zh": "执行清单步骤 `collect_forecast_evidence`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_forecast_evidence` using GET requests validated against live schema."
       },
       "operations": {
         "zh": [
-          "校验工厂、物料和期间唯一且单位明确。",
-          "记录促销、停产和一次性订单等业务事件。"
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderItem",
+          "GET API_PLANNED_ORDERS@2.0/A_PlannedOrder"
         ],
         "en": [
-          "Validate a unique plant, material, horizon and unit.",
-          "Capture promotions, discontinuations and one-off orders."
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderItem",
+          "GET API_PLANNED_ORDERS@2.0/A_PlannedOrder"
         ]
       },
       "tools": [
         {
-          "name": "Query scope validator",
-          "kind": "Agent component",
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
           "purpose": {
-            "zh": "生成可审计的预测查询范围。",
-            "en": "Creates an auditable forecast scope."
+            "zh": "执行 `collect_forecast_evidence` / `execute_plan`",
+            "en": "Execute `collect_forecast_evidence` / `execute_plan`"
           }
         }
+      ],
+      "executionStepIds": [
+        "collect_forecast_evidence"
       ]
     },
     {
-      "id": "check-embedded-provider",
+      "id": "execute-evaluate_business_result",
       "title": {
-        "zh": "检查 Embedded Provider",
-        "en": "Check Embedded Provider"
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "确认运行时健康、只读并验证销售订单和计划订单 schema。",
-        "en": "Verify a healthy read-only runtime and authoritative sales/planned-order schemas."
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
       },
       "operations": {
         "zh": [
-          "要求 runtime_enabled=true 且 read_only=true。",
-          "schema 不完整时停止，不猜测字段。"
+          "rule.evaluate_business_agent"
         ],
         "en": [
-          "Require runtime_enabled=true and read_only=true.",
-          "Stop on incomplete schemas instead of guessing fields."
+          "rule.evaluate_business_agent"
         ]
       },
       "tools": [
         {
-          "name": "embedded_provider_health",
-          "kind": "Embedded SAP OData",
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "检查连接与只读边界。",
-            "en": "Checks connectivity and the read-only boundary."
-          }
-        },
-        {
-          "name": "embedded_odata_schema",
-          "kind": "Embedded SAP OData",
-          "purpose": {
-            "zh": "验证实体和字段。",
-            "en": "Validates entities and fields."
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
           }
         }
-      ]
-    },
-    {
-      "id": "collect-demand-history",
-      "title": {
-        "zh": "读取销售需求",
-        "en": "Collect sales demand"
-      },
-      "description": {
-        "zh": "按物料、工厂和期间读取销售订单项目并标准化数量。",
-        "en": "Read sales-order items by material, plant and date and normalize quantities."
-      },
-      "operations": {
-        "zh": [
-          "读取订单、项目、物料、生产工厂、请求数量和状态。",
-          "剔除拒绝、取消或重复需求并保留原始键。"
-        ],
-        "en": [
-          "Read order, item, material, production plant, requested quantity and status.",
-          "Exclude rejected, cancelled or duplicate demand while retaining source keys."
-        ]
-      },
-      "tools": [
-        {
-          "name": "API_SALES_ORDER_SRV",
-          "kind": "SAP OData API",
-          "purpose": {
-            "zh": "提供真实销售需求。",
-            "en": "Provides actual sales demand."
-          }
-        },
-        {
-          "name": "embedded_odata_execute_get",
-          "kind": "Embedded SAP OData",
-          "purpose": {
-            "zh": "执行受控只读查询。",
-            "en": "Executes controlled read-only queries."
-          }
-        }
-      ]
-    },
-    {
-      "id": "collect-pir-and-supply",
-      "title": {
-        "zh": "读取 PIR 与计划供给",
-        "en": "Collect PIR and planned supply"
-      },
-      "description": {
-        "zh": "读取现有 PIR、计划订单和计划版本，建立预测对照。",
-        "en": "Read existing PIRs, planned orders and planning versions for comparison."
-      },
-      "operations": {
-        "zh": [
-          "通过 SAPSkillhub/SE16N 读取 PBIM、PBED 的只读证据。",
-          "通过计划订单 API 读取物料、数量、日期和固定/可转换标志。"
-        ],
-        "en": [
-          "Use SAPSkillhub/SE16N for read-only PBIM and PBED evidence.",
-          "Read planned-order material, quantity, dates and firm/convertible flags."
-        ]
-      },
-      "tools": [
-        {
-          "name": "API_PLANNED_ORDERS",
-          "kind": "SAP OData API",
-          "purpose": {
-            "zh": "提供计划供给证据。",
-            "en": "Provides planned-supply evidence."
-          }
-        },
-        {
-          "name": "sap-se16n-export",
-          "kind": "SAPSkillhub",
-          "purpose": {
-            "zh": "补充 PIR 表证据。",
-            "en": "Supplements PIR table evidence."
-          }
-        }
-      ]
-    },
-    {
-      "id": "forecast-and-explain",
-      "title": {
-        "zh": "预测并解释偏差",
-        "en": "Forecast and explain gaps"
-      },
-      "description": {
-        "zh": "比较基线、实际需求与现有 PIR，输出带置信度的建议。",
-        "en": "Compare baseline, actual demand and existing PIRs and produce confidence-scored recommendations."
-      },
-      "operations": {
-        "zh": [
-          "按期间计算趋势、季节性、异常值和预测误差。",
-          "把模型建议与促销等人工事件分开解释。"
-        ],
-        "en": [
-          "Calculate trend, seasonality, outliers and forecast error by period.",
-          "Explain model effects separately from planner-supplied events."
-        ]
-      },
-      "tools": [
-        {
-          "name": "Forecast engine",
-          "kind": "AI analysis",
-          "purpose": {
-            "zh": "生成预测、区间和驱动因素。",
-            "en": "Generates forecasts, intervals and drivers."
-          }
-        }
-      ]
-    },
-    {
-      "id": "review-and-present",
-      "title": {
-        "zh": "复核并提交建议",
-        "en": "Review and present recommendations"
-      },
-      "description": {
-        "zh": "验证完整性并向计划员展示建议，保持只读。",
-        "en": "Validate completeness and present recommendations to the planner without write-back."
-      },
-      "operations": {
-        "zh": [
-          "检查分页、期间、单位和数据新鲜度。",
-          "输出建议调整量、证据键、风险和审批状态。"
-        ],
-        "en": [
-          "Check pagination, periods, units and freshness.",
-          "Present recommended deltas, evidence keys, risks and approval status."
-        ]
-      },
-      "tools": [
-        {
-          "name": "Evidence validator",
-          "kind": "Control",
-          "purpose": {
-            "zh": "阻止不完整数据驱动的调整。",
-            "en": "Blocks adjustments based on incomplete evidence."
-          }
-        },
-        {
-          "name": "Planner approval",
-          "kind": "Human control",
-          "purpose": {
-            "zh": "保留 PIR 变更决策权。",
-            "en": "Retains human authority over PIR changes."
-          }
-        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
       ]
     }
   ],
@@ -423,6 +266,7 @@
                   "Material",
                   "ProductionPlant",
                   "RequestedQuantity",
+                  "RequestedQuantityUnit",
                   "ConfdDelivQtyInOrderQtyUnit"
                 ],
                 "rationale": "Load historical sales demand.",
@@ -505,6 +349,253 @@
           ]
         }
       }
-    ]
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          },
+          "description": {
+            "zh": "请输入工厂。",
+            "en": "Enter the plant."
+          },
+          "placeholder": {
+            "zh": "例如：1710",
+            "en": "Example: 1710"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          },
+          "description": {
+            "zh": "请输入物料。",
+            "en": "Enter the material."
+          },
+          "placeholder": {
+            "zh": "例如：SG21",
+            "en": "Example: SG21"
+          },
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "开始日期",
+            "en": "Start date"
+          },
+          "description": {
+            "zh": "请输入开始日期。",
+            "en": "Enter the start date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "结束日期",
+            "en": "End date"
+          },
+          "description": {
+            "zh": "请输入结束日期。",
+            "en": "Enter the end date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "plant",
+        "material",
+        "date_from",
+        "date_to",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "plant": "{{steps.evaluate_business_result.output.workflow_output.plant}}",
+      "material": "{{steps.evaluate_business_result.output.workflow_output.material}}",
+      "date_from": "{{steps.evaluate_business_result.output.workflow_output.date_from}}",
+      "date_to": "{{steps.evaluate_business_result.output.workflow_output.date_to}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "material",
+        "plant",
+        "requirement_date"
+      ],
+      "facts": [
+        "business_status"
+      ],
+      "metrics": [
+        "demand_rows",
+        "planned_order_rows"
+      ],
+      "decimalFields": [
+        "demand_quantity",
+        "planned_quantity"
+      ],
+      "decimalMetricIds": [],
+      "currencyFields": [],
+      "unitFields": [
+        "unit"
+      ],
+      "dateFields": [
+        "requirement_date"
+      ],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {
+        "material": "material",
+        "plant": "plant",
+        "requirement_date": "date_from"
+      },
+      "constantDefaults": {},
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "pir_evidence": [
+          "pir evidence",
+          "planned independent requirements",
+          "pbim",
+          "pbed",
+          "独立需求",
+          "pir"
+        ],
+        "sales_demand_period_evidence": [
+          "sales demand period",
+          "demand date",
+          "period attribution",
+          "销售需求期间",
+          "需求日期"
+        ]
+      },
+      "summaryRecord": true,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [
+        "pir_evidence",
+        "sales_demand_period_evidence"
+      ],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [
+        "pir_evidence",
+        "sales_demand_period_evidence"
+      ],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {
+        "planned_quantity": "planned_order_rows"
+      },
+      "recordScope": "",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "BLOCKED",
+    "testedAt": "2026-08-20T09:12:01.093603+00:00",
+    "evidenceScope": "bounded",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
+      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": false,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": [
+      "pir_evidence",
+      "sales_demand_period_evidence"
+    ],
+    "codexDirectBaselineHash": "sha256:5dc4d2ff08665bb5b70399f6154f268e8c990775da33d0c558b33ef46519e2ee",
+    "freeQueryHash": "sha256:44d93a68bbc1dcc6f8d961b1a81c77fae07c94bfd79605c98e02bb29256f13f1",
+    "adjudicatedResultHash": "sha256:5dc4d2ff08665bb5b70399f6154f268e8c990775da33d0c558b33ef46519e2ee",
+    "fixedAgentHash": "sha256:eea9435c4644306b463d16319ceb3e37c98f414b28f51b5c71effe4ecbae74f6",
+    "comparisonHash": "sha256:fa725d8d78a567c92e940f974c8b64b924ca9f20796b16cbd30f2609e6db9ea2"
   }
 }

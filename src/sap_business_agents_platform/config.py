@@ -30,8 +30,13 @@ class Settings:
     free_query_runtime: str = "harness"
     internal_api_url: str = "http://127.0.0.1:8765"
     max_harness_turns: int = 12
-    max_tool_calls: int = 40
+    # ``None`` means that run-scoped tool calls are bounded only by the turn and
+    # elapsed-time limits.  Environment value ``0`` selects this mode.
+    max_tool_calls: int | None = 40
     max_run_seconds: int = 600
+    # Always true for the local product runtime. Tests and the in-process live
+    # acceptance campaign may construct Settings with this disabled explicitly.
+    enforce_agent_acceptance: bool = True
 
     @property
     def database_path(self) -> Path:
@@ -94,7 +99,7 @@ class Settings:
                 "SAPBA_INTERNAL_API_URL", "http://127.0.0.1:8765"
             ).rstrip("/"),
             max_harness_turns=max(1, int(os.getenv("SAPBA_MAX_HARNESS_TURNS", "12"))),
-            max_tool_calls=max(1, int(os.getenv("SAPBA_MAX_TOOL_CALLS", "40"))),
+            max_tool_calls=_env_optional_limit("SAPBA_MAX_TOOL_CALLS", 40),
             max_run_seconds=max(10, int(os.getenv("SAPBA_MAX_RUN_SECONDS", "600"))),
         )
 
@@ -111,3 +116,14 @@ def _env_choice(name: str, default: str, allowed: set[str]) -> str:
     if value not in allowed:
         raise ValueError(f"{name} must be one of: {', '.join(sorted(allowed))}")
     return value
+
+
+def _env_optional_limit(name: str, default: int) -> int | None:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return None if value == 0 else value

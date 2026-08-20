@@ -6,6 +6,12 @@ import { runPath } from "../lib/urls";
 interface Props { locale: Locale; agent: AgentDefinition }
 const { locale, agent } = Astro.props;
 const execution = agent.execution;
+const executable = Boolean(
+  agent.validation?.verdict === "PASS"
+  && agent.validation?.executable === true
+  && agent.validation?.freeQueryComparison === "MATCH"
+  && agent.validation?.fixedAgentComparison === "MATCH"
+);
 const base = import.meta.env.BASE_URL;
 const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const destination = runPath(base, locale);
@@ -21,6 +27,7 @@ const labels = locale === "zh" ? {
   questionHelp: "请提供业务对象编号、日期范围以及希望确认的状态。",
   questionPlaceholder: `例如：${agent.summary.zh}`,
   error: "无法创建任务，请确认本地运行服务已经启动。",
+  validationRequired: "该 Agent 尚未通过真机三级验收，当前不可执行。",
 } : {
   title: "Run this Agent",
   deterministicLead: "The runtime follows the declared steps exactly. Codex does not choose or replace APIs or Skills.",
@@ -33,6 +40,7 @@ const labels = locale === "zh" ? {
   questionHelp: "Include the business object ID, date range, and the status you want to confirm.",
   questionPlaceholder: `Example: ${agent.summary.en}`,
   error: "Could not create the run. Confirm that the local runtime is started.",
+  validationRequired: "This Agent has not passed three-stage live acceptance and cannot run yet.",
 };
 ---
 
@@ -82,7 +90,8 @@ const labels = locale === "zh" ? {
       )}
       <div class="runtime-form-actions">
         <span class="runtime-form-error" role="alert" hidden>{labels.error}</span>
-        <button type="submit"><Play size={17} aria-hidden="true" />{execution ? labels.deterministicSubmit : labels.guidedSubmit}</button>
+        {execution && !executable && <span class="runtime-validation-required" role="status">{labels.validationRequired}</span>}
+        <button type="submit" disabled={Boolean(execution && !executable)}><Play size={17} aria-hidden="true" />{execution ? labels.deterministicSubmit : labels.guidedSubmit}</button>
       </div>
     </form>
 </section>

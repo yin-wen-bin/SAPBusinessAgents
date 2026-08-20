@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -14,17 +15,32 @@ import pytest
 from sap_business_agents_platform.app import create_app
 from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.database import RunStore
+from sap_business_agents_platform.engine import _count_free_query_top_bounds
 from sap_business_agents_platform.harness import (
     CodexHarnessController,
     HarnessToolBroker,
+    _best_effort_interrupt,
+    _evidence_sources_complete,
+    _executed_plans_from_calls,
+    _latest_assessed_missing_evidence,
+    _latest_validated_presentation,
     _custom_tool_kind,
     _mcp_overrides,
+    _plan_business_contract_issue,
     _persistent_harness_counts,
     _public_https_citations,
     _sanitized_codex_env,
+    _validated_presentation_snapshot,
+    _validated_payload_from_store,
     _validate_internal_api_url,
 )
-from sap_business_agents_platform.models import RunCreate, RunMode
+from sap_business_agents_platform.models import (
+    LocalizedText,
+    PresentationBlock,
+    RunCreate,
+    RunMode,
+    RunPresentation,
+)
 from sap_business_agents_platform.sap_read.embedded_odata import EmbeddedODataProvider
 from sap_business_agents_platform.tool_gateway import (
     ToolAdmissionError,
@@ -32,6 +48,12 @@ from sap_business_agents_platform.tool_gateway import (
     ToolCandidate,
     _admit_openapi,
 )
+
+
+def test_empty_inconclusive_harness_audit_plan_has_no_top_bound() -> None:
+    assert _count_free_query_top_bounds(
+        {"kind": "sap_business_agents_harness", "runtime": "codex_app_server", "steps": []}
+    ) == 0
 
 
 class FakeSapRead:
@@ -106,6 +128,79 @@ def _settings(tmp_path: Path, root: Path | None = None) -> Settings:
 def test_broker_enforces_capability_idempotency_evidence_and_gap_gate(tmp_path: Path) -> None:
     async def scenario() -> None:
         await _broker_scenario(tmp_path)
+
+    asyncio.run(scenario())
+
+
+def test_zero_tool_limit_is_unlimited_and_invalid_values_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SAPBA_MAX_TOOL_CALLS", "0")
+    assert Settings.from_env(tmp_path).max_tool_calls is None
+    monkeypatch.setenv("SAPBA_MAX_TOOL_CALLS", "-1")
+    with pytest.raises(ValueError, match="non-negative integer"):
+        Settings.from_env(tmp_path)
+    monkeypatch.setenv("SAPBA_MAX_TOOL_CALLS", "not-a-number")
+    with pytest.raises(ValueError, match="non-negative integer"):
+        Settings.from_env(tmp_path)
+
+
+def test_final_report_validation_is_outside_budget_and_updates_phases(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        settings = replace(_settings(tmp_path), max_tool_calls=1)
+        store = RunStore(settings.database_path)
+        run_id = "run_budget"
+        store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="supplier status"))
+        store.update_run(run_id, status="planning")
+        broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+        token = broker.open_session(run_id)
+        catalog = await broker.handle(run_id, token, "sap_catalog_search", {"query": "supplier"})
+        assert catalog["ok"] is True
+        assert store.get_run(run_id).status.value == "validating"
+        blocked = await broker.handle(
+            run_id,
+            token,
+            "sap_schema_get",
+            {
+                "service_name": "API_GLACCOUNTLINEITEM",
+                "odata_version": "2.0",
+                "entity_sets": ["GLAccountLineItem"],
+            },
+        )
+        assert blocked["code"] == "harness_tool_limit_reached"
+        report = RunPresentation(
+            title=LocalizedText(zh="诊断", en="Diagnostic"),
+            blocks=[
+                PresentationBlock(
+                    type="notice",
+                    text=LocalizedText(zh="没有客户事实。", en="No customer facts."),
+                    claim_scope="diagnostic",
+                )
+            ],
+        ).model_dump(mode="json")
+        validated = await broker.handle(
+            run_id, token, "sap_final_report_validate", {"report": report}
+        )
+        assert validated["ok"] is True
+        assert validated["validation_ref"].startswith("validation_")
+        assert "_validated_report" not in validated
+        assert store.get_run(run_id).status.value == "running"
+        calls = store.list_harness_tool_calls(run_id)
+        assert [item["tool_name"] for item in calls] == [
+            "sap_catalog_search",
+            "sap_final_report_validate",
+        ]
+        stored = calls[-1]
+        assert "_validated_report" in stored["output"]
+        copied_with_drift = RunPresentation.model_validate(report)
+        copied_with_drift.validation_ref = validated["validation_ref"]
+        copied_with_drift.title.en = "Model changed this after validation"
+        recovered = _validated_presentation_snapshot(
+            copied_with_drift.validation_ref, calls
+        )
+        assert recovered is not None
+        assert recovered.title.en == "Diagnostic"
+        assert recovered.validation_ref == validated["validation_ref"]
 
     asyncio.run(scenario())
 
@@ -192,6 +287,159 @@ def test_harness_steer_interrupt_and_persistent_counts(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_best_effort_interrupt_does_not_mask_timeout() -> None:
+    class MissingTurn:
+        async def interrupt(self) -> None:
+            error = RuntimeError("thread not found")
+            error.code = "-32600"  # type: ignore[attr-defined]
+            raise error
+
+    assert asyncio.run(_best_effort_interrupt(MissingTurn())) == "-32600"
+
+
+def test_timeout_can_recover_latest_immutable_validated_report(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    store = RunStore(settings.database_path)
+    run_id = "run_recover_report"
+    store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="status"))
+    broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+    token = broker.open_session(run_id)
+    report = RunPresentation(
+        title=LocalizedText(zh="结果", en="Result"),
+        blocks=[
+            PresentationBlock(
+                type="notice",
+                text=LocalizedText(zh="诊断", en="Diagnostic"),
+                claim_scope="diagnostic",
+            )
+        ],
+    ).model_dump(mode="json")
+    result = asyncio.run(
+        broker.handle(run_id, token, "sap_final_report_validate", {"report": report})
+    )
+
+    recovered = _latest_validated_presentation(store.list_harness_tool_calls(run_id))
+
+    assert recovered is not None
+    assert recovered.validation_ref == result["validation_ref"]
+    assert recovered.title.en == "Result"
+
+
+def test_source_completeness_is_derived_from_executed_sap_evidence() -> None:
+    assert _evidence_sources_complete(
+        [
+            {"source_type": "sap_live", "source_complete": True},
+            {"source_type": "sap_live", "source_complete": True},
+            {"source_type": "web_reference", "source_complete": False},
+        ]
+    ) is True
+    assert _evidence_sources_complete(
+        [{"source_type": "sap_skill", "source_complete": False}]
+    ) is False
+
+
+def test_validated_report_can_finish_without_waiting_for_turn_teardown(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    store = RunStore(settings.database_path)
+    run_id = "run_early_validated"
+    store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="customer items"))
+    broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+    token = broker.open_session(run_id)
+    executed = asyncio.run(
+        broker.handle(
+            run_id,
+            token,
+            "sap_query_execute",
+            {
+                "plan": {
+                    "service_name": "API_TEST_SRV",
+                    "odata_version": "2.0",
+                    "entity_set": "A_Test",
+                    "http_method": "GET",
+                }
+            },
+        )
+    )
+    assessed = asyncio.run(
+        broker.handle(
+            run_id,
+            token,
+            "sap_evidence_assess",
+            {
+                "question": "historical status",
+                "evidence_refs": [executed["evidence_ref"]],
+                "missing_evidence": ["historical_dunning_evidence"],
+            },
+        )
+    )
+    assert assessed["missing_evidence"] == ["historical_dunning_evidence"]
+    report = RunPresentation(
+        title=LocalizedText(zh="结果", en="Result"),
+        blocks=[
+            PresentationBlock(
+                type="text",
+                text=LocalizedText(zh="已确认应收。", en="Receivables confirmed."),
+                claim_scope="customer_business_fact",
+                evidence_refs=[executed["evidence_ref"]],
+            )
+        ],
+    ).model_dump(mode="json")
+    asyncio.run(
+        broker.handle(run_id, token, "sap_final_report_validate", {"report": report})
+    )
+
+    raw_calls = store.list_harness_tool_calls(run_id)
+    assert _latest_assessed_missing_evidence(raw_calls) == ["historical_dunning_evidence"]
+    payload = _validated_payload_from_store(store, run_id, broker.snapshot(run_id)[1])
+    assert payload is not None
+    assert payload["status"] == "inconclusive"
+    assert payload["business_complete"] is False
+    assert payload["missing_evidence"] == ["historical_dunning_evidence"]
+    assert payload["evidence_refs"] == [executed["evidence_ref"]]
+    assert payload["executed_plans"] == _executed_plans_from_calls(raw_calls)
+    assert payload["executed_plans"] == [
+        {
+            "service_name": "API_TEST_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_Test",
+            "http_method": "GET",
+            "evidence_ref": executed["evidence_ref"],
+        }
+    ]
+
+
+def test_account_item_plan_requires_declared_transaction_pair_and_rejects_guessed_ledger() -> None:
+    question = "List customer transaction-currency amount as of the cutoff"
+    missing_pair = _plan_business_contract_issue(
+        question,
+        {
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "select_fields": ["TransactionCurrency"],
+            "filters": [],
+        },
+    )
+    assert missing_pair is not None
+    assert missing_pair["code"] == "paired_transaction_amount_required"
+    assert _plan_business_contract_issue(
+        question,
+        {
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "select_fields": ["AmountInTransactionCurrency", "TransactionCurrency"],
+            "filters": [],
+        },
+    ) is None
+    guessed_ledger = _plan_business_contract_issue(
+        question,
+        {
+            "entity_set": "GLAccountLineItem",
+            "select_fields": ["AmountInTransactionCurrency", "TransactionCurrency"],
+            "filters": [{"field": "Ledger", "operator": "eq", "value": "0L"}],
+        },
+    )
+    assert guessed_ledger is not None
+    assert guessed_ledger["code"] == "unverified_ledger_scope_rejected"
+
+
 async def _broker_scenario(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     store = RunStore(settings.database_path)
@@ -245,6 +493,29 @@ async def _broker_scenario(tmp_path: Path) -> None:
         run_id, token, "sap_evidence_read", {"evidence_ref": executed["evidence_ref"]}
     )
     assert read["rows"][0]["FinancialAccountType"] == "K"
+    presentation = RunPresentation(
+        title=LocalizedText(zh="供应商状态", en="Supplier status"),
+        blocks=[
+            PresentationBlock(
+                type="text",
+                text=LocalizedText(zh="已找到供应商项目。", en="A supplier item was found."),
+                claim_scope="customer_business_fact",
+                evidence_refs=[executed["evidence_ref"]],
+            )
+        ],
+    ).model_dump(mode="json")
+    validated_report = await broker.handle(
+        run_id, token, "sap_final_report_validate", {"report": presentation}
+    )
+    assert validated_report["ok"] is True
+    assert validated_report["report_hash"].startswith("sha256:")
+    invalid_presentation = json.loads(json.dumps(presentation))
+    invalid_presentation["blocks"][0]["evidence_refs"] = ["ev_000000000000000000000000"]
+    invalid_report = await broker.handle(
+        run_id, token, "sap_final_report_validate", {"report": invalid_presentation}
+    )
+    assert invalid_report["ok"] is False
+    assert invalid_report["validation_issues"][0]["code"] == "unknown_evidence_ref"
 
     assessed = await broker.handle(
         run_id,
@@ -539,12 +810,22 @@ def test_app_server_overrides_disable_inherited_mcp_and_strip_sap_secrets(
     assert "mcp_servers.sapclaw_runtime.enabled=false" in overrides
     assert any(item.startswith("mcp_servers.sap_business_agents.command=") for item in overrides)
     assert not any("SAP_PASSWORD" in item for item in overrides)
+    assert any(
+        item == 'mcp_servers.sap_business_agents.env.PYTHONUTF8="1"'
+        for item in overrides
+    )
+    assert any(
+        item == 'mcp_servers.sap_business_agents.env.PYTHONIOENCODING="utf-8"'
+        for item in overrides
+    )
 
     monkeypatch.setenv("SAP_PASSWORD", "secret")
     monkeypatch.setenv("SAP_ADT_TOKEN", "secret")
     sanitized = _sanitized_codex_env()
     assert sanitized["SAP_PASSWORD"] == ""
     assert sanitized["SAP_ADT_TOKEN"] == ""
+    assert sanitized["PYTHONUTF8"] == "1"
+    assert sanitized["PYTHONIOENCODING"] == "utf-8"
 
 
 def test_custom_tool_wrapper_classifies_native_web_and_forbidden_host_tools() -> None:

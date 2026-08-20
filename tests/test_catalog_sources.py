@@ -217,6 +217,7 @@ def test_curated_bilingual_inventory_document_and_mrp_search_rank_expected_candi
         password="",
         service_registry_path=ROOT / "config" / "odata-services.json",
         catalog_seed_path=ROOT / "data" / "catalog-seed" / "catalog.json",
+        curated_catalog_path=ROOT / "config" / "catalog-curated-terms.json",
     )
 
     async def search(query: str) -> dict[str, object]:
@@ -227,6 +228,8 @@ def test_curated_bilingual_inventory_document_and_mrp_search_rank_expected_candi
         "material document": ("API_MATERIAL_DOCUMENT_SRV", "A_MaterialDocumentHeader"),
         "物料需求计划": ("API_MRP_MATERIALS_SRV_01", "A_MRPMaterial"),
         "MRP supply demand": ("API_MRP_MATERIALS_SRV_01", "SupplyDemandItems"),
+        "supplier quotation item": ("API_QTN_PROCESS_SRV", "A_SupplierQuotationItem"),
+        "planned order": ("API_PLANNED_ORDERS", "A_PlannedOrder"),
     }
     for query, expected in cases.items():
         result = asyncio.run(search(query))

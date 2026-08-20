@@ -2,53 +2,1525 @@
   "schemaVersion": 2,
   "slug": "material-shortage-procurement-response",
   "module": "MM",
-  "title": {"zh": "外购件短缺采购响应助手", "en": "Material Shortage Procurement Response Assistant"},
-  "summary": {"zh": "联结 MRP 短缺、采购申请、采购订单交期和有效货源，给出可审计的释放、转换与催交建议。", "en": "Links MRP shortages, requisitions, PO schedules, and valid sources into auditable release, conversion, and expediting recommendations."},
-  "status": "Deterministic prototype pending live validation",
+  "title": {
+    "zh": "外购件短缺采购响应助手",
+    "en": "Material Shortage Procurement Response Assistant"
+  },
+  "summary": {
+    "zh": "联结 MRP 短缺、采购申请、采购订单交期和有效货源，给出可审计的释放、转换与催交建议。",
+    "en": "Links MRP shortages, requisitions, PO schedules, and valid sources into auditable release, conversion, and expediting recommendations."
+  },
+  "status": "Three-stage live acceptance blocked",
   "version": "0.1.0",
   "owner": "MM-PUR / PP-MRP",
-  "tags": ["MRP", "Shortage", "Purchase Requisition", "Expediting"],
-  "sapModules": ["MM-PUR", "PP-MRP"],
-  "transactions": ["MD04", "MD05", "ME53N", "ME23N"],
-  "tables": ["MDKP", "MDTB", "EBAN", "EKPO", "EKET", "EINA", "EINE"],
-  "systems": ["SAP ECC", "SAP S/4HANA"],
-  "inputs": {"zh": ["物料", "工厂", "MRP 范围", "采购组织", "评估基准日"], "en": ["Material", "Plant", "MRP area", "Purchasing organization", "Evaluation date"]},
-  "outputs": {"zh": ["待释放与待转换 PR", "催交 PO", "交期风险", "有效货源", "确定或受抑制的短缺量"], "en": ["PRs to release or convert", "POs to expedite", "Delivery risk", "Valid sources", "Confirmed or suppressed shortage quantity"]},
-  "guardrails": {"zh": ["只读，不创建或修改采购凭证", "单位不可比时不计算确定缺口", "ADT 仅在 API 证据不足时调用并以实时 DDIC 校验", "缺失、超时和截断不得解释为零记录"], "en": ["Read-only; never create or change purchasing documents", "Do not calculate a confirmed gap when units are incomparable", "Call ADT only when API evidence is insufficient and validate against live DDIC metadata", "Never interpret missing, timed-out, or truncated evidence as zero records"]},
+  "tags": [
+    "MRP",
+    "Shortage",
+    "Purchase Requisition",
+    "Expediting"
+  ],
+  "sapModules": [
+    "MM-PUR",
+    "PP-MRP"
+  ],
+  "transactions": [],
+  "tables": [
+    "MDKP",
+    "EBAN",
+    "EKPO",
+    "EKET",
+    "EINA",
+    "EINE"
+  ],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "物料",
+      "工厂",
+      "mrp area",
+      "采购组织",
+      "shortage profile",
+      "shortage counter",
+      "查询基准日"
+    ],
+    "en": [
+      "Material",
+      "Plant",
+      "Mrp Area",
+      "Purchasing organization",
+      "Shortage Profile",
+      "Shortage Counter",
+      "As-of date"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "物料",
+      "工厂",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
+    ],
+    "en": [
+      "Material",
+      "Plant",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "只读，不创建或修改采购凭证",
+      "单位不可比时不计算确定缺口",
+      "ADT 仅在 API 证据不足时调用并以实时 DDIC 校验",
+      "缺失、超时和截断不得解释为零记录"
+    ],
+    "en": [
+      "Read-only; never create or change purchasing documents",
+      "Do not calculate a confirmed gap when units are incomparable",
+      "Call ADT only when API evidence is insufficient and validate against live DDIC metadata",
+      "Never interpret missing, timed-out, or truncated evidence as zero records"
+    ]
+  },
   "workflow": [
-    {"id":"parse-input","title":{"zh":"1. 解析输入","en":"1. Parse input"},"description":{"zh":"验证物料、工厂、MRP 范围、采购组织和基准日。","en":"Validate material, plant, MRP area, purchasing organization, and evaluation date."},"operations":{"zh":["拒绝无界或格式无效的查询。"],"en":["Reject unbounded or malformed queries."]},"tools":[{"name":"Input schema","kind":"Control","purpose":{"zh":"建立有界范围。","en":"Establishes bounded scope."}}]},
-    {"id":"check-embedded","title":{"zh":"2. 检查 Embedded Provider/schema","en":"2. Check Embedded Provider/schema"},"description":{"zh":"要求 selected_provider=embedded、read_only=true 并读取实时 metadata。","en":"Require selected_provider=embedded and read_only=true, then read live metadata."},"operations":{"zh":["验证 MRP 与采购 API 的实体和字段。"],"en":["Validate entities and fields for MRP and purchasing APIs."]},"tools":[{"name":"embedded-sap-odata","kind":"SAP read Provider","purpose":{"zh":"提供 GET-only schema。","en":"Provides GET-only schema."}}]},
-    {"id":"read-api","title":{"zh":"3. 读取标准 API","en":"3. Read standard APIs"},"description":{"zh":"读取 MRP 覆盖、供需、PR、PO 交期、信息记录、合同和供应商状态。","en":"Read MRP coverage, supply-demand, PR, PO schedule, info record, contract, and supplier status evidence."},"operations":{"zh":["全部请求使用精确过滤和完整分页。"],"en":["Use exact filters and complete paging for every request."]},"tools":[{"name":"Released SAP OData APIs","kind":"SAP API","purpose":{"zh":"提供首选业务证据。","en":"Provides preferred business evidence."}}]},
-    {"id":"assess-gap","title":{"zh":"4. 评估 API 证据缺口","en":"4. Assess API evidence gaps"},"description":{"zh":"确定性检查实体、字段、分页和业务关联。","en":"Deterministically check entities, fields, paging, and business relationships."},"operations":{"zh":["按 mrp、pr、po_schedule、source 生成布尔 needs_adt。"],"en":["Produce boolean needs_adt flags for mrp, pr, po_schedule, and source."]},"tools":[{"name":"assess_api_evidence","kind":"Deterministic rule","purpose":{"zh":"控制降级。","en":"Controls fallback."}}]},
-    {"id":"adt-fallback","title":{"zh":"5. 条件调用 sap-adt-table-export","en":"5. Conditionally call sap-adt-table-export"},"description":{"zh":"仅对明确缺口执行受保护、有界的 ADT 查询；对象、读取字段、过滤字段和稳定键均以实时 DDIC 为准。","en":"Run protected, bounded ADT queries only for explicit gaps; validate objects, selected fields, filter fields, and stable keys against live DDIC metadata."},"operations":{"zh":["未触发步骤记录 skipped/condition_false。"],"en":["Record skipped/condition_false for untriggered steps."]},"tools":[{"name":"sap-adt-table-export","kind":"SAPSkillhub Skill","purpose":{"zh":"补充 MDKP、EBAN、EKET、EINE 证据。","en":"Supplements MDKP, EBAN, EKET, and EINE evidence."}}]},
-    {"id":"merge-evidence","title":{"zh":"6. 合并并验证证据","en":"6. Merge and validate evidence"},"description":{"zh":"按业务键合并 API 与 ADT，并校验完整性和哈希。","en":"Merge API and ADT by business keys and validate completeness and hashes."},"operations":{"zh":["partial、failed 或哈希失败保持证据缺口。"],"en":["Keep an evidence gap for partial, failed, or hash-invalid results."]},"tools":[{"name":"Evidence gate","kind":"Control","purpose":{"zh":"抑制不完整结论。","en":"Suppresses incomplete conclusions."}}]},
-    {"id":"analyze","title":{"zh":"7. 执行确定性分析","en":"7. Run deterministic analysis"},"description":{"zh":"识别待释放/转换 PR、催交 PO、交期风险与有效货源。","en":"Identify PRs to release/convert, POs to expedite, schedule risk, and valid sources."},"operations":{"zh":["只有供需完整且单位一致才计算确定缺口。"],"en":["Calculate a confirmed shortage only with complete supply-demand evidence and consistent units."]},"tools":[{"name":"Shortage procurement analyzer","kind":"Rule engine","purpose":{"zh":"生成可解释建议。","en":"Produces explainable recommendations."}}]},
-    {"id":"present","title":{"zh":"8. 输出结论和限制","en":"8. Present conclusions and limits"},"description":{"zh":"输出双语状态、证据范围、缺口和建议动作。","en":"Present bilingual status, evidence scope, gaps, and recommended actions."},"operations":{"zh":["必需证据缺失时输出 INCONCLUSIVE。"],"en":["Return INCONCLUSIVE when required evidence is missing."]},"tools":[{"name":"Business report","kind":"Output","purpose":{"zh":"形成审计友好报告。","en":"Creates an audit-friendly report."}}]}
+    {
+      "id": "execute-read_mrp",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `read_mrp`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_mrp` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_MRP_MATERIALS_SRV_01@2.0/MaterialCoverages"
+        ],
+        "en": [
+          "GET API_MRP_MATERIALS_SRV_01@2.0/MaterialCoverages"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_mrp` / `execute_plan`",
+            "en": "Execute `read_mrp` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_mrp"
+      ]
+    },
+    {
+      "id": "execute-read_pr",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `read_pr`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_pr` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_PURCHASEREQ_PROCESS_SRV@2.0/A_PurchaseRequisitionItem"
+        ],
+        "en": [
+          "GET API_PURCHASEREQ_PROCESS_SRV@2.0/A_PurchaseRequisitionItem"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_pr` / `execute_plan`",
+            "en": "Execute `read_pr` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_pr"
+      ]
+    },
+    {
+      "id": "execute-read_pr_release",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `read_pr_release`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_pr_release` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_PURCHASEREQ_PROCESS_SRV@2.0/A_PurchaseRequisitionItem"
+        ],
+        "en": [
+          "GET API_PURCHASEREQ_PROCESS_SRV@2.0/A_PurchaseRequisitionItem"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_pr_release` / `execute_plan`",
+            "en": "Execute `read_pr_release` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_pr_release"
+      ]
+    },
+    {
+      "id": "execute-read_po_source",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `read_po_source`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_po_source` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem"
+        ],
+        "en": [
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_po_source` / `execute_plan`",
+            "en": "Execute `read_po_source` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_po_source"
+      ]
+    },
+    {
+      "id": "execute-read_po_schedule",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `read_po_schedule`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_po_schedule` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderScheduleLine"
+        ],
+        "en": [
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderScheduleLine"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_po_schedule` / `execute_plan`",
+            "en": "Execute `read_po_schedule` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_po_schedule"
+      ]
+    },
+    {
+      "id": "execute-read_source",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `read_source`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_source` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_INFORECORD_PROCESS_SRV@2.0/A_PurgInfoRecdOrgPlantData"
+        ],
+        "en": [
+          "GET API_INFORECORD_PROCESS_SRV@2.0/A_PurgInfoRecdOrgPlantData"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_source` / `execute_plan`",
+            "en": "Execute `read_source` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_source"
+      ]
+    },
+    {
+      "id": "execute-assess",
+      "title": {
+        "zh": "评估证据完整性",
+        "en": "Assess evidence completeness"
+      },
+      "description": {
+        "zh": "执行清单步骤 `assess`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `assess` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.assess_api_evidence"
+        ],
+        "en": [
+          "rule.assess_api_evidence"
+        ]
+      },
+      "tools": [
+        {
+          "name": "assess_api_evidence",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `assess` / `assess_api_evidence`",
+            "en": "Execute `assess` / `assess_api_evidence`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "assess"
+      ]
+    },
+    {
+      "id": "execute-adt_mrp",
+      "title": {
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
+      },
+      "description": {
+        "zh": "仅在清单条件成立时执行 `adt_mrp`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_mrp` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+      },
+      "operations": {
+        "zh": [
+          "sap-adt-table-export.execute"
+        ],
+        "en": [
+          "sap-adt-table-export.execute"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "执行 `adt_mrp` / `execute`",
+            "en": "Execute `adt_mrp` / `execute`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_mrp"
+      ]
+    },
+    {
+      "id": "execute-adt_pr",
+      "title": {
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
+      },
+      "description": {
+        "zh": "仅在清单条件成立时执行 `adt_pr`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_pr` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+      },
+      "operations": {
+        "zh": [
+          "sap-adt-table-export.execute"
+        ],
+        "en": [
+          "sap-adt-table-export.execute"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "执行 `adt_pr` / `execute`",
+            "en": "Execute `adt_pr` / `execute`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_pr"
+      ]
+    },
+    {
+      "id": "execute-adt_po_scope",
+      "title": {
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
+      },
+      "description": {
+        "zh": "仅在清单条件成立时执行 `adt_po_scope`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_po_scope` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+      },
+      "operations": {
+        "zh": [
+          "sap-adt-table-export.execute"
+        ],
+        "en": [
+          "sap-adt-table-export.execute"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "执行 `adt_po_scope` / `execute`",
+            "en": "Execute `adt_po_scope` / `execute`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_po_scope"
+      ]
+    },
+    {
+      "id": "execute-po_numbers",
+      "title": {
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
+      },
+      "description": {
+        "zh": "执行清单步骤 `po_numbers`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `po_numbers` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.extract_bounded_values"
+        ],
+        "en": [
+          "rule.extract_bounded_values"
+        ]
+      },
+      "tools": [
+        {
+          "name": "extract_bounded_values",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `po_numbers` / `extract_bounded_values`",
+            "en": "Execute `po_numbers` / `extract_bounded_values`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "po_numbers"
+      ]
+    },
+    {
+      "id": "execute-adt_po",
+      "title": {
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
+      },
+      "description": {
+        "zh": "仅在清单条件成立时执行 `adt_po`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_po` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+      },
+      "operations": {
+        "zh": [
+          "sap-adt-table-export.execute"
+        ],
+        "en": [
+          "sap-adt-table-export.execute"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "执行 `adt_po` / `execute`",
+            "en": "Execute `adt_po` / `execute`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_po"
+      ]
+    },
+    {
+      "id": "execute-adt_source_scope",
+      "title": {
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
+      },
+      "description": {
+        "zh": "仅在清单条件成立时执行 `adt_source_scope`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_source_scope` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+      },
+      "operations": {
+        "zh": [
+          "sap-adt-table-export.execute"
+        ],
+        "en": [
+          "sap-adt-table-export.execute"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "执行 `adt_source_scope` / `execute`",
+            "en": "Execute `adt_source_scope` / `execute`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_source_scope"
+      ]
+    },
+    {
+      "id": "execute-info_numbers",
+      "title": {
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
+      },
+      "description": {
+        "zh": "执行清单步骤 `info_numbers`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `info_numbers` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.extract_bounded_values"
+        ],
+        "en": [
+          "rule.extract_bounded_values"
+        ]
+      },
+      "tools": [
+        {
+          "name": "extract_bounded_values",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `info_numbers` / `extract_bounded_values`",
+            "en": "Execute `info_numbers` / `extract_bounded_values`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "info_numbers"
+      ]
+    },
+    {
+      "id": "execute-adt_source",
+      "title": {
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
+      },
+      "description": {
+        "zh": "仅在清单条件成立时执行 `adt_source`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_source` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+      },
+      "operations": {
+        "zh": [
+          "sap-adt-table-export.execute"
+        ],
+        "en": [
+          "sap-adt-table-export.execute"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "执行 `adt_source` / `execute`",
+            "en": "Execute `adt_source` / `execute`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_source"
+      ]
+    },
+    {
+      "id": "execute-evaluate",
+      "title": {
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
+      },
+      "description": {
+        "zh": "执行清单步骤 `evaluate`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.evaluate_business_agent"
+        ],
+        "en": [
+          "rule.evaluate_business_agent"
+        ]
+      },
+      "tools": [
+        {
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `evaluate` / `evaluate_business_agent`",
+            "en": "Execute `evaluate` / `evaluate_business_agent`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "evaluate"
+      ]
+    }
   ],
   "execution": {
     "mode": "deterministic",
     "timeoutSeconds": 600,
-    "inputSchema": {"type":"object","properties":{"material":{"type":"string","minLength":1,"maxLength":40,"pattern":"^[0-9A-Za-z_-]+$"},"plant":{"type":"string","minLength":1,"maxLength":4,"pattern":"^[0-9A-Za-z_-]+$"},"mrp_area":{"type":"string","minLength":1,"maxLength":10,"pattern":"^[0-9A-Za-z_-]+$"},"purchasing_organization":{"type":"string","minLength":1,"maxLength":4,"pattern":"^[0-9A-Za-z_-]+$"},"shortage_profile":{"type":"string","minLength":1,"maxLength":20,"pattern":"^[0-9A-Za-z_-]+$"},"shortage_counter":{"type":"string","minLength":1,"maxLength":3,"pattern":"^[0-9]+$"},"as_of":{"type":"string","format":"date"}},"required":["material","plant","mrp_area","purchasing_organization","shortage_profile","shortage_counter","as_of"],"additionalProperties":false},
-    "outputSchema":{"type":"object","properties":{"material":{"type":"string"},"plant":{"type":"string"},"business_status":{"type":"string"},"source_complete":{"type":"boolean"},"business_report":{"type":"object"}},"required":["material","plant","business_status","source_complete","business_report"],"additionalProperties":false},
-    "outputMapping":{"material":"{{steps.evaluate.output.workflow_output.material}}","plant":"{{steps.evaluate.output.workflow_output.plant}}","business_status":"{{steps.evaluate.output.workflow_output.business_status}}","source_complete":"{{steps.evaluate.output.workflow_output.source_complete}}","business_report":"{{steps.evaluate.output.workflow_output.business_report}}"},
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "material": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          }
+        },
+        "plant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          }
+        },
+        "mrp_area": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "mrp area",
+            "en": "Mrp Area"
+          }
+        },
+        "purchasing_organization": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "采购组织",
+            "en": "Purchasing organization"
+          }
+        },
+        "shortage_profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "shortage profile",
+            "en": "Shortage Profile"
+          }
+        },
+        "shortage_counter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 3,
+          "pattern": "^[0-9]+$",
+          "title": {
+            "zh": "shortage counter",
+            "en": "Shortage Counter"
+          }
+        },
+        "as_of": {
+          "type": "string",
+          "format": "date",
+          "title": {
+            "zh": "查询基准日",
+            "en": "As-of date"
+          }
+        }
+      },
+      "required": [
+        "material",
+        "plant",
+        "mrp_area",
+        "purchasing_organization",
+        "shortage_profile",
+        "shortage_counter",
+        "as_of"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          }
+        },
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          }
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "material",
+        "plant",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "material": "{{steps.evaluate.output.workflow_output.material}}",
+      "plant": "{{steps.evaluate.output.workflow_output.plant}}",
+      "business_status": "{{steps.evaluate.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate.output.workflow_output.business_report}}"
+    },
     "steps": [
-      {"id":"read_mrp","executor":"sap_read","operation":"execute_plan","readOnly":true,"failurePolicy":"record_gap","request":{"plan":{"service_name":"API_MRP_MATERIALS_SRV_01","odata_version": "2.0","entity_set":"MaterialCoverages","http_method":"GET","plan_kind":"direct","select_fields":["Material","MRPArea","MRPPlant","MaterialBaseUnit","MaterialShortageQuantity","MaterialShortageStartDate","MaterialShortageProfile","MaterialShortageProfileCount"],"filters":[{"field":"Material","operator":"eq","value":"{{input.material}}","value_type":"string"},{"field":"MRPArea","operator":"eq","value":"{{input.mrp_area}}","value_type":"string"},{"field":"MRPPlant","operator":"eq","value":"{{input.plant}}","value_type":"string"},{"field":"MaterialShortageProfile","operator":"eq","value":"{{input.shortage_profile}}","value_type":"string"},{"field":"MaterialShortageProfileCount","operator":"eq","value":"{{input.shortage_counter}}","value_type":"string"}],"rationale":"Collect bounded MRP shortage evidence."}}},
-      {"id":"read_pr","executor":"sap_read","operation":"execute_plan","readOnly":true,"failurePolicy":"record_gap","request":{"plan":{"service_name":"API_PURCHASEREQ_PROCESS_SRV","odata_version": "2.0","entity_set":"A_PurchaseRequisitionItem","http_method":"GET","plan_kind":"direct","select_fields":["PurchaseRequisition","PurchaseRequisitionItem","Material","Plant","RequestedQuantity","BaseUnit","ProcessingStatus"],"filters":[{"field":"Material","operator":"eq","value":"{{input.material}}","value_type":"string"},{"field":"Plant","operator":"eq","value":"{{input.plant}}","value_type":"string"}],"rationale":"Collect bounded purchase requisition core evidence."}}},
-      {"id":"read_pr_release","executor":"sap_read","operation":"execute_plan","readOnly":true,"failurePolicy":"record_gap","request":{"plan":{"service_name":"API_PURCHASEREQ_PROCESS_SRV","odata_version": "2.0","entity_set":"A_PurchaseRequisitionItem","http_method":"GET","plan_kind":"direct","select_fields":["PurchaseRequisition","PurchaseRequisitionItem","ReleaseStatus"],"filters":[{"field":"Material","operator":"eq","value":"{{input.material}}","value_type":"string"},{"field":"Plant","operator":"eq","value":"{{input.plant}}","value_type":"string"}],"rationale":"Collect release status when the live API exposes it."}}},
-      {"id":"read_po_source","executor":"sap_read","operation":"execute_plan","readOnly":true,"failurePolicy":"record_gap","request":{"plan":{"service_name":"API_PURCHASEORDER_PROCESS_SRV","odata_version": "2.0","entity_set":"A_PurchaseOrderItem","http_method":"GET","plan_kind":"direct","select_fields":["PurchaseOrder","PurchaseOrderItem","Material","Plant","OrderQuantity","PurchaseOrderQuantityUnit"],"filters":[{"field":"Material","operator":"eq","value":"{{input.material}}","value_type":"string"},{"field":"Plant","operator":"eq","value":"{{input.plant}}","value_type":"string"}],"rationale":"Collect bounded PO item core evidence before schedule fallback."}}},
-      {"id":"read_po_schedule","executor":"sap_read","operation":"execute_plan","readOnly":true,"failurePolicy":"record_gap","request":{"plan":{"service_name":"API_PURCHASEORDER_PROCESS_SRV","odata_version": "2.0","entity_set":"A_PurchaseOrderScheduleLine","http_method":"GET","plan_kind":"direct","select_fields":["PurchaseOrder","PurchaseOrderItem","ScheduleLine","ScheduleLineDeliveryDate","ScheduleLineOrderQuantity","OpenPurchaseOrderQuantity"],"filters":[{"field":"PurchasingOrganization","operator":"eq","value":"{{input.purchasing_organization}}","value_type":"string"},{"field":"Material","operator":"eq","value":"{{input.material}}","value_type":"string"},{"field":"Plant","operator":"eq","value":"{{input.plant}}","value_type":"string"}],"rationale":"Collect schedule lines when the live API exposes the required fields."}}},
-      {"id":"read_source","executor":"sap_read","operation":"execute_plan","readOnly":true,"failurePolicy":"record_gap","request":{"plan":{"service_name":"API_INFORECORD_PROCESS_SRV","odata_version": "2.0","entity_set":"A_PurchasingInfoRecord","http_method":"GET","plan_kind":"direct","select_fields":["PurchasingInfoRecord","Supplier","Material","PurchasingOrganization","IsDeleted"],"filters":[{"field":"Material","operator":"eq","value":"{{input.material}}","value_type":"string"},{"field":"PurchasingOrganization","operator":"eq","value":"{{input.purchasing_organization}}","value_type":"string"}],"rationale":"Collect approved source evidence when the live API exposes purchasing-organization scope."}}},
-      {"id":"assess","executor":"rule","operation":"assess_api_evidence","inputMapping":{"checks":{"mrp":"{{steps.read_mrp.output}}","pr":{"core":"{{steps.read_pr.output}}","release":"{{steps.read_pr_release.output}}"},"po_schedule":{"core":"{{steps.read_po_source.output}}","schedule":"{{steps.read_po_schedule.output}}"},"source":"{{steps.read_source.output}}"}}},
-      {"id":"adt_mrp","executor":"skill","operation":"execute","skillId":"sap-adt-table-export","readOnly":true,"failurePolicy":"record_gap","when":{"source":"{{steps.assess.output.needs_adt.mrp}}","equals":true},"inputMapping":{"schema_version":1,"source_type":"table","object":"MDKP","fields":["DTNUM","MATNR","PLWRK"],"filters":[{"field":"MATNR","operator":"eq","value":"{{input.material}}"},{"field":"PLWRK","operator":"eq","value":"{{input.plant}}"}],"max_rows":30000}},
-      {"id":"adt_pr","executor":"skill","operation":"execute","skillId":"sap-adt-table-export","readOnly":true,"failurePolicy":"record_gap","when":{"source":"{{steps.assess.output.needs_adt.pr}}","equals":true},"inputMapping":{"schema_version":1,"source_type":"table","object":"EBAN","fields":["BANFN","BNFPO","MATNR","WERKS","MENGE","MEINS","FRGKZ"],"filters":[{"field":"MATNR","operator":"eq","value":"{{input.material}}"},{"field":"WERKS","operator":"eq","value":"{{input.plant}}"}],"max_rows":30000}},
-      {"id":"adt_po_scope","executor":"skill","operation":"execute","skillId":"sap-adt-table-export","readOnly":true,"failurePolicy":"record_gap","when":{"source":"{{steps.assess.output.needs_adt.po_schedule}}","equals":true},"inputMapping":{"schema_version":1,"source_type":"table","object":"EKPO","fields":["EBELN","EBELP","MATNR","WERKS"],"filters":[{"field":"MATNR","operator":"eq","value":"{{input.material}}"},{"field":"WERKS","operator":"eq","value":"{{input.plant}}"}],"max_rows":100}},
-      {"id":"po_numbers","executor":"rule","operation":"extract_bounded_values","inputMapping":{"payload":"{{steps.adt_po_scope.output}}","field":"EBELN","max_values":100}},
-      {"id":"adt_po","executor":"skill","operation":"execute","skillId":"sap-adt-table-export","readOnly":true,"failurePolicy":"record_gap","when":{"source":"{{steps.po_numbers.output.has_values}}","equals":true},"inputMapping":{"schema_version":1,"source_type":"table","object":"EKET","fields":["EBELN","EBELP","ETENR","EINDT","MENGE","WEMNG"],"filters":[{"field":"EBELN","operator":"in","values":"{{steps.po_numbers.output.values}}"},{"field":"EINDT","operator":"le","value":"{{input.as_of}}"}],"max_rows":30000}},
-      {"id":"adt_source_scope","executor":"skill","operation":"execute","skillId":"sap-adt-table-export","readOnly":true,"failurePolicy":"record_gap","when":{"source":"{{steps.assess.output.needs_adt.source}}","equals":true},"inputMapping":{"schema_version":1,"source_type":"table","object":"EINA","fields":["INFNR","MATNR","LIFNR"],"filters":[{"field":"MATNR","operator":"eq","value":"{{input.material}}"}],"max_rows":100}},
-      {"id":"info_numbers","executor":"rule","operation":"extract_bounded_values","inputMapping":{"payload":"{{steps.adt_source_scope.output}}","field":"INFNR","max_values":100}},
-      {"id":"adt_source","executor":"skill","operation":"execute","skillId":"sap-adt-table-export","readOnly":true,"failurePolicy":"record_gap","when":{"source":"{{steps.info_numbers.output.has_values}}","equals":true},"inputMapping":{"schema_version":1,"source_type":"table","object":"EINE","fields":["INFNR","EKORG","ESOKZ","WERKS"],"filters":[{"field":"INFNR","operator":"in","values":"{{steps.info_numbers.output.values}}"},{"field":"EKORG","operator":"eq","value":"{{input.purchasing_organization}}"},{"field":"WERKS","operator":"eq","value":"{{input.plant}}"}],"max_rows":30000}},
-      {"id":"evaluate","executor":"rule","operation":"evaluate_business_agent","inputMapping":{"agent_id":"material-shortage-procurement-response","run_input":"{{input}}","assessment":"{{steps.assess.output}}","evidence":{"mrp":"{{steps.read_mrp.output}}","pr":"{{steps.read_pr.output}}","pr_release":"{{steps.read_pr_release.output}}","po":"{{steps.read_po_source.output}}","po_schedule":"{{steps.read_po_schedule.output}}","source":"{{steps.read_source.output}}"},"fallbacks":{"mrp":"{{steps.adt_mrp.output}}","pr":"{{steps.adt_pr.output}}","po_schedule":{"scope":"{{steps.adt_po_scope.output}}","detail":"{{steps.adt_po.output}}"},"source":{"scope":"{{steps.adt_source_scope.output}}","detail":"{{steps.adt_source.output}}"}},"known_gaps":[]}}
-    ]
+      {
+        "id": "read_mrp",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
+            "entity_set": "MaterialCoverages",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "Material",
+              "MRPArea",
+              "MRPPlant",
+              "MRPPlanningSegmentNumber",
+              "MRPPlanningSegmentType",
+              "MaterialBaseUnit",
+              "MaterialShortageQuantity",
+              "MaterialShortageStartDate",
+              "MaterialShortageProfile",
+              "MaterialShortageProfileCount"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MRPArea",
+                "operator": "eq",
+                "value": "{{input.mrp_area}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MRPPlant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MaterialShortageProfile",
+                "operator": "eq",
+                "value": "{{input.shortage_profile}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MaterialShortageProfileCount",
+                "operator": "eq",
+                "value": "{{input.shortage_counter}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Collect bounded MRP shortage evidence."
+          }
+        }
+      },
+      {
+        "id": "read_pr",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_PURCHASEREQ_PROCESS_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_PurchaseRequisitionItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "PurchaseRequisition",
+              "PurchaseRequisitionItem",
+              "Material",
+              "Plant",
+              "RequestedQuantity",
+              "BaseUnit",
+              "ProcessingStatus"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "Plant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Collect bounded purchase requisition core evidence."
+          }
+        }
+      },
+      {
+        "id": "read_pr_release",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_PURCHASEREQ_PROCESS_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_PurchaseRequisitionItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "PurchaseRequisition",
+              "PurchaseRequisitionItem",
+              "Material",
+              "Plant",
+              "DeliveryDate",
+              "RequestedQuantity",
+              "OrderedQuantity",
+              "BaseUnit",
+              "ProcessingStatus",
+              "PurReqnReleaseStatus",
+              "ReleaseIsNotCompleted",
+              "IsClosed",
+              "IsDeleted"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "Plant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read the target-system processing status exposed for exact purchase-requisition items."
+          }
+        }
+      },
+      {
+        "id": "read_po_source",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_PurchaseOrderItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "PurchaseOrder",
+              "PurchaseOrderItem",
+              "Material",
+              "Plant",
+              "OrderQuantity",
+              "PurchaseOrderQuantityUnit"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "Plant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Collect bounded PO item core evidence before schedule fallback."
+          }
+        }
+      },
+      {
+        "id": "read_po_schedule",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_PurchaseOrderItem",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "schedule_po_items",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Material",
+                  "Plant"
+                ],
+                "filters": [
+                  {
+                    "field": "Material",
+                    "operator": "eq",
+                    "value": "{{input.material}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "Plant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "po_schedules",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrderScheduleLine",
+                "http_method": "GET",
+                "select_fields": [
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "ScheduleLine",
+                  "ScheduleLineDeliveryDate",
+                  "ScheduleLineOrderQuantity",
+                  "ScheduleLineCommittedQuantity",
+                  "PurchaseOrderQuantityUnit"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "PurchasingDocument",
+                    "source_step_id": "schedule_po_items",
+                    "source_field": "PurchaseOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "PurchasingDocumentItem",
+                    "source_step_id": "schedule_po_items",
+                    "source_field": "PurchaseOrderItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Join live purchase-order items to schedule lines using the target-system PurchasingDocument keys."
+          }
+        }
+      },
+      {
+        "id": "read_source",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_INFORECORD_PROCESS_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_PurgInfoRecdOrgPlantData",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "PurchasingInfoRecord",
+              "PurchasingInfoRecordCategory",
+              "PurchasingOrganization",
+              "Plant",
+              "Supplier",
+              "Material",
+              "PurgDocOrderQuantityUnit",
+              "MaterialPlannedDeliveryDurn",
+              "IsMarkedForDeletion",
+              "IsRelevantForAutomSrcg"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "PurchasingOrganization",
+                "operator": "eq",
+                "value": "{{input.purchasing_organization}}",
+                "value_type": "string"
+              },
+              {
+                "field": "Plant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read source-list evidence from the organization/plant purchasing-info-record entity exposed by live metadata."
+          }
+        }
+      },
+      {
+        "id": "assess",
+        "executor": "rule",
+        "operation": "assess_api_evidence",
+        "inputMapping": {
+          "checks": {
+            "mrp": "{{steps.read_mrp.output}}",
+            "pr": {
+              "core": "{{steps.read_pr.output}}",
+              "release": "{{steps.read_pr_release.output}}"
+            },
+            "po_schedule": {
+              "core": "{{steps.read_po_source.output}}",
+              "schedule": "{{steps.read_po_schedule.output}}"
+            },
+            "source": "{{steps.read_source.output}}"
+          }
+        }
+      },
+      {
+        "id": "adt_mrp",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.mrp}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "MDKP",
+          "fields": [
+            "DTNUM",
+            "MATNR",
+            "PLWRK"
+          ],
+          "filters": [
+            {
+              "field": "MATNR",
+              "operator": "eq",
+              "value": "{{input.material}}"
+            },
+            {
+              "field": "PLWRK",
+              "operator": "eq",
+              "value": "{{input.plant}}"
+            }
+          ],
+          "max_rows": 30000
+        }
+      },
+      {
+        "id": "adt_pr",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.pr}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "EBAN",
+          "fields": [
+            "BANFN",
+            "BNFPO",
+            "MATNR",
+            "WERKS",
+            "MENGE",
+            "MEINS",
+            "FRGKZ"
+          ],
+          "filters": [
+            {
+              "field": "MATNR",
+              "operator": "eq",
+              "value": "{{input.material}}"
+            },
+            {
+              "field": "WERKS",
+              "operator": "eq",
+              "value": "{{input.plant}}"
+            }
+          ],
+          "max_rows": 30000
+        }
+      },
+      {
+        "id": "adt_po_scope",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.po_schedule}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "EKPO",
+          "fields": [
+            "EBELN",
+            "EBELP",
+            "MATNR",
+            "WERKS"
+          ],
+          "filters": [
+            {
+              "field": "MATNR",
+              "operator": "eq",
+              "value": "{{input.material}}"
+            },
+            {
+              "field": "WERKS",
+              "operator": "eq",
+              "value": "{{input.plant}}"
+            }
+          ],
+          "max_rows": 100
+        }
+      },
+      {
+        "id": "po_numbers",
+        "executor": "rule",
+        "operation": "extract_bounded_values",
+        "inputMapping": {
+          "payload": "{{steps.adt_po_scope.output}}",
+          "field": "EBELN",
+          "max_values": 100
+        }
+      },
+      {
+        "id": "adt_po",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.po_numbers.output.has_values}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "EKET",
+          "fields": [
+            "EBELN",
+            "EBELP",
+            "ETENR",
+            "EINDT",
+            "MENGE",
+            "WEMNG"
+          ],
+          "filters": [
+            {
+              "field": "EBELN",
+              "operator": "in",
+              "values": "{{steps.po_numbers.output.values}}"
+            },
+            {
+              "field": "EINDT",
+              "operator": "le",
+              "value": "{{input.as_of}}"
+            }
+          ],
+          "max_rows": 30000
+        }
+      },
+      {
+        "id": "adt_source_scope",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.source}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "EINA",
+          "fields": [
+            "INFNR",
+            "MATNR",
+            "LIFNR"
+          ],
+          "filters": [
+            {
+              "field": "MATNR",
+              "operator": "eq",
+              "value": "{{input.material}}"
+            }
+          ],
+          "max_rows": 100
+        }
+      },
+      {
+        "id": "info_numbers",
+        "executor": "rule",
+        "operation": "extract_bounded_values",
+        "inputMapping": {
+          "payload": "{{steps.adt_source_scope.output}}",
+          "field": "INFNR",
+          "max_values": 100
+        }
+      },
+      {
+        "id": "adt_source",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.info_numbers.output.has_values}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "EINE",
+          "fields": [
+            "INFNR",
+            "EKORG",
+            "ESOKZ",
+            "WERKS"
+          ],
+          "filters": [
+            {
+              "field": "INFNR",
+              "operator": "in",
+              "values": "{{steps.info_numbers.output.values}}"
+            },
+            {
+              "field": "EKORG",
+              "operator": "eq",
+              "value": "{{input.purchasing_organization}}"
+            },
+            {
+              "field": "WERKS",
+              "operator": "eq",
+              "value": "{{input.plant}}"
+            }
+          ],
+          "max_rows": 30000
+        }
+      },
+      {
+        "id": "evaluate",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "material-shortage-procurement-response",
+          "run_input": "{{input}}",
+          "assessment": "{{steps.assess.output}}",
+          "evidence": {
+            "mrp": "{{steps.read_mrp.output}}",
+            "pr": "{{steps.read_pr_release.output}}",
+            "pr_release": "{{steps.read_pr_release.output}}",
+            "po": "{{steps.read_po_source.output}}",
+            "po_schedule": "{{steps.read_po_schedule.output}}",
+            "source": "{{steps.read_source.output}}"
+          },
+          "fallbacks": {
+            "mrp": "{{steps.adt_mrp.output}}",
+            "pr": "{{steps.adt_pr.output}}",
+            "po_schedule": {
+              "scope": "{{steps.adt_po_scope.output}}",
+              "detail": "{{steps.adt_po.output}}"
+            },
+            "source": {
+              "scope": "{{steps.adt_source_scope.output}}",
+              "detail": "{{steps.adt_source.output}}"
+            }
+          },
+          "known_gaps": []
+        }
+      }
+    ],
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "material",
+        "plant",
+        "requirement_id"
+      ],
+      "facts": [
+        "requirement_date",
+        "mrp_element_type",
+        "business_status"
+      ],
+      "metrics": [
+        "shortage_quantity",
+        "pending_pr",
+        "expedite_po",
+        "valid_source_candidates"
+      ],
+      "decimalFields": [
+        "shortage_quantity"
+      ],
+      "decimalMetricIds": [
+        "shortage_quantity"
+      ],
+      "currencyFields": [],
+      "unitFields": [
+        "unit"
+      ],
+      "dateFields": [
+        "requirement_date"
+      ],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {},
+      "constantDefaults": {},
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {
+        "mrp_element_type": {
+          "materialcoverage": "material_coverage",
+          "material_coverage": "material_coverage"
+        }
+      },
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "mrp_evidence": [
+          "mrp evidence unavailable",
+          "mrp coverage unavailable",
+          "mrp query incomplete",
+          "mrp timeout",
+          "mrp 证据不可用",
+          "mrp 证据不足",
+          "mrp 超时"
+        ],
+        "pr_evidence": [
+          "pr evidence unavailable",
+          "pr query incomplete",
+          "采购申请证据不足"
+        ],
+        "po_schedule_evidence": [
+          "po schedule evidence unavailable",
+          "po schedule query incomplete",
+          "计划行证据不足"
+        ],
+        "source_evidence": [
+          "source evidence unavailable",
+          "source query incomplete",
+          "货源证据不足"
+        ],
+        "movement_evidence": [
+          "movement evidence unavailable",
+          "movement query incomplete",
+          "移动证据不足"
+        ],
+        "batch_expiry_evidence": [
+          "batch expiry evidence unavailable",
+          "batch expiry query incomplete",
+          "批次效期证据不足"
+        ],
+        "supplier_evidence": [
+          "supplier evidence unavailable",
+          "supplier query incomplete",
+          "供应商证据不足"
+        ],
+        "receipt_evidence": [
+          "receipt evidence unavailable",
+          "receipt query incomplete",
+          "收货证据不足"
+        ],
+        "low_sample_confidence": [
+          "low sample",
+          "fewer than five",
+          "less than 5",
+          "少于 5",
+          "低样本",
+          "样本不足"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [
+        "mrp_evidence"
+      ],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "Return only authoritative MRP coverage or supply-demand requirement rows. Purchase requisitions, PO schedule lines, and source candidates are contextual evidence summarized by metrics, not comparison records.",
+      "metricDefinitions": {
+        "pending_pr": "Count exact material/plant PR items that are not deleted and are not in completed/released terminal processing states.",
+        "expedite_po": "Count exact material/plant PO schedule lines with delivery before the as-of date and positive schedule quantity minus committed quantity.",
+        "valid_source_candidates": "Count exact purchasing-organization/plant info-record rows returned by the complete source query."
+      },
+      "businessStatusDefinition": "Use attention when shortage_quantity, pending_pr, or expedite_po is positive; use normal only when all three are zero. Test-data qualification BLOCKED is a separate acceptance verdict and must not replace this business status.",
+      "businessStatusFromAnyPositiveMetric": {
+        "metrics": [
+          "shortage_quantity",
+          "pending_pr",
+          "expedite_po"
+        ],
+        "positive": "attention",
+        "zero": "normal"
+      }
+    }
   },
-  "validation":{"verdict":"BLOCKED","testedAt":"2026-08-18T21:36:47+08:00","evidenceScope":"bounded","providers":["embedded-sap-odata","sap-adt-table-export"],"summary":{"zh":"PR 和 PO 的历史真机 GET 证据保留；当前 ADT 调用因已安装 Skill 契约仍要求 caller profile 而记录 skill_contract_incompatible，结论保持 INCONCLUSIVE。","en":"Historical live PR and PO GET evidence is retained; current ADT calls report skill_contract_incompatible because the installed Skill contract still requires a caller profile, so conclusions remain inconclusive."},"reportPath":"docs/live-sap-test-report.md"}
+  "validation": {
+    "verdict": "BLOCKED",
+    "testedAt": "2026-08-20T09:28:09.598221+00:00",
+    "evidenceScope": "bounded",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
+      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": false,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": [
+      "qualified_shortage_test_data_missing"
+    ],
+    "codexDirectBaselineHash": "sha256:ecf0a6949d3836cdbacbbbc2cc6a01f07743987f6fa18290aea869f76a5d5d26",
+    "freeQueryHash": "sha256:33eb1a446305c20cfc868103368ae148a0a7ebda29ad46d380363964e23e70f9",
+    "adjudicatedResultHash": "sha256:ecf0a6949d3836cdbacbbbc2cc6a01f07743987f6fa18290aea869f76a5d5d26",
+    "fixedAgentHash": "sha256:0ae023456ff12363975bbf553ef3ab8c5e425501f443019afb9cdf4476ef40da",
+    "comparisonHash": "sha256:74e3ed32aeea08cbc845ebd6b54d3ca71da75629d026833549ecc5aaab730e1e"
+  }
 }

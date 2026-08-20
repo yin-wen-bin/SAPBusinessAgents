@@ -456,13 +456,56 @@
       "entity_set": "A_MaterialDocumentItem",
       "field": "ManufacturingOrder",
       "semantic": "manufacturing_order_id"
+    },
+    {
+      "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_PurchaseOrderScheduleLine",
+      "field": "PurchasingDocument",
+      "semantic": "purchase_order_id"
+    },
+    {
+      "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_PurchaseOrderScheduleLine",
+      "field": "PurchasingDocumentItem",
+      "semantic": "purchase_order_item_id"
+    },
+    {
+      "service_name": "API_QTN_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SupplierQuotationItem",
+      "field": "SupplierQuotation",
+      "semantic": "supplier_quotation_id"
+    },
+    {
+      "service_name": "API_QTN_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SupplierQuotation",
+      "field": "SupplierQuotation",
+      "semantic": "supplier_quotation_id"
+    },
+    {
+      "service_name": "API_QTN_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SupplierQuotation",
+      "field": "Supplier",
+      "semantic": "supplier_id"
+    },
+    {
+      "service_name": "API_BUSINESS_PARTNER",
+      "odata_version": "2.0",
+      "entity_set": "A_SupplierPurchasingOrg",
+      "field": "Supplier",
+      "semantic": "supplier_id"
     }
   ],
   "relationships": [
     {
       "id": "o2c-sales-order-items",
       "modes": [
-        "literal"
+        "literal",
+        "binding"
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
@@ -480,7 +523,8 @@
     {
       "id": "o2c-sales-order-delivery",
       "modes": [
-        "literal"
+        "literal",
+        "binding"
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
@@ -498,7 +542,8 @@
     {
       "id": "o2c-sales-order-direct-billing",
       "modes": [
-        "literal"
+        "literal",
+        "binding"
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
@@ -516,7 +561,8 @@
     {
       "id": "o2c-sales-order-material-document",
       "modes": [
-        "literal"
+        "literal",
+        "binding"
       ],
       "source": {
         "service_name": "API_SALES_ORDER_SRV",
@@ -660,7 +706,8 @@
     {
       "id": "p2p-purchase-order-items",
       "modes": [
-        "literal"
+        "literal",
+        "binding"
       ],
       "source": {
         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
@@ -678,7 +725,8 @@
     {
       "id": "p2p-purchase-order-material-document",
       "modes": [
-        "literal"
+        "literal",
+        "binding"
       ],
       "source": {
         "service_name": "API_PURCHASEORDER_PROCESS_SRV",
@@ -1393,6 +1441,150 @@
         "odata_version": "2.0",
         "entity_set": "A_MaterialDocumentItem",
         "field": "ManufacturingOrder"
+      }
+    },
+    {
+      "id": "fi-operational-purchase-order",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "PurchasingDocument",
+        "odata_version": "2.0"
+      },
+      "target": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "entity_set": "A_PurchaseOrderItem",
+        "field": "PurchaseOrder",
+        "odata_version": "2.0"
+      }
+    },
+    {
+      "id": "fi-operational-material-document-po",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "PurchasingDocument",
+        "odata_version": "2.0"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "PurchaseOrder",
+        "odata_version": "2.0"
+      }
+    },
+    {
+      "id": "fi-operational-supplier-invoice-po",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "PurchasingDocument",
+        "odata_version": "2.0"
+      },
+      "target": {
+        "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "entity_set": "A_SuplrInvcItemPurOrdRef",
+        "field": "PurchaseOrder",
+        "odata_version": "2.0"
+      }
+    },
+    {
+      "id": "mm-po-item-schedule-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrderItem",
+        "field": "PurchaseOrder"
+      },
+      "target": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrderScheduleLine",
+        "field": "PurchasingDocument"
+      }
+    },
+    {
+      "id": "mm-po-item-schedule-item",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrderItem",
+        "field": "PurchaseOrderItem"
+      },
+      "target": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrderScheduleLine",
+        "field": "PurchasingDocumentItem"
+      }
+    },
+    {
+      "id": "mm-quotation-item-header",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_QTN_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_SupplierQuotationItem",
+        "field": "SupplierQuotation"
+      },
+      "target": {
+        "service_name": "API_QTN_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_SupplierQuotation",
+        "field": "SupplierQuotation"
+      }
+    },
+    {
+      "id": "mm-quotation-supplier-status",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_QTN_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_SupplierQuotation",
+        "field": "Supplier"
+      },
+      "target": {
+        "service_name": "API_BUSINESS_PARTNER",
+        "odata_version": "2.0",
+        "entity_set": "A_SupplierPurchasingOrg",
+        "field": "Supplier"
+      }
+    },
+    {
+      "id": "sd-customer-return-follow-on-billing",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_CUSTOMER_RETURN_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_CustomerReturn",
+        "field": "CustomerReturn"
+      },
+      "target": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "SalesDocument"
       }
     }
   ]

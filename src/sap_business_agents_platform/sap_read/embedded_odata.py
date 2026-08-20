@@ -29,6 +29,21 @@ _METHOD_KEYS = {"http_method", "httpMethod", "method"}
 _SAP_NS = "http://www.sap.com/Protocols/SAPData"
 
 
+def _sortable_stable_value(value: Any) -> tuple[int, int, str, str]:
+    """Use natural ordering for SAP ALPHA-style digit-only string keys."""
+    text = str(value or "")
+    # SAP Gateway sorts an empty character key before populated values.  Keep
+    # that ordering when a compound stable key contains optional components
+    # such as Plant, otherwise a valid server-side $orderby is falsely marked
+    # non-monotonic when it transitions from an empty Plant to a numeric Plant.
+    if not text:
+        return (-1, 0, "", "")
+    if text.isdecimal():
+        normalized = text.lstrip("0") or "0"
+        return (0, len(normalized), normalized, text)
+    return (1, 0, text, text)
+
+
 class EmbeddedODataProvider:
     """In-process, GET-only SAP OData V2/V4 provider.
 
@@ -55,6 +70,7 @@ class EmbeddedODataProvider:
         relationship_catalog_path: Path | None = None,
         service_registry_path: Path | None = None,
         catalog_seed_path: Path | None = None,
+        curated_catalog_path: Path | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -74,6 +90,7 @@ class EmbeddedODataProvider:
         self._metadata_cache: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._service_registry = ODataServiceRegistry.load(service_registry_path)
         self._catalog_seed = self._load_catalog_seed(catalog_seed_path)
+        self._merge_curated_catalog(curated_catalog_path)
 
     async def health(self) -> dict[str, Any]:
         issues: list[dict[str, str]] = []
@@ -656,7 +673,12 @@ class EmbeddedODataProvider:
             },
             "source_complete": source_complete,
             "source_truncated": source_truncated,
-            "validation_issues": [],
+            "validation_issues": [
+                {"step_id": step_id, **issue}
+                for step_id, item in step_results.items()
+                for issue in item.get("validation_issues") or []
+                if isinstance(issue, dict)
+            ],
             "presentation": {
                 "text": {
                     "zh": (
@@ -697,7 +719,20 @@ class EmbeddedODataProvider:
             return await self._execute_function_import(
                 service, version, service_binding, entity, step
             )
-        literal_filter = self._literal_filters(step.get("filters") or [], version)
+        descriptor = self._metadata_cache.get((service, version), {}).get(entity, {})
+        field_types = {
+            str(field.get("name") or ""): str(field.get("type") or "")
+            for field in descriptor.get("fields") or []
+            if isinstance(field, dict) and field.get("name")
+        }
+        typed_filters: list[dict[str, Any]] = []
+        for raw_filter in step.get("filters") or []:
+            item = dict(raw_filter)
+            field_type = field_types.get(str(item.get("field") or ""))
+            if not item.get("value_type") and field_type:
+                item["value_type"] = field_type
+            typed_filters.append(item)
+        literal_filter = self._literal_filters(typed_filters, version)
         binding_groups = self._binding_filter_groups(
             step.get("filter_from_previous") or [], prior, version
         )
@@ -714,6 +749,7 @@ class EmbeddedODataProvider:
 
         all_rows: list[dict[str, Any]] = []
         requests: list[dict[str, Any]] = []
+        validation_issues: list[dict[str, Any]] = []
         complete = True
         truncated = False
         for binding_chunk in chunks:
@@ -733,11 +769,36 @@ class EmbeddedODataProvider:
             requests.extend(result["requests"])
             complete = complete and result["source_complete"]
             truncated = truncated or result["source_truncated"]
+            validation_issues.extend(result.get("validation_issues") or [])
             if len(all_rows) >= self.max_results:
                 truncated = True
                 complete = False
                 all_rows = all_rows[: self.max_results]
                 break
+        aggregate_order = [str(item) for item in step.get("order_by") or []]
+        if not aggregate_order and step.get("top") is None:
+            sortable_fields = {
+                str(field.get("name") or "")
+                for field in descriptor.get("fields", [])
+                if field.get("sortable") is True
+            }
+            aggregate_order = [
+                key for key in descriptor.get("keys", []) if key in sortable_fields
+            ]
+        if aggregate_order and all_rows:
+            aggregate_values = [
+                tuple(str(row.get(field) or "") for field in aggregate_order)
+                for row in all_rows
+            ]
+            if len(aggregate_values) != len(set(aggregate_values)) and not any(
+                issue.get("code") == "duplicate_stable_key"
+                for issue in validation_issues
+            ):
+                validation_issues.append(
+                    {"code": "duplicate_stable_key", "fields": aggregate_order}
+                )
+            if validation_issues:
+                complete = False
         return {
             "ok": True,
             "service_name": service,
@@ -748,6 +809,7 @@ class EmbeddedODataProvider:
             "source_complete": complete,
             "source_truncated": truncated,
             "requests": requests,
+            "validation_issues": validation_issues,
         }
 
     async def _execute_function_import(
@@ -861,8 +923,6 @@ class EmbeddedODataProvider:
         requested_limit = min(int(explicit_top), remaining) if explicit_top is not None else remaining
         params: dict[str, str] = {"$format": "json"}
         select_fields = [str(item) for item in step.get("select_fields") or []]
-        if select_fields:
-            params["$select"] = ",".join(select_fields)
         order_by = [str(item) for item in step.get("order_by") or []]
         if not order_by and explicit_top is None:
             entity_metadata = self._metadata_cache.get((service, version), {}).get(entity, {})
@@ -874,6 +934,13 @@ class EmbeddedODataProvider:
             order_by = [
                 key for key in entity_metadata.get("keys", []) if key in sortable_fields
             ]
+        if select_fields:
+            # Stable paging checks operate on returned rows.  SAP does not
+            # return fields omitted by an explicit $select, so every ordering
+            # key must be included even when the business projection does not
+            # display it.
+            select_fields = list(dict.fromkeys([*select_fields, *order_by]))
+            params["$select"] = ",".join(select_fields)
         if order_by:
             params["$orderby"] = ",".join(order_by)
         if filter_expression:
@@ -946,11 +1013,40 @@ class EmbeddedODataProvider:
         elif next_url or (len(rows) >= self.max_results and len(rows) >= requested_limit):
             source_complete = False
             source_truncated = True
+        validation_issues: list[dict[str, Any]] = []
+        if order_by and rows:
+            stable_values = [
+                tuple(str(row.get(field) or "") for field in order_by)
+                for row in rows
+            ]
+            if len(stable_values) != len(set(stable_values)):
+                validation_issues.append(
+                    {
+                        "code": "duplicate_stable_key",
+                        "fields": order_by,
+                    }
+                )
+            elif [
+                tuple(_sortable_stable_value(row.get(field)) for field in order_by)
+                for row in rows
+            ] != sorted(
+                tuple(_sortable_stable_value(row.get(field)) for field in order_by)
+                for row in rows
+            ):
+                validation_issues.append(
+                    {
+                        "code": "non_monotonic_stable_key",
+                        "fields": order_by,
+                    }
+                )
+            if validation_issues:
+                source_complete = False
         return {
             "results": rows,
             "requests": requests,
             "source_complete": source_complete,
             "source_truncated": source_truncated,
+            "validation_issues": validation_issues,
         }
 
     async def _request(
@@ -1227,6 +1323,11 @@ class EmbeddedODataProvider:
                 raise SapReadError("Invalid numeric OData literal.", code="odata_literal_invalid")
             suffix = "M" if odata_version == "2.0" and normalized in {"decimal", "edm.decimal"} else ""
             return f"{numeric}{suffix}"
+        if normalized == "date_compact":
+            compact = str(value).replace("-", "")
+            if not re.fullmatch(r"\d{8}", compact):
+                raise SapReadError("Invalid compact-date OData literal.", code="odata_literal_invalid")
+            return f"'{compact}'"
         text = str(value).replace("'", "''")
         if normalized in {"date", "datetime", "date_start", "date_end", "edm.date", "edm.datetime"} or isinstance(value, (date, datetime)):
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
@@ -1502,6 +1603,42 @@ class EmbeddedODataProvider:
         if not isinstance(payload, dict) or payload.get("schema_version") != "2.0":
             return {}
         return payload
+
+    def _merge_curated_catalog(self, path: Path | None) -> None:
+        """Overlay reviewed search terms without regenerating the migrated seed.
+
+        The migrated SAPClaw snapshot is immutable.  Reviewed platform-owned
+        terminology can continue to evolve independently, while live metadata
+        remains the execution authority for every entity and field.
+        """
+        if path is None or not path.is_file():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict) or payload.get("schema_version") != "2.0":
+            return
+        existing = {
+            (
+                str(item.get("service_name") or ""),
+                str(item.get("odata_version") or ""),
+                str(item.get("entity_set") or ""),
+            ): item
+            for item in self._catalog_seed.get("curated_search") or []
+            if isinstance(item, dict)
+        }
+        for item in payload.get("entries") or []:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("service_name") or ""),
+                str(item.get("odata_version") or ""),
+                str(item.get("entity_set") or ""),
+            )
+            if all(key):
+                existing[key] = item
+        self._catalog_seed["curated_search"] = list(existing.values())
 
     @staticmethod
     def _normalize_observed_version(value: str) -> str | None:

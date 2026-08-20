@@ -152,6 +152,94 @@
         "MRPElementAvailyOrRqmtDate", "MRPAvailableQuantity", "MRPElementOpenQuantity",
         "ExceptionMessageNumber", "ExceptionMessageText"
       ]
+    },
+    {
+      "topic": "purchasing-rfq",
+      "service_name": "API_RFQ_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_RequestForQuotation",
+      "terms": {
+        "zh": ["询价单", "采购询价", "RFQ", "寻源询价", "报价邀请"],
+        "en": ["request for quotation", "purchasing RFQ", "sourcing RFQ", "quotation invitation"]
+      },
+      "purpose": {
+        "zh": "检索采购询价抬头、采购组织和生命周期。",
+        "en": "Find purchasing RFQ headers, purchasing organization, and lifecycle evidence."
+      },
+      "candidate_fields": ["RequestForQuotation", "PurchasingOrganization", "RFQLifecycleStatus"]
+    },
+    {
+      "topic": "supplier-quotation-item",
+      "service_name": "API_QTN_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SupplierQuotationItem",
+      "terms": {
+        "zh": ["供应商报价项目", "RFQ 报价", "报价比较", "智能寻源", "报价排名"],
+        "en": ["supplier quotation item", "RFQ quotation", "quotation comparison", "intelligent sourcing", "quotation ranking"]
+      },
+      "purpose": {
+        "zh": "检索与 RFQ 关联的供应商报价项目、价格、数量、单位和交期。",
+        "en": "Find RFQ-linked supplier quotation items, price, quantity, unit, and delivery date."
+      },
+      "candidate_fields": [
+        "SupplierQuotation", "SupplierQuotationItem", "RequestForQuotation", "RequestForQuotationItem",
+        "Material", "Plant", "ScheduleLineDeliveryDate", "ScheduleLineOrderQuantity",
+        "OrderQuantityUnit", "NetPriceAmount", "NetPriceQuantity", "DocumentCurrency"
+      ]
+    },
+    {
+      "topic": "supplier-quotation-header",
+      "service_name": "API_QTN_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SupplierQuotation",
+      "terms": {
+        "zh": ["供应商报价", "报价抬头", "报价有效期", "报价生命周期", "报价供应商"],
+        "en": ["supplier quotation", "quotation header", "quotation validity", "quotation lifecycle", "quotation supplier"]
+      },
+      "purpose": {
+        "zh": "检索报价供应商、采购组织、币种、有效期和生命周期。",
+        "en": "Find quotation supplier, purchasing organization, currency, validity, and lifecycle."
+      },
+      "candidate_fields": [
+        "SupplierQuotation", "Supplier", "PurchasingOrganization", "DocumentCurrency",
+        "RequestForQuotation", "QuotationSubmissionDate", "BindingPeriodValidityEndDate", "QTNLifecycleStatus"
+      ]
+    },
+    {
+      "topic": "planned-order-supply",
+      "service_name": "API_PLANNED_ORDERS",
+      "odata_version": "2.0",
+      "entity_set": "A_PlannedOrder",
+      "terms": {
+        "zh": ["计划订单", "计划供应", "需求预测供应", "生产计划供应", "计划订单数量"],
+        "en": ["planned order", "planned supply", "forecast supply", "production planned supply", "planned order quantity"]
+      },
+      "purpose": {
+        "zh": "检索按物料、工厂和期间划分的计划订单供应。",
+        "en": "Find planned-order supply by material, plant, and period."
+      },
+      "candidate_fields": [
+        "PlannedOrder", "Material", "ProductionPlant", "TotalQuantity",
+        "PlndOrderPlannedStartDate", "PlndOrderPlannedEndDate", "PlannedOrderIsFirm", "PlannedOrderIsConvertible"
+      ]
+    },
+    {
+      "topic": "sales-demand-forecast",
+      "service_name": "API_SALES_ORDER_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SalesOrderItem",
+      "terms": {
+        "zh": ["销售需求", "客户需求", "需求预测", "销售订单需求", "需求数量"],
+        "en": ["sales demand", "customer demand", "demand forecast", "sales order demand", "demand quantity"]
+      },
+      "purpose": {
+        "zh": "检索销售订单项目需求数量；期间归属必须由实时可用日期字段证明。",
+        "en": "Find sales-order item demand quantities; period attribution requires a live date field."
+      },
+      "candidate_fields": [
+        "SalesOrder", "SalesOrderItem", "Material", "ProductionPlant",
+        "RequestedQuantity", "RequestedQuantityUnit", "ConfdDelivQtyInOrderQtyUnit"
+      ]
     }
   ]
 }

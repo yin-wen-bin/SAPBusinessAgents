@@ -39,7 +39,11 @@ V2_METADATA = """<?xml version="1.0" encoding="utf-8"?>
   xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata" Version="1.0">
   <edmx:DataServices m:DataServiceVersion="2.0">
     <Schema xmlns="http://schemas.microsoft.com/ado/2008/09/edm" Namespace="TEST">
-      <EntityType Name="OrderType"><Key><PropertyRef Name="ID" /></Key><Property Name="ID" Type="Edm.String" Nullable="false" /></EntityType>
+      <EntityType Name="OrderType">
+        <Key><PropertyRef Name="ID" /></Key>
+        <Property Name="ID" Type="Edm.String" Nullable="false" />
+        <Property Name="PostingDate" Type="Edm.DateTime" />
+      </EntityType>
       <EntityContainer Name="Container"><EntitySet Name="Orders" EntityType="TEST.OrderType" /></EntityContainer>
     </Schema>
   </edmx:DataServices>
@@ -128,7 +132,7 @@ def test_v4_edmx_contains_literals_next_link_and_versioned_audit(tmp_path: Path)
         "select_fields": ["ID", "Name", "CreatedOn"],
         "filters": [
             {"field": "Name", "operator": "contains", "value": "bolt"},
-            {"field": "CreatedOn", "operator": "eq", "value": "2026-08-19", "value_type": "Edm.Date"},
+            {"field": "CreatedOn", "operator": "eq", "value": "2026-08-19"},
         ],
     }
     result = asyncio.run(provider.execute_plan(plan))
@@ -140,6 +144,48 @@ def test_v4_edmx_contains_literals_next_link_and_versioned_audit(tmp_path: Path)
     assert len(entity_requests) == 2
     assert entity_requests[1].url.params["$skiptoken"] == "NEXT"
     assert entity_requests[1].url.params["sap-client"] == "100"
+
+
+def test_v2_filter_literal_type_is_inferred_from_live_metadata(tmp_path: Path) -> None:
+    entity_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        if request.url.path.endswith("/$metadata"):
+            return httpx.Response(200, text=V2_METADATA)
+        entity_requests.append(request)
+        assert request.url.params["$filter"] == (
+            "(PostingDate le datetime'2018-10-01T23:59:59')"
+        )
+        return httpx.Response(200, json={"d": {"results": []}})
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        service_registry_path=registry(tmp_path, version="2.0"),
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(
+        provider.execute_plan(
+            {
+                "service_name": "API_V4_TEST",
+                "odata_version": "2.0",
+                "entity_set": "Orders",
+                "http_method": "GET",
+                "select_fields": ["ID", "PostingDate"],
+                "filters": [
+                    {
+                        "field": "PostingDate",
+                        "operator": "le",
+                        "value": "2018-10-01T23:59:59",
+                    }
+                ],
+            }
+        )
+    )
+    assert result["status"] == "completed"
+    assert entity_requests
 
 
 def test_v4_unbound_function_import_uses_get_path_literals(tmp_path: Path) -> None:
@@ -341,6 +387,18 @@ def test_v4_time_guid_and_typed_literals_are_lexically_guarded() -> None:
             raise AssertionError(f"Unsafe typed literal was accepted: {value_type}")
 
 
+def test_compact_date_literal_is_validated_and_normalized_as_string() -> None:
+    literal = EmbeddedODataProvider._odata_literal
+    assert literal("2017-10-01", "date_compact", "2.0") == "'20171001'"
+    assert literal("20171031", "date_compact", "2.0") == "'20171031'"
+    try:
+        literal("2017-10-01 or true", "date_compact", "2.0")
+    except Exception as exc:
+        assert getattr(exc, "code", "") == "odata_literal_invalid"
+    else:
+        raise AssertionError("Unsafe compact-date literal was accepted")
+
+
 def test_mixed_version_multi_step_uses_each_registered_adapter(tmp_path: Path) -> None:
     services = []
     for name, version, root in (
@@ -450,6 +508,111 @@ def test_repeated_v4_next_link_is_rejected_as_a_paging_cycle(tmp_path: Path) -> 
         assert getattr(exc, "code", "") == "sap_paging_cycle_rejected"
     else:
         raise AssertionError("A repeated V4 next-link was accepted")
+
+
+def test_duplicate_stable_keys_make_v2_source_inconclusive(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/$metadata"):
+            return httpx.Response(200, text=V2_METADATA)
+        assert request.url.params["$orderby"] == "ID"
+        return httpx.Response(
+            200,
+            json={"d": {"results": [{"ID": "A"}, {"ID": "A"}]}},
+        )
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        service_registry_path=registry(tmp_path, version="2.0"),
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(
+        provider.execute_plan(
+            {
+                "service_name": "API_V4_TEST",
+                "odata_version": "2.0",
+                "entity_set": "Orders",
+                "http_method": "GET",
+            }
+        )
+    )
+    assert result["status"] == "inconclusive"
+    assert result["source_complete"] is False
+    assert result["step_results"]["step_1"]["source_complete"] is False
+    assert result["validation_issues"] == [
+        {"step_id": "step_1", "code": "duplicate_stable_key", "fields": ["ID"]}
+    ]
+
+
+def test_explicit_projection_includes_implicit_stable_ordering_key(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/$metadata"):
+            return httpx.Response(200, text=V2_METADATA)
+        assert request.url.params["$orderby"] == "ID"
+        assert request.url.params["$select"] == "PostingDate,ID"
+        return httpx.Response(
+            200,
+            json={"d": {"results": [{"ID": "A", "PostingDate": "/Date(0)/"}]}},
+        )
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        service_registry_path=registry(tmp_path, version="2.0"),
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(
+        provider.execute_plan(
+            {
+                "service_name": "API_V4_TEST",
+                "odata_version": "2.0",
+                "entity_set": "Orders",
+                "http_method": "GET",
+                "select_fields": ["PostingDate"],
+            }
+        )
+    )
+
+    assert result["status"] == "completed"
+    assert result["source_complete"] is True
+
+
+def test_digit_only_sap_string_keys_use_natural_monotonic_order(tmp_path: Path) -> None:
+    def execute(rows: list[dict[str, str]]) -> dict[str, object]:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/$metadata"):
+                return httpx.Response(200, text=V2_METADATA)
+            return httpx.Response(200, json={"d": {"results": rows}})
+
+        provider = EmbeddedODataProvider(
+            base_url="https://sap.example.test",
+            username="fixture-user",
+            password="fixture-password",
+            service_registry_path=registry(tmp_path, version="2.0"),
+            transport=httpx.MockTransport(handler),
+        )
+        return asyncio.run(
+            provider.execute_plan(
+                {
+                    "service_name": "API_V4_TEST",
+                    "odata_version": "2.0",
+                    "entity_set": "Orders",
+                    "http_method": "GET",
+                }
+            )
+        )
+
+    monotonic = execute([{"ID": "60000000"}, {"ID": "200000001"}])
+    non_monotonic = execute([{"ID": "200000001"}, {"ID": "60000000"}])
+
+    assert monotonic["source_complete"] is True
+    assert monotonic["validation_issues"] == []
+    assert non_monotonic["source_complete"] is False
+    assert non_monotonic["validation_issues"] == [
+        {"step_id": "step_1", "code": "non_monotonic_stable_key", "fields": ["ID"]}
+    ]
 
 
 def test_encoded_v4_next_link_path_traversal_is_rejected(tmp_path: Path) -> None:

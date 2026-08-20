@@ -32,6 +32,7 @@ export interface WorkflowStep {
   operations?: LocalizedList;
   sapScope?: WorkflowSapScope;
   tools: WorkflowTool[];
+  executionStepIds: string[];
 }
 
 export interface ExecutionInputProperty {
@@ -78,6 +79,59 @@ export interface AgentValidation {
   providers: string[];
   summary: LocalizedText;
   reportPath: string;
+  executable?: boolean;
+  caseId?: string;
+  baselineRuntime?: "codex_app_direct_sap";
+  usedSapBusinessAgentsForBaseline?: false;
+  codexDirectBaselineHash?: string;
+  freeQueryHash?: string;
+  adjudicatedResultHash?: string;
+  fixedAgentHash?: string;
+  comparisonHash?: string;
+  freeQueryComparison?: "MATCH" | "MISMATCH" | "BLOCKED" | "NOT_TESTED";
+  fixedAgentComparison?: "MATCH" | "MISMATCH" | "BLOCKED" | "NOT_TESTED";
+  blockingLimitations?: string[];
+}
+
+export interface AgentAcceptance {
+  schemaVersion?: "2.0";
+  comparisonMode: "business_semantic";
+  businessKeys: string[];
+  facts: string[];
+  metrics: string[];
+  decimalFields?: string[];
+  decimalMetricIds?: string[];
+  currencyFields?: string[];
+  unitFields?: string[];
+  dateFields?: string[];
+  codeSetFields?: string[];
+  zeroPadFields?: Record<string, number>;
+  booleanFields?: string[];
+  inputDefaults?: Record<string, unknown>;
+  constantDefaults?: Record<string, unknown>;
+  fieldAliases?: Record<string, unknown>;
+  fieldExtractors?: Record<string, unknown>;
+  currencyFromDecimal?: Record<string, unknown>;
+  valueMappings?: Record<string, unknown>;
+  metricValueMappings?: Record<string, unknown>;
+  limitationKeywords?: Record<string, string[]>;
+  summaryRecord?: boolean;
+  currencyAndUnitPolicy: "compare_only_when_same_or_conversion_validated";
+  requiredLimitations: string[];
+  businessStatusFromMetric?: Record<string, unknown>;
+  limitationsFromMetrics?: Record<string, Record<string, string>>;
+  blankValueKeywords?: Record<string, unknown>;
+  blockingLimitations?: string[];
+  ignoredNoticeKeywords?: string[];
+  zeroFactWhenMetricZero?: Record<string, string>;
+  recordScope?: string;
+  metricDefinitions?: Record<string, string>;
+  businessStatusDefinition?: string;
+  businessStatusFromAnyPositiveMetric?: {
+    metrics?: string[];
+    positive?: string;
+    zero?: string;
+  };
 }
 
 export interface AgentExecution {
@@ -87,6 +141,7 @@ export interface AgentExecution {
   outputSchema?: ExecutionInputSchema;
   outputMapping?: Record<string, unknown>;
   steps: AgentExecutionStep[];
+  acceptance: AgentAcceptance;
 }
 
 export interface WorkflowNodeDefinition {

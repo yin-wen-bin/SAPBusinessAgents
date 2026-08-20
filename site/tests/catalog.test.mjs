@@ -69,48 +69,45 @@ test("catalog discovers thirty valid agents with step-level tools", () => {
 
   const sdAgents = records.filter((agent) => agent.module === "SD");
   assert.equal(sdAgents.length, 11);
-  assert.ok(sdAgents.every((agent) => agent.workflow.length === 8));
-  assert.ok(sdAgents.every((agent) => agent.workflow.some((step) => step.sapScope)));
+  assert.ok(sdAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(sdAgents.every((agent) => agent.guardrails.zh.some((item) => item.includes("只读"))));
-  const closing = records.find((agent) => agent.slug === "month-end-closing");
-  assert.ok(closing.workflow.every((step) => step.sapScope));
-  for (const [scopeField, agentField] of [["modules", "sapModules"], ["transactions", "transactions"], ["tables", "tables"]]) {
-    const coveredValues = new Set(closing.workflow.flatMap((step) => step.sapScope[scopeField]));
-    assert.deepEqual(coveredValues, new Set(closing[agentField]));
+  for (const agent of records) {
+    const executionIds = new Set(agent.execution.steps.map((step) => step.id));
+    const mappedIds = agent.workflow.flatMap((step) => step.executionStepIds);
+    assert.deepEqual(new Set(mappedIds), executionIds);
+    assert.equal(mappedIds.length, new Set(mappedIds).size);
   }
 
   const p2p = records.find((agent) => agent.slug === "procure-to-pay-status");
   assert.equal(p2p.schemaVersion, 2);
   assert.equal(p2p.execution.mode, "deterministic");
   assert.ok(p2p.execution.steps.every((step) => step.executor === "rule" || step.readOnly === true));
-  assert.equal(p2p.workflow.length, 8);
+  assert.equal(p2p.workflow.length, p2p.execution.steps.length);
   assert.ok(p2p.workflow.every((step) => step.operations.zh.length > 0));
   assert.ok(p2p.workflow.every((step) => step.operations.zh.length === step.operations.en.length));
-  const p2pTools = p2p.workflow.flatMap((step) => step.tools.map((tool) => tool.name));
+  const p2pOperations = p2p.workflow.flatMap((step) => step.operations.en);
   for (const api of [
     "API_PURCHASEORDER_PROCESS_SRV",
     "API_MATERIAL_DOCUMENT_SRV",
     "API_SUPPLIERINVOICE_PROCESS_SRV",
     "API_OPLACCTGDOCITEMCUBE_SRV",
   ]) {
-    assert.ok(p2pTools.includes(api));
+    assert.ok(p2pOperations.some((operation) => operation.includes(api)));
   }
 
   const mmAgents = records.filter((agent) => agent.module === "MM");
   assert.equal(mmAgents.length, 5);
   const newMmAgents = mmAgents.filter((agent) => agent.slug !== "procure-to-pay-status");
-  assert.ok(newMmAgents.every((agent) => agent.workflow.length === 8));
+  assert.ok(newMmAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(newMmAgents.every((agent) => agent.validation?.providers.includes("embedded-sap-odata")));
-  assert.ok(newMmAgents.every((agent) => agent.validation?.providers.includes("sap-adt-table-export")));
   assert.ok(newMmAgents.every((agent) => agent.execution.steps.some((step) => step.when)));
   assert.ok(newMmAgents.every((agent) => agent.execution.steps.filter((step) => step.executor === "skill").every((step) => step.skillId === "sap-adt-table-export" && step.failurePolicy === "record_gap")));
 
   const coAgents = records.filter((agent) => agent.module === "CO");
   assert.equal(coAgents.length, 5);
   assert.ok(coAgents.every((agent) => agent.schemaVersion === 2));
-  assert.ok(coAgents.every((agent) => agent.workflow.length === 8));
+  assert.ok(coAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(coAgents.every((agent) => agent.validation?.providers.includes("embedded-sap-odata")));
-  assert.ok(coAgents.every((agent) => agent.validation?.providers.includes("sap-adt-table-export")));
   assert.ok(coAgents.every((agent) => agent.execution.steps.every((step) => ["sap_read", "skill", "rule"].includes(step.executor))));
 
   const o2c = records.find((agent) => agent.slug === "order-to-cash-status");
@@ -119,8 +116,15 @@ test("catalog discovers thirty valid agents with step-level tools", () => {
 
   const ppAgents = records.filter((agent) => agent.module === "PP");
   assert.equal(ppAgents.length, 5);
-  assert.ok(ppAgents.every((agent) => agent.status === "Live-tested deterministic prototype"));
-  assert.ok(ppAgents.every((agent) => agent.workflow.length === 6));
+  const ppVerdicts = Object.fromEntries(ppAgents.map((agent) => [agent.slug, agent.validation?.verdict]));
+  assert.deepEqual(ppVerdicts, {
+    "demand-forecast-planning": "BLOCKED",
+    "mrp-exception-analysis": "PASS",
+    "production-order-monitoring": "PASS",
+    "production-scheduling-capacity": "BLOCKED",
+    "production-variance-analysis": "BLOCKED",
+  });
+  assert.ok(ppAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(ppAgents.every((agent) => agent.workflow.every((step) => step.operations.zh.length === step.operations.en.length)));
   assert.ok(ppAgents.every((agent) => agent.schemaVersion === 2));
   assert.ok(ppAgents.every((agent) => agent.execution.mode === "deterministic"));
@@ -145,6 +149,22 @@ test("manifest validation rejects a schema v2 non-GET execution step", () => {
   );
 });
 
+test("manifest validation permits truthful empty transaction and table scope", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents"))[0]);
+  example.transactions = [];
+  example.tables = [];
+  assert.doesNotThrow(() => validateAgent(example, example.module, example.slug, "example/agent.json"));
+});
+
+test("manifest validation still requires transaction and table scope arrays", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents"))[0]);
+  example.transactions = "none";
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /transactions must be an array/,
+  );
+});
+
 test("manifest validation rejects a service reference without OData version", () => {
   const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "procure-to-pay-status"));
   delete example.execution.steps[0].request.plan.odata_version;
@@ -154,12 +174,12 @@ test("manifest validation rejects a service reference without OData version", ()
   );
 });
 
-test("manifest validation rejects step SAP scope outside the Agent scope", () => {
+test("manifest validation rejects duplicate execution step mappings", () => {
   const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "month-end-closing"));
-  example.workflow[0].sapScope.transactions.push("SE38");
+  example.workflow[1].executionStepIds = [...example.workflow[0].executionStepIds];
   assert.throws(
     () => validateAgent(example, example.module, example.slug, "example/agent.json"),
-    /outside agent\.transactions/,
+    /maps an execution step more than once|must map every execution step exactly once/,
   );
 });
 

@@ -41,6 +41,8 @@ const collectODataRefs = (value: unknown, refs = new Map<string, { service: stri
   return refs;
 };
 const odataRefs = [...collectODataRefs(agent.execution).values()];
+const inputProperties = Object.entries(agent.execution?.inputSchema.properties ?? {});
+const outputProperties = Object.entries(agent.execution?.outputSchema?.properties ?? {});
 const labels = locale === "zh" ? {
   all: "全部 Agents",
   profile: "Agent 信息",
@@ -69,6 +71,9 @@ const labels = locale === "zh" ? {
   testedAt: "测试时间",
   providers: "证据 Provider",
   report: "查看独立测试报告",
+  executable: "可执行",
+  freeQueryComparison: "自由查询对照",
+  fixedAgentComparison: "固定 Agent 对照",
 } : {
   all: "All agents",
   profile: "Agent profile",
@@ -97,6 +102,9 @@ const labels = locale === "zh" ? {
   testedAt: "Tested at",
   providers: "Evidence providers",
   report: "View independent test report",
+  executable: "Executable",
+  freeQueryComparison: "Free-query comparison",
+  fixedAgentComparison: "Fixed-Agent comparison",
 };
 ---
 
@@ -154,6 +162,9 @@ const labels = locale === "zh" ? {
                   <div><dt>{labels.evidenceScope}</dt><dd>{agent.validation.evidenceScope}</dd></div>
                   <div><dt>{labels.testedAt}</dt><dd>{agent.validation.testedAt}</dd></div>
                   <div><dt>{labels.providers}</dt><dd>{agent.validation.providers.join(" · ")}</dd></div>
+                  <div><dt>{labels.executable}</dt><dd><code>{String(agent.validation.executable === true)}</code></dd></div>
+                  <div><dt>{labels.freeQueryComparison}</dt><dd><code>{agent.validation.freeQueryComparison || "NOT_TESTED"}</code></dd></div>
+                  <div><dt>{labels.fixedAgentComparison}</dt><dd><code>{agent.validation.fixedAgentComparison || "NOT_TESTED"}</code></dd></div>
                 </dl>
                 {validationReportUrl && (
                   <p><a href={validationReportUrl} target="_blank" rel="noreferrer">{labels.report} <ExternalLink size={14} aria-hidden="true" /></a></p>
@@ -166,11 +177,19 @@ const labels = locale === "zh" ? {
               <div class="io-grid">
                 <div class="document-panel">
                   <h3>{labels.inputs}</h3>
-                  <ul>{agent.inputs[locale].map((item) => <li>{item}</li>)}</ul>
+                  <ul>{inputProperties.map(([name, property]) => (
+                    <li>
+                      <strong>{property.title?.[locale] || name}</strong>
+                      {property.description?.[locale] && <span> — {property.description[locale]}</span>}
+                      {agent.execution?.inputSchema.required?.includes(name) && <code>{locale === "zh" ? "必填" : "required"}</code>}
+                    </li>
+                  ))}</ul>
                 </div>
                 <div class="document-panel">
                   <h3>{labels.outputs}</h3>
-                  <ul>{agent.outputs[locale].map((item) => <li>{item}</li>)}</ul>
+                  <ul>{outputProperties.map(([name, property]) => (
+                    <li><strong>{property.title?.[locale] || name}</strong></li>
+                  ))}</ul>
                 </div>
               </div>
             </section>
@@ -183,14 +202,18 @@ const labels = locale === "zh" ? {
                     <h3><Database size={18} stroke-width={1.8} aria-hidden="true" />{labels.modules}</h3>
                     <ul class="tag-list scope-tags">{agent.sapModules.map((item) => <li>{item}</li>)}</ul>
                   </div>
-                  <div>
-                    <h3>{labels.transactions}</h3>
-                    <ul class="tag-list scope-tags">{agent.transactions.map((item) => <li><code>{item}</code></li>)}</ul>
-                  </div>
-                  <div>
-                    <h3>{labels.tables}</h3>
-                    <ul class="tag-list scope-tags">{agent.tables.map((item) => <li><code>{item}</code></li>)}</ul>
-                  </div>
+                  {agent.transactions.length > 0 && (
+                    <div>
+                      <h3>{labels.transactions}</h3>
+                      <ul class="tag-list scope-tags">{agent.transactions.map((item) => <li><code>{item}</code></li>)}</ul>
+                    </div>
+                  )}
+                  {agent.tables.length > 0 && (
+                    <div>
+                      <h3>{labels.tables}</h3>
+                      <ul class="tag-list scope-tags">{agent.tables.map((item) => <li><code>{item}</code></li>)}</ul>
+                    </div>
+                  )}
                 </div>
               </section>
             )}

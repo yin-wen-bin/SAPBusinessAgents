@@ -87,6 +87,7 @@ def create_app(
         relationship_catalog_path=settings.repository_root / "config" / "business-relationships.json",
         service_registry_path=settings.odata_service_registry_path,
         catalog_seed_path=settings.catalog_seed_path,
+        curated_catalog_path=settings.repository_root / "config" / "catalog-curated-terms.json",
     )
     selected_provider = "embedded"
     selected_plugin_id = "embedded-sap-odata"
@@ -402,12 +403,12 @@ def create_app(
     @app.post("/api/runs/{run_id}/input", status_code=202)
     async def provide_input(run_id: str, payload: RunInput) -> dict[str, str]:
         try:
-            await coordinator.provide_input(run_id, payload.input)
+            mode = await coordinator.provide_input(run_id, payload.input)
         except KeyError as exc:
             raise HTTPException(404, "Run not found") from exc
         except RunExecutionError as exc:
             raise HTTPException(409, str(exc)) from exc
-        return {"run_id": run_id, "status": "queued"}
+        return {"run_id": run_id, "status": "accepted", "mode": mode}
 
     @app.post("/api/runs/{run_id}/cancel", status_code=202)
     async def cancel_run(run_id: str) -> dict[str, str]:
