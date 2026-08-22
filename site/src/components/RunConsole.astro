@@ -340,20 +340,22 @@ const labels = locale === "zh" ? {
     const id = String(value || "");
     const names = locale === "zh" ? {
       purchase_order: "采购订单", purchase_order_items: "采购订单项目", material_documents: "收货与冲销记录",
-      supplier_invoice_items: "供应商发票", accounting_items: "财务凭证", clearing_documents: "清账与付款凭证",
+      supplier_invoice_items: "供应商发票", accounting_items: "PO关联财务行", full_accounting_documents: "完整财务凭证", clearing_documents: "清账与付款凭证",
       sales_order: "销售订单", sales_order_items: "销售订单项目", delivery_items: "交货单项目",
       delivery_headers: "交货与发货过账", billing_items: "开票凭证项目", billing_headers: "开票凭证",
       accounting_by_billing: "应收财务凭证", ar_clearing: "应收清账", bank_receipt: "银行到账",
-      items: "订单项目", goods_receipt: "收货", supplier_invoice: "供应商发票", fi_clearing: "财务清账",
-      payment: "付款", delivery: "交货", pgi: "发货过账", billing: "开票",
+      items: "订单项目", goods_receipt: "收货", supplier_invoice: "供应商发票", gr_ir_match: "GR/IR匹配",
+      ap_clearing: "应付账款清账", payment_document: "SAP付款凭证", bank_settlement: "银行实际扣款",
+      fi_clearing: "财务清账", payment: "付款", delivery: "交货", pgi: "发货过账", billing: "开票",
     } : {
       purchase_order: "Purchase order", purchase_order_items: "Purchase-order items", material_documents: "Receipts and reversals",
-      supplier_invoice_items: "Supplier invoices", accounting_items: "Accounting documents", clearing_documents: "Clearing and payment documents",
+      supplier_invoice_items: "Supplier invoices", accounting_items: "PO-linked accounting items", full_accounting_documents: "Full accounting documents", clearing_documents: "Clearing and payment documents",
       sales_order: "Sales order", sales_order_items: "Sales-order items", delivery_items: "Delivery items",
       delivery_headers: "Delivery and PGI", billing_items: "Billing items", billing_headers: "Billing documents",
       accounting_by_billing: "AR accounting documents", ar_clearing: "AR clearing", bank_receipt: "Bank receipt",
-      items: "Order items", goods_receipt: "Goods receipt", supplier_invoice: "Supplier invoice", fi_clearing: "FI clearing",
-      payment: "Payment", delivery: "Delivery", pgi: "Post goods issue", billing: "Billing",
+      items: "Order items", goods_receipt: "Goods receipt", supplier_invoice: "Supplier invoice", gr_ir_match: "GR/IR matching",
+      ap_clearing: "AP clearing", payment_document: "SAP payment document", bank_settlement: "Actual bank debit",
+      fi_clearing: "FI clearing", payment: "Payment", delivery: "Delivery", pgi: "Post goods issue", billing: "Billing",
     };
     return names[id] || titleCase(id) || labels.empty;
   };
@@ -376,7 +378,8 @@ const labels = locale === "zh" ? {
       purchase_order_items: "读取订单中的全部采购项目。",
       material_documents: "核对收货、退货和冲销记录。",
       supplier_invoice_items: "核对引用该采购订单的供应商发票。",
-      accounting_items: "核对与采购订单关联的财务、清账和付款线索。",
+      accounting_items: "仅发现直接带采购订单号的财务行及其凭证键。",
+      full_accounting_documents: "按公司代码、年度和凭证号展开读取每张完整财务凭证。",
       clearing_documents: "读取清账凭证本身，避免把清账号误当成付款。",
       sales_order: "读取指定销售订单的基本信息。",
       sales_order_items: "读取订单中的全部销售项目。",
@@ -391,7 +394,8 @@ const labels = locale === "zh" ? {
       purchase_order_items: "Read all purchase-order items.",
       material_documents: "Check receipts, returns, and reversals.",
       supplier_invoice_items: "Check supplier invoices referencing the purchase order.",
-      accounting_items: "Check linked accounting, clearing, and payment evidence.",
+      accounting_items: "Discover accounting rows that directly carry the purchase-order reference.",
+      full_accounting_documents: "Expand each discovered document by company code, fiscal year and document number.",
       clearing_documents: "Read the clearing document so a clearing reference is not mistaken for payment.",
       sales_order: "Read the requested sales-order header.",
       sales_order_items: "Read all sales-order items.",
@@ -405,8 +409,8 @@ const labels = locale === "zh" ? {
     return purposes[id] || localized(step.purpose || step.rationale || step.description) || labels.empty;
   };
   const stateLabel = (state) => {
-    const values = locale === "zh" ? { confirmed: "已确认", not_confirmed: "未确认", unknown: "无法确认", found: "已找到", not_found: "未找到" }
-      : { confirmed: "Confirmed", not_confirmed: "Not confirmed", unknown: "Unknown", found: "Found", not_found: "Not found" };
+    const values = locale === "zh" ? { confirmed: "已确认", partial: "部分确认", not_confirmed: "未确认", unknown: "无法确认", not_assessed: "未单独核验", not_requested: "未启用", candidate: "风险候选", not_candidate: "未发现风险", snapshot_only: "仅库存快照", no_stock: "无当前库存", inconclusive: "无法确认", normal: "正常", attention: "需要关注", found: "已找到", not_found: "未找到" }
+      : { confirmed: "Confirmed", partial: "Partially confirmed", not_confirmed: "Not confirmed", unknown: "Unknown", not_assessed: "Not independently verified", not_requested: "Not enabled", candidate: "Risk candidate", not_candidate: "No risk found", snapshot_only: "Stock snapshot only", no_stock: "No current stock", inconclusive: "Inconclusive", normal: "Normal", attention: "Attention required", found: "Found", not_found: "Not found" };
     return values[state] || titleCase(state);
   };
   const firstRule = (run) => (run.result?.rule_results || []).find((item) => item?.business_report || item?.stages);
@@ -441,7 +445,7 @@ const labels = locale === "zh" ? {
       return { tone: run.status === "failed" ? "error" : "info", headline: text, overview: "", stages: [], next_actions: [run.status === "failed" ? labels.failureAction : labels.fallbackAction] };
     }
     const stageOrder = rule.rule_id?.startsWith("p2p")
-      ? ["purchase_order", "items", "goods_receipt", "supplier_invoice", "fi_clearing", "payment"]
+      ? ["purchase_order", "items", "goods_receipt", "supplier_invoice", "gr_ir_match", "ap_clearing", "payment_document", "bank_settlement"]
       : ["sales_order", "items", "delivery", "pgi", "billing", "ar_clearing", "bank_receipt"];
     const rows = stageOrder.filter((id) => rule.stages[id]).map((id) => {
       const stage = rule.stages[id];

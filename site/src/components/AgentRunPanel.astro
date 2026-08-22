@@ -73,6 +73,10 @@ const labels = locale === "zh" ? {
                 placeholder={property.placeholder?.[locale]}
                 minlength={property.minLength}
                 maxlength={property.maxLength}
+                min={property.minimum}
+                max={property.maximum}
+                step={property.type === "integer" ? 1 : undefined}
+                data-value-type={property.type}
                 pattern={property.pattern}
                 inputmode={property.pattern === "^[0-9]+$" ? "numeric" : undefined}
                 title={property.description?.[locale]}
@@ -107,8 +111,20 @@ const labels = locale === "zh" ? {
       if (error) error.hidden = true;
       const mode = panel.dataset.runMode === "agent" ? "agent" : "free_query";
       const formData = new FormData(form);
+      const input: Record<string, string | number> = {};
+      if (mode === "agent") {
+        form.querySelectorAll<HTMLInputElement>("input[name]").forEach((field) => {
+          const value = field.value.trim();
+          if (!value) return;
+          input[field.name] = field.dataset.valueType === "integer"
+            ? Number(value)
+            : field.dataset.valueType === "number"
+              ? Number(value)
+              : value;
+        });
+      }
       const body = mode === "agent"
-        ? { mode, agentId: panel.dataset.agentId, input: Object.fromEntries(formData.entries()) }
+        ? { mode, agentId: panel.dataset.agentId, input }
         : { mode, agentId: panel.dataset.agentId, query: String(formData.get("query") || "").trim() };
       try {
         const response = await fetch(`${panel.dataset.apiBase}/api/runs`, {

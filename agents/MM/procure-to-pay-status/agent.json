@@ -11,7 +11,7 @@
     "en": "Traces each PO item across receipt, invoice, FI and payment documents to explain end-to-end status and blockers."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "MM / FI-AP",
   "tags": [
     "Procure-to-Pay",
@@ -45,6 +45,11 @@
       "供应商",
       "业务状态",
       "查询源完整性",
+      "业务证据完整性",
+      "GR/IR 匹配状态",
+      "应付清账状态",
+      "SAP 付款凭证状态",
+      "银行扣款核验状态",
       "结构化业务报告"
     ],
     "en": [
@@ -53,6 +58,11 @@
       "Supplier",
       "Business status",
       "Query-source completeness",
+      "Business-evidence completeness",
+      "GR/IR matching status",
+      "AP clearing status",
+      "SAP payment-document status",
+      "Bank-settlement verification status",
       "Structured business report"
     ]
   },
@@ -210,6 +220,41 @@
             "en": "Query-source completeness"
           }
         },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务证据完整性",
+            "en": "Business-evidence completeness"
+          }
+        },
+        "gr_ir_match_status": {
+          "type": "string",
+          "title": {
+            "zh": "GR/IR 匹配状态",
+            "en": "GR/IR matching status"
+          }
+        },
+        "ap_clearing_status": {
+          "type": "string",
+          "title": {
+            "zh": "应付清账状态",
+            "en": "AP clearing status"
+          }
+        },
+        "payment_document_status": {
+          "type": "string",
+          "title": {
+            "zh": "SAP 付款凭证状态",
+            "en": "SAP payment-document status"
+          }
+        },
+        "bank_settlement_status": {
+          "type": "string",
+          "title": {
+            "zh": "银行扣款核验状态",
+            "en": "Bank-settlement verification status"
+          }
+        },
         "business_report": {
           "type": "object",
           "title": {
@@ -222,6 +267,11 @@
         "purchase_order",
         "business_status",
         "source_complete",
+        "evidence_complete",
+        "gr_ir_match_status",
+        "ap_clearing_status",
+        "payment_document_status",
+        "bank_settlement_status",
         "business_report"
       ],
       "additionalProperties": false
@@ -232,6 +282,11 @@
       "supplier": "{{steps.validate_p2p_evidence.output.workflow_output.supplier}}",
       "business_status": "{{steps.validate_p2p_evidence.output.workflow_output.business_status}}",
       "source_complete": "{{steps.validate_p2p_evidence.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.validate_p2p_evidence.output.workflow_output.evidence_complete}}",
+      "gr_ir_match_status": "{{steps.validate_p2p_evidence.output.workflow_output.gr_ir_match_status}}",
+      "ap_clearing_status": "{{steps.validate_p2p_evidence.output.workflow_output.ap_clearing_status}}",
+      "payment_document_status": "{{steps.validate_p2p_evidence.output.workflow_output.payment_document_status}}",
+      "bank_settlement_status": "{{steps.validate_p2p_evidence.output.workflow_output.bank_settlement_status}}",
       "business_report": "{{steps.validate_p2p_evidence.output.workflow_output.business_report}}"
     },
     "steps": [
@@ -325,10 +380,17 @@
                   "AccountingDocument",
                   "AccountingDocumentItem",
                   "PurchasingDocument",
+                  "PurchasingDocumentItem",
                   "Supplier",
                   "AccountingDocumentType",
+                  "GLAccount",
+                  "FinancialAccountType",
+                  "DebitCreditCode",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
                   "ClearingAccountingDocument",
                   "ClearingDocFiscalYear",
+                  "ClearingDate",
                   "IsCleared",
                   "PaymentMethod",
                   "HouseBank",
@@ -342,7 +404,60 @@
                     "value_type": "string"
                   }
                 ],
-                "rationale": "Load FI clearing and payment evidence linked to the PO."
+                "rationale": "Discover FI document keys from rows that directly reference the PO; these filtered rows are not treated as complete accounting documents."
+              },
+              {
+                "step_id": "full_accounting_documents",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "AccountingDocumentType",
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "GLAccount",
+                  "FinancialAccountType",
+                  "DebitCreditCode",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
+                  "Supplier",
+                  "IsCleared",
+                  "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "ClearingDate",
+                  "PaymentMethod",
+                  "HouseBank",
+                  "HouseBankAccount"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "CompanyCode",
+                    "source_step_id": "accounting_items",
+                    "source_field": "CompanyCode",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "FiscalYear",
+                    "source_step_id": "accounting_items",
+                    "source_field": "FiscalYear",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "AccountingDocument",
+                    "source_step_id": "accounting_items",
+                    "source_field": "AccountingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ],
+                "rationale": "Expand every discovered FI document key to all accounting-document items before evaluating GR/IR, supplier clearing or payment evidence."
               },
               {
                 "step_id": "clearing_documents",
@@ -356,7 +471,16 @@
                   "AccountingDocument",
                   "AccountingDocumentItem",
                   "AccountingDocumentType",
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "GLAccount",
+                  "FinancialAccountType",
+                  "DebitCreditCode",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
                   "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "ClearingDate",
                   "IsCleared",
                   "PaymentMethod",
                   "HouseBank",
@@ -366,21 +490,21 @@
                 "filter_from_previous": [
                   {
                     "field": "AccountingDocument",
-                    "source_step_id": "accounting_items",
+                    "source_step_id": "full_accounting_documents",
                     "source_field": "ClearingAccountingDocument",
                     "fanout": true,
                     "fetch_all_for_binding": true
                   },
                   {
                     "field": "CompanyCode",
-                    "source_step_id": "accounting_items",
+                    "source_step_id": "full_accounting_documents",
                     "source_field": "CompanyCode",
                     "fanout": true,
                     "fetch_all_for_binding": true
                   },
                   {
                     "field": "FiscalYear",
-                    "source_step_id": "accounting_items",
+                    "source_step_id": "full_accounting_documents",
                     "source_field": "ClearingDocFiscalYear",
                     "fanout": true,
                     "fetch_all_for_binding": true
@@ -399,7 +523,20 @@
         "operation": "evaluate_p2p_status",
         "inputMapping": {
           "run_input": "{{input}}",
-          "sap_read": "{{steps.collect_p2p_evidence.output}}"
+          "sap_read": "{{steps.collect_p2p_evidence.output}}",
+          "rule_config": {
+            "goods_receipt_document_types": [
+              "WE"
+            ],
+            "supplier_invoice_document_types": [
+              "RE"
+            ],
+            "payment_document_types": [
+              "KZ",
+              "ZP"
+            ],
+            "gr_ir_amount_tolerance": "0.01"
+          }
         }
       }
     ],
@@ -420,6 +557,14 @@
         "purchase_order_items",
         "material_document_items",
         "supplier_invoice_items",
+        "po_linked_accounting_items",
+        "accounting_documents",
+        "full_accounting_items",
+        "clearing_document_items",
+        "gr_ir_matched_groups",
+        "gr_ir_open_groups",
+        "cleared_supplier_items",
+        "payment_documents",
         "accounting_items",
         "active_receipts",
         "cleared_items",

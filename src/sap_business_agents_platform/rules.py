@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -26,6 +27,8 @@ API_CAPABILITY_GAP_CODES = frozenset(
 
 
 def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    if operation == "resolve_inventory_health_window":
+        return resolve_inventory_health_window(inputs)
     if operation == "assess_api_evidence":
         return assess_api_evidence(inputs)
     if operation == "assess_adt_preflight":
@@ -45,6 +48,62 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "evaluate_o2c_status":
         return evaluate_o2c_status(inputs)
     raise ValueError(f"Unknown deterministic rule operation: {operation}")
+
+
+def resolve_inventory_health_window(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Resolve optional inventory checks into a deterministic current-date window."""
+
+    run_input = inputs.get("run_input")
+    if not isinstance(run_input, dict):
+        raise ValueError("resolve_inventory_health_window requires run_input")
+
+    def optional_days(name: str) -> int | None:
+        value = run_input.get(name)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 365:
+            raise ValueError(f"{name} must be an integer between 1 and 365")
+        return value
+
+    slow_days = optional_days("slow_moving_days")
+    obsolete_days = optional_days("obsolete_days")
+    expiry_days = optional_days("expiry_days")
+    if slow_days is not None and obsolete_days is not None and slow_days >= obsolete_days:
+        raise ValueError("slow_moving_days must be less than obsolete_days")
+
+    snapshot = date.today()
+    movement_values = [value for value in (slow_days, obsolete_days) if value is not None]
+    lookback = max(movement_values) if movement_values else None
+    date_from = snapshot - timedelta(days=lookback) if lookback is not None else None
+    movement_years = (
+        [str(year) for year in range(date_from.year, snapshot.year + 1)]
+        if date_from is not None
+        else []
+    )
+    selected_checks = [
+        name
+        for name, enabled in (
+            ("slow_moving", slow_days is not None),
+            ("obsolete", obsolete_days is not None),
+            ("expiry", expiry_days is not None),
+        )
+        if enabled
+    ]
+    return {
+        "rule_id": "inventory_health_window_v1",
+        "status": "complete",
+        "snapshot_date": snapshot.isoformat(),
+        "check_slow_moving": slow_days is not None,
+        "check_obsolete": obsolete_days is not None,
+        "check_expiry": expiry_days is not None,
+        "movement_check_requested": bool(movement_values),
+        "movement_lookback_days": lookback,
+        "movement_date_from": date_from.isoformat() if date_from is not None else None,
+        "movement_year_from": str(date_from.year) if date_from is not None else None,
+        "movement_year_to": str(snapshot.year),
+        "movement_years": movement_years,
+        "selected_checks": selected_checks,
+    }
 
 
 def classify_control_object(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -89,16 +148,22 @@ def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
         for item in inputs.get("capability_gaps") or []
         if str(item).strip()
     }
+    requested = inputs.get("requested")
+    requested = requested if isinstance(requested, dict) else {}
     needs_adt: dict[str, bool] = {}
     api_complete: dict[str, bool] = {}
     missing: list[str] = []
     capability_gaps: list[str] = []
     operational_gaps: list[str] = []
     for name, payload in checks.items():
+        key = str(name)
+        if requested.get(key) is False:
+            api_complete[key] = True
+            needs_adt[key] = False
+            continue
         flags = _collect_source_complete(payload)
         ok_values = [value for value in _collect_values(payload, "ok") if isinstance(value, bool)]
         complete = bool(flags) and all(flags) and (not ok_values or all(ok_values))
-        key = str(name)
         codes = {
             str(value)
             for value in _collect_values(payload, "code")
@@ -236,35 +301,291 @@ def evidence_summary(inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _accounting_document_key(row: dict[str, Any]) -> tuple[str, str, str] | None:
+    key = tuple(
+        str(row.get(field) or "").strip()
+        for field in ("CompanyCode", "FiscalYear", "AccountingDocument")
+    )
+    return key if all(key) else None
+
+
+def _sap_date_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.startswith("/Date(") and text.endswith(")/"):
+        milliseconds = text[6:-2].split("+", 1)[0].split("-", 1)[0]
+        try:
+            return datetime.fromtimestamp(int(milliseconds) / 1000, tz=timezone.utc).date().isoformat()
+        except (ValueError, OverflowError, OSError):
+            return text
+    return text
+
+
+def _p2p_rule_config(inputs: dict[str, Any]) -> tuple[set[str], set[str], set[str], Decimal]:
+    config = inputs.get("rule_config") if isinstance(inputs.get("rule_config"), dict) else {}
+
+    def document_types(name: str, default: set[str]) -> set[str]:
+        configured = {
+            str(value).strip().upper()
+            for value in config.get(name) or []
+            if str(value).strip()
+        }
+        return configured or set(default)
+
+    tolerance = _decimal_or_none(config.get("gr_ir_amount_tolerance", "0.01"))
+    if tolerance is None or tolerance < 0:
+        raise ValueError("gr_ir_amount_tolerance must be a non-negative decimal")
+    return (
+        document_types("goods_receipt_document_types", {"WE"}),
+        document_types("supplier_invoice_document_types", {"RE"}),
+        document_types("payment_document_types", set(P2P_PAYMENT_DOCUMENT_TYPES)),
+        tolerance,
+    )
+
+
+def _p2p_grir_groups(
+    rows: list[dict[str, Any]],
+    *,
+    purchase_order: str,
+    receipt_document_types: set[str],
+    invoice_document_types: set[str],
+    tolerance: Decimal,
+) -> tuple[list[dict[str, Any]], bool]:
+    grouped: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    invalid_required_field = False
+    for row in rows:
+        document_type = str(row.get("AccountingDocumentType") or "").strip().upper()
+        side = (
+            "receipt"
+            if document_type in receipt_document_types
+            else "invoice"
+            if document_type in invoice_document_types
+            else ""
+        )
+        if not side or str(row.get("FinancialAccountType") or "").strip().upper() != "S":
+            continue
+        if purchase_order and str(row.get("PurchasingDocument") or "").strip() != purchase_order:
+            continue
+        item = str(row.get("PurchasingDocumentItem") or "").strip()
+        account = str(row.get("GLAccount") or "").strip()
+        currency = str(row.get("CompanyCodeCurrency") or "").strip()
+        amount = _decimal_or_none(row.get("AmountInCompanyCodeCurrency"))
+        if not item or not account or not currency or amount is None:
+            invalid_required_field = True
+            continue
+        key = (purchase_order or str(row.get("PurchasingDocument") or "").strip(), item, account, currency)
+        group = grouped.setdefault(
+            key,
+            {
+                "purchase_order": key[0],
+                "purchase_order_item": item,
+                "gl_account": account,
+                "currency": currency,
+                "receipt_amount": Decimal("0"),
+                "invoice_amount": Decimal("0"),
+                "receipt_documents": set(),
+                "invoice_documents": set(),
+            },
+        )
+        group[f"{side}_amount"] += amount
+        document_key = _accounting_document_key(row)
+        if document_key:
+            group[f"{side}_documents"].add("/".join(document_key[1:]))
+
+    results: list[dict[str, Any]] = []
+    for group in grouped.values():
+        if not group["receipt_documents"] or not group["invoice_documents"]:
+            continue
+        net_amount = group["receipt_amount"] + group["invoice_amount"]
+        status = "matched" if abs(net_amount) <= tolerance else "open"
+        results.append(
+            {
+                "purchase_order": group["purchase_order"],
+                "purchase_order_item": group["purchase_order_item"],
+                "gl_account": group["gl_account"],
+                "currency": group["currency"],
+                "receipt_amount": str(group["receipt_amount"]),
+                "invoice_amount": str(group["invoice_amount"]),
+                "net_amount": str(net_amount),
+                "status": status,
+                "status_label": {
+                    "zh": "已匹配" if status == "matched" else "存在差额",
+                    "en": "Matched" if status == "matched" else "Difference remains",
+                },
+            }
+        )
+    results.sort(
+        key=lambda item: (
+            item["purchase_order"],
+            item["purchase_order_item"],
+            item["gl_account"],
+            item["currency"],
+        )
+    )
+    return results, invalid_required_field
+
+
 def evaluate_p2p_status(inputs: dict[str, Any]) -> dict[str, Any]:
     steps = _step_results(inputs)
     order_rows = _step_rows(steps, "purchase_order")
     item_rows = _step_rows(steps, "purchase_order_items")
     material_rows = _step_rows(steps, "material_documents")
     invoice_rows = _step_rows(steps, "supplier_invoice_items")
-    accounting_rows = _step_rows(steps, "accounting_items") + _step_rows(
-        steps, "clearing_documents"
+    po_linked_accounting_rows = _step_rows(steps, "accounting_items")
+    full_accounting_rows = _step_rows(steps, "full_accounting_documents")
+    clearing_document_rows = _step_rows(steps, "clearing_documents")
+    receipt_document_types, invoice_document_types, payment_document_types, tolerance = (
+        _p2p_rule_config(inputs)
     )
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    purchase_order = str(run_input.get("purchase_order") or "").strip()
 
     receipt_rows = [row for row in material_rows if _movement_kind(row) == "receipt"]
     reversal_rows = [row for row in material_rows if _movement_kind(row) == "reversal"]
     active_receipts = max(0, len(receipt_rows) - len(reversal_rows))
-    cleared_rows = [
+
+    discovered_document_keys = {
+        key for row in po_linked_accounting_rows if (key := _accounting_document_key(row))
+    }
+    expanded_document_keys = {
+        key for row in full_accounting_rows if (key := _accounting_document_key(row))
+    }
+    document_expansion_complete = discovered_document_keys.issubset(expanded_document_keys)
+
+    invoice_document_keys = {
+        key
+        for row in po_linked_accounting_rows
+        if str(row.get("AccountingDocumentType") or "").strip().upper()
+        in invoice_document_types
+        and (key := _accounting_document_key(row))
+    }
+    vendor_rows_by_document: dict[tuple[str, str, str], list[dict[str, Any]]] = {
+        key: [] for key in invoice_document_keys
+    }
+    for row in full_accounting_rows:
+        key = _accounting_document_key(row)
+        if key in vendor_rows_by_document and str(row.get("FinancialAccountType") or "").strip().upper() == "K":
+            vendor_rows_by_document[key].append(row)
+    vendor_coverage_complete = all(vendor_rows_by_document.values()) if invoice_document_keys else True
+    vendor_rows = [row for rows in vendor_rows_by_document.values() for row in rows]
+    cleared_vendor_rows = [
         row
-        for row in accounting_rows
+        for row in vendor_rows
         if _is_true(row.get("IsCleared"))
         and bool(str(row.get("ClearingAccountingDocument") or "").strip())
     ]
-    payment_rows = [
-        row
-        for row in accounting_rows
-        if str(row.get("AccountingDocumentType") or "").upper()
-        in P2P_PAYMENT_DOCUMENT_TYPES
-        and bool(str(row.get("PaymentMethod") or "").strip())
-        and bool(
-            str(row.get("HouseBank") or row.get("HouseBankAccount") or "").strip()
+
+    clearing_references: set[tuple[str, str, str]] = set()
+    invalid_clearing_reference = False
+    for row in cleared_vendor_rows:
+        reference = (
+            str(row.get("CompanyCode") or "").strip(),
+            str(row.get("ClearingDocFiscalYear") or "").strip(),
+            str(row.get("ClearingAccountingDocument") or "").strip(),
         )
-    ]
+        if all(reference) and reference[1] != "0":
+            clearing_references.add(reference)
+        else:
+            invalid_clearing_reference = True
+    returned_clearing_keys = {
+        key for row in clearing_document_rows if (key := _accounting_document_key(row))
+    }
+    clearing_expansion_complete = (
+        not invalid_clearing_reference
+        and clearing_references.issubset(returned_clearing_keys)
+    )
+
+    payment_documents: list[dict[str, Any]] = []
+    for reference in sorted(clearing_references):
+        rows = [row for row in clearing_document_rows if _accounting_document_key(row) == reference]
+        document_type = _first_non_empty(rows, "AccountingDocumentType").upper()
+        payment_method = _first_non_empty(rows, "PaymentMethod")
+        house_bank = _first_non_empty(rows, "HouseBank")
+        house_bank_account = _first_non_empty(rows, "HouseBankAccount")
+        qualifies = bool(
+            rows
+            and document_type in payment_document_types
+            and payment_method
+            and (house_bank or house_bank_account)
+        )
+        payment_documents.append(
+            {
+                "company_code": reference[0],
+                "fiscal_year": reference[1],
+                "accounting_document": reference[2],
+                "document_type": document_type,
+                "payment_method": payment_method,
+                "house_bank": house_bank,
+                "house_bank_account": house_bank_account,
+                "qualifies": qualifies,
+            }
+        )
+
+    grir_groups, invalid_grir_fields = _p2p_grir_groups(
+        po_linked_accounting_rows,
+        purchase_order=purchase_order,
+        receipt_document_types=receipt_document_types,
+        invoice_document_types=invoice_document_types,
+        tolerance=tolerance,
+    )
+    matched_grir_groups = [group for group in grir_groups if group["status"] == "matched"]
+    open_grir_groups = [group for group in grir_groups if group["status"] == "open"]
+
+    source_complete = _source_complete(inputs)
+    evidence_complete = bool(
+        source_complete
+        and document_expansion_complete
+        and vendor_coverage_complete
+        and clearing_expansion_complete
+        and not invalid_grir_fields
+    )
+
+    if not source_complete or not document_expansion_complete or invalid_grir_fields:
+        grir_state = "unknown"
+    elif not invoice_rows:
+        grir_state = "not_confirmed"
+    elif not grir_groups:
+        grir_state = "unknown"
+    elif open_grir_groups and matched_grir_groups:
+        grir_state = "partial"
+    elif open_grir_groups:
+        grir_state = "not_confirmed"
+    else:
+        grir_state = "confirmed"
+
+    if not source_complete or not document_expansion_complete or not vendor_coverage_complete:
+        ap_clearing_state = "unknown"
+    elif not vendor_rows:
+        ap_clearing_state = "not_confirmed"
+    elif len(cleared_vendor_rows) == len(vendor_rows):
+        ap_clearing_state = "confirmed"
+    elif cleared_vendor_rows:
+        ap_clearing_state = "partial"
+    else:
+        ap_clearing_state = "not_confirmed"
+
+    qualifying_payment_documents = [row for row in payment_documents if row["qualifies"]]
+    if not source_complete or not clearing_expansion_complete or ap_clearing_state == "unknown":
+        payment_document_state = "unknown"
+    elif ap_clearing_state == "not_confirmed" or not clearing_references:
+        payment_document_state = "not_confirmed"
+    elif (
+        ap_clearing_state == "confirmed"
+        and len(qualifying_payment_documents) == len(clearing_references)
+    ):
+        payment_document_state = "confirmed"
+    elif qualifying_payment_documents:
+        payment_document_state = "partial"
+    else:
+        payment_document_state = "not_confirmed"
 
     stages = {
         "purchase_order": _presence_stage(order_rows),
@@ -276,24 +597,40 @@ def evaluate_p2p_status(inputs: dict[str, Any]) -> dict[str, Any]:
             "net_active_receipt_count": active_receipts,
         },
         "supplier_invoice": _presence_stage(invoice_rows),
-        "fi_clearing": {
-            "state": "confirmed" if cleared_rows else "not_confirmed",
-            "evidence_count": len(cleared_rows),
+        "gr_ir_match": {
+            "state": grir_state,
+            "matched_group_count": len(matched_grir_groups),
+            "open_group_count": len(open_grir_groups),
+            "amount_tolerance": str(tolerance),
         },
-        "payment": {
-            "state": "confirmed" if payment_rows else "not_confirmed",
-            "evidence_count": len(payment_rows),
-            "required_document_types": sorted(P2P_PAYMENT_DOCUMENT_TYPES),
+        "ap_clearing": {
+            "state": ap_clearing_state,
+            "evidence_count": len(cleared_vendor_rows),
+            "supplier_item_count": len(vendor_rows),
+        },
+        "payment_document": {
+            "state": payment_document_state,
+            "evidence_count": len(qualifying_payment_documents),
+            "required_document_types": sorted(payment_document_types),
             "requires_payment_method_and_house_bank": True,
         },
+        "bank_settlement": {
+            "state": "not_assessed",
+            "evidence_count": 0,
+            "non_blocking": True,
+        },
     }
-    source_complete = _source_complete(inputs)
-    required = ["purchase_order", "items", "goods_receipt", "supplier_invoice"]
-    core_confirmed = all(stages[name]["state"] == "confirmed" for name in required)
-    business_complete = (
-        core_confirmed
-        and stages["fi_clearing"]["state"] == "confirmed"
-        and stages["payment"]["state"] == "confirmed"
+    required = (
+        "purchase_order",
+        "items",
+        "goods_receipt",
+        "supplier_invoice",
+        "gr_ir_match",
+        "ap_clearing",
+        "payment_document",
+    )
+    business_complete = evidence_complete and all(
+        stages[name]["state"] == "confirmed" for name in required
     )
     business_status = "complete" if business_complete else "partial"
     counts = {
@@ -301,7 +638,18 @@ def evaluate_p2p_status(inputs: dict[str, Any]) -> dict[str, Any]:
         "purchase_order_items": len(item_rows),
         "material_document_items": len(material_rows),
         "supplier_invoice_items": len(invoice_rows),
-        "accounting_items": len(accounting_rows),
+        "po_linked_accounting_items": len(po_linked_accounting_rows),
+        "accounting_documents": len(discovered_document_keys),
+        "full_accounting_items": len(full_accounting_rows),
+        "clearing_document_items": len(clearing_document_rows),
+        "gr_ir_matched_groups": len(matched_grir_groups),
+        "gr_ir_open_groups": len(open_grir_groups),
+        "cleared_supplier_items": len(cleared_vendor_rows),
+        "payment_documents": len(qualifying_payment_documents),
+        # Temporary compatibility aliases. The presentation never uses these labels.
+        "accounting_items": len(full_accounting_rows),
+        "cleared_items": len(cleared_vendor_rows),
+        "payment_evidence": len(qualifying_payment_documents),
     }
     business_report = _p2p_business_report(
         stages=stages,
@@ -309,15 +657,13 @@ def evaluate_p2p_status(inputs: dict[str, Any]) -> dict[str, Any]:
         receipt_count=len(receipt_rows),
         reversal_count=len(reversal_rows),
         active_receipt_count=active_receipts,
-        clearing_count=len(cleared_rows),
-        payment_count=len(payment_rows),
+        grir_groups=grir_groups,
+        po_linked_accounting_rows=po_linked_accounting_rows,
+        full_accounting_rows=full_accounting_rows,
+        vendor_rows=vendor_rows,
+        payment_documents=payment_documents,
+        evidence_complete=evidence_complete,
     )
-    if not payment_rows:
-        missing_evidence = business_report.setdefault("missing_evidence", [])
-        if "bank_settlement_not_proven" not in missing_evidence:
-            missing_evidence.append("bank_settlement_not_proven")
-    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
-    purchase_order = str(run_input.get("purchase_order") or "")
     business_report["records"] = [
         {
             "purchase_order": str(row.get("PurchaseOrder") or purchase_order),
@@ -327,30 +673,59 @@ def evaluate_p2p_status(inputs: dict[str, Any]) -> dict[str, Any]:
             "order_quantity": str(row.get("OrderQuantity") or ""),
             "unit": str(row.get("PurchaseOrderQuantityUnit") or ""),
             "business_status": business_status,
+            "gr_ir_match_status": grir_state,
+            "ap_clearing_status": ap_clearing_state,
+            "payment_document_status": payment_document_state,
+            "bank_settlement_status": "not_assessed",
         }
         for row in item_rows
         if str(row.get("PurchaseOrder") or purchase_order).strip()
         and str(row.get("PurchaseOrderItem") or "").strip()
     ]
-    business_report["metrics"] = [
-        {"id": key, "value": value} for key, value in counts.items()
-    ] + [
-        {"id": "active_receipts", "value": active_receipts},
-        {"id": "cleared_items", "value": len(cleared_rows)},
-        {"id": "payment_evidence", "value": len(payment_rows)},
+    business_report["record_columns"] = [
+        {"key": "purchase_order", "label": {"zh": "采购订单", "en": "Purchase order"}},
+        {"key": "purchase_order_item", "label": {"zh": "项目", "en": "Item"}},
+        {"key": "material", "label": {"zh": "物料", "en": "Material"}},
+        {"key": "plant", "label": {"zh": "工厂", "en": "Plant"}},
+        {"key": "order_quantity", "label": {"zh": "订单数量", "en": "Order quantity"}, "format": "decimal"},
+        {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+        {"key": "gr_ir_match_status", "label": {"zh": "GR/IR", "en": "GR/IR"}, "format": "status"},
+        {"key": "ap_clearing_status", "label": {"zh": "应付清账", "en": "AP clearing"}, "format": "status"},
+        {"key": "payment_document_status", "label": {"zh": "SAP付款凭证", "en": "SAP payment document"}, "format": "status"},
     ]
-    company_code = _first_non_empty(order_rows + accounting_rows, "CompanyCode")
-    supplier = _first_non_empty(order_rows + accounting_rows, "Supplier")
+    metric_labels = {
+        "purchase_orders": {"zh": "采购订单", "en": "Purchase orders"},
+        "purchase_order_items": {"zh": "采购订单项目", "en": "Purchase-order items"},
+        "material_document_items": {"zh": "物料凭证项目", "en": "Material-document items"},
+        "supplier_invoice_items": {"zh": "供应商发票项目", "en": "Supplier-invoice items"},
+        "po_linked_accounting_items": {"zh": "PO关联财务行", "en": "PO-linked accounting items"},
+        "accounting_documents": {"zh": "发现的财务凭证", "en": "Discovered accounting documents"},
+        "full_accounting_items": {"zh": "完整财务凭证行", "en": "Full accounting-document items"},
+        "clearing_document_items": {"zh": "清账凭证行", "en": "Clearing-document items"},
+        "gr_ir_matched_groups": {"zh": "GR/IR已匹配组", "en": "Matched GR/IR groups"},
+        "gr_ir_open_groups": {"zh": "GR/IR差异组", "en": "Open GR/IR groups"},
+        "cleared_supplier_items": {"zh": "已清账供应商行", "en": "Cleared supplier items"},
+        "payment_documents": {"zh": "合格SAP付款凭证", "en": "Qualifying SAP payment documents"},
+    }
+    business_report["metrics"] = [
+        {"id": key, "label": metric_labels[key], "value": counts[key]}
+        for key in metric_labels
+    ] + [
+        {"id": "active_receipts", "label": {"zh": "当前有效收货记录", "en": "Active receipt records"}, "value": active_receipts},
+    ]
+    company_code = _first_non_empty(order_rows + full_accounting_rows, "CompanyCode")
+    supplier = _first_non_empty(order_rows + full_accounting_rows, "Supplier")
     return {
-        "rule_id": "p2p_deterministic_status_v1",
+        "rule_id": "p2p_deterministic_status_v2",
         "status": "complete" if source_complete and business_complete else "inconclusive",
         "business_status": business_status,
         "score": round(
             100
-            * sum(stage["state"] == "confirmed" for stage in stages.values())
-            / len(stages)
+            * sum(stages[name]["state"] == "confirmed" for name in required)
+            / len(required)
         ),
         "source_complete": source_complete,
+        "evidence_complete": evidence_complete,
         "stages": stages,
         "counts": counts,
         "business_report": business_report,
@@ -363,6 +738,11 @@ def evaluate_p2p_status(inputs: dict[str, Any]) -> dict[str, Any]:
             "supplier": supplier,
             "business_status": business_status,
             "source_complete": source_complete,
+            "evidence_complete": evidence_complete,
+            "gr_ir_match_status": grir_state,
+            "ap_clearing_status": ap_clearing_state,
+            "payment_document_status": payment_document_state,
+            "bank_settlement_status": "not_assessed",
             "business_report": business_report,
         },
     }
@@ -540,28 +920,30 @@ def _p2p_business_report(
     receipt_count: int,
     reversal_count: int,
     active_receipt_count: int,
-    clearing_count: int,
-    payment_count: int,
+    grir_groups: list[dict[str, Any]],
+    po_linked_accounting_rows: list[dict[str, Any]],
+    full_accounting_rows: list[dict[str, Any]],
+    vendor_rows: list[dict[str, Any]],
+    payment_documents: list[dict[str, Any]],
+    evidence_complete: bool,
 ) -> dict[str, Any]:
+    process_order = (
+        "purchase_order",
+        "items",
+        "goods_receipt",
+        "supplier_invoice",
+        "gr_ir_match",
+        "ap_clearing",
+        "payment_document",
+    )
     first_gap = next(
-        (
-            stage_id
-            for stage_id in (
-                "purchase_order",
-                "items",
-                "goods_receipt",
-                "supplier_invoice",
-                "fi_clearing",
-                "payment",
-            )
-            if stages[stage_id]["state"] != "confirmed"
-        ),
+        (stage_id for stage_id in process_order if stages[stage_id]["state"] != "confirmed"),
         None,
     )
     headlines = {
         None: {
-            "zh": "采购、收货、发票和付款证据均已确认",
-            "en": "Procurement, receipt, invoice, and payment evidence are confirmed",
+            "zh": "SAP付款流程已完成，银行实际扣款未单独核验",
+            "en": "The SAP payment process is complete; the actual bank debit was not independently verified",
         },
         "purchase_order": {
             "zh": "未找到这张采购订单",
@@ -579,19 +961,23 @@ def _p2p_business_report(
             "zh": "已找到采购订单和收货记录，尚未找到供应商发票",
             "en": "The purchase order and receipt were found, but no supplier invoice was found",
         },
-        "fi_clearing": {
-            "zh": "已找到供应商发票，尚未确认财务清账",
-            "en": "The supplier invoice was found, but FI clearing is not confirmed",
+        "gr_ir_match": {
+            "zh": "收货和发票已找到，但GR/IR匹配尚未完整确认",
+            "en": "Receipt and invoice evidence was found, but GR/IR matching is not fully confirmed",
         },
-        "payment": {
-            "zh": "已确认财务清账，尚未确认付款",
-            "en": "FI clearing is confirmed, but payment is not confirmed",
+        "ap_clearing": {
+            "zh": "GR/IR已核对，供应商应付清账尚未完整确认",
+            "en": "GR/IR was checked, but supplier-payable clearing is not fully confirmed",
+        },
+        "payment_document": {
+            "zh": "供应商应付已清账，尚未确认合格的SAP付款凭证",
+            "en": "Supplier payables were cleared, but a qualifying SAP payment document was not confirmed",
         },
     }
     overviews = {
         None: {
-            "zh": "系统在当前只读查询范围内找到了完整的采购到付款证据链。",
-            "en": "The complete procure-to-pay evidence chain was found within the current read-only query scope.",
+            "zh": "系统已分别核验GR/IR匹配、供应商应付清账和SAP付款凭证。付款凭证不等同于银行流水，因此银行实际扣款仍显示为未单独核验。",
+            "en": "GR/IR matching, supplier-payable clearing and the SAP payment document were verified separately. A payment document is not a bank statement, so the actual bank debit remains independently unverified.",
         },
         "purchase_order": {
             "zh": "当前查询范围内没有返回该采购订单，请先核对订单号和访问权限。",
@@ -609,13 +995,17 @@ def _p2p_business_report(
             "zh": "系统确认订单已产生收货记录，但没有找到引用该订单的供应商发票，因此无法继续确认清账和付款。",
             "en": "Receipt evidence exists, but no supplier invoice referencing the order was found, so clearing and payment cannot be confirmed.",
         },
-        "fi_clearing": {
-            "zh": "发票证据已经返回，但没有找到满足条件的清账记录。付款状态仍不能确认。",
-            "en": "Invoice evidence was returned, but no qualifying clearing record was found. Payment remains unconfirmed.",
+        "gr_ir_match": {
+            "zh": "系统不会使用IsCleared判断GR/IR；当前按采购订单项目、总账科目和本位币汇总收货与发票金额，但存在差额或证据字段不足。",
+            "en": "IsCleared is not used for GR/IR. Receipt and invoice amounts were grouped by PO item, G/L account and company-code currency, but a difference or an evidence-field gap remains.",
         },
-        "payment": {
-            "zh": "清账证据已经返回，但没有同时满足付款凭证类型、付款方式和开户行条件的付款证据。",
-            "en": "Clearing evidence was returned, but no payment evidence met the document-type, payment-method, and house-bank requirements.",
+        "ap_clearing": {
+            "zh": "完整发票凭证已经展开，但并非所有供应商行都具有有效清账状态和清账凭证引用。",
+            "en": "Full invoice documents were expanded, but not every supplier item has a valid cleared status and clearing-document reference.",
+        },
+        "payment_document": {
+            "zh": "应付清账证据已经返回，但清账凭证尚未同时满足允许的付款凭证类型、付款方式和开户行条件。",
+            "en": "AP clearing evidence was returned, but the clearing document did not meet the allowed payment-document type, payment-method and house-bank requirements.",
         },
     }
     stage_rows = [
@@ -662,36 +1052,56 @@ def _p2p_business_report(
             f"Found {counts['supplier_invoice_items']} linked supplier-invoice item(s)." if counts["supplier_invoice_items"] else "No supplier-invoice item referencing the purchase order was found.",
         ),
         _business_stage(
-            "fi_clearing",
-            "财务清账",
-            "FI clearing",
-            stages["fi_clearing"]["state"],
+            "gr_ir_match",
+            "GR/IR匹配",
+            "GR/IR matching",
+            stages["gr_ir_match"]["state"],
             (
-                f"找到 {clearing_count} 条已清账证据。"
-                if clearing_count
-                else f"找到 {counts['accounting_items']} 条财务记录，但未找到满足条件的清账证据。"
+                f"发现 {counts['po_linked_accounting_items']} 条直接关联采购订单的财务行，"
+                f"展开为 {counts['accounting_documents']} 张财务凭证、共 {counts['full_accounting_items']} 个完整行项目；"
+                f"其中 {counts['gr_ir_matched_groups']} 组GR/IR已匹配，{counts['gr_ir_open_groups']} 组仍有差额。"
             ),
             (
-                f"Found {clearing_count} qualifying cleared record(s)."
-                if clearing_count
-                else f"Found {counts['accounting_items']} FI record(s), but no qualifying clearing evidence."
+                f"Discovered {counts['po_linked_accounting_items']} PO-linked accounting item(s) and expanded "
+                f"{counts['accounting_documents']} accounting document(s) to {counts['full_accounting_items']} full item(s); "
+                f"{counts['gr_ir_matched_groups']} GR/IR group(s) matched and {counts['gr_ir_open_groups']} remain open."
             ),
         ),
         _business_stage(
-            "payment",
-            "付款",
-            "Payment",
-            stages["payment"]["state"],
+            "ap_clearing",
+            "应付账款清账",
+            "AP clearing",
+            stages["ap_clearing"]["state"],
             (
-                f"找到 {payment_count} 条同时具备付款凭证类型、付款方式和开户行的付款证据。"
-                if payment_count
-                else "未找到同时具备付款凭证类型、付款方式和开户行的付款证据。清账编号本身不能证明已经付款。"
+                f"{len(vendor_rows)} 个供应商行中有 {counts['cleared_supplier_items']} 个已取得有效清账凭证引用。"
             ),
             (
-                f"Found {payment_count} payment record(s) with a qualifying document type, payment method, and house bank."
-                if payment_count
-                else "No payment record had a qualifying document type, payment method, and house bank. A clearing reference alone does not prove payment."
+                f"{counts['cleared_supplier_items']} of {len(vendor_rows)} supplier item(s) have a valid clearing-document reference."
             ),
+        ),
+        _business_stage(
+            "payment_document",
+            "SAP付款凭证",
+            "SAP payment document",
+            stages["payment_document"]["state"],
+            (
+                f"找到 {counts['payment_documents']} 张同时具备允许凭证类型、付款方式和开户行信息的SAP付款凭证。"
+                if counts["payment_documents"]
+                else "未找到同时具备允许凭证类型、付款方式和开户行信息的SAP付款凭证；清账编号本身不等同于付款。"
+            ),
+            (
+                f"Found {counts['payment_documents']} SAP payment document(s) with an allowed type, payment method and house-bank information."
+                if counts["payment_documents"]
+                else "No SAP payment document had an allowed type, payment method and house-bank information; a clearing reference alone is not payment."
+            ),
+        ),
+        _business_stage(
+            "bank_settlement",
+            "银行实际扣款",
+            "Actual bank debit",
+            "not_assessed",
+            "当前数据源不包含银行流水或银行对账结果，因此未单独核验实际扣款；这不阻止SAP付款流程显示完成。",
+            "The current sources do not include bank statements or reconciliation, so the actual debit was not independently verified; this does not block SAP payment-process completion.",
         ),
     ]
     actions_zh: list[str] = []
@@ -715,10 +1125,13 @@ def _p2p_business_report(
                 "If the invoice is expected, verify that its item correctly references this purchase order.",
             ]
         )
-    elif first_gap == "fi_clearing":
+    elif first_gap == "gr_ir_match":
+        actions_zh.append("按采购订单项目核对收货和发票对应的GR/IR科目及本位币差额。")
+        actions_en.append("Review receipt and invoice GR/IR accounts and company-code-currency differences by PO item.")
+    elif first_gap == "ap_clearing":
         actions_zh.append("请应付会计检查供应商未清项、付款冻结、到期日以及付款运行状态。")
         actions_en.append("Ask Accounts Payable to review the supplier open item, payment block, due date, and payment-run status.")
-    elif first_gap == "payment":
+    elif first_gap == "payment_document":
         actions_zh.append("核对付款运行是否生成了允许的付款凭证类型，并确认付款方式和开户行信息已经写入凭证。")
         actions_en.append("Check whether the payment run created an allowed payment document type with payment method and house-bank information.")
     else:
@@ -726,7 +1139,109 @@ def _p2p_business_report(
         actions_en.append("For audit purposes, download the business report and stage details.")
     headline = headlines[first_gap]
     overview = overviews[first_gap]
+
+    full_rows_by_document: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    linked_rows_by_document: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in full_accounting_rows:
+        if key := _accounting_document_key(row):
+            full_rows_by_document.setdefault(key, []).append(row)
+    for row in po_linked_accounting_rows:
+        if key := _accounting_document_key(row):
+            linked_rows_by_document.setdefault(key, []).append(row)
+    accounting_document_rows = []
+    for key in sorted(set(full_rows_by_document) | set(linked_rows_by_document)):
+        full_rows = full_rows_by_document.get(key, [])
+        linked_rows = linked_rows_by_document.get(key, [])
+        accounting_document_rows.append(
+            {
+                "company_code": key[0],
+                "fiscal_year": key[1],
+                "accounting_document": key[2],
+                "document_type": _first_non_empty(full_rows + linked_rows, "AccountingDocumentType"),
+                "po_linked_items": len(linked_rows),
+                "full_items": len(full_rows),
+            }
+        )
+
+    payment_by_key = {
+        (row["company_code"], row["fiscal_year"], row["accounting_document"]): row
+        for row in payment_documents
+    }
+    clearing_payment_rows = []
+    for row in vendor_rows:
+        clearing_key = (
+            str(row.get("CompanyCode") or "").strip(),
+            str(row.get("ClearingDocFiscalYear") or "").strip(),
+            str(row.get("ClearingAccountingDocument") or "").strip(),
+        )
+        payment = payment_by_key.get(clearing_key, {})
+        is_cleared = _is_true(row.get("IsCleared")) and bool(clearing_key[2])
+        clearing_payment_rows.append(
+            {
+                "invoice_document": str(row.get("AccountingDocument") or ""),
+                "invoice_item": str(row.get("AccountingDocumentItem") or ""),
+                "ap_clearing_status": "confirmed" if is_cleared else "not_confirmed",
+                "clearing_document": clearing_key[2],
+                "clearing_fiscal_year": clearing_key[1] if clearing_key[1] != "0" else "",
+                "clearing_date": _sap_date_text(row.get("ClearingDate")),
+                "payment_document_type": str(payment.get("document_type") or ""),
+                "payment_method": str(payment.get("payment_method") or ""),
+                "house_bank": str(payment.get("house_bank") or payment.get("house_bank_account") or ""),
+                "payment_document_status": "confirmed" if payment.get("qualifies") else "not_confirmed",
+            }
+        )
+
+    evidence_tables = [
+        {
+            "id": "accounting_documents",
+            "title": {"zh": "完整财务凭证", "en": "Full accounting documents"},
+            "columns": [
+                {"key": "company_code", "label": {"zh": "公司代码", "en": "Company code"}},
+                {"key": "fiscal_year", "label": {"zh": "年度", "en": "Fiscal year"}},
+                {"key": "accounting_document", "label": {"zh": "财务凭证", "en": "Accounting document"}},
+                {"key": "document_type", "label": {"zh": "凭证类型", "en": "Document type"}},
+                {"key": "po_linked_items", "label": {"zh": "PO关联行数", "en": "PO-linked items"}, "format": "integer"},
+                {"key": "full_items", "label": {"zh": "完整行项目数", "en": "Full item count"}, "format": "integer"},
+            ],
+            "rows": accounting_document_rows,
+        },
+        {
+            "id": "gr_ir_matching",
+            "title": {"zh": "GR/IR收货与发票匹配", "en": "GR/IR receipt and invoice matching"},
+            "columns": [
+                {"key": "purchase_order_item", "label": {"zh": "PO项目", "en": "PO item"}},
+                {"key": "gl_account", "label": {"zh": "GR/IR科目", "en": "GR/IR account"}},
+                {"key": "receipt_amount", "label": {"zh": "收货金额", "en": "Receipt amount"}, "format": "decimal"},
+                {"key": "invoice_amount", "label": {"zh": "发票金额", "en": "Invoice amount"}, "format": "decimal"},
+                {"key": "net_amount", "label": {"zh": "净额", "en": "Net amount"}, "format": "decimal"},
+                {"key": "currency", "label": {"zh": "币种", "en": "Currency"}},
+                {"key": "status_label", "label": {"zh": "匹配状态", "en": "Matching status"}, "format": "status"},
+            ],
+            "rows": grir_groups,
+        },
+        {
+            "id": "clearing_and_payment",
+            "title": {"zh": "供应商清账与SAP付款凭证", "en": "Supplier clearing and SAP payment documents"},
+            "columns": [
+                {"key": "invoice_document", "label": {"zh": "发票财务凭证", "en": "Invoice accounting document"}},
+                {"key": "invoice_item", "label": {"zh": "供应商行", "en": "Supplier item"}},
+                {"key": "ap_clearing_status", "label": {"zh": "应付清账", "en": "AP clearing"}, "format": "status"},
+                {"key": "clearing_document", "label": {"zh": "清账凭证", "en": "Clearing document"}},
+                {"key": "clearing_fiscal_year", "label": {"zh": "清账年度", "en": "Clearing fiscal year"}},
+                {"key": "clearing_date", "label": {"zh": "清账日期", "en": "Clearing date"}, "format": "date"},
+                {"key": "payment_document_type", "label": {"zh": "付款凭证类型", "en": "Payment document type"}},
+                {"key": "payment_method", "label": {"zh": "付款方式", "en": "Payment method"}},
+                {"key": "house_bank", "label": {"zh": "开户行", "en": "House bank"}},
+                {"key": "payment_document_status", "label": {"zh": "SAP付款凭证", "en": "SAP payment document"}, "format": "status"},
+            ],
+            "rows": clearing_payment_rows,
+        },
+    ]
+    limitations = ["bank_settlement_not_independently_verified"]
+    if not evidence_complete:
+        limitations.append("accounting_document_or_clearing_reference_expansion_incomplete")
     return {
+        "rule_version": "2.0.0",
         "tone": "success" if first_gap is None else "warning",
         "headline": headline,
         "overview": overview,
@@ -735,9 +1250,12 @@ def _p2p_business_report(
             "en": f"{headline['en']}. {overview['en']}",
         },
         "stages": stage_rows,
+        "evidence_tables": evidence_tables,
+        "evidence_complete": evidence_complete,
         "missing_evidence": (
             [] if first_gap is None else [f"p2p_{first_gap}_evidence"]
         ),
+        "limitations": limitations,
         "next_actions": {"zh": actions_zh, "en": actions_en},
     }
 
@@ -835,9 +1353,11 @@ def _business_stage(
 ) -> dict[str, Any]:
     state_labels = {
         "confirmed": {"zh": "已确认", "en": "Confirmed"},
+        "partial": {"zh": "部分确认", "en": "Partially confirmed"},
         "not_found": {"zh": "未找到", "en": "Not found"},
         "not_confirmed": {"zh": "未确认", "en": "Not confirmed"},
         "unknown": {"zh": "尚不明确", "en": "Unknown"},
+        "not_assessed": {"zh": "未单独核验", "en": "Not independently verified"},
     }
     return {
         "id": stage_id,

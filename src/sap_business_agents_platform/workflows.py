@@ -170,7 +170,7 @@ def validate_workflow(
         )
         transform = connection.get("transform") or {"type": "identity"}
         transformed_type = _validate_transform(source_type, transform, location)
-        if not _types_compatible(transformed_type, str(target_type.get("type") or "")):
+        if not _types_compatible(transformed_type, _schema_primary_type(target_type.get("type"))):
             raise WorkflowError(
                 f"{location} maps incompatible types {transformed_type!r} -> "
                 f"{target_type.get('type')!r}",
@@ -243,7 +243,12 @@ def validate_value(value: dict[str, Any], schema: dict[str, Any], *, label: str)
         raise WorkflowError(f"{label} must be an object", code="workflow_contract_violation")
     properties = schema.get("properties") or {}
     required = [str(item) for item in schema.get("required") or []]
-    missing = [name for name in required if name not in value or value[name] in (None, "")]
+    missing = [
+        name
+        for name in required
+        if name not in value
+        or (value[name] in (None, "") and not _schema_allows_null((properties.get(name) or {}).get("type")))
+    ]
     if missing:
         raise WorkflowError(
             f"{label} is missing required fields: {', '.join(missing)}",
@@ -258,7 +263,7 @@ def validate_value(value: dict[str, Any], schema: dict[str, Any], *, label: str)
     for name, item in value.items():
         if name not in properties:
             continue
-        expected = str((properties[name] or {}).get("type") or "")
+        expected = (properties[name] or {}).get("type")
         if not _value_matches_type(item, expected):
             raise WorkflowError(
                 f"{label}.{name} does not match type {expected}",
@@ -292,14 +297,14 @@ def _source_type(
 ) -> str:
     scope = source.get("scope")
     if scope == "workflow_input":
-        return str(_property_schema(workflow["inputSchema"], str(source.get("port") or ""), location).get("type") or "")
+        return _schema_primary_type(_property_schema(workflow["inputSchema"], str(source.get("port") or ""), location).get("type"))
     if scope == "node_output":
         source_node = str(source.get("nodeId") or "")
         if source_node not in nodes or source_node == target_node:
             raise WorkflowError(f"{location}.from.nodeId is unavailable")
         dependencies[target_node].add(source_node)
         output_schema = agents[source_node]["execution"]["outputSchema"]
-        return str(_property_schema(output_schema, str(source.get("port") or ""), location).get("type") or "")
+        return _schema_primary_type(_property_schema(output_schema, str(source.get("port") or ""), location).get("type"))
     if scope == "constant":
         return _json_type(source.get("value"))
     raise WorkflowError(f"{location}.from.scope is unsupported")
@@ -353,7 +358,7 @@ def _validate_outputs(
             output.get("source") or {}, workflow, nodes, agents, dummy_dependencies, "", f"workflow.outputs[{index}]"
         )
         transformed = _validate_transform(source_type, output.get("transform") or {"type": "identity"}, f"workflow.outputs[{index}]")
-        if not _types_compatible(transformed, str(declared[name].get("type") or "")):
+        if not _types_compatible(transformed, _schema_primary_type(declared[name].get("type"))):
             raise WorkflowError(f"workflow.outputs[{index}] has an incompatible type")
     missing = sorted(set(workflow["outputSchema"].get("required") or []).difference(seen))
     if missing:
@@ -380,7 +385,21 @@ def _json_type(value: Any) -> str:
     return "null"
 
 
-def _value_matches_type(value: Any, expected: str) -> bool:
+def _schema_allows_null(value: Any) -> bool:
+    return isinstance(value, list) and "null" in value
+
+
+def _schema_primary_type(value: Any) -> str:
+    if isinstance(value, list):
+        return next((str(item) for item in value if item != "null"), "null")
+    return str(value or "")
+
+
+def _value_matches_type(value: Any, expected: Any) -> bool:
+    if isinstance(expected, list):
+        return any(_value_matches_type(value, item) for item in expected)
+    if expected == "null":
+        return value is None
     if expected == "string":
         return isinstance(value, str)
     if expected == "integer":

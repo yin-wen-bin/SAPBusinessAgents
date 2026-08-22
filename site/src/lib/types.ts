@@ -36,13 +36,15 @@ export interface WorkflowStep {
 }
 
 export interface ExecutionInputProperty {
-  type: "string" | "number" | "integer" | "boolean" | "object" | "array";
+  type: "string" | "number" | "integer" | "boolean" | "object" | "array" | Array<"string" | "number" | "integer" | "boolean" | "object" | "array" | "null">;
   title?: LocalizedText;
   description?: LocalizedText;
   placeholder?: LocalizedText;
   default?: string | number | boolean;
   minLength?: number;
   maxLength?: number;
+  minimum?: number;
+  maximum?: number;
   pattern?: string;
   format?: "date";
 }
@@ -57,6 +59,10 @@ export interface ExecutionInputSchema {
     to: string;
     label?: LocalizedText;
     maxDays?: number;
+  }>;
+  numericOrderPairs?: Array<{
+    lower: string;
+    upper: string;
   }>;
 }
 
@@ -73,7 +79,7 @@ export interface AgentExecutionStep {
 }
 
 export interface AgentValidation {
-  verdict: "PASS" | "PARTIAL" | "FAIL" | "BLOCKED";
+  verdict: "PASS" | "PARTIAL" | "FAIL" | "BLOCKED" | "NOT_TESTED";
   testedAt: string;
   evidenceScope: "complete" | "partial" | "bounded";
   providers: string[];

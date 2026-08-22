@@ -15,6 +15,7 @@ ALLOWED_RULE_OPERATIONS = {
     "classify_control_object",
     "evidence_summary",
     "extract_bounded_values",
+    "resolve_inventory_health_window",
     "evaluate_business_agent",
     "evaluate_p2p_status",
     "evaluate_o2c_status",
@@ -260,6 +261,8 @@ def _validate_live_acceptance(value: Any, source: str) -> None:
         return
     if not isinstance(value, dict):
         raise ManifestError(f"{source}.validation must be an object")
+    if value.get("verdict") not in {"PASS", "PARTIAL", "FAIL", "BLOCKED", "NOT_TESTED"}:
+        raise ManifestError(f"{source}.validation.verdict is invalid")
     if value.get("executable") is not None and not isinstance(value.get("executable"), bool):
         raise ManifestError(f"{source}.validation.executable must be boolean")
     for field in ("freeQueryComparison", "fixedAgentComparison"):

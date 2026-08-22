@@ -1142,6 +1142,14 @@ class EmbeddedODataProvider:
         seen: set[str] = set()
         for index, step in enumerate(candidates, start=1):
             step_id = str(step.get("step_id") or f"step_{index}")
+            if "bindings" in step:
+                issues.append(
+                    {
+                        "code": "unsupported_binding_contract",
+                        "step_id": step_id,
+                        "message": "Use filter_from_previous; bindings is not an executable Provider contract.",
+                    }
+                )
             if step_id in seen:
                 issues.append({"code": "duplicate_step_id", "step_id": step_id})
             seen.add(step_id)

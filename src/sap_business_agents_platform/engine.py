@@ -1695,6 +1695,17 @@ def _validate_input(value: dict[str, Any], schema: dict[str, Any]) -> None:
         if name not in value or not isinstance(property_schema, dict):
             continue
         item = value[name]
+        property_type = property_schema.get("type")
+        if property_type == "integer":
+            if isinstance(item, bool) or not isinstance(item, int):
+                raise ValueError(f"Input {name} must be an integer.")
+            minimum_value = property_schema.get("minimum")
+            maximum_value = property_schema.get("maximum")
+            if isinstance(minimum_value, (int, float)) and item < minimum_value:
+                raise ValueError(f"Input {name} must be at least {minimum_value}.")
+            if isinstance(maximum_value, (int, float)) and item > maximum_value:
+                raise ValueError(f"Input {name} must be at most {maximum_value}.")
+            continue
         if property_schema.get("type") != "string" or not isinstance(item, str):
             continue
         minimum = property_schema.get("minLength")
@@ -1728,6 +1739,15 @@ def _validate_input(value: dict[str, Any], schema: dict[str, Any]) -> None:
         maximum = pair.get("maxDays")
         if isinstance(maximum, int) and (end - start).days > maximum:
             raise ValueError(f"The date range must not exceed {maximum} days.")
+    for pair in schema.get("numericOrderPairs") or []:
+        if not isinstance(pair, dict):
+            continue
+        lower_name = str(pair.get("lower") or "")
+        upper_name = str(pair.get("upper") or "")
+        if lower_name not in value or upper_name not in value:
+            continue
+        if value[lower_name] >= value[upper_name]:
+            raise ValueError(f"Input {lower_name} must be less than {upper_name}.")
 
 
 _TEMPLATE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
@@ -2236,8 +2256,36 @@ def _text_pair(value: Any, fallback: str = "") -> LocalizedText:
         zh = str(value.get("zh") or value.get("en") or fallback)
         en = str(value.get("en") or value.get("zh") or fallback)
         return LocalizedText(zh=zh, en=en)
-    text = str(value or fallback)
+    text = str(fallback if value is None or value == "" else value)
     return LocalizedText(zh=text, en=text)
+
+
+def _presentation_value(value: Any, value_format: str = "text") -> LocalizedText:
+    if value_format == "status" and not isinstance(value, dict):
+        labels = {
+            "confirmed": LocalizedText(zh="已确认", en="Confirmed"),
+            "matched": LocalizedText(zh="已匹配", en="Matched"),
+            "partial": LocalizedText(zh="部分确认", en="Partially confirmed"),
+            "open": LocalizedText(zh="存在差额", en="Difference remains"),
+            "not_confirmed": LocalizedText(zh="未确认", en="Not confirmed"),
+            "not_found": LocalizedText(zh="未找到", en="Not found"),
+            "unknown": LocalizedText(zh="无法确认", en="Unknown"),
+            "not_assessed": LocalizedText(zh="未单独核验", en="Not independently verified"),
+            "not_requested": LocalizedText(zh="未启用", en="Not enabled"),
+            "candidate": LocalizedText(zh="风险候选", en="Risk candidate"),
+            "not_candidate": LocalizedText(zh="未发现风险", en="No risk found"),
+            "snapshot_only": LocalizedText(zh="仅库存快照", en="Stock snapshot only"),
+            "no_stock": LocalizedText(zh="无当前库存", en="No current stock"),
+            "inconclusive": LocalizedText(zh="无法确认", en="Inconclusive"),
+            "normal": LocalizedText(zh="正常", en="Normal"),
+            "attention": LocalizedText(zh="需要关注", en="Attention required"),
+            "complete": LocalizedText(zh="已完成", en="Complete"),
+            "partial_complete": LocalizedText(zh="部分完成", en="Partially complete"),
+        }
+        normalized = str(value or "").strip().lower()
+        if normalized in labels:
+            return labels[normalized]
+    return _text_pair(value)
 
 
 def _default_presentation(result: RunResult) -> RunPresentation:
@@ -2322,7 +2370,10 @@ def _default_presentation(result: RunResult) -> RunPresentation:
             ]
             rows = [
                 PresentationRow(
-                    values=[_text_pair(record.get(column.key)) for column in columns]
+                    values=[
+                        _presentation_value(record.get(column.key), column.format)
+                        for column in columns
+                    ]
                 )
                 for record in records[:200]
             ]
@@ -2334,6 +2385,49 @@ def _default_presentation(result: RunResult) -> RunPresentation:
                     columns=columns,
                     rows=rows,
                     total_rows=len(records),
+                    source_complete=result.completeness.source_complete,
+                )
+            )
+        evidence_tables = [
+            item for item in report.get("evidence_tables") or [] if isinstance(item, dict)
+        ]
+        for table_index, table in enumerate(evidence_tables):
+            table_columns = [
+                item for item in table.get("columns") or [] if isinstance(item, dict)
+            ]
+            table_records = [
+                item for item in table.get("rows") or [] if isinstance(item, dict)
+            ]
+            if not table_columns or not table_records:
+                continue
+            columns = [
+                PresentationColumn(
+                    key=str(item.get("key") or f"column_{index + 1}"),
+                    label=_text_pair(item.get("label") or item.get("key")),
+                    format=str(item.get("format") or "text"),
+                )
+                for index, item in enumerate(table_columns)
+            ]
+            rows = [
+                PresentationRow(
+                    values=[
+                        _presentation_value(record.get(column.key), column.format)
+                        for column in columns
+                    ]
+                )
+                for record in table_records[:200]
+            ]
+            blocks.append(
+                PresentationBlock(
+                    type="table",
+                    title=_text_pair(
+                        table.get("title"),
+                        str(table.get("id") or f"Evidence table {table_index + 1}"),
+                    ),
+                    claim_scope="customer_business_fact",
+                    columns=columns,
+                    rows=rows,
+                    total_rows=len(table_records),
                     source_complete=result.completeness.source_complete,
                 )
             )
@@ -2365,8 +2459,20 @@ def _default_presentation(result: RunResult) -> RunPresentation:
             )
         actions_value = report.get("next_actions") or []
         if isinstance(actions_value, dict):
-            actions_value = actions_value.get("zh") or actions_value.get("en") or []
-        actions = [_text_pair(item) for item in actions_value]
+            zh_actions = actions_value.get("zh") or []
+            en_actions = actions_value.get("en") or []
+            action_count = max(len(zh_actions), len(en_actions))
+            actions = [
+                _text_pair(
+                    {
+                        "zh": zh_actions[index] if index < len(zh_actions) else en_actions[index],
+                        "en": en_actions[index] if index < len(en_actions) else zh_actions[index],
+                    }
+                )
+                for index in range(action_count)
+            ]
+        else:
+            actions = [_text_pair(item) for item in actions_value]
         if actions:
             blocks.append(
                 PresentationBlock(
@@ -2426,11 +2532,37 @@ def _default_presentation(result: RunResult) -> RunPresentation:
 def _localized_text(value: Any, locale: str = "zh") -> str:
     if isinstance(value, dict):
         return str(value.get(locale) or value.get("zh") or value.get("en") or "")
-    return str(value or "")
+    return "" if value is None else str(value)
 
 
 def _markdown_cell(value: Any) -> str:
     return _localized_text(value, "zh").replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _markdown_business_value(value: Any, value_format: str = "text") -> str:
+    if value_format == "status" and not isinstance(value, dict):
+        labels = {
+            "confirmed": "已确认",
+            "matched": "已匹配",
+            "partial": "部分确认",
+            "open": "存在差额",
+            "not_confirmed": "未确认",
+            "not_found": "未找到",
+            "unknown": "无法确认",
+            "not_assessed": "未单独核验",
+            "not_requested": "未启用",
+            "candidate": "风险候选",
+            "not_candidate": "未发现风险",
+            "snapshot_only": "仅库存快照",
+            "no_stock": "无当前库存",
+            "inconclusive": "无法确认",
+            "normal": "正常",
+            "attention": "需要关注",
+        }
+        normalized = str(value or "").strip().lower()
+        if normalized in labels:
+            return labels[normalized]
+    return _markdown_cell(value)
 
 
 def _business_markdown_report(
@@ -2488,6 +2620,41 @@ def _business_markdown_report(
                 lines.append(
                     f"| {_markdown_cell(metric.get('label'))} | "
                     f"{_markdown_cell(metric.get('value'))} |"
+                )
+            lines.append("")
+        evidence_tables = [
+            table
+            for table in business_report.get("evidence_tables") or []
+            if isinstance(table, dict)
+        ]
+        for table in evidence_tables:
+            columns = [
+                column
+                for column in table.get("columns") or []
+                if isinstance(column, dict) and str(column.get("key") or "").strip()
+            ]
+            rows = [row for row in table.get("rows") or [] if isinstance(row, dict)]
+            if not columns or not rows:
+                continue
+            lines.extend(
+                [
+                    f"## {_markdown_cell(table.get('title'))}",
+                    "",
+                    "| " + " | ".join(_markdown_cell(column.get("label")) for column in columns) + " |",
+                    "| " + " | ".join("---" for _ in columns) + " |",
+                ]
+            )
+            for row in rows:
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        _markdown_business_value(
+                            row.get(str(column.get("key"))),
+                            str(column.get("format") or "text"),
+                        )
+                        for column in columns
+                    )
+                    + " |"
                 )
             lines.append("")
         findings = [

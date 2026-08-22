@@ -2,6 +2,3 @@ read_only = true
 selected_provider = "embedded"
 adt_skill = "sap-adt-table-export"
 max_rows = 30000
-slow_moving_days = 180
-obsolete_days = 365
-expiry_days = 90

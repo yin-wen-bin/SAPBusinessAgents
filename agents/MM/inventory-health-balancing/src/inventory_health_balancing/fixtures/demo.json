@@ -1,10 +1,58 @@
 {
-  "run_input": {"material": "MAT-001", "plant": "1010", "storage_location": "101A", "date_from": "2025-08-17", "as_of": "2026-08-17", "slow_moving_days": 180, "obsolete_days": 365, "expiry_days": 90},
-  "assessment": {"api_complete": {"stock": true, "movement": true, "batch_expiry": true, "parameters": true}},
-  "evidence": {
-    "stock": {"source_complete": true, "step_results": {"material_stock": {"results": [{"MatlWrhsStkQtyInMatlBaseUnit": "100", "MaterialBaseUnit": "EA"}]}}},
-    "movement": {"source_complete": true, "step_results": {"material_movements": {"results": [{"PostingDate": "2025-12-01"}]}}},
-    "batch": {"source_complete": true, "step_results": {"batches": {"results": [{"ShelfLifeExpirationDate": "2026-09-01", "MaterialBaseUnit": "EA"}]}, "replenishment_parameters": {"results": [{"SafetyStockQuantity": "20"}]}}}
+  "run_input": {
+    "material": "MAT-001",
+    "plant": "1010",
+    "storage_location": "101A"
   },
-  "fallbacks": {}, "known_gaps": []
+  "window": {
+    "snapshot_date": "2026-08-23",
+    "check_slow_moving": false,
+    "check_obsolete": false,
+    "check_expiry": false,
+    "movement_check_requested": false,
+    "movement_lookback_days": null,
+    "movement_date_from": null,
+    "selected_checks": []
+  },
+  "assessment": {
+    "api_complete": {
+      "stock": true,
+      "movement": true,
+      "batch_expiry": true
+    }
+  },
+  "evidence": {
+    "stock": {
+      "source_complete": true,
+      "step_results": {
+        "material_stock": {
+          "results": [
+            {
+              "Material": "MAT-001",
+              "Plant": "1010",
+              "StorageLocation": "101A",
+              "Batch": "",
+              "InventoryStockType": "01",
+              "InventorySpecialStockType": "",
+              "MatlWrhsStkQtyInMatlBaseUnit": "100",
+              "MaterialBaseUnit": "EA"
+            }
+          ],
+          "source_complete": true
+        }
+      }
+    },
+    "movement": {
+      "status": "skipped",
+      "reason": "condition_false",
+      "source_complete": true
+    },
+    "batch_expiry": {
+      "status": "skipped",
+      "reason": "condition_false",
+      "source_complete": true
+    }
+  },
+  "fallbacks": {},
+  "known_gaps": []
 }

@@ -144,7 +144,7 @@ function validateLiveValidation(validation, source) {
   if (!validation || typeof validation !== "object" || Array.isArray(validation)) {
     throw new Error(`${source}.validation must be an object`);
   }
-  if (!["PASS", "PARTIAL", "FAIL", "BLOCKED"].includes(validation.verdict)) {
+  if (!["PASS", "PARTIAL", "FAIL", "BLOCKED", "NOT_TESTED"].includes(validation.verdict)) {
     throw new Error(`${source}.validation.verdict is invalid`);
   }
   if (!["complete", "partial", "bounded"].includes(validation.evidenceScope)) {

@@ -1453,6 +1453,21 @@ supports a result or a specific gap remains. executed_plans must contain only SA
 actually executed, and evidence_refs must contain only references returned by platform tools.
 Prefer a refined server-side SAP query over paging through an obsolete broad evidence set. Once a
 more specific complete query succeeds, do not keep reading pages from the superseded broad query.
+For material-document item plus header posting-date evidence, prefer one validated multi_step plan:
+filter the item step by the exact material, plant, storage location and involved fiscal years, then
+bind MaterialDocumentYear plus MaterialDocument from that same source step into the header step and
+filter the header PostingDate window there. Do not rely on an unvalidated navigation-property filter,
+and do not replace one complete composite-key header query with repeated single-document GETs.
+The accepted multi-step container is exactly
+`{{"schema_version":"1.0","plan_kind":"multi_step","steps":[...]}}`. Each step declares its own
+service_name, odata_version, entity_set, http_method, filters, select_fields, order_by, and
+response_summary_fields. Composite propagation uses two header-step `filter_from_previous` items
+with the same source_step_id; each declares field plus source_field so values stay grouped by source
+row. Never invent `bindings`, `type`, `runtime_query_plan`,
+`multi_step_plan`, `query_plan`, `root`, or another wrapper around this object.
+safe_compute accepts one bounded pure expression only. It does not accept imports, assignments,
+statements, comprehensions, attribute calls, or date libraries; for SAP epoch timestamps, calculate
+whole-day differences with integer arithmetic over supplied milliseconds.
 """.strip()
 
 

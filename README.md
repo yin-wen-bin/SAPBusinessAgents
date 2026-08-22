@@ -29,7 +29,7 @@ SAP Business Agents 是一个按 SAP 业务模块组织的可运行 Agent 目录
 | FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD 月结异常检查与关账待办 |
 | MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | PO → GR → IV → FI → Payment 全链路状态 |
 | MM | [Material Shortage Procurement Response](agents/MM/material-shortage-procurement-response/) | MRP 短缺、PR、PO 交期与货源响应 |
-| MM | [Inventory Health and Balancing](agents/MM/inventory-health-balancing/) | 慢动、呆滞、临期与库存平衡 |
+| MM | [Inventory Health Check](agents/MM/inventory-health-balancing/) | 可选的慢动、呆滞与临期检查；只分析当前库存 |
 | MM | [Intelligent Sourcing and RFQ Evaluation](agents/MM/intelligent-sourcing-rfq/) | RFQ/报价固定权重评估 |
 | MM | [Supplier Performance and Delivery Risk](agents/MM/supplier-performance-risk/) | 计划行净收货 OTIF 与交付风险 |
 | SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/) | 已发货未开票识别与滞留分级 |
@@ -125,13 +125,29 @@ Copy-Item .env.example .env
 
 完成首次安装和 `.env` 配置后，可直接双击仓库根目录的
 `start-sap-business-agents.cmd`。启动器只检查或启动 SAPBusinessAgents API 和
-Astro Web UI。日志写入 `.local-data/startup/<timestamp>/`，
-已健康的服务不会重复启动。
+Astro Web UI，不会启动 SAPClaw。默认情况下，Web UI 使用内容指纹复用
+`.local-data/site-builds/` 中的静态构建并通过 Astro Preview 运行；首次启动或
+Agent、前端源码、依赖及本地 API 地址变化时才会重新构建。已健康的服务不会重复启动。
+
+每次启动的分阶段耗时和服务日志写入 `.local-data/startup/<timestamp>/`。
+`.local-data/startup/latest.json` 表示最近一次成功启动，`last-attempt.json` 还会记录失败阶段。
 
 也可以从 PowerShell 启动而不自动打开浏览器：
 
 ```powershell
 .\scripts\Start-SAPBusinessAgents.ps1 -NoBrowser
+```
+
+前端开发时使用 `-Dev` 启用 Astro 热更新，此模式不会读取或写入静态构建缓存：
+
+```powershell
+.\scripts\Start-SAPBusinessAgents.ps1 -Dev
+```
+
+如需忽略已有内容指纹并重新生成本地静态站点，可使用：
+
+```powershell
+.\scripts\Start-SAPBusinessAgents.ps1 -Restart -RebuildSite
 ```
 
 如需显式重启由本项目启动、占用对应端口的本机服务，可使用 `-Restart`。启动器不会停止
@@ -236,7 +252,7 @@ Live catalog: [https://yin-wen-bin.github.io/SAPBusinessAgents/](https://yin-wen
 | FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD close checks and traceable follow-up work |
 | MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | End-to-end PO → GR → IV → FI → Payment status |
 | MM | [Material Shortage Procurement Response](agents/MM/material-shortage-procurement-response/) | MRP shortage, PR, PO schedule, and source response |
-| MM | [Inventory Health and Balancing](agents/MM/inventory-health-balancing/) | Slow-moving, obsolete, expiry, and inventory balancing |
+| MM | [Inventory Health Check](agents/MM/inventory-health-balancing/) | Optional slow-moving, obsolete, and expiry checks for current stock only |
 | MM | [Intelligent Sourcing and RFQ Evaluation](agents/MM/intelligent-sourcing-rfq/) | Fixed-weight RFQ and quotation evaluation |
 | MM | [Supplier Performance and Delivery Risk](agents/MM/supplier-performance-risk/) | Schedule-line net-receipt OTIF and delivery risk |
 | SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/) | Delivered-but-unbilled detection and ageing |

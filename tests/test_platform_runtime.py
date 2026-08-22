@@ -548,6 +548,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
             "gr-ir-clearing",
             "month-end-closing",
             "intelligent-sourcing-rfq",
+            "inventory-health-balancing",
             "procure-to-pay-status",
             "supplier-performance-risk",
             "mrp-exception-analysis",
@@ -700,7 +701,7 @@ def test_fixed_agent_runs_without_codex_and_persists_events(tmp_path: Path) -> N
         assert run["result"]["completeness"]["source_complete"] is True
         assert len(embedded.executed_plans) == 1
         assert planner.calls == 0
-        assert run["result"]["rule_results"][0]["rule_id"] == "p2p_deterministic_status_v1"
+        assert run["result"]["rule_results"][0]["rule_id"] == "p2p_deterministic_status_v2"
         assert run["result"]["summary"]["zh"]
         assert run["result"]["presentation"]["schema_version"] == "1.0"
         assert any(

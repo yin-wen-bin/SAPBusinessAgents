@@ -136,34 +136,35 @@ def test_inventory_report_consumes_embedded_rows_by_semantic_evidence_alias() ->
         {
             "agent_id": "inventory-health-balancing",
             "run_input": {
-                "as_of": date.today().isoformat(),
-                "slow_moving_days": 180,
-                "obsolete_days": 365,
-                "expiry_days": 90,
+                "material": "TG10",
+                "plant": "1710",
+                "storage_location": "171A",
+            },
+            "window": {
+                "snapshot_date": date.today().isoformat(),
+                "check_slow_moving": False,
+                "check_obsolete": False,
+                "check_expiry": False,
+                "movement_check_requested": False,
+                "movement_lookback_days": None,
+                "selected_checks": [],
             },
             "assessment": {
                 "api_complete": {
                     "stock": True,
                     "movement": True,
                     "batch_expiry": True,
-                    "parameters": True,
                 }
             },
             "evidence": {
                 "stock": _embedded_response(
                     {
+                        "InventoryStockType": "01",
+                        "InventorySpecialStockType": "",
                         "MatlWrhsStkQtyInMatlBaseUnit": "100",
                         "MaterialBaseUnit": "EA",
                     }
                 ),
-                "movement": _embedded_response({"PostingDate": "2026-08-01"}),
-                "batch": _embedded_response(
-                    {
-                        "ShelfLifeExpirationDate": "2026-09-01",
-                        "MaterialBaseUnit": "EA",
-                    }
-                ),
-                "parameters": _embedded_response({"SafetyStockQuantity": "20"}),
             },
             "fallbacks": {},
             "known_gaps": [],
@@ -175,9 +176,16 @@ def test_inventory_report_consumes_embedded_rows_by_semantic_evidence_alias() ->
         for item in result["business_report"]["stages"]
     }
     metrics = {item["id"]: item["value"] for item in result["metrics"]}
-    assert stages == {"stock": 1, "movement": 1, "batch": 1, "parameters": 1}
-    assert metrics["unrestricted_stock"] == "100"
-    assert metrics["confirmed_transfer_quantity"] == "80"
+    assert stages == {
+        "current_stock": 1,
+        "selected_checks": 0,
+        "slow_moving": 0,
+        "obsolete": 0,
+        "expiry": 0,
+        "completeness": 1,
+    }
+    assert metrics["current_unrestricted_stock"] == "100"
+    assert result["business_status"] == "snapshot_only"
 
 
 def test_material_shortage_report_keeps_context_sources_out_of_primary_records() -> None:

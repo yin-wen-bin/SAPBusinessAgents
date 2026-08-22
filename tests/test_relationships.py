@@ -167,3 +167,30 @@ def test_relationship_catalog_accepts_p2p_business_key_semantics() -> None:
         )
     ]
     assert _catalog().validate_plans(plans) == []
+
+
+def test_p2p_fixed_agent_expands_full_accounting_documents_with_coherent_keys() -> None:
+    agent = json.loads(
+        (ROOT / "agents" / "MM" / "procure-to-pay-status" / "agent.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    plan = agent["execution"]["steps"][0]["request"]["plan"]
+    steps = {step["step_id"]: step for step in plan["steps"]}
+
+    full_document_bindings = steps["full_accounting_documents"]["filter_from_previous"]
+    assert {
+        (item["field"], item["source_step_id"], item["source_field"])
+        for item in full_document_bindings
+    } == {
+        ("CompanyCode", "accounting_items", "CompanyCode"),
+        ("FiscalYear", "accounting_items", "FiscalYear"),
+        ("AccountingDocument", "accounting_items", "AccountingDocument"),
+    }
+    assert all(item["fanout"] is True for item in full_document_bindings)
+    assert all(item["fetch_all_for_binding"] is True for item in full_document_bindings)
+    assert {
+        item["source_step_id"]
+        for item in steps["clearing_documents"]["filter_from_previous"]
+    } == {"full_accounting_documents"}
+    assert _catalog().validate_plans([("p2p", plan)]) == []
