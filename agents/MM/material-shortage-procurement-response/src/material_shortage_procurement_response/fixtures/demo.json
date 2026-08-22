@@ -2,9 +2,11 @@
   "run_input": {"material": "MAT-001", "plant": "1010", "mrp_area": "1010", "purchasing_organization": "1010", "shortage_profile": "SAP000000001", "shortage_counter": "001", "as_of": "2026-08-17"},
   "assessment": {"api_complete": {"mrp": true, "pr": true, "po_schedule": true, "source": true}},
   "evidence": {
+    "mrp_master": {"source_complete": true, "results": [{"Material": "MAT-001", "MRPArea": "1010", "MRPPlant": "1010", "MaterialProcurementCategory": "F", "BaseUnit": "EA"}]},
     "mrp": {"source_complete": true, "step_results": {"mrp_coverage": {"results": [{"MaterialShortageQuantity": "10", "MaterialBaseUnit": "EA"}]}}},
     "pr": {"source_complete": true, "step_results": {"purchase_requisitions": {"results": [{"PurchaseRequisition": "10000001", "ProcessingStatus": "01"}]}}},
-    "po": {"source_complete": true, "step_results": {"purchase_orders": {"results": []}, "info_records": {"results": [{"PurchasingInfoRecord": "5300000001"}]}}}
+    "po": {"source_complete": true, "step_results": {"purchase_orders": {"results": []}}},
+    "source": {"source_complete": true, "results": [{"PurchasingInfoRecord": "5300000001", "IsMarkedForDeletion": false, "IsRelevantForAutomSrcg": true}]}
   },
   "fallbacks": {}, "known_gaps": []
 }

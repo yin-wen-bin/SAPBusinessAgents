@@ -319,6 +319,57 @@ def _normalize_record(
         mapped = (mapping or {}).get(current.casefold())
         if mapped is not None:
             record[field] = mapped
+    for field, parts in (contract.get("composite_key_parts") or {}).items():
+        current = record.get(field)
+        if not isinstance(current, str) or "|" in current or "=" not in current:
+            continue
+        labelled = {
+            _field_token(label): value.strip()
+            for item in current.split(";")
+            if "=" in item
+            for label, value in [item.split("=", 1)]
+        }
+        ordered: list[str] = []
+        complete = True
+        for part in parts or []:
+            if not isinstance(part, dict):
+                complete = False
+                break
+            aliases = [part.get("name"), *(part.get("aliases") or [])]
+            value = next(
+                (
+                    labelled[_field_token(alias)]
+                    for alias in aliases
+                    if _field_token(alias) in labelled
+                ),
+                None,
+            )
+            if value is None:
+                complete = False
+                break
+            ordered.append(value)
+        if complete and ordered:
+            record[field] = "|".join(ordered)
+    for field in contract.get("composite_blank_fields") or []:
+        current = record.get(field)
+        if not isinstance(current, str) or "|" not in current:
+            continue
+        blank_tokens = {
+            "",
+            "blank",
+            "empty",
+            "none",
+            "null",
+            "n/a",
+            "<blank>",
+            "(blank)",
+            "<empty>",
+            "(empty)",
+        }
+        record[field] = "|".join(
+            "(blank)" if segment.strip().casefold() in blank_tokens else segment.strip()
+            for segment in current.split("|")
+        )
     for field, keywords in (contract.get("blank_value_keywords") or {}).items():
         current = str(record.get(field) or "").strip().casefold()
         if current and any(str(item).casefold() in current for item in keywords or []):
@@ -537,6 +588,40 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
         instructions.append(f"- Record scope: {record_scope}")
     for metric_id, definition in (contract.get("metric_definitions") or {}).items():
         instructions.append(f"- Metric {metric_id}: {definition}")
+    qualification_definition = str(
+        contract.get("test_data_qualification_definition") or ""
+    ).strip()
+    if qualification_definition:
+        instructions.append(
+            f"- Test-data qualification rule: {qualification_definition}"
+        )
+    nonblocking_codes = ", ".join(
+        str(item) for item in contract.get("nonblocking_observation_codes") or []
+    )
+    if nonblocking_codes:
+        instructions.append(
+            "- Treat these diagnostic codes as non-blocking observations, not evidence "
+            f"limitations or capability blockers: [{nonblocking_codes}]."
+        )
+    composite_blank_fields = ", ".join(
+        str(item) for item in contract.get("composite_blank_fields") or []
+    )
+    if composite_blank_fields:
+        instructions.append(
+            "- In these composite fields, represent every missing key segment exactly "
+            f"as (blank): [{composite_blank_fields}]."
+        )
+    for field, parts in (contract.get("composite_key_parts") or {}).items():
+        names = [
+            str(item.get("name"))
+            for item in parts or []
+            if isinstance(item, dict) and item.get("name")
+        ]
+        if names:
+            instructions.append(
+                f"- Composite field {field} must contain values only, joined by | in this "
+                f"exact part order (do not include part labels): [{' | '.join(names)}]."
+            )
     status_definition = str(contract.get("business_status_definition") or "").strip()
     if status_definition:
         instructions.append(f"- business_status rule: {status_definition}")
@@ -668,6 +753,10 @@ async def _main(args: argparse.Namespace) -> int:
         "metric_definitions": contract_value.get("metricDefinitions") or {},
         "business_status_definition": contract_value.get("businessStatusDefinition") or "",
         "business_status_from_any_positive_metric": contract_value.get("businessStatusFromAnyPositiveMetric") or {},
+        "composite_blank_fields": contract_value.get("compositeBlankFields") or [],
+        "nonblocking_observation_codes": contract_value.get("nonBlockingObservationCodes") or [],
+        "test_data_qualification_definition": contract_value.get("testDataQualificationDefinition") or "",
+        "composite_key_parts": contract_value.get("compositeKeyParts") or {},
     }
     contract["required_limitations"] = list(
         dict.fromkeys(
@@ -729,6 +818,11 @@ async def _main(args: argparse.Namespace) -> int:
             "runtime": baseline_payload.get("runtime"),
             "used_sap_business_agents": baseline_payload.get("used_sap_business_agents"),
             "http_methods": baseline_payload.get("http_methods") or [baseline_payload.get("http_method")],
+            "nonblocking_observations": [
+                dict(item)
+                for item in baseline_payload.get("nonblocking_observations") or []
+                if isinstance(item, dict)
+            ],
             "sources": [
                 {
                     key: source.get(key)

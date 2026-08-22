@@ -32,6 +32,7 @@ def baseline_report(root: Path, artifact: dict[str, Any]) -> str:
             direct = {
                 "sources": value.get("sources") or [],
                 "qualification": value.get("qualification"),
+                "nonblocking_observations": value.get("nonblocking_observations") or [],
             }
     sources = [item for item in direct.get("sources") or [] if isinstance(item, dict)]
     lines = [
@@ -67,6 +68,21 @@ def baseline_report(root: Path, artifact: dict[str, Any]) -> str:
         for source in sources:
             lines.append(
                 f"- `{source.get('source_id')}` schema `{source.get('schema_hash') or '-'}`; query `{source.get('query_hash') or '-'}`."
+            )
+    observations = [
+        item
+        for item in direct.get("nonblocking_observations") or []
+        if isinstance(item, dict)
+    ]
+    if observations:
+        lines.extend(["", "Non-blocking observations:"])
+        for item in observations:
+            code = str(item.get("code") or "observation")
+            last_mrp_date = str(item.get("last_mrp_date") or "-")
+            age_days = item.get("age_days")
+            age_text = str(age_days) if isinstance(age_days, int) else "-"
+            lines.append(
+                f"- `{code}`: last MRP date `{last_mrp_date}`, snapshot age `{age_text}` day(s); blocking=`false`."
             )
     qualification = direct.get("qualification") if isinstance(direct.get("qualification"), dict) else {}
     if qualification:

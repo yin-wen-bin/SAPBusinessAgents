@@ -1517,22 +1517,40 @@ def _production_variance(inputs: JsonObject) -> JsonObject:
 
 
 def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
-    mrp = _rows(inputs, "mrp", "mrp_coverage", "supply_demand") + _adt_rows(inputs, "mrp")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    as_of = _date(run_input.get("as_of")) or date.today()
+    master = _rows(inputs, "mrp_master")
+    # MaterialCoverages is the authoritative shortage aggregate for this Agent.
+    # SupplyDemandItems may corroborate the situation, but its receipt and stock
+    # rows must never be added to the reported shortage quantity.
+    mrp = _rows(inputs, "mrp", "mrp_coverage") + _adt_rows(inputs, "mrp")
     requisitions = _rows(inputs, "pr", "purchase_requisitions") + _adt_rows(inputs, "pr")
     orders = _rows(inputs, "po_schedule", "purchase_orders") + _adt_rows(inputs, "po_schedule")
     sources = _rows(inputs, "source", "info_records", "contracts", "suppliers") + _adt_rows(inputs, "source")
-    complete, missing = _required_topics(inputs, "mrp", "pr", "po_schedule", "source")
+    topic_complete, missing = _required_topics(inputs, "mrp", "pr", "po_schedule", "source")
+    external_procurement = any(
+        _text(row, "MaterialProcurementCategory", "ProcurementType").upper() == "F"
+        for row in master
+    )
+    if not master:
+        missing.append("external_procurement_evidence")
+    elif not external_procurement:
+        missing.append("external_procurement_scope")
+    complete = topic_complete and external_procurement
     units = {
         str(row.get(key) or "").strip()
         for row in mrp
         for key in ("MaterialBaseUnit", "BaseUnit", "Unit")
         if str(row.get(key) or "").strip()
     }
-    comparable = complete and len(units) <= 1
+    shortage_rows = [
+        row for row in mrp if row.get("MaterialShortageQuantity") not in {None, ""}
+    ]
+    comparable = complete and len(units) <= 1 and bool(shortage_rows)
     shortage = sum(
-        (_decimal(row.get("MaterialShortageQuantity") or row.get("MRPElementOpenQuantity")))
-        for row in mrp
-        if _decimal(row.get("MaterialShortageQuantity") or row.get("MRPElementOpenQuantity")) > 0
+        _decimal(row.get("MaterialShortageQuantity"))
+        for row in shortage_rows
+        if _decimal(row.get("MaterialShortageQuantity")) > 0
     )
     pending_pr = [
         row for row in requisitions
@@ -1542,21 +1560,58 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
         and str(row.get("PurReqnReleaseStatus") or row.get("ReleaseStatus") or "").upper()
         not in {"05", "08", "C", "RELEASED", "COMPLETED"}
     ]
-    today = _date((inputs.get("run_input") or {}).get("as_of")) or date.today()
     expediting = [
         row for row in orders
-        if (_date(row.get("ScheduleLineDeliveryDate") or row.get("DeliveryDate")) or date.max) < today
+        if (_date(row.get("ScheduleLineDeliveryDate") or row.get("DeliveryDate")) or date.max) < as_of
         and _open_po_quantity(row) > 0
     ]
+    valid_sources = [
+        row
+        for row in sources
+        if not _truthy(row.get("IsMarkedForDeletion"))
+        and _truthy(row.get("IsRelevantForAutomSrcg"))
+    ]
+    last_mrp_dates = [
+        parsed
+        for row in [*master, *mrp]
+        for parsed in [_date(row.get("MaterialLastMRPDateTime"))]
+        if parsed is not None
+    ]
+    last_mrp = max(last_mrp_dates) if last_mrp_dates else None
+    snapshot_age_days = (as_of - last_mrp).days if last_mrp and as_of >= last_mrp else 0
     findings = [
         {"code": "UNIT_NOT_COMPARABLE", "severity": "high"}
         for _ in [0]
         if len(units) > 1
     ]
+    if not master:
+        findings.append({"code": "EXTERNAL_PROCUREMENT_NOT_PROVEN", "severity": "high"})
+    elif not external_procurement:
+        findings.append({"code": "MATERIAL_NOT_EXTERNALLY_PROCURED", "severity": "high"})
+    if snapshot_age_days > 30:
+        last_mrp_text = last_mrp.isoformat() if last_mrp else ""
+        findings.append(
+            {
+                "code": "MRP_SNAPSHOT_STALE",
+                "severity": "low",
+                "age_days": snapshot_age_days,
+                "last_mrp_date": last_mrp_text,
+                "detail": {
+                    "zh": (
+                        f"MRP 快照较旧：最后 MRP 日期为 {last_mrp_text}，"
+                        f"距查询基准日 {snapshot_age_days} 天；此提示不阻塞业务结论。"
+                    ),
+                    "en": (
+                        f"The MRP snapshot is stale: the last MRP date is {last_mrp_text}, "
+                        f"{snapshot_age_days} day(s) before the as-of date; this warning "
+                        "does not block the business conclusion."
+                    ),
+                },
+            }
+        )
     if not complete:
         findings.append({"code": "REQUIRED_EVIDENCE_INCOMPLETE", "severity": "high"})
     records: list[JsonObject] = []
-    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
     for index, row in enumerate(mrp):
         material = _text(row, "Material") or str(run_input.get("material") or "")
         plant = _text(row, "MRPPlant", "Plant", "MRPArea") or str(run_input.get("plant") or "")
@@ -1619,7 +1674,13 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
                 )
     return _result(
         inputs,
-        business_status="attention" if shortage or pending_pr or expediting else "normal",
+        business_status=(
+            "capability_blocked"
+            if not complete
+            else "attention"
+            if shortage or pending_pr or expediting
+            else "normal"
+        ),
         headline_zh=(
             f"识别到 {len(pending_pr)} 条待处理 PR、{len(expediting)} 条催交 PO；确定缺口为 {shortage}"
             if comparable else
@@ -1636,14 +1697,14 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
             _stage("mrp", "MRP 供需", "MRP supply and demand", len(mrp), state="confirmed" if _topic_complete(inputs, "mrp") else "unknown"),
             _stage("pr", "采购申请", "Purchase requisitions", len(requisitions), state="confirmed" if _topic_complete(inputs, "pr") else "unknown"),
             _stage("po", "采购订单交期", "PO schedules", len(orders), state="confirmed" if _topic_complete(inputs, "po_schedule") else "unknown"),
-            _stage("source", "有效货源", "Valid sources", len(sources), state="confirmed" if _topic_complete(inputs, "source") else "unknown"),
+            _stage("source", "有效货源", "Valid sources", len(valid_sources), state="confirmed" if _topic_complete(inputs, "source") else "unknown"),
         ],
         findings=findings,
         metrics=[
             {"id": "shortage_quantity", "value": str(shortage) if comparable else None},
             {"id": "pending_pr", "value": len(pending_pr)},
             {"id": "expedite_po", "value": len(expediting)},
-            {"id": "valid_source_candidates", "value": len(sources)},
+            {"id": "valid_source_candidates", "value": len(valid_sources)},
         ],
         records=records,
         gaps=_gaps(inputs, *missing),

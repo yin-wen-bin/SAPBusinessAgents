@@ -93,6 +93,10 @@ def _spec(
         "metricDefinitions": {},
         "businessStatusDefinition": "",
         "businessStatusFromAnyPositiveMetric": {},
+        "compositeBlankFields": [],
+        "nonBlockingObservationCodes": [],
+        "testDataQualificationDefinition": "",
+        "compositeKeyParts": {},
     }
 
 
@@ -464,14 +468,15 @@ SPECS["demand-forecast-planning"]["zeroFactWhenMetricZero"] = {
 }
 
 SPECS["material-shortage-procurement-response"]["recordScope"] = (
-    "Return only authoritative MRP coverage or supply-demand requirement rows. "
-    "Purchase requisitions, PO schedule lines, and source candidates are contextual "
-    "evidence summarized by metrics, not comparison records."
+    "Return only authoritative MaterialCoverages rows as comparison records. "
+    "MRP master data, SupplyDemandItems, purchase requisitions, PO schedule lines, "
+    "and source candidates are contextual evidence summarized by metrics or diagnostics, "
+    "not comparison records."
 )
 SPECS["material-shortage-procurement-response"]["metricDefinitions"] = {
     "pending_pr": "Count exact material/plant PR items that are not deleted and are not in completed/released terminal processing states.",
     "expedite_po": "Count exact material/plant PO schedule lines with delivery before the as-of date and positive schedule quantity minus committed quantity.",
-    "valid_source_candidates": "Count exact purchasing-organization/plant info-record rows returned by the complete source query.",
+    "valid_source_candidates": "Count exact purchasing-organization/plant info-record rows that are not marked for deletion and are relevant for automatic sourcing.",
 }
 SPECS["material-shortage-procurement-response"]["businessStatusDefinition"] = (
     "Use attention when shortage_quantity, pending_pr, or expedite_po is positive; "
@@ -485,10 +490,39 @@ SPECS["material-shortage-procurement-response"]["businessStatusFromAnyPositiveMe
 }
 SPECS["material-shortage-procurement-response"]["valueMappings"] = {
     "mrp_element_type": {
+        "02": "material_coverage",
         "materialcoverage": "material_coverage",
         "material_coverage": "material_coverage",
     }
 }
+SPECS["material-shortage-procurement-response"]["compositeBlankFields"] = [
+    "requirement_id"
+]
+SPECS["material-shortage-procurement-response"]["compositeKeyParts"] = {
+    "requirement_id": [
+        {"name": "profile", "aliases": ["MaterialShortageProfile"]},
+        {"name": "counter", "aliases": ["MaterialShortageProfileCount"]},
+        {"name": "mrp_area", "aliases": ["MRPArea"]},
+        {"name": "segment", "aliases": ["MRPPlanningSegmentNumber"]},
+        {"name": "segment_type", "aliases": ["MRPPlanningSegmentType"]},
+    ]
+}
+SPECS["material-shortage-procurement-response"]["nonBlockingObservationCodes"] = [
+    "mrp_snapshot_stale"
+]
+SPECS["material-shortage-procurement-response"]["testDataQualificationDefinition"] = (
+    "A sample is qualified when the authoritative coverage shortage is positive and active "
+    "at the as-of date, MRP master data confirms external procurement category F, and all "
+    "required source queries are complete. Complete exact zero-row PR, PO schedule, or source "
+    "branches establish zero and do not disqualify the sample. MRP snapshot staleness is a "
+    "non-blocking warning."
+)
+SPECS["material-shortage-procurement-response"]["ignoredNoticeKeywords"] = [
+    "non-blocking observation",
+    "non-blocking warning",
+    "非阻断观察",
+    "非阻断警告",
+]
 SPECS["shortage-allocation-advisor"]["requiredLimitations"] = [
     "atp_availability_evidence"
 ]

@@ -220,6 +220,11 @@ def _validate_acceptance(value: Any, source: str) -> None:
                 raise ManifestError(
                     f"{source}.execution.acceptance.{field} must be an array"
                 )
+        for field in ("compositeBlankFields", "nonBlockingObservationCodes"):
+            if not isinstance(value.get(field, []), list):
+                raise ManifestError(
+                    f"{source}.execution.acceptance.{field} must be an array"
+                )
         for field in (
             "inputDefaults",
             "constantDefaults",
@@ -234,6 +239,10 @@ def _validate_acceptance(value: Any, source: str) -> None:
                 raise ManifestError(
                     f"{source}.execution.acceptance.{field} must be an object"
                 )
+        if not isinstance(value.get("compositeKeyParts", {}), dict):
+            raise ManifestError(
+                f"{source}.execution.acceptance.compositeKeyParts must be an object"
+            )
         if not isinstance(value.get("summaryRecord"), bool):
             raise ManifestError(
                 f"{source}.execution.acceptance.summaryRecord must be boolean"
@@ -249,6 +258,10 @@ def _validate_acceptance(value: Any, source: str) -> None:
         if not isinstance(value.get("businessStatusDefinition", ""), str):
             raise ManifestError(
                 f"{source}.execution.acceptance.businessStatusDefinition must be text"
+            )
+        if not isinstance(value.get("testDataQualificationDefinition", ""), str):
+            raise ManifestError(
+                f"{source}.execution.acceptance.testDataQualificationDefinition must be text"
             )
         if not isinstance(value.get("businessStatusFromAnyPositiveMetric", {}), dict):
             raise ManifestError(

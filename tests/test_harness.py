@@ -21,6 +21,7 @@ from sap_business_agents_platform.harness import (
     HarnessToolBroker,
     _best_effort_interrupt,
     _evidence_sources_complete,
+    _effective_missing_evidence,
     _executed_plans_from_calls,
     _latest_assessed_missing_evidence,
     _latest_validated_presentation,
@@ -406,6 +407,31 @@ def test_validated_report_can_finish_without_waiting_for_turn_teardown(tmp_path:
             "evidence_ref": executed["evidence_ref"],
         }
     ]
+
+
+def test_refined_sap_read_requires_final_gap_reassessment() -> None:
+    assessed_gap = {
+        "tool_name": "sap_evidence_assess",
+        "status": "completed",
+        "output": {"missing_evidence": ["mrp_evidence"]},
+    }
+    refined_read = {
+        "tool_name": "sap_query_execute",
+        "status": "completed",
+        "output": {"source_complete": True},
+    }
+    cleared_gap = {
+        "tool_name": "sap_evidence_assess",
+        "status": "completed",
+        "output": {"missing_evidence": []},
+    }
+
+    assert _effective_missing_evidence(
+        ["mrp_evidence"], [assessed_gap, refined_read]
+    ) == ["mrp_evidence", "evidence_reassessment_required"]
+    assert _effective_missing_evidence(
+        ["mrp_evidence"], [assessed_gap, refined_read, cleared_gap]
+    ) == []
 
 
 def test_account_item_plan_requires_declared_transaction_pair_and_rejects_guessed_ledger() -> None:

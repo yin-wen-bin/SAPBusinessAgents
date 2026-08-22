@@ -75,11 +75,79 @@ def inventory() -> None:
 def shortage() -> None:
     path, manifest = load("material-shortage-procurement-response")
     steps = by_id(manifest)
+    master_step = {
+        "id": "read_mrp_master",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": True,
+        "failurePolicy": "record_gap",
+        "request": {
+            "plan": direct(
+                "API_MRP_MATERIALS_SRV_01",
+                "A_MRPMaterial",
+                [
+                    "Material", "MRPArea", "MRPPlant", "MRPController", "MRPType",
+                    "MaterialProcurementCategory", "MaterialProcurementCatName", "BaseUnit",
+                    "UnitOfMeasureName", "SafetyStockQuantity",
+                ],
+                [
+                    filt("Material", "{{input.material}}"),
+                    filt("MRPArea", "{{input.mrp_area}}"),
+                    filt("MRPPlant", "{{input.plant}}"),
+                ],
+                "Confirm that the exact MRP material is externally procured and read its base-unit parameters.",
+            )
+        },
+    }
+    if "read_mrp_master" in steps:
+        steps["read_mrp_master"].update(master_step)
+    else:
+        read_mrp_index = next(
+            index
+            for index, item in enumerate(manifest["execution"]["steps"])
+            if item.get("id") == "read_mrp"
+        )
+        manifest["execution"]["steps"].insert(read_mrp_index, master_step)
+        steps = by_id(manifest)
+    if not any(
+        "read_mrp_master" in (item.get("executionStepIds") or [])
+        for item in manifest.get("workflow") or []
+    ):
+        manifest["workflow"].insert(
+            0,
+            {
+                "id": "execute-read_mrp_master",
+                "title": {
+                    "zh": "确认外购 MRP 主数据",
+                    "en": "Confirm externally procured MRP master data",
+                },
+                "description": {
+                    "zh": "执行清单步骤 `read_mrp_master`，确认目标物料的 MRP 范围、采购类型和基础单位。",
+                    "en": "Run manifest step `read_mrp_master` to confirm the material's MRP scope, procurement category, and base unit.",
+                },
+                "operations": {
+                    "zh": ["GET API_MRP_MATERIALS_SRV_01@2.0/A_MRPMaterial"],
+                    "en": ["GET API_MRP_MATERIALS_SRV_01@2.0/A_MRPMaterial"],
+                },
+                "tools": [
+                    {
+                        "name": "Embedded SAP OData Provider",
+                        "kind": "GET-only SAP Provider",
+                        "purpose": {
+                            "zh": "执行 `read_mrp_master` / `execute_plan`",
+                            "en": "Execute `read_mrp_master` / `execute_plan`",
+                        },
+                    }
+                ],
+                "executionStepIds": ["read_mrp_master"],
+            },
+        )
     steps["read_mrp"]["request"]["plan"]["select_fields"] = [
         "Material", "MRPArea", "MRPPlant", "MRPPlanningSegmentNumber",
         "MRPPlanningSegmentType", "MaterialBaseUnit", "MaterialShortageQuantity",
-        "MaterialShortageStartDate", "MaterialShortageProfile",
-        "MaterialShortageProfileCount",
+        "MaterialShortageStartDate", "MaterialShortageEndDate", "MaterialShortageDuration",
+        "DaysOfSupplyDuration", "MRPController", "VltdUnrestrictedUseStkQty",
+        "MaterialLastMRPDateTime", "MaterialShortageProfile", "MaterialShortageProfileCount",
     ]
     steps["read_pr_release"]["request"]["plan"] = direct(
         "API_PURCHASEREQ_PROCESS_SRV", "A_PurchaseRequisitionItem",
@@ -102,6 +170,51 @@ def shortage() -> None:
         [filt("Material", "{{input.material}}"), filt("PurchasingOrganization", "{{input.purchasing_organization}}"), filt("Plant", "{{input.plant}}")],
         "Read source-list evidence from the organization/plant purchasing-info-record entity exposed by live metadata.",
     )
+    steps["assess"]["inputMapping"]["checks"]["mrp"] = {
+        "master": "{{steps.read_mrp_master.output}}",
+        "coverage": "{{steps.read_mrp.output}}",
+    }
+    steps["evaluate"]["inputMapping"]["evidence"]["mrp_master"] = (
+        "{{steps.read_mrp_master.output}}"
+    )
+    acceptance = manifest["execution"]["acceptance"]
+    acceptance["recordScope"] = (
+        "Return only authoritative MaterialCoverages rows as comparison records. "
+        "MRP master data, SupplyDemandItems, purchase requisitions, PO schedule lines, "
+        "and source candidates are contextual evidence summarized by metrics or diagnostics, "
+        "not comparison records."
+    )
+    acceptance["metricDefinitions"]["valid_source_candidates"] = (
+        "Count exact purchasing-organization/plant info-record rows that are not marked "
+        "for deletion and are relevant for automatic sourcing."
+    )
+    acceptance.setdefault("valueMappings", {}).setdefault("mrp_element_type", {})[
+        "02"
+    ] = "material_coverage"
+    acceptance["compositeBlankFields"] = ["requirement_id"]
+    acceptance["compositeKeyParts"] = {
+        "requirement_id": [
+            {"name": "profile", "aliases": ["MaterialShortageProfile"]},
+            {"name": "counter", "aliases": ["MaterialShortageProfileCount"]},
+            {"name": "mrp_area", "aliases": ["MRPArea"]},
+            {"name": "segment", "aliases": ["MRPPlanningSegmentNumber"]},
+            {"name": "segment_type", "aliases": ["MRPPlanningSegmentType"]},
+        ]
+    }
+    acceptance["nonBlockingObservationCodes"] = ["mrp_snapshot_stale"]
+    acceptance["testDataQualificationDefinition"] = (
+        "A sample is qualified when the authoritative coverage shortage is positive and active "
+        "at the as-of date, MRP master data confirms external procurement category F, and all "
+        "required source queries are complete. Complete exact zero-row PR, PO schedule, or source "
+        "branches establish zero and do not disqualify the sample. MRP snapshot staleness is a "
+        "non-blocking warning."
+    )
+    acceptance["ignoredNoticeKeywords"] = [
+        "non-blocking observation",
+        "non-blocking warning",
+        "非阻断观察",
+        "非阻断警告",
+    ]
     save(path, manifest)
 
 

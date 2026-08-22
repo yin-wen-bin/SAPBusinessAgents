@@ -4,8 +4,8 @@ All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgent
 
 ## Summary
 
-- PASS / executable: 14
-- BLOCKED / disabled: 16
+- PASS / executable: 16
+- BLOCKED / disabled: 14
 - FAIL / disabled: 0
 
 ## Agent results
@@ -22,8 +22,8 @@ All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgent
 | FI | `gr-ir-clearing` | PASS | true | MATCH | MATCH | complete | none |
 | FI | `month-end-closing` | PASS | true | MATCH | MATCH | complete | none |
 | MM | `intelligent-sourcing-rfq` | PASS | true | MATCH | MATCH | complete | none |
-| MM | `inventory-health-balancing` | BLOCKED | false | MATCH | MATCH | bounded | historical_stock_balance_evidence |
-| MM | `material-shortage-procurement-response` | BLOCKED | false | MATCH | MATCH | bounded | qualified_shortage_test_data_missing |
+| MM | `inventory-health-balancing` | PASS | true | MATCH | MATCH | complete | none |
+| MM | `material-shortage-procurement-response` | PASS | true | MATCH | MATCH | complete | none |
 | MM | `procure-to-pay-status` | PASS | true | MATCH | MATCH | complete | none |
 | MM | `supplier-performance-risk` | PASS | true | MATCH | MATCH | complete | none |
 | PP | `demand-forecast-planning` | BLOCKED | false | MATCH | MATCH | bounded | pir_evidence, sales_demand_period_evidence |

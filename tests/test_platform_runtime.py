@@ -173,11 +173,42 @@ class FakeEmbeddedProvider:
     ) -> dict[str, Any]:
         del query, conversation_id
         self.executed_plans.append(plan)
+        entity_set = str(plan.get("entity_set") or "")
+        if entity_set == "A_MRPMaterial":
+            results = [
+                {
+                    "Material": "MAT001",
+                    "MRPPlant": "1010",
+                    "MRPArea": "1010",
+                    "MaterialProcurementCategory": "F",
+                    "MaterialProcurementCatName": "External procurement",
+                    "BaseUnit": "ST",
+                }
+            ]
+        elif entity_set == "MaterialCoverages":
+            results = [
+                {
+                    "Material": "MAT001",
+                    "MRPPlant": "1010",
+                    "MRPArea": "1010",
+                    "MaterialShortageProfile": "SAP000000001",
+                    "MaterialShortageProfileCount": "001",
+                    "MRPPlanningSegmentNumber": "",
+                    "MRPPlanningSegmentType": "02",
+                    "MaterialShortageStartDate": "2026-08-17",
+                    "MaterialShortageEndDate": "9999-12-31",
+                    "MaterialShortageQuantity": "10",
+                    "MaterialBaseUnit": "ST",
+                    "MaterialLastMRPDateTime": "2026-08-17T00:00:00Z",
+                }
+            ]
+        else:
+            results = [{"PurchaseOrder": "4500000001"}]
         return {
             "ok": True,
             "case_id": "case-001",
             "data": {
-                "results": [{"PurchaseOrder": "4500000001"}],
+                "results": results,
                 "source_complete": self.complete,
             },
             "pagination": {
@@ -549,6 +580,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
             "month-end-closing",
             "intelligent-sourcing-rfq",
             "inventory-health-balancing",
+            "material-shortage-procurement-response",
             "procure-to-pay-status",
             "supplier-performance-risk",
             "mrp-exception-analysis",
@@ -782,7 +814,7 @@ def test_complete_mm_api_evidence_skips_every_conditional_adt_step(
         )
         run = _wait(client, response.json()["run_id"])
         assert run["status"] == "completed"
-        assert len(embedded.executed_plans) == 6
+        assert len(embedded.executed_plans) == 7
         adt_steps = {
             "adt_mrp", "adt_pr", "adt_po_scope", "adt_po",
             "adt_source_scope", "adt_source",

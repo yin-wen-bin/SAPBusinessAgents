@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 from sap_business_agents_platform.acceptance import (
@@ -23,6 +24,7 @@ from scripts.run_three_stage_campaign import (
     _validate_campaign,
 )
 from scripts.promote_three_stage_acceptance import baseline_report
+from scripts.build_material_shortage_direct_baseline import select_qualified_coverage
 
 
 CONTRACT = {
@@ -116,6 +118,70 @@ def test_campaign_prompt_includes_comparison_units_and_only_blocking_status_rule
     assert "historical_balance_evidence" in prompt
     assert "required limitation remains unresolved" not in prompt
     assert "return null; never substitute zero for unknown" in prompt
+
+
+def test_shortage_acceptance_contract_preserves_nonblocking_staleness_and_blank_keys() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "1.0",
+            "case_id": "shortage-live-002",
+            "agent_id": "material-shortage-procurement-response",
+            "question": {"zh": "检查短缺", "en": "Check shortage"},
+            "input": {},
+            "business_conditions": {},
+            "expected_grain": ["material", "plant", "requirement_id"],
+        }
+    )
+    contract = {
+        "business_keys": ["material", "plant", "requirement_id"],
+        "facts": ["mrp_element_type", "business_status"],
+        "metrics": ["shortage_quantity", "pending_pr"],
+        "composite_blank_fields": ["requirement_id"],
+        "composite_key_parts": {
+            "requirement_id": [
+                {"name": "profile", "aliases": ["MaterialShortageProfile"]},
+                {"name": "counter", "aliases": ["MaterialShortageProfileCount"]},
+                {"name": "mrp_area", "aliases": ["MRPArea"]},
+                {"name": "segment", "aliases": ["MRPPlanningSegmentNumber"]},
+                {"name": "segment_type", "aliases": ["MRPPlanningSegmentType"]},
+            ]
+        },
+        "nonblocking_observation_codes": ["mrp_snapshot_stale"],
+        "test_data_qualification_definition": (
+            "Positive active coverage with external procurement F and complete sources qualifies."
+        ),
+        "value_mappings": {"mrp_element_type": {"02": "material_coverage"}},
+    }
+
+    prompt = _acceptance_prompt(case, contract)
+    normalized = _normalize_record(
+        {
+            "material": "RM4_CP",
+            "plant": "1710",
+            "requirement_id": "PROFILE|001|1710|<blank>|02",
+            "mrp_element_type": "02",
+        },
+        case,
+        contract,
+    )
+
+    assert "non-blocking observations" in prompt
+    assert "mrp_snapshot_stale" in prompt
+    assert "represent every missing key segment exactly as (blank)" in prompt
+    assert normalized["requirement_id"] == "PROFILE|001|1710|(blank)|02"
+    assert normalized["mrp_element_type"] == "material_coverage"
+
+    labelled = _normalize_record(
+        {
+            "requirement_id": (
+                "profile=PROFILE;counter=001;mrp_area=1710;"
+                "segment=<blank>;segment_type=02"
+            )
+        },
+        case,
+        contract,
+    )
+    assert labelled["requirement_id"] == "PROFILE|001|1710|(blank)|02"
 
 
 def test_single_object_key_value_presentation_participates_in_acceptance() -> None:
@@ -963,6 +1029,15 @@ def test_public_acceptance_report_contains_sanitized_multisource_completeness(tm
             "expected_grain": ["document"],
         },
         "direct_baseline": {
+            "nonblocking_observations": [
+                {
+                    "code": "mrp_snapshot_stale",
+                    "severity": "warning",
+                    "blocking": False,
+                    "last_mrp_date": "2026-05-12",
+                    "age_days": 103,
+                }
+            ],
             "sources": [
                 {
                     "source_id": "items",
@@ -984,10 +1059,79 @@ def test_public_acceptance_report_contains_sanitized_multisource_completeness(tm
     assert "API_TEST_SRV" in report
     assert "A_Item" in report
     assert "Paging complete" in report
+    assert "mrp_snapshot_stale" in report
+    assert "blocking=`false`" in report
     assert "1710" not in report
     assert _matched_free_run_id(
         {"free_query": {"run_id": "run_stale", "comparison": {"verdict": "MISMATCH"}}}
     ) is None
+
+
+def test_material_shortage_candidate_selection_skips_zero_expired_and_internal_rows() -> None:
+    master_rows = [
+        {
+            "Material": "ZERO",
+            "MRPPlant": "1710",
+            "MRPArea": "1710",
+            "MaterialProcurementCategory": "F",
+        },
+        {
+            "Material": "EXPIRED",
+            "MRPPlant": "1710",
+            "MRPArea": "1710",
+            "MaterialProcurementCategory": "F",
+        },
+        {
+            "Material": "INTERNAL",
+            "MRPPlant": "1710",
+            "MRPArea": "1710",
+            "MaterialProcurementCategory": "E",
+        },
+        {
+            "Material": "ACTIVE",
+            "MRPPlant": "1710",
+            "MRPArea": "1710",
+            "MaterialProcurementCategory": "F",
+        },
+    ]
+    coverage_rows = [
+        {
+            "Material": "ZERO",
+            "MRPPlant": "1710",
+            "MRPArea": "1710",
+            "MaterialShortageQuantity": "0",
+            "MaterialShortageEndDate": "9999-12-31",
+        },
+        {
+            "Material": "EXPIRED",
+            "MRPPlant": "1710",
+            "MRPArea": "1710",
+            "MaterialShortageQuantity": "10",
+            "MaterialShortageEndDate": "2026-08-22",
+        },
+        {
+            "Material": "INTERNAL",
+            "MRPPlant": "1710",
+            "MRPArea": "1710",
+            "MaterialShortageQuantity": "20",
+            "MaterialShortageEndDate": "9999-12-31",
+        },
+        {
+            "Material": "ACTIVE",
+            "MRPPlant": "1710",
+            "MRPArea": "1710",
+            "MaterialShortageQuantity": "30",
+            "MaterialShortageEndDate": "/Date(253402214400000)/",
+        },
+    ]
+
+    selected = select_qualified_coverage(
+        master_rows,
+        coverage_rows,
+        as_of=date(2026, 8, 23),
+    )
+
+    assert [row["Material"] for row in selected] == ["ACTIVE"]
 
 
 def test_campaign_accepts_an_optional_reusable_fixed_result() -> None:

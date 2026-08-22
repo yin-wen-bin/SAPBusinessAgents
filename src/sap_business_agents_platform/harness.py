@@ -971,9 +971,9 @@ class CodexHarnessController:
                     if isinstance(item, dict)
                     and str(item.get("evidence_ref") or "") in execute_evidence
                 ]
-                missing_evidence = [
-                    str(item) for item in partial_payload.get("missing_evidence") or []
-                ] or _latest_assessed_missing_evidence(raw_calls)
+                missing_evidence = _effective_missing_evidence(
+                    partial_payload.get("missing_evidence"), raw_calls
+                )
                 self.store.append_event(
                     run_id,
                     "validated_report_recovered",
@@ -1127,7 +1127,9 @@ class CodexHarnessController:
             else payload.get("source_complete") is True
         )
         business_complete = payload.get("business_complete") is True
-        missing_evidence = [str(item) for item in payload.get("missing_evidence") or []]
+        missing_evidence = _effective_missing_evidence(
+            payload.get("missing_evidence"), raw_calls
+        )
         known_evidence = {
             str(item.get("evidence_ref")) for item in evidence if item.get("evidence_ref")
         }
@@ -1410,6 +1412,10 @@ sap_final_report_validate payload.
 OData is mandatory before ADT: call sap_evidence_assess only after catalog, live schema, and plan
 validation; call sap_skill_execute only with the resulting single-use gap token. Never expose SAP
 URLs, credentials, clients, local paths, raw rows, connection profiles, or hidden reasoning.
+If sap_evidence_assess reported a gap and a later refined SAP query or Skill call may close it, call
+sap_evidence_assess again after the last SAP data call with the final evidence references and the
+remaining gap list. This final reassessment is mandatory before final-report validation; a prior gap
+is not closed merely by describing a later successful query in prose.
 For historical open-item questions, prefer one complete supplier/customer account-item read scoped
 by company, account type, and posting cutoff, then classify the returned rows by clearing date. Do
 not force nullable clearing-date predicates when the Gateway rejects them, and do not use current
@@ -1716,6 +1722,48 @@ def _latest_assessed_missing_evidence(raw_calls: list[dict[str, Any]]) -> list[s
     return []
 
 
+def _effective_missing_evidence(
+    payload_missing: Any,
+    raw_calls: list[dict[str, Any]],
+) -> list[str]:
+    """Resolve business gaps using the latest completed control-plane assessment.
+
+    A successful refinement after a gap assessment can supersede the earlier data read,
+    but it cannot silently supersede the gap decision itself.  Requiring one final
+    assessment prevents both stale false gaps and optimistic model-only gap closure.
+    """
+
+    payload_values = [str(item) for item in payload_missing or [] if str(item)]
+    latest_assessment_index = -1
+    latest_data_index = -1
+    assessed_values: list[str] = []
+    for index, call in enumerate(raw_calls):
+        if call.get("status") != "completed":
+            continue
+        tool_name = str(call.get("tool_name") or call.get("tool") or "")
+        if tool_name in {"sap_query_execute", "sap_skill_execute"}:
+            latest_data_index = index
+        elif tool_name == "sap_evidence_assess":
+            latest_assessment_index = index
+            output = call.get("output") if isinstance(call.get("output"), dict) else {}
+            assessed_values = [
+                str(item) for item in output.get("missing_evidence") or [] if str(item)
+            ]
+    if latest_assessment_index < 0:
+        return list(dict.fromkeys(payload_values))
+    if latest_data_index > latest_assessment_index:
+        return list(
+            dict.fromkeys(
+                [
+                    *payload_values,
+                    *assessed_values,
+                    "evidence_reassessment_required",
+                ]
+            )
+        )
+    return list(dict.fromkeys(assessed_values))
+
+
 def _presentation_evidence_refs(presentation: RunPresentation) -> list[str]:
     references: list[str] = []
     for block in presentation.blocks:
@@ -1772,7 +1820,7 @@ def _validated_payload_from_store(
     presentation = _latest_validated_presentation(raw_calls)
     if presentation is None:
         return None
-    missing = _latest_assessed_missing_evidence(raw_calls)
+    missing = _effective_missing_evidence([], raw_calls)
     first_text = next(
         (
             block.text

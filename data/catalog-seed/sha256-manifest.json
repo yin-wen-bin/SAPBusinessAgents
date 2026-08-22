@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0",
-  "generated_at": "2026-08-19T10:40:46Z",
+  "generated_at": "2026-08-22T18:15:00Z",
   "algorithm": "SHA-256",
   "files": {
-    "data/catalog-seed/catalog.json": "sha256:82466025329c0e1afac4897751733ebbee47ea21236b9641a076fafecb98a6f7",
-    "config/odata-services.json": "sha256:d772a15e8733505bcdb384667b762d0bcab48b547d41a1acb988bf082254a583",
-    "data/catalog-seed/migration-report.json": "sha256:fc3cdc34c827d68bab6220ba5e05f0aa52f7c0efd73d06ecdcc1b16c48984f2d"
+    "data/catalog-seed/catalog.json": "sha256:ddd33cc2a3666f6a302bb9283eadbbc456c7fc950701b3c4dd97660450097024",
+    "config/odata-services.json": "sha256:5efecf2d0bc3c680980500c3af76fafbc6268126e17a4f54434dd530c6fd01f1",
+    "data/catalog-seed/migration-report.json": "sha256:ec191f1b198f292fc7a61b89d9e000ae15c97a8045b148b64b0ba614e7de40b1"
   },
   "manifest_self_hash": "not_applicable"
 }

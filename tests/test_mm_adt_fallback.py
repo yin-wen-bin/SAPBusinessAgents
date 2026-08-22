@@ -40,7 +40,17 @@ def _shortage_with(status: str) -> dict[str, object]:
         "assessment": {
             "api_complete": {"mrp": False, "pr": False, "po_schedule": False, "source": False}
         },
-        "evidence": {},
+        "evidence": {
+            "mrp_master": _embedded_response(
+                {
+                    "Material": "MAT-001",
+                    "MRPPlant": "1010",
+                    "MRPArea": "1010",
+                    "MaterialProcurementCategory": "F",
+                    "BaseUnit": "EA",
+                }
+            )
+        },
         "fallbacks": {
             "mrp": fallback,
             "pr": fallback,
@@ -194,6 +204,15 @@ def test_material_shortage_report_keeps_context_sources_out_of_primary_records()
             "agent_id": "material-shortage-procurement-response",
             "run_input": {"material": "TG10", "plant": "1710", "as_of": "2026-08-20"},
             "evidence": {
+                "mrp_master": _embedded_response(
+                    {
+                        "Material": "TG10",
+                        "MRPPlant": "1710",
+                        "MRPArea": "1710",
+                        "MaterialProcurementCategory": "F",
+                        "BaseUnit": "ST",
+                    }
+                ),
                 "mrp": _embedded_response(
                     {
                         "Material": "TG10",
@@ -204,6 +223,17 @@ def test_material_shortage_report_keeps_context_sources_out_of_primary_records()
                         "MRPPlanningSegmentNumber": "",
                         "MaterialShortageQuantity": "0.000",
                         "MaterialBaseUnit": "ST",
+                        "MaterialLastMRPDateTime": "2026-05-12T07:11:55Z",
+                    }
+                ),
+                "supply_demand": _embedded_response(
+                    {
+                        "Material": "TG10",
+                        "MRPPlant": "1710",
+                        "MRPElement": "Stock",
+                        "MRPElementOpenQuantity": "500.000",
+                        "MRPAvailableQuantity": "500.000",
+                        "MaterialBaseUnit": "PC",
                     }
                 ),
                 "pr": _embedded_response(
@@ -243,6 +273,7 @@ def test_material_shortage_report_keeps_context_sources_out_of_primary_records()
                         "Material": "TG10",
                         "PurgDocOrderQuantityUnit": "ST",
                         "IsMarkedForDeletion": False,
+                        "IsRelevantForAutomSrcg": True,
                     }
                 ),
             },
@@ -261,3 +292,52 @@ def test_material_shortage_report_keeps_context_sources_out_of_primary_records()
         "valid_source_candidates": 1,
     }
     assert result["business_status"] == "attention"
+    findings = {item["code"]: item for item in result["business_report"]["findings"]}
+    assert findings["MRP_SNAPSHOT_STALE"]["severity"] == "low"
+    assert findings["MRP_SNAPSHOT_STALE"]["age_days"] == 100
+    assert "不阻塞业务结论" in findings["MRP_SNAPSHOT_STALE"]["detail"]["zh"]
+    assert "does not block" in findings["MRP_SNAPSHOT_STALE"]["detail"]["en"]
+    assert "UNIT_NOT_COMPARABLE" not in findings
+
+
+def test_material_shortage_requires_external_procurement_master_evidence() -> None:
+    payload = {
+        "agent_id": "material-shortage-procurement-response",
+        "run_input": {"material": "MAT-001", "plant": "1010", "as_of": "2026-08-23"},
+        "evidence": {
+            "mrp_master": _embedded_response(
+                {
+                    "Material": "MAT-001",
+                    "MRPPlant": "1010",
+                    "MRPArea": "1010",
+                    "MaterialProcurementCategory": "E",
+                }
+            ),
+            "mrp": _embedded_response(
+                {
+                    "Material": "MAT-001",
+                    "MRPPlant": "1010",
+                    "MRPArea": "1010",
+                    "MaterialShortageProfile": "SAP000000001",
+                    "MaterialShortageProfileCount": "001",
+                    "MaterialShortageQuantity": "20",
+                    "MaterialBaseUnit": "EA",
+                }
+            ),
+            "pr": _embedded_response(),
+            "po_schedule": _embedded_response(),
+            "source": _embedded_response(),
+        },
+        "fallbacks": {},
+        "known_gaps": [],
+    }
+
+    result = evaluate_business_agent(payload)
+
+    assert result["status"] == "inconclusive"
+    assert result["business_status"] == "capability_blocked"
+    assert "external_procurement_scope" in result["missing_evidence"]
+    assert any(
+        item["code"] == "MATERIAL_NOT_EXTERNALLY_PROCURED"
+        for item in result["business_report"]["findings"]
+    )

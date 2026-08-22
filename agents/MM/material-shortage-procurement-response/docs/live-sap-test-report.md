@@ -1,5 +1,9 @@
 # 外购件短缺采购响应：真机测试报告
 
+> 历史报告：以下 `TG10` / 2026-08-17 结果仅保留用于审计，已被
+> [`RM4_CP` 三级真机闭环报告](three-stage-live-acceptance.md)取代。当前 Agent
+> 验证结论为 `PASS`，且 `executable=true`。
+
 ## 2026-08-18 契约解耦说明
 
 SAPBusinessAgents 已停止传递或管理 ADT `connection_profile`。当前已安装的 `sap-adt-table-export` Schema 仍要求调用方传入该字段，因此新的 ADT 补证会在启动 Skill 前明确记录 `skill_contract_incompatible`，不会注入默认 profile，业务结论继续保持 **INCONCLUSIVE**。下方 2026-08-17 的 ADT 结果仅作为历史真机证据保留；新契约发布前不重新执行真机 ADT。
