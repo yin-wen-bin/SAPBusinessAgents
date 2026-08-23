@@ -9,6 +9,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "scripts" / "Start-SAPBusinessAgents.ps1"
+CMD_LAUNCHER = ROOT / "start-sap-business-agents.cmd"
+
+
+def test_cmd_launcher_always_restarts_and_preserves_extra_arguments() -> None:
+    source = CMD_LAUNCHER.read_text(encoding="utf-8")
+
+    invocation = next(line for line in source.splitlines() if line.startswith("powershell.exe "))
+    assert 'Start-SAPBusinessAgents.ps1" -Restart %*' in invocation
 
 
 def test_launcher_contract_includes_cached_preview_and_explicit_dev_mode() -> None:
