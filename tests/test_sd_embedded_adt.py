@@ -71,7 +71,9 @@ def test_sd_acceptance_outputs_use_positive_provider_and_write_safety_evidence()
 
 
 def test_sd_adt_steps_are_allowlisted_bounded_and_connection_agnostic() -> None:
-    expected_objects = {"VBFA", "VBUV"}
+    expected_objects = {
+        "VBFA", "VBUV", "TVFST", "TVLST", "DD07T", "DD03T", "DD03L", "DD04T"
+    }
     found: set[str] = set()
     row_limits: dict[str, set[int]] = {name: set() for name in expected_objects}
     for manifest in _manifests():

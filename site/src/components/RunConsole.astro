@@ -334,6 +334,19 @@ const labels = locale === "zh" ? {
     if (value && typeof value === "object" && !Array.isArray(value)) return String(value[locale] || value.zh || value.en || "");
     return String(value ?? "");
   };
+  const findingText = (finding) => {
+    if (!finding || typeof finding !== "object" || Array.isArray(finding)) return localized(finding);
+    const explicit = localized(finding.detail || finding.text || finding.label);
+    if (explicit) return explicit;
+    const code = String(finding.code || "Finding");
+    const raw = String(finding.value || "").trim();
+    const valueText = localized(finding.value_text);
+    const objectId = String(finding.object || "").trim();
+    let text = [code, raw].filter(Boolean).join(" — ");
+    if (valueText) text += ` — ${valueText}`;
+    if (objectId) text += ` (${objectId})`;
+    return text;
+  };
   const format = (value) => value == null ? "—" : JSON.stringify(value, null, 2);
   const titleCase = (value) => String(value || "").replace(/^A_/, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   const friendlyId = (value) => {
@@ -614,7 +627,7 @@ const labels = locale === "zh" ? {
     const findings = Array.isArray(report.findings) ? report.findings : [];
     findings.forEach((finding) => {
       const item = document.createElement("li");
-      item.textContent = localized(finding.detail || finding.text || finding.label) || String(finding);
+      item.textContent = findingText(finding) || labels.empty;
       findingList.append(item);
     });
     root.querySelector("[data-business-findings-wrap]").hidden = findings.length === 0;

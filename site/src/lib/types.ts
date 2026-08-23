@@ -97,6 +97,17 @@ export interface AgentValidation {
   freeQueryComparison?: "MATCH" | "MISMATCH" | "BLOCKED" | "NOT_TESTED";
   fixedAgentComparison?: "MATCH" | "MISMATCH" | "BLOCKED" | "NOT_TESTED";
   blockingLimitations?: string[];
+  focusedReplay?: {
+    runId: string;
+    testedAt: string;
+    technicalStatus: "completed" | "inconclusive" | "failed";
+    businessStatus: string;
+    sourceComplete: boolean;
+    businessComplete: boolean;
+    blockedFindings: number;
+    missingEvidence: string[];
+    resultHash: string;
+  };
 }
 
 export interface AgentAcceptance {

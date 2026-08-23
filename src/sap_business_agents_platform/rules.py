@@ -35,6 +35,8 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
         return assess_adt_preflight(inputs)
     if operation == "assess_billing_block_incompletion":
         return assess_billing_block_incompletion(inputs)
+    if operation == "prepare_billing_block_code_text_lookups":
+        return prepare_billing_block_code_text_lookups(inputs)
     if operation == "classify_control_object":
         return classify_control_object(inputs)
     if operation == "assess_o2c_document_flow":
@@ -195,6 +197,74 @@ def assess_billing_block_incompletion(inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def prepare_billing_block_code_text_lookups(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Extract only observed block/status codes for bounded ADT text lookups."""
+
+    steps = _step_results(inputs.get("sap_read"))
+    orders = _step_rows(steps, "sales_orders")
+    items = _step_rows(steps, "sales_order_items")
+    delivery_headers = _step_rows(steps, "delivery_headers")
+    delivery_items = _step_rows(steps, "delivery_items")
+
+    def distinct(rows: list[dict[str, Any]], *fields: str) -> list[str]:
+        return sorted(
+            {
+                str(row.get(field) or "").strip().upper()
+                for row in rows
+                for field in fields
+                if str(row.get(field) or "").strip()
+            }
+        )
+
+    billing_codes = distinct(
+        orders + delivery_headers,
+        "HeaderBillingBlockReason",
+    )
+    billing_codes = sorted(
+        set(billing_codes).union(distinct(items + delivery_items, "ItemBillingBlockReason"))
+    )
+    delivery_codes = distinct(orders + delivery_headers, "DeliveryBlockReason")
+    credit_codes = [
+        value
+        for value in distinct(orders + delivery_headers, "TotalCreditCheckStatus")
+        if value != "C"
+    ]
+
+    fallback = inputs.get("item_incompletion")
+    fallback = fallback if isinstance(fallback, dict) else {}
+    incompletion_pairs = sorted(
+        {
+            (
+                str(row.get("TBNAM") or "").strip().upper(),
+                str(row.get("FDNAM") or "").strip().upper(),
+            )
+            for row in _rows_from_nested_payload(fallback)
+            if str(row.get("TBNAM") or "").strip()
+            and str(row.get("FDNAM") or "").strip()
+        }
+    )
+    tables = sorted({table for table, _field in incompletion_pairs})
+    fields = sorted({field for _table, field in incompletion_pairs})
+    return {
+        "rule_id": "billing_block_code_text_lookup_v1",
+        "status": "complete",
+        "billing_block_codes": billing_codes,
+        "delivery_block_codes": delivery_codes,
+        "credit_status_codes": credit_codes,
+        "incompletion_tables": tables,
+        "incompletion_fields": fields,
+        "has_billing_block_codes": bool(billing_codes),
+        "has_delivery_block_codes": bool(delivery_codes),
+        "has_credit_status_codes": bool(credit_codes),
+        "has_incompletion_fields": bool(incompletion_pairs),
+        "first_billing_block_code": billing_codes[0] if billing_codes else "",
+        "first_delivery_block_code": delivery_codes[0] if delivery_codes else "",
+        "first_credit_status_code": credit_codes[0] if credit_codes else "",
+        "first_incompletion_table": tables[0] if tables else "",
+        "first_incompletion_field": fields[0] if fields else "",
+    }
+
+
 def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
     checks = inputs.get("checks")
     if not isinstance(checks, dict) or not checks:
@@ -321,6 +391,7 @@ def extract_bounded_values(inputs: dict[str, Any]) -> dict[str, Any]:
         "values": values,
         "value_count": len(values),
         "has_values": bool(values),
+        "first_value": values[0] if values else "",
         "source_complete": complete,
         "truncated": truncated,
     }
@@ -1448,6 +1519,19 @@ def _step_results(value: Any) -> dict[str, dict[str, Any]]:
 def _step_rows(steps: dict[str, dict[str, Any]], step_id: str) -> list[dict[str, Any]]:
     step = steps.get(step_id) or {}
     return [dict(row) for row in (step.get("results") or []) if isinstance(row, dict)]
+
+
+def _rows_from_nested_payload(value: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        rows.extend(dict(row) for row in value.get("rows") or [] if isinstance(row, dict))
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                rows.extend(_rows_from_nested_payload(child))
+    elif isinstance(value, list):
+        for child in value:
+            rows.extend(_rows_from_nested_payload(child))
+    return rows
 
 
 def _rows_for_prefixes(

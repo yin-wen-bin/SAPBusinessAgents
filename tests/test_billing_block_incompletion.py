@@ -85,14 +85,18 @@ def _assessment(sap_read: dict[str, object]) -> dict[str, object]:
 def _evaluate(
     sap_read: dict[str, object],
     adt: dict[str, object],
+    *,
+    text_fallbacks: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    fallbacks = {"sales_order_item_incompletion": adt}
+    fallbacks.update(text_fallbacks or {})
     return evaluate_business_agent(
         {
             "agent_id": "billing-block-diagnosis",
             "run_input": {"sales_order": "2"},
             "evidence": {"collect_billing_block_evidence": sap_read},
             "assessment": _assessment(sap_read),
-            "fallbacks": {"sales_order_item_incompletion": adt},
+            "fallbacks": fallbacks,
             "known_gaps": [],
         }
     )
@@ -132,29 +136,38 @@ def test_complete_empty_vbuv_log_removes_gap() -> None:
     assert result["source_complete"] is True
     assert result["business_status"] == "normal"
     assert result["missing_evidence"] == []
-    assert result["metrics"] == [{"id": "blocked_findings", "value": 0}]
+    assert result["metrics"] == [{
+        "id": "blocked_findings",
+        "label": {"zh": "冻结及异常发现数", "en": "Block and exception findings"},
+        "value": 0,
+    }]
     assert {row["incompletion_status"] for row in result["business_report"]["records"]} == {
         "complete_or_not_relevant"
     }
 
 
 def test_vbuv_missing_field_rows_create_explainable_findings() -> None:
-    result = _evaluate(_sap_read(), _adt(_incompletion_rows()))
+    result = _evaluate(
+        _sap_read(),
+        _adt(_incompletion_rows()),
+        text_fallbacks={
+            "incompletion_field_texts": _adt(
+                [{"TABNAME": "VBAP", "FIELDNAME": "KWMENG", "DDLANGUAGE": "E", "DDTEXT": "Order Quantity"}]
+            )
+        },
+    )
 
     assert result["status"] == "complete"
     assert result["business_status"] == "blocked"
-    assert result["findings"] == [
-        {
-            "code": "SalesDocumentIncompletionLog",
-            "severity": "high",
-            "value": "VBAP.KWMENG",
-            "object": "0000000002/000010",
-            "status_group": "04",
-            "incompletion_group": "01",
-        }
-    ]
+    assert len(result["findings"]) == 1
+    finding = result["findings"][0]
+    assert finding["code"] == "SalesDocumentIncompletionLog"
+    assert finding["value"] == "VBAP.KWMENG"
+    assert finding["value_text"]["en"] == "Order Quantity"
+    assert "VBAP.KWMENG" in finding["detail"]["zh"]
     first = result["business_report"]["records"][0]
     assert first["incompletion_status"] == "incomplete:VBAP.KWMENG"
+    assert first["incompletion_fields"][0]["code"] == "VBAP.KWMENG"
     assert result["business_report"]["records"][1]["incompletion_status"] == "complete_or_not_relevant"
 
 
@@ -194,10 +207,121 @@ def test_manifest_uses_exact_conditional_vbuv_contract_without_connection_input(
         assert "connection_profile" not in json.dumps(step)
     assert manifest["execution"]["acceptance"]["requiredLimitations"] == []
     assert manifest["execution"]["acceptance"]["blockingLimitations"] == [
-        "sales_order_item_incompletion_evidence"
+        "sales_order_item_incompletion_evidence",
+        "code_text_evidence",
     ]
     assert manifest["execution"]["acceptance"]["businessStatusFromAnyPositiveMetric"] == {
         "metrics": ["blocked_findings"],
         "zero": "normal",
         "positive": "blocked",
     }
+    text_contracts = {
+        "billing_block_texts": ("TVFST", "FAKSP"),
+        "delivery_block_texts": ("TVLST", "LIFSP"),
+        "credit_status_texts": ("DD07T", "DOMVALUE_L"),
+        "incompletion_field_texts": ("DD03T", "FIELDNAME"),
+        "incompletion_field_definitions": ("DD03L", "FIELDNAME"),
+        "data_element_texts": ("DD04T", "ROLLNAME"),
+    }
+    for suffix, (object_name, bounded_field) in text_contracts.items():
+        preflight = steps[f"preflight_{suffix}"]
+        formal = steps[f"read_{suffix}"]
+        assert preflight["inputMapping"]["object"] == object_name
+        assert preflight["inputMapping"]["max_rows"] == 2
+        assert formal["inputMapping"]["object"] == object_name
+        assert formal["inputMapping"]["max_rows"] == 200
+        assert any(
+            item["field"] == bounded_field and item["operator"] == "in"
+            for item in formal["inputMapping"]["filters"]
+        )
+        assert preflight["failurePolicy"] == formal["failurePolicy"] == "record_gap"
+        assert "connection_profile" not in json.dumps([preflight, formal])
+
+
+def test_header_codes_flow_to_item_records_with_authoritative_texts() -> None:
+    sap_read = _sap_read(items=[{
+        "SalesOrder": "5837",
+        "SalesOrderItem": "10",
+        "ItemBillingBlockReason": "",
+        "DeliveryStatus": "A",
+    }])
+    steps = sap_read["data"]["step_results"]
+    steps["sales_orders"]["results"] = [{
+        "SalesOrder": "5837",
+        "HeaderBillingBlockReason": "00",
+        "DeliveryBlockReason": "07",
+        "TotalCreditCheckStatus": "B",
+    }]
+    vbuv = _adt([{
+        "VBELN": "0000005837", "POSNR": "000010", "ETENR": "0000",
+        "TBNAM": "VBAP", "FDNAM": "VSTEL", "FEHGR": "20", "STATG": "02",
+    }])
+    result = _evaluate(
+        sap_read,
+        vbuv,
+        text_fallbacks={
+            "billing_block_code_texts": _adt([{"SPRAS": "E", "FAKSP": "00", "VTEXT": "Billing block text"}]),
+            "delivery_block_code_texts": _adt([{"SPRAS": "E", "LIFSP": "07", "VTEXT": "Delivery block text"}]),
+            "credit_status_code_texts": _adt([{"DDLANGUAGE": "E", "DOMVALUE_L": "B", "DDTEXT": "Credit status text"}]),
+            "incompletion_field_texts": _adt([]),
+            "incompletion_field_definitions": _adt([{"TABNAME": "VBAP", "FIELDNAME": "VSTEL", "ROLLNAME": "VSTEL"}]),
+            "data_element_texts": _adt([{"ROLLNAME": "VSTEL", "DDLANGUAGE": "E", "DDTEXT": "Shipping Point"}]),
+        },
+    )
+
+    assert result["status"] == "complete"
+    assert result["business_status"] == "blocked"
+    assert result["metrics"] == [{
+        "id": "blocked_findings",
+        "label": {"zh": "冻结及异常发现数", "en": "Block and exception findings"},
+        "value": 4,
+    }]
+    assert len(result["findings"]) == 4
+    assert all(finding["detail"]["zh"] for finding in result["findings"])
+    record = result["business_report"]["records"][0]
+    assert record["billing_block_reason"] == "00"
+    assert record["billing_block_reason_text"]["en"] == "Billing block text"
+    assert record["billing_block_scope"] == "header"
+    assert record["delivery_block_reason"] == "07"
+    assert record["delivery_block_reason_text"]["en"] == "Delivery block text"
+    assert record["credit_status"] == "B"
+    assert record["credit_status_text"]["en"] == "Credit status text"
+    assert record["incompletion_fields"] == [{
+        "code": "VBAP.VSTEL",
+        "text": {"zh": "Shipping Point [SAP EN]", "en": "Shipping Point"},
+        "source": "DD04T via DD03L",
+    }]
+
+
+def test_missing_code_text_keeps_blocked_business_status_but_is_inconclusive() -> None:
+    sap_read = _sap_read()
+    sap_read["data"]["step_results"]["sales_orders"]["results"] = [{
+        "SalesOrder": "2", "HeaderBillingBlockReason": "00", "TotalCreditCheckStatus": "C"
+    }]
+    result = _evaluate(sap_read, _adt([]))
+
+    assert result["status"] == "inconclusive"
+    assert result["business_status"] == "blocked"
+    assert result["missing_evidence"] == ["code_text_evidence"]
+
+
+def test_partial_direct_field_text_evidence_cannot_be_hidden_by_ddic_fallback() -> None:
+    sap_read = _sap_read()
+    vbuv = _adt(_incompletion_rows())
+    result = _evaluate(
+        sap_read,
+        vbuv,
+        text_fallbacks={
+            "incompletion_field_texts": _adt([], status="partial"),
+            "incompletion_field_definitions": _adt([
+                {"TABNAME": "VBAP", "FIELDNAME": "KWMENG", "ROLLNAME": "KWMENG"}
+            ]),
+            "data_element_texts": _adt([
+                {"ROLLNAME": "KWMENG", "DDLANGUAGE": "E", "DDTEXT": "Order Quantity"}
+            ]),
+        },
+    )
+
+    assert result["status"] == "inconclusive"
+    assert result["business_status"] == "blocked"
+    assert result["missing_evidence"] == ["code_text_evidence"]

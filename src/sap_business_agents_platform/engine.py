@@ -2288,6 +2288,31 @@ def _presentation_value(value: Any, value_format: str = "text") -> LocalizedText
     return _text_pair(value)
 
 
+def _finding_text(value: Any) -> LocalizedText:
+    if not isinstance(value, dict):
+        return _text_pair(value)
+    explicit = value.get("detail") or value.get("text") or value.get("label")
+    if explicit:
+        return _text_pair(explicit)
+    code = str(value.get("code") or "Finding")
+    raw = str(value.get("value") or "").strip()
+    object_id = str(value.get("object") or "").strip()
+    value_text = _text_pair(value.get("value_text"))
+
+    def build(localized: str) -> str:
+        parts = [code]
+        if raw:
+            parts.append(raw)
+        text = " — ".join(parts)
+        if localized:
+            text += f" — {localized}"
+        if object_id:
+            text += f" ({object_id})"
+        return text
+
+    return LocalizedText(zh=build(value_text.zh), en=build(value_text.en))
+
+
 def _default_presentation(result: RunResult) -> RunPresentation:
     report = _find_business_report(result.rule_results)
     summary = _text_pair(result.summary, "查询已经结束。")
@@ -2431,12 +2456,7 @@ def _default_presentation(result: RunResult) -> RunPresentation:
                     source_complete=result.completeness.source_complete,
                 )
             )
-        findings = [
-            _text_pair(item.get("detail") or item.get("text") or item.get("label"))
-            if isinstance(item, dict)
-            else _text_pair(item)
-            for item in report.get("findings") or []
-        ]
+        findings = [_finding_text(item) for item in report.get("findings") or []]
         if findings:
             blocks.append(
                 PresentationBlock(
@@ -2665,8 +2685,7 @@ def _business_markdown_report(
         if findings:
             lines.extend(["## 业务发现", ""])
             for finding in findings:
-                detail = finding.get("detail") or finding.get("text") or finding.get("label")
-                lines.append(f"- {_markdown_cell(detail)}")
+                lines.append(f"- {_markdown_cell(_finding_text(finding).model_dump())}")
             lines.append("")
         missing_evidence = business_report.get("missing_evidence") or []
         if isinstance(missing_evidence, list) and missing_evidence:

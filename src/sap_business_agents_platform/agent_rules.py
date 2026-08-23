@@ -276,6 +276,59 @@ def _adt_hash_verified(value: JsonObject) -> bool:
     )
 
 
+def _sap_localized_texts(
+    payload: JsonObject,
+    *,
+    key_fields: tuple[str, ...],
+    text_field: str,
+    language_field: str,
+) -> dict[str, JsonObject]:
+    """Build localized SAP text values without inventing translations."""
+
+    grouped: dict[str, dict[str, str]] = {}
+    for row in _rows_in_adt_payload(payload):
+        key = ".".join(str(row.get(field) or "").strip().upper() for field in key_fields)
+        text = str(row.get(text_field) or "").strip()
+        language = str(row.get(language_field) or "").strip().upper()
+        if not key or not text or not language:
+            continue
+        grouped.setdefault(key, {})[language] = text
+    resolved: dict[str, JsonObject] = {}
+    for key, languages in grouped.items():
+        english = languages.get("E", "")
+        chinese = languages.get("1", "") or languages.get("M", "")
+        fallback_language, fallback_text = next(iter(sorted(languages.items())))
+        resolved[key] = {
+            "zh": chinese or (f"{english} [SAP EN]" if english else f"{fallback_text} [SAP {fallback_language}]"),
+            "en": english or (f"{chinese} [SAP ZH]" if chinese else f"{fallback_text} [SAP {fallback_language}]"),
+        }
+    return resolved
+
+
+def _finding_detail(
+    *,
+    field_zh: str,
+    field_en: str,
+    value: str,
+    value_text: JsonObject,
+    object_id: str,
+    scope: str,
+) -> JsonObject:
+    scope_labels = {
+        "header": ("销售订单抬头", "sales-order header"),
+        "item": ("销售订单项目", "sales-order item"),
+        "delivery_header": ("交货抬头", "delivery header"),
+        "delivery_item": ("交货项目", "delivery item"),
+    }
+    zh_scope, en_scope = scope_labels.get(scope, (scope, scope))
+    zh_text = str(value_text.get("zh") or value_text.get("en") or "未取得SAP文本")
+    en_text = str(value_text.get("en") or value_text.get("zh") or "SAP text unavailable")
+    return {
+        "zh": f"{zh_scope} {object_id}：{field_zh} {value} — {zh_text}",
+        "en": f"{en_scope} {object_id}: {field_en} {value} — {en_text}",
+    }
+
+
 def _date_text(row: JsonObject, *fields: str) -> str:
     parsed = _date(_text(row, *fields))
     return parsed.isoformat() if parsed is not None else ""
@@ -349,6 +402,7 @@ def _result(
     records: list[JsonObject] | None = None,
     record_columns: list[JsonObject] | None = None,
     allow_empty_records: bool = False,
+    preserve_business_status_on_gap: bool = False,
 ) -> JsonObject:
     missing = sorted(set(gaps or []))
     source_complete = (
@@ -383,7 +437,13 @@ def _result(
         "record_columns": record_columns or [],
     }
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
-    effective_status = "capability_blocked" if missing else business_status
+    effective_status = (
+        business_status
+        if preserve_business_status_on_gap
+        else "capability_blocked"
+        if missing
+        else business_status
+    )
     normalized_records = [dict(item) for item in records or [] if isinstance(item, dict)]
     if not normalized_records and not allow_empty_records:
         normalized_records = [{**run_input, "business_status": effective_status}]
@@ -418,7 +478,9 @@ def _result(
 def _billing_block(inputs: JsonObject) -> JsonObject:
     orders = _rows(inputs, "sales_orders")
     items = _rows(inputs, "sales_order_items")
-    deliveries = _rows(inputs, "delivery_headers", "delivery_items")
+    delivery_headers = _rows(inputs, "delivery_headers")
+    delivery_items = _rows(inputs, "delivery_items")
+    deliveries = delivery_headers + delivery_items
     assessment = inputs.get("assessment")
     assessment = assessment if isinstance(assessment, dict) else {}
     needs_adt = bool(
@@ -464,36 +526,193 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
             )
         )
     )
-    fields = (
-        "HeaderBillingBlockReason", "ItemBillingBlockReason", "DeliveryBlockReason",
-        "TotalCreditCheckStatus", "TotalBlockStatus", "HdrGeneralIncompletionStatus",
+    billing_text_payload = _fallback(inputs, "billing_block_code_texts")
+    delivery_text_payload = _fallback(inputs, "delivery_block_code_texts")
+    credit_text_payload = _fallback(inputs, "credit_status_code_texts")
+    incompletion_text_payload = _fallback(inputs, "incompletion_field_texts")
+    incompletion_definition_payload = _fallback(inputs, "incompletion_field_definitions")
+    data_element_text_payload = _fallback(inputs, "data_element_texts")
+    billing_texts = _sap_localized_texts(
+        billing_text_payload,
+        key_fields=("FAKSP",),
+        text_field="VTEXT",
+        language_field="SPRAS",
     )
-    findings = [
-        {"code": field, "severity": "high", "value": str(row.get(field)), "object": str(row.get("SalesOrder") or row.get("DeliveryDocument") or "")}
-        for row in orders + items + deliveries
-        for field in fields
-        if str(row.get(field) or "").strip() not in {"", "0", "C"}
-    ]
-    if status_evidence_complete and needs_adt:
-        findings.extend(
+    delivery_texts = _sap_localized_texts(
+        delivery_text_payload,
+        key_fields=("LIFSP",),
+        text_field="VTEXT",
+        language_field="SPRAS",
+    )
+    credit_texts = _sap_localized_texts(
+        credit_text_payload,
+        key_fields=("DOMVALUE_L",),
+        text_field="DDTEXT",
+        language_field="DDLANGUAGE",
+    )
+    incompletion_texts = _sap_localized_texts(
+        incompletion_text_payload,
+        key_fields=("TABNAME", "FIELDNAME"),
+        text_field="DDTEXT",
+        language_field="DDLANGUAGE",
+    )
+    data_element_texts = _sap_localized_texts(
+        data_element_text_payload,
+        key_fields=("ROLLNAME",),
+        text_field="DDTEXT",
+        language_field="DDLANGUAGE",
+    )
+    incompletion_text_sources = {key: "DD03T" for key in incompletion_texts}
+    for row in _rows_in_adt_payload(incompletion_definition_payload):
+        field_key = ".".join(
+            (
+                str(row.get("TABNAME") or "").strip().upper(),
+                str(row.get("FIELDNAME") or "").strip().upper(),
+            )
+        )
+        rollname = str(row.get("ROLLNAME") or "").strip().upper()
+        if field_key not in incompletion_texts and rollname in data_element_texts:
+            incompletion_texts[field_key] = data_element_texts[rollname]
+            incompletion_text_sources[field_key] = "DD04T via DD03L"
+
+    findings: list[JsonObject] = []
+    finding_keys: set[tuple[str, str, str, str]] = set()
+    required_texts: list[tuple[str, str, JsonObject, JsonObject]] = []
+
+    def add_code_finding(
+        *,
+        code: str,
+        value: Any,
+        object_id: Any,
+        scope: str,
+        text_map: dict[str, JsonObject],
+        field_zh: str,
+        field_en: str,
+        normal_values: set[str] | None = None,
+        severity: str = "high",
+        source: str,
+    ) -> None:
+        normalized = str(value or "").strip().upper()
+        if not normalized or normalized in (normal_values or set()):
+            return
+        object_text = str(object_id or "").strip()
+        key = (code, object_text, scope, normalized)
+        if key in finding_keys:
+            return
+        finding_keys.add(key)
+        value_text = text_map.get(normalized, {})
+        required_texts.append((normalized, source, value_text, _fallback(inputs, source)))
+        findings.append(
             {
-                "code": "SalesDocumentIncompletionLog",
-                "severity": "high" if str(row.get("STATG") or "").strip() else "medium",
-                "value": ".".join(
+                "code": code,
+                "severity": severity,
+                "value": normalized,
+                "value_text": value_text,
+                "object": object_text,
+                "scope": scope,
+                "text_source": source,
+                "detail": _finding_detail(
+                    field_zh=field_zh,
+                    field_en=field_en,
+                    value=normalized,
+                    value_text=value_text,
+                    object_id=object_text,
+                    scope=scope,
+                ),
+            }
+        )
+
+    for row in orders:
+        object_id = row.get("SalesOrder")
+        add_code_finding(
+            code="HeaderBillingBlockReason", value=row.get("HeaderBillingBlockReason"),
+            object_id=object_id, scope="header", text_map=billing_texts,
+            field_zh="开票冻结原因", field_en="billing block reason",
+            source="billing_block_code_texts",
+        )
+        add_code_finding(
+            code="DeliveryBlockReason", value=row.get("DeliveryBlockReason"),
+            object_id=object_id, scope="header", text_map=delivery_texts,
+            field_zh="交货冻结原因", field_en="delivery block reason",
+            source="delivery_block_code_texts",
+        )
+        add_code_finding(
+            code="TotalCreditCheckStatus", value=row.get("TotalCreditCheckStatus"),
+            object_id=object_id, scope="header", text_map=credit_texts,
+            field_zh="信用检查状态", field_en="credit-check status",
+            normal_values={"C"}, severity="medium", source="credit_status_code_texts",
+        )
+    for row in items:
+        add_code_finding(
+            code="ItemBillingBlockReason", value=row.get("ItemBillingBlockReason"),
+            object_id=f"{_text(row, 'SalesOrder')}/{_text(row, 'SalesOrderItem')}",
+            scope="item", text_map=billing_texts,
+            field_zh="项目开票冻结原因", field_en="item billing block reason",
+            source="billing_block_code_texts",
+        )
+    for row in delivery_headers:
+        object_id = row.get("DeliveryDocument")
+        add_code_finding(
+            code="HeaderBillingBlockReason", value=row.get("HeaderBillingBlockReason"),
+            object_id=object_id, scope="delivery_header", text_map=billing_texts,
+            field_zh="开票冻结原因", field_en="billing block reason",
+            source="billing_block_code_texts",
+        )
+        add_code_finding(
+            code="DeliveryBlockReason", value=row.get("DeliveryBlockReason"),
+            object_id=object_id, scope="delivery_header", text_map=delivery_texts,
+            field_zh="交货冻结原因", field_en="delivery block reason",
+            source="delivery_block_code_texts",
+        )
+        add_code_finding(
+            code="TotalCreditCheckStatus", value=row.get("TotalCreditCheckStatus"),
+            object_id=object_id, scope="delivery_header", text_map=credit_texts,
+            field_zh="信用检查状态", field_en="credit-check status",
+            normal_values={"C"}, severity="medium", source="credit_status_code_texts",
+        )
+    for row in delivery_items:
+        add_code_finding(
+            code="ItemBillingBlockReason", value=row.get("ItemBillingBlockReason"),
+            object_id=f"{_text(row, 'DeliveryDocument')}/{_text(row, 'DeliveryDocumentItem')}",
+            scope="delivery_item", text_map=billing_texts,
+            field_zh="项目开票冻结原因", field_en="item billing block reason",
+            source="billing_block_code_texts",
+        )
+    if status_evidence_complete and needs_adt:
+        for key, rows in status_by_key.items():
+            for row in rows:
+                raw_field = ".".join(
                     part
                     for part in (
                         str(row.get("TBNAM") or "").strip().upper(),
                         str(row.get("FDNAM") or "").strip().upper(),
                     )
                     if part
-                ) or "unspecified_field",
+                ) or "unspecified_field"
+                value_text = incompletion_texts.get(raw_field, {})
+                finding = {
+                "code": "SalesDocumentIncompletionLog",
+                "severity": "high" if str(row.get("STATG") or "").strip() else "medium",
+                "value": raw_field,
+                "value_text": value_text,
                 "object": f"{key[0]}/{key[1] or 'HEADER'}",
+                "scope": "item",
+                "text_source": incompletion_text_sources.get(raw_field, "incompletion_field_texts"),
                 "status_group": str(row.get("STATG") or ""),
                 "incompletion_group": str(row.get("FEHGR") or ""),
+                "detail": _finding_detail(
+                    field_zh="不完整字段",
+                    field_en="incomplete field",
+                    value=raw_field,
+                    value_text=value_text,
+                    object_id=f"{key[0]}/{key[1] or 'HEADER'}",
+                    scope="item",
+                ),
             }
-            for key, rows in status_by_key.items()
-            for row in rows
-        )
+                finding_key = (finding["code"], finding["object"], finding["scope"], raw_field)
+                if finding_key not in finding_keys:
+                    finding_keys.add(finding_key)
+                    findings.append(finding)
     elif status_evidence_complete and embedded_status_complete:
         incompletion_fields = (
             ("UVALL", "ItemGeneralIncompletion", "medium"),
@@ -516,13 +735,58 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
             if str(row.get(field) or "").strip().upper() not in {"", "0", "C"}
         )
     blocked = bool(findings)
+    order_by_key = {
+        _canonical_sd_key(row.get("SalesOrder"), 10): row
+        for row in orders
+        if _text(row, "SalesOrder")
+    }
+    delivery_documents_by_item: dict[tuple[str, str], list[str]] = {}
+    for row in delivery_items:
+        key = (
+            _canonical_sd_key(row.get("ReferenceSDDocument"), 10),
+            _canonical_sd_key(row.get("ReferenceSDDocumentItem"), 6),
+        )
+        document = _text(row, "DeliveryDocument")
+        if all(key) and document:
+            delivery_documents_by_item.setdefault(key, []).append(document)
+    delivery_header_by_document = {
+        _text(row, "DeliveryDocument"): row
+        for row in delivery_headers
+        if _text(row, "DeliveryDocument")
+    }
+
+    def item_reason(row: JsonObject, item_field: str, header_field: str) -> tuple[str, str]:
+        item_value = _text(row, item_field)
+        if item_value:
+            return item_value.upper(), "item"
+        order = order_by_key.get(_canonical_sd_key(row.get("SalesOrder"), 10), {})
+        header_value = _text(order, header_field)
+        if header_value:
+            return header_value.upper(), "header"
+        key = (
+            _canonical_sd_key(row.get("SalesOrder"), 10),
+            _canonical_sd_key(row.get("SalesOrderItem"), 6),
+        )
+        for document in delivery_documents_by_item.get(key, []):
+            delivery = delivery_header_by_document.get(document, {})
+            delivery_value = _text(delivery, header_field)
+            if delivery_value:
+                return delivery_value.upper(), "delivery_header"
+        return "", "none"
+
     records = [
         {
             "sales_order": _text(row, "SalesOrder"),
             "sales_order_item": _text(row, "SalesOrderItem"),
-            "billing_block_reason": _text(row, "ItemBillingBlockReason", "HeaderBillingBlockReason"),
-            "delivery_block_reason": _text(row, "DeliveryBlockReason"),
-            "credit_status": _text(row, "TotalCreditCheckStatus"),
+            "billing_block_reason": (billing := item_reason(row, "ItemBillingBlockReason", "HeaderBillingBlockReason"))[0],
+            "billing_block_reason_text": billing_texts.get(billing[0], {}),
+            "billing_block_scope": billing[1],
+            "delivery_block_reason": (delivery := item_reason(row, "", "DeliveryBlockReason"))[0],
+            "delivery_block_reason_text": delivery_texts.get(delivery[0], {}),
+            "delivery_block_scope": delivery[1],
+            "credit_status": (credit := item_reason(row, "", "TotalCreditCheckStatus"))[0],
+            "credit_status_text": credit_texts.get(credit[0], {}),
+            "credit_status_scope": credit[1],
             "incompletion_status": (
                 _vbuv_incompletion_summary(
                     status_by_key.get(
@@ -536,6 +800,81 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
                 if needs_adt
                 else _embedded_billing_incompletion_summary(row)
             ),
+            "incompletion_field_text": {
+                "zh": "；".join(
+                    str(incompletion_texts.get(code, {}).get("zh") or "")
+                    for code in sorted(
+                        {
+                            ".".join(
+                                part
+                                for part in (
+                                    str(status.get("TBNAM") or "").strip().upper(),
+                                    str(status.get("FDNAM") or "").strip().upper(),
+                                )
+                                if part
+                            )
+                            for status in status_by_key.get(
+                                (
+                                    _canonical_sd_key(row.get("SalesOrder"), 10),
+                                    _canonical_sd_key(row.get("SalesOrderItem"), 6),
+                                ),
+                                [],
+                            )
+                        }
+                        - {""}
+                    )
+                ),
+                "en": "; ".join(
+                    str(incompletion_texts.get(code, {}).get("en") or "")
+                    for code in sorted(
+                        {
+                            ".".join(
+                                part
+                                for part in (
+                                    str(status.get("TBNAM") or "").strip().upper(),
+                                    str(status.get("FDNAM") or "").strip().upper(),
+                                )
+                                if part
+                            )
+                            for status in status_by_key.get(
+                                (
+                                    _canonical_sd_key(row.get("SalesOrder"), 10),
+                                    _canonical_sd_key(row.get("SalesOrderItem"), 6),
+                                ),
+                                [],
+                            )
+                        }
+                        - {""}
+                    )
+                ),
+            },
+            "incompletion_fields": [
+                {
+                    "code": code,
+                    "text": incompletion_texts.get(code, {}),
+                    "source": incompletion_text_sources.get(code, "unavailable"),
+                }
+                for code in sorted(
+                    {
+                        ".".join(
+                            part
+                            for part in (
+                                str(status.get("TBNAM") or "").strip().upper(),
+                                str(status.get("FDNAM") or "").strip().upper(),
+                            )
+                            if part
+                        )
+                        for status in status_by_key.get(
+                            (
+                                _canonical_sd_key(row.get("SalesOrder"), 10),
+                                _canonical_sd_key(row.get("SalesOrderItem"), 6),
+                            ),
+                            [],
+                        )
+                    }
+                    - {""}
+                )
+            ],
         }
         for row in items
         if _text(row, "SalesOrder") and _text(row, "SalesOrderItem")
@@ -543,12 +882,59 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
     gaps = _gaps(inputs)
     if items and not status_evidence_complete:
         gaps = sorted(set(gaps) | {"sales_order_item_incompletion_evidence"})
-    source_complete = _source_complete(inputs) and (not items or status_evidence_complete)
+    text_evidence_complete = all(
+        bool(value_text)
+        and _adt_complete(payload)
+        and _adt_hash_verified(payload)
+        for _value, _source, value_text, payload in required_texts
+    )
+    incompletion_codes = {
+        str(finding.get("value") or "")
+        for finding in findings
+        if finding.get("code") == "SalesDocumentIncompletionLog"
+    }
+    for code in incompletion_codes:
+        source = incompletion_text_sources.get(code)
+        if source == "DD03T":
+            complete = (
+                _adt_complete(incompletion_text_payload)
+                and _adt_hash_verified(incompletion_text_payload)
+            )
+        elif source == "DD04T via DD03L":
+            complete = (
+                _adt_complete(incompletion_text_payload)
+                and _adt_hash_verified(incompletion_text_payload)
+                and _adt_complete(incompletion_definition_payload)
+                and _adt_hash_verified(incompletion_definition_payload)
+                and _adt_complete(data_element_text_payload)
+                and _adt_hash_verified(data_element_text_payload)
+            )
+        else:
+            complete = False
+        text_evidence_complete = text_evidence_complete and complete and bool(
+            incompletion_texts.get(code)
+        )
+    code_text_required = bool(required_texts or incompletion_codes)
+    if code_text_required and not text_evidence_complete:
+        gaps = sorted(set(gaps) | {"code_text_evidence"})
+    source_complete = (
+        _source_complete(inputs)
+        and (not items or status_evidence_complete)
+        and (not code_text_required or text_evidence_complete)
+    )
+    categories = {
+        "billing": any(item["code"] in {"HeaderBillingBlockReason", "ItemBillingBlockReason"} for item in findings),
+        "delivery": any(item["code"] == "DeliveryBlockReason" for item in findings),
+        "credit": any(item["code"] == "TotalCreditCheckStatus" for item in findings),
+        "incompletion": any(item["code"] == "SalesDocumentIncompletionLog" or "Incompletion" in item["code"] for item in findings),
+    }
+    zh_parts = [label for key, label in (("billing", "开票冻结"), ("delivery", "交货冻结"), ("credit", "信用检查异常"), ("incompletion", "字段不完整")) if categories[key]]
+    en_parts = [label for key, label in (("billing", "billing blocks"), ("delivery", "delivery blocks"), ("credit", "credit-check exceptions"), ("incompletion", "incomplete fields")) if categories[key]]
     return _result(
         inputs,
         business_status="blocked" if blocked else "normal",
-        headline_zh="发现销售或交货冻结" if blocked else "未发现销售或交货冻结",
-        headline_en="Sales or delivery blocks were found" if blocked else "No sales or delivery blocks were found",
+        headline_zh=("发现" + "、".join(zh_parts)) if blocked else "未发现冻结、信用检查异常或字段不完整",
+        headline_en=("Found " + ", ".join(en_parts)) if blocked else "No blocks, credit-check exceptions, or incomplete fields were found",
         overview_zh="系统按订单、项目和交货层级检查了冻结、信用及不完整状态。",
         overview_en="Order, item, delivery, credit, and incompletion statuses were checked.",
         stages=[
@@ -578,12 +964,33 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
             _stage("delivery", "交货", "Delivery", len(deliveries)),
         ],
         findings=findings,
-        metrics=[{"id": "blocked_findings", "value": len(findings)}],
+        metrics=[{
+            "id": "blocked_findings",
+            "label": {"zh": "冻结及异常发现数", "en": "Block and exception findings"},
+            "value": len(findings),
+        }],
         records=records,
+        record_columns=[
+            {"key": "sales_order", "label": {"zh": "销售订单", "en": "Sales order"}},
+            {"key": "sales_order_item", "label": {"zh": "订单项目", "en": "Sales-order item"}},
+            {"key": "billing_block_reason", "label": {"zh": "开票冻结原因代码", "en": "Billing block reason code"}},
+            {"key": "billing_block_reason_text", "label": {"zh": "开票冻结原因文本", "en": "Billing block reason text"}},
+            {"key": "billing_block_scope", "label": {"zh": "开票冻结来源", "en": "Billing block scope"}},
+            {"key": "delivery_block_reason", "label": {"zh": "交货冻结原因代码", "en": "Delivery block reason code"}},
+            {"key": "delivery_block_reason_text", "label": {"zh": "交货冻结原因文本", "en": "Delivery block reason text"}},
+            {"key": "delivery_block_scope", "label": {"zh": "交货冻结来源", "en": "Delivery block scope"}},
+            {"key": "credit_status", "label": {"zh": "信用状态代码", "en": "Credit status code"}},
+            {"key": "credit_status_text", "label": {"zh": "信用状态文本", "en": "Credit status text"}},
+            {"key": "credit_status_scope", "label": {"zh": "信用状态来源", "en": "Credit status scope"}},
+            {"key": "incompletion_status", "label": {"zh": "不完整字段代码", "en": "Incompletion field code"}},
+            {"key": "incompletion_field_text", "label": {"zh": "不完整字段文本", "en": "Incompletion field text"}},
+            {"key": "business_status", "label": {"zh": "业务状态", "en": "Business status"}, "format": "status"},
+        ],
         gaps=gaps,
         actions_zh=["按冻结所在层级交由销售、信用或主数据人员处理。"] if blocked else [],
         actions_en=["Route the block to sales, credit, or master-data owners."] if blocked else [],
         source_complete_override=source_complete,
+        preserve_business_status_on_gap=(bool(gaps) and set(gaps) == {"code_text_evidence"}),
     )
 
 

@@ -62,3 +62,11 @@ Supplemental evidence hashes:
 The final comparison uses stable business keys, deterministic facts, Decimal-aware metrics, currencies, units, limitations, and completeness rather than display prose or row order. Platform and fixed-Agent corrections are covered by the campaign regression suite; runtime logic contains no test-document constants.
 
 Raw SAP rows, URLs, credentials, business identifiers, and connection details remain in ignored local artifacts.
+
+## 2026-08-23 code-text consistency replay
+
+- Embedded stage: complete GET-only order, item, delivery and billing branches; header block and credit codes remained separate from item rows.
+- ADT stage: complete and hash-verified reads for `VBUV`, `TVFST`, `TVLST`, `DD07T`, `DD03T`, `DD03L`, and `DD04T`; `DD03T` complete-zero was resolved through the authoritative DDIC data-element fallback.
+- Fixed-Agent stage: run `acceptance_7b93a3c35b124e9d` completed with `source_complete=true`, `business_complete=true`, four visible findings, and no missing evidence; focused result hash `sha256:d6b1600e0b59759b38402077d467c25555dcbd7ca1028b0f60635751270f709f`.
+- Semantic outcome: the raw values `00`, `07`, `B`, and `VBAP.VSTEL` were preserved and paired with live SAP texts; header values were propagated to the item record with `scope=header`.
+- Safety: Embedded business requests were GET-only, ADT remained read-only, and no SAP write operation was executed.

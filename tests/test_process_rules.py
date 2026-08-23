@@ -370,6 +370,34 @@ def test_p2p_default_presentation_renders_business_evidence_tables_bilingually()
     assert "| 10 | 21120000 | -35.00 | 35.00 | 0.00 | USD | 已匹配 |" in report
 
 
+def test_finding_presentation_falls_back_to_code_text_and_object() -> None:
+    business_report = {
+        "headline": {"zh": "发现异常", "en": "Finding detected"},
+        "overview": {"zh": "测试", "en": "Test"},
+        "findings": [{
+            "code": "HeaderBillingBlockReason",
+            "value": "00",
+            "value_text": {"zh": "冻结文本", "en": "Block text"},
+            "object": "5837",
+        }],
+    }
+    run = RunResult(
+        run_id="run-finding-fixture",
+        mode=RunMode.agent,
+        agent_id="billing-block-diagnosis",
+        rule_results=[{"business_report": business_report}],
+        completeness=Completeness(source_complete=True, business_complete=True, reason="fixture"),
+        summary={"zh": "发现异常", "en": "Finding detected"},
+    )
+
+    presentation = _default_presentation(run)
+    findings = next(block for block in presentation.blocks if block.type == "bullet_list")
+    assert findings.items[0].zh == "HeaderBillingBlockReason — 00 — 冻结文本 (5837)"
+    assert findings.items[0].en == "HeaderBillingBlockReason — 00 — Block text (5837)"
+    markdown = _business_markdown_report(run, business_report)
+    assert "- HeaderBillingBlockReason — 00 — 冻结文本 (5837)" in markdown
+
+
 def test_p2p_business_report_explains_receipt_without_invoice_in_business_language() -> None:
     result = rules.evaluate_p2p_status(
         {
