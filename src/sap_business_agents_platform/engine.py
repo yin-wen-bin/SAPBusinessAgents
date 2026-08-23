@@ -494,7 +494,7 @@ class RunCoordinator:
                 raise RunExecutionError(
                     str(exc), code=exc.code, detail=exc.detail
                 ) from exc
-        self._complete_result(run_id, result)
+        self._complete_result(run_id, result, output_schema=output_schema)
         self._acceptance_runs.discard(run_id)
 
     async def _execute_step(
@@ -915,7 +915,8 @@ class RunCoordinator:
                     "business_complete": outcome.business_complete,
                     "missing_evidence": outcome.missing_evidence,
                     "evidence_refs": outcome.evidence_refs,
-                }
+                },
+                *outcome.verified_rule_results,
             ],
             summary=outcome.summary,
             presentation=outcome.presentation,
@@ -1470,7 +1471,13 @@ class RunCoordinator:
                 )
         return failures
 
-    def _complete_result(self, run_id: str, result: RunResult) -> None:
+    def _complete_result(
+        self,
+        run_id: str,
+        result: RunResult,
+        *,
+        output_schema: dict[str, Any] | None = None,
+    ) -> None:
         completeness_evidence, evidence_scope = _completeness_evidence_scope(result)
         flags = rules._collect_source_complete(completeness_evidence)
         evidence_source_complete = (
@@ -1551,7 +1558,7 @@ class RunCoordinator:
             missing_evidence=missing_evidence,
         )
         if result.presentation is None:
-            result.presentation = _default_presentation(result)
+            result.presentation = _default_presentation(result, output_schema=output_schema)
         result.completed_at = utc_now()
         result.artifacts = self._write_artifacts(result)
         status = (
@@ -2260,7 +2267,32 @@ def _text_pair(value: Any, fallback: str = "") -> LocalizedText:
     return LocalizedText(zh=text, en=text)
 
 
-def _presentation_value(value: Any, value_format: str = "text") -> LocalizedText:
+def _presentation_value(
+    value: Any,
+    value_format: str = "text",
+    value_schema: dict[str, Any] | None = None,
+) -> LocalizedText:
+    schema = value_schema if isinstance(value_schema, dict) else {}
+    display = schema.get("x-sapba-display")
+    display = display if isinstance(display, dict) else {}
+    labels = display.get("labels")
+    labels = labels if isinstance(labels, dict) else {}
+
+    def enum_label(item: Any) -> LocalizedText:
+        configured = labels.get(str(item))
+        return _text_pair(configured, str(item))
+
+    if isinstance(value, list):
+        localized = [enum_label(item) for item in value]
+        return LocalizedText(
+            zh="、".join(item.zh for item in localized),
+            en=", ".join(item.en for item in localized),
+        )
+    if str(value) in labels:
+        return enum_label(value)
+    if isinstance(value, bool):
+        return LocalizedText(zh="是" if value else "否", en="Yes" if value else "No")
+    value_format = str(display.get("format") or value_format)
     if value_format == "status" and not isinstance(value, dict):
         labels = {
             "confirmed": LocalizedText(zh="已确认", en="Confirmed"),
@@ -2288,6 +2320,27 @@ def _presentation_value(value: Any, value_format: str = "text") -> LocalizedText
     return _text_pair(value)
 
 
+def _output_property_schema(
+    output_schema: dict[str, Any] | None, key: str
+) -> dict[str, Any]:
+    if not isinstance(output_schema, dict):
+        return {}
+    properties = output_schema.get("properties")
+    if not isinstance(properties, dict):
+        return {}
+    value = properties.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _schema_visible(schema: dict[str, Any]) -> bool:
+    display = schema.get("x-sapba-display")
+    return not (isinstance(display, dict) and display.get("visible") is False)
+
+
+def _schema_label(schema: dict[str, Any], fallback: Any) -> LocalizedText:
+    return _text_pair(schema.get("title"), str(fallback or ""))
+
+
 def _finding_text(value: Any) -> LocalizedText:
     if not isinstance(value, dict):
         return _text_pair(value)
@@ -2313,7 +2366,11 @@ def _finding_text(value: Any) -> LocalizedText:
     return LocalizedText(zh=build(value_text.zh), en=build(value_text.en))
 
 
-def _default_presentation(result: RunResult) -> RunPresentation:
+def _default_presentation(
+    result: RunResult,
+    *,
+    output_schema: dict[str, Any] | None = None,
+) -> RunPresentation:
     report = _find_business_report(result.rule_results)
     summary = _text_pair(result.summary, "查询已经结束。")
     title = summary
@@ -2365,19 +2422,38 @@ def _default_presentation(result: RunResult) -> RunPresentation:
             )
         metrics = [item for item in report.get("metrics") or [] if isinstance(item, dict)]
         if metrics:
+            presentation_metrics: list[PresentationMetric] = []
+            for index, item in enumerate(metrics):
+                metric_id = str(item.get("id") or item.get("name") or f"metric_{index + 1}")
+                metric_schema = _output_property_schema(output_schema, metric_id)
+                metric_value = _presentation_value(
+                    item.get("value"),
+                    str(item.get("format") or "text"),
+                    metric_schema,
+                )
+                metric_unit = str(item.get("unit") or "").strip()
+                if metric_unit and (metric_value.zh or metric_value.en):
+                    metric_value = LocalizedText(
+                        zh=f"{metric_value.zh} {metric_unit}",
+                        en=f"{metric_value.en} {metric_unit}",
+                    )
+                presentation_metrics.append(
+                    PresentationMetric(
+                        id=metric_id,
+                        label=(
+                            _schema_label(metric_schema, metric_id)
+                            if metric_schema
+                            else _text_pair(item.get("label") or metric_id)
+                        ),
+                        value=metric_value,
+                    )
+                )
             blocks.append(
                 PresentationBlock(
                     type="metrics",
                     title=LocalizedText(zh="关键业务指标", en="Key business metrics"),
                     claim_scope="customer_business_fact",
-                    metrics=[
-                        PresentationMetric(
-                            id=str(item.get("id") or item.get("name") or f"metric_{index + 1}"),
-                            label=_text_pair(item.get("label") or item.get("id")),
-                            value=_text_pair(item.get("value")),
-                        )
-                        for index, item in enumerate(metrics)
-                    ],
+                    metrics=presentation_metrics,
                 )
             )
         record_columns = [
@@ -2385,34 +2461,67 @@ def _default_presentation(result: RunResult) -> RunPresentation:
         ]
         records = [item for item in report.get("records") or [] if isinstance(item, dict)]
         if record_columns and records:
-            columns = [
-                PresentationColumn(
-                    key=str(item.get("key") or f"column_{index + 1}"),
-                    label=_text_pair(item.get("label") or item.get("key")),
-                    format=str(item.get("format") or "text"),
+            columns: list[PresentationColumn] = []
+            column_schemas: list[dict[str, Any]] = []
+            for index, item in enumerate(record_columns):
+                key = str(item.get("key") or f"column_{index + 1}")
+                property_schema = _output_property_schema(output_schema, key)
+                if property_schema and not _schema_visible(property_schema):
+                    continue
+                display = property_schema.get("x-sapba-display") if property_schema else None
+                display = display if isinstance(display, dict) else {}
+                column_format = str(display.get("format") or item.get("format") or "text")
+                if column_format not in {
+                    "text", "date", "datetime", "integer", "decimal", "currency", "status"
+                }:
+                    column_format = "text"
+                columns.append(
+                    PresentationColumn(
+                        key=key,
+                        label=(
+                            _schema_label(property_schema, key)
+                            if property_schema
+                            else _text_pair(item.get("label") or key)
+                        ),
+                        format=column_format,
+                    )
                 )
-                for index, item in enumerate(record_columns)
-            ]
+                column_schemas.append(property_schema)
             rows = [
                 PresentationRow(
                     values=[
-                        _presentation_value(record.get(column.key), column.format)
-                        for column in columns
+                        _presentation_value(
+                            record.get(column.key), column.format, column_schemas[index]
+                        )
+                        for index, column in enumerate(columns)
                     ]
                 )
                 for record in records[:200]
             ]
-            blocks.append(
-                PresentationBlock(
-                    type="table",
-                    title=LocalizedText(zh="业务记录", en="Business records"),
-                    claim_scope="customer_business_fact",
-                    columns=columns,
-                    rows=rows,
-                    total_rows=len(records),
-                    source_complete=result.completeness.source_complete,
+            if len(records) == 1:
+                blocks.append(
+                    PresentationBlock(
+                        type="key_value",
+                        title=LocalizedText(zh="业务记录", en="Business record"),
+                        claim_scope="customer_business_fact",
+                        entries=[
+                            PresentationEntry(label=column.label, value=rows[0].values[index])
+                            for index, column in enumerate(columns)
+                        ],
+                    )
                 )
-            )
+            else:
+                blocks.append(
+                    PresentationBlock(
+                        type="table",
+                        title=LocalizedText(zh="业务记录", en="Business records"),
+                        claim_scope="customer_business_fact",
+                        columns=columns,
+                        rows=rows,
+                        total_rows=len(records),
+                        source_complete=result.completeness.source_complete,
+                    )
+                )
         evidence_tables = [
             item for item in report.get("evidence_tables") or [] if isinstance(item, dict)
         ]

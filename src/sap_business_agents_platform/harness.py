@@ -12,11 +12,13 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
 from .config import Settings
+from .agent_rules import evaluate_business_agent
 from .database import RunStore
 from .models import RunPresentation, RunStatus, TERMINAL_STATUSES
 from .tool_gateway import ToolAdmissionError, ToolAdmissionGateway
@@ -207,6 +209,7 @@ class HarnessOutcome:
     discovered_tool_count: int = 0
     activated_tool_count: int = 0
     presentation: RunPresentation | None = None
+    verified_rule_results: list[dict[str, Any]] = field(default_factory=list)
     budgeted_tool_call_count: int = 0
     elapsed_seconds: int = 0
     limit_kind: str | None = None
@@ -474,6 +477,8 @@ class HarnessToolBroker:
             }
         if tool_name == "sap_evidence_assess":
             return self._assess_evidence(run_id, arguments)
+        if tool_name == "sap_inventory_fifo_assess":
+            return self._assess_inventory_fifo(run_id, arguments)
         if tool_name == "sap_skill_execute":
             return await self._execute_skill(run_id, arguments)
         if tool_name == "sap_final_report_validate":
@@ -658,6 +663,298 @@ class HarnessToolBroker:
         )
         return result
 
+    def _assess_inventory_fifo(
+        self, run_id: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        identifiers = {
+            name: str(arguments.get(name) or "").strip()
+            for name in ("material", "plant", "storage_location")
+        }
+        if any(not re.fullmatch(r"[0-9A-Za-z_-]+", value) for value in identifiers.values()):
+            return {"ok": False, "code": "inventory_fifo_input_invalid"}
+        try:
+            snapshot = date.fromisoformat(str(arguments.get("snapshot_date") or ""))
+            slow_days = int(arguments.get("slow_moving_days"))
+            obsolete_days = int(arguments.get("obsolete_days"))
+            expiry_days = int(arguments.get("expiry_days"))
+        except (TypeError, ValueError):
+            return {"ok": False, "code": "inventory_fifo_input_invalid"}
+        if slow_days < 1 or obsolete_days <= slow_days or expiry_days < 1:
+            return {"ok": False, "code": "inventory_fifo_threshold_invalid"}
+
+        reference_names = (
+            "stock_initial_evidence_ref",
+            "stock_confirmation_evidence_ref",
+            "movement_item_evidence_ref",
+            "movement_header_evidence_ref",
+        )
+        references = {name: str(arguments.get(name) or "") for name in reference_names}
+        batch_reference = str(arguments.get("batch_evidence_ref") or "")
+        raw: dict[str, dict[str, Any]] = {}
+        metadata: dict[str, dict[str, Any]] = {}
+        try:
+            for name, reference in references.items():
+                raw[name], metadata[name] = self._read_evidence(run_id, reference)
+            if batch_reference:
+                raw["batch_evidence_ref"], metadata["batch_evidence_ref"] = self._read_evidence(
+                    run_id, batch_reference
+                )
+        except ToolAdmissionError as exc:
+            return {"ok": False, "code": exc.code, "message": str(exc)}
+        if any(item.get("source_complete") is not True for item in metadata.values()):
+            return {"ok": False, "code": "inventory_fifo_source_incomplete"}
+
+        calls = [
+            call
+            for call in self.store.list_harness_tool_calls(run_id)
+            if call.get("tool_name") == "sap_query_execute"
+            and call.get("status") == "completed"
+        ]
+        calls_by_reference: dict[str, list[dict[str, Any]]] = {}
+        for call in calls:
+            reference = str(call.get("evidence_ref") or "")
+            if reference:
+                calls_by_reference.setdefault(reference, []).append(call)
+        stock_references = {
+            references["stock_initial_evidence_ref"],
+            references["stock_confirmation_evidence_ref"],
+        }
+        stock_calls = [
+            call
+            for reference in stock_references
+            for call in calls_by_reference.get(reference, [])
+            if _plan_contains_entity(
+                (call.get("safe_input") or {}).get("plan"), "A_MatlStkInAcctMod"
+            )
+        ]
+        if len({str(call.get("call_id") or "") for call in stock_calls}) < 2:
+            return {"ok": False, "code": "stock_confirmation_evidence"}
+        for call in stock_calls:
+            plan = (call.get("safe_input") or {}).get("plan")
+            issue = _inventory_plan_scope_issue(
+                plan, require_movement=False, identifiers=identifiers
+            )
+            if issue:
+                return {"ok": False, **issue}
+        item_calls = calls_by_reference.get(references["movement_item_evidence_ref"], [])
+        header_calls = calls_by_reference.get(references["movement_header_evidence_ref"], [])
+        valid_item_call = next(
+            (
+                call
+                for call in item_calls
+                if _plan_contains_entity(
+                    (call.get("safe_input") or {}).get("plan"),
+                    "A_MaterialDocumentItem",
+                )
+                and _inventory_plan_scope_issue(
+                    (call.get("safe_input") or {}).get("plan"),
+                    require_movement=True,
+                    identifiers=identifiers,
+                )
+                is None
+            ),
+            None,
+        )
+        valid_header_call = next(
+            (
+                call
+                for call in header_calls
+                if _inventory_header_plan_issue(
+                    (call.get("safe_input") or {}).get("plan")
+                )
+                is None
+            ),
+            None,
+        )
+        if valid_item_call is None or valid_header_call is None:
+            return {"ok": False, "code": "movement_evidence"}
+
+        initial_rows = _rows_with_fields(
+            raw["stock_initial_evidence_ref"],
+            {"Material", "Plant", "StorageLocation", "MatlWrhsStkQtyInMatlBaseUnit"},
+        )
+        confirmation_rows = _rows_with_fields(
+            raw["stock_confirmation_evidence_ref"],
+            {"Material", "Plant", "StorageLocation", "MatlWrhsStkQtyInMatlBaseUnit"},
+        )
+        movement_items = _rows_with_fields(
+            raw["movement_item_evidence_ref"],
+            {
+                "MaterialDocumentYear",
+                "MaterialDocument",
+                "MaterialDocumentItem",
+                "QuantityInBaseUnit",
+                "DebitCreditCode",
+            },
+        )
+        movement_headers = _rows_with_fields(
+            raw["movement_header_evidence_ref"],
+            {"MaterialDocumentYear", "MaterialDocument", "PostingDate", "CreationTime"},
+        )
+        batch_rows = (
+            _rows_with_fields(
+                raw["batch_evidence_ref"],
+                {"Material", "Batch"},
+            )
+            if batch_reference
+            else []
+        )
+        evidence = {
+            "stock_initial": _complete_payload(initial_rows),
+            "stock_confirmation": _complete_payload(confirmation_rows),
+            "movement": _complete_payload(
+                movement_items,
+                step_results={
+                    "movement_date_items": {
+                        "results": movement_items,
+                        "source_complete": True,
+                    },
+                    "movement_date_headers": {
+                        "results": movement_headers,
+                        "source_complete": True,
+                    },
+                },
+            ),
+            "batch_expiry": _complete_payload(batch_rows),
+        }
+        rule_result = evaluate_business_agent(
+            {
+                "agent_id": "inventory-health-balancing",
+                "run_input": {
+                    **identifiers,
+                    "slow_moving_days": slow_days,
+                    "obsolete_days": obsolete_days,
+                    "expiry_days": expiry_days,
+                },
+                "window": {
+                    "snapshot_date": snapshot.isoformat(),
+                    "check_slow_moving": True,
+                    "check_obsolete": True,
+                    "check_expiry": True,
+                    "movement_check_requested": True,
+                    "selected_checks": ["slow_moving", "obsolete", "expiry"],
+                },
+                "assessment": {
+                    "api_complete": {
+                        "stock": True,
+                        "movement": True,
+                        "batch_expiry": True,
+                    },
+                    "needs_adt": {
+                        "stock": False,
+                        "movement": False,
+                        "batch_expiry": False,
+                    },
+                },
+                "evidence": evidence,
+                "fallbacks": {},
+                "requested": {
+                    "stock": True,
+                    "movement": True,
+                    "batch_expiry": True,
+                },
+                "known_gaps": [],
+            }
+        )
+        output = rule_result.get("workflow_output") or {}
+        public_result = {
+            key: output.get(key)
+            for key in (
+                "snapshot_date",
+                "material",
+                "plant",
+                "storage_location",
+                "current_unrestricted_stock",
+                "unit",
+                "aging_method",
+                "aging_complete",
+                "last_movement_activity_date",
+                "days_since_last_movement_activity",
+                "oldest_remaining_layer_date",
+                "oldest_remaining_layer_age_days",
+                "classified_stock_quantity",
+                "unclassified_stock_quantity",
+                "below_threshold_stock_quantity",
+                "slow_moving_only_stock_quantity",
+                "obsolete_stock_quantity",
+                "slow_moving_status",
+                "obsolete_status",
+                "expiry_status",
+                "expiry_candidate_count",
+                "business_status",
+                "source_complete",
+                "evidence_complete",
+                "aging_buckets",
+                "remaining_fifo_layers",
+            )
+        }
+        record_fields = (
+            "snapshot_date",
+            "material",
+            "plant",
+            "storage_location",
+            "current_unrestricted_stock",
+            "unit",
+            "aging_method",
+            "aging_complete",
+            "last_movement_activity_date",
+            "oldest_remaining_layer_date",
+            "slow_moving_status",
+            "obsolete_status",
+            "expiry_status",
+            "business_status",
+            "source_complete",
+            "evidence_complete",
+        )
+        metric_fields = (
+            "current_unrestricted_stock",
+            "days_since_last_movement_activity",
+            "oldest_remaining_layer_age_days",
+            "classified_stock_quantity",
+            "unclassified_stock_quantity",
+            "below_threshold_stock_quantity",
+            "slow_moving_only_stock_quantity",
+            "obsolete_stock_quantity",
+            "expiry_candidate_count",
+        )
+        public_rule_result = {
+            "rule_id": "inventory_health_fifo_harness_v1",
+            "status": rule_result.get("status"),
+            "business_status": output.get("business_status"),
+            "business_complete": rule_result.get("business_complete") is True,
+            "missing_evidence": list(rule_result.get("missing_evidence") or []),
+            "business_report": {
+                "records": [
+                    {field: public_result.get(field) for field in record_fields}
+                ],
+                "metrics": [
+                    {"id": field, "value": public_result.get(field)}
+                    for field in metric_fields
+                ],
+                "limitations": list(rule_result.get("missing_evidence") or []),
+                "missing_evidence": list(rule_result.get("missing_evidence") or []),
+                "source_complete": output.get("source_complete") is True,
+                "evidence_complete": output.get("evidence_complete") is True,
+            },
+            "workflow_output": public_result,
+        }
+        return {
+            "ok": rule_result.get("business_complete") is True,
+            "status": rule_result.get("status"),
+            "source_complete": rule_result.get("business_report", {}).get("source_complete"),
+            "business_complete": rule_result.get("business_complete"),
+            "missing_evidence": rule_result.get("missing_evidence") or [],
+            "evidence_refs": list(
+                dict.fromkeys(
+                    reference
+                    for reference in [*references.values(), batch_reference]
+                    if reference
+                )
+            ),
+            "result": public_result,
+            "rule_result": public_rule_result,
+        }
+
     async def _execute_skill(self, run_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         skill_id = str(arguments.get("skill_id") or "")
         token = str(arguments.get("gap_token") or "")
@@ -699,6 +996,18 @@ class HarnessToolBroker:
             if item.get("evidence_ref")
         }
         issues: list[dict[str, Any]] = []
+        if _inventory_health_requested(str(self.store.get_run(run_id).query or "")):
+            fifo_calls = [
+                call
+                for call in self.store.list_harness_tool_calls(run_id)
+                if call.get("tool_name") == "sap_inventory_fifo_assess"
+                and call.get("status") == "completed"
+                and isinstance(call.get("output"), dict)
+                and call["output"].get("ok") is True
+                and call["output"].get("business_complete") is True
+            ]
+            if not fifo_calls:
+                issues.append({"code": "inventory_fifo_assessment_required"})
         for block_index, block in enumerate(presentation.blocks):
             references = list(block.evidence_refs)
             references.extend(ref for entry in block.entries for ref in entry.evidence_refs)
@@ -1117,6 +1426,13 @@ class CodexHarnessController:
             raise RuntimeError("Codex Harness did not return its structured final result.") from exc
         calls, evidence = self.broker.snapshot(run_id)
         raw_calls = self.store.list_harness_tool_calls(run_id)
+        verified_rule_results = [
+            dict(call["output"]["rule_result"])
+            for call in raw_calls
+            if call.get("status") == "completed"
+            and isinstance(call.get("output"), dict)
+            and isinstance(call["output"].get("rule_result"), dict)
+        ]
         web_search_count, discovered, activated = _persistent_harness_counts(
             self.store, run_id
         )
@@ -1216,6 +1532,7 @@ class CodexHarnessController:
             discovered_tool_count=discovered,
             activated_tool_count=activated,
             presentation=presentation,
+            verified_rule_results=verified_rule_results,
             budgeted_tool_call_count=budgeted_call_count,
             elapsed_seconds=int(time.monotonic() - run_started),
             limit_kind=limit_kind,
@@ -1435,6 +1752,19 @@ When A_OperationalAcctgDocItemCube already supplies the account-item grain, incl
 field in that same complete query. Do not switch to GLAccountLineItem solely to obtain the amount and
 do not impose Ledger='0L' on a customer or supplier subledger question unless live evidence proves that
 the ledger-filtered entity has identical item coverage; otherwise valid subledger items can disappear.
+For inventory-health, slow-moving, obsolete-stock, or FIFO aging questions, current stock and movement
+items must be filtered to InventoryStockType='01' and blank InventorySpecialStockType in addition to
+the exact material, plant, and storage location. Never mix quality-inspection, blocked, special, or
+other stock into unrestricted-use age buckets. Read current stock twice, before and after the complete
+movement history, and require identical snapshots. Give those two executions distinct query descriptions
+(initial snapshot and confirmation snapshot) so the run idempotency guard does not collapse the confirmation.
+Read the complete movement-item history without a
+threshold-derived date lower bound or explicit top; bind every item document/year to its header and
+include PostingDate, CreationDate, and CreationTime. Use DebitCreditCode S to create a quantity layer
+and H to consume the oldest layer, independently by batch; do not sum receipts without consuming
+issues. Call sap_inventory_fifo_assess with the two stock evidence references, complete item/header
+references, and batch evidence before reporting any FIFO age quantity. If that deterministic tool is
+not complete, keep all aging quantities unknown rather than reporting zero risk.
 Build the presentation using the smallest suitable safe block types: text for a short conclusion,
 key_value for one object, metrics for aggregates, table for homogeneous business records, bullet_list
 for recommendations, and notice for evidence limitations. A table may contain at most 200 displayed
@@ -1467,9 +1797,11 @@ actually executed, and evidence_refs must contain only references returned by pl
 Prefer a refined server-side SAP query over paging through an obsolete broad evidence set. Once a
 more specific complete query succeeds, do not keep reading pages from the superseded broad query.
 For material-document item plus header posting-date evidence, prefer one validated multi_step plan:
-filter the item step by the exact material, plant, storage location and involved fiscal years, then
-bind MaterialDocumentYear plus MaterialDocument from that same source step into the header step and
-filter the header PostingDate window there. Do not rely on an unvalidated navigation-property filter,
+filter the item step by the exact material, plant, storage location, InventoryStockType='01', and blank
+InventorySpecialStockType. For FIFO inventory aging, do not use a threshold-derived date lower bound,
+an explicit top, or a preliminary fiscal-year sample: the exact full-history item query must itself be
+complete. Bind MaterialDocumentYear plus MaterialDocument from that same source step into the header
+step and read PostingDate, CreationDate, and CreationTime. Do not rely on an unvalidated navigation-property filter,
 and do not replace one complete composite-key header query with repeated single-document GETs.
 The accepted multi-step container is exactly
 `{{"schema_version":"1.0","plan_kind":"multi_step","steps":[...]}}`. Each step declares its own
@@ -1859,6 +2191,185 @@ def _evidence_sources_complete(evidence: list[dict[str, Any]]) -> bool:
     return bool(sources) and all(item.get("source_complete") is True for item in sources)
 
 
+def _plan_candidates(plan: Any) -> list[dict[str, Any]]:
+    if not isinstance(plan, dict):
+        return []
+    candidates = [plan]
+    candidates.extend(
+        item for item in plan.get("steps") or [] if isinstance(item, dict)
+    )
+    return candidates
+
+
+def _plan_contains_entity(plan: Any, entity_set: str) -> bool:
+    return any(
+        str(item.get("entity_set") or "") == entity_set
+        for item in _plan_candidates(plan)
+    )
+
+
+def _has_exact_filter(candidate: dict[str, Any], field: str, value: str) -> bool:
+    return any(
+        str(item.get("field") or "") == field
+        and str(item.get("operator") or "eq").casefold() == "eq"
+        and str(item.get("value") if item.get("value") is not None else "") == value
+        for item in candidate.get("filters") or []
+        if isinstance(item, dict)
+    )
+
+
+def _inventory_plan_scope_issue(
+    plan: Any,
+    *,
+    require_movement: bool,
+    identifiers: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    expected_identifiers = identifiers or {}
+    for candidate in _plan_candidates(plan):
+        entity = str(candidate.get("entity_set") or "")
+        if entity not in {"A_MatlStkInAcctMod", "A_MaterialDocumentItem"}:
+            continue
+        required_filters = {
+            "InventoryStockType": "01",
+            "InventorySpecialStockType": "",
+        }
+        if expected_identifiers:
+            required_filters.update(
+                {
+                    "Material": expected_identifiers["material"],
+                    "Plant": expected_identifiers["plant"],
+                    "StorageLocation": expected_identifiers["storage_location"],
+                }
+            )
+        missing_filters = [
+            field
+            for field, value in required_filters.items()
+            if not _has_exact_filter(candidate, field, value)
+        ]
+        if missing_filters:
+            return {
+                "code": "inventory_unrestricted_scope_required",
+                "message": (
+                    "Inventory-health aging must be scoped to InventoryStockType='01', blank "
+                    "InventorySpecialStockType, and the exact material/plant/storage location."
+                ),
+                "missing_filters": missing_filters,
+            }
+        if entity == "A_MaterialDocumentItem" and require_movement:
+            selected = {str(item) for item in candidate.get("select_fields") or []}
+            required_fields = {
+                "MaterialDocumentYear",
+                "MaterialDocument",
+                "MaterialDocumentItem",
+                "Batch",
+                "DebitCreditCode",
+                "QuantityInBaseUnit",
+                "MaterialBaseUnit",
+                "InventoryStockType",
+                "InventorySpecialStockType",
+            }
+            missing_fields = sorted(required_fields - selected)
+            if missing_fields:
+                return {
+                    "code": "inventory_fifo_movement_fields_required",
+                    "message": (
+                        "FIFO inventory aging requires complete quantity, direction, unit, "
+                        "batch, and stable-key fields."
+                    ),
+                    "missing_fields": missing_fields,
+                }
+            if candidate.get("top") is not None or any(
+                str(item.get("field") or "") == "MaterialDocumentYear"
+                for item in candidate.get("filters") or []
+                if isinstance(item, dict)
+            ):
+                return {
+                    "code": "inventory_fifo_full_history_required",
+                    "message": (
+                        "FIFO inventory aging requires the exact complete movement history "
+                        "without an explicit top or fiscal-year/date lower bound."
+                    ),
+                }
+    return None
+
+
+def _inventory_header_plan_issue(plan: Any) -> dict[str, Any] | None:
+    for candidate in _plan_candidates(plan):
+        if str(candidate.get("entity_set") or "") != "A_MaterialDocumentHeader":
+            continue
+        selected = {str(item) for item in candidate.get("select_fields") or []}
+        required = {
+            "MaterialDocumentYear",
+            "MaterialDocument",
+            "PostingDate",
+            "CreationDate",
+            "CreationTime",
+        }
+        bindings = {
+            (
+                str(item.get("field") or ""),
+                str(item.get("source_field") or ""),
+                str(item.get("source_step_id") or ""),
+            )
+            for item in candidate.get("filter_from_previous") or []
+            if isinstance(item, dict)
+        }
+        source_ids = {item[2] for item in bindings if item[2]}
+        composite_bound = (
+            len(source_ids) == 1
+            and any(field == source == "MaterialDocumentYear" for field, source, _ in bindings)
+            and any(field == source == "MaterialDocument" for field, source, _ in bindings)
+        )
+        if not required.issubset(selected) or not composite_bound or candidate.get("top") is not None:
+            return {
+                "code": "inventory_fifo_header_evidence_required",
+                "message": (
+                    "FIFO inventory aging requires composite-bound material-document headers "
+                    "with posting date, creation date, and creation time."
+                ),
+            }
+        return None
+    return {"code": "inventory_fifo_header_evidence_required"}
+
+
+def _rows_with_fields(value: Any, required_fields: set[str]) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            if required_fields.issubset(item):
+                found.append(item)
+                return
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    unique: dict[str, dict[str, Any]] = {}
+    for row in found:
+        key = json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+        unique.setdefault(key, row)
+    return list(unique.values())
+
+
+def _complete_payload(
+    rows: list[dict[str, Any]],
+    *,
+    step_results: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "status": "completed",
+        "source_complete": True,
+        "source_truncated": False,
+        "data": {"results": rows, "source_complete": True},
+        "step_results": step_results
+        or {"step_1": {"results": rows, "source_complete": True}},
+    }
+
+
 def _plan_business_contract_issue(query: str, plan: dict[str, Any]) -> dict[str, Any] | None:
     """Enforce question-declared accounting grain without choosing a SAP API for Codex."""
 
@@ -1875,9 +2386,12 @@ def _plan_business_contract_issue(query: str, plan: dict[str, Any]) -> dict[str,
         token in lowered for token in ("客户", "供应商", "customer", "supplier")
     )
     mentions_ledger = any(token in lowered for token in ("ledger", "分类账", "账本"))
-    candidates = [plan]
-    if isinstance(plan.get("steps"), list):
-        candidates.extend(item for item in plan["steps"] if isinstance(item, dict))
+    candidates = _plan_candidates(plan)
+    inventory_health_scope = _inventory_health_requested(query)
+    if inventory_health_scope:
+        inventory_issue = _inventory_plan_scope_issue(plan, require_movement=True)
+        if inventory_issue:
+            return inventory_issue
     for candidate in candidates:
         entity = str(candidate.get("entity_set") or "")
         selected = {str(item) for item in candidate.get("select_fields") or []}
@@ -1915,6 +2429,23 @@ def _plan_business_contract_issue(query: str, plan: dict[str, Any]) -> dict[str,
                 ),
             }
     return None
+
+
+def _inventory_health_requested(query: str) -> bool:
+    lowered = str(query or "").casefold()
+    return any(
+        token in lowered
+        for token in (
+            "库存健康",
+            "慢动",
+            "呆滞",
+            "fifo",
+            "inventory health",
+            "slow-moving",
+            "obsolete stock",
+            "stagnant stock",
+        )
+    )
 
 
 def _safe_tool_input(value: Any, *, depth: int = 0) -> Any:

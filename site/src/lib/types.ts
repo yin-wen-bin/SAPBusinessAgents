@@ -40,13 +40,24 @@ export interface ExecutionInputProperty {
   title?: LocalizedText;
   description?: LocalizedText;
   placeholder?: LocalizedText;
-  default?: string | number | boolean;
+  default?: string | number | boolean | null | unknown[] | Record<string, unknown>;
   minLength?: number;
   maxLength?: number;
   minimum?: number;
   maximum?: number;
   pattern?: string;
-  format?: "date";
+  format?: string;
+  enum?: Array<string | number | boolean | null>;
+  items?: ExecutionInputProperty;
+  properties?: Record<string, ExecutionInputProperty>;
+  required?: string[];
+  additionalProperties?: boolean;
+  deprecated?: boolean;
+  "x-sapba-display"?: {
+    visible?: boolean;
+    format?: "text" | "enum" | "enum_list" | "status";
+    labels?: Record<string, LocalizedText>;
+  };
 }
 
 export interface ExecutionInputSchema {

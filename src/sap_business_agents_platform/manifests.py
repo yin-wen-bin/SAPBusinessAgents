@@ -74,6 +74,9 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
             raise ManifestError(f"{source}.execution.outputSchema must be an object JSON Schema")
         if not isinstance(outputs.get("properties"), dict):
             raise ManifestError(f"{source}.execution.outputSchema.properties must be an object")
+        _validate_output_display(
+            outputs["properties"], f"{source}.execution.outputSchema.properties"
+        )
         if not isinstance(output_mapping, dict):
             raise ManifestError(f"{source}.execution.outputMapping must be an object")
         unknown_outputs = sorted(set(output_mapping).difference(outputs["properties"]))
@@ -160,6 +163,57 @@ def _localized_titles(properties: Any, source: str) -> dict[str, list[str]]:
         for locale in values:
             values[locale].append(str(title[locale]))
     return values
+
+
+def _validate_output_display(properties: dict[str, Any], source: str) -> None:
+    allowed_formats = {"text", "enum", "enum_list", "status"}
+    for name, schema in properties.items():
+        if not isinstance(schema, dict):
+            continue
+        enum_values = schema.get("enum")
+        items = schema.get("items")
+        if enum_values is None and isinstance(items, dict):
+            enum_values = items.get("enum")
+        display = schema.get("x-sapba-display")
+        if display is None:
+            if isinstance(enum_values, list):
+                raise ManifestError(
+                    f"{source}.{name}.x-sapba-display must localize every public enum"
+                )
+            continue
+        location = f"{source}.{name}.x-sapba-display"
+        if not isinstance(display, dict):
+            raise ManifestError(f"{location} must be an object")
+        if "visible" in display and not isinstance(display["visible"], bool):
+            raise ManifestError(f"{location}.visible must be boolean")
+        display_format = str(display.get("format") or "text")
+        if display_format not in allowed_formats:
+            raise ManifestError(f"{location}.format is invalid")
+        labels = display.get("labels")
+        if display_format == "enum_list":
+            enum_values = items.get("enum") if isinstance(items, dict) else None
+        if isinstance(enum_values, list) and not isinstance(labels, dict):
+            raise ManifestError(
+                f"{location}.labels must provide bilingual text for every public enum value"
+            )
+        if display_format in {"enum", "enum_list"} and not isinstance(labels, dict):
+            raise ManifestError(f"{location}.labels must be an object")
+        if isinstance(labels, dict):
+            for value, label in labels.items():
+                if not str(value):
+                    raise ManifestError(f"{location}.labels contains an empty code")
+                if not isinstance(label, dict) or not all(
+                    str(label.get(locale) or "").strip() for locale in ("zh", "en")
+                ):
+                    raise ManifestError(
+                        f"{location}.labels.{value} must be bilingual"
+                    )
+            if isinstance(enum_values, list):
+                missing = [str(item) for item in enum_values if str(item) not in labels]
+                if missing:
+                    raise ManifestError(
+                        f"{location}.labels is missing: " + ", ".join(missing)
+                    )
 
 
 def _validate_page_contract(agent: dict[str, Any], inputs: dict[str, Any], source: str) -> None:

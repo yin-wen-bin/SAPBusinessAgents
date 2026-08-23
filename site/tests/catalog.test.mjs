@@ -200,3 +200,21 @@ test("manifest validation rejects mismatched localized operations", () => {
     /operations must contain the same number of zh and en items/,
   );
 });
+
+test("manifest validation rejects a public enum without bilingual display labels", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "inventory-health-balancing"));
+  delete example.execution.outputSchema.properties.selected_checks["x-sapba-display"];
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /must localize every public enum/,
+  );
+});
+
+test("manifest validation rejects an incomplete public enum translation", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "inventory-health-balancing"));
+  delete example.execution.outputSchema.properties.selected_checks["x-sapba-display"].labels.expiry.zh;
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /labels\.expiry must be localized|labels\.expiry\.zh must be a non-empty string/,
+  );
+});

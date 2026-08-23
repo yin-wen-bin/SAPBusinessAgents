@@ -27,6 +27,43 @@ function requireArray(value, location) {
   if (!Array.isArray(value)) throw new Error(`${location} must be an array`);
 }
 
+function validateOutputDisplay(properties, location) {
+  const allowedFormats = new Set(["text", "enum", "enum_list", "status"]);
+  for (const [name, property] of Object.entries(properties ?? {})) {
+    if (!property || typeof property !== "object" || Array.isArray(property)) continue;
+    const itemSchema = property.items && typeof property.items === "object" ? property.items : undefined;
+    const enumValues = Array.isArray(property.enum)
+      ? property.enum
+      : (Array.isArray(itemSchema?.enum) ? itemSchema.enum : undefined);
+    const display = property["x-sapba-display"];
+    const displayLocation = `${location}.${name}.x-sapba-display`;
+    if (display === undefined) {
+      if (enumValues) throw new Error(`${displayLocation} must localize every public enum`);
+      continue;
+    }
+    if (!display || typeof display !== "object" || Array.isArray(display)) {
+      throw new Error(`${displayLocation} must be an object`);
+    }
+    if (display.visible !== undefined && typeof display.visible !== "boolean") {
+      throw new Error(`${displayLocation}.visible must be boolean`);
+    }
+    const format = display.format ?? "text";
+    if (!allowedFormats.has(format)) throw new Error(`${displayLocation}.format is invalid`);
+    const labels = display.labels;
+    if (enumValues && (!labels || typeof labels !== "object" || Array.isArray(labels))) {
+      throw new Error(`${displayLocation}.labels must provide bilingual text for every public enum value`);
+    }
+    if (labels && typeof labels === "object" && !Array.isArray(labels)) {
+      for (const [code, label] of Object.entries(labels)) {
+        requireString(code, `${displayLocation}.labels code`);
+        requireLocalized(label, `${displayLocation}.labels.${code}`);
+      }
+      const missing = (enumValues ?? []).filter((value) => !Object.hasOwn(labels, String(value)));
+      if (missing.length) throw new Error(`${displayLocation}.labels is missing: ${missing.join(", ")}`);
+    }
+  }
+}
+
 export function validateAgent(agent, expectedModule, expectedSlug, source) {
   if (![1, 2].includes(agent.schemaVersion)) throw new Error(`${source}: unsupported schemaVersion`);
   if (!SLUG_PATTERN.test(expectedSlug)) throw new Error(`${source}: directory must use a lowercase kebab-case slug`);
@@ -134,6 +171,10 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
     throw new Error(`${source}.inputs must mirror execution.inputSchema titles`);
   }
   if (!agent.execution.outputSchema) throw new Error(`${source}.execution.outputSchema is required`);
+  validateOutputDisplay(
+    agent.execution.outputSchema.properties,
+    `${source}.execution.outputSchema.properties`,
+  );
   if (JSON.stringify(agent.outputs) !== JSON.stringify(localizedSchemaTitles(agent.execution.outputSchema, `${source}.execution.outputSchema`))) {
     throw new Error(`${source}.outputs must mirror execution.outputSchema titles`);
   }

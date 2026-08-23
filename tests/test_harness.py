@@ -53,6 +53,46 @@ def test_harness_does_not_guess_adt_stable_keys_and_knows_vbuv_sparse_semantics(
     assert "never infer a stable key" in instructions
     assert "VBUV is sparse" in instructions
     assert "omit order_by so the Skill resolves the live key" in instructions
+    assert "InventoryStockType='01'" in instructions
+    assert "sap_inventory_fifo_assess" in instructions
+
+
+def test_inventory_health_plan_contract_requires_unrestricted_complete_history() -> None:
+    stock_plan = {
+        "entity_set": "A_MatlStkInAcctMod",
+        "filters": [
+            {"field": "Material", "operator": "eq", "value": "FG129"},
+            {"field": "Plant", "operator": "eq", "value": "1710"},
+            {"field": "StorageLocation", "operator": "eq", "value": "171A"},
+        ],
+    }
+    issue = _plan_business_contract_issue("检查库存健康和 FIFO 账龄", stock_plan)
+    assert issue and issue["code"] == "inventory_unrestricted_scope_required"
+
+    movement_plan = {
+        "entity_set": "A_MaterialDocumentItem",
+        "filters": [
+            {"field": "Material", "operator": "eq", "value": "FG129"},
+            {"field": "Plant", "operator": "eq", "value": "1710"},
+            {"field": "StorageLocation", "operator": "eq", "value": "171A"},
+            {"field": "InventoryStockType", "operator": "eq", "value": "01"},
+            {"field": "InventorySpecialStockType", "operator": "eq", "value": ""},
+            {"field": "MaterialDocumentYear", "operator": "ge", "value": "2024"},
+        ],
+        "select_fields": [
+            "MaterialDocumentYear",
+            "MaterialDocument",
+            "MaterialDocumentItem",
+            "Batch",
+            "DebitCreditCode",
+            "QuantityInBaseUnit",
+            "MaterialBaseUnit",
+            "InventoryStockType",
+            "InventorySpecialStockType",
+        ],
+    }
+    issue = _plan_business_contract_issue("check FIFO inventory health", movement_plan)
+    assert issue and issue["code"] == "inventory_fifo_full_history_required"
 from sap_business_agents_platform.tool_gateway import (
     ToolAdmissionError,
     ToolAdmissionGateway,
@@ -108,6 +148,94 @@ class FakeSapRead:
         }
 
 
+class InventorySapRead(FakeSapRead):
+    async def execute_plan(self, plan, query: str = "", conversation_id: str | None = None):
+        del query, conversation_id
+        entity = str(plan.get("entity_set") or "")
+        if entity == "A_MatlStkInAcctMod":
+            rows = [
+                {
+                    "Material": "FG129",
+                    "Plant": "1710",
+                    "StorageLocation": "171A",
+                    "Batch": "",
+                    "InventoryStockType": "01",
+                    "InventorySpecialStockType": "",
+                    "MatlWrhsStkQtyInMatlBaseUnit": "4500",
+                    "MaterialBaseUnit": "PC",
+                }
+            ]
+            return {
+                "ok": True,
+                "source_complete": True,
+                "data": {"results": rows, "source_complete": True},
+                "step_results": {"step_1": {"results": rows, "source_complete": True}},
+            }
+        if plan.get("plan_kind") == "multi_step":
+            items = [
+                {
+                    "MaterialDocumentYear": "2024",
+                    "MaterialDocument": "1",
+                    "MaterialDocumentItem": "1",
+                    "Material": "FG129",
+                    "Plant": "1710",
+                    "StorageLocation": "171A",
+                    "Batch": "",
+                    "InventoryStockType": "01",
+                    "InventorySpecialStockType": "",
+                    "QuantityInBaseUnit": "4400",
+                    "MaterialBaseUnit": "PC",
+                    "DebitCreditCode": "S",
+                },
+                {
+                    "MaterialDocumentYear": "2026",
+                    "MaterialDocument": "2",
+                    "MaterialDocumentItem": "1",
+                    "Material": "FG129",
+                    "Plant": "1710",
+                    "StorageLocation": "171A",
+                    "Batch": "",
+                    "InventoryStockType": "01",
+                    "InventorySpecialStockType": "",
+                    "QuantityInBaseUnit": "100",
+                    "MaterialBaseUnit": "PC",
+                    "DebitCreditCode": "S",
+                },
+            ]
+            headers = [
+                {
+                    "MaterialDocumentYear": "2024",
+                    "MaterialDocument": "1",
+                    "PostingDate": "2024-03-11",
+                    "CreationDate": "2024-03-11",
+                    "CreationTime": "PT9H0M0S",
+                },
+                {
+                    "MaterialDocumentYear": "2026",
+                    "MaterialDocument": "2",
+                    "PostingDate": "2026-08-23",
+                    "CreationDate": "2026-08-23",
+                    "CreationTime": "PT8H0M0S",
+                },
+            ]
+            return {
+                "ok": True,
+                "source_complete": True,
+                "data": {"results": headers, "source_complete": True},
+                "step_results": {
+                    "movement_items": {"results": items, "source_complete": True},
+                    "movement_headers": {"results": headers, "source_complete": True},
+                },
+            }
+        if entity == "Batch":
+            return {
+                "ok": True,
+                "source_complete": True,
+                "data": {"results": [], "source_complete": True},
+                "step_results": {"step_1": {"results": [], "source_complete": True}},
+            }
+        return await super().execute_plan(plan)
+
 class FakeSkills:
     def validate_input(self, skill_id: str, input_payload):
         if input_payload.get("schema_version") != 1:
@@ -139,6 +267,187 @@ def _settings(tmp_path: Path, root: Path | None = None) -> Settings:
 def test_broker_enforces_capability_idempotency_evidence_and_gap_gate(tmp_path: Path) -> None:
     async def scenario() -> None:
         await _broker_scenario(tmp_path)
+
+    asyncio.run(scenario())
+
+
+def test_broker_fifo_assessment_reconciles_only_unrestricted_stock(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        store = RunStore(settings.database_path)
+        run_id = "run_inventory_fifo"
+        store.create_run(
+            run_id,
+            RunCreate(
+                mode=RunMode.free_query,
+                query="检查 FG129 库存健康，按 FIFO 计算慢动和呆滞库存",
+            ),
+        )
+        broker = HarnessToolBroker(
+            settings, store, InventorySapRead(), FakeSkills()
+        )
+        token = broker.open_session(run_id)
+        exact_filters = [
+            {"field": "Material", "operator": "eq", "value": "FG129"},
+            {"field": "Plant", "operator": "eq", "value": "1710"},
+            {"field": "StorageLocation", "operator": "eq", "value": "171A"},
+            {"field": "InventoryStockType", "operator": "eq", "value": "01"},
+            {"field": "InventorySpecialStockType", "operator": "eq", "value": ""},
+        ]
+        stock_plan = {
+            "service_name": "API_MATERIAL_STOCK_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_MatlStkInAcctMod",
+            "http_method": "GET",
+            "filters": exact_filters,
+            "select_fields": [
+                "Material",
+                "Plant",
+                "StorageLocation",
+                "Batch",
+                "InventoryStockType",
+                "InventorySpecialStockType",
+                "MatlWrhsStkQtyInMatlBaseUnit",
+                "MaterialBaseUnit",
+            ],
+            "order_by": ["Material", "Plant", "StorageLocation"],
+        }
+        stock_initial = await broker.handle(
+            run_id,
+            token,
+            "sap_query_execute",
+            {"plan": stock_plan, "query": "Initial unrestricted stock snapshot"},
+        )
+        movement_plan = {
+            "schema_version": "1.0",
+            "plan_kind": "multi_step",
+            "steps": [
+                {
+                    "step_id": "movement_items",
+                    "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                    "odata_version": "2.0",
+                    "entity_set": "A_MaterialDocumentItem",
+                    "http_method": "GET",
+                    "filters": exact_filters,
+                    "select_fields": [
+                        "MaterialDocumentYear",
+                        "MaterialDocument",
+                        "MaterialDocumentItem",
+                        "Material",
+                        "Plant",
+                        "StorageLocation",
+                        "Batch",
+                        "DebitCreditCode",
+                        "QuantityInBaseUnit",
+                        "MaterialBaseUnit",
+                        "InventoryStockType",
+                        "InventorySpecialStockType",
+                    ],
+                    "order_by": [
+                        "MaterialDocumentYear",
+                        "MaterialDocument",
+                        "MaterialDocumentItem",
+                    ],
+                },
+                {
+                    "step_id": "movement_headers",
+                    "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                    "odata_version": "2.0",
+                    "entity_set": "A_MaterialDocumentHeader",
+                    "http_method": "GET",
+                    "filters": [],
+                    "filter_from_previous": [
+                        {
+                            "source_step_id": "movement_items",
+                            "field": "MaterialDocumentYear",
+                            "source_field": "MaterialDocumentYear",
+                        },
+                        {
+                            "source_step_id": "movement_items",
+                            "field": "MaterialDocument",
+                            "source_field": "MaterialDocument",
+                        },
+                    ],
+                    "select_fields": [
+                        "MaterialDocumentYear",
+                        "MaterialDocument",
+                        "PostingDate",
+                        "CreationDate",
+                        "CreationTime",
+                    ],
+                    "order_by": ["MaterialDocumentYear", "MaterialDocument"],
+                },
+            ],
+        }
+        movement = await broker.handle(
+            run_id, token, "sap_query_execute", {"plan": movement_plan}
+        )
+        stock_confirmation = await broker.handle(
+            run_id,
+            token,
+            "sap_query_execute",
+            {"plan": stock_plan, "query": "Confirmation unrestricted stock snapshot"},
+        )
+        batch = await broker.handle(
+            run_id,
+            token,
+            "sap_query_execute",
+            {
+                "plan": {
+                    "service_name": "API_BATCH_SRV",
+                    "odata_version": "2.0",
+                    "entity_set": "Batch",
+                    "http_method": "GET",
+                    "filters": [
+                        {"field": "Material", "operator": "eq", "value": "FG129"},
+                        {
+                            "field": "BatchIdentifyingPlant",
+                            "operator": "eq",
+                            "value": "1710",
+                        },
+                    ],
+                    "select_fields": [
+                        "Material",
+                        "BatchIdentifyingPlant",
+                        "Batch",
+                        "ShelfLifeExpirationDate",
+                    ],
+                    "order_by": ["Material", "BatchIdentifyingPlant", "Batch"],
+                }
+            },
+        )
+        assessed = await broker.handle(
+            run_id,
+            token,
+            "sap_inventory_fifo_assess",
+            {
+                "material": "FG129",
+                "plant": "1710",
+                "storage_location": "171A",
+                "snapshot_date": "2026-08-23",
+                "slow_moving_days": 90,
+                "obsolete_days": 180,
+                "expiry_days": 90,
+                "stock_initial_evidence_ref": stock_initial["evidence_ref"],
+                "stock_confirmation_evidence_ref": stock_confirmation["evidence_ref"],
+                "movement_item_evidence_ref": movement["evidence_ref"],
+                "movement_header_evidence_ref": movement["evidence_ref"],
+                "batch_evidence_ref": batch["evidence_ref"],
+            },
+        )
+
+        assert assessed["ok"] is True
+        assert assessed["business_complete"] is True
+        assert assessed["result"]["current_unrestricted_stock"] == "4500"
+        assert assessed["result"]["below_threshold_stock_quantity"] == "100"
+        assert assessed["result"]["slow_moving_only_stock_quantity"] == "0"
+        assert assessed["result"]["obsolete_stock_quantity"] == "4400"
+        report = assessed["rule_result"]["business_report"]
+        assert report["records"][0]["material"] == "FG129"
+        assert report["records"][0]["source_complete"] is True
+        assert {item["id"]: item["value"] for item in report["metrics"]}[
+            "obsolete_stock_quantity"
+        ] == "4400"
 
     asyncio.run(scenario())
 

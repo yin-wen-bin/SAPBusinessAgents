@@ -2315,11 +2315,20 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
     check_expiry = window.get("check_expiry") is True
     movement_requested = check_slow or check_obsolete
     selected_checks = [str(item) for item in window.get("selected_checks") or []]
-    lookback = window.get("movement_lookback_days")
-    lookback = lookback if isinstance(lookback, int) and not isinstance(lookback, bool) else None
 
-    raw_stock = _rows(inputs, "stock", "material_stock") + _adt_rows(inputs, "stock")
-    movements = _rows(inputs, "movement", "movement_dates", "material_movements") + _adt_rows(inputs, "movement")
+    assessment = inputs.get("assessment") if isinstance(inputs.get("assessment"), dict) else {}
+    api_complete = assessment.get("api_complete") if isinstance(assessment.get("api_complete"), dict) else {}
+    use_stock_fallback = api_complete.get("stock") is False
+    use_movement_fallback = api_complete.get("movement") is False
+    initial_stock_rows = _rows(inputs, "stock_initial", "stock", "material_stock")
+    confirmation_stock_rows = _rows(inputs, "stock_confirmation")
+    if use_stock_fallback:
+        initial_stock_rows = _adt_rows(inputs, "stock")
+    movement_payload_rows = (
+        _adt_rows(inputs, "movement")
+        if use_movement_fallback
+        else _rows(inputs, "movement", "movement_history", "material_movements")
+    )
     batches = _rows(inputs, "batch_expiry", "batch", "batches") + _adt_rows(inputs, "batch_expiry")
 
     def decimal_or_none(value: Any) -> Decimal | None:
@@ -2330,67 +2339,381 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         except (InvalidOperation, ValueError):
             return None
 
-    stock: list[tuple[JsonObject, Decimal, str]] = []
-    invalid_stock_quantity = False
-    for row in raw_stock:
-        is_adt = any(field in row for field in ("MATNR", "WERKS", "LGORT", "LABST"))
-        if not is_adt:
-            if str(row.get("InventoryStockType") or "").strip() != "01":
+    def normalize_stock(rows: list[JsonObject]) -> tuple[dict[str, Decimal], set[str], bool]:
+        quantities: dict[str, Decimal] = {}
+        units: set[str] = set()
+        invalid = False
+        for row in rows:
+            is_adt = any(field in row for field in ("MATNR", "WERKS", "LGORT", "LABST"))
+            if not is_adt:
+                if str(row.get("InventoryStockType") or "").strip() != "01":
+                    continue
+                if str(row.get("InventorySpecialStockType") or "").strip():
+                    continue
+            quantity_value = next(
+                (
+                    row.get(field)
+                    for field in ("MatlWrhsStkQtyInMatlBaseUnit", "UnrestrictedUseStock", "LABST")
+                    if row.get(field) not in {None, ""}
+                ),
+                None,
+            )
+            quantity = decimal_or_none(quantity_value)
+            unit_value = _text(row, "MaterialBaseUnit", "BaseUnit", "MEINS")
+            if quantity is None or not unit_value:
+                invalid = True
                 continue
-            if str(row.get("InventorySpecialStockType") or "").strip():
+            if quantity < 0:
+                invalid = True
                 continue
-        quantity_value = next(
-            (row.get(field) for field in ("MatlWrhsStkQtyInMatlBaseUnit", "UnrestrictedUseStock", "LABST") if row.get(field) not in {None, ""}),
-            None,
-        )
-        quantity = decimal_or_none(quantity_value)
-        if quantity is None:
-            invalid_stock_quantity = True
-            continue
-        unit = _text(row, "MaterialBaseUnit", "BaseUnit", "MEINS")
-        stock.append((row, quantity, unit))
+            batch = _text(row, "Batch", "CHARG")
+            quantities[batch] = quantities.get(batch, Decimal(0)) + quantity
+            units.add(unit_value)
+        return quantities, units, invalid
+
+    initial_stock, initial_units, invalid_initial_stock = normalize_stock(initial_stock_rows)
+    confirmation_stock, confirmation_units, invalid_confirmation_stock = normalize_stock(
+        confirmation_stock_rows
+    )
+    if not movement_requested:
+        confirmation_stock = dict(initial_stock)
+        confirmation_units = set(initial_units)
 
     stock_complete = _topic_complete(inputs, "stock")
+    stock_confirmation_complete = (
+        not movement_requested
+        or (
+            not use_stock_fallback
+            and _topic_complete(inputs, "stock_confirmation")
+        )
+    )
     movement_complete = (not movement_requested) or _topic_complete(inputs, "movement")
     expiry_complete = (not check_expiry) or _topic_complete(inputs, "batch_expiry")
-    source_complete = stock_complete and movement_complete and expiry_complete
-    units = {unit for _row, _quantity, unit in stock if unit}
-    positive_stock = [(row, quantity, unit) for row, quantity, unit in stock if quantity > 0]
-    unit_complete = not stock or (len(units) == 1 and all(unit for _row, _quantity, unit in stock))
-    unrestricted = sum((quantity for _row, quantity, _unit in stock), Decimal(0)) if unit_complete else None
+    source_complete = (
+        stock_complete
+        and stock_confirmation_complete
+        and movement_complete
+        and expiry_complete
+    )
+    units = confirmation_units or initial_units
+    unit_complete = len(units) <= 1 and not invalid_initial_stock and not invalid_confirmation_stock
+    unrestricted = sum(confirmation_stock.values(), Decimal(0)) if unit_complete else None
     unit = next(iter(units), "") if len(units) == 1 else ""
 
-    movement_dates = sorted(
-        value
-        for row in movements
-        for value in [_date(row.get("PostingDate") or row.get("BUDAT"))]
-        if value is not None and value <= snapshot
-    )
-    last_movement = movement_dates[-1] if movement_dates else None
-    stock_age = (snapshot - last_movement).days if last_movement is not None else None
-    stock_age_lower_bound = lookback if movement_requested and movement_complete and last_movement is None else None
+    header_by_key: dict[tuple[str, str], JsonObject] = {}
+    movement_items: list[JsonObject] = []
+    for row in movement_payload_rows:
+        year = _text(row, "MaterialDocumentYear", "MJAHR")
+        document = _text(row, "MaterialDocument", "MBLNR")
+        item = _text(row, "MaterialDocumentItem", "ZEILE")
+        if year and document and not item and (
+            row.get("PostingDate") not in {None, ""}
+            or row.get("CreationDate") not in {None, ""}
+        ):
+            header_by_key[(year, document)] = row
+        elif year and document and item:
+            movement_items.append(row)
 
-    def movement_status(enabled: bool, threshold_name: str) -> str:
+    time_pattern = re.compile(
+        r"^PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?$"
+    )
+
+    def time_key(value: Any) -> tuple[int, int, Decimal]:
+        text = str(value or "").strip()
+        match = time_pattern.fullmatch(text)
+        if match:
+            return (
+                int(match.group("hours") or 0),
+                int(match.group("minutes") or 0),
+                Decimal(match.group("seconds") or "0"),
+            )
+        digits = re.sub(r"\D", "", text)
+        if len(digits) >= 6:
+            return int(digits[:2]), int(digits[2:4]), Decimal(digits[4:6])
+        return 0, 0, Decimal(0)
+
+    events: list[JsonObject] = []
+    movement_keys: set[tuple[str, str, str]] = set()
+    duplicate_movement_key = False
+    invalid_movement = False
+    for row in movement_items:
+        year = _text(row, "MaterialDocumentYear", "MJAHR")
+        document = _text(row, "MaterialDocument", "MBLNR")
+        item = _text(row, "MaterialDocumentItem", "ZEILE")
+        stable_key = (year, document, item)
+        if stable_key in movement_keys:
+            duplicate_movement_key = True
+            continue
+        movement_keys.add(stable_key)
+        header = header_by_key.get((year, document), {})
+        posting_date = _date(row.get("PostingDate") or row.get("BUDAT") or header.get("PostingDate"))
+        creation_date = _date(row.get("CreationDate") or row.get("CPUDT") or header.get("CreationDate")) or posting_date
+        creation_time = row.get("CreationTime") or row.get("CPUTM") or header.get("CreationTime")
+        quantity = decimal_or_none(row.get("QuantityInBaseUnit") or row.get("MENGE"))
+        debit_credit = _text(row, "DebitCreditCode", "SHKZG").upper()
+        movement_unit = _text(row, "MaterialBaseUnit", "BaseUnit", "MEINS")
+        stock_type = _text(row, "InventoryStockType", "INSMK")
+        special_stock = _text(row, "InventorySpecialStockType", "SOBKZ")
+        if "InventoryStockType" in row and stock_type != "01":
+            continue
+        if "INSMK" in row and stock_type:
+            continue
+        if special_stock:
+            continue
+        if (
+            posting_date is None
+            or posting_date > snapshot
+            or quantity is None
+            or quantity < 0
+            or debit_credit not in {"S", "H"}
+            or not movement_unit
+        ):
+            invalid_movement = True
+            continue
+        events.append(
+            {
+                "stable_key": stable_key,
+                "posting_date": posting_date,
+                "creation_date": creation_date or posting_date,
+                "creation_time": time_key(creation_time),
+                "direction": debit_credit,
+                "quantity": quantity,
+                "unit": movement_unit,
+                "batch": _text(row, "Batch", "CHARG"),
+            }
+        )
+
+    events.sort(
+        key=lambda event: (
+            event["posting_date"],
+            event["creation_date"],
+            event["creation_time"],
+            0 if event["direction"] == "S" else 1,
+            event["stable_key"],
+        )
+    )
+    movement_units = {str(event["unit"]) for event in events}
+    layers_by_batch: dict[str, list[JsonObject]] = {}
+    movement_underflow = False
+    for event in events:
+        batch = str(event["batch"])
+        layers = layers_by_batch.setdefault(batch, [])
+        quantity = Decimal(event["quantity"])
+        if event["direction"] == "S":
+            layers.append(
+                {
+                    "receipt_date": event["posting_date"],
+                    "quantity": quantity,
+                    "unit": event["unit"],
+                }
+            )
+            continue
+        remaining = quantity
+        while remaining > 0 and layers:
+            layer = layers[0]
+            consumed = min(Decimal(layer["quantity"]), remaining)
+            layer["quantity"] = Decimal(layer["quantity"]) - consumed
+            remaining -= consumed
+            if Decimal(layer["quantity"]) == 0:
+                layers.pop(0)
+        if remaining > 0:
+            movement_underflow = True
+
+    remaining_by_batch = {
+        batch: sum((Decimal(layer["quantity"]) for layer in layers), Decimal(0))
+        for batch, layers in layers_by_batch.items()
+    }
+    remaining_by_batch = {
+        batch: quantity for batch, quantity in remaining_by_batch.items() if quantity != 0
+    }
+    current_by_batch = {
+        batch: quantity for batch, quantity in confirmation_stock.items() if quantity != 0
+    }
+    stock_changed = movement_requested and (
+        initial_stock != confirmation_stock or initial_units != confirmation_units
+    )
+    history_reconciled = remaining_by_batch == current_by_batch
+    movement_unit_complete = not movement_requested or (
+        len(movement_units) <= 1 and (not movement_units or movement_units == units)
+    )
+
+    aging_gaps: list[str] = []
+    if movement_requested:
+        if not stock_confirmation_complete:
+            aging_gaps.append("stock_confirmation_evidence")
+        if not movement_complete:
+            aging_gaps.append("movement_evidence")
+        if duplicate_movement_key:
+            aging_gaps.append("movement_stable_key_evidence")
+        if invalid_movement:
+            aging_gaps.append("movement_quantity_or_direction_evidence")
+        if not movement_unit_complete:
+            aging_gaps.append("movement_unit_evidence")
+        if movement_underflow or not history_reconciled or stock_changed:
+            aging_gaps.append("aging_reconciliation_gap")
+    aging_complete = movement_requested and not aging_gaps and stock_complete and unit_complete
+
+    layer_records: list[JsonObject] = []
+    for batch, layers in sorted(layers_by_batch.items()):
+        for layer in layers:
+            quantity = Decimal(layer["quantity"])
+            if quantity <= 0:
+                continue
+            receipt_date = layer["receipt_date"]
+            layer_records.append(
+                {
+                    "batch": batch or None,
+                    "receipt_date": receipt_date.isoformat(),
+                    "age_days": (snapshot - receipt_date).days,
+                    "remaining_quantity": str(quantity),
+                    "unit": str(layer["unit"]),
+                }
+            )
+
+    slow_days = run_input.get("slow_moving_days") if check_slow else None
+    obsolete_days = run_input.get("obsolete_days") if check_obsolete else None
+
+    def bucket_id(age_days: int) -> str:
+        if isinstance(obsolete_days, int) and age_days >= obsolete_days:
+            return "obsolete"
+        if isinstance(slow_days, int) and age_days >= slow_days:
+            return "slow_moving_only" if isinstance(obsolete_days, int) else "slow_moving"
+        if isinstance(slow_days, int):
+            return "below_slow_moving"
+        return "below_obsolete"
+
+    bucket_specs: list[tuple[str, int | None, int | None]] = []
+    if isinstance(slow_days, int) and isinstance(obsolete_days, int):
+        bucket_specs = [
+            ("below_slow_moving", 0, slow_days - 1),
+            ("slow_moving_only", slow_days, obsolete_days - 1),
+            ("obsolete", obsolete_days, None),
+        ]
+    elif isinstance(slow_days, int):
+        bucket_specs = [
+            ("below_slow_moving", 0, slow_days - 1),
+            ("slow_moving", slow_days, None),
+        ]
+    elif isinstance(obsolete_days, int):
+        bucket_specs = [
+            ("below_obsolete", 0, obsolete_days - 1),
+            ("obsolete", obsolete_days, None),
+        ]
+
+    bucket_labels = {
+        "below_slow_moving": {"zh": "未达到慢动阈值", "en": "Below slow-moving threshold"},
+        "slow_moving_only": {"zh": "慢动但未呆滞", "en": "Slow-moving but not obsolete"},
+        "slow_moving": {"zh": "慢动库存", "en": "Slow-moving stock"},
+        "below_obsolete": {"zh": "未达到呆滞阈值", "en": "Below obsolete threshold"},
+        "obsolete": {"zh": "呆滞库存", "en": "Obsolete stock"},
+        "unclassified": {"zh": "未分类库存", "en": "Unclassified stock"},
+    }
+    bucket_quantities = {name: Decimal(0) for name, _minimum, _maximum in bucket_specs}
+    if aging_complete:
+        for layer in layer_records:
+            name = bucket_id(int(layer["age_days"]))
+            bucket_quantities[name] = bucket_quantities.get(name, Decimal(0)) + Decimal(
+                str(layer["remaining_quantity"])
+            )
+            layer["bucket_id"] = name
+            layer["bucket_label"] = bucket_labels[name]
+    unclassified_quantity = Decimal(0) if aging_complete else (unrestricted or Decimal(0))
+    aging_buckets = [
+        {
+            "bucket_id": name,
+            "bucket_label": bucket_labels[name],
+            "minimum_age_days": minimum,
+            "maximum_age_days": maximum,
+            "quantity": str(bucket_quantities.get(name, Decimal(0))) if aging_complete else None,
+            "unit": unit or None,
+        }
+        for name, minimum, maximum in bucket_specs
+    ]
+    if movement_requested and not aging_complete:
+        aging_buckets.append(
+            {
+                "bucket_id": "unclassified",
+                "bucket_label": bucket_labels["unclassified"],
+                "minimum_age_days": None,
+                "maximum_age_days": None,
+                "quantity": str(unclassified_quantity) if unrestricted is not None else None,
+                "unit": unit or None,
+            }
+        )
+    below_threshold_quantity = (
+        bucket_quantities.get("below_slow_moving", bucket_quantities.get("below_obsolete"))
+        if aging_complete
+        else None
+    )
+    slow_moving_only_quantity = (
+        bucket_quantities.get("slow_moving_only", bucket_quantities.get("slow_moving"))
+        if aging_complete and check_slow
+        else None
+    )
+    obsolete_bucket_quantity = (
+        bucket_quantities.get("obsolete") if aging_complete and check_obsolete else None
+    )
+
+    movement_dates = [event["posting_date"] for event in events]
+    last_movement = max(movement_dates) if movement_dates else None
+    days_since_last_movement = (
+        (snapshot - last_movement).days if last_movement is not None else None
+    )
+    oldest_layer_date = (
+        min(_date(layer["receipt_date"]) for layer in layer_records if _date(layer["receipt_date"]))
+        if layer_records and aging_complete
+        else None
+    )
+    oldest_layer_age = (
+        (snapshot - oldest_layer_date).days if oldest_layer_date is not None else None
+    )
+
+    slow_quantity = (
+        sum(
+            (Decimal(layer["remaining_quantity"]) for layer in layer_records if int(layer["age_days"]) >= int(slow_days)),
+            Decimal(0),
+        )
+        if aging_complete and isinstance(slow_days, int)
+        else None
+    )
+    obsolete_quantity = (
+        sum(
+            (Decimal(layer["remaining_quantity"]) for layer in layer_records if int(layer["age_days"]) >= int(obsolete_days)),
+            Decimal(0),
+        )
+        if aging_complete and isinstance(obsolete_days, int)
+        else None
+    )
+
+    def movement_status(enabled: bool, quantity: Decimal | None) -> str:
         if not enabled:
             return "not_requested"
-        if not movement_complete:
+        if not aging_complete or quantity is None:
             return "unknown"
-        threshold = run_input.get(threshold_name)
-        if not isinstance(threshold, int) or isinstance(threshold, bool):
-            return "unknown"
-        age_value = stock_age if stock_age is not None else stock_age_lower_bound
-        return "candidate" if age_value is not None and age_value >= threshold else "not_candidate"
+        return "candidate" if quantity > 0 else "not_candidate"
 
-    slow_status = movement_status(check_slow, "slow_moving_days")
-    obsolete_status = movement_status(check_obsolete, "obsolete_days")
+    slow_status = movement_status(check_slow, slow_quantity)
+    obsolete_status = movement_status(check_obsolete, obsolete_quantity)
 
+    effective_stock_rows = confirmation_stock_rows or initial_stock_rows
+    positive_stock = any(
+        (quantity := decimal_or_none(
+            row.get("MatlWrhsStkQtyInMatlBaseUnit") or row.get("LABST")
+        )) is not None
+        and quantity > 0
+        for row in effective_stock_rows
+        if _text(row, "InventoryStockType", "INSME") in {None, "", "01"}
+        and _text(row, "InventorySpecialStockType", "SOBKZ") in {None, ""}
+    )
     positive_batch_keys = {
         (
             _text(row, "Material", "MATNR") or str(run_input.get("material") or ""),
             _text(row, "Plant", "WERKS") or str(run_input.get("plant") or ""),
             _text(row, "Batch", "CHARG"),
         )
-        for row, _quantity, _unit in positive_stock
+        for row in effective_stock_rows
+        for _quantity in [decimal_or_none(row.get("MatlWrhsStkQtyInMatlBaseUnit") or row.get("LABST"))]
+        if _quantity is not None and _quantity > 0
         if _text(row, "Batch", "CHARG")
     }
     batch_by_key = {
@@ -2433,19 +2756,18 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
     evidence_gaps: list[str] = []
     if not stock_complete:
         evidence_gaps.append("stock_evidence")
-    if invalid_stock_quantity:
+    if invalid_initial_stock or invalid_confirmation_stock:
         evidence_gaps.append("stock_quantity_evidence")
     if not unit_complete:
         evidence_gaps.append("stock_unit_evidence")
-    if movement_requested and not movement_complete:
-        evidence_gaps.append("movement_evidence")
+    evidence_gaps.extend(aging_gaps)
     if check_expiry and not expiry_complete:
         evidence_gaps.append("batch_expiry_evidence")
     if check_expiry and not expiry_association_complete:
         evidence_gaps.append("batch_expiry_association")
     evidence_gaps = sorted(set(evidence_gaps))
     evidence_complete = source_complete and not evidence_gaps
-    has_stock = bool(stock)
+    has_stock = bool(current_by_batch)
     has_risk = any(status == "candidate" for status in (slow_status, obsolete_status, expiry_status))
     if not evidence_complete:
         business_status = "inconclusive"
@@ -2468,9 +2790,27 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
     headline_zh, headline_en = headlines[business_status]
     findings: list[JsonObject] = []
     if slow_status == "candidate":
-        findings.append({"code": "SLOW_MOVING_STOCK_CANDIDATE", "severity": "medium", "age_days": stock_age, "age_lower_bound_days": stock_age_lower_bound})
+        findings.append({
+            "code": "SLOW_MOVING_STOCK_CANDIDATE",
+            "severity": "medium",
+            "quantity": str(slow_quantity),
+            "unit": unit,
+            "detail": {
+                "zh": f"识别到 {slow_quantity} {unit} 库存达到慢动阈值。",
+                "en": f"{slow_quantity} {unit} of stock meets the slow-moving threshold.",
+            },
+        })
     if obsolete_status == "candidate":
-        findings.append({"code": "OBSOLETE_STOCK_CANDIDATE", "severity": "high", "age_days": stock_age, "age_lower_bound_days": stock_age_lower_bound})
+        findings.append({
+            "code": "OBSOLETE_STOCK_CANDIDATE",
+            "severity": "high",
+            "quantity": str(obsolete_quantity),
+            "unit": unit,
+            "detail": {
+                "zh": f"识别到 {obsolete_quantity} {unit} 呆滞库存。",
+                "en": f"{obsolete_quantity} {unit} of obsolete stock was identified.",
+            },
+        })
     findings.extend({"code": "EXPIRY_RISK", "severity": "high", **item} for item in expiry_candidates)
 
     def check_stage(stage_id: str, zh: str, en: str, status: str, detail_zh: str, detail_en: str, count: int = 0) -> JsonObject:
@@ -2478,6 +2818,17 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         return _stage(stage_id, zh, en, count, state=state, detail_zh=detail_zh, detail_en=detail_en)
 
     last_movement_text = last_movement.isoformat() if last_movement is not None else None
+    selected_check_labels = {
+        "slow_moving": {"zh": "慢动检查", "en": "Slow-moving check"},
+        "obsolete": {"zh": "呆滞检查", "en": "Obsolete-stock check"},
+        "expiry": {"zh": "临期检查", "en": "Expiry check"},
+    }
+    status_labels = {
+        "candidate": {"zh": "风险候选", "en": "Risk candidate"},
+        "not_candidate": {"zh": "未发现风险", "en": "No risk found"},
+        "unknown": {"zh": "无法确认", "en": "Unknown"},
+        "not_requested": {"zh": "未启用", "en": "Not enabled"},
+    }
     records = [{
         "snapshot_date": snapshot.isoformat(),
         "material": str(run_input.get("material") or ""),
@@ -2487,8 +2838,19 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         "unit": unit or None,
         "selected_checks": selected_checks,
         "last_movement_date": last_movement_text,
-        "stock_age_days": stock_age,
-        "stock_age_lower_bound_days": stock_age_lower_bound,
+        "stock_age_days": days_since_last_movement,
+        "stock_age_lower_bound_days": None,
+        "aging_method": "fifo_movement_layers" if movement_requested else "not_requested",
+        "aging_complete": aging_complete if movement_requested else True,
+        "last_movement_activity_date": last_movement_text,
+        "days_since_last_movement_activity": days_since_last_movement,
+        "oldest_remaining_layer_date": oldest_layer_date.isoformat() if oldest_layer_date else None,
+        "oldest_remaining_layer_age_days": oldest_layer_age,
+        "classified_stock_quantity": str(unrestricted) if aging_complete and unrestricted is not None else None,
+        "unclassified_stock_quantity": str(unclassified_quantity) if movement_requested else None,
+        "below_threshold_stock_quantity": str(below_threshold_quantity) if below_threshold_quantity is not None else None,
+        "slow_moving_only_stock_quantity": str(slow_moving_only_quantity) if slow_moving_only_quantity is not None else None,
+        "obsolete_stock_quantity": str(obsolete_bucket_quantity) if obsolete_bucket_quantity is not None else None,
         "slow_moving_status": slow_status,
         "obsolete_status": obsolete_status,
         "expiry_status": expiry_status,
@@ -2504,18 +2866,23 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         overview_zh="只统计当前非限制使用、非特殊库存；留空的检查不会执行，也不会被视为证据缺失。",
         overview_en="Only current unrestricted-use, non-special stock is counted. Blank checks are not executed and are not treated as evidence gaps.",
         stages=[
-            _stage("current_stock", "当前库存快照", "Current stock snapshot", len(stock), state="confirmed" if stock_complete else "unknown", detail_zh=f"快照日期 {snapshot.isoformat()}；仅统计库存类型 01、非特殊库存。", detail_en=f"Snapshot date {snapshot.isoformat()}; only stock type 01 and non-special stock are counted."),
-            _stage("selected_checks", "本次检查条件", "Selected checks", len(selected_checks), state="confirmed", detail_zh=("、".join(selected_checks) if selected_checks else "三项均未启用。"), detail_en=(", ".join(selected_checks) if selected_checks else "No health checks were enabled.")),
-            check_stage("slow_moving", "慢动检查", "Slow-moving check", slow_status, "未启用。" if not check_slow else f"阈值 {run_input.get('slow_moving_days')} 天；状态 {slow_status}。", "Not enabled." if not check_slow else f"Threshold {run_input.get('slow_moving_days')} days; status {slow_status}."),
-            check_stage("obsolete", "呆滞检查", "Obsolete-stock check", obsolete_status, "未启用。" if not check_obsolete else f"阈值 {run_input.get('obsolete_days')} 天；状态 {obsolete_status}。", "Not enabled." if not check_obsolete else f"Threshold {run_input.get('obsolete_days')} days; status {obsolete_status}."),
+            _stage("current_stock", "当前库存快照", "Current stock snapshot", len(confirmation_stock_rows or initial_stock_rows), state="confirmed" if stock_complete else "unknown", detail_zh=f"快照日期 {snapshot.isoformat()}；仅统计库存类型 01、非特殊库存。", detail_en=f"Snapshot date {snapshot.isoformat()}; only stock type 01 and non-special stock are counted."),
+            _stage("selected_checks", "本次检查条件", "Selected checks", len(selected_checks), state="confirmed", detail_zh=("、".join(selected_check_labels[item]["zh"] for item in selected_checks) if selected_checks else "三项均未启用。"), detail_en=(", ".join(selected_check_labels[item]["en"] for item in selected_checks) if selected_checks else "No health checks were enabled.")),
+            check_stage("slow_moving", "慢动检查", "Slow-moving check", slow_status, "未启用。" if not check_slow else f"阈值 {run_input.get('slow_moving_days')} 天；{status_labels[slow_status]['zh']}。", "Not enabled." if not check_slow else f"Threshold {run_input.get('slow_moving_days')} days; {status_labels[slow_status]['en']}."),
+            check_stage("obsolete", "呆滞检查", "Obsolete-stock check", obsolete_status, "未启用。" if not check_obsolete else f"阈值 {run_input.get('obsolete_days')} 天；{status_labels[obsolete_status]['zh']}。", "Not enabled." if not check_obsolete else f"Threshold {run_input.get('obsolete_days')} days; {status_labels[obsolete_status]['en']}."),
             check_stage("expiry", "临期检查", "Expiry check", expiry_status, "未启用。" if not check_expiry else f"未来 {run_input.get('expiry_days')} 天；发现 {len(expiry_candidates)} 个临期批次。", "Not enabled." if not check_expiry else f"Next {run_input.get('expiry_days')} days; found {len(expiry_candidates)} expiring batch(es).", len(expiry_candidates)),
             _stage("completeness", "数据完整性", "Data completeness", 1 if evidence_complete else 0, state="confirmed" if evidence_complete else "unknown", detail_zh="所选检查证据完整。" if evidence_complete else "至少一项已启用检查存在查询、单位或批次关联缺口。", detail_en="Evidence for the selected checks is complete." if evidence_complete else "At least one enabled check has a query, unit, or batch-association gap."),
         ],
         findings=findings,
         metrics=[
             {"id": "current_unrestricted_stock", "value": str(unrestricted) if unrestricted is not None else None, "unit": unit or None},
-            {"id": "stock_age_days", "value": stock_age},
-            {"id": "stock_age_lower_bound_days", "value": stock_age_lower_bound},
+            {"id": "days_since_last_movement_activity", "value": days_since_last_movement},
+            {"id": "oldest_remaining_layer_age_days", "value": oldest_layer_age},
+            {"id": "classified_stock_quantity", "value": str(unrestricted) if aging_complete and unrestricted is not None else None, "unit": unit or None},
+            {"id": "unclassified_stock_quantity", "value": str(unclassified_quantity) if movement_requested else None, "unit": unit or None},
+            {"id": "below_threshold_stock_quantity", "value": str(below_threshold_quantity) if below_threshold_quantity is not None else None, "unit": unit or None},
+            {"id": "slow_moving_only_stock_quantity", "value": str(slow_moving_only_quantity) if slow_moving_only_quantity is not None else None, "unit": unit or None},
+            {"id": "obsolete_stock_quantity", "value": str(obsolete_bucket_quantity) if obsolete_bucket_quantity is not None else None, "unit": unit or None},
             {"id": "expiry_candidate_count", "value": len(expiry_candidates)},
         ],
         records=records,
@@ -2524,13 +2891,43 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         actions_en=["Have inventory planning review the identified risk candidates."] if has_risk else [],
         source_complete_override=source_complete,
     )
-    result["rule_id"] = "inventory_health_check_deterministic_v2"
+    result["rule_id"] = "inventory_health_check_deterministic_v3"
     result["status"] = "complete" if evidence_complete else "inconclusive"
     result["business_complete"] = evidence_complete
     result["evidence_complete"] = evidence_complete
     result["missing_evidence"] = evidence_gaps
     result["business_report"]["missing_evidence"] = evidence_gaps
+    if movement_requested:
+        result["business_report"]["evidence_tables"] = [
+            {
+                "id": "aging_buckets",
+                "title": {"zh": "库存账龄分布", "en": "Inventory age distribution"},
+                "columns": [
+                    {"key": "bucket_label", "label": {"zh": "账龄分类", "en": "Age category"}},
+                    {"key": "minimum_age_days", "label": {"zh": "最小账龄（天）", "en": "Minimum age (days)"}, "format": "integer"},
+                    {"key": "maximum_age_days", "label": {"zh": "最大账龄（天）", "en": "Maximum age (days)"}, "format": "integer"},
+                    {"key": "quantity", "label": {"zh": "数量", "en": "Quantity"}, "format": "decimal"},
+                    {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+                ],
+                "rows": aging_buckets,
+            },
+            {
+                "id": "remaining_fifo_layers",
+                "title": {"zh": "FIFO 剩余库存层", "en": "Remaining FIFO inventory layers"},
+                "columns": [
+                    {"key": "batch", "label": {"zh": "批次", "en": "Batch"}},
+                    {"key": "receipt_date", "label": {"zh": "入库层日期", "en": "Receipt-layer date"}, "format": "date"},
+                    {"key": "age_days", "label": {"zh": "账龄（天）", "en": "Age (days)"}, "format": "integer"},
+                    {"key": "remaining_quantity", "label": {"zh": "剩余数量", "en": "Remaining quantity"}, "format": "decimal"},
+                    {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+                    {"key": "bucket_label", "label": {"zh": "账龄分类", "en": "Age category"}},
+                ],
+                "rows": layer_records if aging_complete else [],
+            },
+        ]
     result["workflow_output"].update(records[0])
+    result["workflow_output"]["aging_buckets"] = aging_buckets
+    result["workflow_output"]["remaining_fifo_layers"] = layer_records if aging_complete else []
     result["workflow_output"]["business_status"] = business_status
     result["workflow_output"]["source_complete"] = source_complete
     result["workflow_output"]["evidence_complete"] = evidence_complete

@@ -2,7 +2,7 @@
 
 All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgents. Embedded SAP execution is GET-only; approved supplemental ADT evidence may use the Skill's read-only Data Preview transport. No SAP write operation is allowed, and raw rows, URLs, and credentials remain in ignored local artifacts.
 
-The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV revalidation; all other rows retain their original campaign evidence.
+The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV revalidation. The `inventory-health-balancing` row reflects the 2026-08-23 full-history FIFO quantity-aging revalidation. All other rows retain their original campaign evidence.
 
 ## Summary
 

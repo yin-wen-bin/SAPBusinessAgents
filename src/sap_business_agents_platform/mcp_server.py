@@ -138,6 +138,43 @@ _SAP_TOOLS = [
         ),
     },
     {
+        "name": "sap_inventory_fifo_assess",
+        "description": (
+            "Deterministically reconstruct unrestricted-use inventory age by FIFO from two "
+            "current-stock snapshots plus complete material-document item/header evidence."
+        ),
+        "inputSchema": _schema(
+            {
+                "material": {"type": "string"},
+                "plant": {"type": "string"},
+                "storage_location": {"type": "string"},
+                "snapshot_date": {"type": "string", "format": "date"},
+                "slow_moving_days": {"type": "integer", "minimum": 1, "maximum": 3650},
+                "obsolete_days": {"type": "integer", "minimum": 1, "maximum": 3650},
+                "expiry_days": {"type": "integer", "minimum": 1, "maximum": 3650},
+                "stock_initial_evidence_ref": {"type": "string"},
+                "stock_confirmation_evidence_ref": {"type": "string"},
+                "movement_item_evidence_ref": {"type": "string"},
+                "movement_header_evidence_ref": {"type": "string"},
+                "batch_evidence_ref": {"type": ["string", "null"]},
+            },
+            [
+                "material",
+                "plant",
+                "storage_location",
+                "snapshot_date",
+                "slow_moving_days",
+                "obsolete_days",
+                "expiry_days",
+                "stock_initial_evidence_ref",
+                "stock_confirmation_evidence_ref",
+                "movement_item_evidence_ref",
+                "movement_header_evidence_ref",
+                "batch_evidence_ref",
+            ],
+        ),
+    },
+    {
         "name": "sap_skill_execute",
         "description": "Execute one approved SAPSkillhub read-only skill with a single-use deterministic evidence-gap token. ADT order_by is optional and must be omitted unless a trusted live-DDIC result supplied the exact stable key.",
         "inputSchema": _schema(

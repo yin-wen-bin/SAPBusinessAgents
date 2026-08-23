@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -78,12 +78,6 @@ def resolve_inventory_health_window(inputs: dict[str, Any]) -> dict[str, Any]:
     snapshot = date.today()
     movement_values = [value for value in (slow_days, obsolete_days) if value is not None]
     lookback = max(movement_values) if movement_values else None
-    date_from = snapshot - timedelta(days=lookback) if lookback is not None else None
-    movement_years = (
-        [str(year) for year in range(date_from.year, snapshot.year + 1)]
-        if date_from is not None
-        else []
-    )
     selected_checks = [
         name
         for name, enabled in (
@@ -101,11 +95,16 @@ def resolve_inventory_health_window(inputs: dict[str, Any]) -> dict[str, Any]:
         "check_obsolete": obsolete_days is not None,
         "check_expiry": expiry_days is not None,
         "movement_check_requested": bool(movement_values),
+        "movement_history_required": bool(movement_values),
         "movement_lookback_days": lookback,
-        "movement_date_from": date_from.isoformat() if date_from is not None else None,
-        "movement_year_from": str(date_from.year) if date_from is not None else None,
+        # FIFO quantity aging needs the complete material-movement history.  The
+        # thresholds classify the remaining layers; they must not bound the
+        # source query or a recent receipt would reset the entire stock age.
+        "movement_date_from": None,
+        "movement_year_from": None,
         "movement_year_to": str(snapshot.year),
-        "movement_years": movement_years,
+        "movement_years": [],
+        "movement_history_to": snapshot.isoformat(),
         "selected_checks": selected_checks,
     }
 
@@ -274,6 +273,11 @@ def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
         for item in inputs.get("capability_gaps") or []
         if str(item).strip()
     }
+    fallback_on_incomplete = {
+        str(item)
+        for item in inputs.get("fallback_on_incomplete") or []
+        if str(item).strip()
+    }
     requested = inputs.get("requested")
     requested = requested if isinstance(requested, dict) else {}
     needs_adt: dict[str, bool] = {}
@@ -296,7 +300,9 @@ def assess_api_evidence(inputs: dict[str, Any]) -> dict[str, Any]:
             if str(value).strip()
         }
         capability_gap = not complete and (
-            key in declared or bool(codes.intersection(API_CAPABILITY_GAP_CODES))
+            key in declared
+            or key in fallback_on_incomplete
+            or bool(codes.intersection(API_CAPABILITY_GAP_CODES))
         )
         api_complete[key] = complete
         needs_adt[key] = capability_gap

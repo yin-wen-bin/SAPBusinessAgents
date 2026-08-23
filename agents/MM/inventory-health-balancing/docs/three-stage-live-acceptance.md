@@ -4,55 +4,51 @@
 
 `PASS` / `executable=true`
 
-- Agent version: `0.2.0`
-- Tested at: `2026-08-23T01:03:51.11039+08:00`
+- Case: `inventory-health-balancing-live-002`
+- Tested at: `2026-08-23T05:51:12.385559+00:00`
 - Direct baseline runtime: `codex_app_direct_sap`
 - Used SAPBusinessAgents for baseline: `false`
 - Free-query comparison: `MATCH`
 - Fixed-Agent comparison: `MATCH`
-- Blocking limitations: none
-- SAP write operations: none; every SAP request was `GET`
+- Normalized business records: `1`
+- Required limitations preserved: `none`
+- SAP write operations: none
 
-## Accepted live scope
+## Evidence hashes
 
-The live target was material `TG10`, plant `1710`, storage location `171A`.
-All three scenarios returned current unrestricted-use stock of `7,805 PC` for
-stock type `01` and blank special stock.
+- Codex direct baseline: `sha256:a58f4d1d9da3fa5b7c2429f6a49f53637a9fa556238c2ea8961b30f09c505e8b`
+- SAPBusinessAgents free query: `sha256:666755faabb786d3a1999072b66893bf5cfe180c527a8d995d224be954bab6f0`
+- Adjudicated result: `sha256:a58f4d1d9da3fa5b7c2429f6a49f53637a9fa556238c2ea8961b30f09c505e8b`
+- Fixed Agent: `sha256:11aa663adf2de35416776cd3de77c941cf3ec813411293c2d022793c60678a52`
+- Fixed comparison: `sha256:e76459c37eb909b8aee7a29e2aab4d31ccb10989bdbdb0e9ee82b21199bde51e`
 
-| Scenario | Enabled checks | Direct baseline | Free query | Fixed Agent | Business result |
-|---|---|:---:|:---:|:---:|---|
-| Snapshot only | none | PASS | `run_16ec773e21184677` / MATCH | `acceptance_5cc673233859431a` / MATCH | `snapshot_only`; all three checks `not_requested` |
-| Obsolete + expiry | obsolete 365 days; expiry 90 days | PASS | `run_0fe7ebd86d6240d1` / MATCH | `acceptance_5d38ed2a79174efc` / MATCH | obsolete `candidate`; expiry `not_candidate`; slow-moving `not_requested` |
-| All checks | slow-moving 180 days; obsolete 365 days; expiry 90 days | PASS | `run_1bb1063b81fa4097` / MATCH | `acceptance_970c98d52a694dbb` / MATCH | slow-moving and obsolete `candidate`; expiry `not_candidate` |
+## Sanitized case scope
 
-The complete 365-day movement-item query returned zero rows. Therefore no last
-movement date was invented: `last_movement_date=null`, `stock_age_days=null`, and
-`stock_age_lower_bound_days=365`. The current positive stock has no batch, so no
-positive-stock batch qualified for the 90-day expiry window.
-
-## Full-check evidence hashes
-
-- Codex direct baseline: `sha256:80611fb622b68ee0e607fd35365a68a5af4d05400a7cbcf7a3ac833a4a488928`
-- SAPBusinessAgents free query: `sha256:85eba94ceba6fe4b7518f3a5971de90e44319e97a188b93655544da252a9882f`
-- Adjudicated result: `sha256:80611fb622b68ee0e607fd35365a68a5af4d05400a7cbcf7a3ac833a4a488928`
-- Fixed Agent: `sha256:58a7852b49b60766413ba24171a1744848c376227306d11fd69aecc6a4737d37`
-- Fixed comparison: `sha256:0ddbb15636d66f3d1f75a41aead36319b061d6c555c1208fe84c28c98e360950`
+- Selection rule: first independently discovered live sample satisfying the case criteria after real-time schema validation and stable-key ordering.
+- Structured input fields: `expiry_days, material, obsolete_days, plant, slow_moving_days, storage_location` (values remain in ignored artifacts).
+- Business-condition fields: `expiry_days, material, obsolete_days, plant, slow_moving_days, snapshot_date, storage_location` (values remain in ignored artifacts).
+- Accepted business grain: `material, plant, storage_location`.
 
 ## Direct baseline source coverage
 
-| Source | Service | OData | Entity | Rows | Pages | Paging complete | Source complete |
-|---|---|:---:|---|---:|---:|:---:|:---:|
-| current stock | API_MATERIAL_STOCK_SRV | 2.0 | A_MatlStkInAcctMod | 1 | 1 | true | true |
-| movement items | API_MATERIAL_DOCUMENT_SRV | 2.0 | A_MaterialDocumentItem | 0 | 1 | true | true |
+| Source | Service | OData | Entity | Rows | Pages | Stable order | Paging complete | Source complete |
+|---|---|:---:|---|---:|---:|---|:---:|:---:|
+| inventory_stock_initial | API_MATERIAL_STOCK_SRV | 2.0 | A_MatlStkInAcctMod | 1 | 1 | Material, Plant, StorageLocation, Batch, Supplier, Customer, WBSElementInternalID, SDDocument, SDDocumentItem, InventorySpecialStockType, InventoryStockType | true | true |
+| inventory_movement_items | API_MATERIAL_DOCUMENT_SRV | 2.0 | A_MaterialDocumentItem | 12 | 1 | MaterialDocumentYear, MaterialDocument, MaterialDocumentItem | true | true |
+| inventory_movement_headers_001 | API_MATERIAL_DOCUMENT_SRV | 2.0 | A_MaterialDocumentHeader | 12 | 1 | MaterialDocumentYear, MaterialDocument | true | true |
+| inventory_stock_confirmation | API_MATERIAL_STOCK_SRV | 2.0 | A_MatlStkInAcctMod | 1 | 1 | Material, Plant, StorageLocation, Batch, Supplier, Customer, WBSElementInternalID, SDDocument, SDDocumentItem, InventorySpecialStockType, InventoryStockType | true | true |
 
-The header step uses grouped `MaterialDocumentYear + MaterialDocument`
-`filter_from_previous` bindings. Because the exact movement-item step returned
-zero rows, the provider correctly returned an empty dependent header result and
-did not issue a broad header query.
+Schema/query manifests:
+- `inventory_stock_initial` schema `sha256:5cfd9f82fd7abad22dfb6fb4354c9b26caaeb263fc36f8098befb1a2e19676f9`; query `sha256:0253a3b700db809a0adc3c8654cc600e45fed339516a4bd4521ef10790b31533`.
+- `inventory_movement_items` schema `sha256:4de095109c47983878622572c2d95c6383e7c2fbf520cb15241582078d28852e`; query `sha256:f7fa6a1c6c1ba7a03359925a1e5dadcf981619de79ff63daedd113c8a06370d2`.
+- `inventory_movement_headers_001` schema `sha256:4de095109c47983878622572c2d95c6383e7c2fbf520cb15241582078d28852e`; query `sha256:7eecf6927b78bf5c06e57ffc9e8d9db04ddb5f416959070d9d6ec72d2d67b5f9`.
+- `inventory_stock_confirmation` schema `sha256:5cfd9f82fd7abad22dfb6fb4354c9b26caaeb263fc36f8098befb1a2e19676f9`; query `sha256:0253a3b700db809a0adc3c8654cc600e45fed339516a4bd4521ef10790b31533`.
 
-## Removed scope
+- Test-data qualification: `qualified`.
+- Qualification evidence: `inventory_stock_initial, inventory_movement_items, inventory_movement_headers_001, inventory_stock_confirmation`; reasons: `none`.
 
-This version does not reconstruct historical stock balances, call MB5B, subtract
-safety stock, calculate transfer quantities, or recommend stock transfers. Raw
-SAP rows, URLs, credentials, and connection details remain only in ignored local
-acceptance artifacts.
+## Repair and adjudication outcome
+
+The final comparison uses stable business keys, deterministic facts, Decimal-aware metrics, currencies, units, limitations, and completeness rather than display prose or row order. Platform and fixed-Agent corrections are covered by the campaign regression suite; runtime logic contains no test-document constants.
+
+Raw SAP rows, URLs, credentials, business identifiers, and connection details remain in ignored local artifacts.

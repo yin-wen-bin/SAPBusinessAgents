@@ -2,103 +2,461 @@
   "schemaVersion": 2,
   "slug": "inventory-health-balancing",
   "module": "MM",
-  "title": {"zh": "库存健康检查", "en": "Inventory Health Check"},
+  "title": {
+    "zh": "库存健康检查",
+    "en": "Inventory Health Check"
+  },
   "summary": {
-    "zh": "查询当前非限制使用库存，并按用户选择的天数检查慢动、呆滞和临期风险。",
-    "en": "Reads current unrestricted-use stock and checks slow-moving, obsolete, and expiry risks using optional user-selected thresholds."
+    "zh": "查询当前非限制使用库存，按完整物料移动历史重建 FIFO 数量账龄，并检查慢动、呆滞和临期风险。",
+    "en": "Reads current unrestricted-use stock, reconstructs FIFO quantity-age layers from complete material-movement history, and checks slow-moving, obsolete, and expiry risks."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "owner": "MM-IM / Inventory Planning",
-  "tags": ["Inventory", "Slow Moving", "Shelf Life"],
-  "sapModules": ["MM-IM", "MM-BD"],
+  "tags": [
+    "Inventory",
+    "Slow Moving",
+    "Shelf Life"
+  ],
+  "sapModules": [
+    "MM-IM",
+    "MM-BD"
+  ],
   "transactions": [],
-  "tables": ["MARD", "MATDOC", "MCHA"],
-  "systems": ["SAP S/4HANA"],
+  "tables": [
+    "MARD",
+    "MATDOC",
+    "MCHA"
+  ],
+  "systems": [
+    "SAP S/4HANA"
+  ],
   "inputs": {
-    "zh": ["物料", "工厂", "库存地点", "慢动天数（可选）", "呆滞天数（可选）", "临期天数（可选）"],
-    "en": ["Material", "Plant", "Storage Location", "Slow-moving days (optional)", "Obsolete days (optional)", "Expiry days (optional)"]
+    "zh": [
+      "物料",
+      "工厂",
+      "库存地点",
+      "慢动天数（可选）",
+      "呆滞天数（可选）",
+      "临期天数（可选）"
+    ],
+    "en": [
+      "Material",
+      "Plant",
+      "Storage Location",
+      "Slow-moving days (optional)",
+      "Obsolete days (optional)",
+      "Expiry days (optional)"
+    ]
   },
   "outputs": {
-    "zh": ["快照日期", "物料", "工厂", "库存地点", "当前非限制使用库存", "单位", "本次检查项目", "最后移动日期", "库存账龄（天）", "库存账龄下限（天）", "慢动状态", "呆滞状态", "临期状态", "临期批次数", "业务状态", "查询源完整性", "证据完整性", "结构化业务报告"],
-    "en": ["Snapshot date", "Material", "Plant", "Storage Location", "Current unrestricted-use stock", "Unit", "Selected checks", "Last movement date", "Stock age (days)", "Stock age lower bound (days)", "Slow-moving status", "Obsolete status", "Expiry status", "Expiry candidate count", "Business status", "Query-source completeness", "Evidence completeness", "Structured business report"]
+    "zh": [
+      "快照日期",
+      "物料",
+      "工厂",
+      "库存地点",
+      "当前非限制使用库存",
+      "单位",
+      "本次检查项目",
+      "最后库存活动日期（兼容字段）",
+      "距最后库存活动天数（兼容字段）",
+      "库存账龄下限（兼容字段）",
+      "账龄计算方法",
+      "账龄计算完整性",
+      "最后库存活动日期",
+      "距最后库存活动天数",
+      "最早剩余库存层日期",
+      "最早剩余库存层账龄（天）",
+      "已分类库存数量",
+      "未分类库存数量",
+      "未达到最低已启用阈值数量",
+      "慢动但未呆滞数量",
+      "呆滞库存数量",
+      "库存账龄分布",
+      "慢动状态",
+      "呆滞状态",
+      "临期状态",
+      "临期批次数",
+      "业务状态",
+      "查询源完整性",
+      "证据完整性",
+      "结构化业务报告"
+    ],
+    "en": [
+      "Snapshot date",
+      "Material",
+      "Plant",
+      "Storage Location",
+      "Current unrestricted-use stock",
+      "Unit",
+      "Selected checks",
+      "Last inventory activity date (compatibility field)",
+      "Days since last inventory activity (compatibility field)",
+      "Stock age lower bound (compatibility field)",
+      "Aging method",
+      "Aging completeness",
+      "Last inventory activity date",
+      "Days since last inventory activity",
+      "Oldest remaining inventory-layer date",
+      "Oldest remaining inventory-layer age (days)",
+      "Classified stock quantity",
+      "Unclassified stock quantity",
+      "Quantity below the lowest enabled threshold",
+      "Slow-moving but not obsolete quantity",
+      "Obsolete stock quantity",
+      "Inventory age distribution",
+      "Slow-moving status",
+      "Obsolete status",
+      "Expiry status",
+      "Expiry candidate count",
+      "Business status",
+      "Query-source completeness",
+      "Evidence completeness",
+      "Structured business report"
+    ]
   },
   "guardrails": {
-    "zh": ["只统计库存类型 01 且非特殊库存的当前库存", "用户留空的检查不执行，也不计为证据缺失", "不同单位的库存不得合计", "不计算历史库存余额或调拨数量", "全部 SAP 访问为 GET-only"],
-    "en": ["Count only current stock type 01 with no special-stock indicator", "A blank optional check is not executed and is not treated as missing evidence", "Never aggregate stock across different units", "Do not calculate historical stock balances or transfer quantities", "All SAP access is GET-only"]
+    "zh": [
+      "只统计库存类型 01 且非特殊库存的当前库存",
+      "慢动或呆滞检查必须读取完整移动历史并与当前库存对平",
+      "用户留空的检查不执行，也不计为证据缺失",
+      "不同单位的库存不得合计",
+      "证据不完整时不得输出确定账龄数量",
+      "不计算调拨数量",
+      "全部 SAP 访问为 GET-only"
+    ],
+    "en": [
+      "Count only current stock type 01 with no special-stock indicator",
+      "Slow-moving or obsolete checks require complete movement history reconciled to current stock",
+      "A blank optional check is not executed and is not treated as missing evidence",
+      "Never aggregate stock across different units",
+      "Do not output definitive age quantities from incomplete evidence",
+      "Do not calculate transfer quantities",
+      "All SAP access is GET-only"
+    ]
   },
   "workflow": [
     {
       "id": "derive-check-window",
-      "title": {"zh": "确定本次检查范围", "en": "Resolve this check's scope"},
-      "description": {"zh": "自动使用运行当天作为快照日，并根据已填写的天数启用对应检查。", "en": "Uses the run date as the snapshot and enables only checks with supplied thresholds."},
-      "operations": {"zh": ["本地规则 resolve_inventory_health_window"], "en": ["Local rule resolve_inventory_health_window"]},
-      "tools": [{"name": "resolve_inventory_health_window", "kind": "Local deterministic rule", "purpose": {"zh": "生成检查开关和移动日期窗口", "en": "Generate check switches and the movement date window"}}],
-      "executionStepIds": ["resolve_window"]
+      "title": {
+        "zh": "确定本次检查范围",
+        "en": "Resolve this check's scope"
+      },
+      "description": {
+        "zh": "自动使用运行当天作为快照日，根据已填写的天数启用检查；阈值只用于分类，不限制移动历史。",
+        "en": "Uses the run date as the snapshot and enables supplied checks; thresholds classify layers and never bound movement history."
+      },
+      "operations": {
+        "zh": [
+          "本地规则 resolve_inventory_health_window"
+        ],
+        "en": [
+          "Local rule resolve_inventory_health_window"
+        ]
+      },
+      "tools": [
+        {
+          "name": "resolve_inventory_health_window",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "生成检查开关和完整历史截止日",
+            "en": "Generate check switches and the complete-history cutoff"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "resolve_window"
+      ]
     },
     {
       "id": "read-current-stock",
-      "title": {"zh": "读取当前库存", "en": "Read current stock"},
-      "description": {"zh": "始终查询指定物料、工厂和库存地点的当前非限制使用、非特殊库存。", "en": "Always reads current unrestricted-use, non-special stock for the exact material, plant, and storage location."},
-      "operations": {"zh": ["GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"], "en": ["GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"]},
-      "tools": [{"name": "Embedded SAP OData Provider", "kind": "GET-only SAP Provider", "purpose": {"zh": "读取当前库存快照", "en": "Read the current stock snapshot"}}],
-      "executionStepIds": ["read_stock"]
+      "title": {
+        "zh": "读取当前库存",
+        "en": "Read current stock"
+      },
+      "description": {
+        "zh": "始终查询指定物料、工厂和库存地点的当前非限制使用、非特殊库存。",
+        "en": "Always reads current unrestricted-use, non-special stock for the exact material, plant, and storage location."
+      },
+      "operations": {
+        "zh": [
+          "GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"
+        ],
+        "en": [
+          "GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "读取当前库存快照",
+            "en": "Read the current stock snapshot"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_stock"
+      ]
     },
     {
       "id": "read-optional-movement",
-      "title": {"zh": "按需读取移动历史", "en": "Read movement history when requested"},
-      "description": {"zh": "仅当填写慢动或呆滞天数时，按最大阈值读取物料凭证及其过账日期。", "en": "Reads material-document items and header posting dates only when a slow-moving or obsolete threshold is supplied."},
-      "operations": {"zh": ["GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem", "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader"], "en": ["GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem", "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader"]},
-      "tools": [{"name": "Embedded SAP OData Provider", "kind": "GET-only SAP Provider", "purpose": {"zh": "读取所选日期窗口内的移动证据", "en": "Read movement evidence inside the selected date window"}}],
-      "executionStepIds": ["read_movement_dates"]
+      "title": {
+        "zh": "按需读取完整移动历史",
+        "en": "Read complete movement history when requested"
+      },
+      "description": {
+        "zh": "慢动或呆滞检查读取截止快照日的完整物料凭证数量、借贷方向、库存维度及 Header 时间。",
+        "en": "Slow-moving or obsolete checks read complete material-document quantities, debit/credit direction, stock dimensions, and header timestamps through the snapshot date."
+      },
+      "operations": {
+        "zh": [
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader"
+        ],
+        "en": [
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "读取完整 FIFO 重建证据",
+            "en": "Read complete FIFO reconstruction evidence"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_movement_dates"
+      ]
+    },
+    {
+      "id": "confirm-current-stock",
+      "title": {
+        "zh": "复核当前库存快照",
+        "en": "Confirm the current stock snapshot"
+      },
+      "description": {
+        "zh": "移动历史读取后再次读取相同库存范围；两次快照不一致时不输出确定账龄。",
+        "en": "Rereads the same stock scope after movement history; differing snapshots suppress definitive aging."
+      },
+      "operations": {
+        "zh": [
+          "GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"
+        ],
+        "en": [
+          "GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "识别并发库存变化",
+            "en": "Detect concurrent stock changes"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_stock_confirmation"
+      ]
     },
     {
       "id": "read-optional-expiry",
-      "title": {"zh": "按需读取批次效期", "en": "Read batch expiry when requested"},
-      "description": {"zh": "仅当填写临期天数时读取批次效期，并只关联当前正库存批次。", "en": "Reads batch expiry only when requested and relates it only to batches with positive current stock."},
-      "operations": {"zh": ["GET API_BATCH_SRV@2.0/Batch"], "en": ["GET API_BATCH_SRV@2.0/Batch"]},
-      "tools": [{"name": "Embedded SAP OData Provider", "kind": "GET-only SAP Provider", "purpose": {"zh": "读取批次和效期证据", "en": "Read batch and expiry evidence"}}],
-      "executionStepIds": ["read_batch_parameters"]
+      "title": {
+        "zh": "按需读取批次效期",
+        "en": "Read batch expiry when requested"
+      },
+      "description": {
+        "zh": "仅当填写临期天数时读取批次效期，并只关联当前正库存批次。",
+        "en": "Reads batch expiry only when requested and relates it only to batches with positive current stock."
+      },
+      "operations": {
+        "zh": [
+          "GET API_BATCH_SRV@2.0/Batch"
+        ],
+        "en": [
+          "GET API_BATCH_SRV@2.0/Batch"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "读取批次和效期证据",
+            "en": "Read batch and expiry evidence"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_batch_parameters"
+      ]
     },
     {
       "id": "assess-evidence",
-      "title": {"zh": "检查证据完整性", "en": "Assess evidence completeness"},
-      "description": {"zh": "只评估本次实际启用的证据主题，未启用检查不记缺口。", "en": "Assesses only requested evidence topics; disabled checks do not create gaps."},
-      "operations": {"zh": ["本地规则 assess_api_evidence"], "en": ["Local rule assess_api_evidence"]},
-      "tools": [{"name": "assess_api_evidence", "kind": "Local deterministic rule", "purpose": {"zh": "判定是否存在实时 Schema 能力缺口", "en": "Determine whether live schema proves a capability gap"}}],
-      "executionStepIds": ["assess"]
+      "title": {
+        "zh": "检查证据完整性",
+        "en": "Assess evidence completeness"
+      },
+      "description": {
+        "zh": "只评估本次实际启用的证据主题，未启用检查不记缺口。",
+        "en": "Assesses only requested evidence topics; disabled checks do not create gaps."
+      },
+      "operations": {
+        "zh": [
+          "本地规则 assess_api_evidence"
+        ],
+        "en": [
+          "Local rule assess_api_evidence"
+        ]
+      },
+      "tools": [
+        {
+          "name": "assess_api_evidence",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "判定是否存在实时 Schema 能力缺口",
+            "en": "Determine whether live schema proves a capability gap"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "assess"
+      ]
     },
     {
       "id": "approved-adt-stock-fallback",
-      "title": {"zh": "按需补充库存证据", "en": "Supplement stock evidence when needed"},
-      "description": {"zh": "仅在实时 Schema 直接证明库存 API 能力缺口时调用只读 MARD。", "en": "Uses read-only MARD only when live schema directly proves a stock-API capability gap."},
-      "operations": {"zh": ["只读 MARD"], "en": ["Read-only MARD"]},
-      "tools": [{"name": "sap-adt-table-export", "kind": "Approved read-only Skill", "purpose": {"zh": "补充当前库存证据", "en": "Supplement current-stock evidence"}}],
-      "executionStepIds": ["adt_stock"]
+      "title": {
+        "zh": "按需补充库存证据",
+        "en": "Supplement stock evidence when needed"
+      },
+      "description": {
+        "zh": "仅在实时 Schema 直接证明库存 API 能力缺口时调用只读 MARD。",
+        "en": "Uses read-only MARD only when live schema directly proves a stock-API capability gap."
+      },
+      "operations": {
+        "zh": [
+          "只读 MARD"
+        ],
+        "en": [
+          "Read-only MARD"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Approved read-only Skill",
+          "purpose": {
+            "zh": "补充当前库存证据",
+            "en": "Supplement current-stock evidence"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_stock"
+      ]
     },
     {
       "id": "approved-adt-movement-fallback",
-      "title": {"zh": "按需补充移动证据", "en": "Supplement movement evidence when needed"},
-      "description": {"zh": "仅在已启用移动检查且实时 Schema 直接证明 API 能力缺口时调用只读 MATDOC。", "en": "Uses read-only MATDOC only for an enabled movement check with a live-schema-proven API capability gap."},
-      "operations": {"zh": ["只读 MATDOC"], "en": ["Read-only MATDOC"]},
-      "tools": [{"name": "sap-adt-table-export", "kind": "Approved read-only Skill", "purpose": {"zh": "补充移动历史证据", "en": "Supplement movement-history evidence"}}],
-      "executionStepIds": ["adt_movement"]
+      "title": {
+        "zh": "按需补充移动证据",
+        "en": "Supplement movement evidence when needed"
+      },
+      "description": {
+        "zh": "仅在已启用移动检查且实时 Schema 直接证明 API 能力缺口时调用只读 MATDOC。",
+        "en": "Uses read-only MATDOC only for an enabled movement check with a live-schema-proven API capability gap."
+      },
+      "operations": {
+        "zh": [
+          "只读 MATDOC"
+        ],
+        "en": [
+          "Read-only MATDOC"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Approved read-only Skill",
+          "purpose": {
+            "zh": "补充移动历史证据",
+            "en": "Supplement movement-history evidence"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_movement"
+      ]
     },
     {
       "id": "approved-adt-batch-fallback",
-      "title": {"zh": "按需补充批次证据", "en": "Supplement batch evidence when needed"},
-      "description": {"zh": "仅在已启用临期检查且实时 Schema 直接证明 API 能力缺口时调用只读 MCHA。", "en": "Uses read-only MCHA only for an enabled expiry check with a live-schema-proven API capability gap."},
-      "operations": {"zh": ["只读 MCHA"], "en": ["Read-only MCHA"]},
-      "tools": [{"name": "sap-adt-table-export", "kind": "Approved read-only Skill", "purpose": {"zh": "补充批次效期证据", "en": "Supplement batch-expiry evidence"}}],
-      "executionStepIds": ["adt_batch"]
+      "title": {
+        "zh": "按需补充批次证据",
+        "en": "Supplement batch evidence when needed"
+      },
+      "description": {
+        "zh": "仅在已启用临期检查且实时 Schema 直接证明 API 能力缺口时调用只读 MCHA。",
+        "en": "Uses read-only MCHA only for an enabled expiry check with a live-schema-proven API capability gap."
+      },
+      "operations": {
+        "zh": [
+          "只读 MCHA"
+        ],
+        "en": [
+          "Read-only MCHA"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Approved read-only Skill",
+          "purpose": {
+            "zh": "补充批次效期证据",
+            "en": "Supplement batch-expiry evidence"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_batch"
+      ]
     },
     {
       "id": "evaluate-health",
-      "title": {"zh": "形成库存健康结论", "en": "Evaluate inventory health"},
-      "description": {"zh": "按用户选择的检查项目计算账龄、风险和完整性，不生成调拨建议。", "en": "Calculates age, risk, and completeness for selected checks without producing transfer advice."},
-      "operations": {"zh": ["本地规则 inventory_health_check_deterministic_v2"], "en": ["Local rule inventory_health_check_deterministic_v2"]},
-      "tools": [{"name": "evaluate_business_agent", "kind": "Local deterministic rule", "purpose": {"zh": "生成双语业务报告", "en": "Generate the bilingual business report"}}],
-      "executionStepIds": ["evaluate"]
+      "title": {
+        "zh": "形成库存健康结论",
+        "en": "Evaluate inventory health"
+      },
+      "description": {
+        "zh": "以 Decimal 和 FIFO 重建剩余库存层，按互斥账龄桶形成风险结论，不生成调拨建议。",
+        "en": "Reconstructs remaining inventory layers with Decimal FIFO and exclusive age buckets without producing transfer advice."
+      },
+      "operations": {
+        "zh": [
+          "本地规则 inventory_health_check_deterministic_v3"
+        ],
+        "en": [
+          "Local rule inventory_health_check_deterministic_v3"
+        ]
+      },
+      "tools": [
+        {
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "生成双语业务报告",
+            "en": "Generate the bilingual business report"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "evaluate"
+      ]
     }
   ],
   "execution": {
@@ -107,40 +465,585 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "material": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[0-9A-Za-z_-]+$", "title": {"zh": "物料", "en": "Material"}},
-        "plant": {"type": "string", "minLength": 1, "maxLength": 4, "pattern": "^[0-9A-Za-z_-]+$", "title": {"zh": "工厂", "en": "Plant"}},
-        "storage_location": {"type": "string", "minLength": 1, "maxLength": 4, "pattern": "^[0-9A-Za-z_-]+$", "title": {"zh": "库存地点", "en": "Storage Location"}},
-        "slow_moving_days": {"type": "integer", "minimum": 1, "maximum": 365, "title": {"zh": "慢动天数（可选）", "en": "Slow-moving days (optional)"}, "description": {"zh": "留空则不执行慢动检查。", "en": "Leave blank to skip the slow-moving check."}},
-        "obsolete_days": {"type": "integer", "minimum": 1, "maximum": 365, "title": {"zh": "呆滞天数（可选）", "en": "Obsolete days (optional)"}, "description": {"zh": "留空则不执行呆滞检查。", "en": "Leave blank to skip the obsolete-stock check."}},
-        "expiry_days": {"type": "integer", "minimum": 1, "maximum": 365, "title": {"zh": "临期天数（可选）", "en": "Expiry days (optional)"}, "description": {"zh": "留空则不执行临期检查。", "en": "Leave blank to skip the expiry check."}}
+        "material": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          }
+        },
+        "plant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          }
+        },
+        "storage_location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "库存地点",
+            "en": "Storage Location"
+          }
+        },
+        "slow_moving_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365,
+          "title": {
+            "zh": "慢动天数（可选）",
+            "en": "Slow-moving days (optional)"
+          },
+          "description": {
+            "zh": "留空则不执行慢动检查。",
+            "en": "Leave blank to skip the slow-moving check."
+          }
+        },
+        "obsolete_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365,
+          "title": {
+            "zh": "呆滞天数（可选）",
+            "en": "Obsolete days (optional)"
+          },
+          "description": {
+            "zh": "留空则不执行呆滞检查。",
+            "en": "Leave blank to skip the obsolete-stock check."
+          }
+        },
+        "expiry_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365,
+          "title": {
+            "zh": "临期天数（可选）",
+            "en": "Expiry days (optional)"
+          },
+          "description": {
+            "zh": "留空则不执行临期检查。",
+            "en": "Leave blank to skip the expiry check."
+          }
+        }
       },
-      "required": ["material", "plant", "storage_location"],
+      "required": [
+        "material",
+        "plant",
+        "storage_location"
+      ],
       "additionalProperties": false,
-      "numericOrderPairs": [{"lower": "slow_moving_days", "upper": "obsolete_days"}]
+      "numericOrderPairs": [
+        {
+          "lower": "slow_moving_days",
+          "upper": "obsolete_days"
+        }
+      ]
     },
     "outputSchema": {
       "type": "object",
       "properties": {
-        "snapshot_date": {"type": "string", "title": {"zh": "快照日期", "en": "Snapshot date"}},
-        "material": {"type": "string", "title": {"zh": "物料", "en": "Material"}},
-        "plant": {"type": "string", "title": {"zh": "工厂", "en": "Plant"}},
-        "storage_location": {"type": "string", "title": {"zh": "库存地点", "en": "Storage Location"}},
-        "current_unrestricted_stock": {"type": ["string", "null"], "title": {"zh": "当前非限制使用库存", "en": "Current unrestricted-use stock"}},
-        "unit": {"type": ["string", "null"], "title": {"zh": "单位", "en": "Unit"}},
-        "selected_checks": {"type": "array", "title": {"zh": "本次检查项目", "en": "Selected checks"}},
-        "last_movement_date": {"type": ["string", "null"], "title": {"zh": "最后移动日期", "en": "Last movement date"}},
-        "stock_age_days": {"type": ["integer", "null"], "title": {"zh": "库存账龄（天）", "en": "Stock age (days)"}},
-        "stock_age_lower_bound_days": {"type": ["integer", "null"], "title": {"zh": "库存账龄下限（天）", "en": "Stock age lower bound (days)"}},
-        "slow_moving_status": {"type": "string", "title": {"zh": "慢动状态", "en": "Slow-moving status"}},
-        "obsolete_status": {"type": "string", "title": {"zh": "呆滞状态", "en": "Obsolete status"}},
-        "expiry_status": {"type": "string", "title": {"zh": "临期状态", "en": "Expiry status"}},
-        "expiry_candidate_count": {"type": "integer", "title": {"zh": "临期批次数", "en": "Expiry candidate count"}},
-        "business_status": {"type": "string", "title": {"zh": "业务状态", "en": "Business status"}},
-        "source_complete": {"type": "boolean", "title": {"zh": "查询源完整性", "en": "Query-source completeness"}},
-        "evidence_complete": {"type": "boolean", "title": {"zh": "证据完整性", "en": "Evidence completeness"}},
-        "business_report": {"type": "object", "title": {"zh": "结构化业务报告", "en": "Structured business report"}}
+        "snapshot_date": {
+          "type": "string",
+          "title": {
+            "zh": "快照日期",
+            "en": "Snapshot date"
+          }
+        },
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          }
+        },
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          }
+        },
+        "storage_location": {
+          "type": "string",
+          "title": {
+            "zh": "库存地点",
+            "en": "Storage Location"
+          }
+        },
+        "current_unrestricted_stock": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "当前非限制使用库存",
+            "en": "Current unrestricted-use stock"
+          }
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "单位",
+            "en": "Unit"
+          }
+        },
+        "selected_checks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "slow_moving",
+              "obsolete",
+              "expiry"
+            ]
+          },
+          "title": {
+            "zh": "本次检查项目",
+            "en": "Selected checks"
+          },
+          "x-sapba-display": {
+            "format": "enum_list",
+            "labels": {
+              "slow_moving": {
+                "zh": "慢动检查",
+                "en": "Slow-moving check"
+              },
+              "obsolete": {
+                "zh": "呆滞检查",
+                "en": "Obsolete-stock check"
+              },
+              "expiry": {
+                "zh": "临期检查",
+                "en": "Expiry check"
+              }
+            }
+          }
+        },
+        "last_movement_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "最后库存活动日期（兼容字段）",
+            "en": "Last inventory activity date (compatibility field)"
+          },
+          "deprecated": true
+        },
+        "stock_age_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "距最后库存活动天数（兼容字段）",
+            "en": "Days since last inventory activity (compatibility field)"
+          },
+          "deprecated": true
+        },
+        "stock_age_lower_bound_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "库存账龄下限（兼容字段）",
+            "en": "Stock age lower bound (compatibility field)"
+          },
+          "deprecated": true,
+          "x-sapba-display": {
+            "visible": false
+          }
+        },
+        "aging_method": {
+          "type": "string",
+          "enum": [
+            "fifo_movement_layers",
+            "not_requested"
+          ],
+          "title": {
+            "zh": "账龄计算方法",
+            "en": "Aging method"
+          },
+          "x-sapba-display": {
+            "format": "enum",
+            "labels": {
+              "fifo_movement_layers": {
+                "zh": "FIFO 数量分层",
+                "en": "FIFO movement layers"
+              },
+              "not_requested": {
+                "zh": "未启用",
+                "en": "Not enabled"
+              }
+            }
+          }
+        },
+        "aging_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "账龄计算完整性",
+            "en": "Aging completeness"
+          }
+        },
+        "last_movement_activity_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "最后库存活动日期",
+            "en": "Last inventory activity date"
+          }
+        },
+        "days_since_last_movement_activity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "距最后库存活动天数",
+            "en": "Days since last inventory activity"
+          }
+        },
+        "oldest_remaining_layer_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "最早剩余库存层日期",
+            "en": "Oldest remaining inventory-layer date"
+          }
+        },
+        "oldest_remaining_layer_age_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "最早剩余库存层账龄（天）",
+            "en": "Oldest remaining inventory-layer age (days)"
+          }
+        },
+        "classified_stock_quantity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "已分类库存数量",
+            "en": "Classified stock quantity"
+          }
+        },
+        "unclassified_stock_quantity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "未分类库存数量",
+            "en": "Unclassified stock quantity"
+          }
+        },
+        "below_threshold_stock_quantity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "未达到最低已启用阈值数量",
+            "en": "Quantity below the lowest enabled threshold"
+          }
+        },
+        "slow_moving_only_stock_quantity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "慢动但未呆滞数量",
+            "en": "Slow-moving but not obsolete quantity"
+          }
+        },
+        "obsolete_stock_quantity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "呆滞库存数量",
+            "en": "Obsolete stock quantity"
+          }
+        },
+        "aging_buckets": {
+          "type": "array",
+          "title": {
+            "zh": "库存账龄分布",
+            "en": "Inventory age distribution"
+          },
+          "x-sapba-display": {
+            "visible": false
+          },
+          "items": {
+            "type": "object",
+            "properties": {
+              "bucket_id": {
+                "type": "string"
+              },
+              "bucket_label": {
+                "type": "object"
+              },
+              "minimum_age_days": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "maximum_age_days": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "quantity": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "bucket_id",
+              "bucket_label",
+              "minimum_age_days",
+              "maximum_age_days",
+              "quantity",
+              "unit"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "slow_moving_status": {
+          "type": "string",
+          "enum": [
+            "candidate",
+            "not_candidate",
+            "unknown",
+            "not_requested"
+          ],
+          "title": {
+            "zh": "慢动状态",
+            "en": "Slow-moving status"
+          },
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "candidate": {
+                "zh": "风险候选",
+                "en": "Risk candidate"
+              },
+              "not_candidate": {
+                "zh": "未发现风险",
+                "en": "No risk found"
+              },
+              "unknown": {
+                "zh": "无法确认",
+                "en": "Unknown"
+              },
+              "not_requested": {
+                "zh": "未启用",
+                "en": "Not enabled"
+              }
+            }
+          }
+        },
+        "obsolete_status": {
+          "type": "string",
+          "enum": [
+            "candidate",
+            "not_candidate",
+            "unknown",
+            "not_requested"
+          ],
+          "title": {
+            "zh": "呆滞状态",
+            "en": "Obsolete status"
+          },
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "candidate": {
+                "zh": "风险候选",
+                "en": "Risk candidate"
+              },
+              "not_candidate": {
+                "zh": "未发现风险",
+                "en": "No risk found"
+              },
+              "unknown": {
+                "zh": "无法确认",
+                "en": "Unknown"
+              },
+              "not_requested": {
+                "zh": "未启用",
+                "en": "Not enabled"
+              }
+            }
+          }
+        },
+        "expiry_status": {
+          "type": "string",
+          "enum": [
+            "candidate",
+            "not_candidate",
+            "unknown",
+            "not_requested"
+          ],
+          "title": {
+            "zh": "临期状态",
+            "en": "Expiry status"
+          },
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "candidate": {
+                "zh": "风险候选",
+                "en": "Risk candidate"
+              },
+              "not_candidate": {
+                "zh": "未发现风险",
+                "en": "No risk found"
+              },
+              "unknown": {
+                "zh": "无法确认",
+                "en": "Unknown"
+              },
+              "not_requested": {
+                "zh": "未启用",
+                "en": "Not enabled"
+              }
+            }
+          }
+        },
+        "expiry_candidate_count": {
+          "type": "integer",
+          "title": {
+            "zh": "临期批次数",
+            "en": "Expiry candidate count"
+          }
+        },
+        "business_status": {
+          "type": "string",
+          "enum": [
+            "snapshot_only",
+            "no_stock",
+            "inconclusive",
+            "normal",
+            "attention"
+          ],
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          },
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "snapshot_only": {
+                "zh": "仅库存快照",
+                "en": "Stock snapshot only"
+              },
+              "no_stock": {
+                "zh": "无当前库存",
+                "en": "No current stock"
+              },
+              "inconclusive": {
+                "zh": "无法确认",
+                "en": "Inconclusive"
+              },
+              "normal": {
+                "zh": "正常",
+                "en": "Normal"
+              },
+              "attention": {
+                "zh": "需要关注",
+                "en": "Attention required"
+              }
+            }
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "证据完整性",
+            "en": "Evidence completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
       },
-      "required": ["snapshot_date", "material", "plant", "storage_location", "current_unrestricted_stock", "unit", "selected_checks", "last_movement_date", "stock_age_days", "stock_age_lower_bound_days", "slow_moving_status", "obsolete_status", "expiry_status", "expiry_candidate_count", "business_status", "source_complete", "evidence_complete", "business_report"],
+      "required": [
+        "snapshot_date",
+        "material",
+        "plant",
+        "storage_location",
+        "current_unrestricted_stock",
+        "unit",
+        "selected_checks",
+        "last_movement_date",
+        "stock_age_days",
+        "stock_age_lower_bound_days",
+        "aging_method",
+        "aging_complete",
+        "last_movement_activity_date",
+        "days_since_last_movement_activity",
+        "oldest_remaining_layer_date",
+        "oldest_remaining_layer_age_days",
+        "classified_stock_quantity",
+        "unclassified_stock_quantity",
+        "below_threshold_stock_quantity",
+        "slow_moving_only_stock_quantity",
+        "obsolete_stock_quantity",
+        "aging_buckets",
+        "slow_moving_status",
+        "obsolete_status",
+        "expiry_status",
+        "expiry_candidate_count",
+        "business_status",
+        "source_complete",
+        "evidence_complete",
+        "business_report"
+      ],
       "additionalProperties": false
     },
     "outputMapping": {
@@ -154,6 +1057,18 @@
       "last_movement_date": "{{steps.evaluate.output.workflow_output.last_movement_date}}",
       "stock_age_days": "{{steps.evaluate.output.workflow_output.stock_age_days}}",
       "stock_age_lower_bound_days": "{{steps.evaluate.output.workflow_output.stock_age_lower_bound_days}}",
+      "aging_method": "{{steps.evaluate.output.workflow_output.aging_method}}",
+      "aging_complete": "{{steps.evaluate.output.workflow_output.aging_complete}}",
+      "last_movement_activity_date": "{{steps.evaluate.output.workflow_output.last_movement_activity_date}}",
+      "days_since_last_movement_activity": "{{steps.evaluate.output.workflow_output.days_since_last_movement_activity}}",
+      "oldest_remaining_layer_date": "{{steps.evaluate.output.workflow_output.oldest_remaining_layer_date}}",
+      "oldest_remaining_layer_age_days": "{{steps.evaluate.output.workflow_output.oldest_remaining_layer_age_days}}",
+      "classified_stock_quantity": "{{steps.evaluate.output.workflow_output.classified_stock_quantity}}",
+      "unclassified_stock_quantity": "{{steps.evaluate.output.workflow_output.unclassified_stock_quantity}}",
+      "below_threshold_stock_quantity": "{{steps.evaluate.output.workflow_output.below_threshold_stock_quantity}}",
+      "slow_moving_only_stock_quantity": "{{steps.evaluate.output.workflow_output.slow_moving_only_stock_quantity}}",
+      "obsolete_stock_quantity": "{{steps.evaluate.output.workflow_output.obsolete_stock_quantity}}",
+      "aging_buckets": "{{steps.evaluate.output.workflow_output.aging_buckets}}",
       "slow_moving_status": "{{steps.evaluate.output.workflow_output.slow_moving_status}}",
       "obsolete_status": "{{steps.evaluate.output.workflow_output.obsolete_status}}",
       "expiry_status": "{{steps.evaluate.output.workflow_output.expiry_status}}",
@@ -164,119 +1079,476 @@
       "business_report": "{{steps.evaluate.output.workflow_output.business_report}}"
     },
     "steps": [
-      {"id": "resolve_window", "executor": "rule", "operation": "resolve_inventory_health_window", "inputMapping": {"run_input": "{{input}}"}},
       {
-        "id": "read_stock", "executor": "sap_read", "operation": "execute_plan", "readOnly": true, "failurePolicy": "record_gap",
-        "request": {"plan": {
-          "service_name": "API_MATERIAL_STOCK_SRV", "odata_version": "2.0", "entity_set": "A_MatlStkInAcctMod", "http_method": "GET", "plan_kind": "direct",
-          "select_fields": ["Material", "Plant", "StorageLocation", "Batch", "InventoryStockType", "InventorySpecialStockType", "MatlWrhsStkQtyInMatlBaseUnit", "MaterialBaseUnit"],
-          "filters": [
-            {"field": "Material", "operator": "eq", "value": "{{input.material}}", "value_type": "string"},
-            {"field": "Plant", "operator": "eq", "value": "{{input.plant}}", "value_type": "string"},
-            {"field": "StorageLocation", "operator": "eq", "value": "{{input.storage_location}}", "value_type": "string"},
-            {"field": "InventoryStockType", "operator": "eq", "value": "01", "value_type": "string"},
-            {"field": "InventorySpecialStockType", "operator": "eq", "value": "", "value_type": "string"}
-          ],
-          "rationale": "Read the exact current unrestricted-use, non-special stock snapshot."
-        }}
+        "id": "resolve_window",
+        "executor": "rule",
+        "operation": "resolve_inventory_health_window",
+        "inputMapping": {
+          "run_input": "{{input}}"
+        }
       },
       {
-        "id": "read_movement_dates", "executor": "sap_read", "operation": "execute_plan", "readOnly": true, "failurePolicy": "record_gap",
-        "when": {"source": "{{steps.resolve_window.output.movement_check_requested}}", "equals": true},
-        "request": {"plan": {
-          "service_name": "API_MATERIAL_DOCUMENT_SRV", "odata_version": "2.0", "entity_set": "A_MaterialDocumentItem", "http_method": "GET", "plan_kind": "multi_step",
-          "steps": [
+        "id": "read_stock",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_MATERIAL_STOCK_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_MatlStkInAcctMod",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "Material",
+              "Plant",
+              "StorageLocation",
+              "Batch",
+              "InventoryStockType",
+              "InventorySpecialStockType",
+              "MatlWrhsStkQtyInMatlBaseUnit",
+              "MaterialBaseUnit"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "Plant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              },
+              {
+                "field": "StorageLocation",
+                "operator": "eq",
+                "value": "{{input.storage_location}}",
+                "value_type": "string"
+              },
+              {
+                "field": "InventoryStockType",
+                "operator": "eq",
+                "value": "01",
+                "value_type": "string"
+              },
+              {
+                "field": "InventorySpecialStockType",
+                "operator": "eq",
+                "value": "",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read the exact current unrestricted-use, non-special stock snapshot."
+          }
+        }
+      },
+      {
+        "id": "read_movement_dates",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.resolve_window.output.movement_check_requested}}",
+          "equals": true
+        },
+        "request": {
+          "plan": {
+            "service_name": "API_MATERIAL_DOCUMENT_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_MaterialDocumentItem",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "movement_date_items",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "Material",
+                  "Plant",
+                  "StorageLocation",
+                  "Batch",
+                  "GoodsMovementType",
+                  "DebitCreditCode",
+                  "QuantityInBaseUnit",
+                  "MaterialBaseUnit",
+                  "InventoryStockType",
+                  "InventorySpecialStockType",
+                  "ReversedMaterialDocumentYear",
+                  "ReversedMaterialDocument"
+                ],
+                "order_by": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem"
+                ],
+                "filters": [
+                  {
+                    "field": "Material",
+                    "operator": "eq",
+                    "value": "{{input.material}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "Plant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "StorageLocation",
+                    "operator": "eq",
+                    "value": "{{input.storage_location}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "InventoryStockType",
+                    "operator": "eq",
+                    "value": "01",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "InventorySpecialStockType",
+                    "operator": "eq",
+                    "value": "",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "movement_date_headers",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentHeader",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "PostingDate",
+                  "CreationDate",
+                  "CreationTime"
+                ],
+                "order_by": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument"
+                ],
+                "filters": [],
+                "filter_from_previous": [
+                  {
+                    "field": "MaterialDocumentYear",
+                    "source_step_id": "movement_date_items",
+                    "source_field": "MaterialDocumentYear"
+                  },
+                  {
+                    "field": "MaterialDocument",
+                    "source_step_id": "movement_date_items",
+                    "source_field": "MaterialDocument"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Read the complete unrestricted-use movement history through the snapshot date for FIFO quantity-layer reconstruction."
+          }
+        }
+      },
+      {
+        "id": "read_stock_confirmation",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.resolve_window.output.movement_check_requested}}",
+          "equals": true
+        },
+        "request": {
+          "plan": {
+            "service_name": "API_MATERIAL_STOCK_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_MatlStkInAcctMod",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "Material",
+              "Plant",
+              "StorageLocation",
+              "Batch",
+              "InventoryStockType",
+              "InventorySpecialStockType",
+              "MatlWrhsStkQtyInMatlBaseUnit",
+              "MaterialBaseUnit"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "Plant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              },
+              {
+                "field": "StorageLocation",
+                "operator": "eq",
+                "value": "{{input.storage_location}}",
+                "value_type": "string"
+              },
+              {
+                "field": "InventoryStockType",
+                "operator": "eq",
+                "value": "01",
+                "value_type": "string"
+              },
+              {
+                "field": "InventorySpecialStockType",
+                "operator": "eq",
+                "value": "",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Reread the exact current stock after movement history to detect concurrent stock changes."
+          }
+        }
+      },
+      {
+        "id": "read_batch_parameters",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.resolve_window.output.check_expiry}}",
+          "equals": true
+        },
+        "request": {
+          "plan": {
+            "service_name": "API_BATCH_SRV",
+            "odata_version": "2.0",
+            "entity_set": "Batch",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "Material",
+              "BatchIdentifyingPlant",
+              "Batch",
+              "ShelfLifeExpirationDate",
+              "ManufactureDate",
+              "BatchIsMarkedForDeletion"
+            ],
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "value_type": "string"
+              },
+              {
+                "field": "BatchIdentifyingPlant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read expiry evidence only when the user requests an expiry check."
+          }
+        }
+      },
+      {
+        "id": "assess",
+        "executor": "rule",
+        "operation": "assess_api_evidence",
+        "inputMapping": {
+          "checks": {
+            "stock": {
+              "initial": "{{steps.read_stock.output}}",
+              "confirmation": "{{steps.read_stock_confirmation.output}}"
+            },
+            "movement": "{{steps.read_movement_dates.output}}",
+            "batch_expiry": "{{steps.read_batch_parameters.output}}"
+          },
+          "requested": {
+            "stock": true,
+            "movement": "{{steps.resolve_window.output.movement_check_requested}}",
+            "batch_expiry": "{{steps.resolve_window.output.check_expiry}}"
+          },
+          "fallback_on_incomplete": [
+            "movement"
+          ]
+        }
+      },
+      {
+        "id": "adt_stock",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.stock}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "MARD",
+          "fields": [
+            "MATNR",
+            "WERKS",
+            "LGORT",
+            "LABST",
+            "MEINS"
+          ],
+          "filters": [
             {
-              "step_id": "movement_date_items", "service_name": "API_MATERIAL_DOCUMENT_SRV", "odata_version": "2.0", "entity_set": "A_MaterialDocumentItem", "http_method": "GET",
-              "select_fields": ["MaterialDocumentYear", "MaterialDocument", "MaterialDocumentItem", "Material", "Plant", "StorageLocation"],
-              "filters": [
-                {"field": "Material", "operator": "eq", "value": "{{input.material}}", "value_type": "string"},
-                {"field": "Plant", "operator": "eq", "value": "{{input.plant}}", "value_type": "string"},
-                {"field": "StorageLocation", "operator": "eq", "value": "{{input.storage_location}}", "value_type": "string"},
-                {"field": "MaterialDocumentYear", "operator": "in", "value": "{{steps.resolve_window.output.movement_years}}"}
-              ]
+              "field": "MATNR",
+              "operator": "eq",
+              "value": "{{input.material}}"
             },
             {
-              "step_id": "movement_date_headers", "service_name": "API_MATERIAL_DOCUMENT_SRV", "odata_version": "2.0", "entity_set": "A_MaterialDocumentHeader", "http_method": "GET",
-              "select_fields": ["MaterialDocumentYear", "MaterialDocument", "PostingDate"],
-              "filters": [
-                {"field": "PostingDate", "operator": "ge", "value": "{{steps.resolve_window.output.movement_date_from}}", "value_type": "date_start"},
-                {"field": "PostingDate", "operator": "le", "value": "{{steps.resolve_window.output.snapshot_date}}", "value_type": "date_end"}
-              ],
-              "filter_from_previous": [
-                {"field": "MaterialDocumentYear", "source_step_id": "movement_date_items", "source_field": "MaterialDocumentYear"},
-                {"field": "MaterialDocument", "source_step_id": "movement_date_items", "source_field": "MaterialDocument"}
-              ]
+              "field": "WERKS",
+              "operator": "eq",
+              "value": "{{input.plant}}"
+            },
+            {
+              "field": "LGORT",
+              "operator": "eq",
+              "value": "{{input.storage_location}}"
             }
           ],
-          "rationale": "Read movement posting dates inside the maximum requested health-check window."
-        }}
-      },
-      {
-        "id": "read_batch_parameters", "executor": "sap_read", "operation": "execute_plan", "readOnly": true, "failurePolicy": "record_gap",
-        "when": {"source": "{{steps.resolve_window.output.check_expiry}}", "equals": true},
-        "request": {"plan": {
-          "service_name": "API_BATCH_SRV", "odata_version": "2.0", "entity_set": "Batch", "http_method": "GET", "plan_kind": "direct",
-          "select_fields": ["Material", "BatchIdentifyingPlant", "Batch", "ShelfLifeExpirationDate", "ManufactureDate", "BatchIsMarkedForDeletion"],
-          "filters": [
-            {"field": "Material", "operator": "eq", "value": "{{input.material}}", "value_type": "string"},
-            {"field": "BatchIdentifyingPlant", "operator": "eq", "value": "{{input.plant}}", "value_type": "string"}
-          ],
-          "rationale": "Read expiry evidence only when the user requests an expiry check."
-        }}
-      },
-      {
-        "id": "assess", "executor": "rule", "operation": "assess_api_evidence",
-        "inputMapping": {
-          "checks": {"stock": "{{steps.read_stock.output}}", "movement": "{{steps.read_movement_dates.output}}", "batch_expiry": "{{steps.read_batch_parameters.output}}"},
-          "requested": {"stock": true, "movement": "{{steps.resolve_window.output.movement_check_requested}}", "batch_expiry": "{{steps.resolve_window.output.check_expiry}}"}
+          "max_rows": 30000
         }
       },
       {
-        "id": "adt_stock", "executor": "skill", "operation": "execute", "skillId": "sap-adt-table-export", "readOnly": true, "failurePolicy": "record_gap",
-        "when": {"source": "{{steps.assess.output.needs_adt.stock}}", "equals": true},
+        "id": "adt_movement",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.movement}}",
+          "equals": true
+        },
         "inputMapping": {
-          "schema_version": 1, "source_type": "table", "object": "MARD", "fields": ["MATNR", "WERKS", "LGORT", "LABST", "MEINS"],
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "MATDOC",
+          "fields": [
+            "MBLNR",
+            "MJAHR",
+            "ZEILE",
+            "MATNR",
+            "WERKS",
+            "LGORT",
+            "CHARG",
+            "BUDAT",
+            "CPUDT",
+            "CPUTM",
+            "BWART",
+            "SHKZG",
+            "MENGE",
+            "MEINS",
+            "INSMK",
+            "SOBKZ",
+            "SMBLN",
+            "SJAHR",
+            "SMBLP"
+          ],
           "filters": [
-            {"field": "MATNR", "operator": "eq", "value": "{{input.material}}"},
-            {"field": "WERKS", "operator": "eq", "value": "{{input.plant}}"},
-            {"field": "LGORT", "operator": "eq", "value": "{{input.storage_location}}"}
+            {
+              "field": "MATNR",
+              "operator": "eq",
+              "value": "{{input.material}}"
+            },
+            {
+              "field": "WERKS",
+              "operator": "eq",
+              "value": "{{input.plant}}"
+            },
+            {
+              "field": "LGORT",
+              "operator": "eq",
+              "value": "{{input.storage_location}}"
+            },
+            {
+              "field": "BUDAT",
+              "operator": "le",
+              "value": "{{steps.resolve_window.output.snapshot_date}}"
+            }
           ],
           "max_rows": 30000
         }
       },
       {
-        "id": "adt_movement", "executor": "skill", "operation": "execute", "skillId": "sap-adt-table-export", "readOnly": true, "failurePolicy": "record_gap",
-        "when": {"source": "{{steps.assess.output.needs_adt.movement}}", "equals": true},
+        "id": "adt_batch",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.batch_expiry}}",
+          "equals": true
+        },
         "inputMapping": {
-          "schema_version": 1, "source_type": "table", "object": "MATDOC", "fields": ["MBLNR", "MJAHR", "ZEILE", "MATNR", "WERKS", "LGORT", "BUDAT", "BWART", "MENGE", "MEINS"],
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "MCHA",
+          "fields": [
+            "MATNR",
+            "WERKS",
+            "CHARG",
+            "VFDAT"
+          ],
           "filters": [
-            {"field": "MATNR", "operator": "eq", "value": "{{input.material}}"},
-            {"field": "WERKS", "operator": "eq", "value": "{{input.plant}}"},
-            {"field": "LGORT", "operator": "eq", "value": "{{input.storage_location}}"},
-            {"field": "BUDAT", "operator": "bt", "low": "{{steps.resolve_window.output.movement_date_from}}", "high": "{{steps.resolve_window.output.snapshot_date}}"}
+            {
+              "field": "MATNR",
+              "operator": "eq",
+              "value": "{{input.material}}"
+            },
+            {
+              "field": "WERKS",
+              "operator": "eq",
+              "value": "{{input.plant}}"
+            }
           ],
           "max_rows": 30000
         }
       },
       {
-        "id": "adt_batch", "executor": "skill", "operation": "execute", "skillId": "sap-adt-table-export", "readOnly": true, "failurePolicy": "record_gap",
-        "when": {"source": "{{steps.assess.output.needs_adt.batch_expiry}}", "equals": true},
+        "id": "evaluate",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
         "inputMapping": {
-          "schema_version": 1, "source_type": "table", "object": "MCHA", "fields": ["MATNR", "WERKS", "CHARG", "VFDAT"],
-          "filters": [
-            {"field": "MATNR", "operator": "eq", "value": "{{input.material}}"},
-            {"field": "WERKS", "operator": "eq", "value": "{{input.plant}}"}
-          ],
-          "max_rows": 30000
-        }
-      },
-      {
-        "id": "evaluate", "executor": "rule", "operation": "evaluate_business_agent",
-        "inputMapping": {
-          "agent_id": "inventory-health-balancing", "run_input": "{{input}}", "window": "{{steps.resolve_window.output}}", "assessment": "{{steps.assess.output}}",
-          "evidence": {"stock": "{{steps.read_stock.output}}", "movement": "{{steps.read_movement_dates.output}}", "batch_expiry": "{{steps.read_batch_parameters.output}}"},
-          "fallbacks": {"stock": "{{steps.adt_stock.output}}", "movement": "{{steps.adt_movement.output}}", "batch_expiry": "{{steps.adt_batch.output}}"},
+          "agent_id": "inventory-health-balancing",
+          "run_input": "{{input}}",
+          "window": "{{steps.resolve_window.output}}",
+          "assessment": "{{steps.assess.output}}",
+          "evidence": {
+            "stock_initial": "{{steps.read_stock.output}}",
+            "stock_confirmation": "{{steps.read_stock_confirmation.output}}",
+            "movement": "{{steps.read_movement_dates.output}}",
+            "batch_expiry": "{{steps.read_batch_parameters.output}}"
+          },
+          "fallbacks": {
+            "stock": "{{steps.adt_stock.output}}",
+            "movement": "{{steps.adt_movement.output}}",
+            "batch_expiry": "{{steps.adt_batch.output}}"
+          },
           "known_gaps": []
         }
       }
@@ -284,64 +1556,185 @@
     "acceptance": {
       "schemaVersion": "2.0",
       "comparisonMode": "business_semantic",
-      "businessKeys": ["material", "plant", "storage_location"],
-      "facts": ["snapshot_date", "last_movement_date", "slow_moving_status", "obsolete_status", "expiry_status", "business_status", "source_complete", "evidence_complete"],
-      "metrics": ["current_unrestricted_stock", "stock_age_days", "stock_age_lower_bound_days", "expiry_candidate_count"],
-      "decimalFields": ["current_unrestricted_stock"],
-      "decimalMetricIds": ["current_unrestricted_stock"],
+      "businessKeys": [
+        "material",
+        "plant",
+        "storage_location"
+      ],
+      "facts": [
+        "snapshot_date",
+        "aging_method",
+        "aging_complete",
+        "last_movement_activity_date",
+        "oldest_remaining_layer_date",
+        "slow_moving_status",
+        "obsolete_status",
+        "expiry_status",
+        "business_status",
+        "source_complete",
+        "evidence_complete"
+      ],
+      "metrics": [
+        "current_unrestricted_stock",
+        "days_since_last_movement_activity",
+        "oldest_remaining_layer_age_days",
+        "classified_stock_quantity",
+        "unclassified_stock_quantity",
+        "below_threshold_stock_quantity",
+        "slow_moving_only_stock_quantity",
+        "obsolete_stock_quantity",
+        "expiry_candidate_count"
+      ],
+      "decimalFields": [
+        "current_unrestricted_stock"
+      ],
+      "decimalMetricIds": [
+        "current_unrestricted_stock",
+        "classified_stock_quantity",
+        "unclassified_stock_quantity",
+        "below_threshold_stock_quantity",
+        "slow_moving_only_stock_quantity",
+        "obsolete_stock_quantity"
+      ],
       "currencyFields": [],
-      "unitFields": ["unit"],
-      "dateFields": ["snapshot_date", "last_movement_date"],
+      "unitFields": [
+        "unit"
+      ],
+      "dateFields": [
+        "snapshot_date",
+        "last_movement_activity_date",
+        "oldest_remaining_layer_date"
+      ],
       "codeSetFields": [],
       "zeroPadFields": {},
-      "booleanFields": ["source_complete", "evidence_complete"],
-      "inputDefaults": {}, "constantDefaults": {}, "fieldAliases": {}, "fieldExtractors": {}, "currencyFromDecimal": {},
+      "booleanFields": [
+        "aging_complete",
+        "source_complete",
+        "evidence_complete"
+      ],
+      "inputDefaults": {},
+      "constantDefaults": {},
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
       "valueMappings": {
-        "slow_moving_status": {"attention": "candidate", "normal": "not_candidate", "not requested": "not_requested", "not enabled": "not_requested"},
-        "obsolete_status": {"attention": "candidate", "normal": "not_candidate", "not requested": "not_requested", "not enabled": "not_requested"},
-        "expiry_status": {"attention": "candidate", "normal": "not_candidate", "not applicable": "not_candidate", "not requested": "not_requested", "not enabled": "not_requested"}
+        "slow_moving_status": {
+          "attention": "candidate",
+          "normal": "not_candidate",
+          "not requested": "not_requested",
+          "not enabled": "not_requested"
+        },
+        "obsolete_status": {
+          "attention": "candidate",
+          "normal": "not_candidate",
+          "not requested": "not_requested",
+          "not enabled": "not_requested"
+        },
+        "expiry_status": {
+          "attention": "candidate",
+          "normal": "not_candidate",
+          "not applicable": "not_candidate",
+          "not requested": "not_requested",
+          "not enabled": "not_requested"
+        }
       },
       "metricValueMappings": {
-        "stock_age_days": {"null (movement check not requested)": null},
-        "stock_age_lower_bound_days": {"null (movement lookback not requested)": null},
-        "expiry_candidate_count": {"null (expiry check not requested)": 0}
+        "expiry_candidate_count": {
+          "null (expiry check not requested)": 0
+        }
       },
       "limitationKeywords": {
-        "source_incomplete": ["source incomplete", "paging incomplete", "range limited", "范围限制", "分页未完成"],
-        "movement_evidence": ["movement evidence", "movement query incomplete", "移动证据不足"],
-        "batch_expiry_evidence": ["batch expiry evidence", "batch association", "批次效期证据不足", "批次关联"]
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "movement_evidence": [
+          "movement evidence",
+          "movement query incomplete",
+          "移动证据不足"
+        ],
+        "stock_confirmation_evidence": [
+          "stock confirmation",
+          "second stock snapshot",
+          "库存复核快照"
+        ],
+        "movement_stable_key_evidence": [
+          "duplicate movement key",
+          "non-monotonic movement key",
+          "移动稳定键"
+        ],
+        "movement_quantity_or_direction_evidence": [
+          "movement quantity",
+          "debit credit direction",
+          "移动数量或借贷方向"
+        ],
+        "movement_unit_evidence": [
+          "movement unit",
+          "unit mismatch",
+          "移动单位"
+        ],
+        "aging_reconciliation_gap": [
+          "aging reconciliation",
+          "fifo balance mismatch",
+          "账龄对账"
+        ],
+        "batch_expiry_evidence": [
+          "batch expiry evidence",
+          "batch association",
+          "批次效期证据不足",
+          "批次关联"
+        ]
       },
       "summaryRecord": true,
       "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
-      "requiredLimitations": [], "businessStatusFromMetric": {}, "limitationsFromMetrics": {}, "blankValueKeywords": {}, "blockingLimitations": [], "ignoredNoticeKeywords": [], "zeroFactWhenMetricZero": {},
+      "requiredLimitations": [],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
       "recordScope": "one current inventory-health summary for the exact material, plant, and storage location",
       "metricDefinitions": {
         "current_unrestricted_stock": "Current stock type 01 with blank special-stock type; never summed across different units.",
-        "stock_age_days": "Exact calendar-day difference from snapshot date to the latest movement posting date in the requested window.",
-        "stock_age_lower_bound_days": "Requested movement lookback when the complete window contains no movement; not an invented last movement date.",
+        "days_since_last_movement_activity": "Compatibility activity indicator only; it is never used to classify the age of all current stock.",
+        "oldest_remaining_layer_age_days": "Calendar-day age of the oldest positive FIFO inventory layer remaining after complete movement reconstruction.",
+        "classified_stock_quantity": "Current stock quantity reconciled exactly to complete FIFO movement layers.",
+        "unclassified_stock_quantity": "Current stock quantity whose age cannot be classified because a required FIFO completeness or reconciliation gate failed.",
+        "below_threshold_stock_quantity": "FIFO remaining quantity below the lowest enabled movement-age threshold.",
+        "slow_moving_only_stock_quantity": "FIFO remaining quantity that reached the slow-moving threshold but not the obsolete threshold.",
+        "obsolete_stock_quantity": "FIFO remaining quantity at or above the enabled obsolete threshold.",
         "expiry_candidate_count": "Positive-stock batches expiring from snapshot date through the requested future-day threshold."
       },
-      "businessStatusDefinition": "snapshot_only when no checks are requested; normal or attention only when enabled evidence is complete; no_stock for a complete empty current-stock result; otherwise inconclusive.",
+      "businessStatusDefinition": "snapshot_only when no checks are requested; normal or attention only when enabled evidence is complete and FIFO movement layers reconcile exactly to two identical stock snapshots; no_stock for a complete empty current-stock result; otherwise inconclusive.",
       "businessStatusFromAnyPositiveMetric": {}
     }
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-08-23T01:03:51.11039+08:00",
+    "testedAt": "2026-08-23T05:51:12.385559+00:00",
     "evidenceScope": "complete",
-    "providers": ["codex-app-direct-sap", "embedded-sap-odata"],
-    "summary": {"zh": "当前库存快照、呆滞加临期、完整三项检查均已通过独立直连基线、自由查询和固定 Agent 三级真机验收。", "en": "The snapshot-only, obsolete-plus-expiry, and all-check scenarios passed independent direct-SAP, free-query, and fixed-Agent live acceptance."},
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
+      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+    },
     "reportPath": "docs/three-stage-live-acceptance.md",
     "executable": true,
     "freeQueryComparison": "MATCH",
     "fixedAgentComparison": "MATCH",
     "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "codexDirectBaselineHash": "sha256:80611fb622b68ee0e607fd35365a68a5af4d05400a7cbcf7a3ac833a4a488928",
-    "freeQueryHash": "sha256:85eba94ceba6fe4b7518f3a5971de90e44319e97a188b93655544da252a9882f",
-    "adjudicatedResultHash": "sha256:80611fb622b68ee0e607fd35365a68a5af4d05400a7cbcf7a3ac833a4a488928",
-    "fixedAgentHash": "sha256:58a7852b49b60766413ba24171a1744848c376227306d11fd69aecc6a4737d37",
-    "comparisonHash": "sha256:0ddbb15636d66f3d1f75a41aead36319b061d6c555c1208fe84c28c98e360950",
-    "blockingLimitations": []
+    "codexDirectBaselineHash": "sha256:a58f4d1d9da3fa5b7c2429f6a49f53637a9fa556238c2ea8961b30f09c505e8b",
+    "freeQueryHash": "sha256:666755faabb786d3a1999072b66893bf5cfe180c527a8d995d224be954bab6f0",
+    "adjudicatedResultHash": "sha256:a58f4d1d9da3fa5b7c2429f6a49f53637a9fa556238c2ea8961b30f09c505e8b",
+    "fixedAgentHash": "sha256:11aa663adf2de35416776cd3de77c941cf3ec813411293c2d022793c60678a52",
+    "comparisonHash": "sha256:e76459c37eb909b8aee7a29e2aab4d31ccb10989bdbdb0e9ee82b21199bde51e"
   }
 }
