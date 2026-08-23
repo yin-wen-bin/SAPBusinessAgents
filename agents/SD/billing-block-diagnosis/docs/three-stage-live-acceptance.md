@@ -2,28 +2,25 @@
 
 ## Verdict
 
-`BLOCKED` / `executable=false`
+`PASS` / `executable=true`
 
 - Case: `billing-block-diagnosis-live-001`
-- Tested at: `2026-08-20T05:19:29.171753+00:00`
+- Tested at: `2026-08-23T01:41:11.877166+00:00`
 - Direct baseline runtime: `codex_app_direct_sap`
 - Used SAPBusinessAgents for baseline: `false`
 - Free-query comparison: `MATCH`
 - Fixed-Agent comparison: `MATCH`
-- Blocking limitations: `sales_order_item_incompletion_evidence`
+- Normalized business records: `1`
+- Required limitations preserved: `none`
 - SAP write operations: none
 
 ## Evidence hashes
 
-- Codex direct baseline: `sha256:63a8c8b1df92ab1a2eb1fda70406688381f91d70e4ef35411170e834cfd28eea`
-- SAPBusinessAgents free query: `sha256:47235100dbc7e89b6f4dd3c2f19af8394093713502c0135908a42395af6045a8`
-- Adjudicated result: `sha256:63a8c8b1df92ab1a2eb1fda70406688381f91d70e4ef35411170e834cfd28eea`
-- Fixed Agent: `sha256:63a8c8b1df92ab1a2eb1fda70406688381f91d70e4ef35411170e834cfd28eea`
-
-## Comparison diagnostics
-
-- Free-query differences: `[]`
-- Fixed-Agent differences: `[]`
+- Codex direct baseline: `sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13`
+- SAPBusinessAgents free query: `sha256:d949ff765d9a1d9e119d9d4212af717c1ce708c31eb13fa9e8ec054bf15055db`
+- Adjudicated result: `sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13`
+- Fixed Agent: `sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13`
+- Fixed comparison: `sha256:3c956466c5a78bb614bf289218daf36f165f68076b93fb0a17709570fd0e4019`
 
 ## Sanitized case scope
 
@@ -50,6 +47,15 @@ Schema/query manifests:
 - `order_delivery_headers` schema `sha256:77414c3d7fd8ad508bcc94f160799b17e7bc3382165e377ac7e077ff914628c5`; query `sha256:d94b4f1e7f1947c0eadc2c4d0f9f4a191979274c2a8288ad3b0a3a9b89a55615`.
 - `order_billing_items` schema `sha256:a7bd8d8ea98baead41d14d74e7a061a9b5de9013f3b59ea96b47a1ad9899d7d2`; query `sha256:1fbedc1fb3bf53cc4ea7fb99885d66a2394bbf3f05cf1e6f5908fc62da2eaa6d`.
 - `order_billing_headers` schema `sha256:a7bd8d8ea98baead41d14d74e7a061a9b5de9013f3b59ea96b47a1ad9899d7d2`; query `sha256:64d66669a4f9a75f670eaf611dc979f638d53bb756b2c6f27096ca50e9dfd961`.
+
+## Supplemental read-only evidence
+
+| Source | Provider | Object | Fields | Rows | Paging complete | Source complete | Hash verified |
+|---|---|---|---|---:|:---:|:---:|:---:|
+| item_incompletion_log | sap-adt-table-export | VBUV | VBELN, POSNR, ETENR, TBNAM, FDNAM, FEHGR, STATG | 0 | true | true | true |
+
+Supplemental evidence hashes:
+- `item_incompletion_log` filter `sha256:1c9cabfdb4a782e0a2d5e82f2723a706322b55f0a5adc524ab4fe6192d455453`; manifest `sha256:a657a84c7914aa58cf1019ccbb35d202d5cd7c182b7f8f2f0e83397652854c4a`.
 
 ## Repair and adjudication outcome
 

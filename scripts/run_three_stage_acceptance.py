@@ -844,6 +844,27 @@ async def _main(args: argparse.Namespace) -> int:
                 for source in baseline_payload.get("sources") or []
                 if isinstance(source, dict)
             ],
+            "supplemental_sources": [
+                {
+                    key: source.get(key)
+                    for key in (
+                        "source_id",
+                        "provider",
+                        "object",
+                        "fields",
+                        "filter_hash",
+                        "manifest_hash",
+                        "row_count",
+                        "paging_complete",
+                        "source_complete",
+                        "read_only",
+                        "validated",
+                        "hash_verified",
+                    )
+                }
+                for source in baseline_payload.get("supplemental_sources") or []
+                if isinstance(source, dict)
+            ],
             "qualification": baseline_payload.get("qualification"),
         },
         "hashes": {

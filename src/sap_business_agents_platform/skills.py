@@ -113,16 +113,18 @@ class SkillRegistry:
                 process.kill()
                 await process.wait()
                 raise SkillError(f"Skill {skill_id} timed out.") from exc
-            if process.returncode != 0:
-                raise SkillError(
-                    f"Skill {skill_id} failed with exit code {process.returncode}. "
-                    "Its stderr was intentionally not persisted because it may contain sensitive data."
-                )
             try:
                 output_bytes = output_path.read_bytes()
                 result = json.loads(output_bytes.decode("utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise SkillError(f"Skill {skill_id} did not write one JSON object to --output.") from exc
+                suffix = (
+                    f" after exit code {process.returncode}"
+                    if process.returncode != 0
+                    else ""
+                )
+                raise SkillError(
+                    f"Skill {skill_id} did not write one JSON object to --output{suffix}."
+                ) from exc
             if not isinstance(result, dict):
                 raise SkillError(f"Skill {skill_id} returned an invalid result.")
             _validate_json_contract(result, skill.get("output_schema"), "output")
@@ -131,6 +133,15 @@ class SkillRegistry:
                 manifest_hash = _validate_adt_manifest(output_path, output_bytes, result)
                 result["artifacts"].append(
                     {"type": "output_manifest", "sha256": manifest_hash, "verified": True}
+                )
+                if process.returncode != 0 and result.get("status") != "failed":
+                    raise SkillError(
+                        f"Skill {skill_id} exited with code {process.returncode} without a failed result."
+                    )
+            elif process.returncode != 0:
+                raise SkillError(
+                    f"Skill {skill_id} failed with exit code {process.returncode}. "
+                    "Its stderr was intentionally not persisted because it may contain sensitive data."
                 )
         return result
 

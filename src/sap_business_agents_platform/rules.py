@@ -33,6 +33,8 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
         return assess_api_evidence(inputs)
     if operation == "assess_adt_preflight":
         return assess_adt_preflight(inputs)
+    if operation == "assess_billing_block_incompletion":
+        return assess_billing_block_incompletion(inputs)
     if operation == "classify_control_object":
         return classify_control_object(inputs)
     if operation == "assess_o2c_document_flow":
@@ -136,6 +138,60 @@ def assess_o2c_document_flow(inputs: dict[str, Any]) -> dict[str, Any]:
         "source_complete": source_complete,
         "relationship_proven": relationship_proven,
         "needs_adt": {"document_flow": needs_adt},
+    }
+
+
+def _internal_sd_key(value: Any, width: int) -> str:
+    text = str(value or "").strip()
+    if text.isdigit() and len(text) <= width:
+        return text.zfill(width)
+    return text
+
+
+def assess_billing_block_incompletion(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Request item-incompletion evidence only after a complete Embedded read."""
+
+    payload = inputs.get("sap_read")
+    run_input = inputs.get("run_input")
+    run_input = run_input if isinstance(run_input, dict) else {}
+    steps = _step_results(payload)
+    order_rows = _step_rows(steps, "sales_orders")
+    item_rows = _step_rows(steps, "sales_order_items")
+    source_complete = _source_complete(payload)
+    status_fields = ("UVALL", "UVVLK", "UVFAK", "UVPRS")
+    embedded_status_complete = bool(item_rows) and all(
+        all(field in row for field in status_fields) for row in item_rows
+    )
+    needs_adt = bool(order_rows and item_rows) and source_complete and not embedded_status_complete
+    ordered_items = sorted(
+        (
+            _internal_sd_key(row.get("SalesOrderItem"), 6)
+            for row in item_rows
+            if str(row.get("SalesOrderItem") or "").strip()
+        )
+    )
+    sales_order = (
+        str(order_rows[0].get("SalesOrder") or "").strip()
+        if order_rows
+        else str(run_input.get("sales_order") or "").strip()
+    )
+    status = (
+        "fallback_required"
+        if needs_adt
+        else "inconclusive"
+        if not source_complete
+        else "complete"
+    )
+    return {
+        "rule_id": "billing_block_incompletion_gap_assessment_v1",
+        "status": status,
+        "source_complete": source_complete,
+        "order_found": bool(order_rows),
+        "item_count": len(item_rows),
+        "embedded_status_complete": embedded_status_complete,
+        "needs_adt": {"item_incompletion": needs_adt},
+        "adt_sales_order": _internal_sd_key(sales_order, 10),
+        "adt_preflight_item": ordered_items[0] if ordered_items else "",
     }
 
 

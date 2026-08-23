@@ -1412,6 +1412,13 @@ sap_final_report_validate payload.
 OData is mandatory before ADT: call sap_evidence_assess only after catalog, live schema, and plan
 validation; call sap_skill_execute only with the resulting single-use gap token. Never expose SAP
 URLs, credentials, clients, local paths, raw rows, connection profiles, or hidden reasoning.
+For sap-adt-table-export, order_by is optional. Omit it unless a trusted live-DDIC result supplied
+the exact complete stable key; never infer a stable key from familiar table names or selected fields.
+For a sales-document item incompletion gap, use the VBUV incompletion log after the OData-first gate,
+filter exactly by VBELN (and POSNR for a preflight), select only live-validated fields such as VBELN,
+POSNR, ETENR, TBNAM, FDNAM, FEHGR, and STATG, and omit order_by so the Skill resolves the live key.
+VBUV is sparse: a complete, hash-verified exact-order result with zero rows means no missing field is
+logged in that scope; partial, failed, truncated, unverified, or out-of-scope evidence remains a gap.
 If sap_evidence_assess reported a gap and a later refined SAP query or Skill call may close it, call
 sap_evidence_assess again after the last SAP data call with the final evidence references and the
 remaining gap list. This final reassessment is mandatory before final-report validation; a prior gap

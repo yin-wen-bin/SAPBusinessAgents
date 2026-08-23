@@ -1,11 +1,13 @@
 # 30-Agent three-stage live SAP acceptance campaign
 
-All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgents. All SAP execution is read-only GET; raw rows, URLs, and credentials remain in ignored local artifacts.
+All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgents. Embedded SAP execution is GET-only; approved supplemental ADT evidence may use the Skill's read-only Data Preview transport. No SAP write operation is allowed, and raw rows, URLs, and credentials remain in ignored local artifacts.
+
+The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV revalidation; all other rows retain their original campaign evidence.
 
 ## Summary
 
-- PASS / executable: 16
-- BLOCKED / disabled: 14
+- PASS / executable: 17
+- BLOCKED / disabled: 13
 - FAIL / disabled: 0
 
 ## Agent results
@@ -31,7 +33,7 @@ All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgent
 | PP | `production-order-monitoring` | PASS | true | MATCH | MATCH | complete | none |
 | PP | `production-scheduling-capacity` | BLOCKED | false | MATCH | MATCH | bounded | complete_capacity_bucket_evidence |
 | PP | `production-variance-analysis` | BLOCKED | false | MATCH | MATCH | bounded | production_cost_evidence, production_cost_relationship |
-| SD | `billing-block-diagnosis` | BLOCKED | false | MATCH | MATCH | bounded | sales_order_item_incompletion_evidence |
+| SD | `billing-block-diagnosis` | PASS | true | MATCH | MATCH | complete | none |
 | SD | `billing-completeness-check` | PASS | true | MATCH | MATCH | complete | none |
 | SD | `billing-dispute-classification` | BLOCKED | false | MATCH | MATCH | bounded | billing_dispute_case_evidence |
 | SD | `billing-output-monitor` | BLOCKED | false | MATCH | MATCH | bounded | billing_output_status_evidence |

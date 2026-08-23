@@ -584,8 +584,9 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
             "procure-to-pay-status",
             "supplier-performance-risk",
             "mrp-exception-analysis",
-            "production-order-monitoring",
-            "billing-completeness-check",
+                "production-order-monitoring",
+                "billing-block-diagnosis",
+                "billing-completeness-check",
         "delivered-not-billed",
         "delivery-delay-prediction",
         "due-delivery-prioritization",
@@ -645,9 +646,9 @@ def test_public_runtime_rejects_agent_without_three_stage_acceptance(tmp_path: P
             "/api/runs",
             json={
                 "mode": "agent",
-                "agentId": "billing-block-diagnosis",
+                "agentId": "billing-output-monitor",
                 "input": {
-                    "sales_order": "2",
+                    "billing_document": "1",
                 },
             },
         )

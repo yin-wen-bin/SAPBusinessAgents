@@ -15,6 +15,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import type {
   AgentDefinition,
+  ExecutionInputProperty,
   ExecutionInputSchema,
   Locale,
   WorkflowConnectionDefinition,
@@ -358,10 +359,11 @@ export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderPro
   );
 }
 
-function coerceValidationInput(value: string, type?: string): unknown {
-  if (type === "integer") return Number.parseInt(value, 10);
-  if (type === "number") return Number(value);
-  if (type === "boolean") return value.toLowerCase() === "true";
+function coerceValidationInput(value: string, type?: ExecutionInputProperty["type"]): unknown {
+  const scalarType = Array.isArray(type) ? type.find((item) => item !== "null") : type;
+  if (scalarType === "integer") return Number.parseInt(value, 10);
+  if (scalarType === "number") return Number(value);
+  if (scalarType === "boolean") return value.toLowerCase() === "true";
   return value;
 }
 

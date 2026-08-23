@@ -139,7 +139,7 @@ _SAP_TOOLS = [
     },
     {
         "name": "sap_skill_execute",
-        "description": "Execute one approved SAPSkillhub read-only skill with a single-use deterministic evidence-gap token.",
+        "description": "Execute one approved SAPSkillhub read-only skill with a single-use deterministic evidence-gap token. ADT order_by is optional and must be omitted unless a trusted live-DDIC result supplied the exact stable key.",
         "inputSchema": _schema(
             {
                 "skill_id": {"type": "string", "enum": ["sap-adt-table-export"]},

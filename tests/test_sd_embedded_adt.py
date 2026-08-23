@@ -43,8 +43,35 @@ def test_all_eleven_sd_agents_use_schema_v2_embedded_reads() -> None:
         )
 
 
+def test_sd_acceptance_outputs_use_positive_provider_and_write_safety_evidence() -> None:
+    generator = (REPOSITORY / "scripts" / "validate_sd_embedded_adt_live.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"write_operations": 0' in generator
+    assert "provider_fallback_calls" not in generator
+    assert "自动 Provider 回退调用数" not in generator
+
+    reports = sorted(SD_ROOT.glob("*/docs/live-sap-test-report.md"))
+    assert len(reports) == 11
+    acceptance_outputs = [SD_ROOT / "EMBEDDED_ADT_LIVE_VALIDATION_SUMMARY.md", *reports]
+    retired_provider_name = "SAP" + "Claw"
+    for path in acceptance_outputs:
+        text = path.read_text(encoding="utf-8")
+        assert retired_provider_name not in text
+        assert "自动 Provider 回退调用数" not in text
+        assert "未执行任何SAP写操作" in text
+
+    current_architecture_docs = [
+        REPOSITORY / "README.md",
+        REPOSITORY / "docs" / "codex-harness.md",
+        REPOSITORY / "docs" / "codex-harness-live-test-report.md",
+    ]
+    for path in current_architecture_docs:
+        assert retired_provider_name not in path.read_text(encoding="utf-8")
+
+
 def test_sd_adt_steps_are_allowlisted_bounded_and_connection_agnostic() -> None:
-    expected_objects = {"VBFA"}
+    expected_objects = {"VBFA", "VBUV"}
     found: set[str] = set()
     row_limits: dict[str, set[int]] = {name: set() for name in expected_objects}
     for manifest in _manifests():

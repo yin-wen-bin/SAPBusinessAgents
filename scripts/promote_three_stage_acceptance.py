@@ -35,6 +35,11 @@ def baseline_report(root: Path, artifact: dict[str, Any]) -> str:
                 "nonblocking_observations": value.get("nonblocking_observations") or [],
             }
     sources = [item for item in direct.get("sources") or [] if isinstance(item, dict)]
+    supplemental = [
+        item
+        for item in direct.get("supplemental_sources") or []
+        if isinstance(item, dict)
+    ]
     lines = [
         "## Sanitized case scope",
         "",
@@ -68,6 +73,34 @@ def baseline_report(root: Path, artifact: dict[str, Any]) -> str:
         for source in sources:
             lines.append(
                 f"- `{source.get('source_id')}` schema `{source.get('schema_hash') or '-'}`; query `{source.get('query_hash') or '-'}`."
+            )
+    if supplemental:
+        lines.extend(
+            [
+                "",
+                "## Supplemental read-only evidence",
+                "",
+                "| Source | Provider | Object | Fields | Rows | Paging complete | Source complete | Hash verified |",
+                "|---|---|---|---|---:|:---:|:---:|:---:|",
+            ]
+        )
+        for source in supplemental:
+            lines.append(
+                "| {source_id} | {provider} | {object_name} | {fields} | {rows} | {paging} | {complete} | {verified} |".format(
+                    source_id=str(source.get("source_id") or "-").replace("|", "\\|"),
+                    provider=str(source.get("provider") or "-").replace("|", "\\|"),
+                    object_name=str(source.get("object") or "-").replace("|", "\\|"),
+                    fields=", ".join(str(item) for item in source.get("fields") or []).replace("|", "\\|"),
+                    rows=int(source.get("row_count") or 0),
+                    paging=str(source.get("paging_complete") is True).lower(),
+                    complete=str(source.get("source_complete") is True).lower(),
+                    verified=str(source.get("hash_verified") is True).lower(),
+                )
+            )
+        lines.extend(["", "Supplemental evidence hashes:"])
+        for source in supplemental:
+            lines.append(
+                f"- `{source.get('source_id')}` filter `{source.get('filter_hash') or '-'}`; manifest `{source.get('manifest_hash') or '-'}`."
             )
     observations = [
         item
@@ -135,11 +168,19 @@ def promote(root: Path, module: str, artifact_path: Path) -> Path:
     report_rel = "docs/three-stage-live-acceptance.md"
     records = ((fixed.get("normalized_result") or {}).get("records") or [])
     limitations = ((fixed.get("normalized_result") or {}).get("limitations") or [])
+    supplemental = [
+        item
+        for item in (artifact.get("direct_baseline") or {}).get("supplemental_sources") or []
+        if isinstance(item, dict)
+    ]
+    providers = ["codex-app-direct-sap", "embedded-sap-odata"]
+    if supplemental:
+        providers.append("sap-adt-table-export")
     manifest["validation"] = {
         "verdict": "PASS",
         "testedAt": artifact.get("tested_at"),
         "evidenceScope": "complete",
-        "providers": ["codex-app-direct-sap", "embedded-sap-odata"],
+        "providers": providers,
         "summary": {
             "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
             "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent.",

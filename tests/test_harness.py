@@ -26,6 +26,7 @@ from sap_business_agents_platform.harness import (
     _latest_assessed_missing_evidence,
     _latest_validated_presentation,
     _custom_tool_kind,
+    _developer_instructions,
     _mcp_overrides,
     _plan_business_contract_issue,
     _persistent_harness_counts,
@@ -43,6 +44,15 @@ from sap_business_agents_platform.models import (
     RunPresentation,
 )
 from sap_business_agents_platform.sap_read.embedded_odata import EmbeddedODataProvider
+
+
+def test_harness_does_not_guess_adt_stable_keys_and_knows_vbuv_sparse_semantics() -> None:
+    instructions = _developer_instructions()
+
+    assert "order_by is optional" in instructions
+    assert "never infer a stable key" in instructions
+    assert "VBUV is sparse" in instructions
+    assert "omit order_by so the Skill resolves the live key" in instructions
 from sap_business_agents_platform.tool_gateway import (
     ToolAdmissionError,
     ToolAdmissionGateway,
@@ -828,12 +838,12 @@ def test_app_server_overrides_disable_inherited_mcp_and_strip_sap_secrets(
     codex_home = tmp_path / ".codex"
     codex_home.mkdir()
     (codex_home / "config.toml").write_text(
-        '[mcp_servers.sapclaw_runtime]\ncommand="legacy"\n', encoding="utf-8"
+        '[mcp_servers.unapproved_external_runtime]\ncommand="external"\n', encoding="utf-8"
     )
     settings = _settings(tmp_path)
     with patch("sap_business_agents_platform.harness.Path.home", return_value=tmp_path):
         overrides = _mcp_overrides(settings, "run", "cap", sys.executable)
-    assert "mcp_servers.sapclaw_runtime.enabled=false" in overrides
+    assert "mcp_servers.unapproved_external_runtime.enabled=false" in overrides
     assert any(item.startswith("mcp_servers.sap_business_agents.command=") for item in overrides)
     assert not any("SAP_PASSWORD" in item for item in overrides)
     assert any(

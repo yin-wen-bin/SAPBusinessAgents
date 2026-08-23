@@ -125,7 +125,8 @@ Copy-Item .env.example .env
 
 完成首次安装和 `.env` 配置后，可直接双击仓库根目录的
 `start-sap-business-agents.cmd`。启动器只检查或启动 SAPBusinessAgents API 和
-Astro Web UI，不会启动 SAPClaw。默认情况下，Web UI 使用内容指纹复用
+Astro Web UI。Embedded SAP Read Provider是唯一OData执行通道；扩展证据仅使用
+批准的只读Skill。默认情况下，Web UI 使用内容指纹复用
 `.local-data/site-builds/` 中的静态构建并通过 Astro Preview 运行；首次启动或
 Agent、前端源码、依赖及本地 API 地址变化时才会重新构建。已健康的服务不会重复启动。
 

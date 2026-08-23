@@ -276,6 +276,36 @@ def test_new_skill_contract_runs_without_profile_and_isolates_caller_sap_environ
     assert any(item.get("verified") is True for item in result["artifacts"])
 
 
+def test_registry_preserves_hash_verified_failed_adt_result(
+    tmp_path: Path,
+) -> None:
+    skillhub_root = tmp_path / "skillhub"
+    _install_new_contract_fixture(skillhub_root)
+    run_path = skillhub_root / "skills" / "Common" / "sap-adt-table-export" / "run.py"
+    script = run_path.read_text(encoding="utf-8")
+    script = script.replace('"status": "complete"', '"status": "failed"')
+    script = script.replace('"validated": True', '"validated": False')
+    script = script.replace(
+        '"completeness": {"source_complete": True, "paging_complete": True}',
+        '"completeness": {"source_complete": False, "paging_complete": False}',
+    )
+    script = script.replace(
+        '"validation_issues": []',
+        '"validation_issues": [{"code": "field_not_found", "message": "Field unavailable."}]',
+    )
+    run_path.write_text(script + "\nsys.exit(1)\n", encoding="utf-8")
+    repository = Path(__file__).resolve().parents[1]
+    registry = SkillRegistry(skillhub_root, repository / "config" / "skills.json")
+
+    result = asyncio.run(registry.execute("sap-adt-table-export", _input()))
+
+    assert result["status"] == "failed"
+    assert result["validation_issues"] == [
+        {"code": "field_not_found", "message": "Field unavailable."}
+    ]
+    assert any(item.get("verified") is True for item in result["artifacts"])
+
+
 def test_new_adt_schema_is_accepted_and_non_adt_environment_is_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

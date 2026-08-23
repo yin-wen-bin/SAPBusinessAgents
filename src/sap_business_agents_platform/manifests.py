@@ -11,6 +11,7 @@ ALLOWED_SAP_READ_OPERATIONS = {"execute_plan", "execute_get"}
 ALLOWED_RULE_OPERATIONS = {
     "assess_api_evidence",
     "assess_adt_preflight",
+    "assess_billing_block_incompletion",
     "assess_o2c_document_flow",
     "classify_control_object",
     "evidence_summary",

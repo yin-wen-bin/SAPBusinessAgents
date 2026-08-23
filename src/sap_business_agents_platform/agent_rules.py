@@ -219,6 +219,63 @@ def _text(row: JsonObject, *fields: str) -> str:
     return ""
 
 
+def _canonical_sd_key(value: Any, width: int) -> str:
+    text = str(value or "").strip()
+    if text.isdigit() and len(text) <= width:
+        return text.zfill(width)
+    return text
+
+
+def _embedded_billing_incompletion_summary(row: JsonObject | None) -> str:
+    if not isinstance(row, dict):
+        return "not_evidenced"
+    labels = (
+        ("UVFAK", "billing"),
+        ("UVPRS", "pricing"),
+        ("UVVLK", "delivery"),
+        ("UVALL", "general"),
+    )
+    incomplete = [
+        label
+        for field, label in labels
+        if str(row.get(field) or "").strip().upper() not in {"", "0", "C"}
+    ]
+    return ",".join(f"{label}_incomplete" for label in incomplete) or "complete_or_not_relevant"
+
+
+def _vbuv_incompletion_summary(rows: list[JsonObject]) -> str:
+    missing_fields = sorted(
+        {
+            ".".join(
+                part
+                for part in (
+                    str(row.get("TBNAM") or "").strip().upper(),
+                    str(row.get("FDNAM") or "").strip().upper(),
+                )
+                if part
+            )
+            for row in rows
+        }
+        - {""}
+    )
+    return (
+        "incomplete:" + ",".join(missing_fields)
+        if missing_fields
+        else "incomplete:unspecified_field"
+        if rows
+        else "complete_or_not_relevant"
+    )
+
+
+def _adt_hash_verified(value: JsonObject) -> bool:
+    return any(
+        isinstance(artifact, dict)
+        and artifact.get("type") == "output_manifest"
+        and artifact.get("verified") is True
+        for artifact in value.get("artifacts") or []
+    )
+
+
 def _date_text(row: JsonObject, *fields: str) -> str:
     parsed = _date(_text(row, *fields))
     return parsed.isoformat() if parsed is not None else ""
@@ -362,6 +419,51 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
     orders = _rows(inputs, "sales_orders")
     items = _rows(inputs, "sales_order_items")
     deliveries = _rows(inputs, "delivery_headers", "delivery_items")
+    assessment = inputs.get("assessment")
+    assessment = assessment if isinstance(assessment, dict) else {}
+    needs_adt = bool(
+        isinstance(assessment.get("needs_adt"), dict)
+        and assessment["needs_adt"].get("item_incompletion") is True
+    )
+    fallback = _fallback(inputs, "sales_order_item_incompletion")
+    embedded_status_complete = assessment.get("embedded_status_complete") is True
+    status_rows = _adt_rows(inputs, "sales_order_item_incompletion") if needs_adt else []
+    expected_keys = {
+        (
+            _canonical_sd_key(row.get("SalesOrder"), 10),
+            _canonical_sd_key(row.get("SalesOrderItem"), 6),
+        )
+        for row in items
+        if _text(row, "SalesOrder") and _text(row, "SalesOrderItem")
+    }
+    status_by_key: dict[tuple[str, str], list[JsonObject]] = {}
+    scope_conflicts: list[JsonObject] = []
+    for row in status_rows:
+        key = (
+            _canonical_sd_key(row.get("VBELN") or row.get("SalesOrder"), 10),
+            _canonical_sd_key(row.get("POSNR") or row.get("SalesOrderItem"), 6),
+        )
+        if not key[0] or key[0] not in {order for order, _item in expected_keys}:
+            scope_conflicts.append(row)
+            continue
+        # VBUV is a sparse incompletion log: an empty result is positive evidence
+        # that no missing field is logged in the exact, complete order scope.
+        if key[1] not in {"", "000000"} and key not in expected_keys:
+            scope_conflicts.append(row)
+            continue
+        status_by_key.setdefault(key, []).append(row)
+    status_evidence_complete = bool(
+        expected_keys
+        and not scope_conflicts
+        and (
+            embedded_status_complete
+            or (
+                needs_adt
+                and _adt_complete(fallback)
+                and _adt_hash_verified(fallback)
+            )
+        )
+    )
     fields = (
         "HeaderBillingBlockReason", "ItemBillingBlockReason", "DeliveryBlockReason",
         "TotalCreditCheckStatus", "TotalBlockStatus", "HdrGeneralIncompletionStatus",
@@ -372,6 +474,47 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
         for field in fields
         if str(row.get(field) or "").strip() not in {"", "0", "C"}
     ]
+    if status_evidence_complete and needs_adt:
+        findings.extend(
+            {
+                "code": "SalesDocumentIncompletionLog",
+                "severity": "high" if str(row.get("STATG") or "").strip() else "medium",
+                "value": ".".join(
+                    part
+                    for part in (
+                        str(row.get("TBNAM") or "").strip().upper(),
+                        str(row.get("FDNAM") or "").strip().upper(),
+                    )
+                    if part
+                ) or "unspecified_field",
+                "object": f"{key[0]}/{key[1] or 'HEADER'}",
+                "status_group": str(row.get("STATG") or ""),
+                "incompletion_group": str(row.get("FEHGR") or ""),
+            }
+            for key, rows in status_by_key.items()
+            for row in rows
+        )
+    elif status_evidence_complete and embedded_status_complete:
+        incompletion_fields = (
+            ("UVALL", "ItemGeneralIncompletion", "medium"),
+            ("UVVLK", "ItemDeliveryIncompletion", "medium"),
+            ("UVFAK", "ItemBillingIncompletion", "high"),
+            ("UVPRS", "ItemPricingIncompletion", "high"),
+        )
+        findings.extend(
+            {
+                "code": code,
+                "severity": severity,
+                "value": str(row.get(field)),
+                "object": (
+                    f"{_canonical_sd_key(row.get('SalesOrder'), 10)}/"
+                    f"{_canonical_sd_key(row.get('SalesOrderItem'), 6)}"
+                ),
+            }
+            for row in items
+            for field, code, severity in incompletion_fields
+            if str(row.get(field) or "").strip().upper() not in {"", "0", "C"}
+        )
     blocked = bool(findings)
     records = [
         {
@@ -380,11 +523,27 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
             "billing_block_reason": _text(row, "ItemBillingBlockReason", "HeaderBillingBlockReason"),
             "delivery_block_reason": _text(row, "DeliveryBlockReason"),
             "credit_status": _text(row, "TotalCreditCheckStatus"),
-            "incompletion_status": _text(row, "HdrGeneralIncompletionStatus"),
+            "incompletion_status": (
+                _vbuv_incompletion_summary(
+                    status_by_key.get(
+                        (
+                            _canonical_sd_key(row.get("SalesOrder"), 10),
+                            _canonical_sd_key(row.get("SalesOrderItem"), 6),
+                        ),
+                        [],
+                    )
+                )
+                if needs_adt
+                else _embedded_billing_incompletion_summary(row)
+            ),
         }
         for row in items
         if _text(row, "SalesOrder") and _text(row, "SalesOrderItem")
     ]
+    gaps = _gaps(inputs)
+    if items and not status_evidence_complete:
+        gaps = sorted(set(gaps) | {"sales_order_item_incompletion_evidence"})
+    source_complete = _source_complete(inputs) and (not items or status_evidence_complete)
     return _result(
         inputs,
         business_status="blocked" if blocked else "normal",
@@ -392,13 +551,39 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
         headline_en="Sales or delivery blocks were found" if blocked else "No sales or delivery blocks were found",
         overview_zh="系统按订单、项目和交货层级检查了冻结、信用及不完整状态。",
         overview_en="Order, item, delivery, credit, and incompletion statuses were checked.",
-        stages=[_stage("sales_order", "销售订单", "Sales order", len(orders)), _stage("items", "订单项目", "Order items", len(items)), _stage("delivery", "交货", "Delivery", len(deliveries))],
+        stages=[
+            _stage("sales_order", "销售订单", "Sales order", len(orders)),
+            _stage("items", "订单项目", "Order items", len(items)),
+            _stage(
+                "item_incompletion",
+                "项目不完整状态",
+                "Item incompletion",
+                len(status_rows),
+                state="confirmed" if status_evidence_complete else "unknown",
+                detail_zh=(
+                    f"精确订单范围的不完整日志已完整验证，返回 {len(status_rows)} 条缺失字段记录。"
+                    if status_evidence_complete and needs_adt
+                    else f"Embedded项目状态已完整验证，共 {len(items)} 个项目。"
+                    if status_evidence_complete
+                    else "项目级不完整状态证据不完整。"
+                ),
+                detail_en=(
+                    f"The exact-order incompletion log was verified completely and returned {len(status_rows)} missing-field row(s)."
+                    if status_evidence_complete and needs_adt
+                    else f"Embedded item status was verified for {len(items)} item(s)."
+                    if status_evidence_complete
+                    else "Item-level incompletion evidence is incomplete."
+                ),
+            ),
+            _stage("delivery", "交货", "Delivery", len(deliveries)),
+        ],
         findings=findings,
         metrics=[{"id": "blocked_findings", "value": len(findings)}],
         records=records,
-        gaps=_gaps(inputs),
+        gaps=gaps,
         actions_zh=["按冻结所在层级交由销售、信用或主数据人员处理。"] if blocked else [],
         actions_en=["Route the block to sales, credit, or master-data owners."] if blocked else [],
+        source_complete_override=source_complete,
     )
 
 

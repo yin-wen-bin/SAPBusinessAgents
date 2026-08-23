@@ -613,23 +613,36 @@ SPECS["billing-block-diagnosis"]["fieldAliases"] = {
     "incompletion_status": ["Incompletion Status", "Incompletion", "不完整状态"],
     "blocked_findings": ["Blocked Findings", "Block Findings", "冻结发现数"],
 }
-SPECS["billing-block-diagnosis"]["businessStatusFromMetric"] = {
-    "metric": "blocked_findings",
+SPECS["billing-block-diagnosis"]["businessStatusFromMetric"] = {}
+SPECS["billing-block-diagnosis"]["businessStatusFromAnyPositiveMetric"] = {
+    "metrics": ["blocked_findings"],
     "zero": "normal",
-    "nonzero": "attention",
+    "positive": "blocked",
 }
-SPECS["billing-block-diagnosis"]["constantDefaults"] = {
-    "business_status": "capability_blocked",
+SPECS["billing-block-diagnosis"]["businessStatusDefinition"] = (
+    "Return normal when blocked_findings is 0; return blocked when blocked_findings is positive; "
+    "return capability_blocked only when a blocking evidence limitation remains."
+)
+SPECS["billing-block-diagnosis"]["metricDefinitions"] = {
+    "blocked_findings": (
+        "Count all detected order, item, delivery, credit, and VBUV missing-field findings; "
+        "return 0 when every exact source is complete and no finding exists."
+    )
 }
-SPECS["billing-block-diagnosis"]["requiredLimitations"] = [
-    "sales_order_item_incompletion_evidence"
-]
+SPECS["billing-block-diagnosis"]["valueMappings"] = {
+    "incompletion_status": {
+        "complete (vbuv logs no missing field)": "complete_or_not_relevant"
+    }
+}
+SPECS["billing-block-diagnosis"]["constantDefaults"] = {}
+SPECS["billing-block-diagnosis"]["requiredLimitations"] = []
 SPECS["billing-block-diagnosis"]["limitationKeywords"] = {
     **COMMON_LIMITATION_KEYWORDS,
     "sales_order_item_incompletion_evidence": [
         "item-level incompletion",
         "dedicated item incompletion",
-        "vbup",
+        "VBUV unavailable",
+        "VBUV incomplete",
         "项目级不完整",
         "订单项目不完整",
     ],

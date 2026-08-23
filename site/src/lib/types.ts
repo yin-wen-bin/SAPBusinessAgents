@@ -138,6 +138,13 @@ export interface AgentAcceptance {
     positive?: string;
     zero?: string;
   };
+  compositeBlankFields?: string[];
+  nonBlockingObservationCodes?: string[];
+  testDataQualificationDefinition?: string;
+  compositeKeyParts?: Record<string, Array<{
+    name: string;
+    aliases?: string[];
+  }>>;
 }
 
 export interface AgentExecution {

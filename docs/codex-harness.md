@@ -1,6 +1,6 @@
 # Codex Harness 自由查询原型
 
-“直接询问 SAP”默认由持久 Codex App Server thread 执行；固定 Agent 和已发布工作流仍走现有确定性执行链。运行时不会加载或回退到 SAPClaw、Thin SAPClaw、SAPClaw MCP 或 LLM-first。
+“直接询问 SAP”默认由持久 Codex App Server thread 执行；固定 Agent 和已发布工作流仍走现有确定性执行链。Embedded SAP Read Provider是唯一OData执行通道；扩展证据仅使用批准的只读Skill。
 
 ```text
 UI / POST /api/runs
@@ -22,7 +22,7 @@ UI / POST /api/runs
 
 ## 能力隔离
 
-App Server 子进程只直接加载仓库内的两个 MCP Server。启动参数显式禁用用户全局配置中的全部 MCP（包括 `sapclaw_runtime`），再启用 run-scoped SAP Broker 与工具准入 Gateway。子进程不直接获得 Shell、文件修改、Computer Use、任意浏览器或宿主工作区写权限。
+App Server 子进程只直接加载仓库内的两个 MCP Server。启动参数按通用Allowlist禁用全部继承的MCP，再启用run-scoped SAP Broker与工具准入Gateway。子进程不直接获得Shell、文件修改、Computer Use、任意浏览器或宿主工作区写权限。
 
 子进程环境会清除 SAP URL、Client、用户名、密码、证书路径和 `SAP_ADT_*`。SAP 查询只能提交注册的 `service_name`、显式 `odata_version`、实体和 GET-only 计划；原始连接信息留在 Embedded Provider 内。
 

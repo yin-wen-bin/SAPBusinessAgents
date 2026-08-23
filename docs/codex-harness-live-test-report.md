@@ -5,9 +5,9 @@ Tested at: 2026-08-19 (Asia/Shanghai)
 ## Scope and verdict
 
 The free-query path was exercised through the Codex App Server Harness against the configured
-live SAP system. Fixed Agents and published workflows were not redirected. No SAPClaw, Thin
-SAPClaw, SAPClaw MCP, host shell, file-editing tool, Computer Use, or write-capable SAP operation
-was enabled.
+live SAP system. Fixed Agents and published workflows were not redirected. Embedded SAP Read
+Provider was the only OData execution channel, and extension evidence was restricted to approved
+read-only skills. No host shell, file-editing tool, Computer Use, or SAP write operation was enabled.
 
 Verdict: **PARTIAL**. The Harness proved the requested key-date supplier result and its crash
 recovery contract. The business answer remains intentionally `INCONCLUSIVE` because FI clearing

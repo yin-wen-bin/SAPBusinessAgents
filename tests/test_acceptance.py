@@ -636,7 +636,33 @@ def test_v2_case_and_multisource_baseline_require_complete_primary_evidence() ->
         "normalized_result": normalized,
     }
 
+    baseline["supplemental_sources"] = [
+        {
+            "source_id": "item_incompletion",
+            "provider": "sap-adt-table-export",
+            "object": "VBUV",
+            "fields": ["VBELN", "POSNR", "FDNAM"],
+            "filter_hash": "sha256:" + "c" * 64,
+            "manifest_hash": "sha256:" + "d" * 64,
+            "row_count": 0,
+            "paging_complete": True,
+            "source_complete": True,
+            "read_only": True,
+            "validated": True,
+            "hash_verified": True,
+        }
+    ]
+
     assert validate_direct_baseline(baseline, case) == normalized
+
+    baseline["supplemental_sources"][0]["hash_verified"] = False
+    try:
+        validate_direct_baseline(baseline, case)
+    except ValueError as exc:
+        assert "hash_verified must be true" in str(exc)
+    else:
+        raise AssertionError("unverified ADT baseline evidence was accepted")
+    baseline["supplemental_sources"][0]["hash_verified"] = True
 
     baseline["qualification"] = {
         "status": "blocked",
@@ -723,9 +749,6 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
             "order-to-cash-anomaly-monitor": [
                 "billing_output_status_evidence",
                 "billing_dispute_case_evidence",
-            ],
-            "billing-block-diagnosis": [
-                "sales_order_item_incompletion_evidence"
             ],
             "due-delivery-prioritization": [
                 "current_stock_not_historical_atp"
@@ -1050,7 +1073,21 @@ def test_public_acceptance_report_contains_sanitized_multisource_completeness(tm
                     "paging_complete": True,
                     "source_complete": True,
                 }
-            ]
+            ],
+            "supplemental_sources": [
+                {
+                    "source_id": "item_incompletion_log",
+                    "provider": "sap-adt-table-export",
+                    "object": "VBUV",
+                    "fields": ["VBELN", "POSNR", "FDNAM"],
+                    "row_count": 0,
+                    "paging_complete": True,
+                    "source_complete": True,
+                    "hash_verified": True,
+                    "filter_hash": "sha256:" + "a" * 64,
+                    "manifest_hash": "sha256:" + "b" * 64,
+                }
+            ],
         },
     }
 
@@ -1061,6 +1098,10 @@ def test_public_acceptance_report_contains_sanitized_multisource_completeness(tm
     assert "Paging complete" in report
     assert "mrp_snapshot_stale" in report
     assert "blocking=`false`" in report
+    assert "Supplemental read-only evidence" in report
+    assert "sap-adt-table-export" in report
+    assert "VBUV" in report
+    assert "Hash verified" in report
     assert "1710" not in report
     assert _matched_free_run_id(
         {"free_query": {"run_id": "run_stale", "comparison": {"verdict": "MISMATCH"}}}

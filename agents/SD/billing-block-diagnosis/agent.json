@@ -10,7 +10,7 @@
     "zh": "诊断销售订单、项目与交货层的开票冻结、信用检查及不完整状态。",
     "en": "Diagnoses billing blocks, credit checks and incompletion statuses at sales-order header, item and delivery levels."
   },
-  "status": "Three-stage live acceptance blocked",
+  "status": "Three-stage live acceptance passed",
   "version": "0.1.0",
   "owner": "SD / FI-AR",
   "tags": [
@@ -23,7 +23,9 @@
     "SD"
   ],
   "transactions": [],
-  "tables": [],
+  "tables": [
+    "VBUV"
+  ],
   "systems": [
     "SAP S/4HANA"
   ],
@@ -103,6 +105,110 @@
       "executionStepIds": [
         "collect_billing_block_evidence"
       ]
+    },
+    {
+      "id": "execute-assess_item_incompletion",
+      "title": {
+        "zh": "判断项目不完整证据缺口",
+        "en": "Assess the item-incompletion evidence gap"
+      },
+      "description": {
+        "zh": "只有Embedded查询完整、订单项目存在且实时Schema未提供项目不完整状态时，才申请ADT补证。",
+        "en": "Request ADT evidence only when Embedded is complete, items exist, and live schema does not expose item incompletion status."
+      },
+      "operations": {
+        "zh": ["rule.assess_billing_block_incompletion"],
+        "en": ["rule.assess_billing_block_incompletion"]
+      },
+      "tools": [
+        {
+          "name": "assess_billing_block_incompletion",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行OData优先门控并生成精确订单与预检项目键。",
+            "en": "Apply the OData-first gate and produce exact order and preflight item keys."
+          }
+        }
+      ],
+      "executionStepIds": ["assess_item_incompletion"]
+    },
+    {
+      "id": "execute-preflight_item_incompletion_fallback",
+      "title": {
+        "zh": "预检VBUV读取能力",
+        "en": "Preflight VBUV read capability"
+      },
+      "description": {
+        "zh": "按精确订单和项目读取最多2行，验证实时DDIC、TLS、只读契约、分页和Hash链。",
+        "en": "Read at most two rows for one exact order item to validate live DDIC, TLS, read-only policy, paging, and hash chain."
+      },
+      "operations": {
+        "zh": ["skill.sap-adt-table-export: VBUV精确预检(max_rows=2)"],
+        "en": ["skill.sap-adt-table-export: exact VBUV preflight (max_rows=2)"]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Conditional read-only ADT evidence skill",
+          "purpose": {
+            "zh": "不接受调用方连接配置，按实时DDIC解析稳定键。",
+            "en": "Reject caller connection settings and resolve the stable key from live DDIC."
+          }
+        }
+      ],
+      "executionStepIds": ["preflight_item_incompletion_fallback"]
+    },
+    {
+      "id": "execute-assess_item_incompletion_preflight",
+      "title": {
+        "zh": "评估ADT预检结果",
+        "en": "Assess the ADT preflight result"
+      },
+      "description": {
+        "zh": "仅当预检完整、只读、已验证且Hash有效时允许正式查询。",
+        "en": "Allow the formal query only when the preflight is complete, read-only, validated, and hash verified."
+      },
+      "operations": {
+        "zh": ["rule.assess_adt_preflight"],
+        "en": ["rule.assess_adt_preflight"]
+      },
+      "tools": [
+        {
+          "name": "assess_adt_preflight",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "失败闭合地决定是否继续正式ADT读取。",
+            "en": "Fail closed when deciding whether the formal ADT read may proceed."
+          }
+        }
+      ],
+      "executionStepIds": ["assess_item_incompletion_preflight"]
+    },
+    {
+      "id": "execute-read_item_incompletion_fallback",
+      "title": {
+        "zh": "读取VBUV不完整日志",
+        "en": "Read the VBUV incompletion log"
+      },
+      "description": {
+        "zh": "按精确订单读取最多200行缺失字段日志；完整零行表示该范围未记录缺失字段。",
+        "en": "Read at most 200 missing-field rows for the exact order; a complete zero-row result means no missing field is logged in scope."
+      },
+      "operations": {
+        "zh": ["skill.sap-adt-table-export: VBUV有界读取(max_rows=200)"],
+        "en": ["skill.sap-adt-table-export: bounded VBUV read (max_rows=200)"]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Conditional read-only ADT evidence skill",
+          "purpose": {
+            "zh": "按销售订单精确读取VBUV缺失字段日志，不接受调用方连接配置。",
+            "en": "Read the exact VBUV missing-field log by sales order without caller-supplied connection settings."
+          }
+        }
+      ],
+      "executionStepIds": ["read_item_incompletion_fallback"]
     },
     {
       "id": "execute-evaluate_business_result",
@@ -348,6 +454,96 @@
         }
       },
       {
+        "id": "assess_item_incompletion",
+        "executor": "rule",
+        "operation": "assess_billing_block_incompletion",
+        "inputMapping": {
+          "run_input": "{{input}}",
+          "sap_read": "{{steps.collect_billing_block_evidence.output}}"
+        }
+      },
+      {
+        "id": "preflight_item_incompletion_fallback",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_item_incompletion.output.needs_adt.item_incompletion}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "VBUV",
+          "fields": [
+            "VBELN",
+            "POSNR",
+            "ETENR",
+            "TBNAM",
+            "FDNAM",
+            "FEHGR",
+            "STATG"
+          ],
+          "filters": [
+            {
+              "field": "VBELN",
+              "operator": "eq",
+              "value": "{{steps.assess_item_incompletion.output.adt_sales_order}}"
+            },
+            {
+              "field": "POSNR",
+              "operator": "eq",
+              "value": "{{steps.assess_item_incompletion.output.adt_preflight_item}}"
+            }
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_item_incompletion_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {
+          "payload": "{{steps.preflight_item_incompletion_fallback.output}}"
+        }
+      },
+      {
+        "id": "read_item_incompletion_fallback",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_item_incompletion_preflight.output.proceed}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "VBUV",
+          "fields": [
+            "VBELN",
+            "POSNR",
+            "ETENR",
+            "TBNAM",
+            "FDNAM",
+            "FEHGR",
+            "STATG"
+          ],
+          "filters": [
+            {
+              "field": "VBELN",
+              "operator": "eq",
+              "value": "{{steps.assess_item_incompletion.output.adt_sales_order}}"
+            }
+          ],
+          "max_rows": 200
+        }
+      },
+      {
         "id": "evaluate_business_result",
         "executor": "rule",
         "operation": "evaluate_business_agent",
@@ -357,9 +553,11 @@
           "evidence": {
             "collect_billing_block_evidence": "{{steps.collect_billing_block_evidence.output}}"
           },
-          "known_gaps": [
-            "sales_order_item_incompletion_evidence"
-          ]
+          "assessment": "{{steps.assess_item_incompletion.output}}",
+          "fallbacks": {
+            "sales_order_item_incompletion": "{{steps.read_item_incompletion_fallback.output}}"
+          },
+          "known_gaps": []
         }
       }
     ],
@@ -446,9 +644,7 @@
       "zeroPadFields": {},
       "booleanFields": [],
       "inputDefaults": {},
-      "constantDefaults": {
-        "business_status": "capability_blocked"
-      },
+      "constantDefaults": {},
       "fieldAliases": {
         "sales_order": [
           "Sales Order",
@@ -490,7 +686,11 @@
       },
       "fieldExtractors": {},
       "currencyFromDecimal": {},
-      "valueMappings": {},
+      "valueMappings": {
+        "incompletion_status": {
+          "complete (vbuv logs no missing field)": "complete_or_not_relevant"
+        }
+      },
       "limitationKeywords": {
         "source_incomplete": [
           "source incomplete",
@@ -516,21 +716,16 @@
         "sales_order_item_incompletion_evidence": [
           "item-level incompletion",
           "dedicated item incompletion",
-          "vbup",
+          "VBUV unavailable",
+          "VBUV incomplete",
           "项目级不完整",
           "订单项目不完整"
         ]
       },
       "summaryRecord": false,
       "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
-      "requiredLimitations": [
-        "sales_order_item_incompletion_evidence"
-      ],
-      "businessStatusFromMetric": {
-        "metric": "blocked_findings",
-        "zero": "normal",
-        "nonzero": "attention"
-      },
+      "requiredLimitations": [],
+      "businessStatusFromMetric": {},
       "limitationsFromMetrics": {},
       "blankValueKeywords": {
         "billing_block_reason": [
@@ -564,36 +759,42 @@
       "ignoredNoticeKeywords": [],
       "zeroFactWhenMetricZero": {},
       "recordScope": "",
-      "metricDefinitions": {},
-      "businessStatusDefinition": "",
-      "businessStatusFromAnyPositiveMetric": {}
+      "metricDefinitions": {
+        "blocked_findings": "Count all detected order, item, delivery, credit, and VBUV missing-field findings; return 0 when every exact source is complete and no finding exists."
+      },
+      "businessStatusDefinition": "Return normal when blocked_findings is 0; return blocked when blocked_findings is positive; return capability_blocked only when a blocking evidence limitation remains.",
+      "businessStatusFromAnyPositiveMetric": {
+        "metrics": [
+          "blocked_findings"
+        ],
+        "zero": "normal",
+        "positive": "blocked"
+      }
     }
   },
   "validation": {
-    "verdict": "BLOCKED",
-    "testedAt": "2026-08-20T05:19:29.171753+00:00",
-    "evidenceScope": "bounded",
+    "verdict": "PASS",
+    "testedAt": "2026-08-23T01:41:11.877166+00:00",
+    "evidenceScope": "complete",
     "providers": [
       "codex-app-direct-sap",
-      "embedded-sap-odata"
+      "embedded-sap-odata",
+      "sap-adt-table-export"
     ],
     "summary": {
-      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
-      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
+      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
-    "executable": false,
+    "executable": true,
     "freeQueryComparison": "MATCH",
     "fixedAgentComparison": "MATCH",
     "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "blockingLimitations": [
-      "sales_order_item_incompletion_evidence"
-    ],
-    "codexDirectBaselineHash": "sha256:63a8c8b1df92ab1a2eb1fda70406688381f91d70e4ef35411170e834cfd28eea",
-    "freeQueryHash": "sha256:47235100dbc7e89b6f4dd3c2f19af8394093713502c0135908a42395af6045a8",
-    "adjudicatedResultHash": "sha256:63a8c8b1df92ab1a2eb1fda70406688381f91d70e4ef35411170e834cfd28eea",
-    "fixedAgentHash": "sha256:63a8c8b1df92ab1a2eb1fda70406688381f91d70e4ef35411170e834cfd28eea",
-    "comparisonHash": "sha256:a16433fcc19e2d1312208cd6128ae9b254bdbc2bd11a67525b6f5845fb8674cd"
+    "codexDirectBaselineHash": "sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13",
+    "freeQueryHash": "sha256:d949ff765d9a1d9e119d9d4212af717c1ce708c31eb13fa9e8ec054bf15055db",
+    "adjudicatedResultHash": "sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13",
+    "fixedAgentHash": "sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13",
+    "comparisonHash": "sha256:3c956466c5a78bb614bf289218daf36f165f68076b93fb0a17709570fd0e4019"
   }
 }

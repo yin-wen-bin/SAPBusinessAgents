@@ -99,6 +99,12 @@ def validate_direct_baseline(
             raise ValueError("direct baseline v2 sources are required")
         for index, source in enumerate(sources):
             _validate_baseline_source(source, index)
+        supplemental_sources = value.get("supplemental_sources")
+        if supplemental_sources is not None:
+            if not isinstance(supplemental_sources, list) or not supplemental_sources:
+                raise ValueError("direct baseline supplemental_sources must be a non-empty array")
+            for index, source in enumerate(supplemental_sources):
+                _validate_supplemental_adt_source(source, index)
         _validate_baseline_qualification(value.get("qualification"), sources)
     elif value.get("http_method") != "GET":
         raise ValueError("direct baseline must be GET-only")
@@ -225,6 +231,64 @@ def _validate_baseline_source(value: Any, index: int) -> None:
             raise ValueError(f"direct baseline sources[{index}].{field} must be boolean")
     if value.get("paging_complete") is not True or value.get("source_complete") is not True:
         raise ValueError(f"direct baseline sources[{index}] is incomplete")
+
+
+def _validate_supplemental_adt_source(value: Any, index: int) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"direct baseline supplemental_sources[{index}] must be an object")
+    required = {
+        "source_id",
+        "provider",
+        "object",
+        "fields",
+        "filter_hash",
+        "manifest_hash",
+        "row_count",
+        "paging_complete",
+        "source_complete",
+        "read_only",
+        "validated",
+        "hash_verified",
+    }
+    if set(value) != required:
+        raise ValueError(
+            f"direct baseline supplemental_sources[{index}] has unexpected or missing fields"
+        )
+    if value.get("provider") != "sap-adt-table-export":
+        raise ValueError(f"direct baseline supplemental_sources[{index}].provider is invalid")
+    for field in ("source_id", "object"):
+        if not str(value.get(field) or "").strip():
+            raise ValueError(f"direct baseline supplemental_sources[{index}].{field} is required")
+    fields = value.get("fields")
+    if (
+        not isinstance(fields, list)
+        or not fields
+        or len({str(item) for item in fields}) != len(fields)
+        or any(not str(item).strip() for item in fields)
+    ):
+        raise ValueError(f"direct baseline supplemental_sources[{index}].fields is invalid")
+    _require_sha256(
+        value.get("filter_hash"),
+        f"direct baseline supplemental_sources[{index}].filter_hash",
+    )
+    _require_sha256(
+        value.get("manifest_hash"),
+        f"direct baseline supplemental_sources[{index}].manifest_hash",
+    )
+    row_count = value.get("row_count")
+    if not isinstance(row_count, int) or isinstance(row_count, bool) or row_count < 0:
+        raise ValueError(f"direct baseline supplemental_sources[{index}].row_count is invalid")
+    for field in (
+        "paging_complete",
+        "source_complete",
+        "read_only",
+        "validated",
+        "hash_verified",
+    ):
+        if value.get(field) is not True:
+            raise ValueError(
+                f"direct baseline supplemental_sources[{index}].{field} must be true"
+            )
 
 
 def _validate_normalized_result(value: JsonObject) -> None:
