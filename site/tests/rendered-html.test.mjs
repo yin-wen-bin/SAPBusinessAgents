@@ -59,6 +59,28 @@ test("new MM detail pages render exact steps and fail-closed validation metadata
   }
 });
 
+test("material shortage inputs are localized, documented, and prefilled", async () => {
+  const zh = await readPage("zh", "agents", "MM", "material-shortage-procurement-response");
+  const en = await readPage("en", "agents", "MM", "material-shortage-procurement-response");
+
+  assert.match(zh, /MRP 区域/);
+  assert.match(zh, /短缺参数文件/);
+  assert.match(zh, /短缺定义序号/);
+  assert.match(zh, /通常使用默认值 SAP000000001，无需修改/);
+  assert.match(zh, /通常使用默认值 001，无需修改/);
+  assert.match(zh, /name="shortage_profile"[^>]*value="SAP000000001"/);
+  assert.match(zh, /name="shortage_counter"[^>]*value="001"/);
+  assert.doesNotMatch(zh, />mrp area</i);
+  assert.doesNotMatch(zh, />shortage profile</i);
+  assert.doesNotMatch(zh, />shortage counter</i);
+
+  assert.match(en, /MRP Area/);
+  assert.match(en, /Shortage Profile/);
+  assert.match(en, /Shortage Definition Counter/);
+  assert.match(en, /The default SAP000000001 normally requires no change/);
+  assert.match(en, /The default 001 normally requires no change/);
+});
+
 test("SD detail pages render eleven execution-mapped workflows", async () => {
   const slugs = [
     "delivered-not-billed", "billing-block-diagnosis", "billing-completeness-check",

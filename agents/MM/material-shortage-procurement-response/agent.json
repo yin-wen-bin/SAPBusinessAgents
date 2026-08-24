@@ -39,19 +39,19 @@
     "zh": [
       "物料",
       "工厂",
-      "mrp area",
+      "MRP 区域",
       "采购组织",
-      "shortage profile",
-      "shortage counter",
+      "短缺参数文件",
+      "短缺定义序号",
       "查询基准日"
     ],
     "en": [
       "Material",
       "Plant",
-      "Mrp Area",
+      "MRP Area",
       "Purchasing organization",
       "Shortage Profile",
-      "Shortage Counter",
+      "Shortage Definition Counter",
       "As-of date"
     ]
   },
@@ -665,8 +665,8 @@
           "maxLength": 10,
           "pattern": "^[0-9A-Za-z_-]+$",
           "title": {
-            "zh": "mrp area",
-            "en": "Mrp Area"
+            "zh": "MRP 区域",
+            "en": "MRP Area"
           }
         },
         "purchasing_organization": {
@@ -684,9 +684,15 @@
           "minLength": 1,
           "maxLength": 20,
           "pattern": "^[0-9A-Za-z_-]+$",
+          "default": "SAP000000001",
+          "x-sapba-server-default": true,
           "title": {
-            "zh": "shortage profile",
+            "zh": "短缺参数文件",
             "en": "Shortage Profile"
+          },
+          "description": {
+            "zh": "通常使用默认值 SAP000000001，无需修改；企业配置了自定义物料短缺参数文件时，请填写企业配置的参数文件 ID。",
+            "en": "The default SAP000000001 normally requires no change. Enter the configured profile ID only when your organization uses a custom material shortage profile."
           }
         },
         "shortage_counter": {
@@ -694,9 +700,15 @@
           "minLength": 1,
           "maxLength": 3,
           "pattern": "^[0-9]+$",
+          "default": "001",
+          "x-sapba-server-default": true,
           "title": {
-            "zh": "shortage counter",
-            "en": "Shortage Counter"
+            "zh": "短缺定义序号",
+            "en": "Shortage Definition Counter"
+          },
+          "description": {
+            "zh": "通常使用默认值 001，无需修改；使用自定义短缺参数文件时，请填写其中对应的短缺定义序号，并保留前导零。",
+            "en": "The default 001 normally requires no change. For a custom shortage profile, enter its corresponding shortage-definition counter and preserve leading zeros."
           }
         },
         "as_of": {

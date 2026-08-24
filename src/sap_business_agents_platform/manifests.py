@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,13 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
     inputs = execution.get("inputSchema")
     if not isinstance(inputs, dict) or inputs.get("type") != "object":
         raise ManifestError(f"{source}.execution.inputSchema must be an object JSON Schema")
+    input_properties = inputs.get("properties")
+    if not isinstance(input_properties, dict):
+        raise ManifestError(f"{source}.execution.inputSchema.properties must be an object")
+    _validate_input_server_defaults(
+        input_properties,
+        f"{source}.execution.inputSchema.properties",
+    )
     outputs = execution.get("outputSchema")
     output_mapping = execution.get("outputMapping")
     if outputs is not None:
@@ -164,6 +172,66 @@ def _localized_titles(properties: Any, source: str) -> dict[str, list[str]]:
         for locale in values:
             values[locale].append(str(title[locale]))
     return values
+
+
+def _validate_input_server_defaults(properties: dict[str, Any], source: str) -> None:
+    for name, schema in properties.items():
+        if not isinstance(schema, dict):
+            continue
+        location = f"{source}.{name}"
+        marker = schema.get("x-sapba-server-default")
+        if marker is not None and not isinstance(marker, bool):
+            raise ManifestError(f"{location}.x-sapba-server-default must be boolean")
+        if marker is not True:
+            continue
+        if "default" not in schema:
+            raise ManifestError(
+                f"{location}.x-sapba-server-default=true requires a default value"
+            )
+        _validate_schema_default(schema["default"], schema, location)
+
+
+def _validate_schema_default(value: Any, schema: dict[str, Any], source: str) -> None:
+    value_type = schema.get("type")
+    if value_type == "string":
+        if not isinstance(value, str):
+            raise ManifestError(f"{source}.default must be a string")
+        minimum = schema.get("minLength")
+        maximum = schema.get("maxLength")
+        pattern = schema.get("pattern")
+        if isinstance(minimum, int) and len(value) < minimum:
+            raise ManifestError(f"{source}.default is shorter than minLength")
+        if isinstance(maximum, int) and len(value) > maximum:
+            raise ManifestError(f"{source}.default is longer than maxLength")
+        if isinstance(pattern, str) and re.search(pattern, value) is None:
+            raise ManifestError(f"{source}.default does not match pattern")
+        if schema.get("format") == "date":
+            try:
+                date.fromisoformat(value)
+            except ValueError as exc:
+                raise ManifestError(f"{source}.default must be an ISO date") from exc
+        return
+    if value_type == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ManifestError(f"{source}.default must be an integer")
+    elif value_type == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ManifestError(f"{source}.default must be a number")
+    elif value_type == "boolean":
+        if not isinstance(value, bool):
+            raise ManifestError(f"{source}.default must be boolean")
+    elif value_type == "array":
+        if not isinstance(value, list):
+            raise ManifestError(f"{source}.default must be an array")
+    elif value_type == "object" and not isinstance(value, dict):
+        raise ManifestError(f"{source}.default must be an object")
+    minimum = schema.get("minimum")
+    maximum = schema.get("maximum")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(minimum, (int, float)) and value < minimum:
+            raise ManifestError(f"{source}.default is below minimum")
+        if isinstance(maximum, (int, float)) and value > maximum:
+            raise ManifestError(f"{source}.default is above maximum")
 
 
 def _validate_output_display(properties: dict[str, Any], source: str) -> None:

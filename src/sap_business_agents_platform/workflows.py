@@ -177,8 +177,19 @@ def validate_workflow(
                 code="workflow_port_type_mismatch",
             )
     for node_id, agent in agent_by_node.items():
-        required = agent["execution"]["inputSchema"].get("required") or []
-        missing = [port for port in required if (node_id, str(port)) not in target_ports]
+        input_schema = agent["execution"]["inputSchema"]
+        required = input_schema.get("required") or []
+        properties = input_schema.get("properties") or {}
+        missing = [
+            port
+            for port in required
+            if (node_id, str(port)) not in target_ports
+            and not (
+                isinstance(properties.get(str(port)), dict)
+                and properties[str(port)].get("x-sapba-server-default") is True
+                and "default" in properties[str(port)]
+            )
+        ]
         if missing:
             raise WorkflowError(
                 f"Node {node_id} is missing required inputs: {', '.join(missing)}",

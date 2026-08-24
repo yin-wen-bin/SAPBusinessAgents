@@ -14,6 +14,7 @@ from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.engine import (
     _completeness_evidence_scope,
     _count_free_query_top_bounds,
+    _resolve_server_defaults,
     _validate_input,
 )
 from sap_business_agents_platform.manifests import AgentRepository, ManifestError, validate_execution
@@ -80,6 +81,40 @@ def test_validate_input_enforces_iso_date_and_bounded_date_range() -> None:
             pass
         else:
             raise AssertionError(f"Expected invalid date range to be rejected: {invalid}")
+
+
+def test_server_defaults_apply_only_to_omitted_opted_in_fields() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "profile": {
+                "type": "string",
+                "default": "SAP000000001",
+                "x-sapba-server-default": True,
+            },
+            "ui_only": {"type": "string", "default": "not-injected"},
+        },
+        "required": ["profile"],
+        "additionalProperties": False,
+    }
+
+    resolved, fields = _resolve_server_defaults({}, schema)
+    assert resolved == {"profile": "SAP000000001"}
+    assert fields == ["profile"]
+
+    custom, fields = _resolve_server_defaults({"profile": "CUSTOM_001"}, schema)
+    assert custom == {"profile": "CUSTOM_001"}
+    assert fields == []
+
+    explicit_empty, fields = _resolve_server_defaults({"profile": ""}, schema)
+    assert explicit_empty == {"profile": ""}
+    assert fields == []
+    try:
+        _validate_input(explicit_empty, schema)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An explicit empty required input must not be replaced by a default")
 
 
 class FakeEmbeddedProvider:
@@ -681,6 +716,36 @@ def test_manifest_rejects_non_get_plan() -> None:
         raise AssertionError("A non-GET plan passed manifest validation")
 
 
+def test_manifest_validates_opted_in_server_defaults() -> None:
+    root = Path(__file__).resolve().parents[1]
+    manifest = AgentRepository(root / "agents").get(
+        "material-shortage-procurement-response"
+    )
+    validate_execution(manifest)
+
+    invalid_marker = json.loads(json.dumps(manifest))
+    invalid_marker["execution"]["inputSchema"]["properties"]["shortage_profile"][
+        "x-sapba-server-default"
+    ] = "true"
+    try:
+        validate_execution(invalid_marker)
+    except ManifestError as exc:
+        assert "x-sapba-server-default must be boolean" in str(exc)
+    else:
+        raise AssertionError("A non-boolean server-default marker passed validation")
+
+    invalid_default = json.loads(json.dumps(manifest))
+    invalid_default["execution"]["inputSchema"]["properties"]["shortage_counter"][
+        "default"
+    ] = "ABC"
+    try:
+        validate_execution(invalid_default)
+    except ManifestError as exc:
+        assert "default does not match pattern" in str(exc)
+    else:
+        raise AssertionError("An invalid server default passed manifest validation")
+
+
 def test_manifest_rejects_non_get_inside_multi_step_array() -> None:
     manifest = {
         "execution": {
@@ -829,6 +894,118 @@ def test_complete_mm_api_evidence_skips_every_conditional_adt_step(
         assert all(call.get("skill_id") != "sap-adt-table-export" for call in run["result"]["tool_calls"])
         events = app.state.store.events_after(run["run_id"])
         assert sum(event.type == "step_skipped" for event in events) == 6
+
+
+def test_shortage_agent_api_defaults_are_persisted_and_custom_values_override(
+    tmp_path: Path,
+) -> None:
+    embedded = FakeEmbeddedProvider()
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=embedded,
+    )
+    base_input = {
+        "material": "MAT001",
+        "plant": "1010",
+        "mrp_area": "1010",
+        "purchasing_organization": "1010",
+        "as_of": "2026-08-17",
+    }
+
+    with TestClient(app) as client:
+        default_response = client.post(
+            "/api/runs",
+            json={
+                "mode": "agent",
+                "agentId": "material-shortage-procurement-response",
+                "input": base_input,
+            },
+        )
+        assert default_response.status_code == 202
+        default_run = _wait(client, default_response.json()["run_id"])
+        assert default_run["input"]["shortage_profile"] == "SAP000000001"
+        assert default_run["input"]["shortage_counter"] == "001"
+        assert default_run["result"]["input"]["shortage_profile"] == "SAP000000001"
+        assert default_run["result"]["input"]["shortage_counter"] == "001"
+        default_events = app.state.store.events_after(default_run["run_id"])
+        defaults_event = next(
+            event for event in default_events if event.type == "input_defaults_applied"
+        )
+        assert defaults_event.data == {
+            "scope": "agent",
+            "agent_id": "material-shortage-procurement-response",
+            "fields": ["shortage_profile", "shortage_counter"],
+        }
+        coverage_plan = next(
+            plan
+            for plan in embedded.executed_plans
+            if plan.get("entity_set") == "MaterialCoverages"
+        )
+        coverage_filters = {
+            item["field"]: item["value"] for item in coverage_plan["filters"]
+        }
+        assert coverage_filters["MaterialShortageProfile"] == "SAP000000001"
+        assert coverage_filters["MaterialShortageProfileCount"] == "001"
+
+        custom_response = client.post(
+            "/api/runs",
+            json={
+                "mode": "agent",
+                "agentId": "material-shortage-procurement-response",
+                "input": {
+                    **base_input,
+                    "shortage_profile": "CUSTOM_001",
+                    "shortage_counter": "007",
+                },
+            },
+        )
+        assert custom_response.status_code == 202
+        custom_run = _wait(client, custom_response.json()["run_id"])
+        assert custom_run["input"]["shortage_profile"] == "CUSTOM_001"
+        assert custom_run["input"]["shortage_counter"] == "007"
+        custom_events = app.state.store.events_after(custom_run["run_id"])
+        assert all(event.type != "input_defaults_applied" for event in custom_events)
+        custom_coverage_plan = next(
+            plan
+            for plan in reversed(embedded.executed_plans)
+            if plan.get("entity_set") == "MaterialCoverages"
+        )
+        custom_filters = {
+            item["field"]: item["value"] for item in custom_coverage_plan["filters"]
+        }
+        assert custom_filters["MaterialShortageProfile"] == "CUSTOM_001"
+        assert custom_filters["MaterialShortageProfileCount"] == "007"
+
+
+def test_shortage_agent_explicit_empty_or_null_defaulted_input_is_rejected(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    base_input = {
+        "material": "MAT001",
+        "plant": "1010",
+        "mrp_area": "1010",
+        "purchasing_organization": "1010",
+        "shortage_counter": "001",
+        "as_of": "2026-08-17",
+    }
+    with TestClient(app) as client:
+        for invalid in ("", None):
+            response = client.post(
+                "/api/runs",
+                json={
+                    "mode": "agent",
+                    "agentId": "material-shortage-procurement-response",
+                    "input": {**base_input, "shortage_profile": invalid},
+                },
+            )
+            assert response.status_code == 409
+            assert response.json()["detail"]["code"] == "agent_validation_failed"
 
 
 def test_old_adt_contract_gap_is_recorded_and_mm_result_remains_inconclusive(

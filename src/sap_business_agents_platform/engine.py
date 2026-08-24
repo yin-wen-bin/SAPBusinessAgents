@@ -112,6 +112,7 @@ class RunCoordinator:
             self._worker_task = None
 
     async def submit(self, request: RunCreate) -> str:
+        defaulted_fields: list[str] = []
         if request.mode == RunMode.agent:
             try:
                 agent = self.agents.get(str(request.agent_id))
@@ -126,6 +127,18 @@ class RunCoordinator:
                         "verdict": (agent.get("validation") or {}).get("verdict", "NOT_TESTED"),
                     },
                 )
+            try:
+                effective_input, defaulted_fields = _resolve_server_defaults(
+                    request.input,
+                    agent["execution"]["inputSchema"],
+                )
+                _validate_input(effective_input, agent["execution"]["inputSchema"])
+            except (KeyError, ValueError) as exc:
+                raise RunExecutionError(
+                    str(exc),
+                    code="agent_validation_failed",
+                ) from exc
+            request = request.model_copy(update={"input": effective_input})
         run_id = f"run_{uuid.uuid4().hex[:16]}"
         workflow: dict[str, Any] | None = None
         if request.mode == RunMode.workflow:
@@ -133,6 +146,16 @@ class RunCoordinator:
                 raise RunExecutionError("Workflow runtime is unavailable.", code="workflow_unavailable")
             workflow = self.workflows.get(str(request.workflow_id))
         self.store.create_run(run_id, request)
+        if defaulted_fields:
+            self.store.append_event(
+                run_id,
+                "input_defaults_applied",
+                {
+                    "scope": "agent",
+                    "agent_id": request.agent_id,
+                    "fields": defaulted_fields,
+                },
+            )
         if workflow is not None:
             self.store.save_workflow_snapshot(run_id, workflow)
         self.store.append_event(run_id, "run_queued", {"mode": request.mode.value})
@@ -147,9 +170,32 @@ class RunCoordinator:
                 "Acceptance submission only supports fixed Agents.",
                 code="acceptance_mode_invalid",
             )
+        try:
+            agent = self.agents.get(str(request.agent_id))
+            effective_input, defaulted_fields = _resolve_server_defaults(
+                request.input,
+                agent["execution"]["inputSchema"],
+            )
+            _validate_input(effective_input, agent["execution"]["inputSchema"])
+        except (KeyError, ManifestError, PluginError, ValueError) as exc:
+            raise RunExecutionError(
+                str(exc),
+                code="agent_validation_failed",
+            ) from exc
+        request = request.model_copy(update={"input": effective_input})
         run_id = f"acceptance_{uuid.uuid4().hex[:16]}"
         self._acceptance_runs.add(run_id)
         self.store.create_run(run_id, request)
+        if defaulted_fields:
+            self.store.append_event(
+                run_id,
+                "input_defaults_applied",
+                {
+                    "scope": "acceptance_agent",
+                    "agent_id": request.agent_id,
+                    "fields": defaulted_fields,
+                },
+            )
         self.store.append_event(
             run_id,
             "run_queued",
@@ -620,6 +666,10 @@ class RunCoordinator:
                     node_outputs,
                 )
                 agent = self.agents.get(agent_id)
+                node_input, defaulted_fields = _resolve_server_defaults(
+                    node_input,
+                    agent["execution"]["inputSchema"],
+                )
                 _validate_input(node_input, agent["execution"]["inputSchema"])
             except WorkflowError as exc:
                 if exc.code == "workflow_output_unavailable":
@@ -681,6 +731,18 @@ class RunCoordinator:
                     {"node_id": node_id, "agent_id": agent_id, "error": str(exc)},
                 )
                 raise RunExecutionError(str(exc), code="mapping_failed") from exc
+
+            if defaulted_fields:
+                self.store.append_event(
+                    run_id,
+                    "input_defaults_applied",
+                    {
+                        "scope": "workflow_node",
+                        "node_id": node_id,
+                        "agent_id": agent_id,
+                        "fields": defaulted_fields,
+                    },
+                )
 
             self.store.append_event(
                 run_id,
@@ -1687,6 +1749,27 @@ def _plugin_trace(provider: Any, capability: str, operation: str) -> dict[str, A
         "plugin_version": "0.0.0",
         "capability": capability,
     }
+
+
+def _resolve_server_defaults(
+    value: dict[str, Any],
+    schema: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    resolved = copy.deepcopy(value)
+    applied: list[str] = []
+    properties = schema.get("properties") or {}
+    if not isinstance(properties, dict):
+        return resolved, applied
+    for name, property_schema in properties.items():
+        if name in resolved or not isinstance(property_schema, dict):
+            continue
+        if property_schema.get("x-sapba-server-default") is not True:
+            continue
+        if "default" not in property_schema:
+            continue
+        resolved[name] = copy.deepcopy(property_schema["default"])
+        applied.append(str(name))
+    return resolved, applied
 
 
 def _validate_input(value: dict[str, Any], schema: dict[str, Any]) -> None:

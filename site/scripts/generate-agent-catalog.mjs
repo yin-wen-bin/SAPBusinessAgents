@@ -227,6 +227,23 @@ function validateExecution(execution, source) {
   if (!execution.inputSchema.properties || typeof execution.inputSchema.properties !== "object") {
     throw new Error(`${source}.execution.inputSchema.properties must be an object`);
   }
+  for (const [name, property] of Object.entries(execution.inputSchema.properties)) {
+    if (!property || typeof property !== "object" || Array.isArray(property)) continue;
+    const marker = property["x-sapba-server-default"];
+    if (marker !== undefined && typeof marker !== "boolean") {
+      throw new Error(`${source}.execution.inputSchema.properties.${name}.x-sapba-server-default must be boolean`);
+    }
+    if (marker === true && !Object.hasOwn(property, "default")) {
+      throw new Error(`${source}.execution.inputSchema.properties.${name}.x-sapba-server-default=true requires a default value`);
+    }
+    if (marker === true) {
+      validateSchemaDefault(
+        property.default,
+        property,
+        `${source}.execution.inputSchema.properties.${name}`,
+      );
+    }
+  }
   requireList(execution.steps, `${source}.execution.steps`);
   if (!execution.acceptance || execution.acceptance.comparisonMode !== "business_semantic") {
     throw new Error(`${source}.execution.acceptance.comparisonMode is invalid`);
@@ -278,6 +295,51 @@ function validateExecution(execution, source) {
       }
       rejectWriteMethods(step.request, location);
       requireODataVersions(step.request, location);
+    }
+  }
+}
+
+function validateSchemaDefault(value, schema, source) {
+  if (schema.type === "string") {
+    if (typeof value !== "string") throw new Error(`${source}.default must be a string`);
+    if (Number.isInteger(schema.minLength) && value.length < schema.minLength) {
+      throw new Error(`${source}.default is shorter than minLength`);
+    }
+    if (Number.isInteger(schema.maxLength) && value.length > schema.maxLength) {
+      throw new Error(`${source}.default is longer than maxLength`);
+    }
+    if (typeof schema.pattern === "string" && !(new RegExp(schema.pattern).test(value))) {
+      throw new Error(`${source}.default does not match pattern`);
+    }
+    if (schema.format === "date" && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new Error(`${source}.default must be an ISO date`);
+    }
+    return;
+  }
+  if (schema.type === "integer" && (!Number.isInteger(value))) {
+    throw new Error(`${source}.default must be an integer`);
+  }
+  if (schema.type === "number" && (typeof value !== "number" || !Number.isFinite(value))) {
+    throw new Error(`${source}.default must be a number`);
+  }
+  if (schema.type === "boolean" && typeof value !== "boolean") {
+    throw new Error(`${source}.default must be boolean`);
+  }
+  if (schema.type === "array" && !Array.isArray(value)) {
+    throw new Error(`${source}.default must be an array`);
+  }
+  if (
+    schema.type === "object"
+    && (!value || typeof value !== "object" || Array.isArray(value))
+  ) {
+    throw new Error(`${source}.default must be an object`);
+  }
+  if (typeof value === "number") {
+    if (typeof schema.minimum === "number" && value < schema.minimum) {
+      throw new Error(`${source}.default is below minimum`);
+    }
+    if (typeof schema.maximum === "number" && value > schema.maximum) {
+      throw new Error(`${source}.default is above maximum`);
     }
   }
 }

@@ -261,6 +261,86 @@ def test_workflow_schema_validates_ports_order_and_cycles() -> None:
         raise AssertionError("Cycle or duplicate target mapping should be rejected")
 
 
+def test_workflow_allows_unmapped_required_inputs_with_server_defaults_only() -> None:
+    root = Path(__file__).resolve().parents[1]
+    agents = AgentRepository(root / "agents")
+    agent = agents.get("material-shortage-procurement-response")
+    input_properties = {
+        name: agent["execution"]["inputSchema"]["properties"][name]
+        for name in (
+            "material",
+            "plant",
+            "mrp_area",
+            "purchasing_organization",
+            "as_of",
+        )
+    }
+    workflow = {
+        "schemaVersion": 1,
+        "id": "shortage-default-profile",
+        "version": "0.1.0",
+        "title": {"zh": "短缺默认参数", "en": "Shortage defaults"},
+        "description": {"zh": "", "en": ""},
+        "mode": "deterministic",
+        "readOnly": True,
+        "inputSchema": {
+            "type": "object",
+            "properties": input_properties,
+            "required": list(input_properties),
+            "additionalProperties": False,
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {"business_status": {"type": "string"}},
+            "required": ["business_status"],
+            "additionalProperties": False,
+        },
+        "nodes": [
+            {
+                "id": "shortage",
+                "agentId": agent["slug"],
+                "agentVersion": agent["version"],
+                "agentDigest": agent_digest(agent),
+            }
+        ],
+        "connections": [
+            {
+                "from": {"scope": "workflow_input", "port": name},
+                "to": {"nodeId": "shortage", "port": name},
+                "transform": {"type": "identity"},
+            }
+            for name in input_properties
+        ],
+        "outputs": [
+            {
+                "name": "business_status",
+                "source": {
+                    "scope": "node_output",
+                    "nodeId": "shortage",
+                    "port": "business_status",
+                },
+                "transform": {"type": "identity"},
+            }
+        ],
+        "policies": {"onInconclusive": "continue_if_required_outputs_present"},
+    }
+
+    validate_workflow(workflow, agents)
+
+    workflow["connections"] = [
+        item
+        for item in workflow["connections"]
+        if item["to"]["port"] != "material"
+    ]
+    try:
+        validate_workflow(workflow, agents)
+    except WorkflowError as exc:
+        assert exc.code == "workflow_required_input_unmapped"
+        assert "material" in str(exc)
+    else:
+        raise AssertionError("A required input without a server default was not rejected")
+
+
 def test_workflow_draft_live_validation_executes_pinned_agents_without_codex_runtime_planning(tmp_path: Path) -> None:
     app = create_app(
         _settings(tmp_path),

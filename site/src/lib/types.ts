@@ -41,6 +41,7 @@ export interface ExecutionInputProperty {
   description?: LocalizedText;
   placeholder?: LocalizedText;
   default?: string | number | boolean | null | unknown[] | Record<string, unknown>;
+  "x-sapba-server-default"?: boolean;
   minLength?: number;
   maxLength?: number;
   minimum?: number;
