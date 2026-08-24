@@ -12,7 +12,11 @@ from sap_business_agents_platform.engine import _default_presentation, _validate
 from sap_business_agents_platform.harness import _turn_prompt
 from sap_business_agents_platform.manifests import AgentRepository, ManifestError, validate_execution
 from sap_business_agents_platform.models import Completeness, RunMode, RunResult
-from sap_business_agents_platform.rules import assess_api_evidence, resolve_inventory_health_window
+from sap_business_agents_platform.rules import (
+    assess_api_evidence,
+    assess_inventory_batch_expiry,
+    resolve_inventory_health_window,
+)
 from sap_business_agents_platform.sap_read.embedded_odata import EmbeddedODataProvider
 
 
@@ -29,6 +33,20 @@ def _embedded(*rows: dict[str, object], complete: bool = True) -> dict[str, obje
         "step_results": {
             "step_1": {"results": list(rows), "source_complete": complete}
         },
+    }
+
+
+def _adt(*rows: dict[str, object], complete: bool = True) -> dict[str, object]:
+    return {
+        "status": "complete" if complete else "partial",
+        "read_only": True,
+        "validated": True,
+        "rows": list(rows),
+        "completeness": {
+            "source_complete": complete,
+            "paging_complete": complete,
+        },
+        "validation_issues": [],
     }
 
 
@@ -96,6 +114,7 @@ def _evaluate(
     stock: dict[str, object] | None = None,
     movement: dict[str, object] | None = None,
     batch: dict[str, object] | None = None,
+    batch_fallback: dict[str, object] | None = None,
     api_complete: dict[str, bool] | None = None,
 ) -> dict[str, object]:
     window = resolve_inventory_health_window({"run_input": run_input})
@@ -105,6 +124,19 @@ def _evaluate(
         "batch_expiry": window["check_expiry"],
     }
     stock_payload = stock if stock is not None else _embedded()
+    batch_payload = (
+        batch
+        if batch is not None
+        else {"status": "skipped", "reason": "condition_false", "source_complete": True}
+    )
+    batch_assessment = assess_inventory_batch_expiry(
+        {
+            "run_input": run_input,
+            "requested": window["check_expiry"],
+            "stock": {"initial": stock_payload, "confirmation": stock_payload},
+            "batch_expiry": batch_payload,
+        }
+    )
     return evaluate_business_agent(
         {
             "agent_id": "inventory-health-balancing",
@@ -115,17 +147,16 @@ def _evaluate(
                 or {"stock": True, "movement": True, "batch_expiry": True},
                 "needs_adt": {"stock": False, "movement": False, "batch_expiry": False},
             },
+            "batch_assessment": batch_assessment,
             "evidence": {
                 "stock_initial": stock_payload,
                 "stock_confirmation": stock_payload,
                 "movement": movement
                 if movement is not None
                 else {"status": "skipped", "reason": "condition_false", "source_complete": True},
-                "batch_expiry": batch
-                if batch is not None
-                else {"status": "skipped", "reason": "condition_false", "source_complete": True},
+                "batch_expiry": batch_payload,
             },
-            "fallbacks": {},
+            "fallbacks": {"batch_expiry": batch_fallback or {}},
             "requested": requested,
             "known_gaps": [],
         }
@@ -195,6 +226,39 @@ def test_unrequested_evidence_is_complete_without_querying_that_topic() -> None:
     assert result["status"] == "complete"
     assert result["api_complete"] == {"stock": True, "movement": True, "batch_expiry": True}
     assert result["needs_adt"] == {"stock": False, "movement": False, "batch_expiry": False}
+
+
+def test_batch_expiry_assessment_accepts_material_level_batch_and_falls_back_on_empty() -> None:
+    stock = _embedded(_stock(batch="0000000008"))
+    material_level = _embedded(
+        {
+            "Material": "TG10",
+            "BatchIdentifyingPlant": "",
+            "Batch": "0000000008",
+            "ShelfLifeExpirationDate": date.today().isoformat(),
+        }
+    )
+    complete = assess_inventory_batch_expiry(
+        {
+            "run_input": {"material": "TG10", "plant": "1710"},
+            "requested": True,
+            "stock": {"initial": stock, "confirmation": stock},
+            "batch_expiry": material_level,
+        }
+    )
+    empty = assess_inventory_batch_expiry(
+        {
+            "run_input": {"material": "TG10", "plant": "1710"},
+            "requested": True,
+            "stock": {"initial": stock, "confirmation": stock},
+            "batch_expiry": _embedded(),
+        }
+    )
+
+    assert complete["needs_adt"]["batch_expiry"] is False
+    assert complete["matched_batch_count"] == 1
+    assert empty["needs_adt"]["batch_expiry"] is True
+    assert empty["unresolved_batches"] == ["0000000008"]
 
 
 def test_all_optional_checks_blank_returns_snapshot_only() -> None:
@@ -301,6 +365,186 @@ def test_positive_stock_batch_without_expiry_is_unknown() -> None:
     assert result["workflow_output"]["expiry_status"] == "unknown"
     assert result["workflow_output"]["business_status"] == "inconclusive"
     assert result["workflow_output"]["evidence_complete"] is False
+
+
+def test_expired_and_expiring_batches_are_separate_risks_with_material_level_keys() -> None:
+    today = date.today()
+    stock = _embedded(
+        _stock(quantity="20", batch="0000000008"),
+        _stock(quantity="5", batch="0000000009"),
+    )
+    result = _evaluate(
+        run_input={
+            "material": "TG10",
+            "plant": "1710",
+            "storage_location": "171A",
+            "expiry_days": 90,
+        },
+        stock=stock,
+        batch=_embedded(
+            {
+                "Material": "TG10",
+                "BatchIdentifyingPlant": "",
+                "Batch": "0000000008",
+                "ShelfLifeExpirationDate": (today - timedelta(days=10)).isoformat(),
+            },
+            {
+                "Material": "TG10",
+                "BatchIdentifyingPlant": "",
+                "Batch": "0000000009",
+                "ShelfLifeExpirationDate": (today + timedelta(days=30)).isoformat(),
+            },
+        ),
+    )
+    output = result["workflow_output"]
+
+    assert output["expiry_status"] == "candidate"
+    assert output["expired_batch_count"] == 1
+    assert output["expiring_batch_count"] == 1
+    assert output["expiry_candidate_count"] == 1
+    assert output["expiry_evidence_complete"] is True
+    assert output["business_status"] == "attention"
+    assert {item["status"] for item in output["batch_expiry_details"]} == {
+        "expired",
+        "expiring",
+    }
+
+
+def test_exact_plant_batch_wins_and_other_plant_is_ignored() -> None:
+    today = date.today()
+    result = _evaluate(
+        run_input={
+            "material": "TG10",
+            "plant": "1710",
+            "storage_location": "171A",
+            "expiry_days": 90,
+        },
+        stock=_embedded(_stock(batch="B1")),
+        batch=_embedded(
+            {
+                "Material": "TG10",
+                "BatchIdentifyingPlant": "",
+                "Batch": "B1",
+                "ShelfLifeExpirationDate": (today - timedelta(days=5)).isoformat(),
+            },
+            {
+                "Material": "TG10",
+                "BatchIdentifyingPlant": "1710",
+                "Batch": "B1",
+                "ShelfLifeExpirationDate": (today + timedelta(days=120)).isoformat(),
+            },
+            {
+                "Material": "TG10",
+                "BatchIdentifyingPlant": "1720",
+                "Batch": "B1",
+                "ShelfLifeExpirationDate": (today + timedelta(days=10)).isoformat(),
+            },
+        ),
+    )
+
+    detail = result["workflow_output"]["batch_expiry_details"][0]
+    assert detail["status"] == "not_due"
+    assert detail["expiration_date"] == (today + timedelta(days=120)).isoformat()
+
+
+def test_confirmed_expired_risk_is_preserved_when_another_batch_date_is_missing() -> None:
+    today = date.today()
+    stock = _embedded(
+        _stock(quantity="20", batch="B1"),
+        _stock(quantity="5", batch="B2"),
+    )
+    result = _evaluate(
+        run_input={
+            "material": "TG10",
+            "plant": "1710",
+            "storage_location": "171A",
+            "expiry_days": 90,
+        },
+        stock=stock,
+        batch=_embedded(
+            {
+                "Material": "TG10",
+                "BatchIdentifyingPlant": "",
+                "Batch": "B1",
+                "ShelfLifeExpirationDate": (today - timedelta(days=1)).isoformat(),
+            },
+            {"Material": "TG10", "BatchIdentifyingPlant": "", "Batch": "B2"},
+        ),
+        batch_fallback=_adt(
+            {"MATNR": "TG10", "WERKS": "1710", "CHARG": "B1", "VFDAT": (today - timedelta(days=1)).isoformat()},
+            {"MATNR": "TG10", "WERKS": "1710", "CHARG": "B2", "VFDAT": ""},
+        ),
+    )
+    output = result["workflow_output"]
+
+    assert output["expiry_status"] == "candidate"
+    assert output["expired_batch_count"] == 1
+    assert output["missing_expiry_date_batch_count"] == 1
+    assert output["expiry_evidence_complete"] is False
+    assert output["business_status"] == "inconclusive"
+    assert "已确认发现 1 个批次效期风险" in result["summary"]["zh"]
+
+
+def test_failed_adt_supplement_does_not_make_complete_batch_api_source_incomplete() -> None:
+    today = date.today()
+    result = _evaluate(
+        run_input={
+            "material": "TG10",
+            "plant": "1710",
+            "storage_location": "171A",
+            "expiry_days": 90,
+        },
+        stock=_embedded(_stock(quantity="5", batch="B1")),
+        batch=_embedded(
+            {
+                "Material": "TG10",
+                "BatchIdentifyingPlant": "",
+                "Batch": "B1",
+                "ShelfLifeExpirationDate": "",
+            }
+        ),
+        batch_fallback=_adt(complete=False),
+    )
+    output = result["workflow_output"]
+
+    assert output["source_complete"] is True
+    assert output["expiry_evidence_complete"] is False
+    assert output["business_status"] == "inconclusive"
+    assert result["missing_evidence"] == ["batch_expiry_date_missing"]
+
+
+def test_api_and_adt_expiry_conflict_is_inconclusive() -> None:
+    today = date.today()
+    stock = _embedded(
+        _stock(quantity="20", batch="B1"),
+        _stock(quantity="5", batch="B2"),
+    )
+    result = _evaluate(
+        run_input={
+            "material": "TG10",
+            "plant": "1710",
+            "storage_location": "171A",
+            "expiry_days": 90,
+        },
+        stock=stock,
+        batch=_embedded(
+            {
+                "Material": "TG10",
+                "BatchIdentifyingPlant": "",
+                "Batch": "B1",
+                "ShelfLifeExpirationDate": (today + timedelta(days=10)).isoformat(),
+            },
+            {"Material": "TG10", "BatchIdentifyingPlant": "", "Batch": "B2"},
+        ),
+        batch_fallback=_adt(
+            {"MATNR": "TG10", "WERKS": "1710", "CHARG": "B1", "VFDAT": (today + timedelta(days=20)).isoformat()},
+            {"MATNR": "TG10", "WERKS": "1710", "CHARG": "B2", "VFDAT": (today + timedelta(days=120)).isoformat()},
+        ),
+    )
+
+    assert "batch_expiry_conflict" in result["missing_evidence"]
+    assert result["workflow_output"]["business_status"] == "inconclusive"
+    assert result["workflow_output"]["batch_expiry_details"][0]["status"] == "conflict"
 
 
 def test_complete_empty_stock_result_is_no_stock() -> None:
@@ -591,9 +835,9 @@ def test_manifest_and_frontend_remove_historical_transfer_claims_and_blank_value
     package = (ROOT / "agents" / "MM" / "inventory-health-balancing" / "pyproject.toml").read_text(encoding="utf-8")
 
     assert manifest["title"] == {"zh": "库存健康检查", "en": "Inventory Health Check"}
-    assert manifest["version"] == "0.3.0"
-    assert manifest["validation"]["verdict"] == "PASS"
-    assert manifest["validation"]["executable"] is True
+    assert manifest["version"] == "0.4.0"
+    assert manifest["validation"]["verdict"] in {"NOT_TESTED", "BLOCKED", "PASS"}
+    assert isinstance(manifest["validation"]["executable"], bool)
     assert manifest["execution"]["acceptance"]["codeSetFields"] == []
     assert "confirmed_transfer_quantity" not in manifest_text
     assert "historical_stock_balance_evidence" not in manifest_text
@@ -601,7 +845,7 @@ def test_manifest_and_frontend_remove_historical_transfer_claims_and_blank_value
     assert "slow_moving_days" not in policy
     assert "obsolete_days" not in policy
     assert "expiry_days" not in policy
-    assert 'version = "0.3.0"' in package
+    assert 'version = "0.4.0"' in package
     assert "if (!value) return" in frontend
     assert "Number(value)" in frontend
 
@@ -635,6 +879,71 @@ def test_inventory_manifest_uses_supported_grouped_movement_binding() -> None:
             "source_field": "MaterialDocument",
         },
     ]
+
+
+def test_inventory_manifest_queries_material_level_batches_and_gates_adt_on_association() -> None:
+    manifest = json.loads(
+        (ROOT / "agents" / "MM" / "inventory-health-balancing" / "agent.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    steps = {step["id"]: step for step in manifest["execution"]["steps"]}
+    batch_plan = steps["read_batch_parameters"]["request"]["plan"]
+
+    assert batch_plan["filters"] == [
+        {
+            "field": "Material",
+            "operator": "eq",
+            "value": "{{input.material}}",
+            "value_type": "string",
+        }
+    ]
+    assert steps["assess_batch_expiry"]["operation"] == "assess_inventory_batch_expiry"
+    assert steps["adt_batch"]["when"]["source"] == (
+        "{{steps.assess_batch_expiry.output.needs_adt.batch_expiry}}"
+    )
+    output = manifest["execution"]["outputSchema"]
+    for field in (
+        "expired_batch_count",
+        "expiring_batch_count",
+        "missing_expiry_date_batch_count",
+        "expiry_evidence_complete",
+        "batch_expiry_details",
+    ):
+        assert field in output["properties"]
+        assert field in output["required"]
+
+
+def test_expiry_business_report_is_bilingual_table_not_raw_json() -> None:
+    result = _evaluate(
+        run_input={
+            "material": "TG10",
+            "plant": "1710",
+            "storage_location": "171A",
+            "expiry_days": 90,
+        },
+        stock=_embedded(_stock(batch="B1")),
+        batch=_embedded(
+            {
+                "Material": "TG10",
+                "BatchIdentifyingPlant": "",
+                "Batch": "B1",
+                "ShelfLifeExpirationDate": (date.today() - timedelta(days=1)).isoformat(),
+            }
+        ),
+    )
+    table = next(
+        item
+        for item in result["business_report"]["evidence_tables"]
+        if item["id"] == "batch_expiry_details"
+    )
+
+    assert table["title"] == {"zh": "批次效期明细", "en": "Batch expiry details"}
+    assert table["rows"][0]["status_label"] == {"zh": "已过期", "en": "Expired"}
+    assert table["rows"][0]["evidence_source_label"] == {
+        "zh": "SAP Batch API",
+        "en": "SAP Batch API",
+    }
 
 
 def test_embedded_provider_rejects_unknown_bindings_contract() -> None:

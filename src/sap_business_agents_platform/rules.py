@@ -29,6 +29,8 @@ API_CAPABILITY_GAP_CODES = frozenset(
 def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "resolve_inventory_health_window":
         return resolve_inventory_health_window(inputs)
+    if operation == "assess_inventory_batch_expiry":
+        return assess_inventory_batch_expiry(inputs)
     if operation == "assess_api_evidence":
         return assess_api_evidence(inputs)
     if operation == "assess_adt_preflight":
@@ -106,6 +108,133 @@ def resolve_inventory_health_window(inputs: dict[str, Any]) -> dict[str, Any]:
         "movement_years": [],
         "movement_history_to": snapshot.isoformat(),
         "selected_checks": selected_checks,
+    }
+
+
+def assess_inventory_batch_expiry(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Open the MCHA fallback only when positive-stock batch expiry is unresolved."""
+
+    if inputs.get("requested") is not True:
+        return {
+            "rule_id": "inventory_batch_expiry_gap_assessment_v1",
+            "status": "complete",
+            "source_complete": True,
+            "positive_batch_count": 0,
+            "matched_batch_count": 0,
+            "unresolved_batches": [],
+            "conflicting_batches": [],
+            "needs_adt": {"batch_expiry": False},
+        }
+
+    run_input = inputs.get("run_input")
+    run_input = run_input if isinstance(run_input, dict) else {}
+    stock_value = inputs.get("stock")
+    stock_value = stock_value if isinstance(stock_value, dict) else {}
+    confirmation = stock_value.get("confirmation")
+    initial = stock_value.get("initial")
+
+    def plan_rows(value: Any) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for step in _step_results(value).values():
+            rows.extend(
+                dict(row) for row in step.get("results") or [] if isinstance(row, dict)
+            )
+        if rows:
+            return rows
+        if isinstance(value, dict):
+            data = value.get("data")
+            if isinstance(data, dict):
+                rows.extend(
+                    dict(row) for row in data.get("results") or [] if isinstance(row, dict)
+                )
+        return rows
+
+    stock_rows = plan_rows(confirmation) or plan_rows(initial)
+    material_input = str(run_input.get("material") or "").strip()
+    plant_input = str(run_input.get("plant") or "").strip()
+    positive_keys: set[tuple[str, str, str]] = set()
+    for row in stock_rows:
+        if str(row.get("InventoryStockType") or "").strip() not in {"", "01"}:
+            continue
+        if str(row.get("InventorySpecialStockType") or "").strip():
+            continue
+        quantity = _decimal_or_none(
+            row.get("MatlWrhsStkQtyInMatlBaseUnit") or row.get("LABST")
+        )
+        batch = str(row.get("Batch") or row.get("CHARG") or "").strip()
+        if quantity is None or quantity <= 0 or not batch:
+            continue
+        positive_keys.add(
+            (
+                str(row.get("Material") or row.get("MATNR") or material_input).strip(),
+                str(row.get("Plant") or row.get("WERKS") or plant_input).strip(),
+                batch,
+            )
+        )
+
+    batch_payload = inputs.get("batch_expiry")
+    batch_rows = plan_rows(batch_payload)
+    source_complete = _source_complete(batch_payload)
+    matched = 0
+    unresolved: list[str] = []
+    conflicts: list[str] = []
+    for material, plant, batch in sorted(positive_keys):
+        candidates = [
+            row
+            for row in batch_rows
+            if str(row.get("Material") or row.get("MATNR") or "").strip() == material
+            and str(row.get("Batch") or row.get("CHARG") or "").strip() == batch
+        ]
+        exact = [
+            row
+            for row in candidates
+            if str(
+                row.get("BatchIdentifyingPlant")
+                or row.get("Plant")
+                or row.get("WERKS")
+                or ""
+            ).strip()
+            == plant
+        ]
+        material_level = [
+            row
+            for row in candidates
+            if not str(
+                row.get("BatchIdentifyingPlant")
+                or row.get("Plant")
+                or row.get("WERKS")
+                or ""
+            ).strip()
+        ]
+        usable = exact or material_level
+        if not usable:
+            unresolved.append(batch)
+            continue
+        matched += 1
+        parseable_dates: set[str] = set()
+        for row in usable:
+            value = _sap_date_text(row.get("ShelfLifeExpirationDate") or row.get("VFDAT"))
+            if not value:
+                continue
+            try:
+                parseable_dates.add(date.fromisoformat(value[:10]).isoformat())
+            except ValueError:
+                continue
+        if len(parseable_dates) > 1:
+            conflicts.append(batch)
+        elif not parseable_dates:
+            unresolved.append(batch)
+
+    needs_adt = not source_complete or bool(unresolved or conflicts)
+    return {
+        "rule_id": "inventory_batch_expiry_gap_assessment_v1",
+        "status": "fallback_required" if needs_adt else "complete",
+        "source_complete": source_complete,
+        "positive_batch_count": len(positive_keys),
+        "matched_batch_count": matched,
+        "unresolved_batches": sorted(set(unresolved)),
+        "conflicting_batches": sorted(set(conflicts)),
+        "needs_adt": {"batch_expiry": needs_adt},
     }
 
 

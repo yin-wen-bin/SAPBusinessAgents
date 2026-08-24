@@ -9,6 +9,7 @@ from typing import Any
 ALLOWED_EXECUTORS = {"sap_read", "skill", "rule"}
 ALLOWED_SAP_READ_OPERATIONS = {"execute_plan", "execute_get"}
 ALLOWED_RULE_OPERATIONS = {
+    "assess_inventory_batch_expiry",
     "assess_api_evidence",
     "assess_adt_preflight",
     "assess_billing_block_incompletion",

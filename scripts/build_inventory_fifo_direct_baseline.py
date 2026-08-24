@@ -165,6 +165,80 @@ def _stock_by_batch(rows: list[JsonObject]) -> tuple[dict[str, Decimal], str]:
     return quantities, next(iter(units), "")
 
 
+def _batch_expiry(
+    rows: list[JsonObject],
+    stock: dict[str, Decimal],
+    *,
+    material: str,
+    plant: str,
+    unit: str,
+    snapshot: date,
+    expiry_days: int,
+) -> tuple[list[JsonObject], list[str]]:
+    details: list[JsonObject] = []
+    limitations: list[str] = []
+    for batch, quantity in sorted(stock.items()):
+        if quantity <= 0 or not batch:
+            continue
+        candidates = [
+            row
+            for row in rows
+            if str(row.get("Material") or "").strip() == material
+            and str(row.get("Batch") or "").strip() == batch
+        ]
+        exact = [
+            row
+            for row in candidates
+            if str(row.get("BatchIdentifyingPlant") or "").strip() == plant
+        ]
+        material_level = [
+            row
+            for row in candidates
+            if not str(row.get("BatchIdentifyingPlant") or "").strip()
+        ]
+        usable = exact or material_level
+        dates = {
+            parsed
+            for row in usable
+            for parsed in [_date(row.get("ShelfLifeExpirationDate"))]
+            if parsed is not None
+        }
+        if not usable:
+            status = "unmatched"
+            expiration = None
+            limitations.append("batch_expiry_association")
+        elif len(dates) > 1:
+            status = "conflict"
+            expiration = None
+            limitations.append("batch_expiry_conflict")
+        elif not dates:
+            status = "missing_date"
+            expiration = None
+            limitations.append("batch_expiry_date_missing")
+        else:
+            expiration = next(iter(dates))
+            days_to_expiry = (expiration - snapshot).days
+            status = (
+                "expired"
+                if days_to_expiry < 0
+                else "expiring"
+                if days_to_expiry <= expiry_days
+                else "not_due"
+            )
+        details.append(
+            {
+                "batch": batch,
+                "current_quantity": str(quantity),
+                "unit": unit,
+                "expiration_date": expiration.isoformat() if expiration else None,
+                "days_to_expiry": (expiration - snapshot).days if expiration else None,
+                "status": status,
+                "evidence_source": "api_batch" if expiration else "none",
+            }
+        )
+    return details, sorted(set(limitations))
+
+
 def _fifo(
     item_rows: list[JsonObject],
     header_rows: list[JsonObject],
@@ -443,6 +517,42 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
     confirmation_stock, confirmation_unit = _stock_by_batch(confirmation_rows)
     if initial_stock != confirmation_stock or unit != confirmation_unit:
         raise ValueError("current stock changed while the direct baseline was being collected")
+    batch_manifest, batch_rows = _run_source(
+        profile,
+        _request(
+            "inventory_batch_expiry",
+            "API_BATCH_SRV",
+            "Batch",
+            [
+                "Material",
+                "BatchIdentifyingPlant",
+                "Batch",
+                "ShelfLifeExpirationDate",
+                "ManufactureDate",
+                "BatchIsMarkedForDeletion",
+            ],
+            f"Material eq {material}",
+            ["Material", "BatchIdentifyingPlant", "Batch"],
+            max_rows=1000,
+        ),
+        artifacts,
+    )
+    sources.append(batch_manifest)
+    expiry_details, expiry_limitations = _batch_expiry(
+        batch_rows,
+        confirmation_stock,
+        material=str(values["material"]),
+        plant=str(values["plant"]),
+        unit=confirmation_unit,
+        snapshot=snapshot,
+        expiry_days=int(values["expiry_days"]),
+    )
+    expired_count = sum(item["status"] == "expired" for item in expiry_details)
+    expiring_count = sum(item["status"] == "expiring" for item in expiry_details)
+    missing_expiry_count = sum(
+        item["status"] in {"missing_date", "unmatched"} for item in expiry_details
+    )
+    expiry_evidence_complete = not expiry_limitations
     layers = _fifo(
         movement_rows,
         header_rows,
@@ -479,6 +589,19 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
     ]
     last_movement = max(movement_dates) if movement_dates else None
     oldest_layer = min((_date(row["receipt_date"]) for row in layers), default=None)
+    has_aging_risk = any(
+        value > 0 for key, value in bucket_quantities.items() if key != "below_slow_moving"
+    )
+    has_expiry_risk = bool(expired_count or expiring_count)
+    direct_source_complete = all(source.get("source_complete") is True for source in sources)
+    evidence_complete = direct_source_complete and expiry_evidence_complete
+    business_status = (
+        "inconclusive"
+        if not evidence_complete
+        else "attention"
+        if has_aging_risk or has_expiry_risk
+        else "normal"
+    )
     normalized = {
         "records": [
             {
@@ -497,12 +620,17 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
                     Decimal(0),
                 ) > 0 else "not_candidate",
                 "obsolete_status": "candidate" if bucket_quantities["obsolete"] > 0 else "not_candidate",
-                "expiry_status": "not_candidate",
-                "business_status": "attention" if any(
-                    value > 0 for key, value in bucket_quantities.items() if key != "below_slow_moving"
-                ) else "normal",
-                "source_complete": True,
-                "evidence_complete": True,
+                "expiry_status": (
+                    "candidate"
+                    if has_expiry_risk
+                    else "unknown"
+                    if not expiry_evidence_complete
+                    else "not_candidate"
+                ),
+                "expiry_evidence_complete": expiry_evidence_complete,
+                "business_status": business_status,
+                "source_complete": direct_source_complete,
+                "evidence_complete": evidence_complete,
             }
         ],
         "metrics": {
@@ -518,15 +646,19 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
             "below_threshold_stock_quantity": str(bucket_quantities["below_slow_moving"]),
             "slow_moving_only_stock_quantity": str(bucket_quantities["slow_moving_only"]),
             "obsolete_stock_quantity": str(bucket_quantities["obsolete"]),
-            "expiry_candidate_count": 0,
+            "expiry_candidate_count": expiring_count,
+            "expired_batch_count": expired_count,
+            "expiring_batch_count": expiring_count,
+            "missing_expiry_date_batch_count": missing_expiry_count,
         },
         "aging_buckets": [
             {"bucket_id": key, "quantity": str(value), "unit": confirmation_unit}
             for key, value in bucket_quantities.items()
         ],
         "remaining_fifo_layers": layers,
-        "limitations": [],
-        "source_complete": all(source.get("source_complete") is True for source in sources),
+        "batch_expiry_details": expiry_details,
+        "limitations": expiry_limitations,
+        "source_complete": direct_source_complete,
     }
     qualification_reasons = []
     if not normalized["source_complete"]:
@@ -554,6 +686,7 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
                         for row in movement_rows
                     ],
                     "layers": layers,
+                    "batch_expiry": expiry_details,
                 }
             ),
         },

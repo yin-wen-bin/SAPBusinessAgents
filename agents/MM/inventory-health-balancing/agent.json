@@ -11,7 +11,7 @@
     "en": "Reads current unrestricted-use stock, reconstructs FIFO quantity-age layers from complete material-movement history, and checks slow-moving, obsolete, and expiry risks."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "owner": "MM-IM / Inventory Planning",
   "tags": [
     "Inventory",
@@ -77,6 +77,11 @@
       "呆滞状态",
       "临期状态",
       "临期批次数",
+      "已过期批次数",
+      "未来临期批次数",
+      "效期无法确认批次数",
+      "批次效期证据完整",
+      "批次效期明细",
       "业务状态",
       "查询源完整性",
       "证据完整性",
@@ -109,6 +114,11 @@
       "Obsolete status",
       "Expiry status",
       "Expiry candidate count",
+      "Expired batch count",
+      "Expiring batch count",
+      "Batches with unresolved expiry",
+      "Batch expiry evidence complete",
+      "Batch expiry details",
       "Business status",
       "Query-source completeness",
       "Evidence completeness",
@@ -331,6 +341,38 @@
       ]
     },
     {
+      "id": "assess-batch-expiry",
+      "title": {
+        "zh": "核对正库存批次效期",
+        "en": "Assess positive-stock batch expiry"
+      },
+      "description": {
+        "zh": "逐个核对正库存批次的 API 效期证据，并仅在缺失、无法关联、冲突或查询不完整时请求只读 MCHA 补充。",
+        "en": "Checks API expiry evidence for every positive-stock batch and requests read-only MCHA only for missing, unmatched, conflicting, or incomplete evidence."
+      },
+      "operations": {
+        "zh": [
+          "本地规则 assess_inventory_batch_expiry"
+        ],
+        "en": [
+          "Local rule assess_inventory_batch_expiry"
+        ]
+      },
+      "tools": [
+        {
+          "name": "assess_inventory_batch_expiry",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "决定是否需要只读 MCHA 补充",
+            "en": "Decide whether read-only MCHA evidence is required"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "assess_batch_expiry"
+      ]
+    },
+    {
       "id": "approved-adt-stock-fallback",
       "title": {
         "zh": "按需补充库存证据",
@@ -401,8 +443,8 @@
         "en": "Supplement batch evidence when needed"
       },
       "description": {
-        "zh": "仅在已启用临期检查且实时 Schema 直接证明 API 能力缺口时调用只读 MCHA。",
-        "en": "Uses read-only MCHA only for an enabled expiry check with a live-schema-proven API capability gap."
+        "zh": "仅在已启用临期检查且正库存批次的 API 效期证据不足时调用只读 MCHA。",
+        "en": "Uses read-only MCHA only when an enabled expiry check has unresolved API evidence for positive-stock batches."
       },
       "operations": {
         "zh": [
@@ -438,10 +480,10 @@
       },
       "operations": {
         "zh": [
-          "本地规则 inventory_health_check_deterministic_v3"
+          "本地规则 inventory_health_check_deterministic_v4"
         ],
         "en": [
-          "Local rule inventory_health_check_deterministic_v3"
+          "Local rule inventory_health_check_deterministic_v4"
         ]
       },
       "tools": [
@@ -951,6 +993,102 @@
             "en": "Expiry candidate count"
           }
         },
+        "expired_batch_count": {
+          "type": "integer",
+          "title": {
+            "zh": "已过期批次数",
+            "en": "Expired batch count"
+          }
+        },
+        "expiring_batch_count": {
+          "type": "integer",
+          "title": {
+            "zh": "未来临期批次数",
+            "en": "Expiring batch count"
+          }
+        },
+        "missing_expiry_date_batch_count": {
+          "type": "integer",
+          "title": {
+            "zh": "效期无法确认批次数",
+            "en": "Batches with unresolved expiry"
+          }
+        },
+        "expiry_evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "批次效期证据完整",
+            "en": "Batch expiry evidence complete"
+          }
+        },
+        "batch_expiry_details": {
+          "type": "array",
+          "title": {
+            "zh": "批次效期明细",
+            "en": "Batch expiry details"
+          },
+          "x-sapba-display": {
+            "visible": false
+          },
+          "items": {
+            "type": "object",
+            "properties": {
+              "batch": {
+                "type": "string"
+              },
+              "current_quantity": {
+                "type": "string"
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expiration_date": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "days_to_expiry": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "expired",
+                  "expiring",
+                  "not_due",
+                  "missing_date",
+                  "unmatched",
+                  "conflict"
+                ]
+              },
+              "evidence_source": {
+                "type": "string",
+                "enum": [
+                  "api_batch",
+                  "adt_mcha",
+                  "none"
+                ]
+              }
+            },
+            "required": [
+              "batch",
+              "current_quantity",
+              "unit",
+              "expiration_date",
+              "days_to_expiry",
+              "status",
+              "evidence_source"
+            ],
+            "additionalProperties": false
+          }
+        },
         "business_status": {
           "type": "string",
           "enum": [
@@ -1039,6 +1177,11 @@
         "obsolete_status",
         "expiry_status",
         "expiry_candidate_count",
+        "expired_batch_count",
+        "expiring_batch_count",
+        "missing_expiry_date_batch_count",
+        "expiry_evidence_complete",
+        "batch_expiry_details",
         "business_status",
         "source_complete",
         "evidence_complete",
@@ -1073,6 +1216,11 @@
       "obsolete_status": "{{steps.evaluate.output.workflow_output.obsolete_status}}",
       "expiry_status": "{{steps.evaluate.output.workflow_output.expiry_status}}",
       "expiry_candidate_count": "{{steps.evaluate.output.workflow_output.expiry_candidate_count}}",
+      "expired_batch_count": "{{steps.evaluate.output.workflow_output.expired_batch_count}}",
+      "expiring_batch_count": "{{steps.evaluate.output.workflow_output.expiring_batch_count}}",
+      "missing_expiry_date_batch_count": "{{steps.evaluate.output.workflow_output.missing_expiry_date_batch_count}}",
+      "expiry_evidence_complete": "{{steps.evaluate.output.workflow_output.expiry_evidence_complete}}",
+      "batch_expiry_details": "{{steps.evaluate.output.workflow_output.batch_expiry_details}}",
       "business_status": "{{steps.evaluate.output.workflow_output.business_status}}",
       "source_complete": "{{steps.evaluate.output.workflow_output.source_complete}}",
       "evidence_complete": "{{steps.evaluate.output.workflow_output.evidence_complete}}",
@@ -1355,16 +1503,24 @@
                 "operator": "eq",
                 "value": "{{input.material}}",
                 "value_type": "string"
-              },
-              {
-                "field": "BatchIdentifyingPlant",
-                "operator": "eq",
-                "value": "{{input.plant}}",
-                "value_type": "string"
               }
             ],
-            "rationale": "Read expiry evidence only when the user requests an expiry check."
+            "rationale": "Read material-level and plant-level batch expiry evidence; positive-stock association is validated deterministically."
           }
+        }
+      },
+      {
+        "id": "assess_batch_expiry",
+        "executor": "rule",
+        "operation": "assess_inventory_batch_expiry",
+        "inputMapping": {
+          "run_input": "{{input}}",
+          "requested": "{{steps.resolve_window.output.check_expiry}}",
+          "stock": {
+            "initial": "{{steps.read_stock.output}}",
+            "confirmation": "{{steps.read_stock_confirmation.output}}"
+          },
+          "batch_expiry": "{{steps.read_batch_parameters.output}}"
         }
       },
       {
@@ -1501,7 +1657,7 @@
         "readOnly": true,
         "failurePolicy": "record_gap",
         "when": {
-          "source": "{{steps.assess.output.needs_adt.batch_expiry}}",
+          "source": "{{steps.assess_batch_expiry.output.needs_adt.batch_expiry}}",
           "equals": true
         },
         "inputMapping": {
@@ -1538,6 +1694,7 @@
           "run_input": "{{input}}",
           "window": "{{steps.resolve_window.output}}",
           "assessment": "{{steps.assess.output}}",
+          "batch_assessment": "{{steps.assess_batch_expiry.output}}",
           "evidence": {
             "stock_initial": "{{steps.read_stock.output}}",
             "stock_confirmation": "{{steps.read_stock_confirmation.output}}",
@@ -1570,6 +1727,7 @@
         "slow_moving_status",
         "obsolete_status",
         "expiry_status",
+        "expiry_evidence_complete",
         "business_status",
         "source_complete",
         "evidence_complete"
@@ -1583,7 +1741,10 @@
         "below_threshold_stock_quantity",
         "slow_moving_only_stock_quantity",
         "obsolete_stock_quantity",
-        "expiry_candidate_count"
+        "expiry_candidate_count",
+        "expired_batch_count",
+        "expiring_batch_count",
+        "missing_expiry_date_batch_count"
       ],
       "decimalFields": [
         "current_unrestricted_stock"
@@ -1609,6 +1770,7 @@
       "zeroPadFields": {},
       "booleanFields": [
         "aging_complete",
+        "expiry_evidence_complete",
         "source_complete",
         "evidence_complete"
       ],
@@ -1640,6 +1802,15 @@
       },
       "metricValueMappings": {
         "expiry_candidate_count": {
+          "null (expiry check not requested)": 0
+        },
+        "expired_batch_count": {
+          "null (expiry check not requested)": 0
+        },
+        "expiring_batch_count": {
+          "null (expiry check not requested)": 0
+        },
+        "missing_expiry_date_batch_count": {
           "null (expiry check not requested)": 0
         }
       },
@@ -1707,7 +1878,10 @@
         "below_threshold_stock_quantity": "FIFO remaining quantity below the lowest enabled movement-age threshold.",
         "slow_moving_only_stock_quantity": "FIFO remaining quantity that reached the slow-moving threshold but not the obsolete threshold.",
         "obsolete_stock_quantity": "FIFO remaining quantity at or above the enabled obsolete threshold.",
-        "expiry_candidate_count": "Positive-stock batches expiring from snapshot date through the requested future-day threshold."
+        "expiry_candidate_count": "Compatibility alias for positive-stock batches expiring from snapshot date through the requested future-day threshold.",
+        "expired_batch_count": "Positive-stock batches whose shelf-life expiration date is earlier than the snapshot date.",
+        "expiring_batch_count": "Positive-stock batches expiring from the snapshot date through the requested future-day threshold.",
+        "missing_expiry_date_batch_count": "Positive-stock batches without an authoritative usable expiration date after approved fallback."
       },
       "businessStatusDefinition": "snapshot_only when no checks are requested; normal or attention only when enabled evidence is complete and FIFO movement layers reconcile exactly to two identical stock snapshots; no_stock for a complete empty current-stock result; otherwise inconclusive.",
       "businessStatusFromAnyPositiveMetric": {}
@@ -1715,7 +1889,7 @@
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-08-23T05:51:12.385559+00:00",
+    "testedAt": "2026-08-24T14:04:28.218015+00:00",
     "evidenceScope": "complete",
     "providers": [
       "codex-app-direct-sap",
@@ -1731,10 +1905,10 @@
     "fixedAgentComparison": "MATCH",
     "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "codexDirectBaselineHash": "sha256:a58f4d1d9da3fa5b7c2429f6a49f53637a9fa556238c2ea8961b30f09c505e8b",
-    "freeQueryHash": "sha256:666755faabb786d3a1999072b66893bf5cfe180c527a8d995d224be954bab6f0",
-    "adjudicatedResultHash": "sha256:a58f4d1d9da3fa5b7c2429f6a49f53637a9fa556238c2ea8961b30f09c505e8b",
-    "fixedAgentHash": "sha256:11aa663adf2de35416776cd3de77c941cf3ec813411293c2d022793c60678a52",
-    "comparisonHash": "sha256:e76459c37eb909b8aee7a29e2aab4d31ccb10989bdbdb0e9ee82b21199bde51e"
+    "codexDirectBaselineHash": "sha256:795e3db52dc35fa9ba6876f4a6ac877348dcc5bc19bb555678db3c5150495ecc",
+    "freeQueryHash": "sha256:8f7ecf23d717d290371d6f02d94bb0c5595c75afcf46398402e4bce932ed8ef0",
+    "adjudicatedResultHash": "sha256:795e3db52dc35fa9ba6876f4a6ac877348dcc5bc19bb555678db3c5150495ecc",
+    "fixedAgentHash": "sha256:e2da0f9ef4dcaa5613874632a41e46a16052ae0cbd3bc6f44f9be2e3d3c053ed",
+    "comparisonHash": "sha256:208364b12c7622ff17f5784b4115a04df809fe7dc5177f186f49936e193122e9"
   }
 }

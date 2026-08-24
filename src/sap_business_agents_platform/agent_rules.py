@@ -2329,7 +2329,17 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         if use_movement_fallback
         else _rows(inputs, "movement", "movement_history", "material_movements")
     )
-    batches = _rows(inputs, "batch_expiry", "batch", "batches") + _adt_rows(inputs, "batch_expiry")
+    api_batches = _rows(inputs, "batch_expiry", "batch", "batches")
+    adt_batches = _adt_rows(inputs, "batch_expiry")
+    batch_assessment = (
+        inputs.get("batch_assessment")
+        if isinstance(inputs.get("batch_assessment"), dict)
+        else {}
+    )
+    batch_needs_adt = (
+        isinstance(batch_assessment.get("needs_adt"), dict)
+        and batch_assessment["needs_adt"].get("batch_expiry") is True
+    )
 
     def decimal_or_none(value: Any) -> Decimal | None:
         if value in {None, ""}:
@@ -2388,7 +2398,20 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         )
     )
     movement_complete = (not movement_requested) or _topic_complete(inputs, "movement")
-    expiry_complete = (not check_expiry) or _topic_complete(inputs, "batch_expiry")
+    api_expiry_complete = (not check_expiry) or _topic_complete(inputs, "batch_expiry")
+    # A complete Batch API read remains query-source complete even when some
+    # returned master-data rows have no usable expiry date.  ADT is an
+    # evidence supplement in that case, not a replacement source whose
+    # metadata limitation should retroactively make the completed API query
+    # incomplete.  ADT completeness replaces API completeness only when the
+    # API query itself was incomplete.
+    expiry_complete = (
+        True
+        if not check_expiry
+        else _adt_complete(_fallback(inputs, "batch_expiry"))
+        if batch_needs_adt and not api_expiry_complete
+        else api_expiry_complete
+    )
     source_complete = (
         stock_complete
         and stock_confirmation_complete
@@ -2696,60 +2719,144 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
     obsolete_status = movement_status(check_obsolete, obsolete_quantity)
 
     effective_stock_rows = confirmation_stock_rows or initial_stock_rows
-    positive_stock = any(
-        (quantity := decimal_or_none(
+    positive_batch_keys: set[tuple[str, str, str]] = set()
+    for row in effective_stock_rows:
+        if _text(row, "InventoryStockType", "INSME") not in {None, "", "01"}:
+            continue
+        if _text(row, "InventorySpecialStockType", "SOBKZ") not in {None, ""}:
+            continue
+        quantity = decimal_or_none(
             row.get("MatlWrhsStkQtyInMatlBaseUnit") or row.get("LABST")
-        )) is not None
-        and quantity > 0
-        for row in effective_stock_rows
-        if _text(row, "InventoryStockType", "INSME") in {None, "", "01"}
-        and _text(row, "InventorySpecialStockType", "SOBKZ") in {None, ""}
-    )
-    positive_batch_keys = {
-        (
-            _text(row, "Material", "MATNR") or str(run_input.get("material") or ""),
-            _text(row, "Plant", "WERKS") or str(run_input.get("plant") or ""),
-            _text(row, "Batch", "CHARG"),
         )
-        for row in effective_stock_rows
-        for _quantity in [decimal_or_none(row.get("MatlWrhsStkQtyInMatlBaseUnit") or row.get("LABST"))]
-        if _quantity is not None and _quantity > 0
-        if _text(row, "Batch", "CHARG")
-    }
-    batch_by_key = {
-        (
-            _text(row, "Material", "MATNR"),
-            _text(row, "BatchIdentifyingPlant", "Plant", "WERKS"),
-            _text(row, "Batch", "CHARG"),
-        ): row
-        for row in batches
-        if _text(row, "Batch", "CHARG")
-    }
-    expiry_candidates: list[JsonObject] = []
+        batch = _text(row, "Batch", "CHARG")
+        if quantity is None or quantity <= 0 or not batch:
+            continue
+        positive_batch_keys.add(
+            (
+                _text(row, "Material", "MATNR") or str(run_input.get("material") or ""),
+                _text(row, "Plant", "WERKS") or str(run_input.get("plant") or ""),
+                batch,
+            )
+        )
+
+    def usable_batch_rows(
+        rows: list[JsonObject], key: tuple[str, str, str], *, allow_material_level: bool
+    ) -> list[JsonObject]:
+        material, plant, batch = key
+        candidates = [
+            row
+            for row in rows
+            if _text(row, "Material", "MATNR") == material
+            and _text(row, "Batch", "CHARG") == batch
+        ]
+        exact = [
+            row
+            for row in candidates
+            if _text(row, "BatchIdentifyingPlant", "Plant", "WERKS") == plant
+        ]
+        if exact or not allow_material_level:
+            return exact
+        return [
+            row
+            for row in candidates
+            if not _text(row, "BatchIdentifyingPlant", "Plant", "WERKS")
+        ]
+
+    expiry_details: list[JsonObject] = []
     expiry_association_complete = True
-    if check_expiry and expiry_complete and positive_stock:
-        if positive_batch_keys:
-            for key in sorted(positive_batch_keys):
-                batch = batch_by_key.get(key)
-                expiry = _date((batch or {}).get("ShelfLifeExpirationDate") or (batch or {}).get("VFDAT"))
-                if batch is None or expiry is None:
-                    expiry_association_complete = False
-                    continue
-                days_to_expiry = (expiry - snapshot).days
-                if 0 <= days_to_expiry <= int(run_input["expiry_days"]):
-                    expiry_candidates.append({
-                        "material": key[0],
-                        "plant": key[1],
-                        "batch": key[2],
-                        "shelf_life_expiration_date": expiry.isoformat(),
-                        "days_to_expiry": days_to_expiry,
-                    })
+    expiry_date_complete = True
+    expiry_conflict_free = True
+    expiry_threshold = int(run_input.get("expiry_days") or 0)
+    for key in sorted(positive_batch_keys) if check_expiry else []:
+        api_usable = usable_batch_rows(api_batches, key, allow_material_level=True)
+        adt_usable = usable_batch_rows(adt_batches, key, allow_material_level=False)
+        api_dates = {
+            expiry
+            for row in api_usable
+            if (expiry := _date(row.get("ShelfLifeExpirationDate") or row.get("VFDAT")))
+            is not None
+        }
+        adt_dates = {
+            expiry
+            for row in adt_usable
+            if (expiry := _date(row.get("VFDAT") or row.get("ShelfLifeExpirationDate")))
+            is not None
+        }
+        all_dates = api_dates | adt_dates
+        matched = bool(api_usable or adt_usable)
+        if not matched:
+            status = "unmatched"
+            expiry = None
+            source = "none"
+            expiry_association_complete = False
+        elif len(all_dates) > 1:
+            status = "conflict"
+            expiry = None
+            source = "none"
+            expiry_conflict_free = False
+        elif api_dates:
+            expiry = next(iter(api_dates))
+            source = "api_batch"
+            days_to_expiry = (expiry - snapshot).days
+            status = (
+                "expired"
+                if days_to_expiry < 0
+                else "expiring"
+                if days_to_expiry <= expiry_threshold
+                else "not_due"
+            )
+        elif adt_dates:
+            expiry = next(iter(adt_dates))
+            source = "adt_mcha"
+            days_to_expiry = (expiry - snapshot).days
+            status = (
+                "expired"
+                if days_to_expiry < 0
+                else "expiring"
+                if days_to_expiry <= expiry_threshold
+                else "not_due"
+            )
+        else:
+            status = "missing_date"
+            expiry = None
+            source = "none"
+            expiry_date_complete = False
+        expiry_details.append(
+            {
+                "batch": key[2],
+                "current_quantity": str(current_by_batch.get(key[2], Decimal(0))),
+                "unit": unit or None,
+                "expiration_date": expiry.isoformat() if expiry is not None else None,
+                "days_to_expiry": (expiry - snapshot).days if expiry is not None else None,
+                "status": status,
+                "evidence_source": source,
+            }
+        )
+
+    expired_batches = [item for item in expiry_details if item["status"] == "expired"]
+    expiring_batches = [item for item in expiry_details if item["status"] == "expiring"]
+    missing_expiry_batches = [
+        item for item in expiry_details if item["status"] in {"missing_date", "unmatched"}
+    ]
+    conflicting_expiry_batches = [
+        item for item in expiry_details if item["status"] == "conflict"
+    ]
+    expiry_evidence_complete = (
+        (not check_expiry)
+        or (
+            expiry_complete
+            and expiry_association_complete
+            and expiry_date_complete
+            and expiry_conflict_free
+        )
+    )
+    expiry_risks = expired_batches + expiring_batches
     if not check_expiry:
         expiry_status = "not_requested"
-    elif not expiry_complete or not expiry_association_complete:
-        expiry_status = "unknown"
-    elif expiry_candidates:
+    elif expiry_risks:
         expiry_status = "candidate"
+    elif not expiry_evidence_complete:
+        expiry_status = "unknown"
     else:
         expiry_status = "not_candidate"
 
@@ -2765,6 +2872,10 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         evidence_gaps.append("batch_expiry_evidence")
     if check_expiry and not expiry_association_complete:
         evidence_gaps.append("batch_expiry_association")
+    if check_expiry and not expiry_date_complete:
+        evidence_gaps.append("batch_expiry_date_missing")
+    if check_expiry and not expiry_conflict_free:
+        evidence_gaps.append("batch_expiry_conflict")
     evidence_gaps = sorted(set(evidence_gaps))
     evidence_complete = source_complete and not evidence_gaps
     has_stock = bool(current_by_batch)
@@ -2788,6 +2899,16 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         "normal": ("所选库存健康检查未发现风险", "No risk was found by the selected inventory-health checks"),
     }
     headline_zh, headline_en = headlines[business_status]
+    if business_status == "inconclusive" and expiry_risks:
+        unresolved_count = len(missing_expiry_batches) + len(conflicting_expiry_batches)
+        headline_zh = (
+            f"已确认发现 {len(expiry_risks)} 个批次效期风险"
+            + (f"；另有 {unresolved_count} 个批次无法确认" if unresolved_count else "；其他检查证据仍不完整")
+        )
+        headline_en = (
+            f"Confirmed {len(expiry_risks)} batch expiry risk(s)"
+            + (f"; {unresolved_count} additional batch(es) remain unresolved" if unresolved_count else "; other check evidence remains incomplete")
+        )
     findings: list[JsonObject] = []
     if slow_status == "candidate":
         findings.append({
@@ -2811,7 +2932,14 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
                 "en": f"{obsolete_quantity} {unit} of obsolete stock was identified.",
             },
         })
-    findings.extend({"code": "EXPIRY_RISK", "severity": "high", **item} for item in expiry_candidates)
+    findings.extend(
+        {"code": "EXPIRED_BATCH_STOCK", "severity": "high", **item}
+        for item in expired_batches
+    )
+    findings.extend(
+        {"code": "EXPIRING_BATCH_STOCK", "severity": "medium", **item}
+        for item in expiring_batches
+    )
 
     def check_stage(stage_id: str, zh: str, en: str, status: str, detail_zh: str, detail_en: str, count: int = 0) -> JsonObject:
         state = "not_requested" if status == "not_requested" else "unknown" if status == "unknown" else "attention" if status == "candidate" else "confirmed"
@@ -2854,7 +2982,12 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         "slow_moving_status": slow_status,
         "obsolete_status": obsolete_status,
         "expiry_status": expiry_status,
-        "expiry_candidate_count": len(expiry_candidates),
+        "expiry_candidate_count": len(expiring_batches),
+        "expired_batch_count": len(expired_batches),
+        "expiring_batch_count": len(expiring_batches),
+        "missing_expiry_date_batch_count": len(missing_expiry_batches),
+        "expiry_evidence_complete": expiry_evidence_complete,
+        "batch_expiry_details": expiry_details,
         "source_complete": source_complete,
         "evidence_complete": evidence_complete,
     }]
@@ -2870,7 +3003,25 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
             _stage("selected_checks", "本次检查条件", "Selected checks", len(selected_checks), state="confirmed", detail_zh=("、".join(selected_check_labels[item]["zh"] for item in selected_checks) if selected_checks else "三项均未启用。"), detail_en=(", ".join(selected_check_labels[item]["en"] for item in selected_checks) if selected_checks else "No health checks were enabled.")),
             check_stage("slow_moving", "慢动检查", "Slow-moving check", slow_status, "未启用。" if not check_slow else f"阈值 {run_input.get('slow_moving_days')} 天；{status_labels[slow_status]['zh']}。", "Not enabled." if not check_slow else f"Threshold {run_input.get('slow_moving_days')} days; {status_labels[slow_status]['en']}."),
             check_stage("obsolete", "呆滞检查", "Obsolete-stock check", obsolete_status, "未启用。" if not check_obsolete else f"阈值 {run_input.get('obsolete_days')} 天；{status_labels[obsolete_status]['zh']}。", "Not enabled." if not check_obsolete else f"Threshold {run_input.get('obsolete_days')} days; {status_labels[obsolete_status]['en']}."),
-            check_stage("expiry", "临期检查", "Expiry check", expiry_status, "未启用。" if not check_expiry else f"未来 {run_input.get('expiry_days')} 天；发现 {len(expiry_candidates)} 个临期批次。", "Not enabled." if not check_expiry else f"Next {run_input.get('expiry_days')} days; found {len(expiry_candidates)} expiring batch(es).", len(expiry_candidates)),
+            check_stage(
+                "expiry",
+                "批次效期检查",
+                "Batch expiry check",
+                expiry_status,
+                "未启用。"
+                if not check_expiry
+                else (
+                    f"已过期 {len(expired_batches)} 个；未来 {run_input.get('expiry_days')} 天内临期 "
+                    f"{len(expiring_batches)} 个；无法确认 {len(missing_expiry_batches) + len(conflicting_expiry_batches)} 个。"
+                ),
+                "Not enabled."
+                if not check_expiry
+                else (
+                    f"Expired: {len(expired_batches)}; expiring within the next {run_input.get('expiry_days')} days: "
+                    f"{len(expiring_batches)}; unresolved: {len(missing_expiry_batches) + len(conflicting_expiry_batches)}."
+                ),
+                len(expiry_risks),
+            ),
             _stage("completeness", "数据完整性", "Data completeness", 1 if evidence_complete else 0, state="confirmed" if evidence_complete else "unknown", detail_zh="所选检查证据完整。" if evidence_complete else "至少一项已启用检查存在查询、单位或批次关联缺口。", detail_en="Evidence for the selected checks is complete." if evidence_complete else "At least one enabled check has a query, unit, or batch-association gap."),
         ],
         findings=findings,
@@ -2883,7 +3034,10 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
             {"id": "below_threshold_stock_quantity", "value": str(below_threshold_quantity) if below_threshold_quantity is not None else None, "unit": unit or None},
             {"id": "slow_moving_only_stock_quantity", "value": str(slow_moving_only_quantity) if slow_moving_only_quantity is not None else None, "unit": unit or None},
             {"id": "obsolete_stock_quantity", "value": str(obsolete_bucket_quantity) if obsolete_bucket_quantity is not None else None, "unit": unit or None},
-            {"id": "expiry_candidate_count", "value": len(expiry_candidates)},
+            {"id": "expiry_candidate_count", "value": len(expiring_batches)},
+            {"id": "expired_batch_count", "value": len(expired_batches)},
+            {"id": "expiring_batch_count", "value": len(expiring_batches)},
+            {"id": "missing_expiry_date_batch_count", "value": len(missing_expiry_batches)},
         ],
         records=records,
         limitations=evidence_gaps,
@@ -2891,14 +3045,15 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         actions_en=["Have inventory planning review the identified risk candidates."] if has_risk else [],
         source_complete_override=source_complete,
     )
-    result["rule_id"] = "inventory_health_check_deterministic_v3"
+    result["rule_id"] = "inventory_health_check_deterministic_v4"
     result["status"] = "complete" if evidence_complete else "inconclusive"
     result["business_complete"] = evidence_complete
     result["evidence_complete"] = evidence_complete
     result["missing_evidence"] = evidence_gaps
     result["business_report"]["missing_evidence"] = evidence_gaps
+    evidence_tables: list[JsonObject] = []
     if movement_requested:
-        result["business_report"]["evidence_tables"] = [
+        evidence_tables.extend([
             {
                 "id": "aging_buckets",
                 "title": {"zh": "库存账龄分布", "en": "Inventory age distribution"},
@@ -2924,7 +3079,47 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
                 ],
                 "rows": layer_records if aging_complete else [],
             },
+        ])
+    if check_expiry:
+        expiry_status_labels = {
+            "expired": {"zh": "已过期", "en": "Expired"},
+            "expiring": {"zh": "即将到期", "en": "Expiring"},
+            "not_due": {"zh": "未到临期窗口", "en": "Outside expiry window"},
+            "missing_date": {"zh": "效期缺失", "en": "Expiry date missing"},
+            "unmatched": {"zh": "批次主数据未关联", "en": "Batch master not matched"},
+            "conflict": {"zh": "效期证据冲突", "en": "Conflicting expiry evidence"},
+        }
+        expiry_source_labels = {
+            "api_batch": {"zh": "SAP Batch API", "en": "SAP Batch API"},
+            "adt_mcha": {"zh": "SAP MCHA（只读）", "en": "SAP MCHA (read-only)"},
+            "none": {"zh": "未取得", "en": "Unavailable"},
+        }
+        expiry_table_rows = [
+            {
+                **item,
+                "status_label": expiry_status_labels[str(item["status"])],
+                "evidence_source_label": expiry_source_labels[str(item["evidence_source"])],
+            }
+            for item in expiry_details
         ]
+        evidence_tables.append(
+            {
+                "id": "batch_expiry_details",
+                "title": {"zh": "批次效期明细", "en": "Batch expiry details"},
+                "columns": [
+                    {"key": "batch", "label": {"zh": "批次", "en": "Batch"}},
+                    {"key": "current_quantity", "label": {"zh": "当前库存", "en": "Current stock"}, "format": "decimal"},
+                    {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+                    {"key": "expiration_date", "label": {"zh": "保质期", "en": "Expiration date"}, "format": "date"},
+                    {"key": "days_to_expiry", "label": {"zh": "距到期天数", "en": "Days to expiry"}, "format": "integer"},
+                    {"key": "status_label", "label": {"zh": "状态", "en": "Status"}},
+                    {"key": "evidence_source_label", "label": {"zh": "数据来源", "en": "Evidence source"}},
+                ],
+                "rows": expiry_table_rows,
+            }
+        )
+    if evidence_tables:
+        result["business_report"]["evidence_tables"] = evidence_tables
     result["workflow_output"].update(records[0])
     result["workflow_output"]["aging_buckets"] = aging_buckets
     result["workflow_output"]["remaining_fifo_layers"] = layer_records if aging_complete else []

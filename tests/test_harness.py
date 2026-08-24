@@ -93,6 +93,28 @@ def test_inventory_health_plan_contract_requires_unrestricted_complete_history()
     }
     issue = _plan_business_contract_issue("check FIFO inventory health", movement_plan)
     assert issue and issue["code"] == "inventory_fifo_full_history_required"
+
+    invalid_batch_plan = {
+        "entity_set": "Batch",
+        "filters": [
+            {"field": "Material", "operator": "eq", "value": "FG129"},
+            {"field": "BatchIdentifyingPlant", "operator": "eq", "value": "1710"},
+        ],
+        "select_fields": [
+            "Material",
+            "BatchIdentifyingPlant",
+            "Batch",
+            "ShelfLifeExpirationDate",
+        ],
+    }
+    issue = _plan_business_contract_issue("check FIFO inventory health", invalid_batch_plan)
+    assert issue and issue["code"] == "inventory_batch_material_scope_required"
+
+    valid_batch_plan = {
+        **invalid_batch_plan,
+        "filters": [{"field": "Material", "operator": "eq", "value": "FG129"}],
+    }
+    assert _plan_business_contract_issue("check FIFO inventory health", valid_batch_plan) is None
 from sap_business_agents_platform.tool_gateway import (
     ToolAdmissionError,
     ToolAdmissionGateway,
@@ -158,7 +180,7 @@ class InventorySapRead(FakeSapRead):
                     "Material": "FG129",
                     "Plant": "1710",
                     "StorageLocation": "171A",
-                    "Batch": "",
+                    "Batch": "B001",
                     "InventoryStockType": "01",
                     "InventorySpecialStockType": "",
                     "MatlWrhsStkQtyInMatlBaseUnit": "4500",
@@ -180,7 +202,7 @@ class InventorySapRead(FakeSapRead):
                     "Material": "FG129",
                     "Plant": "1710",
                     "StorageLocation": "171A",
-                    "Batch": "",
+                    "Batch": "B001",
                     "InventoryStockType": "01",
                     "InventorySpecialStockType": "",
                     "QuantityInBaseUnit": "4400",
@@ -194,7 +216,7 @@ class InventorySapRead(FakeSapRead):
                     "Material": "FG129",
                     "Plant": "1710",
                     "StorageLocation": "171A",
-                    "Batch": "",
+                    "Batch": "B001",
                     "InventoryStockType": "01",
                     "InventorySpecialStockType": "",
                     "QuantityInBaseUnit": "100",
@@ -228,11 +250,19 @@ class InventorySapRead(FakeSapRead):
                 },
             }
         if entity == "Batch":
+            rows = [
+                {
+                    "Material": "FG129",
+                    "BatchIdentifyingPlant": "",
+                    "Batch": "B001",
+                    "ShelfLifeExpirationDate": None,
+                }
+            ]
             return {
                 "ok": True,
                 "source_complete": True,
-                "data": {"results": [], "source_complete": True},
-                "step_results": {"step_1": {"results": [], "source_complete": True}},
+                "data": {"results": rows, "source_complete": True},
+                "step_results": {"step_1": {"results": rows, "source_complete": True}},
             }
         return await super().execute_plan(plan)
 
@@ -398,14 +428,9 @@ def test_broker_fifo_assessment_reconciles_only_unrestricted_stock(tmp_path: Pat
                     "odata_version": "2.0",
                     "entity_set": "Batch",
                     "http_method": "GET",
-                    "filters": [
-                        {"field": "Material", "operator": "eq", "value": "FG129"},
-                        {
-                            "field": "BatchIdentifyingPlant",
-                            "operator": "eq",
-                            "value": "1710",
-                        },
-                    ],
+                        "filters": [
+                            {"field": "Material", "operator": "eq", "value": "FG129"},
+                        ],
                     "select_fields": [
                         "Material",
                         "BatchIdentifyingPlant",
@@ -436,8 +461,13 @@ def test_broker_fifo_assessment_reconciles_only_unrestricted_stock(tmp_path: Pat
             },
         )
 
-        assert assessed["ok"] is True
-        assert assessed["business_complete"] is True
+        assert assessed["ok"] is True, assessed
+        assert assessed["assessment_valid"] is True
+        assert assessed["aging_complete"] is True
+        assert assessed["business_complete"] is False
+        assert assessed["result"]["expiry_evidence_complete"] is False
+        assert assessed["result"]["missing_expiry_date_batch_count"] == 1
+        assert assessed["result"]["batch_expiry_details"][0]["batch"] == "B001"
         assert assessed["result"]["current_unrestricted_stock"] == "4500"
         assert assessed["result"]["below_threshold_stock_quantity"] == "100"
         assert assessed["result"]["slow_moving_only_stock_quantity"] == "0"
@@ -448,6 +478,24 @@ def test_broker_fifo_assessment_reconciles_only_unrestricted_stock(tmp_path: Pat
         assert {item["id"]: item["value"] for item in report["metrics"]}[
             "obsolete_stock_quantity"
         ] == "4400"
+        presentation = RunPresentation(
+            title=LocalizedText(zh="库存健康", en="Inventory health"),
+            blocks=[
+                PresentationBlock(
+                    type="notice",
+                    text=LocalizedText(
+                        zh="FIFO 评估有效，但一个批次缺少效期。",
+                        en="The FIFO assessment is valid, but one batch lacks an expiration date.",
+                    ),
+                    claim_scope="customer_business_fact",
+                    evidence_refs=[stock_initial["evidence_ref"]],
+                )
+            ],
+        ).model_dump(mode="json")
+        validated = await broker.handle(
+            run_id, token, "sap_final_report_validate", {"report": presentation}
+        )
+        assert validated["ok"] is True
 
     asyncio.run(scenario())
 
@@ -656,6 +704,105 @@ def test_source_completeness_is_derived_from_executed_sap_evidence() -> None:
     assert _evidence_sources_complete(
         [{"source_type": "sap_skill", "source_complete": False}]
     ) is False
+
+
+def test_incomplete_skill_evidence_is_diagnostic_only(tmp_path: Path) -> None:
+    class IncompleteSkills(FakeSkills):
+        async def execute(self, skill_id: str, input_payload):
+            del skill_id, input_payload
+            return {
+                "ok": False,
+                "status": "inconclusive",
+                "read_only": True,
+                "validated": True,
+                "source_complete": False,
+                "paging_complete": False,
+                "rows": [],
+            }
+
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        store = RunStore(settings.database_path)
+        run_id = "run_incomplete_skill_scope"
+        store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="supplier status"))
+        broker = HarnessToolBroker(settings, store, FakeSapRead(), IncompleteSkills())
+        token = broker.open_session(run_id)
+        plan = {
+            "service_name": "API_TEST_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_Test",
+            "http_method": "GET",
+        }
+        await broker.handle(run_id, token, "sap_catalog_search", {"query": "supplier"})
+        await broker.handle(
+            run_id,
+            token,
+            "sap_schema_get",
+            {
+                "service_name": "API_TEST_SRV",
+                "odata_version": "2.0",
+                "entity_sets": ["A_Test"],
+            },
+        )
+        await broker.handle(run_id, token, "sap_query_validate", {"plan": plan})
+        executed = await broker.handle(
+            run_id,
+            token,
+            "sap_query_execute",
+            {"plan": plan},
+        )
+        gap = await broker.handle(
+            run_id,
+            token,
+            "sap_evidence_assess",
+            {
+                "question": "supplier status",
+                "evidence_refs": [executed["evidence_ref"]],
+                "missing_evidence": ["payment settlement evidence"],
+            },
+        )
+        skill = await broker.handle(
+            run_id,
+            token,
+            "sap_skill_execute",
+            {
+                "skill_id": "sap-adt-table-export",
+                "gap_token": gap["gap_token"],
+                "input": {
+                    "schema_version": 1,
+                    "source_type": "table",
+                    "object": "BSAK",
+                    "fields": ["BUKRS"],
+                    "filters": [{"field": "BUKRS", "operator": "EQ", "value": "1710"}],
+                    "max_rows": 2,
+                },
+            },
+        )
+        assert "evidence_ref" in skill, skill
+        customer_report = RunPresentation(
+            title=LocalizedText(zh="结果", en="Result"),
+            blocks=[
+                PresentationBlock(
+                    type="notice",
+                    text=LocalizedText(zh="客户事实", en="Customer fact"),
+                    claim_scope="customer_business_fact",
+                    evidence_refs=[skill["evidence_ref"]],
+                )
+            ],
+        ).model_dump(mode="json")
+        rejected = await broker.handle(
+            run_id, token, "sap_final_report_validate", {"report": customer_report}
+        )
+        assert rejected["ok"] is False
+        assert rejected["validation_issues"][0]["code"] == "customer_fact_requires_sap_evidence"
+
+        customer_report["blocks"][0]["claim_scope"] = "diagnostic"
+        accepted = await broker.handle(
+            run_id, token, "sap_final_report_validate", {"report": customer_report}
+        )
+        assert accepted["ok"] is True
+
+    asyncio.run(scenario())
 
 
 def test_validated_report_can_finish_without_waiting_for_turn_teardown(tmp_path: Path) -> None:

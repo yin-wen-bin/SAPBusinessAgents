@@ -30,4 +30,4 @@ def test_demo_contains_no_historical_balance_or_transfer_output() -> None:
 
 def test_cli(capsys) -> None:
     assert main([]) == 0
-    assert "inventory_health_check_deterministic_v3" in capsys.readouterr().out
+    assert "inventory_health_check_deterministic_v4" in capsys.readouterr().out
