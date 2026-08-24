@@ -154,13 +154,7 @@ def _normalize_run(
                 if isinstance(item, dict) and item.get("id"):
                     metric = aliases.get(_field_token(item["id"]), str(item["id"]))
                     metrics[metric] = _localized(item.get("value"))
-        elif (
-            block.get("claim_scope") == "diagnostic"
-            or (
-                block.get("type") == "notice"
-                and block.get("tone") in {"warning", "error"}
-            )
-        ):
+        elif block.get("claim_scope") == "diagnostic" or block.get("type") == "notice":
             warning_notice = (
                 block.get("type") == "notice"
                 and block.get("tone") in {"warning", "error"}
@@ -168,9 +162,22 @@ def _normalize_run(
             values = block.get("items") or ([block.get("text")] if block.get("text") else [])
             for item in values:
                 text = _localized(item)
-                if _notice_is_ignored(text, contract):
+                explicit_codes = [
+                    str(code)
+                    for code in (contract.get("limitation_keywords") or {})
+                    if str(code).casefold() in text.casefold()
+                ]
+                if _notice_is_ignored(text, contract) and not explicit_codes:
                     continue
-                codes = _limitation_codes(text, contract)
+                informational_business_notice = (
+                    block.get("type") == "notice"
+                    and block.get("tone") not in {"warning", "error"}
+                )
+                codes = (
+                    explicit_codes
+                    if informational_business_notice
+                    else _limitation_codes(text, contract)
+                )
                 # Informational diagnostic notices (for example a positive
                 # source-completeness statement) are not limitations unless
                 # they match a declared limitation code. Warning/error notices
@@ -588,6 +595,8 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
         instructions.append(f"- Record scope: {record_scope}")
     for metric_id, definition in (contract.get("metric_definitions") or {}).items():
         instructions.append(f"- Metric {metric_id}: {definition}")
+    for fact_id, definition in (contract.get("fact_definitions") or {}).items():
+        instructions.append(f"- Fact {fact_id}: {definition}")
     qualification_definition = str(
         contract.get("test_data_qualification_definition") or ""
     ).strip()
@@ -606,6 +615,14 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
     composite_blank_fields = ", ".join(
         str(item) for item in contract.get("composite_blank_fields") or []
     )
+    blank_business_key_fields = ", ".join(
+        str(item) for item in contract.get("blank_business_key_fields") or []
+    )
+    if blank_business_key_fields:
+        instructions.append(
+            "- These business-key segments may legitimately be blank; preserve them as "
+            f"blank rather than inventing an identifier: [{blank_business_key_fields}]."
+        )
     if composite_blank_fields:
         instructions.append(
             "- In these composite fields, represent every missing key segment exactly "
@@ -631,7 +648,8 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
         )
     if limitations:
         instructions.append(
-            f"- When the corresponding evidence is unavailable, include these exact limitation codes: [{limitations}]."
+            "- Always include these required limitation codes in the result; they describe "
+            f"scope boundaries even when the source queries are complete: [{limitations}]."
         )
     return f"{case.question['en']}\n\n" + "\n".join(instructions)
 
@@ -734,6 +752,7 @@ async def _main(args: argparse.Namespace) -> int:
         "field_extractors": contract_value.get("fieldExtractors") or {},
         "input_defaults": contract_value.get("inputDefaults") or {},
         "constant_defaults": contract_value.get("constantDefaults") or {},
+        "fact_definitions": contract_value.get("factDefinitions") or {},
         "date_fields": contract_value.get("dateFields") or [],
         "code_set_fields": contract_value.get("codeSetFields") or [],
         "zero_pad_fields": contract_value.get("zeroPadFields") or {},
@@ -753,6 +772,7 @@ async def _main(args: argparse.Namespace) -> int:
         "metric_definitions": contract_value.get("metricDefinitions") or {},
         "business_status_definition": contract_value.get("businessStatusDefinition") or "",
         "business_status_from_any_positive_metric": contract_value.get("businessStatusFromAnyPositiveMetric") or {},
+        "blank_business_key_fields": contract_value.get("blankBusinessKeyFields") or [],
         "composite_blank_fields": contract_value.get("compositeBlankFields") or [],
         "nonblocking_observation_codes": contract_value.get("nonBlockingObservationCodes") or [],
         "test_data_qualification_definition": contract_value.get("testDataQualificationDefinition") or "",

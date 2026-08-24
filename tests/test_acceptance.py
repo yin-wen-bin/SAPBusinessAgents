@@ -78,7 +78,44 @@ def test_campaign_prompt_exposes_only_value_free_semantic_contract() -> None:
     assert prompt.startswith("Check the requested period")
     assert "company_code, period" in prompt
     assert "posting_rows" in prompt
+    assert "Always include these required limitation codes" in prompt
     assert "1710" not in prompt
+
+
+def test_acceptance_prompt_includes_versioned_fact_definitions() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "2.0",
+            "case_id": "mrp-facts-live-001",
+            "agent_id": "mrp-exception-analysis",
+            "question": {"zh": "检查 MRP", "en": "Check MRP"},
+            "input": {},
+            "business_conditions": {},
+            "expected_grain": ["exception_number"],
+            "expected_output": {
+                "record_fields": ["exception_number", "priority_level"],
+                "metric_ids": [],
+                "minimum_primary_evidence_rows": 1,
+                "allow_empty_result": False,
+                "evidence_scope": "complete",
+            },
+        }
+    )
+
+    prompt = _acceptance_prompt(
+        case,
+        {
+            "business_keys": ["exception_number"],
+            "facts": ["priority_level"],
+            "metrics": [],
+            "required_limitations": [],
+            "fact_definitions": {
+                "priority_level": "10=high; 20=medium; not SAP native priority"
+            },
+        },
+    )
+
+    assert "Fact priority_level: 10=high; 20=medium" in prompt
 
 
 def test_campaign_prompt_includes_comparison_units_and_only_blocking_status_rule() -> None:
@@ -355,6 +392,62 @@ def test_positive_diagnostic_notice_is_not_reported_as_a_limitation() -> None:
     assert normalized["limitations"] == []
 
 
+def test_info_business_notice_emits_declared_limitation_code() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "1.0",
+            "case_id": "horizon-live-001",
+            "agent_id": "mrp-exception-analysis",
+            "question": {"zh": "检查", "en": "Check"},
+            "input": {},
+            "business_conditions": {},
+            "expected_grain": ["document"],
+        }
+    )
+    normalized = _normalize_run(
+        {
+            "result": {
+                "completeness": {"source_complete": True},
+                "presentation": {
+                    "blocks": [
+                        {
+                            "type": "table",
+                            "columns": [{"key": "document"}],
+                            "rows": [{"values": ["1"]}],
+                        },
+                        {
+                            "type": "notice",
+                            "tone": "info",
+                            "claim_scope": "business_semantics",
+                            "text": {
+                                "en": "sap_shortage_time_horizon_applies: current material coverage and supply-demand horizon only; source_complete=true."
+                            },
+                        },
+                    ]
+                },
+            }
+        },
+        case,
+        {
+            "business_keys": ["document"],
+            "facts": [],
+            "metrics": [],
+            "required_limitations": ["sap_shortage_time_horizon_applies"],
+            "field_aliases": {},
+            "input_defaults": {},
+            "constant_defaults": {},
+            "ignored_notice_keywords": ["source_complete=true"],
+            "limitation_keywords": {
+                "sap_shortage_time_horizon_applies": ["time_horizon"],
+                "mrp_coverage_evidence": ["material coverage"],
+                "mrp_supply_demand_evidence": ["supply-demand"],
+            },
+        },
+    )
+
+    assert normalized["limitations"] == ["sap_shortage_time_horizon_applies"]
+
+
 def test_metric_value_mapping_can_explicitly_map_unknown_text_to_null() -> None:
     case = CanonicalTestCase.from_dict(
         {
@@ -507,6 +600,23 @@ def test_semantic_comparison_treats_null_and_blank_optional_facts_as_equal() -> 
     )
 
     comparison = compare_semantic_results(expected, actual, CONTRACT)
+
+    assert comparison.verdict == "MATCH"
+
+
+def test_semantic_comparison_allows_declared_blank_business_key_segments() -> None:
+    expected = _result(
+        [{"document": "1", "item": "1", "ledger": "", "as_of_status": "open"}]
+    )
+    actual = _result(
+        [{"document": "1", "item": "1", "ledger": "", "as_of_status": "open"}]
+    )
+
+    comparison = compare_semantic_results(
+        expected,
+        actual,
+        {**CONTRACT, "blank_business_key_fields": ["ledger"]},
+    )
 
     assert comparison.verdict == "MATCH"
 
@@ -761,7 +871,7 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
                 "pir_evidence",
                 "sales_demand_period_evidence",
             ],
-            "mrp-exception-analysis": [],
+            "mrp-exception-analysis": ["sap_shortage_time_horizon_applies"],
             "production-scheduling-capacity": [
                 "complete_capacity_bucket_evidence"
             ],

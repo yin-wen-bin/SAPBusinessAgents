@@ -1906,71 +1906,618 @@ def _demand_forecast(inputs: JsonObject) -> JsonObject:
 
 
 def _mrp_exception(inputs: JsonObject) -> JsonObject:
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    analysis_context = (
+        inputs.get("analysis_context")
+        if isinstance(inputs.get("analysis_context"), dict)
+        else {}
+    )
+    analysis_date = _date(analysis_context.get("analysis_date")) or date.today()
     master = _rows(inputs, "mrp_material")
     coverage = _rows(inputs, "material_coverages")
     raw_elements = _rows(inputs, "supply_demand_items")
+
+    master_complete = _topic_complete(inputs, "mrp_material")
+    coverage_complete = _topic_complete(inputs, "material_coverages")
     elements_complete = _topic_complete(inputs, "supply_demand_items")
-    # Duplicate/non-monotonic stable keys make the supply-demand list unsafe
-    # for deterministic business comparison even when SAP returned rows.
     elements = raw_elements if elements_complete else []
-    dynamic = (
-        []
-        if _topic_complete(inputs, "material_coverages") and coverage and elements
-        else ["mrp_coverage_or_supply_demand_evidence"]
-    )
-    gaps = _gaps(inputs, *dynamic)
-    records: list[JsonObject] = []
+
+    expected_material = str(run_input.get("material") or "").strip()
+    expected_plant = str(run_input.get("plant") or "").strip()
+    expected_area = str(run_input.get("mrp_area") or "").strip()
+    expected_profile = str(run_input.get("shortage_profile") or "").strip()
+    expected_counter = str(run_input.get("shortage_counter") or "").strip()
+
+    evidence_gaps: list[str] = []
+    if not master_complete:
+        evidence_gaps.append("mrp_master_evidence")
+    if not coverage_complete:
+        evidence_gaps.append("mrp_coverage_evidence")
+    if not elements_complete:
+        evidence_gaps.append("mrp_supply_demand_evidence")
+
+    def scoped(row: JsonObject, *, include_profile: bool) -> bool:
+        actual = {
+            "material": _text(row, "Material"),
+            "plant": _text(row, "MRPPlant", "Plant"),
+            "mrp_area": _text(row, "MRPArea"),
+        }
+        expected = {
+            "material": expected_material,
+            "plant": expected_plant,
+            "mrp_area": expected_area,
+        }
+        if include_profile:
+            actual.update(
+                {
+                    "shortage_profile": _text(row, "MaterialShortageProfile"),
+                    "shortage_counter": _text(row, "MaterialShortageProfileCount"),
+                }
+            )
+            expected.update(
+                {
+                    "shortage_profile": expected_profile,
+                    "shortage_counter": expected_counter,
+                }
+            )
+        return all(actual[key] and actual[key] == value for key, value in expected.items())
+
+    scoped_master = [row for row in master if scoped(row, include_profile=False)]
+    scoped_coverage = [row for row in coverage if scoped(row, include_profile=True)]
+    scoped_elements = [row for row in elements if scoped(row, include_profile=True)]
+    if master_complete and (len(scoped_master) != len(master) or not scoped_master):
+        evidence_gaps.append("mrp_master_scope_evidence")
+    if coverage_complete and (len(scoped_coverage) != len(coverage) or not scoped_coverage):
+        evidence_gaps.append("mrp_coverage_scope_evidence")
+    if elements_complete and len(scoped_elements) != len(elements):
+        evidence_gaps.append("mrp_supply_demand_scope_evidence")
+
+    def strict_decimal(value: Any) -> Decimal | None:
+        if value in {None, ""} or isinstance(value, bool):
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+
+    def strict_int(value: Any) -> int | None:
+        if value in {None, ""} or isinstance(value, bool):
+            return None
+        try:
+            return int(str(value))
+        except ValueError:
+            return None
+
+    # SAP APIs may expose the same piece/each unit as an internal SAP code,
+    # a language-dependent commercial code, or the ISO code. Preserve the
+    # original source value for reporting and use only this deliberately small
+    # versioned alias set when comparing evidence from different APIs.
+    unit_aliases = {"EA": "PCE", "PC": "PCE", "PCE": "PCE", "ST": "PCE"}
+
+    def comparable_unit(value: str) -> str:
+        normalized = value.strip().upper()
+        return unit_aliases.get(normalized, normalized)
+
+    coverage_signatures = {
+        (
+            _text(row, "MaterialShortageQuantity"),
+            _date_text(row, "MaterialShortageStartDate"),
+            _date_text(row, "MaterialShortageEndDate"),
+            _text(row, "DaysOfSupplyDuration"),
+            _text(row, "MaterialShortageDuration"),
+            _text(row, "MaterialShortageDurnInWorkdays"),
+            _date_text(row, "MaterialReplnmtLeadDurnEndDate"),
+            _text(row, "MaterialBaseUnit"),
+            _text(row, "TimeHorizonInDays"),
+            _text(row, "HasAcceptedShortage"),
+        )
+        for row in scoped_coverage
+    }
+    if len(coverage_signatures) > 1:
+        evidence_gaps.append("mrp_coverage_conflict")
+    coverage_row = scoped_coverage[0] if scoped_coverage else {}
+    master_row = scoped_master[0] if scoped_master else {}
+
+    shortage_quantity = strict_decimal(coverage_row.get("MaterialShortageQuantity"))
+    shortage_start = _date(coverage_row.get("MaterialShortageStartDate"))
+    shortage_end = _date(coverage_row.get("MaterialShortageEndDate"))
+    days_of_supply = strict_int(coverage_row.get("DaysOfSupplyDuration"))
+    replenishment_lead_end = _date(coverage_row.get("MaterialReplnmtLeadDurnEndDate"))
+    time_horizon_days = strict_int(coverage_row.get("TimeHorizonInDays"))
+    accepted_shortage = _truthy(coverage_row.get("HasAcceptedShortage"))
+    coverage_unit = _text(coverage_row, "MaterialBaseUnit")
+    master_unit = _text(master_row, "BaseUnit")
+
+    shortage_status = "unknown"
+    shortage_priority = "unknown"
+    if coverage_row:
+        if shortage_quantity is None or shortage_quantity < 0:
+            evidence_gaps.append("mrp_shortage_quantity_evidence")
+        elif shortage_quantity == 0:
+            if shortage_start is not None or shortage_end is not None:
+                evidence_gaps.append("mrp_shortage_date_conflict")
+            else:
+                shortage_status = "none"
+                shortage_priority = "none"
+        elif shortage_start is None:
+            evidence_gaps.append("mrp_shortage_start_date_evidence")
+        elif shortage_start <= analysis_date or (
+            days_of_supply is not None and days_of_supply <= 0
+        ):
+            shortage_status = "active"
+            shortage_priority = "critical"
+        elif replenishment_lead_end is None:
+            evidence_gaps.append("mrp_replenishment_lead_time_evidence")
+        elif shortage_start <= replenishment_lead_end:
+            shortage_status = "imminent"
+            shortage_priority = "high"
+        else:
+            shortage_status = "future"
+            shortage_priority = "medium"
+
+    if coverage_row and not coverage_unit:
+        evidence_gaps.append("mrp_coverage_unit_evidence")
+    if (
+        master_unit
+        and coverage_unit
+        and comparable_unit(master_unit) != comparable_unit(coverage_unit)
+    ):
+        evidence_gaps.append("mrp_master_coverage_unit_conflict")
+
+    priority_rank = {
+        "unknown": -1,
+        "none": 0,
+        "low": 1,
+        "medium": 2,
+        "high": 3,
+        "critical": 4,
+    }
+    exception_types = {
+        "06": "start_date_past",
+        "07": "finish_date_past",
+        "10": "reschedule_in",
+        "15": "reschedule_out",
+        "20": "cancel",
+        "26": "reduce",
+        "30": "schedule_adjusted",
+    }
+    exception_type_labels = {
+        "start_date_past": {"zh": "开始日期已过", "en": "Start date is in the past"},
+        "finish_date_past": {"zh": "完成日期已过", "en": "Finish date is in the past"},
+        "reschedule_in": {"zh": "建议提前处理", "en": "Bring process forward"},
+        "reschedule_out": {"zh": "建议推迟处理", "en": "Postpone process"},
+        "cancel": {"zh": "建议取消", "en": "Cancel process"},
+        "reduce": {"zh": "建议减少数量", "en": "Reduce quantity"},
+        "schedule_adjusted": {"zh": "按调整后的计划处理", "en": "Process according to adjusted schedule"},
+        "other_exception": {"zh": "其他 SAP MRP 异常", "en": "Other SAP MRP exception"},
+    }
+    priority_labels = {
+        "critical": {"zh": "紧急", "en": "Critical"},
+        "high": {"zh": "高", "en": "High"},
+        "medium": {"zh": "中", "en": "Medium"},
+        "low": {"zh": "低", "en": "Low"},
+        "none": {"zh": "无", "en": "None"},
+        "unknown": {"zh": "无法确认", "en": "Unknown"},
+    }
+    actions_by_type = {
+        "start_date_past": {
+            "zh": "核对该未结 MRP 元素的实际开始状态和过期日期。",
+            "en": "Review the open MRP element's actual start status and overdue date.",
+        },
+        "finish_date_past": {
+            "zh": "核对该未结 MRP 元素是否已完成、收货或需要重新排期。",
+            "en": "Check whether the open MRP element is complete, received, or requires rescheduling.",
+        },
+        "reschedule_in": {
+            "zh": "评估把现有供应提前到 SAP 建议日期，以覆盖较早需求。",
+            "en": "Assess bringing the existing receipt forward to the SAP-proposed date to cover earlier demand.",
+        },
+        "reschedule_out": {
+            "zh": "确认后续需求后，再评估推迟过早到货的供应。",
+            "en": "Confirm downstream demand before postponing an early receipt.",
+        },
+        "cancel": {
+            "zh": "确认不存在后续需求后，再评估取消多余供应。",
+            "en": "Confirm that no downstream demand remains before cancelling excess supply.",
+        },
+        "reduce": {
+            "zh": "复核净需求后，再评估减少多余供应数量。",
+            "en": "Review net requirements before reducing excess receipt quantity.",
+        },
+        "schedule_adjusted": {
+            "zh": "复核计划时界、提前期和调整后的日期是否符合业务要求。",
+            "en": "Review the planning time fence, lead time, and adjusted date against business requirements.",
+        },
+        "other_exception": {
+            "zh": "由 MRP 控制员根据 SAP 原始消息复核该元素。",
+            "en": "Have the MRP controller review the element using the original SAP message.",
+        },
+    }
+
+    exception_details: list[JsonObject] = []
     for row in elements:
+        if row not in scoped_elements:
+            continue
         material = _text(row, "Material")
-        plant = _text(row, "Plant", "MRPPlant", "MRPArea")
+        plant = _text(row, "MRPPlant", "Plant")
         category = _text(row, "MRPElementCategory")
         element = _text(row, "MRPElement", "MRPElementType")
         if not element and category == "WB":
             element = "_STOCK"
         elif not element:
             element = category
-        if not material or not plant or not element:
-            continue
-        messages = []
+        open_quantity = strict_decimal(row.get("MRPElementOpenQuantity"))
+        available_quantity = strict_decimal(row.get("MRPAvailableQuantity"))
+        unit = _text(row, "MaterialBaseUnit", "BaseUnit")
+        if row.get("MRPElementOpenQuantity") not in {None, ""} and open_quantity is None:
+            evidence_gaps.append("mrp_open_quantity_evidence")
+        if row.get("MRPAvailableQuantity") not in {None, ""} and available_quantity is None:
+            evidence_gaps.append("mrp_available_quantity_evidence")
+        if (open_quantity is not None or available_quantity is not None) and not unit:
+            evidence_gaps.append("mrp_supply_demand_unit_evidence")
+        if (
+            unit
+            and coverage_unit
+            and comparable_unit(unit) != comparable_unit(coverage_unit)
+        ):
+            evidence_gaps.append("mrp_supply_demand_unit_conflict")
         for number_field, text_field in (
             ("ExceptionMessageNumber", "ExceptionMessageText"),
             ("ExceptionMessageNumber2", "ExceptionMessageText2"),
         ):
             number = _text(row, number_field)
             message = _text(row, text_field)
-            if number or message:
-                messages.append(" ".join(item for item in (number, message) if item))
-        records.append(
+            if not number and not message:
+                continue
+            if not material or not plant or not element or not category:
+                evidence_gaps.append("mrp_exception_business_key_evidence")
+            exception_type = exception_types.get(number, "other_exception")
+            if exception_type == "reschedule_in":
+                exception_priority = "high"
+            elif exception_type in {"start_date_past", "finish_date_past"}:
+                exception_priority = (
+                    "high" if open_quantity is not None and open_quantity > 0 else "medium"
+                )
+            elif exception_type in {"reschedule_out", "cancel", "reduce", "other_exception"}:
+                exception_priority = "medium"
+            else:
+                exception_priority = "low"
+            exception_details.append(
+                {
+                    "material": material,
+                    "plant": plant,
+                    "mrp_area": _text(row, "MRPArea"),
+                    "mrp_element": element,
+                    "mrp_element_item": _text(row, "MRPElementItem") or None,
+                    "mrp_element_schedule_line": _text(row, "MRPElementScheduleLine") or None,
+                    "element_category": category,
+                    "element_category_name": _text(
+                        row, "MRPElementCategoryName", "MRPElementCategoryShortName"
+                    ) or None,
+                    "requirement_or_receipt_date": _date_text(
+                        row, "MRPElementAvailyOrRqmtDate", "RequirementDate"
+                    ) or None,
+                    "open_quantity": str(open_quantity) if open_quantity is not None else None,
+                    "available_quantity": str(available_quantity) if available_quantity is not None else None,
+                    "unit": unit or None,
+                    "exception_number": number or None,
+                    "exception_type": exception_type,
+                    "exception_type_label": exception_type_labels[exception_type],
+                    "sap_exception_text": message or None,
+                    "rescheduling_date": _date_text(row, "MRPElementReschedulingDate") or None,
+                    "priority_level": exception_priority,
+                    "priority_label": priority_labels[exception_priority],
+                    "recommended_action": actions_by_type[exception_type],
+                }
+            )
+
+    deduplicated_details: list[JsonObject] = []
+    seen_exception_keys: set[tuple[Any, ...]] = set()
+    for item in exception_details:
+        key = (
+            item.get("material"),
+            item.get("plant"),
+            item.get("mrp_area"),
+            item.get("mrp_element"),
+            item.get("mrp_element_item"),
+            item.get("mrp_element_schedule_line"),
+            item.get("exception_number"),
+            item.get("sap_exception_text"),
+        )
+        if key not in seen_exception_keys:
+            deduplicated_details.append(item)
+            seen_exception_keys.add(key)
+    exception_details = deduplicated_details
+
+    exception_priorities = [str(item["priority_level"]) for item in exception_details]
+    confirmed_priorities = [
+        value for value in [shortage_priority, *exception_priorities] if value != "unknown"
+    ]
+    priority_level = (
+        max(confirmed_priorities, key=priority_rank.get)
+        if confirmed_priorities
+        else "unknown"
+    )
+    rescheduling_types = {
+        str(item["exception_type"])
+        for item in exception_details
+        if item.get("exception_type")
+        in {"reschedule_in", "reschedule_out", "cancel", "reduce"}
+    }
+    if not rescheduling_types:
+        rescheduling_status = "none"
+    elif rescheduling_types == {"reschedule_in"}:
+        rescheduling_status = "bring_forward"
+    elif rescheduling_types == {"reschedule_out"}:
+        rescheduling_status = "postpone"
+    elif rescheduling_types <= {"cancel", "reduce"}:
+        rescheduling_status = "cancel_or_reduce"
+    else:
+        rescheduling_status = "mixed"
+
+    evidence_gaps = _gaps(inputs, *evidence_gaps)
+    source_complete = master_complete and coverage_complete and elements_complete
+    evidence_complete = source_complete and not evidence_gaps
+    if not evidence_complete:
+        business_status = "inconclusive"
+    elif priority_level == "critical":
+        business_status = "critical"
+    elif priority_level in {"high", "medium", "low"}:
+        business_status = "attention"
+    elif priority_level == "none":
+        business_status = "normal"
+    else:
+        business_status = "inconclusive"
+
+    unit = coverage_unit or master_unit or None
+    shortage_quantity_text = str(shortage_quantity) if shortage_quantity is not None else None
+    shortage_start_text = shortage_start.isoformat() if shortage_start else None
+    shortage_end_text = shortage_end.isoformat() if shortage_end else None
+    shortage_status_labels = {
+        "active": {"zh": "短缺已经发生", "en": "Shortage is active"},
+        "imminent": {"zh": "短缺即将进入补货窗口", "en": "Shortage is within the replenishment window"},
+        "future": {"zh": "未来存在短缺", "en": "Future shortage exists"},
+        "none": {"zh": "当前范围未发现短缺", "en": "No shortage found in the current scope"},
+        "unknown": {"zh": "短缺状态无法确认", "en": "Shortage status is unknown"},
+    }
+    rescheduling_labels = {
+        "bring_forward": {"zh": "需要评估提前供应", "en": "Bring-forward review required"},
+        "postpone": {"zh": "需要评估推迟供应", "en": "Postponement review required"},
+        "cancel_or_reduce": {"zh": "需要评估取消或减少供应", "en": "Cancellation or reduction review required"},
+        "mixed": {"zh": "存在多种重排建议", "en": "Mixed rescheduling proposals exist"},
+        "none": {"zh": "没有重排类消息", "en": "No rescheduling message"},
+        "unknown": {"zh": "重排状态无法确认", "en": "Rescheduling status is unknown"},
+    }
+    affected_elements = {
+        (
+            item.get("mrp_element"),
+            item.get("mrp_element_item"),
+            item.get("mrp_element_schedule_line"),
+        )
+        for item in exception_details
+    }
+
+    if business_status == "critical":
+        headline_zh = f"物料 {expected_material} 的短缺已经发生，需要立即处理"
+        headline_en = f"The shortage for material {expected_material} is active and requires immediate action"
+    elif business_status == "attention":
+        headline_zh = f"物料 {expected_material} 存在{priority_labels[priority_level]['zh']}优先级 MRP 异常"
+        headline_en = f"Material {expected_material} has {priority_labels[priority_level]['en'].lower()}-priority MRP exceptions"
+    elif business_status == "normal":
+        headline_zh = f"当前 SAP 短缺参数和时间范围内未发现物料 {expected_material} 的 MRP 异常"
+        headline_en = f"No MRP exception was found for material {expected_material} within the current SAP shortage profile and horizon"
+    elif priority_level not in {"unknown", "none"}:
+        headline_zh = f"已确认物料 {expected_material} 存在{priority_labels[priority_level]['zh']}优先级风险，但证据仍不完整"
+        headline_en = f"A {priority_labels[priority_level]['en'].lower()}-priority risk is confirmed for material {expected_material}, but evidence remains incomplete"
+    else:
+        headline_zh = f"无法完整判断物料 {expected_material} 的 MRP 异常"
+        headline_en = f"MRP exceptions for material {expected_material} are inconclusive"
+
+    findings: list[JsonObject] = []
+    if shortage_status in {"active", "imminent", "future"}:
+        findings.append(
             {
-                "material": material,
-                "plant": plant,
-                "mrp_element": element,
-                "requirement_date": _date_text(row, "MRPElementAvailyOrRqmtDate", "RequirementDate"),
-                "quantity": _text(row, "MRPElementOpenQuantity", "AvailableQuantity"),
-                "unit": _text(row, "MaterialBaseUnit", "BaseUnit"),
-                "exception_message": "; ".join(messages) or _text(
-                    row, "MRPElementReschedulingProposal", "ExceptionMessage"
-                ),
+                "code": f"MRP_SHORTAGE_{shortage_status.upper()}",
+                "severity": shortage_priority,
+                "quantity": shortage_quantity_text,
+                "unit": unit,
+                "detail": {
+                    "zh": f"短缺状态：{shortage_status_labels[shortage_status]['zh']}；数量 {shortage_quantity_text or '未确认'} {unit or ''}。",
+                    "en": f"Shortage status: {shortage_status_labels[shortage_status]['en']}; quantity {shortage_quantity_text or 'unknown'} {unit or ''}.",
+                },
             }
         )
-    return _result(
+    for item in exception_details:
+        findings.append(
+            {
+                "code": f"MRP_EXCEPTION_{item.get('exception_number') or 'OTHER'}",
+                "severity": item["priority_level"],
+                "mrp_element": item["mrp_element"],
+                "detail": {
+                    "zh": f"MRP 元素 {item['mrp_element']}：{item['exception_type_label']['zh']}。",
+                    "en": f"MRP element {item['mrp_element']}: {item['exception_type_label']['en']}.",
+                },
+            }
+        )
+
+    next_actions_zh: list[str] = []
+    next_actions_en: list[str] = []
+    if shortage_status == "active":
+        next_actions_zh.append("立即复核最早未覆盖需求和可提前的固定供应。")
+        next_actions_en.append("Immediately review the earliest uncovered demand and fixed receipts that can be brought forward.")
+    elif shortage_status in {"imminent", "future"}:
+        next_actions_zh.append("在短缺日期前复核补货方案和供应日期。")
+        next_actions_en.append("Review replenishment options and receipt dates before the shortage date.")
+    for item in exception_details:
+        action = item["recommended_action"]
+        if action["zh"] not in next_actions_zh:
+            next_actions_zh.append(action["zh"])
+        if action["en"] not in next_actions_en:
+            next_actions_en.append(action["en"])
+
+    limitations: list[str] = []
+    if time_horizon_days is not None:
+        limitations.append("sap_shortage_time_horizon_applies")
+    if accepted_shortage:
+        limitations.append("accepted_shortage_not_returned_as_first")
+
+    summary_row = {
+        "analysis_date": analysis_date.isoformat(),
+        "material": expected_material,
+        "plant": expected_plant,
+        "mrp_area": expected_area,
+        "shortage_status": shortage_status,
+        "shortage_status_label": shortage_status_labels[shortage_status],
+        "shortage_quantity": shortage_quantity_text,
+        "unit": unit,
+        "shortage_start_date": shortage_start_text,
+        "shortage_end_date": shortage_end_text,
+        "days_of_supply": days_of_supply,
+        "time_horizon_days": time_horizon_days,
+        "accepted_shortage": accepted_shortage,
+        "priority_level": priority_level,
+        "priority_label": priority_labels[priority_level],
+        "rescheduling_status": rescheduling_status,
+        "rescheduling_status_label": rescheduling_labels[rescheduling_status],
+        "affected_element_count": len(affected_elements),
+        "exception_count": len(exception_details),
+        "source_complete": source_complete,
+        "evidence_complete": evidence_complete,
+    }
+
+    result = _result(
         inputs,
-        business_status="attention" if coverage or elements else "capability_blocked",
-        headline_zh=f"MRP 检查返回 {len(coverage)} 条覆盖和 {len(elements)} 条供需证据",
-        headline_en=f"MRP checks returned {len(coverage)} coverage and {len(elements)} supply-demand row(s)",
-        overview_zh="只有覆盖和供需明细均完整时，才能判断没有短缺或重排异常。",
-        overview_en="Both coverage and supply-demand details must be complete before concluding that no shortage or rescheduling exception exists.",
-        stages=[_stage("master", "MRP 主数据", "MRP master", len(master)), _stage("coverage", "物料覆盖", "Material coverage", len(coverage)), _stage("elements", "供需项目", "Supply-demand items", len(elements))],
-        metrics=[
-            {"id": "coverage_rows", "value": len(coverage)},
-            {"id": "supply_demand_rows", "value": len(elements)},
+        business_status=business_status,
+        headline_zh=headline_zh,
+        headline_en=headline_en,
+        overview_zh="业务处理优先级由 SAPBusinessAgents 的版本化确定性规则计算；SAP 原始异常消息单独保留。本 Agent 只提供诊断建议，不运行 MRP 或修改单据。",
+        overview_en="Business priority is calculated by a versioned SAPBusinessAgents deterministic rule, while original SAP exception messages are preserved separately. This Agent provides diagnosis only and never runs MRP or changes documents.",
+        stages=[
+            _stage("master", "MRP 主数据", "MRP master", len(scoped_master), state="confirmed" if master_complete and scoped_master else "unknown"),
+            _stage("coverage", "物料覆盖与短缺", "Material coverage and shortage", len(scoped_coverage), state="attention" if shortage_status in {"active", "imminent", "future"} else "confirmed" if shortage_status == "none" else "unknown", detail_zh=f"{shortage_status_labels[shortage_status]['zh']}；短缺数量 {shortage_quantity_text or '无法确认'} {unit or ''}。", detail_en=f"{shortage_status_labels[shortage_status]['en']}; shortage quantity {shortage_quantity_text or 'unknown'} {unit or ''}."),
+            _stage("elements", "供需项目", "Supply-demand items", len(scoped_elements), state="confirmed" if elements_complete else "unknown"),
+            _stage("exceptions", "MRP 异常分类", "MRP exception classification", len(exception_details), state="attention" if exception_details else "confirmed" if evidence_complete else "unknown", detail_zh=f"识别到 {len(exception_details)} 条异常消息，影响 {len(affected_elements)} 个 MRP 元素。", detail_en=f"Identified {len(exception_details)} exception message(s) affecting {len(affected_elements)} MRP element(s)."),
+            _stage("completeness", "数据完整性", "Data completeness", 1 if evidence_complete else 0, state="confirmed" if evidence_complete else "unknown", detail_zh="MRP 主数据、覆盖、供需分页、业务键和单位均完整。" if evidence_complete else "至少一项查询、分页、业务键、日期或单位证据不完整。", detail_en="MRP master, coverage, supply-demand paging, business keys, and units are complete." if evidence_complete else "At least one query, page, business key, date, or unit is incomplete."),
         ],
-        gaps=gaps,
-        records=records,
+        findings=findings,
+        metrics=[
+            {"id": "shortage_quantity", "label": {"zh": "短缺数量", "en": "Shortage quantity"}, "value": shortage_quantity_text, "unit": unit},
+            {"id": "days_of_supply", "label": {"zh": "库存覆盖天数", "en": "Days of supply"}, "value": days_of_supply},
+            {"id": "exception_count", "label": {"zh": "异常消息数", "en": "Exception messages"}, "value": len(exception_details)},
+            {"id": "affected_element_count", "label": {"zh": "受影响 MRP 元素数", "en": "Affected MRP elements"}, "value": len(affected_elements)},
+        ],
+        gaps=evidence_gaps,
+        limitations=limitations,
+        records=exception_details,
+        record_columns=[
+            {"key": "mrp_element", "label": {"zh": "MRP 元素", "en": "MRP element"}},
+            {"key": "mrp_element_item", "label": {"zh": "行项目", "en": "Item"}},
+            {"key": "element_category", "label": {"zh": "元素类别", "en": "Element category"}},
+            {"key": "requirement_or_receipt_date", "label": {"zh": "需求/供应日期", "en": "Requirement/receipt date"}},
+            {"key": "open_quantity", "label": {"zh": "未结数量", "en": "Open quantity"}},
+            {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+            {"key": "exception_number", "label": {"zh": "SAP 异常编号", "en": "SAP exception number"}},
+            {"key": "exception_type_label", "label": {"zh": "异常类型", "en": "Exception type"}},
+            {"key": "sap_exception_text", "label": {"zh": "SAP 原文", "en": "Original SAP message"}},
+            {"key": "priority_label", "label": {"zh": "业务处理优先级", "en": "Business priority"}},
+            {"key": "recommended_action", "label": {"zh": "建议处理", "en": "Recommended action"}},
+        ],
         allow_empty_records=True,
-        actions_zh=["复核 MRP 服务超时、短缺参数文件和供需异常消息。"],
-        actions_en=["Review MRP timeouts, shortage profile parameters, and exception messages."],
+        actions_zh=next_actions_zh,
+        actions_en=next_actions_en,
+        source_complete_override=source_complete,
+        preserve_business_status_on_gap=True,
     )
+    exception_summary: dict[str, JsonObject] = {}
+    for item in exception_details:
+        exception_type = str(item["exception_type"])
+        summary = exception_summary.setdefault(
+            exception_type,
+            {
+                "exception_type": exception_type,
+                "exception_type_label": item["exception_type_label"],
+                "count": 0,
+                "highest_priority": item["priority_level"],
+                "highest_priority_label": item["priority_label"],
+            },
+        )
+        summary["count"] = int(summary["count"]) + 1
+        if priority_rank[str(item["priority_level"])] > priority_rank[str(summary["highest_priority"])]:
+            summary["highest_priority"] = item["priority_level"]
+            summary["highest_priority_label"] = item["priority_label"]
+    result["business_report"]["evidence_tables"] = [
+        {
+            "id": "mrp_shortage_summary",
+            "title": {"zh": "短缺与优先级结论", "en": "Shortage and priority conclusion"},
+            "columns": [
+                {"key": "analysis_date", "label": {"zh": "分析日期", "en": "Analysis date"}, "format": "date"},
+                {"key": "shortage_status_label", "label": {"zh": "短缺状态", "en": "Shortage status"}},
+                {"key": "shortage_quantity", "label": {"zh": "短缺数量", "en": "Shortage quantity"}, "format": "decimal"},
+                {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+                {"key": "shortage_start_date", "label": {"zh": "短缺开始日期", "en": "Shortage start date"}, "format": "date"},
+                {"key": "days_of_supply", "label": {"zh": "库存覆盖天数", "en": "Days of supply"}, "format": "integer"},
+                {"key": "priority_label", "label": {"zh": "业务处理优先级", "en": "Business priority"}},
+                {"key": "rescheduling_status_label", "label": {"zh": "重排状态", "en": "Rescheduling status"}},
+            ],
+            "rows": [summary_row],
+        },
+        {
+            "id": "mrp_exception_summary",
+            "title": {"zh": "异常类型汇总", "en": "Exception type summary"},
+            "columns": [
+                {"key": "exception_type_label", "label": {"zh": "异常类型", "en": "Exception type"}},
+                {"key": "count", "label": {"zh": "消息数", "en": "Messages"}, "format": "integer"},
+                {"key": "highest_priority_label", "label": {"zh": "最高业务优先级", "en": "Highest business priority"}},
+            ],
+            "rows": list(exception_summary.values()),
+        },
+        {
+            "id": "mrp_exception_details",
+            "title": {"zh": "受影响的 MRP 元素", "en": "Affected MRP elements"},
+            "columns": [
+                {"key": "mrp_element", "label": {"zh": "MRP 元素", "en": "MRP element"}},
+                {"key": "mrp_element_item", "label": {"zh": "行项目", "en": "Item"}},
+                {"key": "element_category_name", "label": {"zh": "元素类别", "en": "Element category"}},
+                {"key": "requirement_or_receipt_date", "label": {"zh": "需求/供应日期", "en": "Requirement/receipt date"}, "format": "date"},
+                {"key": "open_quantity", "label": {"zh": "未结数量", "en": "Open quantity"}, "format": "decimal"},
+                {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+                {"key": "exception_number", "label": {"zh": "SAP 异常编号", "en": "SAP exception number"}},
+                {"key": "exception_type_label", "label": {"zh": "异常类型", "en": "Exception type"}},
+                {"key": "sap_exception_text", "label": {"zh": "SAP 原文", "en": "Original SAP message"}},
+                {"key": "rescheduling_date", "label": {"zh": "SAP 重排日期", "en": "SAP rescheduling date"}, "format": "date"},
+                {"key": "priority_label", "label": {"zh": "业务处理优先级", "en": "Business priority"}},
+                {"key": "recommended_action", "label": {"zh": "建议处理", "en": "Recommended action"}},
+            ],
+            "rows": exception_details,
+        },
+    ]
+    result["rule_id"] = "mrp_exception_analysis_deterministic_v2"
+    result["status"] = "complete" if evidence_complete else "inconclusive"
+    result["business_status"] = business_status
+    result["business_complete"] = evidence_complete
+    result["source_complete"] = source_complete
+    result["evidence_complete"] = evidence_complete
+    result["missing_evidence"] = evidence_gaps
+    result["business_report"]["tone"] = (
+        "success" if business_status == "normal" else "warning" if business_status in {"critical", "attention"} else "info"
+    )
+    result["business_report"]["source_complete"] = source_complete
+    result["business_report"]["evidence_complete"] = evidence_complete
+    result["business_report"]["missing_evidence"] = evidence_gaps
+    result["workflow_output"].update(summary_row)
+    result["workflow_output"].update(
+        {
+            "shortage_profile": expected_profile,
+            "shortage_counter": expected_counter,
+            "shortage_end_date": shortage_end_text,
+            "rescheduling_status": rescheduling_status,
+            "exception_details": exception_details,
+            "business_status": business_status,
+            "source_complete": source_complete,
+            "evidence_complete": evidence_complete,
+        }
+    )
+    return result
 
 
 def _production_monitor(inputs: JsonObject) -> JsonObject:

@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.direct_sap_read import _schema, _sort_value, _validate_request
+from scripts.direct_sap_read import (
+    _ensure_stable_artifact_order,
+    _schema,
+    _sort_value,
+    _validate_request,
+)
 
 
 METADATA = b"""<?xml version="1.0" encoding="utf-8"?>
@@ -52,6 +57,31 @@ def test_direct_reader_uses_live_keys_and_sap_numeric_string_semantics() -> None
     assert _sort_value("10", fields["Item"]) == (1, Decimal("10"))
     assert _sort_value("2", "Edm.String:UpperCase") == (1, Decimal("2"), "2")
     assert _sort_value("10", "Edm.String:UpperCase") == (1, Decimal("10"), "10")
+
+
+def test_direct_reader_client_sorts_only_complete_single_page_results() -> None:
+    rows = [{"Document": "10", "Item": "1"}, {"Document": "2", "Item": "1"}]
+    fields = {"Document": "Edm.String", "Item": "Edm.String:NonNegative"}
+
+    ordered, client_sorted = _ensure_stable_artifact_order(
+        rows,
+        ["Document", "Item"],
+        fields,
+        page_count=1,
+        paging_complete=True,
+    )
+
+    assert [row["Document"] for row in ordered] == ["2", "10"]
+    assert client_sorted is True
+
+    with pytest.raises(ValueError, match="non-monotonic"):
+        _ensure_stable_artifact_order(
+            rows,
+            ["Document", "Item"],
+            fields,
+            page_count=2,
+            paging_complete=True,
+        )
 
 
 def test_direct_reader_rejects_unbounded_or_oversized_requests() -> None:

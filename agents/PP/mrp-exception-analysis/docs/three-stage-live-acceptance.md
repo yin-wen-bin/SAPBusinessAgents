@@ -1,49 +1,59 @@
-# Three-stage live SAP acceptance: mrp-exception-analysis
+# MRP exception analysis v2: three-stage live SAP acceptance
 
 ## Verdict
 
 `PASS` / `executable=true`
 
-- Case: `mrp-exception-analysis-live-001`
-- Tested at: `2026-08-20T08:17:30.484764+00:00`
+- Agent version: `0.2.0`
+- Deterministic rule: `mrp_exception_analysis_deterministic_v2`
+- Tested on: `2026-08-25` (Asia/Shanghai)
 - Direct baseline runtime: `codex_app_direct_sap`
-- Used SAPBusinessAgents for baseline: `false`
+- Baseline used SAPBusinessAgents: `false`
 - Free-query comparison: `MATCH`
 - Fixed-Agent comparison: `MATCH`
-- Normalized business records: `7`
-- Required limitations preserved: `none`
-- SAP write operations: none
+- SAP write operations: none; every SAP business request was `GET`
+- Required scope limitation: `sap_shortage_time_horizon_applies`
 
-## Evidence hashes
+The priority shown by this Agent is the versioned SAPBusinessAgents business-handling priority. It is not presented as SAP native message priority.
 
-- Codex direct baseline: `sha256:af574435c1605118eb406f5263eb80725237f15d47bc7392dd62e3169e0c06ac`
-- SAPBusinessAgents free query: `sha256:79fb90a73ee2adcf59556190ca73e3b13a42f0f25c15b60a24e69c713623b19b`
-- Adjudicated result: `sha256:af574435c1605118eb406f5263eb80725237f15d47bc7392dd62e3169e0c06ac`
-- Fixed Agent: `sha256:af574435c1605118eb406f5263eb80725237f15d47bc7392dd62e3169e0c06ac`
-- Fixed comparison: `sha256:59cdb8d2dbee8272c29b65f5f982d62b66db73229ff3ed3b8190846fe190aca8`
+## Live samples
 
-## Sanitized case scope
+| Sample | Business case | Baseline conclusion | Records / affected elements | Free query | Fixed Agent |
+|---|---|---|---:|:---:|:---:|
+| `TG10 / 1710 / 1710` | Zero-shortage candidate with rescheduling exceptions | shortage `0.000`; days of supply `999`; highest priority `high`; business status `attention` | `19 / 11` | `MATCH` | `MATCH` |
+| `MZ-RM-C900-01 / 1710 / 1710` | Active shortage with mixed exception messages | shortage `188.000`; days of supply `-1376`; highest priority `critical`; business status `critical` | `66 / 33` | `MATCH` | `MATCH` |
+| `SG21 / 1010 / 1010` | No shortage with overdue 06/07 messages | shortage `0.000`; days of supply `999`; highest priority `high`; business status `attention` | `12 / 6` | `MATCH` | `MATCH` |
 
-- Selection rule: first independently discovered live sample satisfying the case criteria after real-time schema validation and stable-key ordering.
-- Structured input fields: `material, mrp_area, plant, shortage_counter, shortage_profile` (values remain in ignored artifacts).
-- Business-condition fields: `material, mrp_area, plant, shortage_counter, shortage_profile` (values remain in ignored artifacts).
-- Accepted business grain: `material, plant, mrp_element`.
+The `SG21` result also proves that blank MRP element item and schedule-line segments can be legitimate parts of a stable business key; they are not treated as missing evidence.
 
-## Direct baseline source coverage
+## Source coverage
 
-| Source | Service | OData | Entity | Rows | Pages | Stable order | Paging complete | Source complete |
-|---|---|:---:|---|---:|---:|---|:---:|:---:|
-| mrp_master | API_MRP_MATERIALS_SRV_01 | 2.0 | A_MRPMaterial | 1 | 1 | Material, MRPPlant, MRPArea | true | true |
-| mrp_coverages | API_MRP_MATERIALS_SRV_01 | 2.0 | MaterialCoverages | 1 | 1 | Material, MaterialShortageProfile, MaterialShortageProfileCount, MRPArea, MRPPlanningSegmentNumber, MRPPlanningSegmentType, MRPPlant | true | true |
-| mrp_supply_demand | API_MRP_MATERIALS_SRV_01 | 2.0 | SupplyDemandItems | 7 | 1 | Material, MaterialShortageProfile, MaterialShortageProfileCount, MRPArea, MRPPlanningSegment, MRPPlanningSegmentType, MRPPlant, MRPElement, MRPElementItem, MRPElementScheduleLine | true | true |
+Every sample returned one complete `A_MRPMaterial` row and one complete `MaterialCoverages` row. `SupplyDemandItems` returned 12, 53, and 7 complete source rows respectively. All three sources completed in one page for every sample, and no source reached its maximum-result limit.
 
-Schema/query manifests:
-- `mrp_master` schema `sha256:1adaff0c7faaab6671558af7516c825cc212e8c7dc17058bc2aa8ea2aa3921cd`; query `sha256:75427e1dd835eb56e6f81ad50eba10c0bc2212060e8fce41df9dfdae15aa282f`.
-- `mrp_coverages` schema `sha256:1adaff0c7faaab6671558af7516c825cc212e8c7dc17058bc2aa8ea2aa3921cd`; query `sha256:80bb8447c9e3d6dae2d7c7fb6b377b1650a17a44bd59336eca2c8b3f7f45fefd`.
-- `mrp_supply_demand` schema `sha256:1adaff0c7faaab6671558af7516c825cc212e8c7dc17058bc2aa8ea2aa3921cd`; query `sha256:d6dba5478db7225eae3d18bc791755e62815ee96eb6481dc706dc8a474dec1b7`.
+`SupplyDemandItems` marks its properties as non-sortable in live metadata. For the independent direct baseline only, a fully exhausted, non-truncated single page is sorted client-side after duplicate-key validation so the saved artifact is deterministic. Multi-page, truncated, or duplicate-key evidence still fails closed.
 
-## Repair and adjudication outcome
+The live system exposes piece units as `PC`, `ST`, or `EA` across these APIs. The rule keeps source values for reporting and compares them through the versioned piece/each alias family; all other unequal units remain a blocking unit conflict.
 
-The final comparison uses stable business keys, deterministic facts, Decimal-aware metrics, currencies, units, limitations, and completeness rather than display prose or row order. Platform and fixed-Agent corrections are covered by the campaign regression suite; runtime logic contains no test-document constants.
+## Canonical acceptance evidence
 
-Raw SAP rows, URLs, credentials, business identifiers, and connection details remain in ignored local artifacts.
+The active manifest uses the richest active-shortage sample as its canonical acceptance artifact:
+
+- Case: `mrp-exception-analysis-v2-shortage`
+- Free-query run: `run_ca1ce9e5605c4df6`
+- Fixed-Agent run: `acceptance_50a0cfc8f3784d0b`
+- Direct baseline: `sha256:7eb5cc138af2768c6154a8ddbbe4868f359e79af8d96527a5c06edb39b8285d9`
+- Free query: `sha256:7dc2e71bd7ce5ee6882829f5314276417f2c0d70d5b9a01120b71c699ad95942`
+- Adjudicated result: `sha256:7eb5cc138af2768c6154a8ddbbe4868f359e79af8d96527a5c06edb39b8285d9`
+- Fixed Agent: `sha256:7ea1915b61ceebbd5fc702f9515ceb0c0461786025dc395cf1c7563bd95a0a98`
+- Fixed comparison: `sha256:b9cc117a2c040d1710a7447d47c225617528bf077239bac61fc4922eb701ac16`
+
+Supplemental acceptance artifacts:
+
+- `TG10`: free `run_7a2ac25cecec41cb`; fixed `acceptance_535dd2a70f51435e`; both `MATCH`.
+- `SG21`: free `run_fa826fc0349c4f5a`; fixed `acceptance_790fc2f11f8d44ad`; both `MATCH`.
+
+Raw SAP rows, URLs, credentials, and connection details remain only in ignored local acceptance artifacts.
+
+## Interpretation boundary
+
+`source_complete=true` means the exact profile/counter queries and their paging completed. It does not mean the SAP shortage profile covers an unlimited future time axis. When `HasAcceptedShortage=X`, SAP returns the next unaccepted shortage; the report must not describe it as the first shortage on the entire timeline.

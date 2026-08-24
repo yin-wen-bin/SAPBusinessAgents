@@ -101,6 +101,57 @@ def _sort_value(value: Any, edm_type: str) -> Any:
     return (1, text)
 
 
+def _ensure_stable_artifact_order(
+    rows: list[dict[str, Any]],
+    ordered: list[str],
+    fields: dict[str, str],
+    *,
+    page_count: int,
+    paging_complete: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    raw_values = [tuple(str(row.get(key) or "") for key in ordered) for row in rows]
+    if len(raw_values) != len(set(raw_values)):
+        raise ValueError("stable paging key contains duplicates")
+    stable_values = [
+        tuple(_sort_value(row.get(key), fields[key]) for key in ordered)
+        for row in rows
+    ]
+    if stable_values == sorted(stable_values):
+        return rows, False
+    # Some SAP analytical entities explicitly mark all properties as
+    # non-sortable and ignore $orderby. If the entire bounded result arrived
+    # in one exhausted page, client sorting makes the saved artifact
+    # deterministic without weakening paging completeness. Multi-page or
+    # truncated reads still fail closed because their page boundary is not
+    # proven stable.
+    if page_count == 1 and paging_complete:
+        return (
+            sorted(
+                rows,
+                key=lambda row: tuple(
+                    _sort_value(row.get(key), fields[key]) for key in ordered
+                ),
+            ),
+            True,
+        )
+    first = next(
+        index
+        for index in range(1, len(stable_values))
+        if stable_values[index] < stable_values[index - 1]
+    )
+    differing = next(
+        field
+        for field, previous, current in zip(
+            ordered, stable_values[first - 1], stable_values[first]
+        )
+        if previous != current
+    )
+    raise ValueError(
+        "stable paging key is non-monotonic at row "
+        f"{first + 1}; first differing field={differing}; edm_type={fields[differing]}"
+    )
+
+
 def _validate_request(value: dict[str, Any]) -> dict[str, Any]:
     required = {
         "source_id", "service_name", "service_path", "odata_version", "entity_set",
@@ -214,33 +265,13 @@ def run(profile: dict[str, Any], request: dict[str, Any], output: Path) -> dict[
             rows = rows[: int(request["max_rows"])]
             break
         url = urllib.parse.urljoin(service_root.rstrip("/") + "/", str(next_link)) if next_link else ""
-    raw_stable_values = [
-        tuple(str(row.get(key) or "") for key in ordered)
-        for row in rows
-    ]
-    stable_values = [
-        tuple(_sort_value(row.get(key), fields[key]) for key in ordered)
-        for row in rows
-    ]
-    if len(raw_stable_values) != len(set(raw_stable_values)):
-        raise ValueError("stable paging key contains duplicates")
-    if stable_values != sorted(stable_values):
-        first = next(
-            index
-            for index in range(1, len(stable_values))
-            if stable_values[index] < stable_values[index - 1]
-        )
-        differing = next(
-            field
-            for field, previous, current in zip(
-                ordered, stable_values[first - 1], stable_values[first]
-            )
-            if previous != current
-        )
-        raise ValueError(
-            "stable paging key is non-monotonic at row "
-            f"{first + 1}; first differing field={differing}; edm_type={fields[differing]}"
-        )
+    rows, client_sorted = _ensure_stable_artifact_order(
+        rows,
+        ordered,
+        fields,
+        page_count=pages,
+        paging_complete=paging_complete,
+    )
     output.mkdir(parents=True, exist_ok=True)
     (output / "metadata.edmx").write_bytes(metadata)
     (output / "rows.json").write_text(
@@ -256,6 +287,7 @@ def run(profile: dict[str, Any], request: dict[str, Any], output: Path) -> dict[
         "row_count": len(rows),
         "page_count": pages,
         "stable_order_by": ordered,
+        "client_sorted": client_sorted,
         "paging_complete": paging_complete,
         "source_complete": paging_complete,
         "primary": False,

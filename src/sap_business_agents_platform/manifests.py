@@ -19,6 +19,7 @@ ALLOWED_RULE_OPERATIONS = {
     "classify_control_object",
     "evidence_summary",
     "extract_bounded_values",
+    "resolve_mrp_analysis_context",
     "resolve_inventory_health_window",
     "evaluate_business_agent",
     "evaluate_p2p_status",
@@ -345,7 +346,11 @@ def _validate_acceptance(value: Any, source: str) -> None:
                 raise ManifestError(
                     f"{source}.execution.acceptance.{field} must be an array"
                 )
-        for field in ("compositeBlankFields", "nonBlockingObservationCodes"):
+        for field in (
+            "blankBusinessKeyFields",
+            "compositeBlankFields",
+            "nonBlockingObservationCodes",
+        ):
             if not isinstance(value.get(field, []), list):
                 raise ManifestError(
                     f"{source}.execution.acceptance.{field} must be an array"
@@ -364,6 +369,10 @@ def _validate_acceptance(value: Any, source: str) -> None:
                 raise ManifestError(
                     f"{source}.execution.acceptance.{field} must be an object"
                 )
+        if not isinstance(value.get("factDefinitions", {}), dict):
+            raise ManifestError(
+                f"{source}.execution.acceptance.factDefinitions must be an object"
+            )
         if not isinstance(value.get("compositeKeyParts", {}), dict):
             raise ManifestError(
                 f"{source}.execution.acceptance.compositeKeyParts must be an object"

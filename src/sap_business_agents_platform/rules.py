@@ -27,6 +27,8 @@ API_CAPABILITY_GAP_CODES = frozenset(
 
 
 def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    if operation == "resolve_mrp_analysis_context":
+        return resolve_mrp_analysis_context(inputs)
     if operation == "resolve_inventory_health_window":
         return resolve_inventory_health_window(inputs)
     if operation == "assess_inventory_batch_expiry":
@@ -54,6 +56,19 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "evaluate_o2c_status":
         return evaluate_o2c_status(inputs)
     raise ValueError(f"Unknown deterministic rule operation: {operation}")
+
+
+def resolve_mrp_analysis_context(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Capture the local business date once, before any MRP evidence is read."""
+
+    run_input = inputs.get("run_input")
+    if not isinstance(run_input, dict):
+        raise ValueError("resolve_mrp_analysis_context requires run_input")
+    return {
+        "rule_id": "mrp_analysis_context_v1",
+        "status": "complete",
+        "analysis_date": date.today().isoformat(),
+    }
 
 
 def resolve_inventory_health_window(inputs: dict[str, Any]) -> dict[str, Any]:

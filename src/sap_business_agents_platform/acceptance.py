@@ -400,8 +400,15 @@ def compare_semantic_results(
     unit_fields = tuple(str(item) for item in contract.get("unit_fields") or [])
     strict_v2 = str(contract.get("schema_version") or "1.0") == "2.0"
 
-    expected_records = _record_map(expected.get("records"), key_fields, "expected")
-    actual_records = _record_map(actual.get("records"), key_fields, "actual")
+    blank_key_fields = {
+        str(item) for item in contract.get("blank_business_key_fields") or []
+    }
+    expected_records = _record_map(
+        expected.get("records"), key_fields, "expected", blank_key_fields
+    )
+    actual_records = _record_map(
+        actual.get("records"), key_fields, "actual", blank_key_fields
+    )
     expected_keys = set(expected_records)
     actual_keys = set(actual_records)
     if expected_keys != actual_keys:
@@ -513,7 +520,12 @@ def compare_semantic_results(
     )
 
 
-def _record_map(value: Any, key_fields: tuple[str, ...], label: str) -> dict[tuple[str, ...], JsonObject]:
+def _record_map(
+    value: Any,
+    key_fields: tuple[str, ...],
+    label: str,
+    blank_key_fields: set[str] | None = None,
+) -> dict[tuple[str, ...], JsonObject]:
     if not isinstance(value, list):
         raise ValueError(f"{label}.records must be an array")
     result: dict[tuple[str, ...], JsonObject] = {}
@@ -521,7 +533,8 @@ def _record_map(value: Any, key_fields: tuple[str, ...], label: str) -> dict[tup
         if not isinstance(item, dict):
             raise ValueError(f"{label}.records[{index}] must be an object")
         key = tuple(str(item.get(field) or "") for field in key_fields)
-        if any(not part for part in key):
+        allowed_blank = blank_key_fields or set()
+        if any(not part and field not in allowed_blank for field, part in zip(key_fields, key)):
             raise ValueError(f"{label}.records[{index}] is missing a business key")
         if key in result:
             raise ValueError(f"{label}.records contains duplicate business key {key!r}")

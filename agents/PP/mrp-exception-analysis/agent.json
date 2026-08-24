@@ -11,7 +11,7 @@
     "en": "Analyzes material coverage, supply-demand items and MRP exception messages to explain shortages, rescheduling needs and priorities."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "PP-MRP / Material Planning",
   "tags": [
     "MRP",
@@ -51,6 +51,18 @@
       "物料",
       "短缺参数文件",
       "短缺计数器",
+      "分析日期",
+      "短缺状态",
+      "短缺数量",
+      "短缺开始日期",
+      "短缺结束日期",
+      "库存覆盖天数",
+      "SAPBusinessAgents 业务处理优先级",
+      "重排状态",
+      "受影响 MRP 元素数",
+      "异常消息数",
+      "业务证据完整性",
+      "MRP 异常明细",
       "业务状态",
       "查询源完整性",
       "结构化业务报告"
@@ -61,6 +73,18 @@
       "Material",
       "Shortage profile",
       "Shortage profile counter",
+      "Analysis date",
+      "Shortage status",
+      "Shortage quantity",
+      "Shortage start date",
+      "Shortage end date",
+      "Days of supply",
+      "SAPBusinessAgents business priority",
+      "Rescheduling status",
+      "Affected MRP elements",
+      "Exception messages",
+      "Business-evidence completeness",
+      "MRP exception details",
       "Business status",
       "Query-source completeness",
       "Structured business report"
@@ -81,6 +105,38 @@
     ]
   },
   "workflow": [
+    {
+      "id": "execute-resolve_analysis_context",
+      "title": {
+        "zh": "确定分析日期",
+        "en": "Resolve analysis date"
+      },
+      "description": {
+        "zh": "在读取 SAP 前固定本次运行的本地业务日期。",
+        "en": "Capture the run's local business date before reading SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.resolve_mrp_analysis_context"
+        ],
+        "en": [
+          "rule.resolve_mrp_analysis_context"
+        ]
+      },
+      "tools": [
+        {
+          "name": "resolve_mrp_analysis_context",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "固定分析日期",
+            "en": "Capture the analysis date"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "resolve_analysis_context"
+      ]
+    },
     {
       "id": "execute-collect_mrp_master",
       "title": {
@@ -318,6 +374,14 @@
     },
     "steps": [
       {
+        "id": "resolve_analysis_context",
+        "executor": "rule",
+        "operation": "resolve_mrp_analysis_context",
+        "inputMapping": {
+          "run_input": "{{input}}"
+        }
+      },
+      {
         "id": "collect_mrp_master",
         "executor": "sap_read",
         "operation": "execute_plan",
@@ -336,7 +400,13 @@
               "MRPPlant",
               "MRPController",
               "MRPType",
-              "SafetyStockQuantity"
+              "MaterialProcurementCategory",
+              "PlanningTimeFenceInDays",
+              "SafetyStockQuantity",
+              "MaterialPlannedDeliveryDurn",
+              "MaterialPlannedProductionDurn",
+              "TotalReplenishmentLeadDuration",
+              "BaseUnit"
             ],
             "filters": [
               {
@@ -349,6 +419,12 @@
                 "field": "MRPArea",
                 "operator": "eq",
                 "value": "{{input.mrp_area}}",
+                "value_type": "string"
+              },
+              {
+                "field": "MRPPlant",
+                "operator": "eq",
+                "value": "{{input.plant}}",
                 "value_type": "string"
               }
             ],
@@ -375,11 +451,18 @@
               "MaterialShortageProfileCount",
               "MRPArea",
               "MRPPlant",
+              "MRPPlanningSegmentNumber",
+              "MRPPlanningSegmentType",
               "MaterialShortageDuration",
+              "MaterialShortageDurnInWorkdays",
               "DaysOfSupplyDuration",
               "MaterialShortageQuantity",
               "MaterialShortageStartDate",
-              "MaterialShortageEndDate"
+              "MaterialShortageEndDate",
+              "MaterialReplnmtLeadDurnEndDate",
+              "TimeHorizonInDays",
+              "HasAcceptedShortage",
+              "MaterialBaseUnit"
             ],
             "filters": [
               {
@@ -438,9 +521,18 @@
               "MaterialShortageProfile",
               "MaterialShortageProfileCount",
               "MRPElement",
+              "MRPElementItem",
+              "MRPElementScheduleLine",
               "MRPElementCategory",
+              "MRPElementCategoryName",
+              "MRPElementCategoryShortName",
+              "MRPElementDocumentType",
+              "MRPElementDocumentTypeName",
               "MRPElementAvailyOrRqmtDate",
+              "MRPElementReschedulingDate",
               "MRPElementOpenQuantity",
+              "MRPElementQuantityIsFirm",
+              "MRPElementIsReleased",
               "MRPAvailableQuantity",
               "MaterialBaseUnit",
               "ExceptionMessageNumber",
@@ -492,6 +584,7 @@
         "inputMapping": {
           "agent_id": "mrp-exception-analysis",
           "run_input": "{{input}}",
+          "analysis_context": "{{steps.resolve_analysis_context.output}}",
           "evidence": {
             "mrp_material": "{{steps.collect_mrp_master.output}}",
             "material_coverages": "{{steps.collect_mrp_coverage.output}}",
@@ -594,11 +687,338 @@
           "maxLength": 3,
           "pattern": "^[0-9]+$"
         },
+        "analysis_date": {
+          "type": "string",
+          "format": "date",
+          "title": {
+            "zh": "分析日期",
+            "en": "Analysis date"
+          }
+        },
+        "shortage_status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "imminent",
+            "future",
+            "none",
+            "unknown"
+          ],
+          "title": {
+            "zh": "短缺状态",
+            "en": "Shortage status"
+          },
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "active": {
+                "zh": "短缺已经发生",
+                "en": "Active shortage"
+              },
+              "imminent": {
+                "zh": "短缺进入补货窗口",
+                "en": "Within replenishment window"
+              },
+              "future": {
+                "zh": "未来短缺",
+                "en": "Future shortage"
+              },
+              "none": {
+                "zh": "当前范围未发现短缺",
+                "en": "No shortage in current scope"
+              },
+              "unknown": {
+                "zh": "无法确认",
+                "en": "Unknown"
+              }
+            }
+          }
+        },
+        "shortage_quantity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "短缺数量",
+            "en": "Shortage quantity"
+          }
+        },
+        "shortage_start_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date",
+          "title": {
+            "zh": "短缺开始日期",
+            "en": "Shortage start date"
+          }
+        },
+        "shortage_end_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date",
+          "title": {
+            "zh": "短缺结束日期",
+            "en": "Shortage end date"
+          }
+        },
+        "days_of_supply": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "库存覆盖天数",
+            "en": "Days of supply"
+          }
+        },
+        "priority_level": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "none",
+            "unknown"
+          ],
+          "title": {
+            "zh": "SAPBusinessAgents 业务处理优先级",
+            "en": "SAPBusinessAgents business priority"
+          },
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "critical": {
+                "zh": "紧急",
+                "en": "Critical"
+              },
+              "high": {
+                "zh": "高",
+                "en": "High"
+              },
+              "medium": {
+                "zh": "中",
+                "en": "Medium"
+              },
+              "low": {
+                "zh": "低",
+                "en": "Low"
+              },
+              "none": {
+                "zh": "无",
+                "en": "None"
+              },
+              "unknown": {
+                "zh": "无法确认",
+                "en": "Unknown"
+              }
+            }
+          }
+        },
+        "rescheduling_status": {
+          "type": "string",
+          "enum": [
+            "bring_forward",
+            "postpone",
+            "cancel_or_reduce",
+            "mixed",
+            "none",
+            "unknown"
+          ],
+          "title": {
+            "zh": "重排状态",
+            "en": "Rescheduling status"
+          },
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "bring_forward": {
+                "zh": "评估提前供应",
+                "en": "Bring-forward review"
+              },
+              "postpone": {
+                "zh": "评估推迟供应",
+                "en": "Postponement review"
+              },
+              "cancel_or_reduce": {
+                "zh": "评估取消或减少",
+                "en": "Cancellation or reduction review"
+              },
+              "mixed": {
+                "zh": "多种重排建议",
+                "en": "Mixed rescheduling proposals"
+              },
+              "none": {
+                "zh": "无重排消息",
+                "en": "No rescheduling message"
+              },
+              "unknown": {
+                "zh": "无法确认",
+                "en": "Unknown"
+              }
+            }
+          }
+        },
+        "affected_element_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "受影响 MRP 元素数",
+            "en": "Affected MRP elements"
+          }
+        },
+        "exception_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "异常消息数",
+            "en": "Exception messages"
+          }
+        },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务证据完整性",
+            "en": "Business-evidence completeness"
+          }
+        },
+        "exception_details": {
+          "type": "array",
+          "title": {
+            "zh": "MRP 异常明细",
+            "en": "MRP exception details"
+          },
+          "x-sapba-display": {
+            "visible": false
+          },
+          "items": {
+            "type": "object",
+            "properties": {
+              "mrp_element": {
+                "type": "string"
+              },
+              "mrp_element_item": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "mrp_element_schedule_line": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "element_category": {
+                "type": "string"
+              },
+              "requirement_or_receipt_date": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "open_quantity": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "available_quantity": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exception_number": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exception_type": {
+                "type": "string"
+              },
+              "sap_exception_text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rescheduling_date": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "priority_level": {
+                "type": "string"
+              },
+              "recommended_action": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "mrp_element",
+              "mrp_element_item",
+              "mrp_element_schedule_line",
+              "element_category",
+              "requirement_or_receipt_date",
+              "open_quantity",
+              "available_quantity",
+              "unit",
+              "exception_number",
+              "exception_type",
+              "sap_exception_text",
+              "rescheduling_date",
+              "priority_level",
+              "recommended_action"
+            ]
+          }
+        },
         "business_status": {
           "type": "string",
+          "enum": [
+            "critical",
+            "attention",
+            "normal",
+            "inconclusive"
+          ],
           "title": {
             "zh": "业务状态",
             "en": "Business status"
+          },
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "critical": {
+                "zh": "紧急",
+                "en": "Critical"
+              },
+              "attention": {
+                "zh": "需要关注",
+                "en": "Attention required"
+              },
+              "normal": {
+                "zh": "正常",
+                "en": "Normal"
+              },
+              "inconclusive": {
+                "zh": "无法确认",
+                "en": "Inconclusive"
+              }
+            }
           }
         },
         "source_complete": {
@@ -622,8 +1042,20 @@
         "material",
         "shortage_profile",
         "shortage_counter",
+        "analysis_date",
+        "shortage_status",
+        "shortage_quantity",
+        "shortage_start_date",
+        "shortage_end_date",
+        "days_of_supply",
+        "priority_level",
+        "rescheduling_status",
+        "affected_element_count",
+        "exception_count",
         "business_status",
         "source_complete",
+        "evidence_complete",
+        "exception_details",
         "business_report"
       ],
       "additionalProperties": false
@@ -634,8 +1066,20 @@
       "material": "{{steps.evaluate_business_result.output.workflow_output.material}}",
       "shortage_profile": "{{steps.evaluate_business_result.output.workflow_output.shortage_profile}}",
       "shortage_counter": "{{steps.evaluate_business_result.output.workflow_output.shortage_counter}}",
+      "analysis_date": "{{steps.evaluate_business_result.output.workflow_output.analysis_date}}",
+      "shortage_status": "{{steps.evaluate_business_result.output.workflow_output.shortage_status}}",
+      "shortage_quantity": "{{steps.evaluate_business_result.output.workflow_output.shortage_quantity}}",
+      "shortage_start_date": "{{steps.evaluate_business_result.output.workflow_output.shortage_start_date}}",
+      "shortage_end_date": "{{steps.evaluate_business_result.output.workflow_output.shortage_end_date}}",
+      "days_of_supply": "{{steps.evaluate_business_result.output.workflow_output.days_of_supply}}",
+      "priority_level": "{{steps.evaluate_business_result.output.workflow_output.priority_level}}",
+      "rescheduling_status": "{{steps.evaluate_business_result.output.workflow_output.rescheduling_status}}",
+      "affected_element_count": "{{steps.evaluate_business_result.output.workflow_output.affected_element_count}}",
+      "exception_count": "{{steps.evaluate_business_result.output.workflow_output.exception_count}}",
       "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
       "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.evidence_complete}}",
+      "exception_details": "{{steps.evaluate_business_result.output.workflow_output.exception_details}}",
       "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
     },
     "acceptance": {
@@ -644,57 +1088,65 @@
       "businessKeys": [
         "material",
         "plant",
-        "mrp_element"
+        "mrp_area",
+        "mrp_element",
+        "mrp_element_item",
+        "mrp_element_schedule_line",
+        "exception_number"
       ],
       "facts": [
-        "requirement_date",
-        "exception_message",
+        "element_category",
+        "requirement_or_receipt_date",
+        "open_quantity",
+        "available_quantity",
+        "unit",
+        "exception_type",
+        "sap_exception_text",
+        "rescheduling_date",
+        "priority_level",
         "business_status"
       ],
       "metrics": [
-        "coverage_rows",
-        "supply_demand_rows"
+        "shortage_quantity",
+        "days_of_supply",
+        "exception_count",
+        "affected_element_count"
       ],
       "decimalFields": [
-        "quantity"
+        "open_quantity",
+        "available_quantity"
       ],
-      "decimalMetricIds": [],
+      "decimalMetricIds": [
+        "shortage_quantity",
+        "days_of_supply",
+        "exception_count",
+        "affected_element_count"
+      ],
       "currencyFields": [],
       "unitFields": [
         "unit"
       ],
       "dateFields": [
-        "requirement_date"
+        "requirement_or_receipt_date",
+        "rescheduling_date"
       ],
-      "codeSetFields": [
-        "exception_message"
-      ],
+      "codeSetFields": [],
       "zeroPadFields": {},
       "booleanFields": [],
       "inputDefaults": {},
       "constantDefaults": {},
-      "fieldAliases": {
-        "quantity": [
-          "open_quantity"
-        ],
-        "unit": [
-          "base_unit"
-        ]
-      },
-      "fieldExtractors": {
-        "mrp_element": {
-          "source": "mrp_element_category",
-          "contains": {
-            "WB": "_STOCK"
-          },
-          "default": ""
-        }
-      },
+      "fieldAliases": {},
+      "fieldExtractors": {},
       "currencyFromDecimal": {},
       "valueMappings": {
-        "business_status": {
-          "no_exception_detected": "attention",
-          "supply_exception_detected": "attention"
+        "exception_type": {
+          "start_date_in_past": "start_date_past",
+          "finish_date_in_past": "finish_date_past",
+          "bring_forward": "reschedule_in",
+          "postpone": "reschedule_out",
+          "cancel_process": "cancel",
+          "reduce_quantity": "reduce",
+          "process_as_planned": "schedule_adjusted"
         }
       },
       "limitationKeywords": {
@@ -705,12 +1157,6 @@
           "范围限制",
           "分页未完成"
         ],
-        "bank_settlement_not_proven": [
-          "bank settlement",
-          "bank receipt",
-          "银行结算",
-          "银行到账"
-        ],
         "capability_gap": [
           "capability gap",
           "evidence unavailable",
@@ -719,17 +1165,36 @@
           "证据不足",
           "无法确认"
         ],
-        "mrp_coverage_or_supply_demand_evidence": [
+        "mrp_master_evidence": [
+          "mrp master",
+          "mrp 主数据"
+        ],
+        "mrp_coverage_evidence": [
+          "mrp coverage",
+          "material coverage",
+          "物料覆盖"
+        ],
+        "mrp_supply_demand_evidence": [
           "supply-demand",
           "supply demand",
-          "mrp coverage",
-          "供需",
-          "mrp 覆盖"
+          "供需"
+        ],
+        "sap_shortage_time_horizon_applies": [
+          "time horizon",
+          "current sap shortage profile and horizon",
+          "时间范围",
+          "当前 sap 短缺参数"
+        ],
+        "accepted_shortage_not_returned_as_first": [
+          "accepted shortage",
+          "已接受短缺"
         ]
       },
       "summaryRecord": false,
       "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
-      "requiredLimitations": [],
+      "requiredLimitations": [
+        "sap_shortage_time_horizon_applies"
+      ],
       "businessStatusFromMetric": {},
       "limitationsFromMetrics": {},
       "blankValueKeywords": {},
@@ -738,15 +1203,29 @@
         "source_complete=true"
       ],
       "zeroFactWhenMetricZero": {},
-      "recordScope": "",
-      "metricDefinitions": {},
-      "businessStatusDefinition": "",
-      "businessStatusFromAnyPositiveMetric": {}
+      "recordScope": "one_record_per_mrp_element_exception",
+      "factDefinitions": {
+        "exception_type": "Use exact canonical mapping 06=start_date_past, 07=finish_date_past, 10=reschedule_in, 15=reschedule_out, 20=cancel, 26=reduce, 30=schedule_adjusted; any other nonblank exception number=other_exception",
+        "priority_level": "SAPBusinessAgents business priority, not SAP native priority: 10=high; 06 or 07=high when open_quantity is greater than zero, otherwise medium; 15, 20, and 26=medium; 30=low; any unrecognized nonblank exception=medium",
+        "rescheduling_date": "Use only the structured MRPElementReschedulingDate field; never parse a date from localized SAP exception text"
+      },
+      "metricDefinitions": {
+        "shortage_quantity": "MaterialCoverages.MaterialShortageQuantity; never recomputed from SupplyDemandItems",
+        "days_of_supply": "MaterialCoverages.DaysOfSupplyDuration",
+        "exception_count": "Count of distinct nonblank SAP exception message slots",
+        "affected_element_count": "Distinct MRP element, item, and schedule-line keys with at least one exception"
+      },
+      "businessStatusDefinition": "critical for complete active-shortage evidence; attention for complete high, medium, or low business-priority evidence; normal only when all required sources and business evidence are complete with no shortage or exception; inconclusive whenever required evidence is incomplete or contradictory",
+      "businessStatusFromAnyPositiveMetric": {},
+      "blankBusinessKeyFields": [
+        "mrp_element_item",
+        "mrp_element_schedule_line"
+      ]
     }
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-08-20T08:17:30.484764+00:00",
+    "testedAt": "2026-08-24T17:16:32.109796+00:00",
     "evidenceScope": "complete",
     "providers": [
       "codex-app-direct-sap",
@@ -762,10 +1241,10 @@
     "fixedAgentComparison": "MATCH",
     "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "codexDirectBaselineHash": "sha256:af574435c1605118eb406f5263eb80725237f15d47bc7392dd62e3169e0c06ac",
-    "freeQueryHash": "sha256:79fb90a73ee2adcf59556190ca73e3b13a42f0f25c15b60a24e69c713623b19b",
-    "adjudicatedResultHash": "sha256:af574435c1605118eb406f5263eb80725237f15d47bc7392dd62e3169e0c06ac",
-    "fixedAgentHash": "sha256:af574435c1605118eb406f5263eb80725237f15d47bc7392dd62e3169e0c06ac",
-    "comparisonHash": "sha256:59cdb8d2dbee8272c29b65f5f982d62b66db73229ff3ed3b8190846fe190aca8"
+    "codexDirectBaselineHash": "sha256:7eb5cc138af2768c6154a8ddbbe4868f359e79af8d96527a5c06edb39b8285d9",
+    "freeQueryHash": "sha256:7dc2e71bd7ce5ee6882829f5314276417f2c0d70d5b9a01120b71c699ad95942",
+    "adjudicatedResultHash": "sha256:7eb5cc138af2768c6154a8ddbbe4868f359e79af8d96527a5c06edb39b8285d9",
+    "fixedAgentHash": "sha256:7ea1915b61ceebbd5fc702f9515ceb0c0461786025dc395cf1c7563bd95a0a98",
+    "comparisonHash": "sha256:b9cc117a2c040d1710a7447d47c225617528bf077239bac61fc4922eb701ac16"
   }
 }
