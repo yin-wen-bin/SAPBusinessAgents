@@ -180,6 +180,13 @@ def _validate_input_server_defaults(properties: dict[str, Any], source: str) -> 
         if not isinstance(schema, dict):
             continue
         location = f"{source}.{name}"
+        identifier_marker = schema.get("x-sapba-sap-identifier")
+        if identifier_marker is not None and not isinstance(identifier_marker, bool):
+            raise ManifestError(f"{location}.x-sapba-sap-identifier must be boolean")
+        if identifier_marker is True and schema.get("type") != "string":
+            raise ManifestError(
+                f"{location}.x-sapba-sap-identifier=true requires type=string"
+            )
         marker = schema.get("x-sapba-server-default")
         if marker is not None and not isinstance(marker, bool):
             raise ManifestError(f"{location}.x-sapba-server-default must be boolean")

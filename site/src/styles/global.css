@@ -1178,11 +1178,23 @@ button:disabled {
   opacity: 0.55;
 }
 
-.runtime-form-error,
-.run-alert {
-  color: #a12121;
-  font-size: 12px;
-}
+  .runtime-form-error,
+  .run-alert {
+    color: #a12121;
+    font-size: 12px;
+  }
+
+  .runtime-field-grid .runtime-field-error {
+    min-height: 0;
+    color: #a12121;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .runtime-field-grid input[aria-invalid="true"] {
+    border-color: #bb2020;
+    box-shadow: 0 0 0 3px rgba(187, 32, 32, 0.1);
+  }
 
 .runtime-validation-required {
   color: #7a4b00;

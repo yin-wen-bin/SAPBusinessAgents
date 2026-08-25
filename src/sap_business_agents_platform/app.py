@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import logging
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -51,6 +52,9 @@ from .sdk_manager import SDKManager, SDKManagerError
 from .skills import SkillRegistry
 from .workflow_factory import WorkflowDraftError, WorkflowDraftService
 from .workflows import WorkflowError, WorkflowRepository
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LocalConfigUpdate(BaseModel):
@@ -326,6 +330,18 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(404, "Agent or workflow not found") from exc
         except (RunExecutionError, WorkflowError) as exc:
+            detail = getattr(exc, "detail", None)
+            safe_fields: list[str] = []
+            if isinstance(detail, dict):
+                if detail.get("field"):
+                    safe_fields.append(str(detail["field"]))
+                if isinstance(detail.get("fields"), list):
+                    safe_fields.extend(str(field) for field in detail["fields"])
+            LOGGER.warning(
+                "run_create_rejected code=%s fields=%s",
+                getattr(exc, "code", "run_rejected"),
+                sorted(set(safe_fields)),
+            )
             raise HTTPException(
                 409,
                 {

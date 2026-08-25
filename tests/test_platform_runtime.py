@@ -57,6 +57,36 @@ def test_validate_input_enforces_string_length_and_pattern() -> None:
             raise AssertionError(f"Expected invalid sales-order input to be rejected: {invalid}")
 
 
+def test_validate_input_accepts_punctuated_sap_identifier_and_rejects_controls() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "supplier": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 10,
+                "x-sapba-sap-identifier": True,
+            }
+        },
+        "required": ["supplier"],
+        "additionalProperties": False,
+    }
+
+    _validate_input({"supplier": "SUP-001"}, schema)
+
+    for invalid in ("SUP\n001", "SUP\x7f001"):
+        try:
+            _validate_input({"supplier": invalid}, schema)
+        except ValueError as exc:
+            assert getattr(exc, "code", None) == "agent_input_invalid"
+            assert getattr(exc, "detail", None) == {
+                "constraint": "sap_identifier",
+                "field": "supplier",
+            }
+        else:
+            raise AssertionError("A SAP identifier containing control characters was accepted")
+
+
 def test_validate_input_enforces_iso_date_and_bounded_date_range() -> None:
     schema = {
         "type": "object",
@@ -147,6 +177,56 @@ def test_fixed_agent_input_is_normalized_before_first_persistence(tmp_path: Path
         "mrp_area": "1710",
         "shortage_profile": "SAP000000001",
         "shortage_counter": "001",
+    }
+
+
+def test_supplier_performance_agent_accepts_hyphenated_supplier_id(tmp_path: Path) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "mode": "agent",
+                "agentId": "supplier-performance-risk",
+                "input": {
+                    "supplier": "SUP-001",
+                    "purchasing_organization": "1710",
+                    "date_from": "2017-10-01",
+                    "date_to": "2017-10-31",
+                },
+            },
+        )
+        assert response.status_code == 202
+        record = client.get(f"/api/runs/{response.json()['run_id']}").json()
+
+        invalid = client.post(
+            "/api/runs",
+            json={
+                "mode": "agent",
+                "agentId": "supplier-performance-risk",
+                "input": {
+                    "supplier": "SUPPLIER001",
+                    "purchasing_organization": "1710",
+                    "date_from": "2017-10-01",
+                    "date_to": "2017-10-31",
+                },
+            },
+        )
+
+    assert record["input"]["supplier"] == "SUP-001"
+    assert invalid.status_code == 409
+    assert invalid.json()["detail"] == {
+        "code": "agent_input_invalid",
+        "message": "Input supplier must contain at most 10 character(s).",
+        "detail": {
+            "constraint": "max_length",
+            "field": "supplier",
+            "maximum": 10,
+        },
     }
 
 
@@ -779,6 +859,35 @@ def test_manifest_validates_opted_in_server_defaults() -> None:
         raise AssertionError("An invalid server default passed manifest validation")
 
 
+def test_manifest_validates_sap_identifier_extension() -> None:
+    root = Path(__file__).resolve().parents[1]
+    manifest = AgentRepository(root / "agents").get("supplier-performance-risk")
+    validate_execution(manifest)
+    supplier = manifest["execution"]["inputSchema"]["properties"]["supplier"]
+    assert supplier["x-sapba-sap-identifier"] is True
+    assert "pattern" not in supplier
+
+    invalid_marker = json.loads(json.dumps(manifest))
+    invalid_marker["execution"]["inputSchema"]["properties"]["supplier"][
+        "x-sapba-sap-identifier"
+    ] = "true"
+    try:
+        validate_execution(invalid_marker)
+    except ManifestError as exc:
+        assert "x-sapba-sap-identifier must be boolean" in str(exc)
+    else:
+        raise AssertionError("A non-boolean SAP identifier marker passed validation")
+
+    invalid_type = json.loads(json.dumps(manifest))
+    invalid_type["execution"]["inputSchema"]["properties"]["supplier"]["type"] = "integer"
+    try:
+        validate_execution(invalid_type)
+    except ManifestError as exc:
+        assert "x-sapba-sap-identifier=true requires type=string" in str(exc)
+    else:
+        raise AssertionError("A non-string SAP identifier field passed validation")
+
+
 def test_manifest_rejects_non_get_inside_multi_step_array() -> None:
     manifest = {
         "execution": {
@@ -1038,7 +1147,12 @@ def test_shortage_agent_explicit_empty_or_null_defaulted_input_is_rejected(
                 },
             )
             assert response.status_code == 409
-            assert response.json()["detail"]["code"] == "agent_validation_failed"
+            payload = response.json()["detail"]
+            assert payload["code"] == "agent_input_invalid"
+            assert payload["detail"] == {
+                "constraint": "required",
+                "fields": ["shortage_profile"],
+            }
 
 
 def test_old_adt_contract_gap_is_recorded_and_mm_result_remains_inconclusive(

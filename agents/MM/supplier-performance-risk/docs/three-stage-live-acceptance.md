@@ -51,3 +51,25 @@ Schema/query manifests:
 The final comparison uses stable business keys, deterministic facts, Decimal-aware metrics, currencies, units, limitations, and completeness rather than display prose or row order. Platform and fixed-Agent corrections are covered by the campaign regression suite; runtime logic contains no test-document constants.
 
 Raw SAP rows, URLs, credentials, business identifiers, and connection details remain in ignored local artifacts.
+
+## Version 0.2.0 input and run-creation regression
+
+On `2026-08-25`, the fixed Agent was revalidated with a live, ten-character
+supplier identifier containing a hyphen. The identifier itself remains only in
+ignored local artifacts.
+
+- The browser and API accepted the complete identifier without removing or
+  changing its punctuation.
+- The fixed Agent run was created successfully and reached `completed`.
+- All four required evidence topics were complete; the runtime recorded no
+  business or source-completeness gap.
+- Eleven SAP requests were recorded and every request used `GET`.
+- All conditional ADT steps were `skipped/condition_false`; SAPSkillhub was not
+  contacted.
+- The Chinese form displayed a field-level validation message for an overlong
+  synthetic identifier. The task-creation summary no longer misreported an HTTP
+  validation rejection as a stopped local service.
+
+The earlier three-stage comparison hashes remain unchanged because this
+regression changes the input and error-reporting contracts, not the deterministic
+On Time In Full (OTIF) calculation or the frozen business baseline.

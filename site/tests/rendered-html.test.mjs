@@ -81,6 +81,31 @@ test("material shortage inputs are localized, documented, and prefilled", async 
   assert.match(en, /The default 001 normally requires no change/);
 });
 
+test("supplier performance accepts punctuated SAP identifiers and localizes run errors", async () => {
+  const zh = await readPage("zh", "agents", "MM", "supplier-performance-risk");
+  const en = await readPage("en", "agents", "MM", "supplier-performance-risk");
+  const manifest = await readManifest("MM", "supplier-performance-risk");
+  const panelSource = await readFile(path.join("src", "components", "AgentRunPanel.astro"), "utf8");
+  const supplier = manifest.execution.inputSchema.properties.supplier;
+
+  assert.equal(manifest.version, "0.2.1");
+  assert.equal(supplier.maxLength, 10);
+  assert.equal(supplier["x-sapba-sap-identifier"], true);
+  assert.equal(supplier.pattern, undefined);
+  assert.match(zh, /允许企业供应商编码中的连字符/);
+  assert.match(en, /enterprise supplier IDs may contain non-control characters such as hyphens/);
+  assert.match(zh, /准时足量交付率\(OTIF\)/);
+  assert.match(en, /On Time In Full \(OTIF\)/);
+  assert.match(zh, /<form class="agent-run-form" novalidate>/);
+  assert.match(zh, /data-field-error="supplier"/);
+  assert.match(zh, /请修正标出的输入后重试/);
+  assert.match(zh, /无法连接本地运行服务/);
+  assert.doesNotMatch(zh, /无法创建任务，请确认本地运行服务已经启动/);
+  assert.match(panelSource, /class RunCreateHttpError extends Error/);
+  assert.match(panelSource, /agent_input_invalid/);
+  assert.match(panelSource, /caught instanceof RunCreateHttpError/);
+});
+
 test("SD detail pages render eleven execution-mapped workflows", async () => {
   const slugs = [
     "delivered-not-billed", "billing-block-diagnosis", "billing-completeness-check",

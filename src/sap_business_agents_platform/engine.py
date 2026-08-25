@@ -66,6 +66,31 @@ class RunExecutionError(RuntimeError):
         self.detail = detail
 
 
+class InputValidationError(ValueError):
+    """A safe, structured input error that never echoes the submitted value."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "agent_input_invalid",
+        field: str | None = None,
+        fields: list[str] | None = None,
+        constraint: str,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        payload: dict[str, Any] = {"constraint": constraint}
+        if field:
+            payload["field"] = field
+        if fields:
+            payload["fields"] = fields
+        if detail:
+            payload.update(detail)
+        self.code = code
+        self.detail = payload
+
+
 class RunCoordinator:
     def __init__(
         self,
@@ -152,7 +177,9 @@ class RunCoordinator:
                     exc.code
                     if isinstance(exc, SapInputNormalizationError)
                     and exc.code == "sap_input_normalization_conflict"
-                    else "agent_validation_failed"
+                    else "agent_input_invalid"
+                    if isinstance(exc, SapInputNormalizationError)
+                    else str(getattr(exc, "code", "agent_input_invalid"))
                 )
                 raise RunExecutionError(
                     str(exc),
@@ -168,7 +195,11 @@ class RunCoordinator:
                 normalized_input = self.normalizer.normalize_input(
                     request.input, workflow["inputSchema"]
                 )
-                _validate_input(normalized_input, workflow["inputSchema"])
+                _validate_input(
+                    normalized_input,
+                    workflow["inputSchema"],
+                    error_code="workflow_input_invalid",
+                )
             except (SapInputNormalizationError, ValueError) as exc:
                 raise RunExecutionError(
                     str(exc),
@@ -219,7 +250,9 @@ class RunCoordinator:
                 exc.code
                 if isinstance(exc, SapInputNormalizationError)
                 and exc.code == "sap_input_normalization_conflict"
-                else "agent_validation_failed"
+                else "agent_input_invalid"
+                if isinstance(exc, SapInputNormalizationError)
+                else str(getattr(exc, "code", "agent_input_invalid"))
             )
             raise RunExecutionError(
                 str(exc),
@@ -385,7 +418,11 @@ class RunCoordinator:
                 )
             _validate_input(record.input, agent["execution"]["inputSchema"])
         except (KeyError, ManifestError, PluginError, ValueError) as exc:
-            raise RunExecutionError(str(exc), code="agent_validation_failed") from exc
+            raise RunExecutionError(
+                str(exc),
+                code=str(getattr(exc, "code", "agent_validation_failed")),
+                detail=getattr(exc, "detail", None),
+            ) from exc
 
         execution = agent["execution"]
         total_steps = len(execution["steps"])
@@ -761,7 +798,11 @@ class RunCoordinator:
                 source=f"workflow:{record.workflow_id}",
                 require_pins=True,
             )
-            _validate_input(record.input, workflow["inputSchema"])
+            _validate_input(
+                record.input,
+                workflow["inputSchema"],
+                error_code="workflow_input_invalid",
+            )
         except (KeyError, WorkflowError, ValueError) as exc:
             code = getattr(exc, "code", "workflow_validation_failed")
             raise RunExecutionError(str(exc), code=code, detail=getattr(exc, "detail", None)) from exc
@@ -2149,15 +2190,30 @@ def _resolve_server_defaults(
     return resolved, applied
 
 
-def _validate_input(value: dict[str, Any], schema: dict[str, Any]) -> None:
+def _validate_input(
+    value: dict[str, Any],
+    schema: dict[str, Any],
+    *,
+    error_code: str = "agent_input_invalid",
+) -> None:
     required = schema.get("required") or []
     missing = [name for name in required if value.get(name) in (None, "")]
     if missing:
-        raise ValueError("Missing required input: " + ", ".join(missing))
+        raise InputValidationError(
+            "Missing required input: " + ", ".join(missing),
+            code=error_code,
+            fields=[str(name) for name in missing],
+            constraint="required",
+        )
     properties = schema.get("properties") or {}
     unknown = sorted(set(value).difference(properties))
     if schema.get("additionalProperties") is False and unknown:
-        raise ValueError("Unknown input fields: " + ", ".join(unknown))
+        raise InputValidationError(
+            "Unknown input fields: " + ", ".join(unknown),
+            code=error_code,
+            fields=[str(name) for name in unknown],
+            constraint="additional_properties",
+        )
     for name, property_schema in properties.items():
         if name not in value or not isinstance(property_schema, dict):
             continue
@@ -2165,13 +2221,30 @@ def _validate_input(value: dict[str, Any], schema: dict[str, Any]) -> None:
         property_type = property_schema.get("type")
         if property_type == "integer":
             if isinstance(item, bool) or not isinstance(item, int):
-                raise ValueError(f"Input {name} must be an integer.")
+                raise InputValidationError(
+                    f"Input {name} must be an integer.",
+                    code=error_code,
+                    field=str(name),
+                    constraint="integer",
+                )
             minimum_value = property_schema.get("minimum")
             maximum_value = property_schema.get("maximum")
             if isinstance(minimum_value, (int, float)) and item < minimum_value:
-                raise ValueError(f"Input {name} must be at least {minimum_value}.")
+                raise InputValidationError(
+                    f"Input {name} must be at least {minimum_value}.",
+                    code=error_code,
+                    field=str(name),
+                    constraint="minimum",
+                    detail={"minimum": minimum_value},
+                )
             if isinstance(maximum_value, (int, float)) and item > maximum_value:
-                raise ValueError(f"Input {name} must be at most {maximum_value}.")
+                raise InputValidationError(
+                    f"Input {name} must be at most {maximum_value}.",
+                    code=error_code,
+                    field=str(name),
+                    constraint="maximum",
+                    detail={"maximum": maximum_value},
+                )
             continue
         if property_schema.get("type") != "string" or not isinstance(item, str):
             continue
@@ -2179,16 +2252,47 @@ def _validate_input(value: dict[str, Any], schema: dict[str, Any]) -> None:
         maximum = property_schema.get("maxLength")
         pattern = property_schema.get("pattern")
         if isinstance(minimum, int) and len(item) < minimum:
-            raise ValueError(f"Input {name} must contain at least {minimum} character(s).")
+            raise InputValidationError(
+                f"Input {name} must contain at least {minimum} character(s).",
+                code=error_code,
+                field=str(name),
+                constraint="min_length",
+                detail={"minimum": minimum},
+            )
         if isinstance(maximum, int) and len(item) > maximum:
-            raise ValueError(f"Input {name} must contain at most {maximum} character(s).")
+            raise InputValidationError(
+                f"Input {name} must contain at most {maximum} character(s).",
+                code=error_code,
+                field=str(name),
+                constraint="max_length",
+                detail={"maximum": maximum},
+            )
+        if property_schema.get("x-sapba-sap-identifier") is True and any(
+            ord(character) < 32 or ord(character) == 127 for character in item
+        ):
+            raise InputValidationError(
+                f"Input {name} contains a control character.",
+                code=error_code,
+                field=str(name),
+                constraint="sap_identifier",
+            )
         if isinstance(pattern, str) and re.search(pattern, item) is None:
-            raise ValueError(f"Input {name} has an invalid format.")
+            raise InputValidationError(
+                f"Input {name} has an invalid format.",
+                code=error_code,
+                field=str(name),
+                constraint="pattern",
+            )
         if property_schema.get("format") == "date":
             try:
                 date.fromisoformat(item)
             except ValueError as exc:
-                raise ValueError(f"Input {name} must be an ISO date (YYYY-MM-DD).") from exc
+                raise InputValidationError(
+                    f"Input {name} must be an ISO date (YYYY-MM-DD).",
+                    code=error_code,
+                    field=str(name),
+                    constraint="date",
+                ) from exc
     for pair in schema.get("dateRangePairs") or []:
         if not isinstance(pair, dict):
             continue
@@ -2200,12 +2304,29 @@ def _validate_input(value: dict[str, Any], schema: dict[str, Any]) -> None:
             start = date.fromisoformat(str(value[start_name]))
             end = date.fromisoformat(str(value[end_name]))
         except ValueError as exc:
-            raise ValueError("Date range inputs must use YYYY-MM-DD.") from exc
+            raise InputValidationError(
+                "Date range inputs must use YYYY-MM-DD.",
+                code=error_code,
+                fields=[start_name, end_name],
+                constraint="date",
+            ) from exc
         if end < start:
-            raise ValueError(f"Input {end_name} must not be earlier than {start_name}.")
+            raise InputValidationError(
+                f"Input {end_name} must not be earlier than {start_name}.",
+                code=error_code,
+                field=end_name,
+                constraint="date_range_order",
+                detail={"from": start_name, "to": end_name},
+            )
         maximum = pair.get("maxDays")
         if isinstance(maximum, int) and (end - start).days > maximum:
-            raise ValueError(f"The date range must not exceed {maximum} days.")
+            raise InputValidationError(
+                f"The date range must not exceed {maximum} days.",
+                code=error_code,
+                fields=[start_name, end_name],
+                constraint="max_days",
+                detail={"maximum": maximum, "from": start_name, "to": end_name},
+            )
     for pair in schema.get("numericOrderPairs") or []:
         if not isinstance(pair, dict):
             continue
@@ -2214,7 +2335,13 @@ def _validate_input(value: dict[str, Any], schema: dict[str, Any]) -> None:
         if lower_name not in value or upper_name not in value:
             continue
         if value[lower_name] >= value[upper_name]:
-            raise ValueError(f"Input {lower_name} must be less than {upper_name}.")
+            raise InputValidationError(
+                f"Input {lower_name} must be less than {upper_name}.",
+                code=error_code,
+                fields=[lower_name, upper_name],
+                constraint="numeric_order",
+                detail={"lower": lower_name, "upper": upper_name},
+            )
 
 
 _TEMPLATE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")

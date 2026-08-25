@@ -15,6 +15,7 @@ const executable = Boolean(
 const base = import.meta.env.BASE_URL;
 const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const destination = runPath(base, locale);
+const dateRangePairs = execution?.inputSchema.dateRangePairs ?? [];
 const labels = locale === "zh" ? {
   title: "执行这个 Agent",
   deterministicLead: "执行引擎严格按照已定义步骤运行，Codex 不参与 API 或 Skill 选择。",
@@ -26,7 +27,20 @@ const labels = locale === "zh" ? {
   question: "业务问题",
   questionHelp: "请提供业务对象编号、日期范围以及希望确认的状态。",
   questionPlaceholder: `例如：${agent.summary.zh}`,
-  error: "无法创建任务，请确认本地运行服务已经启动。",
+  networkError: "无法连接本地运行服务，请确认服务已启动且 API 地址可访问。",
+  requestError: "运行服务拒绝了本次请求。",
+  invalidInput: "请修正标出的输入后重试。",
+  required: "{field}为必填项。",
+  minLength: "{field}至少需要 {limit} 个字符。",
+  maxLength: "{field}最多允许 {limit} 个字符。",
+  invalidFormat: "{field}的格式无效。",
+  invalidDate: "{field}必须是有效日期。",
+  minimum: "{field}不能小于 {limit}。",
+  maximum: "{field}不能大于 {limit}。",
+  dateOrder: "结束日期不能早于开始日期。",
+  maxDays: "日期范围不能超过 {limit} 天。",
+  invalidNumber: "{field}必须是有效数字。",
+  normalizationConflict: "该输入映射到相互冲突的 SAP 格式规则，请联系平台管理员。",
   validationRequired: "该 Agent 尚未通过真机三级验收，当前不可执行。",
 } : {
   title: "Run this Agent",
@@ -39,8 +53,38 @@ const labels = locale === "zh" ? {
   question: "Business question",
   questionHelp: "Include the business object ID, date range, and the status you want to confirm.",
   questionPlaceholder: `Example: ${agent.summary.en}`,
-  error: "Could not create the run. Confirm that the local runtime is started.",
+  networkError: "Could not reach the local runtime. Confirm that it is running and the API address is accessible.",
+  requestError: "The runtime rejected this request.",
+  invalidInput: "Correct the highlighted input and try again.",
+  required: "{field} is required.",
+  minLength: "{field} must contain at least {limit} character(s).",
+  maxLength: "{field} must contain at most {limit} character(s).",
+  invalidFormat: "{field} has an invalid format.",
+  invalidDate: "{field} must be a valid date.",
+  minimum: "{field} must not be less than {limit}.",
+  maximum: "{field} must not be greater than {limit}.",
+  dateOrder: "The end date must not be earlier than the start date.",
+  maxDays: "The date range must not exceed {limit} days.",
+  invalidNumber: "{field} must be a valid number.",
+  normalizationConflict: "This input maps to conflicting SAP formatting rules. Contact the platform administrator.",
   validationRequired: "This Agent has not passed three-stage live acceptance and cannot run yet.",
+};
+const runtimeMessages = {
+  networkError: labels.networkError,
+  requestError: labels.requestError,
+  invalidInput: labels.invalidInput,
+  required: labels.required,
+  minLength: labels.minLength,
+  maxLength: labels.maxLength,
+  invalidFormat: labels.invalidFormat,
+  invalidDate: labels.invalidDate,
+  minimum: labels.minimum,
+  maximum: labels.maximum,
+  dateOrder: labels.dateOrder,
+  maxDays: labels.maxDays,
+  invalidNumber: labels.invalidNumber,
+  normalizationConflict: labels.normalizationConflict,
+  validationRequired: labels.validationRequired,
 };
 ---
 
@@ -51,6 +95,9 @@ const labels = locale === "zh" ? {
   data-run-path={destination}
   data-agent-id={agent.slug}
   data-run-mode={execution ? "agent" : "free_query"}
+  data-locale={locale}
+  data-messages={JSON.stringify(runtimeMessages)}
+  data-date-range-pairs={JSON.stringify(dateRangePairs)}
 >
     <div class="agent-run-heading">
       <div>
@@ -59,13 +106,13 @@ const labels = locale === "zh" ? {
       </div>
       <span><ShieldCheck size={16} aria-hidden="true" />{execution ? labels.deterministicSafety : labels.guidedSafety}</span>
     </div>
-    <form class="agent-run-form">
+    <form class="agent-run-form" novalidate>
       {execution ? (
         <div class="runtime-field-grid">
           {Object.entries(execution.inputSchema.properties).map(([name, property]) => (
             <label>
               <span>{property.title?.[locale] || name}</span>
-              {property.description && <small>{property.description[locale]}</small>}
+              {property.description && <small class="runtime-field-help">{property.description[locale]}</small>}
               <input
                 name={name}
                 type={property.format === "date" ? "date" : property.type === "integer" || property.type === "number" ? "number" : "text"}
@@ -82,6 +129,7 @@ const labels = locale === "zh" ? {
                 title={property.description?.[locale]}
                 required={execution.inputSchema.required?.includes(name)}
               />
+              <small class="runtime-field-error" data-field-error={name} role="alert" hidden></small>
             </label>
           ))}
         </div>
@@ -93,7 +141,7 @@ const labels = locale === "zh" ? {
         </label>
       )}
       <div class="runtime-form-actions">
-        <span class="runtime-form-error" role="alert" hidden>{labels.error}</span>
+        <span class="runtime-form-error" role="alert" hidden></span>
         {execution && !executable && <span class="runtime-validation-required" role="status">{labels.validationRequired}</span>}
         <button type="submit" disabled={Boolean(execution && !executable)}><Play size={17} aria-hidden="true" />{execution ? labels.deterministicSubmit : labels.guidedSubmit}</button>
       </div>
@@ -101,14 +149,202 @@ const labels = locale === "zh" ? {
 </section>
 
 <script>
+  type LocalizedMessages = Record<string, string>;
+  type ApiErrorPayload = {
+    detail?: {
+      code?: string;
+      message?: string;
+      detail?: {
+        field?: string;
+        fields?: string[];
+        constraint?: string;
+        minimum?: string | number;
+        maximum?: string | number;
+      } | null;
+    } | Array<unknown> | string;
+  };
+
+  class RunCreateHttpError extends Error {
+    status: number;
+    payload: ApiErrorPayload;
+
+    constructor(status: number, payload: ApiErrorPayload) {
+      super(`Run creation failed with HTTP ${status}`);
+      this.status = status;
+      this.payload = payload;
+    }
+  }
+
+  const formatMessage = (template: string, values: Record<string, string | number>) =>
+    Object.entries(values).reduce(
+      (message, [key, value]) => message.replace(`{${key}}`, String(value)),
+      template,
+    );
+
+  const fieldLabel = (form: HTMLFormElement, name: string) => {
+    const field = form.querySelector<HTMLInputElement>(`input[name="${CSS.escape(name)}"]`);
+    return field?.closest("label")?.querySelector<HTMLElement>(":scope > span")?.textContent?.trim() || name;
+  };
+
+  const clearErrors = (form: HTMLFormElement, summary: HTMLElement | null) => {
+    if (summary) {
+      summary.hidden = true;
+      summary.textContent = "";
+    }
+    form.querySelectorAll<HTMLElement>("[data-field-error]").forEach((item) => {
+      item.hidden = true;
+      item.textContent = "";
+    });
+    form.querySelectorAll<HTMLInputElement>("input[aria-invalid]").forEach((field) => {
+      field.removeAttribute("aria-invalid");
+    });
+  };
+
+  const showSummary = (summary: HTMLElement | null, message: string) => {
+    if (!summary) return;
+    summary.textContent = message;
+    summary.hidden = false;
+  };
+
+  const showFieldError = (form: HTMLFormElement, name: string, message: string) => {
+    const field = form.querySelector<HTMLInputElement>(`input[name="${CSS.escape(name)}"]`);
+    const target = form.querySelector<HTMLElement>(`[data-field-error="${CSS.escape(name)}"]`);
+    field?.setAttribute("aria-invalid", "true");
+    if (target) {
+      target.textContent = message;
+      target.hidden = false;
+    }
+  };
+
+  const validateClientInput = (
+    form: HTMLFormElement,
+    messages: LocalizedMessages,
+    dateRangePairs: Array<{ from?: string; to?: string; maxDays?: number }>,
+  ) => {
+    let valid = true;
+    form.querySelectorAll<HTMLInputElement>("input[name]").forEach((field) => {
+      const value = field.value.trim();
+      const label = fieldLabel(form, field.name);
+      let message = "";
+      if (field.required && !value) {
+        message = formatMessage(messages.required, { field: label });
+      } else if (value && field.minLength > 0 && value.length < field.minLength) {
+        message = formatMessage(messages.minLength, { field: label, limit: field.minLength });
+      } else if (value && field.maxLength > 0 && value.length > field.maxLength) {
+        message = formatMessage(messages.maxLength, { field: label, limit: field.maxLength });
+      } else if (value && field.validity.patternMismatch) {
+        message = formatMessage(messages.invalidFormat, { field: label });
+      } else if (value && field.type === "date" && Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
+        message = formatMessage(messages.invalidDate, { field: label });
+      } else if (value && field.type === "number" && !Number.isFinite(field.valueAsNumber)) {
+        message = formatMessage(messages.invalidNumber, { field: label });
+      } else if (value && field.validity.rangeUnderflow) {
+        message = formatMessage(messages.minimum, { field: label, limit: field.min || "" });
+      } else if (value && field.validity.rangeOverflow) {
+        message = formatMessage(messages.maximum, { field: label, limit: field.max || "" });
+      }
+      if (message) {
+        valid = false;
+        showFieldError(form, field.name, message);
+      }
+    });
+
+    dateRangePairs.forEach((pair) => {
+      const startField = pair.from ? form.elements.namedItem(pair.from) : null;
+      const endField = pair.to ? form.elements.namedItem(pair.to) : null;
+      if (!(startField instanceof HTMLInputElement) || !(endField instanceof HTMLInputElement)) return;
+      if (!startField.value || !endField.value) return;
+      const start = Date.parse(`${startField.value}T00:00:00Z`);
+      const end = Date.parse(`${endField.value}T00:00:00Z`);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+      if (end < start) {
+        valid = false;
+        showFieldError(form, endField.name, messages.dateOrder);
+      } else if (typeof pair.maxDays === "number" && (end - start) / 86_400_000 > pair.maxDays) {
+        valid = false;
+        const message = formatMessage(messages.maxDays, { limit: pair.maxDays });
+        showFieldError(form, startField.name, message);
+        showFieldError(form, endField.name, message);
+      }
+    });
+    return valid;
+  };
+
+  const constraintMessage = (
+    form: HTMLFormElement,
+    messages: LocalizedMessages,
+    field: string,
+    detail: NonNullable<Exclude<ApiErrorPayload["detail"], string | Array<unknown>>>["detail"],
+  ) => {
+    const label = fieldLabel(form, field);
+    const constraint = detail?.constraint || "";
+    const limit = detail?.maximum ?? detail?.minimum ?? "";
+    if (constraint === "required") return formatMessage(messages.required, { field: label });
+    if (constraint === "min_length") return formatMessage(messages.minLength, { field: label, limit });
+    if (constraint === "max_length") return formatMessage(messages.maxLength, { field: label, limit });
+    if (constraint === "date") return formatMessage(messages.invalidDate, { field: label });
+    if (constraint === "minimum") return formatMessage(messages.minimum, { field: label, limit });
+    if (constraint === "maximum") return formatMessage(messages.maximum, { field: label, limit });
+    if (constraint === "date_range_order") return messages.dateOrder;
+    if (constraint === "max_days") return formatMessage(messages.maxDays, { limit });
+    if (constraint === "integer") return formatMessage(messages.invalidNumber, { field: label });
+    return formatMessage(messages.invalidFormat, { field: label });
+  };
+
+  const showHttpError = (
+    form: HTMLFormElement,
+    summary: HTMLElement | null,
+    messages: LocalizedMessages,
+    error: RunCreateHttpError,
+  ) => {
+    const envelope = error.payload.detail;
+    if (Array.isArray(envelope)) {
+      showSummary(summary, `${messages.requestError} (HTTP ${error.status})`);
+      return;
+    }
+    if (!envelope || typeof envelope === "string") {
+      showSummary(summary, `${messages.requestError} (HTTP ${error.status})`);
+      return;
+    }
+    if (envelope.code === "agent_live_validation_required") {
+      showSummary(summary, messages.validationRequired);
+      return;
+    }
+    if (envelope.code === "sap_input_normalization_conflict") {
+      showSummary(summary, messages.normalizationConflict);
+      return;
+    }
+    if (envelope.code === "agent_input_invalid" || envelope.code === "agent_validation_failed") {
+      const detail = envelope.detail;
+      const fields = detail?.fields?.length
+        ? detail.fields
+        : detail?.field
+          ? [detail.field]
+          : [];
+      fields.forEach((field) => showFieldError(form, field, constraintMessage(form, messages, field, detail)));
+      showSummary(summary, fields.length ? messages.invalidInput : messages.requestError);
+      return;
+    }
+    const safeMessage = envelope.message ? ` ${envelope.message}` : "";
+    showSummary(summary, `${messages.requestError} (HTTP ${error.status}).${safeMessage}`);
+  };
+
   document.querySelectorAll<HTMLElement>("[data-agent-run]").forEach((panel) => {
     const form = panel.querySelector<HTMLFormElement>("form");
     const error = panel.querySelector<HTMLElement>(".runtime-form-error");
+    const messages = JSON.parse(panel.dataset.messages || "{}") as LocalizedMessages;
+    const dateRangePairs = JSON.parse(panel.dataset.dateRangePairs || "[]") as Array<{ from?: string; to?: string; maxDays?: number }>;
     form?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
       if (button) button.disabled = true;
-      if (error) error.hidden = true;
+      clearErrors(form, error);
+      if (!validateClientInput(form, messages, dateRangePairs)) {
+        showSummary(error, messages.invalidInput);
+        if (button) button.disabled = false;
+        form.querySelector<HTMLInputElement>('input[aria-invalid="true"]')?.focus();
+        return;
+      }
       const mode = panel.dataset.runMode === "agent" ? "agent" : "free_query";
       const formData = new FormData(form);
       const input: Record<string, string | number> = {};
@@ -132,11 +368,24 @@ const labels = locale === "zh" ? {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        if (!response.ok) throw new Error(await response.text());
+        if (!response.ok) {
+          const text = await response.text();
+          let payload: ApiErrorPayload = {};
+          try {
+            payload = JSON.parse(text) as ApiErrorPayload;
+          } catch {
+            payload = {};
+          }
+          throw new RunCreateHttpError(response.status, payload);
+        }
         const payload = await response.json();
         window.location.href = `${panel.dataset.runPath}?run=${encodeURIComponent(payload.run_id)}`;
-      } catch {
-        if (error) error.hidden = false;
+      } catch (caught) {
+        if (caught instanceof RunCreateHttpError) {
+          showHttpError(form, error, messages, caught);
+        } else {
+          showSummary(error, messages.networkError);
+        }
         if (button) button.disabled = false;
       }
     });

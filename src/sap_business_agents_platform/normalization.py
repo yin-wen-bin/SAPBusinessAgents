@@ -119,7 +119,7 @@ class SapValueNormalizer:
         if missing:
             raise SapInputNormalizationError(
                 "Missing required input: " + ", ".join(missing),
-                detail={"fields": missing},
+                detail={"constraint": "required", "fields": missing},
             )
         return normalized
 
@@ -279,7 +279,7 @@ class SapValueNormalizer:
                 if required:
                     raise SapInputNormalizationError(
                         f"Missing required input: {field_name}",
-                        detail={"fields": [field_name]},
+                        detail={"constraint": "required", "fields": [field_name]},
                     )
                 return _OMIT
             mode = str(schema.get("x-sapba-input-normalization") or "")
