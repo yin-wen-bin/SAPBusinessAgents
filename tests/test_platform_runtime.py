@@ -117,6 +117,39 @@ def test_server_defaults_apply_only_to_omitted_opted_in_fields() -> None:
         raise AssertionError("An explicit empty required input must not be replaced by a default")
 
 
+def test_fixed_agent_input_is_normalized_before_first_persistence(tmp_path: Path) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "mode": "agent",
+                "agentId": "mrp-exception-analysis",
+                "input": {
+                    "material": "  tg10\t",
+                    "plant": " 1710 ",
+                    "mrp_area": " 1710 ",
+                    "shortage_profile": " sap000000001 ",
+                    "shortage_counter": " 001 ",
+                },
+            },
+        )
+        assert response.status_code == 202
+        record = client.get(f"/api/runs/{response.json()['run_id']}").json()
+
+    assert record["input"] == {
+        "material": "TG10",
+        "plant": "1710",
+        "mrp_area": "1710",
+        "shortage_profile": "SAP000000001",
+        "shortage_counter": "001",
+    }
+
+
 class FakeEmbeddedProvider:
     def __init__(self, *, complete: bool = True) -> None:
         self.complete = complete
@@ -1617,3 +1650,60 @@ def test_standard_skill_contract_and_free_query_harness(tmp_path: Path) -> None:
             "skill",
         ]
         assert run["result"]["tool_calls"][1]["skill_id"] == "fixture-read-only"
+
+
+def test_progress_tracks_delayed_sap_activity_instead_of_existing_rule_results(
+    tmp_path: Path,
+) -> None:
+    class DelayedSap(FakeEmbeddedProvider):
+        async def execute_plan(
+            self,
+            plan: dict[str, Any],
+            query: str = "",
+            conversation_id: str | None = None,
+        ) -> dict[str, Any]:
+            await asyncio.sleep(0.2)
+            return await super().execute_plan(plan, query, conversation_id)
+
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=DelayedSap(),
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "mode": "agent",
+                "agentId": "mrp-exception-analysis",
+                "input": {
+                    "material": " tg10 ",
+                    "plant": "1710",
+                    "mrp_area": "1710",
+                    "shortage_profile": "SAP000000001",
+                    "shortage_counter": "001",
+                },
+            },
+        )
+        run_id = response.json()["run_id"]
+        deadline = time.monotonic() + 3
+        observed = None
+        while time.monotonic() < deadline:
+            candidate = client.get(f"/api/runs/{run_id}").json()
+            if candidate["progress"]["phase"] == "reading_sap":
+                observed = candidate
+                break
+            time.sleep(0.01)
+        assert observed is not None
+        assert observed["progress"]["current_tool"] == "sap_read"
+        assert observed["progress"]["state"] == "active"
+
+        completed = _wait(client, run_id)
+        assert completed["progress"]["phase"] == "preparing_result"
+        assert completed["progress"]["state"] in {"completed", "inconclusive"}
+        progress_events = [
+            event for event in app.state.store.events_after(run_id)
+            if event.type == "progress_changed"
+        ]
+        assert progress_events
+        assert progress_events[-1].sequence == completed["progress"]["event_sequence"]

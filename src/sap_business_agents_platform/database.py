@@ -11,6 +11,7 @@ from .models import (
     RunCreate,
     RunEvent,
     RunMode,
+    RunProgress,
     RunRecord,
     RunResult,
     RunStatus,
@@ -50,7 +51,8 @@ class RunStore:
                     cancel_requested INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     started_at TEXT,
-                    completed_at TEXT
+                    completed_at TEXT,
+                    progress_json TEXT
                 );
                 CREATE TABLE IF NOT EXISTS events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +136,8 @@ class RunStore:
             for name in ("workflow_id", "parent_run_id", "node_id"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE runs ADD COLUMN {name} TEXT")
+            if "progress_json" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN progress_json TEXT")
 
     def create_run(
         self,
@@ -148,8 +152,8 @@ class RunStore:
             connection.execute(
                 """INSERT INTO runs
                 (run_id, mode, status, agent_id, workflow_id, parent_run_id, node_id,
-                 query, input_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 query, input_json, created_at, progress_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     request.mode.value,
@@ -161,6 +165,7 @@ class RunStore:
                     request.query,
                     _dump(request.input),
                     created_at,
+                    _dump(RunProgress(updated_at=created_at)),
                 ),
             )
         return self.get_run(run_id)
@@ -199,7 +204,7 @@ class RunStore:
     def update_run(self, run_id: str, **values: Any) -> RunRecord:
         allowed = {
             "status", "query", "input_json", "plan_json", "result_json", "thread_id",
-            "error_json", "cancel_requested", "started_at", "completed_at",
+            "error_json", "cancel_requested", "started_at", "completed_at", "progress_json",
         }
         encoded: dict[str, Any] = {}
         for key, value in values.items():
@@ -222,6 +227,78 @@ class RunStore:
             if cursor.rowcount == 0:
                 raise KeyError(run_id)
         return self.get_run(run_id)
+
+    def set_progress(
+        self,
+        run_id: str,
+        *,
+        phase: str | None = None,
+        state: str | None = None,
+        current_step_id: str | None = None,
+        current_node_id: str | None = None,
+        current_tool: str | None = None,
+        completed_units: int | None = None,
+        total_units: int | None = None,
+        determinate: bool | None = None,
+    ) -> RunEvent:
+        """Persist the current activity and its SSE sequence atomically."""
+
+        created_at = utc_now()
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT status, progress_json FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = _load(row["progress_json"], None)
+            progress = (
+                RunProgress.model_validate(current)
+                if isinstance(current, dict)
+                else _legacy_progress(RunStatus(row["status"]), created_at)
+            )
+            updates: dict[str, Any] = {"updated_at": created_at}
+            for key, value in {
+                "phase": phase,
+                "state": state,
+                "completed_units": completed_units,
+                "total_units": total_units,
+                "determinate": determinate,
+            }.items():
+                if value is not None:
+                    updates[key] = value
+            # None is a meaningful reset for current activity identifiers.
+            updates.update(
+                {
+                    "current_step_id": current_step_id,
+                    "current_node_id": current_node_id,
+                    "current_tool": current_tool,
+                }
+            )
+            progress = RunProgress.model_validate(
+                {**progress.model_dump(mode="json"), **updates}
+            )
+            cursor = connection.execute(
+                "INSERT INTO events (run_id, event_type, data_json, created_at) VALUES (?, ?, ?, ?)",
+                (run_id, "progress_changed", "{}", created_at),
+            )
+            sequence = int(cursor.lastrowid)
+            progress = progress.model_copy(update={"event_sequence": sequence})
+            payload = {"progress": progress.model_dump(mode="json")}
+            connection.execute(
+                "UPDATE events SET data_json = ? WHERE sequence = ?",
+                (_dump(payload), sequence),
+            )
+            connection.execute(
+                "UPDATE runs SET progress_json = ? WHERE run_id = ?",
+                (_dump(progress), run_id),
+            )
+        return RunEvent(
+            sequence=sequence,
+            run_id=run_id,
+            type="progress_changed",
+            data=payload,
+            created_at=created_at,
+        )
 
     def append_event(self, run_id: str, event_type: str, data: dict[str, Any] | None = None) -> RunEvent:
         created_at = utc_now()
@@ -506,7 +583,33 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         created_at=row["created_at"],
         started_at=row["started_at"],
         completed_at=row["completed_at"],
+        progress=(
+            RunProgress.model_validate(_load(row["progress_json"], {}))
+            if "progress_json" in row.keys() and row["progress_json"]
+            else _legacy_progress(RunStatus(row["status"]), row["completed_at"] or row["created_at"])
+        ),
     )
+
+
+def _legacy_progress(status: RunStatus, updated_at: str) -> RunProgress:
+    if status == RunStatus.completed:
+        return RunProgress(
+            phase="preparing_result", state="completed", completed_units=1,
+            total_units=1, determinate=True, updated_at=updated_at,
+        )
+    if status == RunStatus.inconclusive:
+        return RunProgress(
+            phase="preparing_result", state="inconclusive", completed_units=1,
+            total_units=1, determinate=True, updated_at=updated_at,
+        )
+    if status in {RunStatus.failed, RunStatus.cancelled}:
+        return RunProgress(
+            phase="preparing", state=status.value, determinate=False, updated_at=updated_at,
+        )
+    if status == RunStatus.waiting_input:
+        return RunProgress(phase="preparing", state="waiting_input", updated_at=updated_at)
+    phase = "received" if status == RunStatus.queued else "preparing"
+    return RunProgress(phase=phase, state="active", updated_at=updated_at)
 
 
 def _harness_call_from_row(row: sqlite3.Row) -> dict[str, Any]:

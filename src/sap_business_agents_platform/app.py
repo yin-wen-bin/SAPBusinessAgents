@@ -88,6 +88,7 @@ def create_app(
         service_registry_path=settings.odata_service_registry_path,
         catalog_seed_path=settings.catalog_seed_path,
         curated_catalog_path=settings.repository_root / "config" / "catalog-curated-terms.json",
+        normalization_catalog_path=settings.repository_root / "config" / "sap-value-normalization.json",
     )
     selected_provider = "embedded"
     selected_plugin_id = "embedded-sap-odata"

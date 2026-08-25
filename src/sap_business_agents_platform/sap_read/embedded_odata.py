@@ -13,6 +13,12 @@ from urllib.parse import unquote, urlsplit
 
 import httpx
 
+from ..normalization import (
+    FieldReference,
+    SapInputNormalizationError,
+    SapValueNormalizer,
+)
+
 from .base import SapReadError
 from .odata_catalog import (
     ODataCatalogError,
@@ -71,6 +77,7 @@ class EmbeddedODataProvider:
         service_registry_path: Path | None = None,
         catalog_seed_path: Path | None = None,
         curated_catalog_path: Path | None = None,
+        normalization_catalog_path: Path | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -86,6 +93,7 @@ class EmbeddedODataProvider:
         self.service_registry_path = service_registry_path
         self.catalog_seed_path = catalog_seed_path
         self.transport = transport
+        self.normalizer = SapValueNormalizer(normalization_catalog_path)
         self._cases: dict[str, dict[str, Any]] = {}
         self._metadata_cache: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._service_registry = ODataServiceRegistry.load(service_registry_path)
@@ -410,6 +418,9 @@ class EmbeddedODataProvider:
                 for field in descriptor["fields"]:
                     if len(fields) >= max_fields:
                         break
+                    normalization = self.normalizer.describe_field(
+                        service, version, entity, field
+                    )
                     fields.append(
                         {
                             "service_name": service,
@@ -426,6 +437,7 @@ class EmbeddedODataProvider:
                             "sortable": field["sortable"],
                             "metadata_filterable": field["filterable"],
                             "metadata_sortable": field["sortable"],
+                            **normalization,
                             "runtime_available": True,
                             "executable": True,
                         }
@@ -463,6 +475,13 @@ class EmbeddedODataProvider:
         if issues:
             return {"ok": False, "status": "rejected", "validation_issues": issues}
 
+        try:
+            plan = self.normalizer.normalize_plan(plan)
+        except SapInputNormalizationError as exc:
+            return self._validation_failure(
+                exc.code, str(exc), detail=exc.detail
+            )
+
         candidates = self._plan_steps(plan)
         refs_by_service: dict[tuple[str, str], list[str]] = defaultdict(list)
         for step in candidates:
@@ -496,6 +515,19 @@ class EmbeddedODataProvider:
                     str(field.get("entity_set") or ""),
                 )
                 schema_fields.setdefault(key, {})[str(field.get("field_name") or "")] = field
+
+        metadata_rules = {
+            (*key, field_name): descriptor
+            for key, fields in schema_fields.items()
+            for field_name, descriptor in fields.items()
+        }
+        try:
+            normalized_plan = self.normalizer.normalize_plan(plan, metadata=metadata_rules)
+        except SapInputNormalizationError as exc:
+            return self._validation_failure(
+                exc.code, str(exc), detail=exc.detail
+            )
+        candidates = self._plan_steps(normalized_plan)
 
         step_lookup = {
             str(step.get("step_id") or ""): step
@@ -619,6 +651,7 @@ class EmbeddedODataProvider:
             "status": "validated" if not issues else "rejected",
             "provider_id": self.provider_id,
             "validation_issues": issues,
+            "normalized_plan": normalized_plan if not issues else None,
         }
 
     async def execute_plan(
@@ -635,6 +668,9 @@ class EmbeddedODataProvider:
                 code="sap_read_plan_rejected",
                 detail=validation,
             )
+        normalized_plan = validation.get("normalized_plan")
+        if isinstance(normalized_plan, dict):
+            plan = normalized_plan
         started = time.perf_counter()
         case_id = f"embedded_{uuid.uuid4().hex[:16]}"
         steps = self._plan_steps(plan)
@@ -720,6 +756,18 @@ class EmbeddedODataProvider:
                 service, version, service_binding, entity, step
             )
         descriptor = self._metadata_cache.get((service, version), {}).get(entity, {})
+        metadata_rules = {
+            (service, version, entity, str(field.get("name") or "")):
+                self.normalizer.describe_field(service, version, entity, field)
+            for field in descriptor.get("fields") or []
+            if isinstance(field, dict) and field.get("name")
+        }
+        try:
+            step = self.normalizer.normalize_plan(step, metadata=metadata_rules)
+        except SapInputNormalizationError as exc:
+            raise SapReadError(
+                str(exc), code=exc.code, detail=exc.detail
+            ) from exc
         field_types = {
             str(field.get("name") or ""): str(field.get("type") or "")
             for field in descriptor.get("fields") or []
@@ -734,7 +782,8 @@ class EmbeddedODataProvider:
             typed_filters.append(item)
         literal_filter = self._literal_filters(typed_filters, version)
         binding_groups = self._binding_filter_groups(
-            step.get("filter_from_previous") or [], prior, version
+            step.get("filter_from_previous") or [], prior, service, version, entity,
+            metadata_rules,
         )
         if binding_groups == [] and step.get("filter_from_previous"):
             return self._empty_result(
@@ -1252,7 +1301,10 @@ class EmbeddedODataProvider:
         self,
         bindings: list[dict[str, Any]],
         prior: dict[str, dict[str, Any]],
+        service_name: str,
         odata_version: str,
+        entity_set: str,
+        metadata: dict[tuple[str, str, str, str], dict[str, Any]],
     ) -> list[str] | None:
         if not bindings:
             return None
@@ -1276,6 +1328,11 @@ class EmbeddedODataProvider:
                     expressions = []
                     break
                 field = self._validate_identifier(str(binding.get("field") or ""), "binding field")
+                value = self.normalizer.normalize_field_value(
+                    value,
+                    FieldReference(service_name, odata_version, entity_set, field),
+                    metadata=metadata,
+                )
                 expressions.append(
                     f"{field} eq {self._odata_literal(value, None, odata_version)}"
                 )
@@ -1450,6 +1507,15 @@ class EmbeddedODataProvider:
                 odata_version = "2.0"
             else:
                 raise ValueError("metadata does not declare an OData protocol version")
+        uppercase_targets: set[str] = set()
+        for annotations in root.findall(".//{*}Annotations"):
+            target = str(annotations.attrib.get("Target") or "")
+            for annotation in annotations.findall("./{*}Annotation"):
+                term = str(annotation.attrib.get("Term") or "")
+                enabled = str(annotation.attrib.get("Bool") or "true").lower() == "true"
+                if term.endswith("Common.IsUpperCase") or term.endswith("Common.v1.IsUpperCase"):
+                    if enabled and target:
+                        uppercase_targets.add(target)
         entity_types: dict[str, dict[str, Any]] = {}
         for entity_type in root.findall(".//{*}EntityType"):
             name = str(entity_type.attrib.get("Name") or "")
@@ -1465,6 +1531,20 @@ class EmbeddedODataProvider:
                 field_name = str(prop.attrib.get("Name") or "")
                 if not field_name:
                     continue
+                display_format = str(prop.attrib.get(f"{{{_SAP_NS}}}display-format") or "")
+                direct_uppercase = any(
+                    (
+                        str(annotation.attrib.get("Term") or "").endswith("Common.IsUpperCase")
+                        or str(annotation.attrib.get("Term") or "").endswith("Common.v1.IsUpperCase")
+                    )
+                    and str(annotation.attrib.get("Bool") or "true").lower() == "true"
+                    for annotation in prop.findall("./{*}Annotation")
+                )
+                external_uppercase = any(
+                    target.endswith(f".{name}/{field_name}")
+                    or target.endswith(f"/{field_name}") and f".{name}/" in target
+                    for target in uppercase_targets
+                )
                 fields.append(
                     {
                         "name": field_name,
@@ -1473,6 +1553,8 @@ class EmbeddedODataProvider:
                         "selectable": str(prop.attrib.get(f"{{{_SAP_NS}}}visible", "true")).lower() != "false",
                         "filterable": str(prop.attrib.get(f"{{{_SAP_NS}}}filterable", "true")).lower() != "false",
                         "sortable": str(prop.attrib.get(f"{{{_SAP_NS}}}sortable", "true")).lower() != "false",
+                        "display_format": display_format,
+                        "is_uppercase": direct_uppercase or external_uppercase,
                     }
                 )
             entity_types[name] = {"keys": keys, "fields": fields, "kind": "entity_set"}
@@ -1492,6 +1574,17 @@ class EmbeddedODataProvider:
                             "selectable": True,
                             "filterable": False,
                             "sortable": False,
+                            "display_format": str(
+                                prop.attrib.get(f"{{{_SAP_NS}}}display-format") or ""
+                            ),
+                            "is_uppercase": any(
+                                (
+                                    str(annotation.attrib.get("Term") or "").endswith("Common.IsUpperCase")
+                                    or str(annotation.attrib.get("Term") or "").endswith("Common.v1.IsUpperCase")
+                                )
+                                and str(annotation.attrib.get("Bool") or "true").lower() == "true"
+                                for annotation in prop.findall("./{*}Annotation")
+                            ),
                         }
                     )
             entity_types[name] = {"keys": [], "fields": fields, "kind": "complex_type"}
@@ -1707,11 +1800,16 @@ class EmbeddedODataProvider:
         return result
 
     @staticmethod
-    def _validation_failure(code: str, message: str) -> dict[str, Any]:
+    def _validation_failure(
+        code: str, message: str, *, detail: Any = None
+    ) -> dict[str, Any]:
+        issue = {"code": code, "message": message}
+        if detail is not None:
+            issue["detail"] = detail
         return {
             "ok": False,
             "status": "rejected",
-            "validation_issues": [{"code": code, "message": message}],
+            "validation_issues": [issue],
         }
 
     @staticmethod

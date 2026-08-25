@@ -29,6 +29,25 @@ class RunStatus(StrEnum):
     cancelled = "cancelled"
 
 
+class RunProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phase: Literal[
+        "received", "preparing", "reading_sap", "validating_evidence", "preparing_result"
+    ] = "received"
+    state: Literal[
+        "active", "waiting_input", "completed", "inconclusive", "failed", "cancelled"
+    ] = "active"
+    current_step_id: str | None = None
+    current_node_id: str | None = None
+    current_tool: str | None = None
+    completed_units: int = Field(default=0, ge=0)
+    total_units: int | None = Field(default=None, ge=0)
+    determinate: bool = False
+    event_sequence: int = Field(default=0, ge=0)
+    updated_at: str = Field(default_factory=utc_now)
+
+
 TERMINAL_STATUSES = {
     RunStatus.completed,
     RunStatus.inconclusive,
@@ -48,6 +67,8 @@ class RunCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_payload(self) -> "RunCreate":
+        if self.query is not None:
+            self.query = self.query.strip()
         if self.mode == RunMode.agent and not self.agent_id:
             raise ValueError("agentId is required for agent mode")
         if self.mode == RunMode.free_query and not str(self.query or "").strip():
@@ -60,6 +81,13 @@ class RunCreate(BaseModel):
 class RunInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     input: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def strip_input(self) -> "RunInput":
+        self.input = self.input.strip()
+        if not self.input:
+            raise ValueError("input must not be blank")
+        return self
 
 
 class Completeness(BaseModel):
@@ -234,6 +262,7 @@ class RunRecord(BaseModel):
     created_at: str
     started_at: str | None = None
     completed_at: str | None = None
+    progress: RunProgress = Field(default_factory=RunProgress)
 
 
 class RunEvent(BaseModel):

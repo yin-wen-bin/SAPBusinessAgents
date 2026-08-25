@@ -1282,6 +1282,21 @@ button:disabled {
   animation: run-progress-spin 0.9s linear infinite;
 }
 
+.run-progress-indicator.is-paused {
+  border-color: #a16c18;
+  background: #fff8e8;
+}
+
+.run-progress-indicator.is-paused::after {
+  content: "Ⅱ";
+  position: absolute;
+  inset: 0;
+  color: #8a5700;
+  font-weight: 800;
+  line-height: 28px;
+  text-align: center;
+}
+
 .run-progress-indicator.is-complete,
 .run-progress-indicator.is-stopped {
   border-color: #3c9a62;
@@ -1368,7 +1383,8 @@ button:disabled {
 }
 
 .run-progress-steps li.is-complete,
-.run-progress-steps li.is-active {
+.run-progress-steps li.is-active,
+.run-progress-steps li.is-paused {
   color: var(--color-primary);
 }
 
@@ -1381,6 +1397,12 @@ button:disabled {
 .run-progress-steps li.is-active span {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 4px rgba(7, 94, 232, 0.1);
+}
+
+.run-progress-steps li.is-paused span {
+  border-color: #a16c18;
+  color: #8a5700;
+  box-shadow: 0 0 0 4px rgba(161, 108, 24, 0.1);
 }
 
 .run-progress-steps li.is-stopped {

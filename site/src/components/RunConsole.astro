@@ -46,13 +46,15 @@ const labels = locale === "zh" ? {
   unavailable: "无法连接本机查询服务。请先启动 SAPBusinessAgents。",
   empty: "暂无",
   phaseLabels: ["接收请求", "准备查询", "读取 SAP", "核验证据", "生成结果"],
+  progressState: { waiting_input: "等待补充信息", completed: "查询完成", inconclusive: "查询完成，但证据不足", failed: "查询失败", cancelled: "查询已取消" },
+  stepProgress: "步骤 {current}/{total}",
   status: {
     queued: "等待执行", planning: "正在理解查询需求", waiting_input: "等待补充信息",
     validating: "正在检查查询范围", running: "正在读取 SAP 数据", completed: "查询完成",
     inconclusive: "查询完成，但证据不足", failed: "查询失败", cancelled: "查询已取消",
   },
   events: {
-    run_queued: "查询已进入队列", run_started: "开始处理查询",
+    run_queued: "查询已进入队列", run_started: "开始处理查询", progress_changed: "当前处理阶段已更新",
     planning_started: "正在理解问题并准备查询步骤", plan_created: "查询步骤已经准备好", run_phase_changed: "查询阶段已更新",
     validation_started: "正在检查 API、字段和只读限制", schema_received: "已读取 SAP 数据结构",
     plan_grounded: "查询步骤已与 SAP 数据结构核对", plan_canonicalized: "查询参数已规范化",
@@ -137,13 +139,15 @@ const labels = locale === "zh" ? {
   unavailable: "Cannot reach the local query service. Start SAPBusinessAgents first.",
   empty: "None",
   phaseLabels: ["Receive request", "Prepare query", "Read SAP", "Validate evidence", "Prepare result"],
+  progressState: { waiting_input: "Waiting for more information", completed: "Query completed", inconclusive: "Completed with insufficient evidence", failed: "Query failed", cancelled: "Query cancelled" },
+  stepProgress: "Step {current}/{total}",
   status: {
     queued: "Waiting to run", planning: "Understanding the request", waiting_input: "Waiting for more information",
     validating: "Checking query scope", running: "Reading SAP data", completed: "Query completed",
     inconclusive: "Completed with insufficient evidence", failed: "Query failed", cancelled: "Query cancelled",
   },
   events: {
-    run_queued: "Query queued", run_started: "Query processing started",
+    run_queued: "Query queued", run_started: "Query processing started", progress_changed: "Current processing phase updated",
     planning_started: "Understanding the request and preparing steps", plan_created: "Query steps prepared", run_phase_changed: "Query phase updated",
     validation_started: "Checking APIs, fields, and read-only restrictions", schema_received: "SAP schema received",
     plan_grounded: "Query steps checked against the SAP schema", plan_canonicalized: "Query parameters normalized",
@@ -752,26 +756,34 @@ const labels = locale === "zh" ? {
     const time = document.createElement("time"); time.textContent = payload?.created_at ? new Date(payload.created_at).toLocaleTimeString(locale === "zh" ? "zh-CN" : "en-US") : "";
     item.append(marker, content, time); root.querySelector("[data-timeline]").append(item);
   };
-  const progressIndex = (run) => {
-    if (terminal.has(run.status)) return labels.phaseLabels.length;
-    if (run.status === "queued") return 0;
-    if (run.status === "planning" || run.status === "waiting_input") return 1;
-    if (run.status === "validating") return 2;
-    if (run.status === "running") {
-      if ([...seenEvents].length && (run.result?.rule_results?.length || run.result?.evidence?.length)) return 3;
-      return 2;
-    }
-    return 0;
-  };
+  const progressPhases = ["received", "preparing", "reading_sap", "validating_evidence", "preparing_result"];
+  const progressIndex = (run) => Math.max(0, progressPhases.indexOf(run.progress?.phase || "received"));
   const renderProgress = (run) => {
     const index = progressIndex(run);
-    const failed = run.status === "failed" || run.status === "cancelled";
-    root.querySelector("[data-progress-message]").textContent = labels.status[run.status] || run.status;
-    const indicator = root.querySelector("[data-progress-indicator]"); indicator.className = `run-progress-indicator ${terminal.has(run.status) ? (failed ? "is-stopped" : "is-complete") : "is-active"}`;
-    root.querySelector("[data-progress-bar]").style.width = `${Math.min(100, Math.max(4, index / labels.phaseLabels.length * 100))}%`;
+    const progress = run.progress || {};
+    const state = progress.state || (terminal.has(run.status) ? run.status : "active");
+    const finished = state === "completed" || state === "inconclusive";
+    const failed = state === "failed" || state === "cancelled";
+    const waiting = state === "waiting_input";
+    const showUnits = run.mode !== "free_query" && progress.determinate && Number(progress.total_units) > 0;
+    const unitText = showUnits
+      ? labels.stepProgress.replace("{current}", String(Math.min(Number(progress.completed_units || 0) + (finished ? 0 : 1), Number(progress.total_units)))).replace("{total}", String(progress.total_units))
+      : "";
+    const activityId = progress.current_step_id || progress.current_node_id || "";
+    const activity = activityId ? friendlyId(activityId) : "";
+    const phaseText = labels.phaseLabels[index] || labels.phaseLabels[0];
+    root.querySelector("[data-progress-message]").textContent = [labels.progressState[state] || phaseText, activity, unitText].filter(Boolean).join(" · ");
+    const indicator = root.querySelector("[data-progress-indicator]");
+    indicator.className = `run-progress-indicator ${finished ? "is-complete" : failed ? "is-stopped" : waiting ? "is-paused" : "is-active"}`;
+    let percent;
+    if (finished) percent = 100;
+    else if (showUnits) percent = Math.max(4, Number(progress.completed_units || 0) / Number(progress.total_units) * 92);
+    else percent = Math.max(4, (index + 0.35) / labels.phaseLabels.length * 100);
+    root.querySelector("[data-progress-bar]").style.width = `${Math.min(100, percent)}%`;
     root.querySelectorAll("[data-progress-step]").forEach((step, stepIndex) => {
-      step.classList.toggle("is-complete", stepIndex < index && !failed);
-      step.classList.toggle("is-active", stepIndex === Math.min(index, labels.phaseLabels.length - 1) && !terminal.has(run.status));
+      step.classList.toggle("is-complete", finished || (stepIndex < index && !failed));
+      step.classList.toggle("is-active", stepIndex === index && !finished && !failed && !waiting);
+      step.classList.toggle("is-paused", stepIndex === index && waiting);
       step.classList.toggle("is-stopped", failed && stepIndex === Math.min(index, labels.phaseLabels.length - 1));
     });
   };
@@ -792,11 +804,15 @@ const labels = locale === "zh" ? {
   };
 
   const renderRun = (run) => {
+    const incomingSequence = Number(run.progress?.event_sequence || 0);
+    const currentSequence = Number(currentRun?.progress?.event_sequence || 0);
+    if (currentRun && incomingSequence < currentSequence) run.progress = currentRun.progress;
     currentRun = run;
     const modeLabel = run.mode === "free_query" && run.agent_id ? labels.mode.guided : (labels.mode[run.mode] || run.mode);
     const subject = run.agent_id || run.workflow_id;
     root.querySelector("[data-run-identity]").textContent = `${modeLabel}${subject ? ` · ${subject}` : ""} · ${run.run_id}`;
-    root.querySelector("[data-run-status]").textContent = labels.status[run.status] || run.status;
+    const progressState = run.progress?.state || (terminal.has(run.status) ? run.status : "active");
+    root.querySelector("[data-run-status]").textContent = labels.progressState[progressState] || labels.phaseLabels[progressIndex(run)] || labels.connecting;
     root.querySelector("[data-plan]").textContent = format(run.plan || run.result?.plan);
     root.querySelector("[data-rules]").textContent = format(run.result?.rule_results);
     root.querySelector("[data-tool-calls]").textContent = format(run.result?.tool_calls);
@@ -839,7 +855,7 @@ const labels = locale === "zh" ? {
     const run = await response.json(); renderRun(run); return run;
   };
   const eventNames = [
-    "run_queued", "run_started", "planning_started", "plan_created", "validation_started", "schema_received",
+    "run_queued", "run_started", "progress_changed", "planning_started", "plan_created", "validation_started", "schema_received",
     "plan_grounded", "plan_canonicalized", "plan_repaired", "waiting_input", "input_received", "step_started",
     "workflow_started", "node_started", "node_input_resolved", "node_completed", "node_inconclusive", "node_skipped",
     "mapping_failed", "candidate_discovery_completed", "codex_repair_applied",
@@ -855,7 +871,9 @@ const labels = locale === "zh" ? {
     if (!runId || !apiBase) { showAlert(labels.noRun); return; }
     source = new EventSource(`${apiBase}/api/runs/${encodeURIComponent(runId)}/events`);
     eventNames.forEach((name) => source.addEventListener(name, (event) => {
-      try { appendEvent(name, JSON.parse(event.data)); } catch { appendEvent(name, {}); }
+      if (name !== "progress_changed") {
+        try { appendEvent(name, JSON.parse(event.data)); } catch { appendEvent(name, {}); }
+      }
       loadRun().catch(() => showAlert(labels.unavailable));
       if (["run_completed", "run_inconclusive", "run_failed", "run_cancelled"].includes(name)) source.close();
     }));

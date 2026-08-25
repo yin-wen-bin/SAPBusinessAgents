@@ -21,6 +21,7 @@ from .config import Settings
 from .agent_rules import evaluate_business_agent
 from .database import RunStore
 from .models import RunPresentation, RunStatus, TERMINAL_STATUSES
+from .normalization import SapInputNormalizationError, SapValueNormalizer
 from .tool_gateway import ToolAdmissionError, ToolAdmissionGateway
 
 
@@ -135,6 +136,16 @@ _PRESENTATION_SCHEMA: dict[str, Any] = {
     },
 }
 
+
+def _strip_argument_strings(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return [_strip_argument_strings(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _strip_argument_strings(item) for key, item in value.items()}
+    return value
+
 _HARNESS_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -223,6 +234,9 @@ class HarnessToolBroker:
         self.store = store
         self.sap_read = sap_read
         self.skills = skills
+        self.normalizer = SapValueNormalizer(
+            settings.repository_root / "config" / "sap-value-normalization.json"
+        )
         self.tool_gateway = ToolAdmissionGateway()
         self._tokens: dict[str, str] = {}
         self._gap_tokens: dict[str, dict[str, Any]] = {}
@@ -277,6 +291,14 @@ class HarnessToolBroker:
     ) -> dict[str, Any]:
         if not self.authenticate(run_id, token):
             return {"ok": False, "code": "harness_capability_denied", "message": "Invalid capability."}
+        arguments = _strip_argument_strings(arguments)
+        if tool_name in {"sap_query_validate", "sap_query_execute"} and isinstance(
+            arguments.get("plan"), dict
+        ):
+            try:
+                arguments["plan"] = self.normalizer.normalize_plan(arguments["plan"])
+            except SapInputNormalizationError as exc:
+                return {"ok": False, "code": exc.code, "message": str(exc), "detail": exc.detail}
         calls = self.store.list_harness_tool_calls(run_id)
         call_id = str(arguments.pop("tool_call_id", "") or f"call_{uuid.uuid4().hex[:16]}")
         safe_input = _safe_tool_input(arguments)
@@ -399,6 +421,25 @@ class HarnessToolBroker:
                 "run_phase_changed",
                 {"status": next_status.value, "tool": tool_name},
             )
+        if tool_name in {"sap_query_execute", "sap_skill_execute"}:
+            phase = "reading_sap"
+            current_tool = "sap_read" if tool_name == "sap_query_execute" else "skill"
+        elif tool_name in {
+            "sap_evidence_read", "sap_evidence_assess", "sap_inventory_fifo_assess",
+            "sap_final_report_validate", "safe_compute", "external_tool_execute",
+        }:
+            phase = "validating_evidence"
+            current_tool = tool_name
+        else:
+            phase = "preparing"
+            current_tool = tool_name
+        self.store.set_progress(
+            run_id,
+            phase=phase,
+            state="active",
+            current_tool=current_tool,
+            determinate=False,
+        )
 
     async def _dispatch(
         self, run_id: str, tool_name: str, arguments: dict[str, Any]
@@ -419,16 +460,26 @@ class HarnessToolBroker:
                 max_fields=min(max(int(arguments.get("max_fields") or 5000), 1), 5000),
             )
         if tool_name == "sap_query_validate":
-            plan = _require_object(arguments.get("plan"), "plan")
+            plan = self.normalizer.normalize_plan(
+                _require_object(arguments.get("plan"), "plan")
+            )
             business_issue = _plan_business_contract_issue(
                 str(self.store.get_run(run_id).query or ""), plan
             )
             if business_issue:
                 return {"ok": False, **business_issue, "validated_plan": None}
             result = await self.sap_read.validate_plan(plan, str(arguments.get("query") or ""))
-            return {**result, "validated_plan": plan if result.get("ok") else None}
+            normalized_plan = result.get("normalized_plan")
+            return {
+                **result,
+                "validated_plan": (
+                    normalized_plan if isinstance(normalized_plan, dict) else plan
+                ) if result.get("ok") else None,
+            }
         if tool_name == "sap_query_execute":
-            plan = _require_object(arguments.get("plan"), "plan")
+            plan = self.normalizer.normalize_plan(
+                _require_object(arguments.get("plan"), "plan")
+            )
             business_issue = _plan_business_contract_issue(
                 str(self.store.get_run(run_id).query or ""), plan
             )
@@ -437,6 +488,9 @@ class HarnessToolBroker:
             validation = await self.sap_read.validate_plan(plan, str(arguments.get("query") or ""))
             if validation.get("ok") is not True:
                 return {"ok": False, "code": "free_query_plan_rejected", "validation": validation}
+            normalized_plan = validation.get("normalized_plan")
+            if isinstance(normalized_plan, dict):
+                plan = normalized_plan
             raw = await self.sap_read.execute_plan(
                 plan,
                 str(arguments.get("query") or ""),

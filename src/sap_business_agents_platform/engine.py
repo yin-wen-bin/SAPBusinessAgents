@@ -38,6 +38,11 @@ from .models import (
     TERMINAL_STATUSES,
     utc_now,
 )
+from .normalization import (
+    SapInputNormalizationError,
+    SapValueNormalizer,
+    discover_agent_input_references,
+)
 from .plugins import PluginError, SapReadCapability
 from .relationships import RelationshipCatalog
 from .sap_read import SapReadError
@@ -84,6 +89,9 @@ class RunCoordinator:
         self.relationships = RelationshipCatalog.load(
             settings.repository_root / "config" / "business-relationships.json"
         )
+        self.normalizer = SapValueNormalizer(
+            settings.repository_root / "config" / "sap-value-normalization.json"
+        )
         self._queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._worker_task: asyncio.Task[None] | None = None
         self._acceptance_runs: set[str] = set()
@@ -113,6 +121,7 @@ class RunCoordinator:
 
     async def submit(self, request: RunCreate) -> str:
         defaulted_fields: list[str] = []
+        workflow: dict[str, Any] | None = None
         if request.mode == RunMode.agent:
             try:
                 agent = self.agents.get(str(request.agent_id))
@@ -132,19 +141,42 @@ class RunCoordinator:
                     request.input,
                     agent["execution"]["inputSchema"],
                 )
+                effective_input = self.normalizer.normalize_input(
+                    effective_input,
+                    agent["execution"]["inputSchema"],
+                    field_references=discover_agent_input_references(agent),
+                )
                 _validate_input(effective_input, agent["execution"]["inputSchema"])
-            except (KeyError, ValueError) as exc:
+            except (KeyError, SapInputNormalizationError, ValueError) as exc:
+                error_code = (
+                    exc.code
+                    if isinstance(exc, SapInputNormalizationError)
+                    and exc.code == "sap_input_normalization_conflict"
+                    else "agent_validation_failed"
+                )
                 raise RunExecutionError(
                     str(exc),
-                    code="agent_validation_failed",
+                    code=error_code,
+                    detail=getattr(exc, "detail", None),
                 ) from exc
             request = request.model_copy(update={"input": effective_input})
-        run_id = f"run_{uuid.uuid4().hex[:16]}"
-        workflow: dict[str, Any] | None = None
         if request.mode == RunMode.workflow:
             if self.workflows is None:
                 raise RunExecutionError("Workflow runtime is unavailable.", code="workflow_unavailable")
             workflow = self.workflows.get(str(request.workflow_id))
+            try:
+                normalized_input = self.normalizer.normalize_input(
+                    request.input, workflow["inputSchema"]
+                )
+                _validate_input(normalized_input, workflow["inputSchema"])
+            except (SapInputNormalizationError, ValueError) as exc:
+                raise RunExecutionError(
+                    str(exc),
+                    code=str(getattr(exc, "code", "workflow_validation_failed")),
+                    detail=getattr(exc, "detail", None),
+                ) from exc
+            request = request.model_copy(update={"input": normalized_input})
+        run_id = f"run_{uuid.uuid4().hex[:16]}"
         self.store.create_run(run_id, request)
         if defaulted_fields:
             self.store.append_event(
@@ -176,11 +208,23 @@ class RunCoordinator:
                 request.input,
                 agent["execution"]["inputSchema"],
             )
+            effective_input = self.normalizer.normalize_input(
+                effective_input,
+                agent["execution"]["inputSchema"],
+                field_references=discover_agent_input_references(agent),
+            )
             _validate_input(effective_input, agent["execution"]["inputSchema"])
-        except (KeyError, ManifestError, PluginError, ValueError) as exc:
+        except (KeyError, ManifestError, PluginError, SapInputNormalizationError, ValueError) as exc:
+            error_code = (
+                exc.code
+                if isinstance(exc, SapInputNormalizationError)
+                and exc.code == "sap_input_normalization_conflict"
+                else "agent_validation_failed"
+            )
             raise RunExecutionError(
                 str(exc),
-                code="agent_validation_failed",
+                code=error_code,
+                detail=getattr(exc, "detail", None),
             ) from exc
         request = request.model_copy(update={"input": effective_input})
         run_id = f"acceptance_{uuid.uuid4().hex[:16]}"
@@ -215,6 +259,17 @@ class RunCoordinator:
         if self.workflows is None:
             raise RunExecutionError("Workflow runtime is unavailable.", code="workflow_unavailable")
         validate_workflow(workflow, self.agents, source=f"workflow:{workflow.get('id')}")
+        try:
+            input_value = self.normalizer.normalize_input(
+                input_value, workflow["inputSchema"]
+            )
+            _validate_input(input_value, workflow["inputSchema"])
+        except (SapInputNormalizationError, ValueError) as exc:
+            raise RunExecutionError(
+                str(exc),
+                code=str(getattr(exc, "code", "workflow_validation_failed")),
+                detail=getattr(exc, "detail", None),
+            ) from exc
         request = RunCreate(
             mode=RunMode.workflow,
             workflowId=str(workflow.get("id")),
@@ -234,6 +289,11 @@ class RunCoordinator:
         return run_id
 
     async def provide_input(self, run_id: str, value: str) -> str:
+        value = self.normalizer.strip_text(value)
+        if not value:
+            raise RunExecutionError(
+                "Supplemental input must not be blank.", code="input_blank"
+            )
         record = self.store.get_run(run_id)
         if (
             record.mode == RunMode.free_query
@@ -295,6 +355,7 @@ class RunCoordinator:
         started = record.started_at or utc_now()
         self.store.update_run(run_id, started_at=started)
         self.store.append_event(run_id, "run_started", {"mode": record.mode.value})
+        self._set_progress(run_id, phase="preparing", state="active")
         if record.mode == RunMode.agent:
             await self._execute_agent(run_id)
         elif record.mode == RunMode.free_query:
@@ -327,6 +388,15 @@ class RunCoordinator:
             raise RunExecutionError(str(exc), code="agent_validation_failed") from exc
 
         execution = agent["execution"]
+        total_steps = len(execution["steps"])
+        self._set_progress(
+            run_id,
+            phase="preparing",
+            state="active",
+            completed_units=0,
+            total_units=total_steps,
+            determinate=True,
+        )
         context: dict[str, Any] = {"input": record.input, "steps": {}}
         result = RunResult(
             run_id=run_id,
@@ -338,6 +408,7 @@ class RunCoordinator:
         )
         self.store.update_run(run_id, status=RunStatus.running, plan_json=result.plan)
 
+        sap_activity_started = False
         for index, step in enumerate(execution["steps"]):
             self._ensure_not_cancelled(run_id)
             step_id = step["id"]
@@ -367,8 +438,37 @@ class RunCoordinator:
                     "step_skipped",
                     {"step_id": step_id, "reason": "condition_false", "index": index},
                 )
+                self._set_progress(
+                    run_id,
+                    phase="validating_evidence" if sap_activity_started else "preparing",
+                    state="active",
+                    current_step_id=step_id,
+                    completed_units=index + 1,
+                    total_units=total_steps,
+                    determinate=True,
+                )
                 self.store.update_run(run_id, result_json=result)
                 continue
+            executor = str(step.get("executor") or "")
+            phase = (
+                "reading_sap"
+                if executor in {"sap_read", "skill"}
+                else "validating_evidence"
+                if sap_activity_started
+                else "preparing"
+            )
+            if executor in {"sap_read", "skill"}:
+                sap_activity_started = True
+            self._set_progress(
+                run_id,
+                phase=phase,
+                state="active",
+                current_step_id=step_id,
+                current_tool="sap_read" if executor == "sap_read" else executor or None,
+                completed_units=index,
+                total_units=total_steps,
+                determinate=True,
+            )
             self.store.append_event(
                 run_id,
                 "step_started",
@@ -458,6 +558,15 @@ class RunCoordinator:
                     "evidence_gap_recorded",
                     {"step_id": step_id, "error": gap["error"]},
                 )
+                self._set_progress(
+                    run_id,
+                    phase=phase,
+                    state="active",
+                    current_step_id=step_id,
+                    completed_units=index + 1,
+                    total_units=total_steps,
+                    determinate=True,
+                )
                 self.store.update_run(run_id, result_json=result)
                 continue
             output = _redact_sensitive(output)
@@ -524,6 +633,15 @@ class RunCoordinator:
                     }
                 self.store.append_event(run_id, "rule_completed", {"step_id": step_id, "result": output})
             self.store.append_event(run_id, "tool_completed", {"step_id": step_id})
+            self._set_progress(
+                run_id,
+                phase=phase,
+                state="active",
+                current_step_id=step_id,
+                completed_units=index + 1,
+                total_units=total_steps,
+                determinate=True,
+            )
             self.store.update_run(run_id, result_json=result)
 
         output_schema = execution.get("outputSchema")
@@ -540,6 +658,14 @@ class RunCoordinator:
                 raise RunExecutionError(
                     str(exc), code=exc.code, detail=exc.detail
                 ) from exc
+        self._set_progress(
+            run_id,
+            phase="preparing_result",
+            state="active",
+            completed_units=total_steps,
+            total_units=total_steps,
+            determinate=True,
+        )
         self._complete_result(run_id, result, output_schema=output_schema)
         self._acceptance_runs.discard(run_id)
 
@@ -557,6 +683,13 @@ class RunCoordinator:
         if executor in {"sap_read"}:
             trace = _plugin_trace(self.sap_read, "sap_read.v2", str(operation or ""))
             candidate_plan = rendered.get("plan") if isinstance(rendered.get("plan"), dict) else rendered
+            normalized_plan = self.normalizer.normalize_plan(candidate_plan)
+            if isinstance(rendered.get("plan"), dict):
+                rendered["plan"] = normalized_plan
+            else:
+                rendered.clear()
+                rendered.update(normalized_plan)
+            candidate_plan = normalized_plan
             self.store.append_event(
                 run_id,
                 "tool_started",
@@ -591,6 +724,14 @@ class RunCoordinator:
             if operation == "execute_get":
                 return await self.sap_read.execute_get(rendered)
         if executor == "skill":
+            skill_id = str(step.get("skillId") or "")
+            try:
+                skill = self.skills.get(skill_id)
+            except KeyError:
+                skill = {}
+            rendered = self.normalizer.normalize_input(
+                rendered, skill.get("input_schema") or {"type": "object"}
+            )
             trace = _plugin_trace(self.skills, "skill_execute.v1", "execute")
             self.store.append_event(
                 run_id,
@@ -598,12 +739,12 @@ class RunCoordinator:
                 {
                     "step_id": step["id"],
                     "tool": "skill",
-                    "skill_id": step.get("skillId"),
+                    "skill_id": skill_id,
                     "call_id": call_id,
                     **trace,
                 },
             )
-            return await self.skills.execute(str(step.get("skillId") or ""), rendered)
+            return await self.skills.execute(skill_id, rendered)
         if executor == "rule":
             return rules.evaluate(str(operation), rendered)
         raise ValueError(f"Unsupported executor: {executor}")
@@ -626,6 +767,16 @@ class RunCoordinator:
             raise RunExecutionError(str(exc), code=code, detail=getattr(exc, "detail", None)) from exc
 
         self.store.update_run(run_id, status=RunStatus.running, plan_json=workflow)
+        node_order = topological_order(workflow)
+        total_nodes = len(node_order)
+        self._set_progress(
+            run_id,
+            phase="preparing",
+            state="active",
+            completed_units=0,
+            total_units=total_nodes,
+            determinate=True,
+        )
         self.store.append_event(
             run_id,
             "workflow_started",
@@ -649,10 +800,19 @@ class RunCoordinator:
         degraded = False
         blocked_nodes: set[str] = set()
 
-        for node_id in topological_order(workflow):
+        for node_index, node_id in enumerate(node_order):
             self._ensure_not_cancelled(run_id)
             node = nodes[node_id]
             agent_id = str(node["agentId"])
+            self._set_progress(
+                run_id,
+                phase="preparing",
+                state="active",
+                current_node_id=node_id,
+                completed_units=node_index,
+                total_units=total_nodes,
+                determinate=True,
+            )
             self.store.append_event(
                 run_id,
                 "node_started",
@@ -669,6 +829,11 @@ class RunCoordinator:
                 node_input, defaulted_fields = _resolve_server_defaults(
                     node_input,
                     agent["execution"]["inputSchema"],
+                )
+                node_input = self.normalizer.normalize_input(
+                    node_input,
+                    agent["execution"]["inputSchema"],
+                    field_references=discover_agent_input_references(agent),
                 )
                 _validate_input(node_input, agent["execution"]["inputSchema"])
             except WorkflowError as exc:
@@ -689,6 +854,15 @@ class RunCoordinator:
                         "node_skipped",
                         {"node_id": node_id, "agent_id": agent_id, "reason": str(exc)},
                     )
+                    self._set_progress(
+                        run_id,
+                        phase="preparing",
+                        state="active",
+                        current_node_id=node_id,
+                        completed_units=node_index + 1,
+                        total_units=total_nodes,
+                        determinate=True,
+                    )
                     continue
                 self.store.append_event(
                     run_id,
@@ -696,7 +870,7 @@ class RunCoordinator:
                     {"node_id": node_id, "agent_id": agent_id, "error": str(exc)},
                 )
                 raise RunExecutionError(str(exc), code=exc.code, detail=exc.detail) from exc
-            except ValueError as exc:
+            except (SapInputNormalizationError, ValueError) as exc:
                 if str(exc).startswith("Missing required input:"):
                     degraded = True
                     blocked_nodes.add(node_id)
@@ -832,6 +1006,15 @@ class RunCoordinator:
                     {"node_id": node_id, "agent_id": agent_id, "run_id": child_run_id},
                 )
             self.store.update_run(run_id, result_json=result)
+            self._set_progress(
+                run_id,
+                phase="validating_evidence",
+                state="active",
+                current_node_id=node_id,
+                completed_units=node_index + 1,
+                total_units=total_nodes,
+                determinate=True,
+            )
 
         try:
             result.workflow_output = _resolve_workflow_output(
@@ -848,6 +1031,14 @@ class RunCoordinator:
                 result.errors.append({"code": exc.code, "message": str(exc)})
             else:
                 raise RunExecutionError(str(exc), code=exc.code, detail=exc.detail) from exc
+        self._set_progress(
+            run_id,
+            phase="preparing_result",
+            state="active",
+            completed_units=total_nodes,
+            total_units=total_nodes,
+            determinate=True,
+        )
         self._complete_workflow_result(run_id, result, degraded=degraded or bool(blocked_nodes))
 
     def _complete_workflow_result(
@@ -895,6 +1086,14 @@ class RunCoordinator:
             if source_complete and business_complete and not degraded
             else RunStatus.inconclusive
         )
+        self._set_progress(
+            run_id,
+            phase="preparing_result",
+            state=status.value,
+            completed_units=max(1, len(result.node_results)),
+            total_units=max(1, len(result.node_results)),
+            determinate=True,
+        )
         self.store.update_run(
             run_id,
             status=status,
@@ -928,6 +1127,7 @@ class RunCoordinator:
                 ) from exc
             harness_query = _guided_agent_question(guided_agent, query)
         self.store.update_run(run_id, status=RunStatus.planning)
+        self._set_progress(run_id, phase="preparing", state="active", determinate=False)
         self.store.append_event(
             run_id,
             "planning_started",
@@ -941,6 +1141,9 @@ class RunCoordinator:
                 run_id,
                 status=RunStatus.waiting_input,
                 error_json={"code": "clarification_required", "message": question},
+            )
+            self._set_progress(
+                run_id, phase="preparing", state="waiting_input", determinate=False
             )
             self.store.append_event(
                 run_id, "waiting_input", {"question": question, "runtime": "codex_app_server"}
@@ -1036,6 +1239,9 @@ class RunCoordinator:
                 "stop_reason": outcome.stop_reason,
             },
         )
+        self._set_progress(
+            run_id, phase="preparing_result", state="active", determinate=False
+        )
         self._complete_result(run_id, result)
 
     async def _execute_free_query_legacy(self, run_id: str) -> None:
@@ -1053,6 +1259,7 @@ class RunCoordinator:
                 ) from exc
             planner_query = _guided_agent_question(guided_agent, query)
         self.store.update_run(run_id, status=RunStatus.planning)
+        self._set_progress(run_id, phase="preparing", state="active", determinate=False)
         self.store.append_event(
             run_id,
             "planning_started",
@@ -1085,6 +1292,9 @@ class RunCoordinator:
                 run_id,
                 status=RunStatus.waiting_input,
                 error_json={"code": "clarification_required", "message": decision.clarification_question},
+            )
+            self._set_progress(
+                run_id, phase="preparing", state="waiting_input", determinate=False
             )
             self.store.append_event(
                 run_id,
@@ -1120,6 +1330,14 @@ class RunCoordinator:
             reason = str(step.get("reason") or step.get("purpose") or "")
             started_monotonic = time.perf_counter()
             call_id = f"call_{uuid.uuid4().hex[:16]}"
+            self._set_progress(
+                run_id,
+                phase="reading_sap",
+                state="active",
+                current_step_id=step_id,
+                current_tool="sap_read" if tool == "sap_read" else tool,
+                determinate=False,
+            )
             self.store.append_event(
                 run_id,
                 "step_started",
@@ -1132,6 +1350,8 @@ class RunCoordinator:
                         f"Free-query step {step_id} has no SAP read plan.",
                         code="invalid_codex_plan",
                     )
+                sap_plan = self.normalizer.normalize_plan(sap_plan)
+                step["plan"] = sap_plan
                 validation = await self.sap_read.validate_plan(sap_plan, query)
                 if validation.get("ok") is not True:
                     raise RunExecutionError(
@@ -1179,6 +1399,10 @@ class RunCoordinator:
                         f"Skill step {step_id} input must be an object.",
                         code="invalid_codex_plan",
                     )
+                rendered_input = self.normalizer.normalize_input(
+                    rendered_input,
+                    skill.get("input_schema") or {"type": "object"},
+                )
                 self.store.append_event(
                     run_id,
                     "tool_started",
@@ -1247,6 +1471,9 @@ class RunCoordinator:
                 {"step_id": step_id, "source": "sap_read" if tool in {"sap_read"} else tool, "case_id": output.get("case_id")},
             )
 
+        self._set_progress(
+            run_id, phase="validating_evidence", state="active", determinate=False
+        )
         rule_result = rules.evidence_summary({"evidence": evidence})
         self.store.append_event(run_id, "rule_completed", {"rule": rule_result})
         summary = {
@@ -1258,6 +1485,9 @@ class RunCoordinator:
         supports = getattr(self.planner, "supports", None)
         summary_supported = not callable(supports) or bool(supports("summarize"))
         if callable(summarize) and summary_supported and decision.thread_id:
+            self._set_progress(
+                run_id, phase="preparing_result", state="active", determinate=False
+            )
             self.store.append_event(run_id, "summary_started", {})
             remaining = (
                 self.settings.max_run_seconds
@@ -1315,6 +1545,9 @@ class RunCoordinator:
             thread_id=decision.thread_id,
             started_at=record.started_at,
         )
+        self._set_progress(
+            run_id, phase="preparing_result", state="active", determinate=False
+        )
         self._complete_result(run_id, result)
 
     async def _ground_and_validate_free_plan(
@@ -1325,6 +1558,9 @@ class RunCoordinator:
     ) -> PlannerDecision:
         if not decision.plan:
             return decision
+        decision = decision.model_copy(
+            update={"plan": self.normalizer.normalize_plan(decision.plan)}
+        )
         _validate_free_plan_limits(decision.plan, self.settings.max_tool_calls)
         original_refs = _collect_sap_entity_refs(decision.plan)
         if not original_refs:
@@ -1336,6 +1572,24 @@ class RunCoordinator:
             {"phase": "live_schema_grounding", "entity_count": len(original_refs)},
         )
         schemas = await self._load_live_schemas(query, original_refs)
+        metadata_rules = {
+            (
+                str(field.get("service_name") or ""),
+                str(field.get("odata_version") or ""),
+                str(field.get("entity_set") or ""),
+                str(field.get("field_name") or ""),
+            ): field
+            for response in schemas
+            for field in ((response.get("data") or {}).get("fields") or [])
+            if isinstance(field, dict) and field.get("field_name")
+        }
+        decision = decision.model_copy(
+            update={
+                "plan": self.normalizer.normalize_plan(
+                    decision.plan, metadata=metadata_rules
+                )
+            }
+        )
         relationship_contract = self.relationships.snapshot_for(original_refs)
         self.store.append_event(
             run_id,
@@ -1389,6 +1643,14 @@ class RunCoordinator:
                 repair_attempt=1,
             )
             decision = _require_grounded_decision(repaired, original_refs)
+            if decision.plan:
+                decision = decision.model_copy(
+                    update={
+                        "plan": self.normalizer.normalize_plan(
+                            decision.plan, metadata=metadata_rules
+                        )
+                    }
+                )
             decision, repaired_order_fields = _canonicalize_plan_order_by(decision)
             decision, repaired_removed_order_fields = _remove_unsupported_order_by(
                 decision, schemas
@@ -1628,6 +1890,19 @@ class RunCoordinator:
             if source_complete and business_complete
             else RunStatus.inconclusive
         )
+        current_progress = self.store.get_run(run_id).progress
+        self._set_progress(
+            run_id,
+            phase="preparing_result",
+            state=status.value,
+            completed_units=(
+                current_progress.total_units
+                if current_progress.determinate and current_progress.total_units is not None
+                else current_progress.completed_units
+            ),
+            total_units=current_progress.total_units,
+            determinate=current_progress.determinate,
+        )
         self.store.update_run(
             run_id,
             status=status,
@@ -1706,8 +1981,64 @@ class RunCoordinator:
             self._finish_cancelled(run_id)
             raise asyncio.CancelledError()
 
+    def _set_progress(
+        self,
+        run_id: str,
+        *,
+        phase: str,
+        state: str,
+        current_step_id: str | None = None,
+        current_node_id: str | None = None,
+        current_tool: str | None = None,
+        completed_units: int | None = None,
+        total_units: int | None = None,
+        determinate: bool | None = None,
+    ) -> None:
+        self.store.set_progress(
+            run_id,
+            phase=phase,
+            state=state,
+            current_step_id=current_step_id,
+            current_node_id=current_node_id,
+            current_tool=current_tool,
+            completed_units=completed_units,
+            total_units=total_units,
+            determinate=determinate,
+        )
+        record = self.store.get_run(run_id)
+        if not record.parent_run_id:
+            return
+        parent = self.store.get_run(record.parent_run_id)
+        if parent.status in TERMINAL_STATUSES:
+            return
+        # A workflow remains active while its child runs. It mirrors the child's
+        # real phase and tool, but keeps the parent's node-level unit counts.
+        self.store.set_progress(
+            record.parent_run_id,
+            phase=phase,
+            state="active",
+            current_step_id=current_step_id,
+            current_node_id=record.node_id,
+            current_tool=current_tool,
+            completed_units=parent.progress.completed_units,
+            total_units=parent.progress.total_units,
+            determinate=parent.progress.determinate,
+        )
+
     def _finish_cancelled(self, run_id: str) -> None:
         completed = utc_now()
+        progress = self.store.get_run(run_id).progress
+        self._set_progress(
+            run_id,
+            phase=progress.phase,
+            state="cancelled",
+            current_step_id=progress.current_step_id,
+            current_node_id=progress.current_node_id,
+            current_tool=progress.current_tool,
+            completed_units=progress.completed_units,
+            total_units=progress.total_units,
+            determinate=progress.determinate,
+        )
         self.store.update_run(run_id, status=RunStatus.cancelled, completed_at=completed)
         self.store.append_event(run_id, "run_cancelled", {})
 
@@ -1717,6 +2048,18 @@ class RunCoordinator:
         error = _error_payload(exc)
         completed = utc_now()
         try:
+            progress = self.store.get_run(run_id).progress
+            self._set_progress(
+                run_id,
+                phase=progress.phase,
+                state="inconclusive" if status == RunStatus.inconclusive else "failed",
+                current_step_id=progress.current_step_id,
+                current_node_id=progress.current_node_id,
+                current_tool=progress.current_tool,
+                completed_units=progress.completed_units,
+                total_units=progress.total_units,
+                determinate=progress.determinate,
+            )
             self.store.update_run(
                 run_id,
                 status=status,
