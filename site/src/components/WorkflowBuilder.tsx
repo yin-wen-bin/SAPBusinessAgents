@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -19,6 +19,7 @@ import type {
   ExecutionInputSchema,
   Locale,
   WorkflowConnectionDefinition,
+  WorkflowComposition,
   WorkflowDefinition,
 } from "../lib/types";
 
@@ -29,15 +30,37 @@ type Draft = {
   workflow: WorkflowDefinition;
   validation_run_id?: string | null;
   validation: Record<string, unknown>;
+  composition: WorkflowComposition;
 };
 
-type BuilderProps = { apiBase: string; locale: Locale; runPath: string };
+type BuilderProps = { apiBase: string; locale: Locale; runPath: string; askPath: string };
 type AgentNodeData = { agent: AgentDefinition; locale: Locale };
 
 const labels = {
   zh: {
-    title: "工作流编排",
-    lead: "拖入固定 Agent，通过已声明的业务字段连接输入和输出。",
+    title: "用一句话生成工作流",
+    lead: "描述业务目标，Codex 会从当前仓库的可执行 Agent 中自动选择、排序并连接输入输出。",
+    requirement: "你希望完成什么业务任务？",
+    requirementPlaceholder: "例如：检查指定采购订单从收货、发票到清账的完整状态，并输出缺失环节和下一步。",
+    compose: "生成工作流草稿",
+    composing: "正在匹配 Agent 并编译工作流…",
+    advanced: "高级编辑",
+    hideAdvanced: "收起高级编辑",
+    manual: "从空白画布开始",
+    intent: "理解到的业务目标",
+    route: "自动编排结果",
+    matchedAgent: "已匹配 Agent",
+    missingAgent: "缺口 Agent",
+    gapTitle: "还缺少以下 Agent",
+    gapHelp: "缺口解决前不能验证或发布。可转到自由查询，先完成一次只读查询，再保存为待审核 Agent 草稿。",
+    createGapAgent: "用自由查询创建此 Agent",
+    gapDraft: "Agent 草稿",
+    awaitingCatalog: "草稿尚未进入可执行目录；完成审核、真机验证和发布后，返回此页会自动重新匹配。",
+    clarify: "Codex 需要确认一个关键信息",
+    clarifyPlaceholder: "请直接回答这个问题",
+    continueCompose: "继续生成",
+    reconciled: "已检查当前 Agent 目录",
+    catalogOnly: "只会采用当前仓库中状态为可执行的 Agent，并固定版本与摘要。",
     agents: "可用 Agents",
     save: "保存草稿",
     validate: "Codex 真机验证",
@@ -58,8 +81,29 @@ const labels = {
     remove: "移除节点",
   },
   en: {
-    title: "Workflow builder",
-    lead: "Add fixed Agents and connect their declared business input and output ports.",
+    title: "Generate a workflow from one request",
+    lead: "Describe the business outcome. Codex selects executable repository Agents, orders them, and wires compatible inputs and outputs.",
+    requirement: "What business task should this workflow complete?",
+    requirementPlaceholder: "Example: check a purchase order from goods receipt through invoice and clearing, then report missing stages and next actions.",
+    compose: "Generate workflow draft",
+    composing: "Matching Agents and compiling the workflow…",
+    advanced: "Advanced editor",
+    hideAdvanced: "Hide advanced editor",
+    manual: "Start with a blank canvas",
+    intent: "Interpreted business outcome",
+    route: "Composed route",
+    matchedAgent: "Matched Agent",
+    missingAgent: "Missing Agent",
+    gapTitle: "These Agents are still missing",
+    gapHelp: "Validation and publishing stay blocked until every gap is resolved. Use a read-only free query, then save the result as an Agent draft for review.",
+    createGapAgent: "Create this Agent with free query",
+    gapDraft: "Agent draft",
+    awaitingCatalog: "The draft is not executable yet. After review, live validation, and publishing, return here to trigger automatic matching.",
+    clarify: "Codex needs one key detail",
+    clarifyPlaceholder: "Answer this question directly",
+    continueCompose: "Continue",
+    reconciled: "Current Agent catalog checked",
+    catalogOnly: "Only executable repository Agents are selected, with version and digest pinned.",
     agents: "Available Agents",
     save: "Save draft",
     validate: "Validate live with Codex",
@@ -137,15 +181,48 @@ function connectionId(item: WorkflowConnectionDefinition): string {
   return `${from}->${item.to.nodeId}:${item.to.port}`;
 }
 
-export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderProps) {
+export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: BuilderProps) {
   const t = labels[locale];
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [requirement, setRequirement] = useState("");
+  const [clarificationInput, setClarificationInput] = useState("");
+  const [advanced, setAdvanced] = useState(false);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [acknowledge, setAcknowledge] = useState(false);
   const [validationInputs, setValidationInputs] = useState<Record<string, string>>({});
+  const pollTimer = useRef<number | null>(null);
+  const reconciledDrafts = useRef(new Set<string>());
+
+  const applyDraft = useCallback((value: Draft) => {
+    setDraft(value);
+    if (value.composition?.requirement) setRequirement(value.composition.requirement);
+    if (value.composition?.validation_defaults) {
+      setValidationInputs((current) => ({
+        ...Object.fromEntries(Object.entries(value.composition.validation_defaults ?? {}).map(([key, item]) => [key, item == null ? "" : String(item)])),
+        ...current,
+      }));
+    }
+    if (!value.composition?.requirement) setAdvanced(true);
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current != null) window.clearInterval(pollTimer.current);
+    pollTimer.current = null;
+  }, []);
+
+  const pollDraft = useCallback((draftId: string) => {
+    stopPolling();
+    pollTimer.current = window.setInterval(async () => {
+      const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draftId)}`);
+      if (!response.ok) return;
+      const value = (await response.json()) as Draft;
+      applyDraft(value);
+      if (value.status !== "planning" && value.validation?.live_status !== "running") stopPolling();
+    }, 1000);
+  }, [apiBase, applyDraft, stopPolling]);
 
   useEffect(() => {
     void (async () => {
@@ -155,21 +232,30 @@ export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderPro
       const requested = new URLSearchParams(window.location.search).get("draft");
       if (requested) {
         const existing = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(requested)}`);
-        if (existing.ok) setDraft((await existing.json()) as Draft);
-        return;
-      }
-      const created = await fetch(`${apiBase}/api/authoring/workflows`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: emptyWorkflow().title, description: emptyWorkflow().description, workflow: emptyWorkflow() }),
-      });
-      if (created.ok) {
-        const value = (await created.json()) as Draft;
-        setDraft(value);
-        history.replaceState({}, "", `${window.location.pathname}?draft=${encodeURIComponent(value.draft_id)}`);
+        if (existing.ok) {
+          const value = (await existing.json()) as Draft;
+          applyDraft(value);
+          if (value.status === "planning") pollDraft(value.draft_id);
+        }
       }
     })().catch((error) => setMessage(String(error)));
-  }, [apiBase]);
+    return stopPolling;
+  }, [apiBase, applyDraft, pollDraft, stopPolling]);
+
+  useEffect(() => {
+    if (!draft || draft.status !== "needs_agents") return;
+    const key = `${draft.draft_id}:${draft.composition?.catalog_digest ?? ""}`;
+    if (reconciledDrafts.current.has(key)) return;
+    reconciledDrafts.current.add(key);
+    void fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draft.draft_id)}/reconcile`, { method: "POST" })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const value = (await response.json()) as Draft;
+        applyDraft(value);
+        if (value.status === "planning") pollDraft(value.draft_id);
+      })
+      .catch(() => undefined);
+  }, [apiBase, applyDraft, draft, pollDraft]);
 
   const agentMap = useMemo(() => new Map(agents.map((agent) => [agent.slug, agent])), [agents]);
   const nodes = useMemo<Node<AgentNodeData>[]>(() => {
@@ -247,6 +333,60 @@ export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderPro
     });
   }, [mutateWorkflow]);
 
+  const compose = async () => {
+    if (!requirement.trim()) return;
+    setBusy(true); setMessage(""); setAdvanced(false); setValidationInputs({});
+    try {
+      const response = await fetch(`${apiBase}/api/authoring/workflows/compose`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requirement: requirement.trim(), locale }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail?.message ?? payload.detail ?? "Composition failed");
+      applyDraft(payload as Draft);
+      history.replaceState({}, "", `${window.location.pathname}?draft=${encodeURIComponent(payload.draft_id)}`);
+      pollDraft(payload.draft_id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally { setBusy(false); }
+  };
+
+  const continueComposition = async () => {
+    if (!draft || !clarificationInput.trim()) return;
+    setBusy(true); setMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draft.draft_id)}/composition-input`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: clarificationInput.trim() }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail?.message ?? payload.detail ?? "Composition failed");
+      setClarificationInput(""); applyDraft(payload as Draft); pollDraft(payload.draft_id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally { setBusy(false); }
+  };
+
+  const createManualDraft = async () => {
+    setBusy(true); setMessage(""); setAdvanced(true); setValidationInputs({});
+    try {
+      const workflow = emptyWorkflow();
+      const response = await fetch(`${apiBase}/api/authoring/workflows`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: workflow.title, description: workflow.description, workflow }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail?.message ?? payload.detail ?? "Draft creation failed");
+      applyDraft(payload as Draft);
+      history.replaceState({}, "", `${window.location.pathname}?draft=${encodeURIComponent(payload.draft_id)}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally { setBusy(false); }
+  };
+
   const save = async () => {
     if (!draft) return;
     setBusy(true); setMessage("");
@@ -258,7 +398,7 @@ export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderPro
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail?.message ?? payload.detail ?? "Save failed");
-      setDraft(payload as Draft); setMessage(`${t.save} · r${payload.revision}`);
+      applyDraft(payload as Draft); setMessage(`${t.save} · r${payload.revision}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally { setBusy(false); }
@@ -276,7 +416,7 @@ export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderPro
         });
         const savedPayload = await saved.json();
         if (!saved.ok) throw new Error(savedPayload.detail?.message ?? "Save failed");
-        current = savedPayload as Draft; setDraft(current);
+        current = savedPayload as Draft; applyDraft(current);
       }
       const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(current.draft_id)}/validate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -289,21 +429,11 @@ export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderPro
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail?.message ?? payload.detail ?? "Validation failed");
-      setDraft(payload as Draft); setMessage(`${t.validate} · ${payload.validation_run_id}`);
+      applyDraft(payload as Draft); setMessage(`${t.validate} · ${payload.validation_run_id}`);
       pollDraft(payload.draft_id);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally { setBusy(false); }
-  };
-
-  const pollDraft = (draftId: string) => {
-    const timer = window.setInterval(async () => {
-      const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draftId)}`);
-      if (!response.ok) return;
-      const value = (await response.json()) as Draft;
-      setDraft(value);
-      if (["validated", "inconclusive", "invalid", "published"].includes(value.status) || value.validation.live_status === "repair_failed") window.clearInterval(timer);
-    }, 1000);
   };
 
   const publish = async () => {
@@ -316,7 +446,7 @@ export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderPro
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail?.message ?? payload.detail ?? "Publish failed");
-      setDraft(payload as Draft); setMessage(`${t.publish} · ${payload.validation?.branch ?? ""}`);
+      applyDraft(payload as Draft); setMessage(`${t.publish} · ${payload.validation?.branch ?? ""}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally { setBusy(false); }
@@ -324,11 +454,66 @@ export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderPro
 
   const selected = draft?.workflow.nodes.find((node) => node.id === selectedNode);
   const selectedAgent = selected ? agentMap.get(selected.agentId) : undefined;
+  const composition = draft?.composition;
+  const gaps = composition?.gaps ?? [];
+  const hasComposition = Boolean(composition?.requirement);
+  const canValidate = Boolean(draft?.workflow.nodes.length) && gaps.length === 0 && draft?.status !== "planning" && draft?.status !== "waiting_input";
 
   return (
     <main className="workflow-builder-shell">
-      <header className="workflow-builder-heading"><div><p className="eyebrow">Workflow Factory</p><h1>{t.title}</h1><p>{t.lead}</p></div><div className="workflow-builder-actions"><button disabled={busy || !draft} onClick={save}>{t.save}</button><button disabled={busy || !draft?.workflow.nodes.length} onClick={validate}>{t.validate}</button><button disabled={busy || !["validated", "inconclusive"].includes(draft?.status ?? "")} onClick={publish}>{t.publish}</button></div></header>
-      <section className="workflow-builder-grid">
+      <header className="workflow-builder-heading">
+        <div><p className="eyebrow">Workflow Factory</p><h1>{t.title}</h1><p>{t.lead}</p></div>
+        <div className="workflow-builder-actions">
+          {draft && <button onClick={() => setAdvanced((value) => !value)}>{advanced ? t.hideAdvanced : t.advanced}</button>}
+          {!draft && <button disabled={busy} onClick={createManualDraft}>{t.manual}</button>}
+          {advanced && <button disabled={busy || !draft} onClick={save}>{t.save}</button>}
+          <button disabled={busy || !canValidate} onClick={validate}>{t.validate}</button>
+          <button disabled={busy || gaps.length > 0 || !["validated", "inconclusive"].includes(draft?.status ?? "")} onClick={publish}>{t.publish}</button>
+        </div>
+      </header>
+
+      <section className="workflow-intent-panel">
+        <label htmlFor="workflow-requirement"><strong>{t.requirement}</strong></label>
+        <textarea id="workflow-requirement" rows={4} value={requirement} placeholder={t.requirementPlaceholder} onChange={(event) => setRequirement(event.target.value)} />
+        <div className="workflow-intent-actions">
+          <small>{t.catalogOnly}</small>
+          <button disabled={busy || !requirement.trim()} onClick={compose}>{t.compose}</button>
+        </div>
+      </section>
+
+      {draft?.status === "planning" && <section className="workflow-composition-state" aria-live="polite"><span className="workflow-spinner" />{t.composing}</section>}
+      {composition?.error?.message && <section className="workflow-composition-state is-error" role="alert">{composition.error.message}</section>}
+
+      {draft?.status === "waiting_input" && <section className="workflow-clarification-card">
+        <p className="eyebrow">{t.clarify}</p>
+        <h2>{composition?.clarification_question}</h2>
+        <div><input value={clarificationInput} placeholder={t.clarifyPlaceholder} onChange={(event) => setClarificationInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void continueComposition(); }} /><button disabled={busy || !clarificationInput.trim()} onClick={continueComposition}>{t.continueCompose}</button></div>
+      </section>}
+
+      {hasComposition && draft?.status !== "planning" && draft?.status !== "waiting_input" && <section className="workflow-composition-summary">
+        <div className="workflow-intent-summary"><span>{t.intent}</span><h2>{localizedText(composition?.intent, locale) || requirement}</h2></div>
+        <div className="workflow-route-heading"><h2>{t.route}</h2><small>{draft?.workflow.nodes.length ?? 0} / {(composition?.stages ?? []).length} {t.matchedAgent}</small></div>
+        <ol className="workflow-route-list">{(composition?.stages ?? []).map((stage, index) => {
+          const gap = gaps.find((item) => item.stage_id === stage.id);
+          const agent = stage.agent_id ? agentMap.get(stage.agent_id) : undefined;
+          return <li className={gap ? "is-gap" : "is-matched"} key={stage.id}>
+            <span className="workflow-route-index">{index + 1}</span>
+            <div><strong>{localizedText(stage.capability, locale)}</strong><small>{gap ? t.missingAgent : `${t.matchedAgent} · ${agent?.title[locale] ?? stage.agent_id}`}</small></div>
+          </li>;
+        })}</ol>
+      </section>}
+
+      {gaps.length > 0 && <section className="workflow-gap-panel">
+        <header><div><p className="eyebrow">Blocked</p><h2>{t.gapTitle}</h2><p>{t.gapHelp}</p></div><strong>{gaps.length}</strong></header>
+        <div className="workflow-gap-list">{gaps.map((gap) => <article key={gap.gap_id}>
+          <div><h3>{localizedText(gap.title, locale)}</h3><p>{localizedText(gap.description, locale)}</p></div>
+          <dl><div><dt>Inputs</dt><dd>{gap.required_inputs.map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div><div><dt>Outputs</dt><dd>{gap.required_outputs.map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div></dl>
+          {gap.agent_draft_id && <p className="workflow-gap-draft"><strong>{t.gapDraft}: {gap.agent_draft_id}</strong><br /><span>{t.awaitingCatalog}</span></p>}
+          <a className="workflow-gap-action" href={`${askPath}?workflowDraft=${encodeURIComponent(draft!.draft_id)}&gap=${encodeURIComponent(gap.gap_id)}`}>{t.createGapAgent}</a>
+        </article>)}</div>
+      </section>}
+
+      {advanced && draft && <section className="workflow-builder-grid">
         <aside className="workflow-agent-palette"><h2>{t.agents}</h2>{agents.map((agent) => <button key={agent.slug} onClick={() => addAgent(agent)}><strong>{agent.title[locale]}</strong><small>{agent.module} · {agent.slug}</small></button>)}</aside>
         <div className="workflow-canvas" aria-label={t.title}>
           <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onConnect={onConnect} onNodeClick={(_, node) => setSelectedNode(node.id)} onNodesChange={(changes) => mutateWorkflow((workflow) => { for (const change of changes) if (change.type === "position" && change.position) { const item = workflow.nodes.find((node) => node.id === change.id); if (item) item.position = change.position; } })} fitView>
@@ -337,26 +522,32 @@ export default function WorkflowBuilder({ apiBase, locale, runPath }: BuilderPro
         </div>
         <aside className="workflow-inspector">
           <h2>{t.metadata}</h2>
-          {draft && <div className="workflow-metadata-fields">
+          <div className="workflow-metadata-fields">
             <label><span>{t.workflowId}</span><input value={draft.workflow.id} pattern="[a-z][a-z0-9-]*" onChange={(event) => mutateWorkflow((workflow) => { workflow.id = event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"); })} /></label>
             <label><span>{t.workflowName}</span><input value={draft.workflow.title[locale]} onChange={(event) => mutateWorkflow((workflow) => { workflow.title[locale] = event.target.value; })} /></label>
-          </div>}
-          <h2>{t.mapping}</h2>{selected && selectedAgent ? <NodeInspector workflow={draft!.workflow} nodeId={selected.id} agent={selectedAgent} agents={agentMap} locale={locale} onChange={mutateWorkflow} onRemove={() => { mutateWorkflow((workflow) => removeNode(workflow, selected.id)); setSelectedNode(null); }} removeLabel={t.remove} /> : <p>{t.selectNode}</p>}
+          </div>
+          <h2>{t.mapping}</h2>{selected && selectedAgent ? <NodeInspector workflow={draft.workflow} nodeId={selected.id} agent={selectedAgent} agents={agentMap} locale={locale} onChange={mutateWorkflow} onRemove={() => { mutateWorkflow((workflow) => removeNode(workflow, selected.id)); setSelectedNode(null); }} removeLabel={t.remove} /> : <p>{t.selectNode}</p>}
         </aside>
-      </section>
-      <section className="workflow-validation-panel">
-        <strong>{t.status}: {draft?.status ?? "loading"}</strong>
-        {draft?.validation_run_id && <a href={`${runPath}?run=${encodeURIComponent(draft.validation_run_id)}`}>{t.openRun}</a>}
+      </section>}
+
+      {draft && <section className="workflow-validation-panel">
+        <strong>{t.status}: {draft.status}</strong>
+        {draft.validation_run_id && <a href={`${runPath}?run=${encodeURIComponent(draft.validation_run_id)}`}>{t.openRun}</a>}
         <h2>{t.validationInputs}</h2>
         <p>{t.autoDiscover}</p>
-        <div className="workflow-validation-inputs">{Object.entries(draft?.workflow.inputSchema.properties ?? {}).map(([name, schema]) => <label key={name}><span>{schema.title?.[locale] ?? name}</span><input type={schema.format === "date" ? "date" : schema.type === "number" || schema.type === "integer" ? "number" : "text"} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? name} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} /></label>)}</div>
+        <div className="workflow-validation-inputs">{Object.entries(draft.workflow.inputSchema.properties ?? {}).map(([name, schema]) => <label key={name}><span>{schema.title?.[locale] ?? name}</span><input type={schema.format === "date" ? "date" : schema.type === "number" || schema.type === "integer" ? "number" : "text"} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? name} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} /></label>)}</div>
         <label><input type="checkbox" checked={acknowledge} onChange={(event) => setAcknowledge(event.target.checked)} />{t.acknowledge}</label>
-        {message && <p>{message}</p>}
+        {message && <p role="status">{message}</p>}
         <h2>{t.validationDetail}</h2>
-        <ul className="workflow-validation-issues">{validationMessages(draft?.validation, locale).map((item) => <li key={item}>{item}</li>)}</ul>
-      </section>
+        <ul className="workflow-validation-issues">{validationMessages(draft.validation, locale).map((item) => <li key={item}>{item}</li>)}</ul>
+      </section>}
+      {!draft && message && <p className="workflow-builder-message" role="alert">{message}</p>}
     </main>
   );
+}
+
+function localizedText(value: { zh?: string; en?: string } | undefined, locale: Locale): string {
+  return String(value?.[locale] || value?.zh || value?.en || "");
 }
 
 function coerceValidationInput(value: string, type?: ExecutionInputProperty["type"]): unknown {

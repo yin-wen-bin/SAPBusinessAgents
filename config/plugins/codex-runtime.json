@@ -23,7 +23,7 @@
     },
     {
       "capability": "workflow_authoring.v1",
-      "operations": ["review_workflow", "repair_workflow"]
+      "operations": ["compose_workflow", "review_workflow", "repair_workflow"]
     }
   ],
   "transport": {

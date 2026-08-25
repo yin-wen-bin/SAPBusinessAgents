@@ -416,7 +416,9 @@ select {
 .workflow-builder-actions { display: flex; gap: .6rem; flex-wrap: wrap; }
 .workflow-builder-actions button,
 .workflow-agent-palette button,
-.workflow-inspector button {
+.workflow-inspector button,
+.workflow-intent-panel button,
+.workflow-clarification-card button {
   border: 1px solid #9fb3bf;
   border-radius: .55rem;
   background: white;
@@ -426,6 +428,104 @@ select {
 }
 .workflow-builder-actions button:nth-last-child(-n+2) { background: #0a6e79; color: white; border-color: #0a6e79; }
 .workflow-builder-actions button:disabled { opacity: .45; cursor: not-allowed; }
+
+.workflow-intent-panel,
+.workflow-composition-summary,
+.workflow-gap-panel,
+.workflow-clarification-card,
+.workflow-composition-state {
+  margin-bottom: .85rem;
+  border: 1px solid #d5e0e5;
+  border-radius: .8rem;
+  background: white;
+  padding: 1rem;
+  box-shadow: 0 8px 24px rgb(15 45 55 / 6%);
+}
+
+.workflow-intent-panel {
+  display: grid;
+  gap: .7rem;
+  border-color: #a9ccd1;
+  background: linear-gradient(135deg, #f4fbfb, white 58%);
+}
+
+.workflow-intent-panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid #9fb7c1;
+  border-radius: .55rem;
+  padding: .8rem;
+  color: #173847;
+  font: inherit;
+  line-height: 1.55;
+}
+
+.workflow-intent-panel textarea:focus,
+.workflow-clarification-card input:focus {
+  outline: 0;
+  border-color: #0a7884;
+  box-shadow: 0 0 0 3px rgb(10 120 132 / 12%);
+}
+
+.workflow-intent-actions,
+.workflow-route-heading,
+.workflow-gap-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.workflow-intent-actions small { max-width: 700px; color: #53636f; }
+.workflow-intent-actions button,
+.workflow-clarification-card button,
+.workflow-gap-action { background: #0a6e79; color: white; border-color: #0a6e79; }
+.workflow-intent-actions button:disabled,
+.workflow-clarification-card button:disabled { opacity: .45; cursor: not-allowed; }
+
+.workflow-composition-state { display: flex; align-items: center; gap: .7rem; color: #285462; }
+.workflow-composition-state.is-error { border-color: #ddb0b0; background: #fff7f7; color: #962b2b; }
+.workflow-spinner { width: 16px; height: 16px; border: 2px solid #b7d8dc; border-top-color: #0a7884; border-radius: 50%; animation: workflow-spin .8s linear infinite; }
+@keyframes workflow-spin { to { transform: rotate(360deg); } }
+
+.workflow-clarification-card .eyebrow,
+.workflow-gap-panel .eyebrow { margin: 0; }
+.workflow-clarification-card h2 { margin: .5rem 0 1rem; font-size: 1.05rem; }
+.workflow-clarification-card > div { display: flex; gap: .65rem; }
+.workflow-clarification-card input { flex: 1; min-width: 0; border: 1px solid #9fb7c1; border-radius: .55rem; padding: .7rem; font: inherit; }
+
+.workflow-intent-summary { border-left: 4px solid #0a7884; padding-left: .85rem; }
+.workflow-intent-summary span { color: #61747c; font-size: .78rem; font-weight: 700; text-transform: uppercase; }
+.workflow-intent-summary h2 { margin: .25rem 0 1.1rem; font-size: 1.12rem; }
+.workflow-route-heading h2 { margin: 0; font-size: 1rem; }
+.workflow-route-heading small { color: #5a6d75; }
+.workflow-route-list { display: grid; gap: .55rem; margin: .8rem 0 0; padding: 0; list-style: none; }
+.workflow-route-list li { display: grid; grid-template-columns: 32px 1fr; align-items: center; gap: .7rem; border: 1px solid #d5e0e5; border-radius: .6rem; padding: .65rem .75rem; }
+.workflow-route-list li.is-gap { border-color: #deb66c; background: #fffaf0; }
+.workflow-route-index { display: grid; width: 26px; height: 26px; place-items: center; border-radius: 50%; background: #e3f1f2; color: #0a6670; font-weight: 800; }
+.workflow-route-list li.is-gap .workflow-route-index { background: #f5dfb4; color: #82590a; }
+.workflow-route-list strong,
+.workflow-route-list small { display: block; }
+.workflow-route-list small { margin-top: .15rem; color: #61747c; }
+
+.workflow-gap-panel { border-color: #dfbc78; background: #fffdf8; }
+.workflow-gap-panel > header h2 { margin: .2rem 0; }
+.workflow-gap-panel > header p { margin: 0; max-width: 760px; color: #665a43; }
+.workflow-gap-panel > header > strong { display: grid; min-width: 44px; height: 44px; place-items: center; border-radius: 50%; background: #f3dcae; color: #7b5207; font-size: 1.15rem; }
+.workflow-gap-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: .8rem; margin-top: 1rem; }
+.workflow-gap-list article { display: grid; align-content: start; gap: .7rem; border: 1px solid #e7d3aa; border-radius: .65rem; background: white; padding: .85rem; }
+.workflow-gap-list h3,
+.workflow-gap-list p,
+.workflow-gap-list dl { margin: 0; }
+.workflow-gap-list p { color: #5d6d74; }
+.workflow-gap-list dl { display: grid; gap: .35rem; font-size: .8rem; }
+.workflow-gap-list dl div { display: grid; grid-template-columns: 58px 1fr; gap: .45rem; }
+.workflow-gap-list dt { font-weight: 800; }
+.workflow-gap-list dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.workflow-gap-draft { border-radius: .5rem; background: #f4f7f9; padding: .65rem; font-size: .82rem; }
+.workflow-gap-action { justify-self: start; border-radius: .5rem; padding: .65rem .8rem; font-weight: 750; text-decoration: none; }
+.workflow-builder-message { color: #9a2424; }
 
 .workflow-builder-grid {
   display: grid;
@@ -502,6 +602,9 @@ select {
 
 @media (max-width: 760px) {
   .workflow-builder-heading { align-items: flex-start; flex-direction: column; }
+  .workflow-intent-actions,
+  .workflow-gap-panel > header,
+  .workflow-clarification-card > div { align-items: stretch; flex-direction: column; }
   .workflow-builder-grid { grid-template-columns: 1fr; }
   .workflow-canvas { min-height: 520px; }
 }
@@ -990,6 +1093,15 @@ select {
   text-transform: none;
 }
 
+.free-query-gap-context {
+  border-left: 3px solid #c48218;
+  border-radius: 0 4px 4px 0;
+  background: #fff7e6;
+  padding: 9px 11px;
+  color: #72500f !important;
+  font-weight: 650;
+}
+
 .free-query-form,
 .agent-run-form,
 .run-input-form {
@@ -1044,6 +1156,7 @@ select {
 
 .runtime-form-actions button,
 .run-actions button,
+.run-actions > a,
 .run-input-form button {
   display: inline-flex;
   align-items: center;
@@ -1057,6 +1170,7 @@ select {
   padding: 7px 13px;
   cursor: pointer;
   font-weight: 650;
+  text-decoration: none;
 }
 
 button:disabled {

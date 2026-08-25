@@ -14,6 +14,12 @@ from .config import Settings
 from .database import RunStore
 from .engine import RunCoordinator
 from .models import RunStatus, TERMINAL_STATUSES, WorkflowDraftRecord, utc_now
+from .workflow_composer import (
+    WorkflowCompositionError,
+    compact_agent_catalog,
+    compile_workflow_proposal,
+    gap_free_query_prompt,
+)
 from .workflows import (
     WorkflowError,
     agent_digest,
@@ -99,6 +105,105 @@ class WorkflowDraftService:
         self.store.get_workflow_draft(draft_id)
         return self.store.list_workflow_revisions(draft_id)
 
+    def start_composition(self, requirement: str, locale: str) -> WorkflowDraftRecord:
+        draft = self.create(
+            {"zh": "正在生成工作流", "en": "Generating workflow"},
+            {"zh": requirement, "en": requirement},
+            None,
+        )
+        draft.status = "planning"
+        draft.composition = {
+            "requirement": requirement,
+            "locale": locale,
+            "catalog_digest": "",
+            "stages": [],
+            "gaps": [],
+            "validation_defaults": {},
+            "clarification_question": "",
+            "clarification_history": [],
+            "error": None,
+        }
+        draft.updated_at = utc_now()
+        self.store.save_workflow_draft(draft)
+        self._schedule_composition(draft.draft_id)
+        return draft
+
+    def provide_composition_input(
+        self, draft_id: str, clarification_input: str
+    ) -> WorkflowDraftRecord:
+        draft = self.store.get_workflow_draft(draft_id)
+        if draft.status != "waiting_input":
+            raise WorkflowDraftError(
+                "This workflow draft is not waiting for composition input.",
+                code="workflow_composition_not_waiting",
+            )
+        history = list(draft.composition.get("clarification_history") or [])
+        history.append(
+            {
+                "question": str(draft.composition.get("clarification_question") or ""),
+                "answer": clarification_input,
+            }
+        )
+        draft.composition["clarification_history"] = history
+        draft.composition["clarification_question"] = ""
+        draft.status = "planning"
+        draft.updated_at = utc_now()
+        self.store.save_workflow_draft(draft)
+        self._schedule_composition(draft_id, clarification_input=clarification_input)
+        return draft
+
+    def reconcile(self, draft_id: str) -> WorkflowDraftRecord:
+        draft = self.store.get_workflow_draft(draft_id)
+        if draft.status != "needs_agents":
+            return draft
+        current_catalog = compact_agent_catalog(self.agents)
+        if draft.composition.get("catalog_digest") == current_catalog["digest"]:
+            return draft
+        draft.status = "planning"
+        draft.composition["reconciling"] = True
+        draft.updated_at = utc_now()
+        self.store.save_workflow_draft(draft)
+        self._schedule_composition(draft_id)
+        return draft
+
+    def gap(self, draft_id: str, gap_id: str, *, locale: str) -> dict[str, Any]:
+        draft = self.store.get_workflow_draft(draft_id)
+        gap = next(
+            (
+                item
+                for item in draft.composition.get("gaps") or []
+                if str(item.get("gap_id") or "") == gap_id
+            ),
+            None,
+        )
+        if gap is None:
+            raise KeyError(gap_id)
+        return {
+            "workflow_draft_id": draft_id,
+            "gap": gap,
+            "prompt": gap_free_query_prompt(gap, locale=locale),
+        }
+
+    def link_agent_draft(
+        self, workflow_draft_id: str, gap_id: str, agent_draft_id: str
+    ) -> WorkflowDraftRecord:
+        draft = self.store.get_workflow_draft(workflow_draft_id)
+        gaps = list(draft.composition.get("gaps") or [])
+        found = False
+        for gap in gaps:
+            if str(gap.get("gap_id") or "") != gap_id:
+                continue
+            gap["status"] = "agent_draft_created"
+            gap["agent_draft_id"] = agent_draft_id
+            found = True
+            break
+        if not found:
+            raise KeyError(gap_id)
+        draft.composition["gaps"] = gaps
+        draft.updated_at = utc_now()
+        self.store.save_workflow_draft(draft)
+        return draft
+
     def update(
         self, draft_id: str, expected_revision: int, workflow: dict[str, Any]
     ) -> WorkflowDraftRecord:
@@ -115,7 +220,7 @@ class WorkflowDraftService:
         diff = _json_diff(current.workflow, normalized)
         current.workflow = normalized
         current.revision += 1
-        current.status = "draft"
+        current.status = "needs_agents" if current.composition.get("gaps") else "draft"
         current.validation_run_id = None
         current.validation = {"valid": False, "issues": ["Draft changed after validation."]}
         current.updated_at = utc_now()
@@ -157,6 +262,14 @@ class WorkflowDraftService:
         *,
         auto_discover: bool,
     ) -> WorkflowDraftRecord:
+        current = self.store.get_workflow_draft(draft_id)
+        gaps = list(current.composition.get("gaps") or [])
+        if gaps:
+            raise WorkflowDraftError(
+                "Workflow validation is blocked until all missing Agents are available.",
+                code="workflow_gaps_unresolved",
+                detail={"gaps": [str(item.get("gap_id") or "") for item in gaps]},
+            )
         draft = self.validate_structure(draft_id)
         if draft.validation.get("valid") is not True:
             raise WorkflowDraftError(
@@ -217,6 +330,109 @@ class WorkflowDraftService:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return draft
+
+    def _schedule_composition(
+        self, draft_id: str, *, clarification_input: str | None = None
+    ) -> None:
+        task = asyncio.create_task(
+            self._compose_draft(draft_id, clarification_input=clarification_input),
+            name=f"workflow-composition-{draft_id}",
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _compose_draft(
+        self, draft_id: str, *, clarification_input: str | None = None
+    ) -> None:
+        draft = self.store.get_workflow_draft(draft_id)
+        requirement = str(draft.composition.get("requirement") or "").strip()
+        locale = str(draft.composition.get("locale") or "zh")
+        try:
+            compose = getattr(self.author, "compose_workflow", None)
+            supports = getattr(self.author, "supports", None)
+            if not callable(compose) or (callable(supports) and not supports("compose_workflow")):
+                raise WorkflowDraftError(
+                    "The selected Codex runtime does not support workflow composition.",
+                    code="workflow_composition_unavailable",
+                )
+            catalog = compact_agent_catalog(self.agents)
+            result = await compose(
+                requirement=requirement,
+                catalog=catalog,
+                locale=locale,
+                thread_id=draft.thread_id,
+                clarification_input=clarification_input,
+                previous=draft.composition,
+            )
+            draft = self.store.get_workflow_draft(draft_id)
+            draft.thread_id = str(result.get("thread_id") or draft.thread_id or "") or None
+            if result.get("needs_clarification"):
+                question = str(result.get("clarification_question") or "").strip()
+                if not question:
+                    raise WorkflowCompositionError(
+                        "Codex requested clarification without returning a question."
+                    )
+                draft.status = "waiting_input"
+                draft.composition.update(
+                    {
+                        "catalog_digest": catalog["digest"],
+                        "clarification_question": question,
+                        "error": None,
+                    }
+                )
+                draft.updated_at = utc_now()
+                self.store.save_workflow_draft(draft)
+                return
+            workflow, composition = compile_workflow_proposal(
+                workflow_id=str(draft.workflow["id"]),
+                requirement=requirement,
+                locale=locale,
+                proposal=result.get("proposal") or {},
+                catalog=catalog,
+                agents=self.agents,
+            )
+            old_gaps = {
+                str(item.get("gap_id") or ""): item
+                for item in draft.composition.get("gaps") or []
+            }
+            for gap in composition.get("gaps") or []:
+                previous_gap = old_gaps.get(str(gap.get("gap_id") or "")) or {}
+                if previous_gap.get("agent_draft_id"):
+                    gap["agent_draft_id"] = previous_gap["agent_draft_id"]
+                    gap["status"] = previous_gap.get("status") or "agent_draft_created"
+            composition["clarification_history"] = list(
+                draft.composition.get("clarification_history") or []
+            )
+            composition["reconciling"] = False
+            diff = _json_diff(draft.workflow, workflow)
+            draft.workflow = workflow
+            if diff:
+                draft.revision += 1
+            draft.composition = composition
+            draft.status = "needs_agents" if composition.get("gaps") else "draft"
+            draft.validation_run_id = None
+            draft.validation = {
+                "valid": False,
+                "issues": (
+                    ["Missing Agents must be created and accepted before validation."]
+                    if composition.get("gaps")
+                    else ["Generated workflow has not been validated."]
+                ),
+            }
+            draft.updated_at = utc_now()
+            self._write_draft(draft)
+            self.store.save_workflow_draft(draft, diff=diff if diff else None)
+        except Exception as exc:
+            draft = self.store.get_workflow_draft(draft_id)
+            draft.status = "needs_review"
+            draft.composition["error"] = {
+                "code": getattr(exc, "code", "workflow_composition_failed"),
+                "message": str(exc),
+                "type": type(exc).__name__,
+            }
+            draft.composition["reconciling"] = False
+            draft.updated_at = utc_now()
+            self.store.save_workflow_draft(draft)
 
     def publish(self, draft_id: str, *, acknowledge_inconclusive: bool) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)

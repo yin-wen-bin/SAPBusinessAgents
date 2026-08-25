@@ -57,6 +57,17 @@ WORKFLOW_REPAIR_OUTPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+WORKFLOW_COMPOSITION_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "needs_clarification": {"type": "boolean"},
+        "clarification_question": {"type": "string"},
+        "proposal_json": {"type": "string"},
+    },
+    "required": ["needs_clarification", "clarification_question", "proposal_json"],
+    "additionalProperties": False,
+}
+
 
 class Planner(Protocol):
     async def plan(
@@ -78,6 +89,17 @@ class Planner(Protocol):
         validation_failures: list[dict[str, Any]] | None = None,
         repair_attempt: int = 0,
     ) -> PlannerDecision: ...
+
+    async def compose_workflow(
+        self,
+        *,
+        requirement: str,
+        catalog: dict[str, Any],
+        locale: str,
+        thread_id: str | None = None,
+        clarification_input: str | None = None,
+        previous: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class CodexPlanner:
@@ -339,6 +361,139 @@ Rules:
                 "connections": connections,
                 "thread_id": thread.id,
             }
+
+    async def compose_workflow(
+        self,
+        *,
+        requirement: str,
+        catalog: dict[str, Any],
+        locale: str,
+        thread_id: str | None = None,
+        clarification_input: str | None = None,
+        previous: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+
+        prompt = _workflow_composition_prompt(
+            requirement=requirement,
+            catalog=catalog,
+            locale=locale,
+            clarification_input=clarification_input,
+            previous=previous or {},
+        )
+        async with AsyncCodex() as codex:
+            if thread_id:
+                thread = await codex.thread_resume(
+                    thread_id,
+                    cwd=str(self.repository_root),
+                    sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all,
+                    model=self.model,
+                )
+            else:
+                thread = await codex.thread_start(
+                    cwd=str(self.repository_root),
+                    sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all,
+                    model=self.model,
+                    service_name="sap_business_agents_workflow_composer",
+                    developer_instructions=(
+                        "You compose reusable deterministic read-only workflows only from the supplied "
+                        "executable Agent catalog. Never call tools, inspect other files, execute SAP, edit "
+                        "files, invent Agent IDs, or propose write operations."
+                    ),
+                )
+            result = await thread.run(prompt, output_schema=WORKFLOW_COMPOSITION_OUTPUT_SCHEMA)
+            raw = json.loads(result.final_response)
+            try:
+                proposal = json.loads(str(raw.get("proposal_json") or "{}"))
+            except json.JSONDecodeError as exc:
+                repair = await thread.run(
+                    (
+                        "Your proposal_json was not valid JSON: "
+                        f"{exc.msg} at character {exc.pos}. Re-emit the same workflow proposal and "
+                        "change only the JSON syntax. Do not change Agent IDs, stages, bindings, "
+                        "defaults, gaps, scope, or safety boundaries."
+                    ),
+                    output_schema=WORKFLOW_COMPOSITION_OUTPUT_SCHEMA,
+                )
+                raw = json.loads(repair.final_response)
+                proposal = json.loads(str(raw.get("proposal_json") or "{}"))
+            if not isinstance(proposal, dict):
+                raise ValueError("Codex workflow composition did not return a JSON object.")
+            return {
+                "needs_clarification": bool(raw.get("needs_clarification")),
+                "clarification_question": str(raw.get("clarification_question") or ""),
+                "proposal": proposal,
+                "thread_id": thread.id,
+            }
+
+
+def _workflow_composition_prompt(
+    *,
+    requirement: str,
+    catalog: dict[str, Any],
+    locale: str,
+    clarification_input: str | None,
+    previous: dict[str, Any],
+) -> str:
+    if clarification_input:
+        follow_up = (
+            f"User clarification: {clarification_input}\n"
+            f"Previous composition: {_safe_json(previous, limit=30_000)}"
+        )
+    elif previous.get("stages") or previous.get("gaps"):
+        follow_up = (
+            "Reconcile the existing proposal against the new executable catalog snapshot. "
+            "Replace a gap only when a new catalog Agent is a high-confidence contract match.\n"
+            f"Previous composition: {_safe_json(previous, limit=30_000)}"
+        )
+    else:
+        follow_up = "This is the initial composition turn."
+    return f"""
+Turn the business user's requirement into a reusable SAPBusinessAgents workflow proposal.
+
+Requirement: {requirement}
+Preferred UI language: {locale}
+{follow_up}
+
+Executable Agent catalog snapshot (the only Agents you may select):
+{_safe_json(catalog, limit=140_000)}
+
+Rules:
+1. Decompose the complete requested outcome into ordered business capability stages.
+2. Select an Agent only when one catalog entry is a high-confidence semantic match. Use its exact agent_id.
+3. If multiple Agents would materially change the business meaning, set needs_clarification=true and ask exactly one concise question. Do not ask for identifiers that can remain reusable workflow inputs.
+4. If no Agent covers a stage, keep agent_id empty and describe one missing Agent contract. Never hide or merge away an uncovered stage.
+5. A binding may connect only an earlier selected stage output to a later input with the exact same port name. Otherwise omit the binding; the server will expose a workflow input.
+6. Concrete identifiers and dates in the requirement belong only in validation_defaults. Never make them workflow constants.
+7. Select no tools and describe no SAP write operation. Source completeness and business completion remain separate concepts.
+
+Return proposal_json as a JSON object with exactly this conceptual shape:
+{{
+  "intent": {{"zh":"...","en":"..."}},
+  "title": {{"zh":"...","en":"..."}},
+  "description": {{"zh":"...","en":"..."}},
+  "validation_defaults": {{"declared_workflow_input_name":"value"}},
+  "stages": [{{
+    "id":"lower_snake_case",
+    "capability":{{"zh":"...","en":"..."}},
+    "agent_id":"exact catalog id or empty",
+    "confidence":"high|medium|low",
+    "reason":{{"zh":"...","en":"..."}},
+    "bindings":[{{"input_port":"company_code","source_stage_id":"earlier_stage","source_output_port":"company_code"}}],
+    "requested_outputs":["declared_output_port"],
+    "gap_title":{{"zh":"...","en":"..."}},
+    "gap_description":{{"zh":"...","en":"..."}},
+    "required_inputs":[{{"name":"snake_case","type":"string|integer|number|boolean|object|array","required":true,"description":{{"zh":"...","en":"..."}}}}],
+    "required_outputs":[{{"name":"snake_case","type":"string|integer|number|boolean|object|array","required":true,"description":{{"zh":"...","en":"..."}}}}],
+    "guardrails":{{"zh":["..."],"en":["..."]}},
+    "acceptance":{{"zh":"...","en":"..."}}
+  }}]
+}}
+
+For a selected Agent, gap fields may be empty. For an uncovered stage, required_inputs, required_outputs, guardrails, and acceptance must be specific enough for an Agent author to implement and test it.
+""".strip()
 
 
 def _planner_prompt(

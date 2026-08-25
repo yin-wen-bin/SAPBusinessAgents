@@ -1,10 +1,13 @@
 ---
 import { Ban, Download, FilePlus, RefreshCw, Send } from "@lucide/astro";
 import type { Locale } from "../lib/types";
+import { workflowsPath } from "../lib/urls";
 
 interface Props { locale: Locale }
 const { locale } = Astro.props;
+const base = import.meta.env.BASE_URL;
 const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
+const workflowDestination = workflowsPath(base, locale);
 const labels = locale === "zh" ? {
   title: "SAP 业务查询",
   noRun: "链接中没有查询编号。请从 Agent 页面或“直接询问 SAP”页面重新发起查询。",
@@ -41,6 +44,7 @@ const labels = locale === "zh" ? {
   send: "继续查询",
   cancel: "取消查询",
   draft: "保存为 Agent 草稿",
+  returnWorkflow: "返回工作流查看缺口",
   reconnect: "重新连接",
   downloads: "下载业务报告与明细",
   unavailable: "无法连接本机查询服务。请先启动 SAPBusinessAgents。",
@@ -134,6 +138,7 @@ const labels = locale === "zh" ? {
   send: "Continue query",
   cancel: "Cancel query",
   draft: "Save as Agent draft",
+  returnWorkflow: "Return to workflow gap",
   reconnect: "Reconnect",
   downloads: "Download report and details",
   unavailable: "Cannot reach the local query service. Start SAPBusinessAgents first.",
@@ -194,7 +199,7 @@ const labels = locale === "zh" ? {
 };
 ---
 
-<section class="run-console" data-run-console data-api-base={apiBase}>
+<section class="run-console" data-run-console data-api-base={apiBase} data-workflows-path={workflowDestination}>
   <header class="run-console-header">
     <div>
       <p class="runtime-eyebrow">SAPBusinessAgents</p>
@@ -210,6 +215,7 @@ const labels = locale === "zh" ? {
     <button type="button" class="secondary-button" data-cancel><Ban size={16} aria-hidden="true" />{labels.cancel}</button>
     <button type="button" class="secondary-button" data-reconnect><RefreshCw size={16} aria-hidden="true" />{labels.reconnect}</button>
     <button type="button" data-draft hidden><FilePlus size={16} aria-hidden="true" />{labels.draft}</button>
+    <a class="secondary-button" data-gap-return hidden>{labels.returnWorkflow}</a>
     <span class="run-downloads" data-downloads hidden><Download size={16} aria-hidden="true" /><span>{labels.downloads}</span></span>
   </div>
 
@@ -322,7 +328,10 @@ const labels = locale === "zh" ? {
 
 <script is:inline define:vars={{ labels, locale }}>
   const root = document.querySelector("[data-run-console]");
-  const runId = new URLSearchParams(window.location.search).get("run");
+  const queryParams = new URLSearchParams(window.location.search);
+  const runId = queryParams.get("run");
+  const workflowDraft = queryParams.get("workflowDraft");
+  const gap = queryParams.get("gap");
   const apiBase = root?.dataset.apiBase;
   const terminal = new Set(["completed", "inconclusive", "failed", "cancelled"]);
   const seenEvents = new Set();
@@ -903,8 +912,16 @@ const labels = locale === "zh" ? {
   });
   root?.querySelector("[data-draft]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget; button.disabled = true;
-    const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/create-agent-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ correction: "" }) });
-    const payload = await response.json(); button.textContent = response.ok ? `${payload.draft_id} · ${payload.status}` : String(payload.detail || "Draft failed");
+    const body = { correction: "" };
+    if (workflowDraft && gap) { body.workflowDraftId = workflowDraft; body.gapId = gap; }
+    const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/create-agent-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const payload = await response.json();
+    button.textContent = response.ok ? `${payload.draft_id} · ${payload.status}` : String(payload.detail?.message || payload.detail || "Draft failed");
+    if (response.ok && workflowDraft && gap) {
+      const returnLink = root.querySelector("[data-gap-return]");
+      returnLink.href = `${root.dataset.workflowsPath}?draft=${encodeURIComponent(workflowDraft)}`;
+      returnLink.hidden = false;
+    } else if (!response.ok) button.disabled = false;
   });
 
   if (runId) loadRun().then(connect).catch(() => showAlert(labels.unavailable)); else showAlert(labels.noRun);

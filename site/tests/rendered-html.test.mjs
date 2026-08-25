@@ -164,11 +164,17 @@ test("dual-mode prototype renders free-query and run pages", async () => {
 test("workflow builder is rendered and consistently localized", async () => {
   const zh = await readPage("zh", "workflows");
   const en = await readPage("en", "workflows");
-  assert.match(zh, /工作流编排/);
+  assert.match(zh, /用一句话生成工作流/);
+  assert.match(zh, /你希望完成什么业务任务/);
+  assert.match(zh, /从空白画布开始/);
+  assert.match(zh, /生成工作流草稿/);
   assert.match(zh, /Codex 真机验证/);
   assert.match(zh, /发布固定工作流/);
   assert.doesNotMatch(zh, />Workflow builder</);
-  assert.match(en, /Workflow builder/);
+  assert.match(en, /Generate a workflow from one request/);
+  assert.match(en, /What business task should this workflow complete/);
+  assert.match(en, /Start with a blank canvas/);
+  assert.match(en, /Generate workflow draft/);
   assert.match(en, /Validate live with Codex/);
   assert.match(en, /Publish fixed workflow/);
   assert.doesNotMatch(en, />工作流编排</);

@@ -284,6 +284,8 @@ class PlannerDecision(BaseModel):
 class DraftCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     correction: str = ""
+    workflow_draft_id: str | None = Field(default=None, alias="workflowDraftId")
+    gap_id: str | None = Field(default=None, alias="gapId")
 
 
 class DraftAuthoringCreate(DraftCreate):
@@ -298,8 +300,9 @@ class DraftInput(BaseModel):
 class DraftRecord(BaseModel):
     draft_id: str
     run_id: str
-    status: Literal["generated", "validated", "invalid", "applied"]
+    status: Literal["generated", "needs_review", "validated", "invalid", "applied"]
     path: str
+    origin: dict[str, Any] = Field(default_factory=dict)
     validation: dict[str, Any] = Field(default_factory=dict)
     created_at: str
 
@@ -312,6 +315,33 @@ class WorkflowDraftCreate(BaseModel):
     )
     description: dict[str, str] = Field(default_factory=lambda: {"zh": "", "en": ""})
     workflow: dict[str, Any] | None = None
+
+
+class WorkflowCompositionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requirement: str = Field(min_length=1, max_length=12_000)
+    locale: Literal["zh", "en"] = "zh"
+
+    @model_validator(mode="after")
+    def strip_requirement(self) -> "WorkflowCompositionCreate":
+        self.requirement = self.requirement.strip()
+        if not self.requirement:
+            raise ValueError("requirement must not be blank")
+        return self
+
+
+class WorkflowCompositionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input: str = Field(min_length=1, max_length=4_000)
+
+    @model_validator(mode="after")
+    def strip_input(self) -> "WorkflowCompositionInput":
+        self.input = self.input.strip()
+        if not self.input:
+            raise ValueError("input must not be blank")
+        return self
 
 
 class WorkflowDraftUpdate(BaseModel):
@@ -337,13 +367,22 @@ class WorkflowPublishRequest(BaseModel):
 class WorkflowDraftRecord(BaseModel):
     draft_id: str
     status: Literal[
-        "draft", "invalid", "validated", "inconclusive", "needs_review", "published"
+        "planning",
+        "waiting_input",
+        "needs_agents",
+        "draft",
+        "invalid",
+        "validated",
+        "inconclusive",
+        "needs_review",
+        "published",
     ]
     revision: int
     workflow: dict[str, Any]
     path: str
     thread_id: str | None = None
     validation_run_id: str | None = None
+    composition: dict[str, Any] = Field(default_factory=dict)
     validation: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str

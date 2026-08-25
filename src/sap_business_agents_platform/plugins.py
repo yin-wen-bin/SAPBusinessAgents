@@ -469,6 +469,15 @@ class CodexRuntimePluginProvider:
             raise PluginError("Codex runtime does not support authoring.", code="operation_unavailable")
         return await method(*args, **kwargs)
 
+    async def compose_workflow(self, *args: Any, **kwargs: Any) -> Any:
+        method = getattr(self.planner, "compose_workflow", None)
+        if not callable(method):
+            raise PluginError(
+                "Codex runtime does not support workflow composition.",
+                code="operation_unavailable",
+            )
+        return await method(*args, **kwargs)
+
     async def review_workflow(self, *args: Any, **kwargs: Any) -> Any:
         method = getattr(self.planner, "review_workflow", None)
         if not callable(method):
@@ -619,7 +628,7 @@ class AgentRuntimeCapability:
     def plugin_metadata(self, operation: str) -> dict[str, Any]:
         capability = (
             "workflow_authoring.v1"
-            if operation in {"review_workflow", "repair_workflow"}
+            if operation in {"compose_workflow", "review_workflow", "repair_workflow"}
             else "authoring.v1"
             if operation == "author_draft"
             else "agent_runtime.v1"
@@ -629,7 +638,7 @@ class AgentRuntimeCapability:
     def supports(self, operation: str) -> bool:
         capability = (
             "workflow_authoring.v1"
-            if operation in {"review_workflow", "repair_workflow"}
+            if operation in {"compose_workflow", "review_workflow", "repair_workflow"}
             else "authoring.v1"
             if operation == "author_draft"
             else "agent_runtime.v1"
@@ -651,6 +660,11 @@ class AgentRuntimeCapability:
 
     async def author_draft(self, *args: Any, **kwargs: Any) -> Any:
         return await self.manager.invoke("authoring.v1", "author_draft", *args, **kwargs)
+
+    async def compose_workflow(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke(
+            "workflow_authoring.v1", "compose_workflow", *args, **kwargs
+        )
 
     async def review_workflow(self, *args: Any, **kwargs: Any) -> Any:
         return await self.manager.invoke(
@@ -729,7 +743,7 @@ def official_plugin_manifests() -> list[PluginManifest]:
                 {"capability": "authoring.v1", "operations": ["author_draft"]},
                 {
                     "capability": "workflow_authoring.v1",
-                    "operations": ["review_workflow", "repair_workflow"],
+                    "operations": ["compose_workflow", "review_workflow", "repair_workflow"],
                 },
             ],
             "transport": {"type": "codex_app_server", "entrypoint": "codex app-server --listen stdio://", "loopback_only": True},

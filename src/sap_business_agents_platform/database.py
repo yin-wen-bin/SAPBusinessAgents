@@ -68,6 +68,7 @@ class RunStore:
                     run_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     path TEXT NOT NULL,
+                    origin_json TEXT NOT NULL DEFAULT '{}',
                     validation_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -79,6 +80,7 @@ class RunStore:
                     path TEXT NOT NULL,
                     thread_id TEXT,
                     validation_run_id TEXT,
+                    composition_json TEXT NOT NULL DEFAULT '{}',
                     validation_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -138,6 +140,19 @@ class RunStore:
                     connection.execute(f"ALTER TABLE runs ADD COLUMN {name} TEXT")
             if "progress_json" not in columns:
                 connection.execute("ALTER TABLE runs ADD COLUMN progress_json TEXT")
+            draft_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(drafts)").fetchall()
+            }
+            if "origin_json" not in draft_columns:
+                connection.execute("ALTER TABLE drafts ADD COLUMN origin_json TEXT NOT NULL DEFAULT '{}'")
+            workflow_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(workflow_drafts)").fetchall()
+            }
+            if "composition_json" not in workflow_columns:
+                connection.execute(
+                    "ALTER TABLE workflow_drafts ADD COLUMN composition_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def create_run(
         self,
@@ -424,13 +439,14 @@ class RunStore:
         with self._lock, self._connect() as connection:
             connection.execute(
                 """INSERT OR REPLACE INTO drafts
-                (draft_id, run_id, status, path, validation_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)""",
+                (draft_id, run_id, status, path, origin_json, validation_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     draft.draft_id,
                     draft.run_id,
                     draft.status,
                     draft.path,
+                    _dump(draft.origin),
                     _dump(draft.validation),
                     draft.created_at,
                 ),
@@ -471,8 +487,8 @@ class RunStore:
             connection.execute(
                 """INSERT OR REPLACE INTO workflow_drafts
                 (draft_id, status, revision, workflow_json, path, thread_id,
-                 validation_run_id, validation_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 validation_run_id, composition_json, validation_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     draft.draft_id,
                     draft.status,
@@ -481,6 +497,7 @@ class RunStore:
                     draft.path,
                     draft.thread_id,
                     draft.validation_run_id,
+                    _dump(draft.composition),
                     _dump(draft.validation),
                     draft.created_at,
                     draft.updated_at,
@@ -515,6 +532,7 @@ class RunStore:
             path=row["path"],
             thread_id=row["thread_id"],
             validation_run_id=row["validation_run_id"],
+            composition=_load(row["composition_json"], {}),
             validation=_load(row["validation_json"], {}),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -546,6 +564,7 @@ class RunStore:
             run_id=row["run_id"],
             status=row["status"],
             path=row["path"],
+            origin=_load(row["origin_json"], {}),
             validation=_load(row["validation_json"], {}),
             created_at=row["created_at"],
         )

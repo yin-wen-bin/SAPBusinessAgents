@@ -171,7 +171,7 @@ npm run dev
 
 插件页显示本机注册表、健康状态、能力、传输方式和安全权限。对应接口为 `GET /api/plugins`、`GET /api/capabilities`、`POST /api/plugins/rescan`、`POST /api/plugins/{plugin_id}/health` 和 `PUT /api/plugins/{plugin_id}/enabled`。详细契约见 [本机插件平台设计](docs/local-plugin-platform.md)。
 
-“我的工作流”页面提供可视化 DAG 编排、类型化端口映射、草稿版本、真机 GET-only 验证和 Git 分支发布。首批验证链路为 P2P→AP 与 O2C→AR；正式工作流执行时不调用 Codex。完整边界与接口见 [用户自定义工作流](docs/user-workflows.md)。
+“我的工作流”现在以自然语言为默认入口：Codex 自动匹配当前仓库中的可执行 Agent，服务端固定版本与摘要并编译类型化 DAG；不确定能力会形成阻断验证/发布的缺口清单，并可一键带着缺口契约进入自由查询创建待审核 Agent 草稿。原可视化画布保留为高级编辑。首批真机验证链路为 P2P→AP 与 O2C→AR；正式工作流执行时不调用 Codex。完整边界与接口见 [用户自定义工作流](docs/user-workflows.md)。
 
 Skill 自动执行默认关闭。只有在 `config/skills.json` 中显式登记、同时声明 `read_only=true`、`validated=true` 并支持标准 JSON 输入输出入口的 Skill，才会进入工具目录。仅包含 `SKILL.md` 的 Skill 不能由运行时自动执行。
 
@@ -303,7 +303,7 @@ In another terminal, run `npm run dev` under `site/`. Fixed Agents execute their
 
 The local runtime is a Python/FastAPI microkernel without Cordis. It routes versioned capabilities from trusted manifests under `config/plugins/`: `business_agent.v1`, `sap_read.v2`, `skill_catalog.v1`, `skill_execute.v1`, `agent_runtime.v2`, and `authoring.v1`. Plugins can be inspected, health-checked, enabled, or disabled through the local plugin page and API; every evidence-producing call records plugin identity and duration. See [Local plugin platform](docs/local-plugin-platform.md).
 
-The “My workflows” page provides visual DAG authoring, typed mappings, draft revisions, live GET-only validation, and local Git-branch publishing. The initial validation slices are P2P→AP and O2C→AR. See [User-defined workflows](docs/user-workflows.md).
+“My workflows” is natural-language-first: Codex matches executable repository Agents, while a trusted server-side compiler pins versions and digests and builds the typed DAG. Uncertain capabilities become blocking gaps that can open a contract-prefilled free query and produce a review-only Agent draft. The visual DAG remains available as the advanced editor. Live validation is GET-only, and published runtime execution never calls Codex. See [User-defined workflows](docs/user-workflows.md).
 
 ### Runtime dependency version policy
 

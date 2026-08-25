@@ -24,7 +24,13 @@ class AgentDraftService:
         self.store = store
         self.author = author
 
-    async def create_from_run(self, run_id: str, correction: str = "") -> DraftRecord:
+    async def create_from_run(
+        self,
+        run_id: str,
+        correction: str = "",
+        *,
+        origin: dict[str, Any] | None = None,
+    ) -> DraftRecord:
         run = self.store.get_run(run_id)
         if run.mode != RunMode.free_query:
             raise DraftError("Only a free_query run can become an Agent draft.")
@@ -37,6 +43,12 @@ class AgentDraftService:
             raise DraftError("Draft path escaped the configured draft root.")
         query = str(run.query or "SAP free query")
         manifest = _manifest_from_run(slug, query, run.plan, correction)
+        origin = json.loads(json.dumps(origin or {}))
+        if origin:
+            manifest.setdefault("authoring", {})["workflowGap"] = {
+                "workflowDraftId": origin.get("workflow_draft_id"),
+                "gapId": origin.get("gap_id"),
+            }
         authored = {
             "content_zh": "只读 Agent 草稿。发布前必须复核业务语义、规则与证据完整性。",
             "content_en": "Read-only Agent draft. Review semantics, rules, and evidence completeness before publishing.",
@@ -130,11 +142,17 @@ class AgentDraftService:
             + "\n",
             encoding="utf-8",
         )
+        if origin.get("gap_contract"):
+            (docs_dir / "gap-contract.json").write_text(
+                json.dumps(origin["gap_contract"], ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
         draft = DraftRecord(
             draft_id=draft_id,
             run_id=run_id,
             status="generated",
             path=str(draft_dir),
+            origin=origin,
             created_at=utc_now(),
         )
         self.store.save_draft(draft)
@@ -144,15 +162,23 @@ class AgentDraftService:
         draft = self.store.get_draft(draft_id)
         path = Path(draft.path)
         issues: list[str] = []
+        review_issues: list[str] = []
         try:
             manifest = json.loads((path / "agent.json").read_text(encoding="utf-8"))
             validate_execution(manifest, str(path / "agent.json"))
             if _contains_write_operation(manifest):
                 issues.append("Draft contains a write-like SAP operation.")
+            review_issues.extend(
+                _gap_contract_issues(manifest, (draft.origin or {}).get("gap_contract"))
+            )
         except (OSError, json.JSONDecodeError, ManifestError) as exc:
             issues.append(str(exc))
-        draft.status = "invalid" if issues else "validated"
-        draft.validation = {"valid": not issues, "issues": issues}
+        draft.status = "invalid" if issues else "needs_review" if review_issues else "validated"
+        draft.validation = {
+            "valid": not issues and not review_issues,
+            "issues": [*issues, *review_issues],
+            "review_required": bool(review_issues),
+        }
         self.store.save_draft(draft)
         return draft
 
@@ -365,6 +391,33 @@ def _execution_steps_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:
     if not execution_steps:
         raise DraftError("The validated harness plan has no executable steps.")
     return execution_steps
+
+
+def _gap_contract_issues(manifest: dict[str, Any], gap_contract: Any) -> list[str]:
+    if not isinstance(gap_contract, dict):
+        return []
+    execution = manifest.get("execution") or {}
+    issues: list[str] = []
+    if not (gap_contract.get("required_inputs") or gap_contract.get("required_outputs")):
+        issues.append("Gap contract requires business-owner input and output definition review.")
+    for label, contract_key, schema_key in (
+        ("input", "required_inputs", "inputSchema"),
+        ("output", "required_outputs", "outputSchema"),
+    ):
+        properties = ((execution.get(schema_key) or {}).get("properties") or {})
+        for spec in gap_contract.get(contract_key) or []:
+            if not isinstance(spec, dict):
+                continue
+            name = str(spec.get("name") or "")
+            expected = str(spec.get("type") or "")
+            actual = properties.get(name)
+            if not isinstance(actual, dict):
+                issues.append(f"Gap contract {label} port is not implemented: {name}.")
+            elif expected and str(actual.get("type") or "") != expected:
+                issues.append(
+                    f"Gap contract {label} port type is unresolved: {name} expects {expected}."
+                )
+    return issues
 
 
 def _contains_write_operation(value: Any) -> bool:

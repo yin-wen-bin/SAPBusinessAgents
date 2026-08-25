@@ -27,6 +27,8 @@ from .models import (
     RunCreate,
     RunInput,
     TERMINAL_STATUSES,
+    WorkflowCompositionCreate,
+    WorkflowCompositionInput,
     WorkflowDraftCreate,
     WorkflowDraftUpdate,
     WorkflowPublishRequest,
@@ -456,18 +458,38 @@ def create_app(
     @app.post("/api/runs/{run_id}/create-agent-draft", status_code=201)
     async def create_draft(run_id: str, payload: DraftCreate) -> dict[str, Any]:
         try:
-            return (await drafts.create_from_run(run_id, payload.correction)).model_dump(mode="json")
+            origin = _agent_draft_origin(workflow_drafts, payload)
+            draft = await drafts.create_from_run(run_id, payload.correction, origin=origin)
+            if origin:
+                workflow_drafts.link_agent_draft(
+                    str(origin["workflow_draft_id"]), str(origin["gap_id"]), draft.draft_id
+                )
+            return draft.model_dump(mode="json")
         except KeyError as exc:
-            raise HTTPException(404, "Run not found") from exc
+            raise HTTPException(404, "Run or workflow gap not found") from exc
+        except WorkflowDraftError as exc:
+            raise HTTPException(
+                409, {"code": exc.code, "message": str(exc), "detail": exc.detail}
+            ) from exc
         except DraftError as exc:
             raise HTTPException(409, str(exc)) from exc
 
     @app.post("/api/authoring/drafts", status_code=201)
     async def create_authoring_draft(payload: DraftAuthoringCreate) -> dict[str, Any]:
         try:
-            return (await drafts.create_from_run(payload.run_id, payload.correction)).model_dump(mode="json")
+            origin = _agent_draft_origin(workflow_drafts, payload)
+            draft = await drafts.create_from_run(payload.run_id, payload.correction, origin=origin)
+            if origin:
+                workflow_drafts.link_agent_draft(
+                    str(origin["workflow_draft_id"]), str(origin["gap_id"]), draft.draft_id
+                )
+            return draft.model_dump(mode="json")
         except KeyError as exc:
-            raise HTTPException(404, "Run not found") from exc
+            raise HTTPException(404, "Run or workflow gap not found") from exc
+        except WorkflowDraftError as exc:
+            raise HTTPException(
+                409, {"code": exc.code, "message": str(exc), "detail": exc.detail}
+            ) from exc
         except DraftError as exc:
             raise HTTPException(409, str(exc)) from exc
 
@@ -514,6 +536,22 @@ def create_app(
                 409, {"code": getattr(exc, "code", "workflow_draft_error"), "message": str(exc)}
             ) from exc
 
+    @app.post("/api/authoring/workflows/compose", status_code=202)
+    async def compose_workflow_draft(payload: WorkflowCompositionCreate) -> dict[str, Any]:
+        try:
+            return workflow_drafts.start_composition(
+                payload.requirement, payload.locale
+            ).model_dump(mode="json")
+        except (WorkflowDraftError, WorkflowError, PluginError) as exc:
+            raise HTTPException(
+                409,
+                {
+                    "code": getattr(exc, "code", "workflow_composition_failed"),
+                    "message": str(exc),
+                    "detail": getattr(exc, "detail", None),
+                },
+            ) from exc
+
     @app.get("/api/authoring/workflows/{draft_id}")
     def get_workflow_draft(draft_id: str) -> dict[str, Any]:
         try:
@@ -547,6 +585,46 @@ def create_app(
             return {"items": workflow_drafts.revisions(draft_id)}
         except KeyError as exc:
             raise HTTPException(404, "Workflow draft not found") from exc
+
+    @app.post("/api/authoring/workflows/{draft_id}/composition-input", status_code=202)
+    async def continue_workflow_composition(
+        draft_id: str, payload: WorkflowCompositionInput
+    ) -> dict[str, Any]:
+        try:
+            return workflow_drafts.provide_composition_input(
+                draft_id, payload.input
+            ).model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+        except WorkflowDraftError as exc:
+            raise HTTPException(
+                409, {"code": exc.code, "message": str(exc), "detail": exc.detail}
+            ) from exc
+
+    @app.post("/api/authoring/workflows/{draft_id}/reconcile", status_code=202)
+    async def reconcile_workflow_draft(draft_id: str) -> dict[str, Any]:
+        try:
+            return workflow_drafts.reconcile(draft_id).model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+        except (WorkflowDraftError, PluginError) as exc:
+            raise HTTPException(
+                409,
+                {
+                    "code": getattr(exc, "code", "workflow_reconcile_failed"),
+                    "message": str(exc),
+                    "detail": getattr(exc, "detail", None),
+                },
+            ) from exc
+
+    @app.get("/api/authoring/workflows/{draft_id}/gaps/{gap_id}")
+    def get_workflow_gap(draft_id: str, gap_id: str, locale: str = "zh") -> dict[str, Any]:
+        try:
+            return workflow_drafts.gap(
+                draft_id, gap_id, locale="en" if locale == "en" else "zh"
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow gap not found") from exc
 
     @app.post("/api/authoring/workflows/{draft_id}/validate", status_code=202)
     async def validate_workflow_draft(
@@ -667,6 +745,24 @@ def create_app(
         }
 
     return app
+
+
+def _agent_draft_origin(workflow_drafts: WorkflowDraftService, payload: Any) -> dict[str, Any]:
+    workflow_draft_id = getattr(payload, "workflow_draft_id", None)
+    gap_id = getattr(payload, "gap_id", None)
+    if bool(workflow_draft_id) != bool(gap_id):
+        raise WorkflowDraftError(
+            "workflowDraftId and gapId must be provided together.",
+            code="workflow_gap_origin_invalid",
+        )
+    if not workflow_draft_id or not gap_id:
+        return {}
+    gap = workflow_drafts.gap(str(workflow_draft_id), str(gap_id), locale="zh")["gap"]
+    return {
+        "workflow_draft_id": str(workflow_draft_id),
+        "gap_id": str(gap_id),
+        "gap_contract": gap,
+    }
 
 
 def _merge_env(path: Path, updates: dict[str, str]) -> None:

@@ -1586,6 +1586,78 @@ def test_validated_free_query_creates_isolated_agent_draft(tmp_path: Path) -> No
         assert (Path(draft["path"]) / "docs" / "data-contract.json").is_file()
 
 
+def test_gap_origin_is_preserved_and_linked_when_free_query_becomes_agent_draft(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        _settings(tmp_path), planner=FakePlanner(), embedded_provider=FakeEmbeddedProvider()
+    )
+    with TestClient(app) as client:
+        workflow = app.state.workflow_drafts.create(
+            {"zh": "付款复核", "en": "Payment review"},
+            {"zh": "只读工作流", "en": "Read-only workflow"},
+            None,
+        )
+        gap = {
+            "gap_id": "gap_bank_settlement",
+            "stage_id": "bank_settlement",
+            "title": {"zh": "银行扣款核验 Agent", "en": "Bank settlement Agent"},
+            "description": {"zh": "核验银行结算证据", "en": "Verify bank settlement evidence"},
+            "required_inputs": [
+                {
+                    "name": "payment_document",
+                    "type": "string",
+                    "required": True,
+                    "description": {"zh": "付款凭证", "en": "Payment document"},
+                }
+            ],
+            "required_outputs": [
+                {
+                    "name": "settlement_status",
+                    "type": "string",
+                    "required": True,
+                    "description": {"zh": "结算状态", "en": "Settlement status"},
+                }
+            ],
+            "guardrails": {"zh": ["严格只读"], "en": ["Strictly read-only"]},
+            "acceptance": {"zh": "真机验收", "en": "Live acceptance"},
+            "status": "missing",
+            "agent_draft_id": None,
+        }
+        workflow.status = "needs_agents"
+        workflow.composition = {"requirement": "核验付款", "gaps": [gap]}
+        app.state.store.save_workflow_draft(workflow)
+
+        response = client.post(
+            "/api/runs", json={"mode": "free_query", "query": "查询采购订单 4500000001"}
+        )
+        run = _wait(client, response.json()["run_id"])
+        incomplete_origin = client.post(
+            f"/api/runs/{run['run_id']}/create-agent-draft",
+            json={"correction": "", "workflowDraftId": workflow.draft_id},
+        )
+        assert incomplete_origin.status_code == 409
+        assert incomplete_origin.json()["detail"]["code"] == "workflow_gap_origin_invalid"
+        created = client.post(
+            f"/api/runs/{run['run_id']}/create-agent-draft",
+            json={
+                "correction": "",
+                "workflowDraftId": workflow.draft_id,
+                "gapId": gap["gap_id"],
+            },
+        )
+
+        assert created.status_code == 201, created.text
+        agent_draft = created.json()
+        assert agent_draft["status"] == "needs_review"
+        assert agent_draft["origin"]["workflow_draft_id"] == workflow.draft_id
+        assert agent_draft["origin"]["gap_id"] == gap["gap_id"]
+        assert (Path(agent_draft["path"]) / "docs" / "gap-contract.json").is_file()
+        linked = client.get(f"/api/authoring/workflows/{workflow.draft_id}").json()
+        assert linked["composition"]["gaps"][0]["status"] == "agent_draft_created"
+        assert linked["composition"]["gaps"][0]["agent_draft_id"] == agent_draft["draft_id"]
+
+
 def test_standard_skill_contract_and_free_query_harness(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     skillhub = tmp_path / "skillhub"

@@ -16,6 +16,7 @@ const copy = locale === "zh" ? {
   submit: "开始只读查询",
   safety: "仅允许 SAP Provider GET 和已批准的只读 Skill",
   error: "无法连接本地运行服务，请先启动 127.0.0.1:8765。",
+  gapContext: "正在为工作流补齐缺口 Agent。完成查询后，请点击“保存为 Agent 草稿”。",
 } : {
   eyebrow: "Free SAP query",
   title: "No matching Agent? Ask SAP directly",
@@ -24,14 +25,16 @@ const copy = locale === "zh" ? {
   submit: "Start read-only query",
   safety: "Only SAP Provider GET and approved read-only Skills are allowed",
   error: "Cannot reach the local runtime. Start 127.0.0.1:8765 first.",
+  gapContext: "This query is closing a workflow Agent gap. When it finishes, select Save as Agent draft.",
 };
 ---
 
-<section class="free-query-panel" data-free-query data-api-base={apiBase} data-run-path={destination}>
+<section class="free-query-panel" data-free-query data-api-base={apiBase} data-run-path={destination} data-locale={locale}>
   <div>
     <p class="runtime-eyebrow"><MessageSquareText size={16} aria-hidden="true" />{copy.eyebrow}</p>
     <h2>{copy.title}</h2>
     <p>{copy.body}</p>
+    <p class="free-query-gap-context" data-gap-context hidden>{copy.gapContext}</p>
     <p class="runtime-safety"><ShieldCheck size={16} aria-hidden="true" />{copy.safety}</p>
   </div>
   <form class="free-query-form">
@@ -47,6 +50,21 @@ const copy = locale === "zh" ? {
   document.querySelectorAll<HTMLElement>("[data-free-query]").forEach((panel) => {
     const form = panel.querySelector<HTMLFormElement>("form");
     const error = panel.querySelector<HTMLElement>(".runtime-form-error");
+    const textarea = form?.querySelector<HTMLTextAreaElement>("textarea[name=query]");
+    const context = panel.querySelector<HTMLElement>("[data-gap-context]");
+    const params = new URLSearchParams(window.location.search);
+    const workflowDraft = params.get("workflowDraft");
+    const gap = params.get("gap");
+    if (workflowDraft && gap) {
+      void fetch(`${panel.dataset.apiBase}/api/authoring/workflows/${encodeURIComponent(workflowDraft)}/gaps/${encodeURIComponent(gap)}?locale=${encodeURIComponent(panel.dataset.locale || "zh")}`)
+        .then(async (response) => {
+          if (!response.ok) throw new Error(await response.text());
+          const payload = await response.json();
+          if (textarea) textarea.value = String(payload.prompt || "");
+          if (context) context.hidden = false;
+        })
+        .catch(() => { if (error) error.hidden = false; });
+    }
     form?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const submit = form.querySelector<HTMLButtonElement>("button[type=submit]");
@@ -61,7 +79,12 @@ const copy = locale === "zh" ? {
         });
         if (!response.ok) throw new Error(await response.text());
         const payload = await response.json();
-        window.location.href = `${panel.dataset.runPath}?run=${encodeURIComponent(payload.run_id)}`;
+        const destinationParams = new URLSearchParams({ run: String(payload.run_id) });
+        if (workflowDraft && gap) {
+          destinationParams.set("workflowDraft", workflowDraft);
+          destinationParams.set("gap", gap);
+        }
+        window.location.href = `${panel.dataset.runPath}?${destinationParams.toString()}`;
       } catch {
         if (error) error.hidden = false;
         if (submit) submit.disabled = false;

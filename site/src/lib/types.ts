@@ -217,6 +217,50 @@ export interface WorkflowDefinition {
   policies: { onInconclusive: "continue_if_required_outputs_present" };
 }
 
+export interface WorkflowCompositionPort {
+  name: string;
+  type: string;
+  description: LocalizedText;
+  required: boolean;
+}
+
+export interface WorkflowCompositionGap {
+  gap_id: string;
+  stage_id: string;
+  title: LocalizedText;
+  description: LocalizedText;
+  required_inputs: WorkflowCompositionPort[];
+  required_outputs: WorkflowCompositionPort[];
+  guardrails: LocalizedList;
+  acceptance: LocalizedText;
+  status: string;
+  agent_draft_id?: string | null;
+}
+
+export interface WorkflowCompositionStage {
+  id: string;
+  capability: LocalizedText;
+  agent_id?: string | null;
+  confidence: "high" | "medium" | "low";
+  reason: LocalizedText;
+  bindings: Array<Record<string, unknown>>;
+  requested_outputs: string[];
+}
+
+export interface WorkflowComposition {
+  requirement?: string;
+  locale?: Locale;
+  intent?: LocalizedText;
+  catalog_digest?: string;
+  stages?: WorkflowCompositionStage[];
+  gaps?: WorkflowCompositionGap[];
+  validation_defaults?: Record<string, unknown>;
+  clarification_question?: string;
+  clarification_history?: Array<{ question: string; answer: string }>;
+  reconciling?: boolean;
+  error?: { code?: string; message?: string; type?: string } | null;
+}
+
 export interface AgentDefinition {
   schemaVersion: number;
   slug: string;
