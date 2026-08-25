@@ -498,6 +498,48 @@
       "entity_set": "A_SupplierPurchasingOrg",
       "field": "Supplier",
       "semantic": "supplier_id"
+    },
+    {
+      "service_name": "API_BUSINESS_PARTNER",
+      "odata_version": "2.0",
+      "entity_set": "A_Supplier",
+      "field": "Supplier",
+      "semantic": "supplier_id"
+    },
+    {
+      "service_name": "API_BUSINESS_PARTNER",
+      "odata_version": "2.0",
+      "entity_set": "A_SupplierPurchasingOrg",
+      "field": "PurchasingOrganization",
+      "semantic": "purchasing_organization_id"
+    },
+    {
+      "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_PurchaseOrder",
+      "field": "Supplier",
+      "semantic": "supplier_id"
+    },
+    {
+      "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_PurchaseOrder",
+      "field": "PurchasingOrganization",
+      "semantic": "purchasing_organization_id"
+    },
+    {
+      "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_PurchaseOrderItem",
+      "field": "PurchaseOrderItem",
+      "semantic": "purchase_order_item_id"
+    },
+    {
+      "service_name": "API_MATERIAL_DOCUMENT_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_MaterialDocumentItem",
+      "field": "PurchaseOrderItem",
+      "semantic": "purchase_order_item_id"
     }
   ],
   "relationships": [
@@ -1495,6 +1537,114 @@
         "entity_set": "A_SuplrInvcItemPurOrdRef",
         "field": "PurchaseOrder",
         "odata_version": "2.0"
+      }
+    },
+    {
+      "id": "mm-po-item-header",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrderItem",
+        "field": "PurchaseOrder"
+      },
+      "target": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrder",
+        "field": "PurchaseOrder"
+      }
+    },
+    {
+      "id": "mm-po-item-material-document-po",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrderItem",
+        "field": "PurchaseOrder"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "PurchaseOrder"
+      }
+    },
+    {
+      "id": "mm-po-item-material-document-item",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrderItem",
+        "field": "PurchaseOrderItem"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "PurchaseOrderItem"
+      }
+    },
+    {
+      "id": "mm-po-header-supplier-master",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrder",
+        "field": "Supplier"
+      },
+      "target": {
+        "service_name": "API_BUSINESS_PARTNER",
+        "odata_version": "2.0",
+        "entity_set": "A_Supplier",
+        "field": "Supplier"
+      }
+    },
+    {
+      "id": "mm-po-header-supplier-purchasing-org-supplier",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrder",
+        "field": "Supplier"
+      },
+      "target": {
+        "service_name": "API_BUSINESS_PARTNER",
+        "odata_version": "2.0",
+        "entity_set": "A_SupplierPurchasingOrg",
+        "field": "Supplier"
+      }
+    },
+    {
+      "id": "mm-po-header-supplier-purchasing-org-organization",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrder",
+        "field": "PurchasingOrganization"
+      },
+      "target": {
+        "service_name": "API_BUSINESS_PARTNER",
+        "odata_version": "2.0",
+        "entity_set": "A_SupplierPurchasingOrg",
+        "field": "PurchasingOrganization"
       }
     },
     {

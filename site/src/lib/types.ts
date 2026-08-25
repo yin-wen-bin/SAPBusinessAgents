@@ -150,11 +150,13 @@ export interface AgentAcceptance {
   businessStatusFromMetric?: Record<string, unknown>;
   limitationsFromMetrics?: Record<string, Record<string, string>>;
   blankValueKeywords?: Record<string, unknown>;
+  blankBusinessKeyFields?: string[];
   blockingLimitations?: string[];
   ignoredNoticeKeywords?: string[];
   zeroFactWhenMetricZero?: Record<string, string>;
   recordScope?: string;
   metricDefinitions?: Record<string, string>;
+  factDefinitions?: Record<string, string>;
   businessStatusDefinition?: string;
   businessStatusFromAnyPositiveMetric?: {
     metrics?: string[];

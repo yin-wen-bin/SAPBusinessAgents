@@ -1708,6 +1708,32 @@ button:disabled {
   z-index: 1;
 }
 
+.presentation-table-wide th {
+  white-space: nowrap;
+}
+
+.presentation-table-wide th,
+.presentation-table-wide td {
+  min-width: 92px;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.presentation-table-wide [data-key="action"],
+.presentation-table-wide [data-key="item_text"],
+.presentation-table-wide [data-key="supplier_name"] {
+  min-width: 156px;
+}
+
+.presentation-table-wide [data-format="date"],
+.presentation-table-wide [data-format="datetime"],
+.presentation-table-wide [data-format="integer"],
+.presentation-table-wide [data-format="decimal"],
+.presentation-table-wide [data-format="currency"],
+.presentation-table-wide [data-format="status"] {
+  white-space: nowrap;
+}
+
 .presentation-pagination {
   display: flex;
   align-items: center;

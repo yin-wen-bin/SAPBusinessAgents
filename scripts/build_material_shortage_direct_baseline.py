@@ -47,6 +47,16 @@ def _decimal(value: Any) -> Decimal:
         return Decimal(0)
 
 
+def _strict_decimal(value: Any) -> Decimal | None:
+    if value in {None, ""}:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
 def _date(value: Any) -> date | None:
     if value in {None, ""}:
         return None
@@ -119,6 +129,38 @@ def _run_source(
     primary: bool = False,
 ) -> tuple[JsonObject, list[JsonObject]]:
     output = artifacts / str(request["source_id"])
+    manifest_path = output / "manifest.json"
+    rows_path = output / "rows.json"
+    if manifest_path.is_file() and rows_path.is_file():
+        cached = _load(manifest_path)
+        expected_query_hash = _hash_json(
+            {key: request[key] for key in request if key != "source_id"}
+        )
+        if (
+            cached.get("query_hash") == expected_query_hash
+            and cached.get("source_complete") is True
+            and cached.get("paging_complete") is True
+            and cached.get("http_method") == "GET"
+        ):
+            rows = json.loads(rows_path.read_text(encoding="utf-8"))
+            manifest = {
+                key: cached[key]
+                for key in (
+                    "source_id",
+                    "service_name",
+                    "odata_version",
+                    "entity_set",
+                    "schema_hash",
+                    "query_hash",
+                    "row_count",
+                    "page_count",
+                    "stable_order_by",
+                    "paging_complete",
+                    "source_complete",
+                )
+            }
+            manifest["primary"] = primary
+            return manifest, [row for row in rows if isinstance(row, dict)]
     raw_manifest = direct_sap_read.run(profile, request, output)
     manifest = {
         key: raw_manifest[key]
@@ -201,14 +243,29 @@ def _requirement_id(row: JsonObject) -> str:
     )
 
 
-def _open_schedule_quantity(row: JsonObject) -> Decimal:
-    ordered = _decimal(row.get("ScheduleLineOrderQuantity"))
-    committed = row.get("ScheduleLineCommittedQuantity")
-    return (
-        max(ordered - _decimal(committed), Decimal(0))
-        if committed not in {None, ""}
-        else ordered
+def _pr_action(row: JsonObject) -> str:
+    release_status = str(row.get("PurReqnReleaseStatus") or "").upper()
+    release_not_complete = _truthy(row.get("ReleaseIsNotCompleted"))
+    source_assigned = _truthy(row.get("SourceOfSupplyIsAssigned")) or bool(
+        str(row.get("FixedSupplier") or "").strip()
     )
+    if release_status == "05" and release_not_complete:
+        return "manual_review"
+    if release_status == "01":
+        return "complete_version"
+    if release_status == "02":
+        return "process_active" if source_assigned else "assign_source"
+    if release_status in {"03", "04"}:
+        return "complete_release"
+    if release_status == "05":
+        return "ready_to_convert" if source_assigned else "assign_source"
+    if release_status == "08":
+        return "handle_rejection"
+    return "manual_review"
+
+
+def _chunks(values: list[str], size: int = 20) -> list[list[str]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
 
 
 def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) -> JsonObject:
@@ -324,6 +381,7 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
             [
                 "PurchaseRequisition",
                 "PurchaseRequisitionItem",
+                "PurchaseRequisitionItemText",
                 "Material",
                 "Plant",
                 "DeliveryDate",
@@ -333,11 +391,25 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
                 "ProcessingStatus",
                 "PurReqnReleaseStatus",
                 "ReleaseIsNotCompleted",
+                "SourceOfSupplyIsAssigned",
+                "FixedSupplier",
+                "PurchasingOrganization",
+                "PurchasingGroup",
+                "RequisitionerName",
+                "PurReqCreationDate",
+                "CreatedByUser",
+                "PurchaseRequisitionPrice",
+                "PurReqnPriceQuantity",
+                "PurReqnItemCurrency",
                 "IsClosed",
                 "IsDeleted",
             ],
-            f"Material eq {material} and Plant eq {plant}",
+            (
+                f"Material eq {material} and Plant eq {plant} "
+                "and ProcessingStatus eq 'N'"
+            ),
             ["PurchaseRequisition", "PurchaseRequisitionItem"],
+            max_rows=5000,
         ),
         artifacts,
     )
@@ -354,11 +426,19 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
                 "PurchaseOrderItem",
                 "Material",
                 "Plant",
+                "PurchaseOrderItemText",
                 "OrderQuantity",
                 "PurchaseOrderQuantityUnit",
+                "PurchaseRequisition",
+                "PurchaseRequisitionItem",
+                "SupplierMaterialNumber",
+                "PurchasingDocumentDeletionCode",
+                "IsCompletelyDelivered",
+                "GoodsReceiptIsExpected",
             ],
             f"Material eq {material} and Plant eq {plant}",
             ["PurchaseOrder", "PurchaseOrderItem"],
+            max_rows=1000,
         ),
         artifacts,
     )
@@ -370,10 +450,41 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
         item = str(row.get("PurchaseOrderItem") or "")
         if document and item:
             po_items_by_document.setdefault(document, set()).add(item)
+    po_header_rows: list[JsonObject] = []
+    for index, documents in enumerate(
+        _chunks(sorted(po_items_by_document)), start=1
+    ):
+        document_filter = " or ".join(
+            f"PurchaseOrder eq {_literal(document)}" for document in documents
+        )
+        header_manifest, rows = _run_source(
+            profile,
+            _request(
+                f"shortage_po_headers_{index:03d}",
+                "API_PURCHASEORDER_PROCESS_SRV",
+                "A_PurchaseOrder",
+                [
+                    "PurchaseOrder",
+                    "Supplier",
+                    "PurchasingOrganization",
+                    "PurchasingGroup",
+                    "SupplierRespSalesPersonName",
+                    "SupplierPhoneNumber",
+                ],
+                f"({document_filter})",
+                ["PurchaseOrder"],
+                max_rows=100,
+            ),
+            artifacts,
+        )
+        sources.append(header_manifest)
+        po_header_rows.extend(rows)
     schedule_rows: list[JsonObject] = []
-    for index, (document, items) in enumerate(sorted(po_items_by_document.items()), start=1):
-        item_filter = " or ".join(
-            f"PurchasingDocumentItem eq {_literal(item)}" for item in sorted(items)
+    for index, documents in enumerate(
+        _chunks(sorted(po_items_by_document)), start=1
+    ):
+        document_filter = " or ".join(
+            f"PurchasingDocument eq {_literal(document)}" for document in documents
         )
         schedule_manifest, rows = _run_source(
             profile,
@@ -390,13 +501,83 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
                     "ScheduleLineCommittedQuantity",
                     "PurchaseOrderQuantityUnit",
                 ],
-                f"PurchasingDocument eq {_literal(document)} and ({item_filter})",
+                f"({document_filter})",
                 ["PurchasingDocument", "PurchasingDocumentItem", "ScheduleLine"],
+                max_rows=1000,
             ),
             artifacts,
         )
         sources.append(schedule_manifest)
-        schedule_rows.extend(rows)
+        schedule_rows.extend(
+            row
+            for row in rows
+            if str(row.get("PurchasingDocumentItem") or "")
+            in po_items_by_document.get(str(row.get("PurchasingDocument") or ""), set())
+        )
+
+    receipt_manifest, all_receipt_rows = _run_source(
+        profile,
+        _request(
+            "shortage_po_receipts",
+            "API_MATERIAL_DOCUMENT_SRV",
+            "A_MaterialDocumentItem",
+            [
+                "MaterialDocumentYear",
+                "MaterialDocument",
+                "MaterialDocumentItem",
+                "Material",
+                "Plant",
+                "PurchaseOrder",
+                "PurchaseOrderItem",
+                "GoodsMovementType",
+                "DebitCreditCode",
+                "QuantityInEntryUnit",
+                "EntryUnit",
+                "ReversedMaterialDocumentYear",
+                "ReversedMaterialDocument",
+                "ReversedMaterialDocumentItem",
+            ],
+            f"Material eq {material} and Plant eq {plant}",
+            ["MaterialDocumentYear", "MaterialDocument", "MaterialDocumentItem"],
+            max_rows=5000,
+        ),
+        artifacts,
+    )
+    sources.append(receipt_manifest)
+    receipt_rows = [
+        row
+        for row in all_receipt_rows
+        if str(row.get("PurchaseOrder") or "") in po_items_by_document
+    ]
+    receipt_documents_by_year: dict[str, set[str]] = {}
+    for row in receipt_rows:
+        year = str(row.get("MaterialDocumentYear") or "")
+        document = str(row.get("MaterialDocument") or "")
+        if year and document:
+            receipt_documents_by_year.setdefault(year, set()).add(document)
+    receipt_header_rows: list[JsonObject] = []
+    header_query_index = 0
+    for year, year_documents in sorted(receipt_documents_by_year.items()):
+        for documents in _chunks(sorted(year_documents)):
+            header_query_index += 1
+            document_filter = " or ".join(
+                f"MaterialDocument eq {_literal(document)}" for document in documents
+            )
+            receipt_header_manifest, rows = _run_source(
+                profile,
+                _request(
+                    f"shortage_receipt_headers_{header_query_index:03d}",
+                    "API_MATERIAL_DOCUMENT_SRV",
+                    "A_MaterialDocumentHeader",
+                    ["MaterialDocumentYear", "MaterialDocument", "PostingDate"],
+                    f"MaterialDocumentYear eq {_literal(year)} and ({document_filter})",
+                    ["MaterialDocumentYear", "MaterialDocument"],
+                    max_rows=100,
+                ),
+                artifacts,
+            )
+            sources.append(receipt_header_manifest)
+            receipt_header_rows.extend(rows)
 
     source_manifest, source_rows = _run_source(
         profile,
@@ -413,6 +594,10 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
                 "Material",
                 "PurgDocOrderQuantityUnit",
                 "MaterialPlannedDeliveryDurn",
+                "PurchasingGroup",
+                "MinimumPurchaseOrderQuantity",
+                "StandardPurchaseOrderQuantity",
+                "MaximumOrderQuantity",
                 "IsMarkedForDeletion",
                 "IsRelevantForAutomSrcg",
             ],
@@ -426,14 +611,29 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
                 "PurchasingOrganization",
                 "Plant",
             ],
+            max_rows=100,
         ),
         artifacts,
     )
     sources.append(source_manifest)
 
     qualified = select_qualified_coverage(master_rows, coverage_rows, as_of=as_of)
-    qualification_status = "qualified" if qualified else "blocked"
-    qualification_reasons = [] if qualified else ["qualified_shortage_test_data_missing"]
+    action_regression = case.get("test_purpose") == "procurement_action_display"
+    action_coverage = [
+        row
+        for row in coverage_rows
+        if action_regression
+        and str(row.get("Material") or "") == str(values["material"])
+        and str(row.get("MRPPlant") or "") == str(values["plant"])
+        and str(row.get("MRPArea") or "") == str(values["mrp_area"])
+        and str(row.get("MaterialShortageProfile") or "") == str(values["shortage_profile"])
+        and str(row.get("MaterialShortageProfileCount") or "") == str(values["shortage_counter"])
+        and any(
+            str(master.get("MaterialProcurementCategory") or "").upper() == "F"
+            for master in master_rows
+        )
+    ]
+    coverage_for_records = qualified or action_coverage
     records = [
         {
             "material": str(row.get("Material") or values["material"]),
@@ -447,43 +647,223 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
             "unit": str(row.get("MaterialBaseUnit") or ""),
             "business_status": "attention",
         }
-        for row in qualified
+        for row in coverage_for_records
     ]
     shortage_quantity = sum(
-        (_decimal(row.get("MaterialShortageQuantity")) for row in qualified),
+        (_decimal(row.get("MaterialShortageQuantity")) for row in coverage_for_records),
         Decimal(0),
     )
-    pending_pr = sum(
-        1
-        for row in pr_rows
-        if not _truthy(row.get("IsDeleted"))
-        and not _truthy(row.get("IsClosed"))
-        and str(row.get("ProcessingStatus") or "").upper() == "N"
-        and str(row.get("PurReqnReleaseStatus") or "").upper()
-        not in {"05", "08", "C", "RELEASED", "COMPLETED"}
+    limitations: list[str] = []
+    pr_actions: list[JsonObject] = []
+    for row in pr_rows:
+        if (
+            _truthy(row.get("IsDeleted"))
+            or _truthy(row.get("IsClosed"))
+            or str(row.get("ProcessingStatus") or "").upper() != "N"
+        ):
+            continue
+        requested = _strict_decimal(row.get("RequestedQuantity"))
+        ordered = _strict_decimal(row.get("OrderedQuantity"))
+        if requested is None or ordered is None:
+            limitations.append("pr_quantity_evidence")
+            continue
+        remaining = max(requested - ordered, Decimal(0))
+        if remaining <= 0:
+            continue
+        delivery_date = _date(row.get("DeliveryDate"))
+        pr_actions.append(
+            {
+                "action": _pr_action(row),
+                "purchase_requisition": str(row.get("PurchaseRequisition") or ""),
+                "purchase_requisition_item": str(row.get("PurchaseRequisitionItem") or ""),
+                "release_status": str(row.get("PurReqnReleaseStatus") or ""),
+                "requested_quantity": str(requested),
+                "ordered_quantity": str(ordered),
+                "remaining_quantity": str(remaining),
+                "unit": str(row.get("BaseUnit") or ""),
+                "delivery_date": delivery_date.isoformat() if delivery_date else "",
+                "supplier": str(row.get("FixedSupplier") or ""),
+            }
+        )
+    pr_actions.sort(
+        key=lambda row: (
+            str(row.get("action") or ""),
+            str(row.get("delivery_date") or ""),
+            str(row.get("purchase_requisition") or ""),
+            str(row.get("purchase_requisition_item") or ""),
+        )
     )
-    expedite_po = sum(
-        1
-        for row in schedule_rows
-        if (_date(row.get("ScheduleLineDeliveryDate")) or date.max) < as_of
-        and _open_schedule_quantity(row) > 0
+    pr_counts = {
+        "release": sum(row["action"] == "complete_release" for row in pr_actions),
+        "convert": sum(row["action"] == "ready_to_convert" for row in pr_actions),
+        "source_or_processing": sum(
+            row["action"] in {"complete_version", "assign_source", "process_active"}
+            for row in pr_actions
+        ),
+    }
+
+    po_item_map = {
+        (str(row.get("PurchaseOrder") or ""), str(row.get("PurchaseOrderItem") or "")): row
+        for row in po_rows
+        if row.get("PurchaseOrder") and row.get("PurchaseOrderItem")
+    }
+    po_header_map = {
+        str(row.get("PurchaseOrder") or ""): row
+        for row in po_header_rows
+        if row.get("PurchaseOrder")
+    }
+    receipt_header_map = {
+        (str(row.get("MaterialDocumentYear") or ""), str(row.get("MaterialDocument") or "")): row
+        for row in receipt_header_rows
+        if row.get("MaterialDocumentYear") and row.get("MaterialDocument")
+    }
+    receipt_totals: dict[tuple[str, str], Decimal] = {}
+    receipt_units: dict[tuple[str, str], set[str]] = {}
+    for row in receipt_rows:
+        receipt_key = (
+            str(row.get("MaterialDocumentYear") or ""),
+            str(row.get("MaterialDocument") or ""),
+        )
+        header = receipt_header_map.get(receipt_key)
+        posting_date = _date(header.get("PostingDate")) if header else None
+        if posting_date is None:
+            limitations.append("po_receipt_posting_date_evidence")
+            continue
+        if posting_date > as_of:
+            continue
+        po_key = (
+            str(row.get("PurchaseOrder") or ""),
+            str(row.get("PurchaseOrderItem") or ""),
+        )
+        quantity = _strict_decimal(row.get("QuantityInEntryUnit"))
+        debit_credit = str(row.get("DebitCreditCode") or "").upper()
+        unit = str(row.get("EntryUnit") or "").upper()
+        if not all(po_key) or quantity is None or quantity < 0 or debit_credit not in {"S", "H"}:
+            limitations.append("po_receipt_quantity_evidence")
+            continue
+        receipt_totals[po_key] = receipt_totals.get(po_key, Decimal(0)) + (
+            quantity if debit_credit == "S" else -quantity
+        )
+        if unit:
+            receipt_units.setdefault(po_key, set()).add(unit)
+
+    schedules_by_item: dict[tuple[str, str], list[JsonObject]] = {}
+    for row in schedule_rows:
+        key = (
+            str(row.get("PurchasingDocument") or ""),
+            str(row.get("PurchasingDocumentItem") or ""),
+        )
+        if all(key):
+            schedules_by_item.setdefault(key, []).append(row)
+        else:
+            limitations.append("po_schedule_business_key_evidence")
+    po_actions: list[JsonObject] = []
+    for po_key, rows in schedules_by_item.items():
+        item = po_item_map.get(po_key)
+        if item is None:
+            limitations.append("po_item_evidence")
+            continue
+        if str(item.get("PurchasingDocumentDeletionCode") or "").strip():
+            continue
+        unit = str(item.get("PurchaseOrderQuantityUnit") or "").upper()
+        if not unit:
+            limitations.append("po_order_unit_evidence")
+            continue
+        if any(receipt_unit != unit for receipt_unit in receipt_units.get(po_key, set())):
+            limitations.append("po_receipt_unit_conflict")
+            continue
+        receipt_pool = receipt_totals.get(po_key, Decimal(0))
+        if receipt_pool < 0:
+            limitations.append("po_negative_net_receipt")
+            continue
+        header = po_header_map.get(po_key[0])
+        if header is None:
+            limitations.append("po_header_evidence")
+            header = {}
+        for row in sorted(
+            rows,
+            key=lambda item: (
+                _date(item.get("ScheduleLineDeliveryDate")) or date.max,
+                str(item.get("ScheduleLine") or ""),
+            ),
+        ):
+            delivery_date = _date(row.get("ScheduleLineDeliveryDate"))
+            scheduled = _strict_decimal(row.get("ScheduleLineOrderQuantity"))
+            schedule_unit = str(row.get("PurchaseOrderQuantityUnit") or unit).upper()
+            if delivery_date is None or scheduled is None or scheduled < 0:
+                limitations.append("po_schedule_quantity_or_date_evidence")
+                continue
+            if schedule_unit != unit:
+                limitations.append("po_schedule_unit_conflict")
+                continue
+            received = max(min(receipt_pool, scheduled), Decimal(0))
+            receipt_pool -= received
+            open_quantity = max(scheduled - received, Decimal(0))
+            if delivery_date >= as_of or open_quantity <= 0:
+                continue
+            committed = _strict_decimal(row.get("ScheduleLineCommittedQuantity"))
+            po_actions.append(
+                {
+                    "purchase_order": po_key[0],
+                    "purchase_order_item": po_key[1],
+                    "schedule_line": str(row.get("ScheduleLine") or ""),
+                    "supplier": str(header.get("Supplier") or ""),
+                    "delivery_date": delivery_date.isoformat(),
+                    "scheduled_quantity": str(scheduled),
+                    "received_quantity": str(received),
+                    "open_quantity": str(open_quantity),
+                    "committed_quantity": str(committed) if committed is not None else "",
+                    "unit": unit,
+                }
+            )
+    po_actions.sort(
+        key=lambda row: (
+            str(row.get("delivery_date") or ""),
+            str(row.get("purchase_order") or ""),
+            str(row.get("purchase_order_item") or ""),
+            str(row.get("schedule_line") or ""),
+        )
     )
+    po_business_complete = not any(
+        limitation.startswith("po_") for limitation in limitations
+    )
+    expedite_po: int | None = len(po_actions) if po_business_complete else None
     valid_sources = sum(
         1
         for row in source_rows
         if not _truthy(row.get("IsMarkedForDeletion"))
         and _truthy(row.get("IsRelevantForAutomSrcg"))
     )
+    all_sources_complete = all(
+        source.get("source_complete") is True for source in sources
+    )
+    qualification_reasons: list[str] = []
+    if not coverage_for_records:
+        qualification_reasons.append("qualified_shortage_test_data_missing")
+    if not all_sources_complete:
+        qualification_reasons.append("direct_source_incomplete")
+    if limitations:
+        qualification_reasons.append("business_evidence_incomplete")
+    qualification_status = "qualified" if not qualification_reasons else "blocked"
     normalized = {
         "records": records,
         "metrics": {
             "shortage_quantity": str(shortage_quantity),
-            "pending_pr": pending_pr,
+            "pr_action_total": len(pr_actions),
+            "pr_awaiting_release": pr_counts["release"],
+            "pr_ready_to_convert": pr_counts["convert"],
+            "pr_source_or_processing_required": pr_counts["source_or_processing"],
+            "po_schedule_lines_to_expedite": expedite_po,
+            "pending_pr": len(pr_actions),
             "expedite_po": expedite_po,
             "valid_source_candidates": valid_sources,
         },
-        "limitations": [],
-        "source_complete": all(source.get("source_complete") is True for source in sources),
+        "action_tables": {
+            "pr_actions": pr_actions,
+            "po_expedite_actions": po_actions,
+        },
+        "limitations": sorted(set(limitations)),
+        "source_complete": all_sources_complete,
     }
     last_mrp_dates = [
         parsed
@@ -493,6 +873,15 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
     ]
     latest_mrp = max(last_mrp_dates) if last_mrp_dates else None
     observations = []
+    if action_regression and action_coverage and not qualified:
+        observations.append(
+            {
+                "code": "zero_shortage_action_regression",
+                "severity": "info",
+                "blocking": False,
+                "detail": "The exact MaterialCoverages row is retained to validate procurement action tables; its shortage quantity is zero.",
+            }
+        )
     if latest_mrp is not None and (as_of - latest_mrp).days > 30:
         observations.append(
             {
@@ -540,7 +929,7 @@ def build(case_path: Path, profile_path: Path, output: Path, artifacts: Path) ->
                                 "MaterialShortageEndDate",
                             )
                         }
-                        for row in qualified
+                        for row in coverage_for_records
                     ],
                 }
             ),

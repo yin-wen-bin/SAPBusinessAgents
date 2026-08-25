@@ -246,6 +246,8 @@ def test_material_shortage_report_keeps_context_sources_out_of_primary_records()
                         "BaseUnit": "ST",
                         "ProcessingStatus": "N",
                         "PurReqnReleaseStatus": "02",
+                        "RequestedQuantity": "10",
+                        "OrderedQuantity": "0",
                         "IsClosed": False,
                         "IsDeleted": False,
                     }
@@ -258,10 +260,16 @@ def test_material_shortage_report_keeps_context_sources_out_of_primary_records()
                             "source_complete": True,
                             "results": [{"PurchaseOrder": "4500000134", "PurchaseOrderItem": "10", "Material": "TG10", "Plant": "1710"}],
                         },
+                        "po_headers": {
+                            "source_complete": True,
+                            "results": [{"PurchaseOrder": "4500000134", "Supplier": "17300001", "PurchasingOrganization": "1710"}],
+                        },
                         "po_schedules": {
                             "source_complete": True,
                             "results": [{"PurchasingDocument": "4500000134", "PurchasingDocumentItem": "10", "ScheduleLine": "1", "ScheduleLineDeliveryDate": "2018-04-14", "ScheduleLineOrderQuantity": "10", "ScheduleLineCommittedQuantity": "5", "PurchaseOrderQuantityUnit": "ST"}],
                         },
+                        "po_receipts": {"source_complete": True, "results": []},
+                        "receipt_headers": {"source_complete": True, "results": []},
                     },
                 },
                 "source": _embedded_response(
@@ -285,12 +293,23 @@ def test_material_shortage_report_keeps_context_sources_out_of_primary_records()
     record_ids = {row["requirement_id"] for row in result["business_report"]["records"]}
     assert record_ids == {"SAP000000001|001|1710|(blank)|02"}
     metrics = {item["id"]: item["value"] for item in result["metrics"]}
-    assert metrics == {
-        "shortage_quantity": "0",
-        "pending_pr": 1,
-        "expedite_po": 1,
-        "valid_source_candidates": 1,
+    assert metrics["shortage_quantity"] == "0"
+    assert metrics["pr_action_total"] == 1
+    assert metrics["pr_awaiting_release"] == 0
+    assert metrics["pr_ready_to_convert"] == 0
+    assert metrics["pr_source_or_processing_required"] == 1
+    assert metrics["po_schedule_lines_to_expedite"] == 1
+    assert metrics["valid_source_candidates"] == 1
+    assert metrics["pending_pr"] == 1
+    assert metrics["expedite_po"] == 1
+    tables = {
+        table["id"]: table
+        for table in result["business_report"]["action_tables"]
     }
+    assert tables["pr_actions"]["rows"][0]["action"]["zh"] == "分配货源并处理 PR"
+    assert tables["pr_actions"]["rows"][0]["remaining_quantity"] == "10"
+    assert tables["po_expedite_actions"]["rows"][0]["received_quantity"] == "0"
+    assert tables["po_expedite_actions"]["rows"][0]["open_quantity"] == "10"
     assert result["business_status"] == "attention"
     findings = {item["code"]: item for item in result["business_report"]["findings"]}
     assert findings["MRP_SNAPSHOT_STALE"]["severity"] == "low"

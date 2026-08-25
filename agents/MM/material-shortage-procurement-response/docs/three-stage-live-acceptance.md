@@ -57,3 +57,34 @@ Non-blocking observations:
 The final comparison uses stable business keys, deterministic facts, Decimal-aware metrics, currencies, units, limitations, and completeness rather than display prose or row order. Platform and fixed-Agent corrections are covered by the campaign regression suite; runtime logic contains no test-document constants.
 
 Raw SAP rows, URLs, credentials, business identifiers, and connection details remain in ignored local artifacts.
+
+## Version 0.2.0 procurement-action display regression
+
+The executable procurement-action output was revalidated on `2026-08-25` with an
+independent Codex direct-SAP GET-only baseline and the fixed Agent using identical
+business conditions. The action-display case deliberately retained a complete zero-
+shortage MaterialCoverages row so PR and PO follow-up evidence could be tested without
+misrepresenting it as an active shortage.
+
+- All 16 direct OData sources were paging-complete and GET-only.
+- The complete PR source contained 104 not-processed items; deterministic deletion,
+  close, quantity, release, and source-assignment rules produced 29 actionable rows.
+- PR classification produced 17 rows ready for PO conversion, 12 rows requiring
+  completion/source processing, and no rows awaiting release in this snapshot.
+- Forty PO items, 42 schedule lines, and 34 material-document items were reconciled
+  through posting dates and debit/credit signs; 24 overdue schedule lines retained a
+  positive open quantity at the cutoff.
+- Supplier contact fields remained optional. Three information-record rows were read,
+  but none met the automatic-sourcing condition.
+- Stable PR-item and PO-item-schedule keys matched between the direct baseline and the
+  fixed Agent: PR differences `0`, PO differences `0`.
+- Direct normalized result hash:
+  `sha256:20702cea4d4cc0dd7e579d8b39687848d9eb1c0f9799c6c5dd3313d7d0b2fdcc`.
+- The Chinese desktop and mobile result pages were checked after rebuild. Wide action
+  tables preserve readable columns through horizontal scrolling, use 20-row paging,
+  and expose complete CSV downloads independently of the displayed page.
+
+The earlier live acceptance and promotion hashes remain unchanged because this action-
+display regression verifies presentation and purchasing follow-up semantics rather than
+replacing the qualified positive-shortage case. Raw rows and business identifiers remain
+only in ignored local acceptance artifacts.

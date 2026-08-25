@@ -913,7 +913,7 @@ def test_complete_mm_api_evidence_skips_every_conditional_adt_step(
         )
         run = _wait(client, response.json()["run_id"])
         assert run["status"] == "completed"
-        assert len(embedded.executed_plans) == 7
+        assert len(embedded.executed_plans) == 8
         adt_steps = {
             "adt_mrp", "adt_pr", "adt_po_scope", "adt_po",
             "adt_source_scope", "adt_source",

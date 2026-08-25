@@ -101,7 +101,7 @@ const labels = locale === "zh" ? {
   pendingConclusion: "正在查询，完成后将在这里显示业务结论",
   pendingOverview: "系统正在读取 SAP 数据并核验证据，请留在本页等待结果。",
   mode: { agent: "固定 Agent", free_query: "自由 SAP 查询", workflow: "组合工作流", guided: "Agent 引导查询" },
-  artifact: { "report.md": "业务报告", "business-stages.csv": "阶段结果表", "evidence.csv": "证据明细", "result.json": "技术 JSON" },
+  artifact: { "report.md": "业务报告", "business-stages.csv": "阶段结果表", "pr-actions.csv": "采购申请待办", "po-expedite-actions.csv": "采购订单催交待办", "source-candidates.csv": "有效货源候选", "evidence.csv": "证据明细", "result.json": "技术 JSON" },
 } : {
   title: "SAP business query",
   noRun: "The link has no run ID. Start a query from an Agent or the free-query page.",
@@ -195,7 +195,7 @@ const labels = locale === "zh" ? {
   pendingConclusion: "The business conclusion will appear here when the query finishes",
   pendingOverview: "The system is reading SAP data and validating evidence. Keep this page open for the result.",
   mode: { agent: "Fixed Agent", free_query: "Free SAP query", workflow: "Composite workflow", guided: "Agent-guided query" },
-  artifact: { "report.md": "Business report", "business-stages.csv": "Stage results", "evidence.csv": "Evidence details", "result.json": "Technical JSON" },
+  artifact: { "report.md": "Business report", "business-stages.csv": "Stage results", "pr-actions.csv": "Purchase requisition actions", "po-expedite-actions.csv": "PO expediting actions", "source-candidates.csv": "Valid source candidates", "evidence.csv": "Evidence details", "result.json": "Technical JSON" },
 };
 ---
 
@@ -515,11 +515,17 @@ const labels = locale === "zh" ? {
   const renderPresentationTable = (section, block) => {
     const wrap = document.createElement("div"); wrap.className = "run-table-wrap";
     const table = document.createElement("table"); table.className = "run-business-table presentation-table";
+    const columnCount = Array.isArray(block.columns) ? block.columns.length : 0;
+    if (columnCount > 6) {
+      table.classList.add("presentation-table-wide");
+      table.style.minWidth = `${Math.max(840, columnCount * 118)}px`;
+    }
     const head = document.createElement("thead"); const headRow = document.createElement("tr");
     (block.columns || []).forEach((column) => {
       const cell = document.createElement("th"); cell.scope = "col";
       cell.textContent = localized(column.label) || friendlyId(column.key);
-      cell.dataset.format = column.format || "text"; headRow.append(cell);
+      cell.dataset.format = column.format || "text";
+      cell.dataset.key = column.key || ""; headRow.append(cell);
     });
     head.append(headRow); const body = document.createElement("tbody");
     table.append(head, body); wrap.append(table); section.append(wrap);
@@ -536,7 +542,8 @@ const labels = locale === "zh" ? {
         const row = document.createElement("tr");
         (item.values || []).forEach((value, index) => {
           const cell = document.createElement("td"); cell.textContent = localized(value) || labels.empty;
-          cell.dataset.format = block.columns?.[index]?.format || "text"; row.append(cell);
+          cell.dataset.format = block.columns?.[index]?.format || "text";
+          cell.dataset.key = block.columns?.[index]?.key || ""; row.append(cell);
         });
         body.append(row);
       });

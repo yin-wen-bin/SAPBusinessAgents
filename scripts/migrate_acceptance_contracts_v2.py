@@ -190,7 +190,17 @@ SPECS: dict[str, dict[str, Any]] = {
     "material-shortage-procurement-response": _spec(
         ["material", "plant", "requirement_id"],
         ["requirement_date", "mrp_element_type"],
-        ["shortage_quantity", "pending_pr", "expedite_po", "valid_source_candidates"],
+        [
+            "shortage_quantity",
+            "pr_action_total",
+            "pr_awaiting_release",
+            "pr_ready_to_convert",
+            "pr_source_or_processing_required",
+            "po_schedule_lines_to_expedite",
+            "pending_pr",
+            "expedite_po",
+            "valid_source_candidates",
+        ],
         decimals=["shortage_quantity"], decimal_metrics=["shortage_quantity"], units=["unit"], dates=["requirement_date"],
     ),
     "intelligent-sourcing-rfq": _spec(
@@ -474,17 +484,22 @@ SPECS["material-shortage-procurement-response"]["recordScope"] = (
     "not comparison records."
 )
 SPECS["material-shortage-procurement-response"]["metricDefinitions"] = {
-    "pending_pr": "Count exact material/plant PR items that are not deleted and are not in completed/released terminal processing states.",
-    "expedite_po": "Count exact material/plant PO schedule lines with delivery before the as-of date and positive schedule quantity minus committed quantity.",
+    "pr_action_total": "Count exact material/plant PR items with ProcessingStatus=N, positive requested quantity minus ordered quantity, and no deletion or close indicator.",
+    "pr_awaiting_release": "Count actionable PR items whose release status is 03 or 04.",
+    "pr_ready_to_convert": "Count actionable PR items whose release status is 05, release is complete, and a source or fixed supplier is assigned.",
+    "pr_source_or_processing_required": "Count actionable PR items that require version completion, active processing, or source assignment before PO conversion.",
+    "po_schedule_lines_to_expedite": "Count exact material/plant PO schedule lines whose delivery date is before the as-of date and whose order quantity exceeds net goods receipts posted by the as-of date, after unit validation and stable schedule allocation.",
+    "pending_pr": "Deprecated compatibility alias of pr_action_total.",
+    "expedite_po": "Deprecated compatibility alias of po_schedule_lines_to_expedite.",
     "valid_source_candidates": "Count exact purchasing-organization/plant info-record rows that are not marked for deletion and are relevant for automatic sourcing.",
 }
 SPECS["material-shortage-procurement-response"]["businessStatusDefinition"] = (
-    "Use attention when shortage_quantity, pending_pr, or expedite_po is positive; "
+    "Use attention when shortage_quantity, pr_action_total, or po_schedule_lines_to_expedite is positive; "
     "use normal only when all three are zero. Test-data qualification BLOCKED is a "
     "separate acceptance verdict and must not replace this business status."
 )
 SPECS["material-shortage-procurement-response"]["businessStatusFromAnyPositiveMetric"] = {
-    "metrics": ["shortage_quantity", "pending_pr", "expedite_po"],
+    "metrics": ["shortage_quantity", "pr_action_total", "po_schedule_lines_to_expedite"],
     "positive": "attention",
     "zero": "normal",
 }

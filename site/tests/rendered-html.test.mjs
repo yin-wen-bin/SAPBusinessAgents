@@ -149,6 +149,9 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /预算型/);
   assert.match(run, /const pageSize = 20/);
   assert.match(run, /cell\.textContent = localized\(value\)/);
+  assert.match(run, /presentation-table-wide/);
+  assert.match(run, /columnCount \* 118/);
+  assert.match(run, /cell\.dataset\.key = column\.key/);
   assert.doesNotMatch(run, /\.innerHTML\s*=/);
   assert.match(run, /技术详情（供 IT 支持和审计使用）/);
   assert.match(run, /<details class="run-technical-details">/);

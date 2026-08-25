@@ -1931,7 +1931,11 @@ class RunCoordinator:
             json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         csv_buffer = StringIO()
-        writer = csv.DictWriter(csv_buffer, fieldnames=["step_id", "source", "payload_json"])
+        writer = csv.DictWriter(
+            csv_buffer,
+            fieldnames=["step_id", "source", "payload_json"],
+            lineterminator="\n",
+        )
         writer.writeheader()
         for item in result.evidence:
             writer.writerow(
@@ -1949,7 +1953,9 @@ class RunCoordinator:
         if business_report:
             stage_buffer = StringIO()
             stage_writer = csv.DictWriter(
-                stage_buffer, fieldnames=["stage", "status", "business_explanation"]
+                stage_buffer,
+                fieldnames=["stage", "status", "business_explanation"],
+                lineterminator="\n",
             )
             stage_writer.writeheader()
             for stage in business_report.get("stages") or []:
@@ -1968,6 +1974,34 @@ class RunCoordinator:
             artifacts.append(
                 {"name": "business-stages.csv", "media_type": "text/csv"}
             )
+            for table in business_report.get("action_tables") or []:
+                if not isinstance(table, dict):
+                    continue
+                artifact_name = str(table.get("artifact_name") or "").strip()
+                if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}\.csv", artifact_name):
+                    raise RunExecutionError("Action-table artifact name is invalid.")
+                columns = [
+                    column
+                    for column in table.get("columns") or []
+                    if isinstance(column, dict) and str(column.get("key") or "").strip()
+                ]
+                rows = [row for row in table.get("rows") or [] if isinstance(row, dict)]
+                action_buffer = StringIO()
+                action_writer = csv.writer(action_buffer, lineterminator="\n")
+                action_writer.writerow(
+                    [_localized_text(column.get("label"), "zh") for column in columns]
+                )
+                for row in rows:
+                    action_writer.writerow(
+                        [
+                            _localized_text(row.get(str(column.get("key"))), "zh")
+                            for column in columns
+                        ]
+                    )
+                (artifact_root / artifact_name).write_text(
+                    action_buffer.getvalue(), encoding="utf-8-sig"
+                )
+                artifacts.append({"name": artifact_name, "media_type": "text/csv"})
         artifacts.extend(
             [
                 {"name": "evidence.csv", "media_type": "text/csv"},
@@ -2882,6 +2916,77 @@ def _default_presentation(
                     metrics=presentation_metrics,
                 )
             )
+        action_tables = [
+            item for item in report.get("action_tables") or [] if isinstance(item, dict)
+        ]
+        for table_index, table in enumerate(action_tables):
+            table_columns = [
+                item for item in table.get("columns") or [] if isinstance(item, dict)
+            ]
+            columns: list[PresentationColumn] = []
+            for index, item in enumerate(table_columns):
+                column_format = str(item.get("format") or "text")
+                if column_format not in {
+                    "text", "date", "datetime", "integer", "decimal", "currency", "status"
+                }:
+                    column_format = "text"
+                columns.append(
+                    PresentationColumn(
+                        key=str(item.get("key") or f"column_{index + 1}"),
+                        label=_text_pair(item.get("label") or item.get("key")),
+                        format=column_format,
+                    )
+                )
+            table_records = [
+                item for item in table.get("rows") or [] if isinstance(item, dict)
+            ]
+            source_complete = table.get("source_complete")
+            source_complete = source_complete if isinstance(source_complete, bool) else None
+            if columns and table_records:
+                rows = [
+                    PresentationRow(
+                        values=[
+                            _presentation_value(record.get(column.key), column.format)
+                            for column in columns
+                        ],
+                        evidence_refs=[
+                            str(ref)
+                            for ref in record.get("_evidence_refs") or []
+                            if str(ref)
+                        ],
+                    )
+                    for record in table_records[:200]
+                ]
+                blocks.append(
+                    PresentationBlock(
+                        type="table",
+                        title=_text_pair(
+                            table.get("title"),
+                            str(table.get("id") or f"Action table {table_index + 1}"),
+                        ),
+                        claim_scope="customer_business_fact",
+                        columns=columns,
+                        rows=rows,
+                        total_rows=int(table.get("total_rows") or len(table_records)),
+                        source_complete=source_complete,
+                    )
+                )
+            elif columns:
+                empty_state = _text_pair(table.get("empty_state"))
+                if empty_state.zh or empty_state.en:
+                    blocks.append(
+                        PresentationBlock(
+                            type="notice",
+                            title=_text_pair(
+                                table.get("title"),
+                                str(table.get("id") or f"Action table {table_index + 1}"),
+                            ),
+                            tone="success" if source_complete is True else "warning",
+                            claim_scope="customer_business_fact",
+                            text=empty_state,
+                            source_complete=source_complete,
+                        )
+                    )
         record_columns = [
             item for item in report.get("record_columns") or [] if isinstance(item, dict)
         ]
@@ -3175,6 +3280,52 @@ def _business_markdown_report(
                 lines.append(
                     f"| {_markdown_cell(metric.get('label'))} | "
                     f"{_markdown_cell(metric.get('value'))} |"
+                )
+            lines.append("")
+        action_tables = [
+            table
+            for table in business_report.get("action_tables") or []
+            if isinstance(table, dict)
+        ]
+        for table in action_tables:
+            columns = [
+                column
+                for column in table.get("columns") or []
+                if isinstance(column, dict) and str(column.get("key") or "").strip()
+            ]
+            rows = [row for row in table.get("rows") or [] if isinstance(row, dict)]
+            if not columns:
+                continue
+            lines.extend([f"## {_markdown_cell(table.get('title'))}", ""])
+            if not rows:
+                lines.extend([_markdown_cell(table.get("empty_state")), ""])
+                continue
+            lines.extend(
+                [
+                    "| "
+                    + " | ".join(_markdown_cell(column.get("label")) for column in columns)
+                    + " |",
+                    "| " + " | ".join("---" for _ in columns) + " |",
+                ]
+            )
+            for row in rows[:200]:
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        _markdown_business_value(
+                            row.get(str(column.get("key"))),
+                            str(column.get("format") or "text"),
+                        )
+                        for column in columns
+                    )
+                    + " |"
+                )
+            if len(rows) > 200:
+                lines.extend(
+                    [
+                        "",
+                        f"> 页面报告展示前 200 条；完整 {len(rows)} 条请下载 `{table.get('artifact_name')}`。",
+                    ]
                 )
             lines.append("")
         evidence_tables = [

@@ -65,6 +65,15 @@ def _rows(inputs: JsonObject, *step_ids: str) -> list[JsonObject]:
     return found
 
 
+def _optional_rows(inputs: JsonObject, *step_ids: str) -> list[JsonObject]:
+    """Read advisory context without adding it to required evidence completeness."""
+
+    optional_context = inputs.get("optional_context")
+    if not isinstance(optional_context, dict):
+        return []
+    return _rows({"evidence": optional_context}, *step_ids)
+
+
 def _source_complete(inputs: JsonObject) -> bool:
     flags: list[bool] = []
 
@@ -185,6 +194,20 @@ def _decimal(value: Any) -> Decimal:
         return Decimal(str(value or 0))
     except (InvalidOperation, ValueError):
         return Decimal(0)
+
+
+def _strict_decimal(value: Any) -> Decimal | None:
+    if value in {None, ""}:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _unit_key(value: Any) -> str:
+    return str(value or "").strip().upper()
 
 
 def _date(value: Any) -> date | None:
@@ -2664,9 +2687,74 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
     # rows must never be added to the reported shortage quantity.
     mrp = _rows(inputs, "mrp", "mrp_coverage") + _adt_rows(inputs, "mrp")
     requisitions = _rows(inputs, "pr", "purchase_requisitions") + _adt_rows(inputs, "pr")
-    orders = _rows(inputs, "po_schedule", "purchase_orders") + _adt_rows(inputs, "po_schedule")
-    sources = _rows(inputs, "source", "info_records", "contracts", "suppliers") + _adt_rows(inputs, "source")
+    po_items = _rows(inputs, "schedule_po_items") or _rows(inputs, "po", "purchase_orders")
+    po_headers = _rows(inputs, "po_headers")
+    po_schedules = _rows(inputs, "po_schedules")
+    po_receipts = _rows(inputs, "po_receipts")
+    receipt_headers = _rows(inputs, "receipt_headers")
+    po_fallback_rows = _adt_rows(inputs, "po_schedule")
+    if not po_items:
+        po_items = [
+            row
+            for row in po_fallback_rows
+            if _text(row, "EBELN") and _text(row, "EBELP") and not _text(row, "ETENR")
+        ]
+    if not po_schedules:
+        po_schedules = [row for row in po_fallback_rows if _text(row, "ETENR")]
+    sources = (
+        _rows(inputs, "source", "info_records", "contracts", "suppliers")
+        + _adt_rows(inputs, "source")
+    )
     topic_complete, missing = _required_topics(inputs, "mrp", "pr", "po_schedule", "source")
+    pr_complete = _topic_complete(inputs, "pr")
+    po_complete = _topic_complete(inputs, "po_schedule")
+    source_topic_complete = _topic_complete(inputs, "source")
+    evidence_gaps: list[str] = []
+    evidence_payloads = inputs.get("evidence")
+    po_payload = (
+        evidence_payloads.get("po_schedule")
+        if isinstance(evidence_payloads, dict)
+        else None
+    )
+    assessment = inputs.get("assessment")
+    api_complete = (
+        assessment.get("api_complete")
+        if isinstance(assessment, dict)
+        and isinstance(assessment.get("api_complete"), dict)
+        else {}
+    )
+    if isinstance(po_payload, dict) and api_complete.get("po_schedule") is not False:
+        step_results = po_payload.get("step_results")
+        if not isinstance(step_results, dict):
+            data = po_payload.get("data")
+            step_results = data.get("step_results") if isinstance(data, dict) else None
+        if isinstance(step_results, dict):
+            for required_step in (
+                "schedule_po_items",
+                "po_headers",
+                "po_schedules",
+                "po_receipts",
+                "receipt_headers",
+            ):
+                step_result = step_results.get(required_step)
+                if not isinstance(step_result, dict):
+                    po_complete = False
+                    evidence_gaps.append(f"{required_step}_evidence")
+                    continue
+                if (
+                    step_result.get("source_complete") is not True
+                    or step_result.get("source_truncated") is True
+                    or step_result.get("ok") is False
+                ):
+                    po_complete = False
+                    evidence_gaps.append(f"{required_step}_evidence")
+    if not pr_complete and "pr_evidence" not in missing:
+        missing.append("pr_evidence")
+    if not po_complete and "po_schedule_evidence" not in missing:
+        missing.append("po_schedule_evidence")
+    if not source_topic_complete and "source_evidence" not in missing:
+        missing.append("source_evidence")
+    topic_complete = topic_complete and pr_complete and po_complete and source_topic_complete
     external_procurement = any(
         _text(row, "MaterialProcurementCategory", "ProcurementType").upper() == "F"
         for row in master
@@ -2691,25 +2779,375 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
         for row in shortage_rows
         if _decimal(row.get("MaterialShortageQuantity")) > 0
     )
-    pending_pr = [
-        row for row in requisitions
-        if not _truthy(row.get("IsDeleted"))
-        and not _truthy(row.get("IsClosed"))
-        and str(row.get("ProcessingStatus") or "").upper() == "N"
-        and str(row.get("PurReqnReleaseStatus") or row.get("ReleaseStatus") or "").upper()
-        not in {"05", "08", "C", "RELEASED", "COMPLETED"}
-    ]
-    expediting = [
-        row for row in orders
-        if (_date(row.get("ScheduleLineDeliveryDate") or row.get("DeliveryDate")) or date.max) < as_of
-        and _open_po_quantity(row) > 0
-    ]
+    release_labels = {
+        "01": {"zh": "版本处理中（01）", "en": "Version in process (01)"},
+        "02": {"zh": "活动（02）", "en": "Active (02)"},
+        "03": {"zh": "审批中（03）", "en": "In release (03)"},
+        "04": {"zh": "等待整体审批（04）", "en": "For overall release (04)"},
+        "05": {"zh": "审批完成（05）", "en": "Release completed (05)"},
+        "08": {"zh": "审批拒绝（08）", "en": "Release refused (08)"},
+    }
+    action_labels = {
+        "complete_version": {"zh": "完善采购申请", "en": "Complete requisition version"},
+        "assign_source": {"zh": "分配货源并处理 PR", "en": "Assign source and process PR"},
+        "process_active": {"zh": "处理活动 PR", "en": "Process active PR"},
+        "complete_release": {"zh": "完成审批", "en": "Complete release"},
+        "ready_to_convert": {"zh": "转换为采购订单", "en": "Convert to purchase order"},
+        "handle_rejection": {"zh": "处理拒绝并重新提交", "en": "Resolve rejection and resubmit"},
+        "manual_review": {"zh": "人工复核状态", "en": "Review status manually"},
+    }
+    action_rank = {
+        "manual_review": 0,
+        "handle_rejection": 1,
+        "complete_release": 2,
+        "assign_source": 3,
+        "process_active": 4,
+        "ready_to_convert": 5,
+        "complete_version": 6,
+    }
+    pr_actions: list[JsonObject] = []
+    for row in requisitions:
+        if _truthy(row.get("IsDeleted")) or _truthy(row.get("IsClosed")):
+            continue
+        if _text(row, "ProcessingStatus", "STATU").upper() != "N":
+            continue
+        requested = _strict_decimal(row.get("RequestedQuantity", row.get("MENGE")))
+        ordered = _strict_decimal(row.get("OrderedQuantity", row.get("BSMNG")))
+        if requested is None or ordered is None:
+            evidence_gaps.append("pr_quantity_evidence")
+            continue
+        remaining = max(requested - ordered, Decimal(0))
+        if remaining <= 0:
+            continue
+        release_status = _text(row, "PurReqnReleaseStatus", "ReleaseStatus", "FRGKZ").upper()
+        release_not_complete = _truthy(row.get("ReleaseIsNotCompleted"))
+        source_assigned = _truthy(row.get("SourceOfSupplyIsAssigned"))
+        supplier = _text(row, "FixedSupplier", "Supplier", "LIFNR")
+        release_state_conflict = release_status == "05" and release_not_complete
+        if release_state_conflict:
+            action_id = "manual_review"
+        elif release_status == "01":
+            action_id = "complete_version"
+        elif release_status == "02":
+            action_id = "process_active" if source_assigned or supplier else "assign_source"
+        elif release_status in {"03", "04"}:
+            action_id = "complete_release"
+        elif release_status == "05":
+            action_id = (
+                "ready_to_convert"
+                if source_assigned or supplier
+                else "assign_source"
+            )
+        elif release_status == "08":
+            action_id = "handle_rejection"
+        else:
+            action_id = "manual_review"
+        delivery_date = _date(row.get("DeliveryDate"))
+        overdue_days = max((as_of - delivery_date).days, 0) if delivery_date else None
+        price = _strict_decimal(row.get("PurchaseRequisitionPrice"))
+        price_quantity = _strict_decimal(row.get("PurReqnPriceQuantity"))
+        currency = _text(row, "PurReqnItemCurrency")
+        price_summary = ""
+        if price is not None and price_quantity is not None and price_quantity > 0:
+            price_summary = f"{price} {currency} / {price_quantity}".strip()
+        source_status = (
+            {
+                "zh": f"已分配：{supplier}" if supplier else "已分配",
+                "en": f"Assigned: {supplier}" if supplier else "Assigned",
+            }
+            if source_assigned or supplier
+            else {"zh": "未分配", "en": "Not assigned"}
+        )
+        pr_actions.append(
+            {
+                "action": action_labels[action_id],
+                "purchase_requisition": _text(row, "PurchaseRequisition", "BANFN"),
+                "purchase_requisition_item": _text(row, "PurchaseRequisitionItem", "BNFPO"),
+                "item_text": _text(row, "PurchaseRequisitionItemText", "TXZ01"),
+                "requested_quantity": str(requested),
+                "ordered_quantity": str(ordered),
+                "remaining_quantity": str(remaining),
+                "unit": _text(row, "BaseUnit", "MEINS"),
+                "delivery_date": delivery_date.isoformat() if delivery_date else "",
+                "overdue_days": overdue_days,
+                "release_status": release_labels.get(
+                    release_status,
+                    {
+                        "zh": f"未知状态（{release_status or '空'}）",
+                        "en": f"Unknown status ({release_status or 'blank'})",
+                    },
+                ),
+                "source_assignment": source_status,
+                "supplier": supplier,
+                "purchasing_organization": _text(row, "PurchasingOrganization", "EKORG"),
+                "purchasing_group": _text(row, "PurchasingGroup", "EKGRP"),
+                "requisitioner": _text(row, "RequisitionerName", "AFNAM", "CreatedByUser"),
+                "creation_date": _date_text(row, "PurReqCreationDate", "BADAT"),
+                "price": price_summary,
+                "action_id": action_id,
+                "_sort": (
+                    action_rank[action_id],
+                    delivery_date or date.max,
+                    _text(row, "PurchaseRequisition", "BANFN"),
+                    _text(row, "PurchaseRequisitionItem", "BNFPO"),
+                ),
+            }
+        )
+    pr_actions.sort(key=lambda item: item["_sort"])
+    for item in pr_actions:
+        item.pop("_sort", None)
+
+    po_item_map: dict[tuple[str, str], JsonObject] = {}
+    for row in po_items:
+        key = (
+            _text(row, "PurchaseOrder", "EBELN"),
+            _text(row, "PurchaseOrderItem", "EBELP"),
+        )
+        if all(key):
+            po_item_map[key] = row
+    po_header_map = {
+        _text(row, "PurchaseOrder", "EBELN"): row
+        for row in po_headers
+        if _text(row, "PurchaseOrder", "EBELN")
+    }
+    receipt_header_map = {
+        (
+            _text(row, "MaterialDocumentYear", "MJAHR"),
+            _text(row, "MaterialDocument", "MBLNR"),
+        ): row
+        for row in receipt_headers
+        if _text(row, "MaterialDocumentYear", "MJAHR")
+        and _text(row, "MaterialDocument", "MBLNR")
+    }
+    receipt_totals: dict[tuple[str, str], Decimal] = {}
+    receipt_units: dict[tuple[str, str], set[str]] = {}
+    seen_receipts: set[tuple[str, str, str]] = set()
+    for row in po_receipts:
+        receipt_key = (
+            _text(row, "MaterialDocumentYear", "MJAHR"),
+            _text(row, "MaterialDocument", "MBLNR"),
+            _text(row, "MaterialDocumentItem", "ZEILE"),
+        )
+        if not all(receipt_key) or receipt_key in seen_receipts:
+            evidence_gaps.append("po_receipt_business_key_evidence")
+            continue
+        seen_receipts.add(receipt_key)
+        header = receipt_header_map.get(receipt_key[:2])
+        if header is None:
+            evidence_gaps.append("po_receipt_header_evidence")
+            continue
+        posting_date = _date(header.get("PostingDate"))
+        if posting_date is None:
+            evidence_gaps.append("po_receipt_posting_date_evidence")
+            continue
+        if posting_date > as_of:
+            continue
+        po_key = (
+            _text(row, "PurchaseOrder", "EBELN"),
+            _text(row, "PurchaseOrderItem", "EBELP"),
+        )
+        quantity = _strict_decimal(row.get("QuantityInEntryUnit", row.get("MENGE")))
+        debit_credit = _text(row, "DebitCreditCode", "SHKZG").upper()
+        unit = _unit_key(_text(row, "EntryUnit", "ERFME", "MEINS"))
+        if not all(po_key) or quantity is None or quantity < 0 or debit_credit not in {"S", "H"}:
+            evidence_gaps.append("po_receipt_quantity_evidence")
+            continue
+        signed = quantity if debit_credit == "S" else -quantity
+        receipt_totals[po_key] = receipt_totals.get(po_key, Decimal(0)) + signed
+        if unit:
+            receipt_units.setdefault(po_key, set()).add(unit)
+
+    optional_supplier_rows = _optional_rows(inputs, "supplier_master")
+    optional_supplier_org_rows = _optional_rows(inputs, "supplier_purchasing_org")
+    supplier_master_map = {
+        _text(row, "Supplier", "LIFNR"): row
+        for row in optional_supplier_rows
+        if _text(row, "Supplier", "LIFNR")
+    }
+    supplier_org_map = {
+        (
+            _text(row, "Supplier", "LIFNR"),
+            _text(row, "PurchasingOrganization", "EKORG"),
+        ): row
+        for row in optional_supplier_org_rows
+        if _text(row, "Supplier", "LIFNR")
+        and _text(row, "PurchasingOrganization", "EKORG")
+    }
+    schedules_by_item: dict[tuple[str, str], list[JsonObject]] = {}
+    for row in po_schedules:
+        key = (
+            _text(row, "PurchasingDocument", "PurchaseOrder", "EBELN"),
+            _text(row, "PurchasingDocumentItem", "PurchaseOrderItem", "EBELP"),
+        )
+        if all(key):
+            schedules_by_item.setdefault(key, []).append(row)
+        else:
+            evidence_gaps.append("po_schedule_business_key_evidence")
+
+    po_actions: list[JsonObject] = []
+    for po_key, schedule_rows in schedules_by_item.items():
+        item = po_item_map.get(po_key)
+        if item is None:
+            evidence_gaps.append("po_item_evidence")
+            continue
+        if _text(item, "PurchasingDocumentDeletionCode", "LOEKZ"):
+            continue
+        item_unit = _unit_key(
+            _text(item, "PurchaseOrderQuantityUnit", "OrderQuantityUnit", "MEINS")
+        )
+        if not item_unit:
+            schedule_units = {
+                _unit_key(
+                    _text(row, "PurchaseOrderQuantityUnit", "OrderQuantityUnit", "MEINS")
+                )
+                for row in schedule_rows
+                if _unit_key(
+                    _text(row, "PurchaseOrderQuantityUnit", "OrderQuantityUnit", "MEINS")
+                )
+            }
+            if len(schedule_units) == 1:
+                item_unit = next(iter(schedule_units))
+        if not item_unit:
+            evidence_gaps.append("po_order_unit_evidence")
+            continue
+        units = receipt_units.get(po_key, set())
+        if any(unit != item_unit for unit in units):
+            evidence_gaps.append("po_receipt_unit_conflict")
+            continue
+        receipt_pool = receipt_totals.get(po_key, Decimal(0))
+        if receipt_pool < 0:
+            evidence_gaps.append("po_negative_net_receipt")
+            continue
+        header = po_header_map.get(po_key[0], {})
+        supplier = _text(header, "Supplier", "LIFNR")
+        purchasing_org = _text(header, "PurchasingOrganization", "EKORG")
+        supplier_master = supplier_master_map.get(supplier, {})
+        supplier_org = supplier_org_map.get((supplier, purchasing_org), {})
+        supplier_name = _text(supplier_master, "SupplierFullName", "SupplierName", "NAME1")
+        contact = _text(
+            header,
+            "SupplierRespSalesPersonName",
+        ) or _text(supplier_org, "SupplierRespSalesPersonName")
+        phone = _text(header, "SupplierPhoneNumber") or _text(
+            supplier_org, "SupplierPhoneNumber"
+        )
+        sorted_schedules = sorted(
+            schedule_rows,
+            key=lambda row: (
+                _date(
+                    row.get("ScheduleLineDeliveryDate", row.get("DeliveryDate", row.get("EINDT")))
+                )
+                or date.max,
+                _text(row, "ScheduleLine", "ETENR"),
+            ),
+        )
+        for row in sorted_schedules:
+            delivery_date = _date(
+                row.get("ScheduleLineDeliveryDate", row.get("DeliveryDate", row.get("EINDT")))
+            )
+            scheduled_quantity = _strict_decimal(
+                row.get("ScheduleLineOrderQuantity", row.get("MENGE"))
+            )
+            schedule_unit = _unit_key(
+                _text(row, "PurchaseOrderQuantityUnit", "OrderQuantityUnit") or item_unit
+            )
+            if delivery_date is None or scheduled_quantity is None or scheduled_quantity < 0:
+                evidence_gaps.append("po_schedule_quantity_or_date_evidence")
+                continue
+            if schedule_unit != item_unit:
+                evidence_gaps.append("po_schedule_unit_conflict")
+                continue
+            adt_received = _strict_decimal(row.get("WEMNG"))
+            if adt_received is not None:
+                received_quantity = max(min(adt_received, scheduled_quantity), Decimal(0))
+            else:
+                received_quantity = max(min(receipt_pool, scheduled_quantity), Decimal(0))
+                receipt_pool -= received_quantity
+            open_quantity = max(scheduled_quantity - received_quantity, Decimal(0))
+            if delivery_date >= as_of or open_quantity <= 0:
+                continue
+            committed_quantity = _strict_decimal(row.get("ScheduleLineCommittedQuantity"))
+            overdue_days = (as_of - delivery_date).days
+            po_actions.append(
+                {
+                    "action": {"zh": "联系供应商确认并催交", "en": "Confirm and expedite with supplier"},
+                    "purchase_order": po_key[0],
+                    "purchase_order_item": po_key[1],
+                    "schedule_line": _text(row, "ScheduleLine", "ETENR"),
+                    "supplier": supplier,
+                    "supplier_name": supplier_name,
+                    "supplier_contact": contact,
+                    "supplier_phone": phone,
+                    "material": _text(item, "Material", "MATNR"),
+                    "item_text": _text(item, "PurchaseOrderItemText", "TXZ01"),
+                    "supplier_material": _text(item, "SupplierMaterialNumber", "IDNLF"),
+                    "plant": _text(item, "Plant", "WERKS"),
+                    "delivery_date": delivery_date.isoformat(),
+                    "overdue_days": overdue_days,
+                    "scheduled_quantity": str(scheduled_quantity),
+                    "received_quantity": str(received_quantity),
+                    "open_quantity": str(open_quantity),
+                    "committed_quantity": (
+                        str(committed_quantity) if committed_quantity is not None else ""
+                    ),
+                    "unit": item_unit,
+                    "purchase_requisition": _text(item, "PurchaseRequisition", "BANFN"),
+                    "purchase_requisition_item": _text(
+                        item, "PurchaseRequisitionItem", "BNFPO"
+                    ),
+                    "purchasing_group": _text(header, "PurchasingGroup", "EKGRP"),
+                    "_sort": (
+                        -overdue_days,
+                        delivery_date,
+                        po_key[0],
+                        po_key[1],
+                        _text(row, "ScheduleLine", "ETENR"),
+                    ),
+                }
+            )
+    po_actions.sort(key=lambda item: item["_sort"])
+    for item in po_actions:
+        item.pop("_sort", None)
+
     valid_sources = [
         row
         for row in sources
         if not _truthy(row.get("IsMarkedForDeletion"))
         and _truthy(row.get("IsRelevantForAutomSrcg"))
     ]
+    source_actions = [
+        {
+            "action": {"zh": "复核并用于分配货源", "en": "Review for source assignment"},
+            "purchasing_info_record": _text(row, "PurchasingInfoRecord", "INFNR"),
+            "supplier": _text(row, "Supplier", "LIFNR"),
+            "purchasing_organization": _text(row, "PurchasingOrganization", "EKORG"),
+            "plant": _text(row, "Plant", "WERKS"),
+            "purchasing_group": _text(row, "PurchasingGroup", "EKGRP"),
+            "planned_delivery_days": (
+                str(value)
+                if (
+                    value := _strict_decimal(
+                        row.get("MaterialPlannedDeliveryDurn", row.get("PLIFZ"))
+                    )
+                )
+                is not None
+                else ""
+            ),
+            "order_unit": _text(row, "PurgDocOrderQuantityUnit", "BSTME"),
+            "minimum_order_quantity": _text(row, "MinimumPurchaseOrderQuantity", "MINBM"),
+            "standard_order_quantity": _text(row, "StandardPurchaseOrderQuantity", "NORBM"),
+            "maximum_order_quantity": _text(row, "MaximumOrderQuantity", "MABM"),
+            "automatic_sourcing": {"zh": "可用于自动寻源", "en": "Relevant for automatic sourcing"},
+        }
+        for row in valid_sources
+    ]
+    source_actions.sort(
+        key=lambda item: (
+            str(item.get("planned_delivery_days") or ""),
+            str(item.get("supplier") or ""),
+            str(item.get("purchasing_info_record") or ""),
+        )
+    )
     last_mrp_dates = [
         parsed
         for row in [*master, *mrp]
@@ -2750,6 +3188,25 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
         )
     if not complete:
         findings.append({"code": "REQUIRED_EVIDENCE_INCOMPLETE", "severity": "high"})
+    evidence_gaps = sorted(set(evidence_gaps))
+    pr_action_complete = pr_complete and "pr_quantity_evidence" not in evidence_gaps
+    po_action_complete = po_complete and not any(
+        gap.startswith("po_") for gap in evidence_gaps
+    )
+    pr_counts = {
+        "release": sum(item.get("action_id") == "complete_release" for item in pr_actions),
+        "convert": sum(item.get("action_id") == "ready_to_convert" for item in pr_actions),
+        "source_or_processing": sum(
+            item.get("action_id") in {"complete_version", "assign_source", "process_active"}
+            for item in pr_actions
+        ),
+        "rejected_or_review": sum(
+            item.get("action_id") in {"handle_rejection", "manual_review"}
+            for item in pr_actions
+        ),
+    }
+    for item in pr_actions:
+        item.pop("action_id", None)
     records: list[JsonObject] = []
     for index, row in enumerate(mrp):
         material = _text(row, "Material") or str(run_input.get("material") or "")
@@ -2794,63 +3251,203 @@ def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
                 }
             )
     if not records:
-        for row in pending_pr:
-            material = _text(row, "Material") or str(run_input.get("material") or "")
-            plant = _text(row, "Plant") or str(run_input.get("plant") or "")
-            requisition = _text(row, "PurchaseRequisition", "BANFN")
-            item = _text(row, "PurchaseRequisitionItem", "BNFPO")
+        for row in pr_actions:
+            material = str(run_input.get("material") or "")
+            plant = str(run_input.get("plant") or "")
+            requisition = str(row.get("purchase_requisition") or "")
+            item = str(row.get("purchase_requisition_item") or "")
             if material and plant and requisition and item:
                 records.append(
                     {
                         "material": material,
                         "plant": plant,
                         "requirement_id": f"PR:{requisition}/{item}",
-                        "requirement_date": _date_text(row, "DeliveryDate", "RequirementDate", "PurchaseRequisitionReleaseDate"),
+                        "requirement_date": str(row.get("delivery_date") or ""),
                         "mrp_element_type": "purchase_requisition",
                         "shortage_quantity": "",
-                        "unit": _text(row, "BaseUnit", "PurchaseRequisitionQuantityUnit"),
+                        "unit": str(row.get("unit") or ""),
                     }
                 )
-    return _result(
+    expedite_count: int | None = len(po_actions) if po_action_complete else None
+    pr_breakdown_zh = (
+        f"待审批 {pr_counts['release']}、可转 PO {pr_counts['convert']}、"
+        f"待完善或分配货源 {pr_counts['source_or_processing']}、拒绝或复核 {pr_counts['rejected_or_review']}"
+    )
+    pr_breakdown_en = (
+        f"{pr_counts['release']} awaiting release, {pr_counts['convert']} ready for PO conversion, "
+        f"{pr_counts['source_or_processing']} needing completion or source assignment, and "
+        f"{pr_counts['rejected_or_review']} rejected or requiring review"
+    )
+    po_summary_zh = (
+        f"{expedite_count} 条 PO 计划行需要催交"
+        if expedite_count is not None
+        else "PO 催交数量无法确定"
+    )
+    po_summary_en = (
+        f"{expedite_count} PO schedule line(s) require expediting"
+        if expedite_count is not None
+        else "the PO expediting count is inconclusive"
+    )
+    actions_zh: list[str] = []
+    actions_en: list[str] = []
+    if pr_actions:
+        actions_zh.append("按“采购申请待办”逐项完成审批、货源分配或 PO 转换。")
+        actions_en.append("Work through the purchase-requisition action table for release, sourcing, or PO conversion.")
+    if po_actions:
+        actions_zh.append("优先联系逾期天数最长的供应商，确认未交数量和新的承诺交期。")
+        actions_en.append("Contact the most overdue suppliers first to confirm open quantity and a revised committed date.")
+    if not source_actions and source_topic_complete:
+        actions_zh.append("当前未找到可自动寻源的信息记录，需要采购员补充或复核货源。")
+        actions_en.append("No auto-sourcing-relevant info record was found; purchasing must add or review sources.")
+    if not actions_zh:
+        actions_zh.append("当前没有已确认的采购处置待办。")
+        actions_en.append("No confirmed procurement action is currently required.")
+
+    result = _result(
         inputs,
         business_status=(
             "capability_blocked"
             if not complete
             else "attention"
-            if shortage or pending_pr or expediting
+            if shortage or pr_actions or po_actions
             else "normal"
         ),
         headline_zh=(
-            f"识别到 {len(pending_pr)} 条待处理 PR、{len(expediting)} 条催交 PO；确定缺口为 {shortage}"
+            f"识别到 {len(pr_actions)} 条 PR 待办（{pr_breakdown_zh}），{po_summary_zh}；确定缺口为 {shortage}"
             if comparable else
-            f"识别到 {len(pending_pr)} 条待处理 PR、{len(expediting)} 条催交 PO；缺口数量无法确定"
+            f"识别到 {len(pr_actions)} 条 PR 待办（{pr_breakdown_zh}），{po_summary_zh}；缺口数量无法确定"
         ),
         headline_en=(
-            f"Found {len(pending_pr)} pending PR(s), {len(expediting)} PO line(s) to expedite; confirmed shortage is {shortage}"
+            f"Found {len(pr_actions)} PR action(s) ({pr_breakdown_en}); {po_summary_en}; confirmed shortage is {shortage}"
             if comparable else
-            f"Found {len(pending_pr)} pending PR(s), {len(expediting)} PO line(s) to expedite; shortage quantity is inconclusive"
+            f"Found {len(pr_actions)} PR action(s) ({pr_breakdown_en}); {po_summary_en}; shortage quantity is inconclusive"
         ),
-        overview_zh="MRP、PR、PO 交期和货源证据均完整且单位可比时才计算确定缺口；本 Agent 只给出处置建议。",
-        overview_en="A confirmed shortage is calculated only when MRP, PR, PO schedule, and source evidence are complete and units are comparable; the Agent is advisory only.",
+        overview_zh="PR 建议按审批与货源状态分类；PO 催交数量按截止日净收货重建，不使用 SAP 承诺数量替代实际收货。本 Agent 只给出处置建议。",
+        overview_en="PR actions are classified by release and sourcing status. PO expediting uses net goods receipts at the cutoff and never substitutes SAP committed quantity for actual receipts. The Agent is advisory only.",
         stages=[
             _stage("mrp", "MRP 供需", "MRP supply and demand", len(mrp), state="confirmed" if _topic_complete(inputs, "mrp") else "unknown"),
-            _stage("pr", "采购申请", "Purchase requisitions", len(requisitions), state="confirmed" if _topic_complete(inputs, "pr") else "unknown"),
-            _stage("po", "采购订单交期", "PO schedules", len(orders), state="confirmed" if _topic_complete(inputs, "po_schedule") else "unknown"),
+            _stage("pr", "采购申请待办", "Purchase requisition actions", len(pr_actions), state="confirmed" if pr_action_complete else "unknown", detail_zh=f"{len(pr_actions)} 条待办：{pr_breakdown_zh}。", detail_en=f"{len(pr_actions)} action(s): {pr_breakdown_en}."),
+            _stage("po", "采购订单催交", "PO expediting", len(po_actions), state="confirmed" if po_action_complete else "unknown", detail_zh=po_summary_zh + "。", detail_en=po_summary_en + "."),
             _stage("source", "有效货源", "Valid sources", len(valid_sources), state="confirmed" if _topic_complete(inputs, "source") else "unknown"),
         ],
         findings=findings,
         metrics=[
-            {"id": "shortage_quantity", "value": str(shortage) if comparable else None},
-            {"id": "pending_pr", "value": len(pending_pr)},
-            {"id": "expedite_po", "value": len(expediting)},
-            {"id": "valid_source_candidates", "value": len(valid_sources)},
+            {"id": "shortage_quantity", "label": {"zh": "短缺数量", "en": "Shortage quantity"}, "value": str(shortage) if comparable else None},
+            {"id": "pr_action_total", "label": {"zh": "PR 待办总数", "en": "Total PR actions"}, "value": len(pr_actions)},
+            {"id": "pr_awaiting_release", "label": {"zh": "待审批 PR", "en": "PRs awaiting release"}, "value": pr_counts["release"]},
+            {"id": "pr_ready_to_convert", "label": {"zh": "可转 PO 的 PR", "en": "PRs ready for PO conversion"}, "value": pr_counts["convert"]},
+            {"id": "pr_source_or_processing_required", "label": {"zh": "待完善或分配货源 PR", "en": "PRs needing completion or sourcing"}, "value": pr_counts["source_or_processing"]},
+            {"id": "po_schedule_lines_to_expedite", "label": {"zh": "确认需要催交的 PO 计划行", "en": "Confirmed PO schedule lines to expedite"}, "value": expedite_count},
+            {"id": "pending_pr", "label": {"zh": "PR 待办总数（兼容）", "en": "Pending PRs (compatibility)"}, "value": len(pr_actions), "deprecated": True},
+            {"id": "expedite_po", "label": {"zh": "需催交 PO 计划行", "en": "PO schedule lines to expedite"}, "value": expedite_count, "deprecated": True},
+            {"id": "valid_source_candidates", "label": {"zh": "有效货源候选", "en": "Valid source candidates"}, "value": len(valid_sources)},
         ],
         records=records,
-        gaps=_gaps(inputs, *missing),
-        actions_zh=["释放或转换合格 PR，并由采购员复核逾期 PO 与有效货源。"],
-        actions_en=["Release or convert eligible PRs and have purchasing review overdue POs and valid sources."],
-        source_complete_override=complete,
+        gaps=_gaps(inputs, *missing, *evidence_gaps),
+        actions_zh=actions_zh,
+        actions_en=actions_en,
+        source_complete_override=topic_complete,
     )
+    result["business_report"]["action_tables"] = [
+        {
+            "id": "pr_actions",
+            "title": {"zh": "采购申请待办", "en": "Purchase requisition actions"},
+            "columns": [
+                {"key": "action", "label": {"zh": "建议动作", "en": "Recommended action"}, "format": "status"},
+                {"key": "purchase_requisition", "label": {"zh": "采购申请", "en": "Purchase requisition"}},
+                {"key": "purchase_requisition_item", "label": {"zh": "项目", "en": "Item"}},
+                {"key": "item_text", "label": {"zh": "项目描述", "en": "Item description"}},
+                {"key": "requested_quantity", "label": {"zh": "申请数量", "en": "Requested quantity"}, "format": "decimal"},
+                {"key": "ordered_quantity", "label": {"zh": "已订购数量", "en": "Ordered quantity"}, "format": "decimal"},
+                {"key": "remaining_quantity", "label": {"zh": "待处理数量", "en": "Remaining quantity"}, "format": "decimal"},
+                {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+                {"key": "delivery_date", "label": {"zh": "需求日期", "en": "Delivery date"}, "format": "date"},
+                {"key": "overdue_days", "label": {"zh": "逾期天数", "en": "Days overdue"}, "format": "integer"},
+                {"key": "release_status", "label": {"zh": "审批状态", "en": "Release status"}, "format": "status"},
+                {"key": "source_assignment", "label": {"zh": "货源分配", "en": "Source assignment"}, "format": "status"},
+                {"key": "supplier", "label": {"zh": "供应商", "en": "Supplier"}},
+                {"key": "purchasing_organization", "label": {"zh": "采购组织", "en": "Purchasing organization"}},
+                {"key": "purchasing_group", "label": {"zh": "采购组", "en": "Purchasing group"}},
+                {"key": "requisitioner", "label": {"zh": "申请人", "en": "Requisitioner"}},
+                {"key": "creation_date", "label": {"zh": "创建日期", "en": "Creation date"}, "format": "date"},
+                {"key": "price", "label": {"zh": "参考价格", "en": "Reference price"}},
+            ],
+            "rows": pr_actions,
+            "total_rows": len(pr_actions),
+            "source_complete": pr_action_complete,
+            "empty_state": (
+                {"zh": "完整查询未发现需要继续处理的采购申请。", "en": "The complete query found no purchase requisition requiring action."}
+                if pr_action_complete
+                else {"zh": "采购申请证据不完整，无法确认待办清单。", "en": "Purchase requisition evidence is incomplete, so the action list cannot be confirmed."}
+            ),
+            "artifact_name": "pr-actions.csv",
+        },
+        {
+            "id": "po_expedite_actions",
+            "title": {"zh": "采购订单催交待办", "en": "Purchase order expediting actions"},
+            "columns": [
+                {"key": "action", "label": {"zh": "建议动作", "en": "Recommended action"}, "format": "status"},
+                {"key": "purchase_order", "label": {"zh": "采购订单", "en": "Purchase order"}},
+                {"key": "purchase_order_item", "label": {"zh": "项目", "en": "Item"}},
+                {"key": "schedule_line", "label": {"zh": "计划行", "en": "Schedule line"}},
+                {"key": "supplier", "label": {"zh": "供应商", "en": "Supplier"}},
+                {"key": "supplier_name", "label": {"zh": "供应商名称", "en": "Supplier name"}},
+                {"key": "supplier_contact", "label": {"zh": "联系人", "en": "Contact"}},
+                {"key": "supplier_phone", "label": {"zh": "联系电话", "en": "Phone"}},
+                {"key": "material", "label": {"zh": "物料", "en": "Material"}},
+                {"key": "item_text", "label": {"zh": "项目描述", "en": "Item description"}},
+                {"key": "supplier_material", "label": {"zh": "供应商物料号", "en": "Supplier material"}},
+                {"key": "plant", "label": {"zh": "工厂", "en": "Plant"}},
+                {"key": "delivery_date", "label": {"zh": "计划交货日期", "en": "Scheduled delivery date"}, "format": "date"},
+                {"key": "overdue_days", "label": {"zh": "逾期天数", "en": "Days overdue"}, "format": "integer"},
+                {"key": "scheduled_quantity", "label": {"zh": "计划数量", "en": "Scheduled quantity"}, "format": "decimal"},
+                {"key": "received_quantity", "label": {"zh": "截止日净收货", "en": "Net receipts at cutoff"}, "format": "decimal"},
+                {"key": "open_quantity", "label": {"zh": "未交数量", "en": "Open quantity"}, "format": "decimal"},
+                {"key": "committed_quantity", "label": {"zh": "SAP 承诺数量", "en": "SAP committed quantity"}, "format": "decimal"},
+                {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+                {"key": "purchase_requisition", "label": {"zh": "关联 PR", "en": "Related PR"}},
+                {"key": "purchase_requisition_item", "label": {"zh": "PR 项目", "en": "PR item"}},
+                {"key": "purchasing_group", "label": {"zh": "采购组", "en": "Purchasing group"}},
+            ],
+            "rows": po_actions,
+            "total_rows": len(po_actions),
+            "source_complete": po_action_complete,
+            "empty_state": (
+                {"zh": "完整查询未发现截止日仍有未交数量的逾期计划行。", "en": "The complete query found no overdue schedule line with open quantity at the cutoff."}
+                if po_action_complete
+                else {"zh": "PO 或收货证据不完整，无法确认催交清单。", "en": "PO or receipt evidence is incomplete, so the expediting list cannot be confirmed."}
+            ),
+            "artifact_name": "po-expedite-actions.csv",
+        },
+        {
+            "id": "source_candidates",
+            "title": {"zh": "有效货源候选", "en": "Valid source candidates"},
+            "columns": [
+                {"key": "action", "label": {"zh": "建议动作", "en": "Recommended action"}, "format": "status"},
+                {"key": "purchasing_info_record", "label": {"zh": "采购信息记录", "en": "Purchasing info record"}},
+                {"key": "supplier", "label": {"zh": "供应商", "en": "Supplier"}},
+                {"key": "purchasing_organization", "label": {"zh": "采购组织", "en": "Purchasing organization"}},
+                {"key": "plant", "label": {"zh": "工厂", "en": "Plant"}},
+                {"key": "purchasing_group", "label": {"zh": "采购组", "en": "Purchasing group"}},
+                {"key": "planned_delivery_days", "label": {"zh": "计划交货天数", "en": "Planned delivery days"}, "format": "decimal"},
+                {"key": "order_unit", "label": {"zh": "订单单位", "en": "Order unit"}},
+                {"key": "minimum_order_quantity", "label": {"zh": "最小订单量", "en": "Minimum order quantity"}, "format": "decimal"},
+                {"key": "standard_order_quantity", "label": {"zh": "标准订单量", "en": "Standard order quantity"}, "format": "decimal"},
+                {"key": "maximum_order_quantity", "label": {"zh": "最大订单量", "en": "Maximum order quantity"}, "format": "decimal"},
+                {"key": "automatic_sourcing", "label": {"zh": "自动寻源", "en": "Automatic sourcing"}, "format": "status"},
+            ],
+            "rows": source_actions,
+            "total_rows": len(source_actions),
+            "source_complete": source_topic_complete,
+            "empty_state": (
+                {"zh": "完整查询未发现符合自动寻源条件的信息记录。", "en": "The complete query found no info record relevant for automatic sourcing."}
+                if source_topic_complete
+                else {"zh": "货源证据不完整，无法确认有效货源候选。", "en": "Source evidence is incomplete, so valid source candidates cannot be confirmed."}
+            ),
+            "artifact_name": "source-candidates.csv",
+        },
+    ]
+    return result
 
 
 def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:

@@ -11,7 +11,7 @@
     "en": "Links MRP shortages, requisitions, PO schedules, and valid sources into auditable release, conversion, and expediting recommendations."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "MM-PUR / PP-MRP",
   "tags": [
     "MRP",
@@ -259,11 +259,17 @@
       "operations": {
         "zh": [
           "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
-          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderScheduleLine"
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrder",
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderScheduleLine",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader"
         ],
         "en": [
           "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
-          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderScheduleLine"
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrder",
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderScheduleLine",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader"
         ]
       },
       "tools": [
@@ -278,6 +284,44 @@
       ],
       "executionStepIds": [
         "read_po_schedule"
+      ]
+    },
+    {
+      "id": "execute-read_supplier_context",
+      "title": {
+        "zh": "补充供应商联系信息",
+        "en": "Supplement supplier contact information"
+      },
+      "description": {
+        "zh": "执行可选清单步骤 `read_supplier_context`，读取供应商名称、联系人和电话；缺失不会阻塞核心催交判断。",
+        "en": "Run optional manifest step `read_supplier_context` to read supplier name, contact, and phone; missing contact data does not block the core expediting decision."
+      },
+      "operations": {
+        "zh": [
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrder",
+          "GET API_BUSINESS_PARTNER@2.0/A_Supplier",
+          "GET API_BUSINESS_PARTNER@2.0/A_SupplierPurchasingOrg"
+        ],
+        "en": [
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
+          "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrder",
+          "GET API_BUSINESS_PARTNER@2.0/A_Supplier",
+          "GET API_BUSINESS_PARTNER@2.0/A_SupplierPurchasingOrg"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_supplier_context` / `execute_plan`",
+            "en": "Execute `read_supplier_context` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_supplier_context"
       ]
     },
     {
@@ -937,6 +981,12 @@
                 "operator": "eq",
                 "value": "{{input.plant}}",
                 "value_type": "string"
+              },
+              {
+                "field": "ProcessingStatus",
+                "operator": "eq",
+                "value": "N",
+                "value_type": "string"
               }
             ],
             "rationale": "Collect bounded purchase requisition core evidence."
@@ -959,6 +1009,7 @@
             "select_fields": [
               "PurchaseRequisition",
               "PurchaseRequisitionItem",
+              "PurchaseRequisitionItemText",
               "Material",
               "Plant",
               "DeliveryDate",
@@ -968,6 +1019,17 @@
               "ProcessingStatus",
               "PurReqnReleaseStatus",
               "ReleaseIsNotCompleted",
+              "SourceOfSupplyIsAssigned",
+              "Supplier",
+              "FixedSupplier",
+              "PurchasingOrganization",
+              "PurchasingGroup",
+              "RequisitionerName",
+              "CreatedByUser",
+              "PurReqCreationDate",
+              "PurchaseRequisitionPrice",
+              "PurReqnPriceQuantity",
+              "PurReqnItemCurrency",
               "IsClosed",
               "IsDeleted"
             ],
@@ -982,6 +1044,12 @@
                 "field": "Plant",
                 "operator": "eq",
                 "value": "{{input.plant}}",
+                "value_type": "string"
+              },
+              {
+                "field": "ProcessingStatus",
+                "operator": "eq",
+                "value": "N",
                 "value_type": "string"
               }
             ],
@@ -1005,10 +1073,18 @@
             "select_fields": [
               "PurchaseOrder",
               "PurchaseOrderItem",
+              "PurchaseOrderItemText",
               "Material",
               "Plant",
               "OrderQuantity",
-              "PurchaseOrderQuantityUnit"
+              "PurchaseOrderQuantityUnit",
+              "PurchaseRequisition",
+              "PurchaseRequisitionItem",
+              "RequisitionerName",
+              "SupplierMaterialNumber",
+              "IsCompletelyDelivered",
+              "PurchasingDocumentDeletionCode",
+              "GoodsReceiptIsExpected"
             ],
             "filters": [
               {
@@ -1051,8 +1127,18 @@
                 "select_fields": [
                   "PurchaseOrder",
                   "PurchaseOrderItem",
+                  "PurchaseOrderItemText",
                   "Material",
-                  "Plant"
+                  "Plant",
+                  "OrderQuantity",
+                  "PurchaseOrderQuantityUnit",
+                  "PurchaseRequisition",
+                  "PurchaseRequisitionItem",
+                  "RequisitionerName",
+                  "SupplierMaterialNumber",
+                  "IsCompletelyDelivered",
+                  "PurchasingDocumentDeletionCode",
+                  "GoodsReceiptIsExpected"
                 ],
                 "filters": [
                   {
@@ -1066,6 +1152,33 @@
                     "operator": "eq",
                     "value": "{{input.plant}}",
                     "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "po_headers",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrder",
+                "http_method": "GET",
+                "select_fields": [
+                  "PurchaseOrder",
+                  "Supplier",
+                  "PurchaseOrderDate",
+                  "PurchasingOrganization",
+                  "PurchasingGroup",
+                  "PurchasingProcessingStatus",
+                  "ReleaseIsNotCompleted",
+                  "SupplierRespSalesPersonName",
+                  "SupplierPhoneNumber"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "PurchaseOrder",
+                    "source_step_id": "schedule_po_items",
+                    "source_field": "PurchaseOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
                   }
                 ]
               },
@@ -1100,9 +1213,201 @@
                     "fetch_all_for_binding": true
                   }
                 ]
+              },
+              {
+                "step_id": "po_receipts",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Supplier",
+                  "Plant",
+                  "GoodsMovementType",
+                  "QuantityInEntryUnit",
+                  "EntryUnit",
+                  "DebitCreditCode",
+                  "GoodsMovementIsCancelled",
+                  "ReversedMaterialDocument",
+                  "ReversedMaterialDocumentYear",
+                  "ReversedMaterialDocumentItem"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "PurchaseOrder",
+                    "source_step_id": "schedule_po_items",
+                    "source_field": "PurchaseOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "PurchaseOrderItem",
+                    "source_step_id": "schedule_po_items",
+                    "source_field": "PurchaseOrderItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "receipt_headers",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentHeader",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "PostingDate",
+                  "DocumentDate",
+                  "CreationDate",
+                  "CreationTime"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "MaterialDocumentYear",
+                    "source_step_id": "po_receipts",
+                    "source_field": "MaterialDocumentYear",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "MaterialDocument",
+                    "source_step_id": "po_receipts",
+                    "source_field": "MaterialDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
               }
             ],
-            "rationale": "Join live purchase-order items to schedule lines using the target-system PurchasingDocument keys."
+            "rationale": "Join exact PO items to headers, schedule lines, receipts, returns, reversals, and posting dates so overdue open quantities are based on net goods receipts rather than supplier commitment quantities."
+          }
+        }
+      },
+      {
+        "id": "read_supplier_context",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_PurchaseOrderItem",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "supplier_po_items",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Material",
+                  "Plant"
+                ],
+                "filters": [
+                  {
+                    "field": "Material",
+                    "operator": "eq",
+                    "value": "{{input.material}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "Plant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "supplier_po_headers",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrder",
+                "http_method": "GET",
+                "select_fields": [
+                  "PurchaseOrder",
+                  "Supplier",
+                  "PurchasingOrganization"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "PurchaseOrder",
+                    "source_step_id": "supplier_po_items",
+                    "source_field": "PurchaseOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "supplier_master",
+                "service_name": "API_BUSINESS_PARTNER",
+                "odata_version": "2.0",
+                "entity_set": "A_Supplier",
+                "http_method": "GET",
+                "select_fields": [
+                  "Supplier",
+                  "SupplierFullName",
+                  "SupplierName",
+                  "PurchasingIsBlocked",
+                  "DeletionIndicator"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "Supplier",
+                    "source_step_id": "supplier_po_headers",
+                    "source_field": "Supplier",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "supplier_purchasing_org",
+                "service_name": "API_BUSINESS_PARTNER",
+                "odata_version": "2.0",
+                "entity_set": "A_SupplierPurchasingOrg",
+                "http_method": "GET",
+                "select_fields": [
+                  "Supplier",
+                  "PurchasingOrganization",
+                  "PurchasingIsBlockedForSupplier",
+                  "SupplierRespSalesPersonName",
+                  "SupplierPhoneNumber",
+                  "PurchaseOrderCurrency"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "Supplier",
+                    "source_step_id": "supplier_po_headers",
+                    "source_field": "Supplier",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "PurchasingOrganization",
+                    "source_step_id": "supplier_po_headers",
+                    "source_field": "PurchasingOrganization",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Read optional supplier names and purchasing contacts for the exact PO suppliers without making contact availability a prerequisite for the procurement conclusion."
           }
         }
       },
@@ -1128,6 +1433,10 @@
               "Material",
               "PurgDocOrderQuantityUnit",
               "MaterialPlannedDeliveryDurn",
+              "PurchasingGroup",
+              "MinimumPurchaseOrderQuantity",
+              "StandardPurchaseOrderQuantity",
+              "MaximumOrderQuantity",
               "IsMarkedForDeletion",
               "IsRelevantForAutomSrcg"
             ],
@@ -1232,9 +1541,24 @@
             "BNFPO",
             "MATNR",
             "WERKS",
+            "TXZ01",
             "MENGE",
+            "BSMNG",
             "MEINS",
-            "FRGKZ"
+            "LFDAT",
+            "STATU",
+            "FRGKZ",
+            "LIFNR",
+            "FLIEF",
+            "EKORG",
+            "EKGRP",
+            "AFNAM",
+            "BADAT",
+            "PREIS",
+            "PEINH",
+            "WAERS",
+            "LOEKZ",
+            "EBAKZ"
           ],
           "filters": [
             {
@@ -1270,7 +1594,14 @@
             "EBELN",
             "EBELP",
             "MATNR",
-            "WERKS"
+            "WERKS",
+            "TXZ01",
+            "MENGE",
+            "MEINS",
+            "ELIKZ",
+            "LOEKZ",
+            "BANFN",
+            "BNFPO"
           ],
           "filters": [
             {
@@ -1284,7 +1615,7 @@
               "value": "{{input.plant}}"
             }
           ],
-          "max_rows": 100
+          "max_rows": 30000
         }
       },
       {
@@ -1433,6 +1764,9 @@
             "po_schedule": "{{steps.read_po_schedule.output}}",
             "source": "{{steps.read_source.output}}"
           },
+          "optional_context": {
+            "supplier": "{{steps.read_supplier_context.output}}"
+          },
           "fallbacks": {
             "mrp": "{{steps.adt_mrp.output}}",
             "pr": "{{steps.adt_pr.output}}",
@@ -1464,6 +1798,11 @@
       ],
       "metrics": [
         "shortage_quantity",
+        "pr_action_total",
+        "pr_awaiting_release",
+        "pr_ready_to_convert",
+        "pr_source_or_processing_required",
+        "po_schedule_lines_to_expedite",
         "pending_pr",
         "expedite_po",
         "valid_source_candidates"
@@ -1589,16 +1928,21 @@
       "zeroFactWhenMetricZero": {},
       "recordScope": "Return only authoritative MaterialCoverages rows as comparison records. MRP master data, SupplyDemandItems, purchase requisitions, PO schedule lines, and source candidates are contextual evidence summarized by metrics or diagnostics, not comparison records.",
       "metricDefinitions": {
-        "pending_pr": "Count exact material/plant PR items that are not deleted and are not in completed/released terminal processing states.",
-        "expedite_po": "Count exact material/plant PO schedule lines with delivery before the as-of date and positive schedule quantity minus committed quantity.",
+        "pr_action_total": "Count exact material/plant PR items with ProcessingStatus=N, positive requested quantity minus ordered quantity, and no deletion or close indicator.",
+        "pr_awaiting_release": "Count actionable PR items whose release status is 03 or 04.",
+        "pr_ready_to_convert": "Count actionable PR items whose release status is 05, release is complete, and a source or fixed supplier is assigned.",
+        "pr_source_or_processing_required": "Count actionable PR items that require version completion, active processing, or source assignment before PO conversion.",
+        "po_schedule_lines_to_expedite": "Count exact material/plant PO schedule lines whose delivery date is before the as-of date and whose order quantity exceeds net goods receipts posted by the as-of date, after unit validation and stable schedule allocation.",
+        "pending_pr": "Deprecated compatibility alias of pr_action_total.",
+        "expedite_po": "Deprecated compatibility alias of po_schedule_lines_to_expedite.",
         "valid_source_candidates": "Count exact purchasing-organization/plant info-record rows that are not marked for deletion and are relevant for automatic sourcing."
       },
-      "businessStatusDefinition": "Use attention when shortage_quantity, pending_pr, or expedite_po is positive; use normal only when all three are zero. Test-data qualification BLOCKED is a separate acceptance verdict and must not replace this business status.",
+      "businessStatusDefinition": "Use attention when shortage_quantity, pr_action_total, or po_schedule_lines_to_expedite is positive; use normal only when all three are zero. Test-data qualification BLOCKED is a separate acceptance verdict and must not replace this business status.",
       "businessStatusFromAnyPositiveMetric": {
         "metrics": [
           "shortage_quantity",
-          "pending_pr",
-          "expedite_po"
+          "pr_action_total",
+          "po_schedule_lines_to_expedite"
         ],
         "positive": "attention",
         "zero": "normal"
