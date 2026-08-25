@@ -1,12 +1,13 @@
 # Product Cost Variance Assistant: SAP data contract
 
-## Evidence order
+## Evidence order (0.2.0)
 
-1. Embedded GET-only OData with live metadata and complete paging.
-2. `assess_api_evidence` separates schema capability gaps from operational failures.
-3. Protected `sap-adt-table-export` only for a confirmed capability gap.
-4. `DATA_GAP` when ADT is unavailable, partial, failed, truncated, or unverifiable.
+1. Embedded GET-only production-order OData derives company code, material, plant, costing variants, and status.
+2. Embedded GET-only operational accounting OData resolves the order's actual posting-period range when the user omits year and period.
+3. `sap-production-order-cost-analysis` reads AUFK through the protected default ADT connection and proves `AUFNR/OBJNR/KOKRS/BUKRS` attribution.
+4. The Skill validates and executes `C_MfgOrdActlPlnTgtLdgrCost` or its interface view for ledger `0L`, currency role `10`, and target-cost variant `1`.
+5. `DATA_GAP` when the released CDS is unavailable, rejected, partial, truncated, or unverifiable.
 
-A complete empty API result is valid bounded evidence and does not trigger ADT. Network, authentication, authorization, timeout, malformed response, explicit top, and paging limits remain inconclusive. There is no automatic Provider fallback or SE16N fallback.
+A complete empty actual-cost query is valid bounded evidence but does not create a zero target cost. Network, authentication, authorization, timeout, malformed response, explicit top, and paging limits remain inconclusive. There is no automatic Provider fallback or SE16N fallback.
 
-ADT evidence is accepted only with `status=complete`, `read_only=true`, `validated=true`, `source_complete=true`, `paging_complete=true`, no validation issue, and a matching adjacent SHA-256 manifest.
+Cost evidence is accepted only with `status=complete`, `read_only=true`, `validated=true`, `source_complete=true`, `evidence_complete=true`, `paging_complete=true`, no validation issue, and a matching order relationship. Plan, target, and actual values are compared only within one ledger, currency role, currency, and period scope.

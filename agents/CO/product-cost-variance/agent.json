@@ -2,484 +2,90 @@
   "schemaVersion": 2,
   "slug": "product-cost-variance",
   "module": "CO",
-  "title": {
-    "zh": "产品成本差异助手",
-    "en": "Product Cost Variance Assistant"
-  },
+  "title": {"zh": "生产订单成本差异分析助手", "en": "Production Order Cost Variance Analysis Assistant"},
   "summary": {
-    "zh": "结合生产订单实际发生额与物料分类账标准/周期价格分析成本差异。",
-    "en": "Combines production-order actual postings with Material Ledger standard and periodic prices to analyze cost variance."
+    "zh": "按生产订单、成本要素、期间、账本和币种比较计划、目标与实际成本；证据不完整时保持不确定。",
+    "en": "Compares production-order plan, target, and actual costs by cost element, period, ledger, and currency and remains inconclusive when evidence is incomplete."
   },
   "status": "Three-stage live acceptance blocked",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "CO-PC / Product Cost Controlling",
-  "tags": [
-    "Product Cost",
-    "Material Ledger",
-    "Variance",
-    "Production Order"
-  ],
-  "sapModules": [
-    "CO-PC",
-    "PP-SFC"
-  ],
+  "tags": ["Production Order", "Plan Cost", "Target Cost", "Actual Cost", "Cost Element"],
+  "sapModules": ["CO-PC", "PP-SFC"],
   "transactions": [],
-  "tables": [
-    "AUFK",
-    "ACDOCA",
-    "CKMLHD",
-    "CKMLCR"
-  ],
-  "systems": [
-    "SAP S/4HANA"
-  ],
+  "tables": ["AUFK", "ACDOCA", "C_MfgOrdActlPlnTgtLdgrCost"],
+  "systems": ["SAP S/4HANA"],
   "inputs": {
-    "zh": [
-      "公司代码",
-      "fiscal year",
-      "period",
-      "manufacturing order",
-      "物料",
-      "valuation area"
-    ],
-    "en": [
-      "Company code",
-      "Fiscal Year",
-      "Period",
-      "Manufacturing Order",
-      "Material",
-      "Valuation Area"
-    ]
+    "zh": ["生产订单", "会计年度", "期间"],
+    "en": ["Manufacturing order", "Fiscal year", "Period"]
   },
   "outputs": {
-    "zh": [
-      "业务状态",
-      "查询源完整性",
-      "结构化业务报告"
-    ],
-    "en": [
-      "Business status",
-      "Query-source completeness",
-      "Structured business report"
-    ]
+    "zh": ["生产订单", "公司代码", "控制范围", "物料", "工厂", "分析期间起始", "分析期间截止", "账本", "币种角色", "目标成本版本", "计划成本总额", "目标成本总额", "实际成本总额", "实际减目标差异", "实际减目标差异百分比", "成本状态", "成本要素明细", "订单与成本对象关系证据", "查询源完整性", "业务证据完整性", "业务状态", "结构化业务报告"],
+    "en": ["Manufacturing order", "Company code", "Controlling area", "Material", "Plant", "Analysis period from", "Analysis period to", "Ledger", "Currency role", "Target cost variant", "Plan cost total", "Target cost total", "Actual cost total", "Actual minus target variance", "Actual minus target variance percent", "Cost status", "Cost element details", "Order-to-cost-object relationship evidence", "Query-source completeness", "Business evidence completeness", "Business status", "Structured business report"]
   },
   "guardrails": {
-    "zh": [
-      "全部 SAP 访问严格只读",
-      "Embedded OData 为唯一主 provider",
-      "仅 schema 能力缺口触发 ADT",
-      "不启用自动 Provider 回退或 SE16N",
-      "不完整证据不得生成确定结论"
-    ],
-    "en": [
-      "All SAP access is strictly read-only",
-      "Embedded OData is the sole primary provider",
-      "Only schema capability gaps trigger ADT",
-      "Never use automatic Provider fallback or SE16N",
-      "Incomplete evidence cannot produce a confirmed conclusion"
-    ]
+    "zh": ["全部SAP访问严格只读", "生产订单与成本对象关系必须由AUFK证明", "计划、目标和实际成本必须来自发布成本CDS或已对账的只读回退", "目标成本缺失不得当作零", "不同账本、币种或币种角色不得合计", "不得用物料标准单价乘数量伪造订单目标成本", "不得运行成本计算、差异计算、结算或重估"],
+    "en": ["All SAP access is strictly read-only", "AUFK must prove the production-order-to-cost-object relationship", "Plan, target, and actual costs must come from the released cost CDS or a reconciled read-only fallback", "Missing target cost is never treated as zero", "Different ledgers, currencies, or currency roles are never combined", "Never fabricate order target cost from standard price multiplied by quantity", "Never run costing, variance calculation, settlement, or revaluation"]
   },
   "workflow": [
     {
-      "id": "execute-read_order",
-      "title": {
-        "zh": "读取 SAP 证据",
-        "en": "Read SAP evidence"
-      },
-      "description": {
-        "zh": "执行清单步骤 `read_order`，通过实时 Schema 校验后的 GET 请求读取证据。",
-        "en": "Run manifest step `read_order` using GET requests validated against live schema."
-      },
-      "operations": {
-        "zh": [
-          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrder_2"
-        ],
-        "en": [
-          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrder_2"
-        ]
-      },
-      "tools": [
-        {
-          "name": "Embedded SAP OData Provider",
-          "kind": "GET-only SAP Provider",
-          "purpose": {
-            "zh": "执行 `read_order` / `execute_plan`",
-            "en": "Execute `read_order` / `execute_plan`"
-          }
-        }
-      ],
-      "executionStepIds": [
-        "read_order"
-      ]
+      "id": "read-order",
+      "title": {"zh": "读取生产订单", "en": "Read production order"},
+      "description": {"zh": "读取订单公司代码、物料、工厂、成本变式和状态。", "en": "Read company code, material, plant, costing variants, and order status."},
+      "operations": {"zh": ["GET API_PRODUCTION_ORDER_2_SRV/A_ProductionOrder_2"], "en": ["GET API_PRODUCTION_ORDER_2_SRV/A_ProductionOrder_2"]},
+      "tools": [{"name": "Embedded SAP OData Provider", "kind": "GET-only SAP Provider", "purpose": {"zh": "读取订单主数据", "en": "Read order master evidence"}}],
+      "executionStepIds": ["read_order"]
     },
     {
-      "id": "execute-read_actual",
-      "title": {
-        "zh": "读取 SAP 证据",
-        "en": "Read SAP evidence"
-      },
-      "description": {
-        "zh": "执行清单步骤 `read_actual`，通过实时 Schema 校验后的 GET 请求读取证据。",
-        "en": "Run manifest step `read_actual` using GET requests validated against live schema."
-      },
-      "operations": {
-        "zh": [
-          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
-        ],
-        "en": [
-          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
-        ]
-      },
+      "id": "read-actual-periods",
+      "title": {"zh": "读取实际成本过账期间", "en": "Read actual-cost posting periods"},
+      "description": {"zh": "读取订单实际成本行，用于确定存在实际过账的年度和期间。", "en": "Read actual order-cost rows to identify fiscal years and periods with postings."},
+      "operations": {"zh": ["GET API_OPLACCTGDOCITEMCUBE_SRV/A_OperationalAcctgDocItemCube"], "en": ["GET API_OPLACCTGDOCITEMCUBE_SRV/A_OperationalAcctgDocItemCube"]},
       "tools": [
-        {
-          "name": "Embedded SAP OData Provider",
-          "kind": "GET-only SAP Provider",
-          "purpose": {
-            "zh": "执行 `read_actual` / `execute_plan`",
-            "en": "Execute `read_actual` / `execute_plan`"
-          }
-        }
+        {"name": "Embedded SAP OData Provider", "kind": "GET-only SAP Provider", "purpose": {"zh": "读取实际成本期间", "en": "Read actual cost periods"}}
       ],
-      "executionStepIds": [
-        "read_actual"
-      ]
+      "executionStepIds": ["read_actual_periods"]
     },
     {
-      "id": "execute-assess",
-      "title": {
-        "zh": "评估证据完整性",
-        "en": "Assess evidence completeness"
-      },
-      "description": {
-        "zh": "执行清单步骤 `assess`，只解释已经取得的证据，不访问或修改 SAP。",
-        "en": "Run manifest step `assess` and interpret collected evidence without accessing or changing SAP."
-      },
-      "operations": {
-        "zh": [
-          "rule.assess_api_evidence"
-        ],
-        "en": [
-          "rule.assess_api_evidence"
-        ]
-      },
+      "id": "resolve-period",
+      "title": {"zh": "确定成本分析期间", "en": "Resolve cost analysis period"},
+      "description": {"zh": "优先使用用户指定的年度和期间；未指定时按完整的实际成本过账期间确定范围。", "en": "Use the requested fiscal scope when supplied; otherwise derive it from complete actual-cost posting periods."},
+      "operations": {"zh": ["rule.resolve_production_cost_scope"], "en": ["rule.resolve_production_cost_scope"]},
       "tools": [
-        {
-          "name": "assess_api_evidence",
-          "kind": "Local deterministic rule",
-          "purpose": {
-            "zh": "执行 `assess` / `assess_api_evidence`",
-            "en": "Execute `assess` / `assess_api_evidence`"
-          }
-        }
+        {"name": "resolve_production_cost_scope", "kind": "Local deterministic rule", "purpose": {"zh": "解析精确期间范围", "en": "Resolve the exact fiscal-period range"}}
       ],
-      "executionStepIds": [
-        "assess"
-      ]
+      "executionStepIds": ["resolve_scope"]
     },
     {
-      "id": "execute-adt_order",
-      "title": {
-        "zh": "按条件补充表级证据",
-        "en": "Conditionally supplement table evidence"
-      },
-      "description": {
-        "zh": "仅在清单条件成立时执行 `adt_order`；条件为假时记录 skipped，不连接 Skill。",
-        "en": "Run `adt_order` only when its manifest condition is true; otherwise record skipped without calling the Skill."
-      },
-      "operations": {
-        "zh": [
-          "sap-adt-table-export.execute"
-        ],
-        "en": [
-          "sap-adt-table-export.execute"
-        ]
-      },
-      "tools": [
-        {
-          "name": "sap-adt-table-export",
-          "kind": "Read-only SAPSkillhub Skill",
-          "purpose": {
-            "zh": "执行 `adt_order` / `execute`",
-            "en": "Execute `adt_order` / `execute`"
-          }
-        }
-      ],
-      "executionStepIds": [
-        "adt_order"
-      ]
+      "id": "read-cost",
+      "title": {"zh": "读取计划、目标与实际成本", "en": "Read plan, target, and actual costs"},
+      "description": {"zh": "专用只读Skill验证AUFK关系并读取发布成本CDS。", "en": "A dedicated read-only Skill validates AUFK attribution and reads the released cost CDS."},
+      "operations": {"zh": ["sap-production-order-cost-analysis.execute"], "en": ["sap-production-order-cost-analysis.execute"]},
+      "tools": [{"name": "sap-production-order-cost-analysis", "kind": "Read-only SAPSkillhub Skill", "purpose": {"zh": "读取按成本要素的计划、目标和实际成本", "en": "Read plan, target, and actual costs by cost element"}}],
+      "executionStepIds": ["read_production_cost"]
     },
     {
-      "id": "execute-adt_actual",
-      "title": {
-        "zh": "按条件补充表级证据",
-        "en": "Conditionally supplement table evidence"
-      },
-      "description": {
-        "zh": "仅在清单条件成立时执行 `adt_actual`；条件为假时记录 skipped，不连接 Skill。",
-        "en": "Run `adt_actual` only when its manifest condition is true; otherwise record skipped without calling the Skill."
-      },
-      "operations": {
-        "zh": [
-          "sap-adt-table-export.execute"
-        ],
-        "en": [
-          "sap-adt-table-export.execute"
-        ]
-      },
-      "tools": [
-        {
-          "name": "sap-adt-table-export",
-          "kind": "Read-only SAPSkillhub Skill",
-          "purpose": {
-            "zh": "执行 `adt_actual` / `execute`",
-            "en": "Execute `adt_actual` / `execute`"
-          }
-        }
-      ],
-      "executionStepIds": [
-        "adt_actual"
-      ]
-    },
-    {
-      "id": "execute-adt_cost_header",
-      "title": {
-        "zh": "按条件补充表级证据",
-        "en": "Conditionally supplement table evidence"
-      },
-      "description": {
-        "zh": "仅在清单条件成立时执行 `adt_cost_header`；条件为假时记录 skipped，不连接 Skill。",
-        "en": "Run `adt_cost_header` only when its manifest condition is true; otherwise record skipped without calling the Skill."
-      },
-      "operations": {
-        "zh": [
-          "sap-adt-table-export.execute"
-        ],
-        "en": [
-          "sap-adt-table-export.execute"
-        ]
-      },
-      "tools": [
-        {
-          "name": "sap-adt-table-export",
-          "kind": "Read-only SAPSkillhub Skill",
-          "purpose": {
-            "zh": "执行 `adt_cost_header` / `execute`",
-            "en": "Execute `adt_cost_header` / `execute`"
-          }
-        }
-      ],
-      "executionStepIds": [
-        "adt_cost_header"
-      ]
-    },
-    {
-      "id": "execute-cost_numbers",
-      "title": {
-        "zh": "执行确定性业务规则",
-        "en": "Run deterministic business rules"
-      },
-      "description": {
-        "zh": "执行清单步骤 `cost_numbers`，只解释已经取得的证据，不访问或修改 SAP。",
-        "en": "Run manifest step `cost_numbers` and interpret collected evidence without accessing or changing SAP."
-      },
-      "operations": {
-        "zh": [
-          "rule.extract_bounded_values"
-        ],
-        "en": [
-          "rule.extract_bounded_values"
-        ]
-      },
-      "tools": [
-        {
-          "name": "extract_bounded_values",
-          "kind": "Local deterministic rule",
-          "purpose": {
-            "zh": "执行 `cost_numbers` / `extract_bounded_values`",
-            "en": "Execute `cost_numbers` / `extract_bounded_values`"
-          }
-        }
-      ],
-      "executionStepIds": [
-        "cost_numbers"
-      ]
-    },
-    {
-      "id": "execute-adt_cost_period",
-      "title": {
-        "zh": "按条件补充表级证据",
-        "en": "Conditionally supplement table evidence"
-      },
-      "description": {
-        "zh": "仅在清单条件成立时执行 `adt_cost_period`；条件为假时记录 skipped，不连接 Skill。",
-        "en": "Run `adt_cost_period` only when its manifest condition is true; otherwise record skipped without calling the Skill."
-      },
-      "operations": {
-        "zh": [
-          "sap-adt-table-export.execute"
-        ],
-        "en": [
-          "sap-adt-table-export.execute"
-        ]
-      },
-      "tools": [
-        {
-          "name": "sap-adt-table-export",
-          "kind": "Read-only SAPSkillhub Skill",
-          "purpose": {
-            "zh": "执行 `adt_cost_period` / `execute`",
-            "en": "Execute `adt_cost_period` / `execute`"
-          }
-        }
-      ],
-      "executionStepIds": [
-        "adt_cost_period"
-      ]
-    },
-    {
-      "id": "execute-evaluate",
-      "title": {
-        "zh": "执行确定性业务规则",
-        "en": "Run deterministic business rules"
-      },
-      "description": {
-        "zh": "执行清单步骤 `evaluate`，只解释已经取得的证据，不访问或修改 SAP。",
-        "en": "Run manifest step `evaluate` and interpret collected evidence without accessing or changing SAP."
-      },
-      "operations": {
-        "zh": [
-          "rule.evaluate_business_agent"
-        ],
-        "en": [
-          "rule.evaluate_business_agent"
-        ]
-      },
-      "tools": [
-        {
-          "name": "evaluate_business_agent",
-          "kind": "Local deterministic rule",
-          "purpose": {
-            "zh": "执行 `evaluate` / `evaluate_business_agent`",
-            "en": "Execute `evaluate` / `evaluate_business_agent`"
-          }
-        }
-      ],
-      "executionStepIds": [
-        "evaluate"
-      ]
+      "id": "evaluate-cost",
+      "title": {"zh": "执行确定性成本差异规则", "en": "Run deterministic cost variance rules"},
+      "description": {"zh": "按成本要素计算实际减目标差异，证据缺口优先返回不确定。", "en": "Calculate actual-minus-target variance by cost element and return inconclusive when evidence gaps remain."},
+      "operations": {"zh": ["rule.evaluate_business_agent"], "en": ["rule.evaluate_business_agent"]},
+      "tools": [{"name": "production_order_cost_variance_v2", "kind": "Local deterministic rule", "purpose": {"zh": "生成成本结论和业务报告", "en": "Produce the cost conclusion and business report"}}],
+      "executionStepIds": ["evaluate"]
     }
   ],
   "execution": {
     "mode": "deterministic",
-    "timeoutSeconds": 600,
+    "timeoutSeconds": 900,
     "inputSchema": {
       "type": "object",
       "properties": {
-        "company_code": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 4,
-          "pattern": "^[0-9A-Za-z_-]+$",
-          "title": {
-            "zh": "公司代码",
-            "en": "Company code"
-          }
-        },
-        "fiscal_year": {
-          "type": "string",
-          "minLength": 4,
-          "maxLength": 4,
-          "pattern": "^[0-9]{4}$",
-          "title": {
-            "zh": "fiscal year",
-            "en": "Fiscal Year"
-          }
-        },
-        "period": {
-          "type": "string",
-          "pattern": "^[0-9]{1,3}$",
-          "title": {
-            "zh": "period",
-            "en": "Period"
-          }
-        },
-        "manufacturing_order": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 12,
-          "pattern": "^[0-9A-Za-z_-]+$",
-          "title": {
-            "zh": "manufacturing order",
-            "en": "Manufacturing Order"
-          }
-        },
-        "material": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 40,
-          "pattern": "^[0-9A-Za-z_-]+$",
-          "title": {
-            "zh": "物料",
-            "en": "Material"
-          }
-        },
-        "valuation_area": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 4,
-          "pattern": "^[0-9A-Za-z_-]+$",
-          "title": {
-            "zh": "valuation area",
-            "en": "Valuation Area"
-          }
-        }
+        "manufacturing_order": {"type": "string", "minLength": 1, "maxLength": 12, "pattern": "^[0-9A-Za-z_-]+$", "x-sapba-sap-identifier": true, "title": {"zh": "生产订单", "en": "Manufacturing order"}},
+        "fiscal_year": {"type": "string", "pattern": "^[0-9]{4}$", "title": {"zh": "会计年度", "en": "Fiscal year"}},
+        "period": {"type": "integer", "minimum": 1, "maximum": 16, "title": {"zh": "期间", "en": "Period"}}
       },
-      "required": [
-        "company_code",
-        "fiscal_year",
-        "period",
-        "manufacturing_order",
-        "material",
-        "valuation_area"
-      ],
+      "required": ["manufacturing_order"],
+      "dependentRequired": {"period": ["fiscal_year"]},
       "additionalProperties": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "properties": {
-        "business_status": {
-          "type": "string",
-          "title": {
-            "zh": "业务状态",
-            "en": "Business status"
-          }
-        },
-        "source_complete": {
-          "type": "boolean",
-          "title": {
-            "zh": "查询源完整性",
-            "en": "Query-source completeness"
-          }
-        },
-        "business_report": {
-          "type": "object",
-          "title": {
-            "zh": "结构化业务报告",
-            "en": "Structured business report"
-          }
-        }
-      },
-      "required": [
-        "business_status",
-        "source_complete",
-        "business_report"
-      ],
-      "additionalProperties": false
-    },
-    "outputMapping": {
-      "business_status": "{{steps.evaluate.output.workflow_output.business_status}}",
-      "source_complete": "{{steps.evaluate.output.workflow_output.source_complete}}",
-      "business_report": "{{steps.evaluate.output.workflow_output.business_report}}"
     },
     "steps": [
       {
@@ -488,305 +94,55 @@
         "operation": "execute_plan",
         "readOnly": true,
         "failurePolicy": "record_gap",
-        "request": {
-          "plan": {
-            "service_name": "API_PRODUCTION_ORDER_2_SRV",
-            "odata_version": "2.0",
-            "entity_set": "A_ProductionOrder_2",
-            "http_method": "GET",
-            "plan_kind": "direct",
-            "select_fields": [
-              "ManufacturingOrder",
-              "ManufacturingOrderType",
-              "Material",
-              "ProductionPlant",
-              "CompanyCode",
-              "OrderIsReleased",
-              "OrderIsDelivered",
-              "OrderIsTechnicallyCompleted",
-              "OrderIsClosed",
-              "SettlementRuleIsCreated",
-              "MfgOrderConfirmedYieldQty"
-            ],
-            "filters": [
-              {
-                "field": "ManufacturingOrder",
-                "operator": "eq",
-                "value": "{{input.manufacturing_order}}",
-                "value_type": "string"
-              }
-            ],
-            "rationale": "Read one production order and settlement status."
-          }
-        }
+        "request": {"plan": {
+          "service_name": "API_PRODUCTION_ORDER_2_SRV",
+          "odata_version": "2.0",
+          "entity_set": "A_ProductionOrder_2",
+          "http_method": "GET",
+          "plan_kind": "direct",
+          "select_fields": ["ManufacturingOrder", "ManufacturingOrderType", "Material", "ProductionPlant", "CompanyCode", "ActualCostsCostingVariant", "PlannedCostsCostingVariant", "OrderIsReleased", "OrderIsDelivered", "OrderIsTechnicallyCompleted", "OrderIsClosed"],
+          "filters": [{"field": "ManufacturingOrder", "operator": "eq", "value": "{{input.manufacturing_order}}", "value_type": "string"}],
+          "rationale": "Read the exact production-order context without changing SAP."
+        }}
       },
       {
-        "id": "read_actual",
+        "id": "read_actual_periods",
         "executor": "sap_read",
         "operation": "execute_plan",
         "readOnly": true,
         "failurePolicy": "record_gap",
-        "request": {
-          "plan": {
-            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
-            "odata_version": "2.0",
-            "entity_set": "A_OperationalAcctgDocItemCube",
-            "http_method": "GET",
-            "plan_kind": "direct",
-            "select_fields": [
-              "CompanyCode",
-              "FiscalYear",
-              "FiscalPeriod",
-              "AccountingDocument",
-              "AccountingDocumentItem",
-              "ControllingArea",
-              "CostCenter",
-              "OrderID",
-              "WBSElementInternalID",
-              "Material",
-              "Plant",
-              "GLAccount",
-              "PostingDate",
-              "AmountInCompanyCodeCurrency",
-              "CompanyCodeCurrency"
-            ],
-            "filters": [
-              {
-                "field": "CompanyCode",
-                "operator": "eq",
-                "value": "{{input.company_code}}",
-                "value_type": "string"
-              },
-              {
-                "field": "FiscalYear",
-                "operator": "eq",
-                "value": "{{input.fiscal_year}}",
-                "value_type": "string"
-              },
-              {
-                "field": "FiscalPeriod",
-                "operator": "eq",
-                "value": "{{input.period}}",
-                "value_type": "string"
-              },
-              {
-                "field": "OrderID",
-                "operator": "eq",
-                "value": "{{input.manufacturing_order}}",
-                "value_type": "string"
-              }
-            ],
-            "rationale": "Read actual order-cost postings."
-          }
-        }
+        "request": {"plan": {
+          "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+          "odata_version": "2.0",
+          "entity_set": "A_OperationalAcctgDocItemCube",
+          "http_method": "GET",
+          "plan_kind": "direct",
+          "select_fields": ["CompanyCode", "FiscalYear", "FiscalPeriod", "AccountingDocument", "AccountingDocumentItem", "ControllingArea", "OrderID", "GLAccount", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"],
+          "filters": [{"field": "OrderID", "operator": "eq", "value": "{{input.manufacturing_order}}", "value_type": "string"}],
+          "order_by": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem"],
+          "rationale": "Read exact-order actual cost postings and fiscal periods for scope derivation."
+        }}
       },
       {
-        "id": "assess",
+        "id": "resolve_scope",
         "executor": "rule",
-        "operation": "assess_api_evidence",
-        "inputMapping": {
-          "checks": {
-            "order": "{{steps.read_order.output}}",
-            "actual_cost": "{{steps.read_actual.output}}"
-          },
-          "capability_gaps": [
-            "standard_cost"
-          ]
-        }
+        "operation": "resolve_production_cost_scope",
+        "inputMapping": {"run_input": "{{input}}", "actual_cost": "{{steps.read_actual_periods.output}}"}
       },
       {
-        "id": "adt_order",
+        "id": "read_production_cost",
         "executor": "skill",
         "operation": "execute",
-        "skillId": "sap-adt-table-export",
+        "skillId": "sap-production-order-cost-analysis",
         "readOnly": true,
         "failurePolicy": "record_gap",
-        "when": {
-          "source": "{{steps.assess.output.needs_adt.order}}",
-          "equals": true
-        },
+        "when": {"source": "{{steps.resolve_scope.output.scope_resolved}}", "equals": true},
         "inputMapping": {
           "schema_version": 1,
-          "source_type": "table",
-          "object": "AUFK",
-          "fields": [
-            "AUFNR",
-            "OBJNR",
-            "KOKRS",
-            "BUKRS",
-            "LOEKZ",
-            "PHAS3"
-          ],
-          "filters": [
-            {
-              "field": "AUFNR",
-              "operator": "eq",
-              "value": "{{input.manufacturing_order}}"
-            }
-          ],
-          "order_by": [
-            "AUFNR"
-          ],
-          "max_rows": 10
-        }
-      },
-      {
-        "id": "adt_actual",
-        "executor": "skill",
-        "operation": "execute",
-        "skillId": "sap-adt-table-export",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "when": {
-          "source": "{{steps.assess.output.needs_adt.actual_cost}}",
-          "equals": true
-        },
-        "inputMapping": {
-          "schema_version": 1,
-          "source_type": "table",
-          "object": "ACDOCA",
-          "fields": [
-            "RLDNR",
-            "RBUKRS",
-            "GJAHR",
-            "BELNR",
-            "DOCLN",
-            "POPER",
-            "AUFNR",
-            "RACCT",
-            "HSL",
-            "RHCUR"
-          ],
-          "filters": [
-            {
-              "field": "RBUKRS",
-              "operator": "eq",
-              "value": "{{input.company_code}}"
-            },
-            {
-              "field": "GJAHR",
-              "operator": "eq",
-              "value": "{{input.fiscal_year}}"
-            },
-            {
-              "field": "POPER",
-              "operator": "eq",
-              "value": "{{input.period}}"
-            },
-            {
-              "field": "AUFNR",
-              "operator": "eq",
-              "value": "{{input.manufacturing_order}}"
-            }
-          ],
-          "order_by": [
-            "RLDNR",
-            "RBUKRS",
-            "GJAHR",
-            "BELNR",
-            "DOCLN"
-          ],
-          "max_rows": 10000
-        }
-      },
-      {
-        "id": "adt_cost_header",
-        "executor": "skill",
-        "operation": "execute",
-        "skillId": "sap-adt-table-export",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "when": {
-          "source": "{{steps.assess.output.needs_adt.standard_cost}}",
-          "equals": true
-        },
-        "inputMapping": {
-          "schema_version": 1,
-          "source_type": "table",
-          "object": "CKMLHD",
-          "fields": [
-            "KALNR",
-            "MATNR",
-            "BWKEY",
-            "BWTAR"
-          ],
-          "filters": [
-            {
-              "field": "MATNR",
-              "operator": "eq",
-              "value": "{{input.material}}"
-            },
-            {
-              "field": "BWKEY",
-              "operator": "eq",
-              "value": "{{input.valuation_area}}"
-            }
-          ],
-          "order_by": [
-            "KALNR"
-          ],
-          "max_rows": 100
-        }
-      },
-      {
-        "id": "cost_numbers",
-        "executor": "rule",
-        "operation": "extract_bounded_values",
-        "inputMapping": {
-          "payload": "{{steps.adt_cost_header.output}}",
-          "field": "KALNR",
-          "max_values": 100
-        }
-      },
-      {
-        "id": "adt_cost_period",
-        "executor": "skill",
-        "operation": "execute",
-        "skillId": "sap-adt-table-export",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "when": {
-          "source": "{{steps.cost_numbers.output.has_values}}",
-          "equals": true
-        },
-        "inputMapping": {
-          "schema_version": 1,
-          "source_type": "table",
-          "object": "CKMLCR",
-          "fields": [
-            "KALNR",
-            "BDATJ",
-            "POPER",
-            "UNTPER",
-            "CURTP",
-            "PVPRS",
-            "STPRS"
-          ],
-          "filters": [
-            {
-              "field": "KALNR",
-              "operator": "in",
-              "values": "{{steps.cost_numbers.output.values}}"
-            },
-            {
-              "field": "BDATJ",
-              "operator": "eq",
-              "value": "{{input.fiscal_year}}"
-            },
-            {
-              "field": "POPER",
-              "operator": "eq",
-              "value": "{{input.period}}"
-            }
-          ],
-          "order_by": [
-            "KALNR",
-            "BDATJ",
-            "POPER",
-            "UNTPER",
-            "CURTP"
-          ],
-          "max_rows": 1000
+          "manufacturing_order": "{{input.manufacturing_order}}",
+          "analysis_period_from": "{{steps.resolve_scope.output.analysis_period_from}}",
+          "analysis_period_to": "{{steps.resolve_scope.output.analysis_period_to}}",
+          "target_cost_variant": 1
         }
       },
       {
@@ -796,137 +152,128 @@
         "inputMapping": {
           "agent_id": "product-cost-variance",
           "run_input": "{{input}}",
-          "assessment": "{{steps.assess.output}}",
-          "evidence": {
-            "production_orders": "{{steps.read_order.output}}",
-            "actual_cost_items": "{{steps.read_actual.output}}"
-          },
-          "fallbacks": {
-            "order": "{{steps.adt_order.output}}",
-            "actual_cost": "{{steps.adt_actual.output}}",
-            "standard_cost": {
-              "header": "{{steps.adt_cost_header.output}}",
-              "period": "{{steps.adt_cost_period.output}}"
-            }
-          },
+          "scope": "{{steps.resolve_scope.output}}",
+          "evidence": {"production_order": "{{steps.read_order.output}}", "actual_cost": "{{steps.read_actual_periods.output}}"},
+          "fallbacks": {"production_cost": "{{steps.read_production_cost.output}}"},
           "known_gaps": []
         }
       }
     ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "manufacturing_order": {"type": "string", "title": {"zh": "生产订单", "en": "Manufacturing order"}},
+        "company_code": {"type": "string", "title": {"zh": "公司代码", "en": "Company code"}},
+        "controlling_area": {"type": "string", "title": {"zh": "控制范围", "en": "Controlling area"}},
+        "material": {"type": "string", "title": {"zh": "物料", "en": "Material"}},
+        "plant": {"type": "string", "title": {"zh": "工厂", "en": "Plant"}},
+        "analysis_period_from": {"type": "string", "title": {"zh": "分析期间起始", "en": "Analysis period from"}},
+        "analysis_period_to": {"type": "string", "title": {"zh": "分析期间截止", "en": "Analysis period to"}},
+        "ledger": {"type": "string", "title": {"zh": "账本", "en": "Ledger"}},
+        "currency_role": {"type": "string", "title": {"zh": "币种角色", "en": "Currency role"}},
+        "target_cost_variant": {"type": "integer", "title": {"zh": "目标成本版本", "en": "Target cost variant"}},
+        "plan_cost_total": {"type": ["string", "null"], "title": {"zh": "计划成本总额", "en": "Plan cost total"}},
+        "target_cost_total": {"type": ["string", "null"], "title": {"zh": "目标成本总额", "en": "Target cost total"}},
+        "actual_cost_total": {"type": ["string", "null"], "title": {"zh": "实际成本总额", "en": "Actual cost total"}},
+        "actual_target_variance": {"type": ["string", "null"], "title": {"zh": "实际减目标差异", "en": "Actual minus target variance"}},
+        "actual_target_variance_percent": {"type": ["string", "null"], "title": {"zh": "实际减目标差异百分比", "en": "Actual minus target variance percent"}},
+        "cost_status": {"type": "string", "title": {"zh": "成本状态", "en": "Cost status"}},
+        "cost_element_details": {"type": "array", "items": {"type": "object"}, "title": {"zh": "成本要素明细", "en": "Cost element details"}},
+        "relationship_evidence": {"type": "object", "title": {"zh": "订单与成本对象关系证据", "en": "Order-to-cost-object relationship evidence"}},
+        "source_complete": {"type": "boolean", "title": {"zh": "查询源完整性", "en": "Query-source completeness"}},
+        "evidence_complete": {"type": "boolean", "title": {"zh": "业务证据完整性", "en": "Business evidence completeness"}},
+        "business_status": {"type": "string", "title": {"zh": "业务状态", "en": "Business status"}},
+        "business_report": {"type": "object", "title": {"zh": "结构化业务报告", "en": "Structured business report"}}
+      },
+      "required": ["manufacturing_order", "company_code", "controlling_area", "material", "plant", "analysis_period_from", "analysis_period_to", "ledger", "currency_role", "target_cost_variant", "plan_cost_total", "target_cost_total", "actual_cost_total", "actual_target_variance", "actual_target_variance_percent", "cost_status", "cost_element_details", "relationship_evidence", "source_complete", "evidence_complete", "business_status", "business_report"],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "manufacturing_order": "{{steps.evaluate.output.workflow_output.manufacturing_order}}",
+      "company_code": "{{steps.evaluate.output.workflow_output.company_code}}",
+      "controlling_area": "{{steps.evaluate.output.workflow_output.controlling_area}}",
+      "material": "{{steps.evaluate.output.workflow_output.material}}",
+      "plant": "{{steps.evaluate.output.workflow_output.plant}}",
+      "analysis_period_from": "{{steps.evaluate.output.workflow_output.analysis_period_from}}",
+      "analysis_period_to": "{{steps.evaluate.output.workflow_output.analysis_period_to}}",
+      "ledger": "{{steps.evaluate.output.workflow_output.ledger}}",
+      "currency_role": "{{steps.evaluate.output.workflow_output.currency_role}}",
+      "target_cost_variant": "{{steps.evaluate.output.workflow_output.target_cost_variant}}",
+      "plan_cost_total": "{{steps.evaluate.output.workflow_output.plan_cost_total}}",
+      "target_cost_total": "{{steps.evaluate.output.workflow_output.target_cost_total}}",
+      "actual_cost_total": "{{steps.evaluate.output.workflow_output.actual_cost_total}}",
+      "actual_target_variance": "{{steps.evaluate.output.workflow_output.actual_target_variance}}",
+      "actual_target_variance_percent": "{{steps.evaluate.output.workflow_output.actual_target_variance_percent}}",
+      "cost_status": "{{steps.evaluate.output.workflow_output.cost_status}}",
+      "cost_element_details": "{{steps.evaluate.output.workflow_output.cost_element_details}}",
+      "relationship_evidence": "{{steps.evaluate.output.workflow_output.relationship_evidence}}",
+      "source_complete": "{{steps.evaluate.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate.output.workflow_output.evidence_complete}}",
+      "business_status": "{{steps.evaluate.output.workflow_output.business_status}}",
+      "business_report": "{{steps.evaluate.output.workflow_output.business_report}}"
+    },
     "acceptance": {
       "schemaVersion": "2.0",
       "comparisonMode": "business_semantic",
-      "businessKeys": [
-        "company_code",
-        "manufacturing_order",
-        "material",
-        "fiscal_year",
-        "period"
-      ],
-      "facts": [
-        "business_status"
-      ],
-      "metrics": [
-        "order_actual_amount",
-        "standard_unit_price",
-        "periodic_unit_price",
-        "unit_price_variance"
-      ],
-      "decimalFields": [],
-      "decimalMetricIds": [
-        "order_actual_amount",
-        "standard_unit_price",
-        "periodic_unit_price",
-        "unit_price_variance"
-      ],
-      "currencyFields": [],
+      "businessKeys": ["manufacturing_order", "cost_element"],
+      "facts": ["company_code", "controlling_area", "ledger", "currency_role", "currency", "cost_status", "business_status"],
+      "metrics": ["plan_cost_total", "target_cost_total", "actual_cost_total", "actual_target_variance"],
+      "decimalFields": ["plan_cost", "target_cost", "actual_cost", "actual_target_variance"],
+      "decimalMetricIds": ["plan_cost_total", "target_cost_total", "actual_cost_total", "actual_target_variance"],
+      "currencyFields": ["currency"],
       "unitFields": [],
       "dateFields": [],
       "codeSetFields": [],
       "zeroPadFields": {},
       "booleanFields": [],
-      "inputDefaults": {
-        "company_code": "company_code",
-        "manufacturing_order": "manufacturing_order",
-        "material": "material",
-        "fiscal_year": "fiscal_year",
-        "period": "period"
-      },
-      "constantDefaults": {},
+      "inputDefaults": {"manufacturing_order": "manufacturing_order"},
+      "constantDefaults": {"ledger": "0L", "currency_role": "10"},
       "fieldAliases": {},
       "fieldExtractors": {},
       "currencyFromDecimal": {},
       "valueMappings": {},
       "limitationKeywords": {
-        "source_incomplete": [
-          "source incomplete",
-          "paging incomplete",
-          "range limited",
-          "范围限制",
-          "分页未完成"
-        ],
-        "bank_settlement_not_proven": [
-          "bank settlement",
-          "bank receipt",
-          "银行结算",
-          "银行到账"
-        ],
-        "capability_gap": [
-          "capability gap",
-          "evidence unavailable",
-          "inconclusive",
-          "能力缺口",
-          "证据不足",
-          "无法确认"
-        ],
-        "standard_cost_evidence": [
-          "standard_cost_evidence"
-        ]
+        "source_incomplete": ["source incomplete", "paging incomplete", "范围限制", "分页未完成"],
+        "capability_gap": ["capability gap", "inconclusive", "能力缺口", "无法确认"],
+        "production_cost_evidence": ["production_cost_evidence", "plan target actual cost", "计划目标实际成本"],
+        "production_cost_relationship": ["production_cost_relationship", "aufk", "成本对象关系"]
       },
-      "summaryRecord": true,
+      "summaryRecord": false,
       "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
-      "requiredLimitations": [
-        "standard_cost_evidence"
-      ],
+      "requiredLimitations": ["production_cost_evidence", "production_cost_relationship"],
       "businessStatusFromMetric": {},
       "limitationsFromMetrics": {},
       "blankValueKeywords": {},
-      "blockingLimitations": [
-        "standard_cost_evidence"
-      ],
+      "blockingLimitations": ["production_cost_evidence", "production_cost_relationship"],
       "ignoredNoticeKeywords": [],
       "zeroFactWhenMetricZero": {},
-      "recordScope": "",
-      "metricDefinitions": {},
-      "businessStatusDefinition": "",
+      "recordScope": "one_record_per_manufacturing_order_cost_element_ledger_currency_period_scope",
+      "factDefinitions": {"cost_status": "normal within absolute 0.01; positive actual-minus-target is unfavorable, negative is favorable; target zero with actual cost is unplanned_cost; target with zero actual is planned_cost_not_consumed"},
+      "metricDefinitions": {
+        "plan_cost_total": "Released production-order cost CDS plan cost summed only within one ledger, currency role, and currency",
+        "target_cost_total": "TargetCostVariant 1 target cost summed only within one comparable scope",
+        "actual_cost_total": "Released production-order cost CDS actual cost summed only within one comparable scope",
+        "actual_target_variance": "actual_cost_total minus target_cost_total"
+      },
+      "businessStatusDefinition": "normal only with complete comparable evidence and absolute actual-minus-target variance at most 0.01; attention for a complete confirmed variance; inconclusive whenever relationship, period, plan, target, actual, ledger, currency, or paging evidence is incomplete",
       "businessStatusFromAnyPositiveMetric": {}
     }
   },
   "validation": {
     "verdict": "BLOCKED",
-    "testedAt": "2026-08-20T08:22:30.673801+00:00",
+    "testedAt": "2026-08-25T18:10:00+08:00",
     "evidenceScope": "bounded",
-    "providers": [
-      "codex-app-direct-sap",
-      "embedded-sap-odata"
-    ],
+    "providers": ["codex-app-direct-sap", "embedded-sap-odata", "sap-production-order-cost-analysis"],
     "summary": {
-      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
-      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+      "zh": "AUFK已证明订单与成本对象关系，实际成本期间可由OData取得；当前ADT Data Preview对发布的参数化成本CDS返回HTTP 400，计划与目标成本证据仍不完整。",
+      "en": "AUFK proves the order-to-cost-object relationship and OData provides actual-cost periods; ADT Data Preview currently returns HTTP 400 for the released parameterized cost CDS, so plan and target cost evidence remain incomplete."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
     "executable": false,
-    "freeQueryComparison": "MATCH",
-    "fixedAgentComparison": "MATCH",
+    "freeQueryComparison": "NOT_TESTED",
+    "fixedAgentComparison": "BLOCKED",
     "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "blockingLimitations": [
-      "standard_cost_evidence"
-    ],
-    "codexDirectBaselineHash": "sha256:c53fe026dffdfe735a5de448371e87ff6400739fb1eb27791b76c14b351bd3d1",
-    "freeQueryHash": "sha256:560a31a1fc8d9b0104f5ebc91ca6bd806e1fdc50ae9ead441cda9c891d15bd75",
-    "adjudicatedResultHash": "sha256:c53fe026dffdfe735a5de448371e87ff6400739fb1eb27791b76c14b351bd3d1",
-    "fixedAgentHash": "sha256:de9ea44b1355310c48d82de6494b7869ea96d3ee6a1a52d788f74280ce8c1a5a",
-    "comparisonHash": "sha256:3db758270ce33b1ae2e419f31b6640b0f3fe713902319c73cc4785906a59466e"
+    "blockingLimitations": ["production_cost_evidence"]
   }
 }

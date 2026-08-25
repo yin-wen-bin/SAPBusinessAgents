@@ -38,8 +38,12 @@ def test_five_schema_v2_co_agents_use_only_embedded_adt_and_rules() -> None:
             for step in steps
             if step["executor"] == "sap_read"
         )
+        approved_co_skills = {
+            "sap-adt-table-export",
+            "sap-production-order-cost-analysis",
+        }
         assert all(
-            step["skillId"] == "sap-adt-table-export"
+            step["skillId"] in approved_co_skills
             and step.get("when")
             and "connection_profile" not in step.get("inputMapping", {})
             for step in steps

@@ -2,12 +2,12 @@
 
 All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgents. Embedded SAP execution is GET-only; approved supplemental ADT evidence may use the Skill's read-only Data Preview transport. No SAP write operation is allowed, and raw rows, URLs, and credentials remain in ignored local artifacts.
 
-The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV revalidation. The `inventory-health-balancing` row reflects the 2026-08-24 FIFO quantity-aging and batch-expiry revalidation. All other rows retain their original campaign evidence.
+The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV revalidation. The `inventory-health-balancing` row reflects the 2026-08-24 FIFO quantity-aging and batch-expiry revalidation. The two production-variance rows reflect the 2026-08-25 two-phase implementation and revalidation. All other rows retain their original campaign evidence.
 
 ## Summary
 
-- PASS / executable: 17
-- BLOCKED / disabled: 13
+- PASS / executable: 18
+- BLOCKED / disabled: 12
 - FAIL / disabled: 0
 
 ## Agent results
@@ -18,7 +18,7 @@ The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV reval
 | CO | `co-month-end-allocation-settlement` | BLOCKED | false | MATCH | MATCH | bounded | allocation_cycle_evidence, object_status_evidence, settlement_rule_evidence |
 | CO | `cost-center-expense-anomaly` | BLOCKED | false | MATCH | MATCH | bounded | plan_evidence_missing |
 | CO | `internal-order-project-control` | BLOCKED | false | MATCH | MATCH | bounded | budget_evidence, commitment_evidence, control_object_not_found, master_evidence, plan_evidence |
-| CO | `product-cost-variance` | BLOCKED | false | MATCH | MATCH | bounded | standard_cost_evidence |
+| CO | `product-cost-variance` | BLOCKED | false | NOT_TESTED | BLOCKED | bounded | production_cost_evidence |
 | FI | `ap-payment` | PASS | true | MATCH | MATCH | complete | none |
 | FI | `ar-collection` | PASS | true | MATCH | MATCH | complete | none |
 | FI | `gr-ir-clearing` | PASS | true | MATCH | MATCH | complete | none |
@@ -32,7 +32,7 @@ The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV reval
 | PP | `mrp-exception-analysis` | PASS | true | MATCH | MATCH | complete | none |
 | PP | `production-order-monitoring` | PASS | true | MATCH | MATCH | complete | none |
 | PP | `production-scheduling-capacity` | BLOCKED | false | MATCH | MATCH | bounded | complete_capacity_bucket_evidence |
-| PP | `production-variance-analysis` | BLOCKED | false | MATCH | MATCH | bounded | production_cost_evidence, production_cost_relationship |
+| PP | `production-variance-analysis` | PASS | true | MATCH | MATCH | complete | none |
 | SD | `billing-block-diagnosis` | PASS | true | MATCH | MATCH | complete | none |
 | SD | `billing-completeness-check` | PASS | true | MATCH | MATCH | complete | none |
 | SD | `billing-dispute-classification` | BLOCKED | false | MATCH | MATCH | bounded | billing_dispute_case_evidence |

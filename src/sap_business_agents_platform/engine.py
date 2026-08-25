@@ -2205,6 +2205,26 @@ def _validate_input(
             fields=[str(name) for name in missing],
             constraint="required",
         )
+    dependent_required = schema.get("dependentRequired")
+    if isinstance(dependent_required, dict):
+        for trigger, dependencies in dependent_required.items():
+            if trigger not in value or value.get(trigger) in (None, ""):
+                continue
+            if not isinstance(dependencies, list):
+                continue
+            dependent_missing = [
+                str(name)
+                for name in dependencies
+                if value.get(str(name)) in (None, "")
+            ]
+            if dependent_missing:
+                raise InputValidationError(
+                    f"Input {trigger} requires: {', '.join(dependent_missing)}",
+                    code=error_code,
+                    fields=dependent_missing,
+                    constraint="dependent_required",
+                    detail={"trigger": str(trigger)},
+                )
     properties = schema.get("properties") or {}
     unknown = sorted(set(value).difference(properties))
     if schema.get("additionalProperties") is False and unknown:

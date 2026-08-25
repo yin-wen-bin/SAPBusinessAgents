@@ -3,25 +3,23 @@
   "slug": "production-variance-analysis",
   "module": "PP",
   "title": {
-    "zh": "生产差异根因分析助手",
-    "en": "Production Variance Root Cause Assistant"
+    "zh": "生产数量与物料差异根因分析助手",
+    "en": "Production Quantity and Material Variance Analysis Assistant"
   },
   "summary": {
-    "zh": "比较生产订单计划与实际产量、废品、用料和成本，定位数量及成本偏差的候选根因。",
-    "en": "Compares planned and actual yield, scrap, consumption and cost to identify candidate root causes of production variance."
+    "zh": "比较生产订单计划、最终工序确认、成品入库、组件领料和冲销，定位数量与物料差异的候选原因。",
+    "en": "Compares production-order plan, final-operation confirmation, finished-goods receipt, component issues, and reversals to identify candidate quantity and material variance causes."
   },
-  "status": "Three-stage live acceptance blocked",
-  "version": "0.1.0",
-  "owner": "PP-SFC / CO-PC",
+  "status": "Three-stage live acceptance passed",
+  "version": "0.2.0",
+  "owner": "PP-SFC / MM-IM",
   "tags": [
     "Variance",
-    "Scrap",
     "Consumption",
     "Root Cause"
   ],
   "sapModules": [
     "PP-SFC",
-    "CO-PC",
     "MM-IM"
   ],
   "transactions": [],
@@ -40,29 +38,67 @@
   "outputs": {
     "zh": [
       "生产订单号",
+      "物料",
+      "工厂",
+      "TECO状态",
+      "生产单位",
+      "计划数量",
+      "最终工序确认产量",
+      "成品入库数量",
+      "入库差异数量",
+      "入库差异百分比",
+      "数量状态",
+      "工序状态",
+      "组件状态",
+      "物料移动状态",
+      "成本状态",
+      "存在差异的组件数",
+      "冲销数量",
+      "候选原因",
       "业务状态",
       "查询源完整性",
+      "证据完整性",
       "结构化业务报告"
     ],
     "en": [
       "Manufacturing order",
+      "Material",
+      "Plant",
+      "TECO status",
+      "Production unit",
+      "Planned quantity",
+      "Final-operation confirmed yield",
+      "Finished-goods receipt quantity",
+      "Receipt variance quantity",
+      "Receipt variance percent",
+      "Quantity status",
+      "Operation status",
+      "Component status",
+      "Material movement status",
+      "Cost status",
+      "Components with variance",
+      "Reversal count",
+      "Candidate causes",
       "Business status",
       "Query-source completeness",
+      "Evidence completeness",
       "Structured business report"
     ]
   },
   "guardrails": {
     "zh": [
       "相关性不得表述为确定因果",
-      "数量和成本偏差必须分开核对",
-      "缺少实际过账时返回尚无偏差证据",
-      "不自动冲销、重估或结算订单"
+      "计划、确认、入库和组件数量必须分开核对",
+      "不同物料、项目或单位不得合计",
+      "成本由独立Agent分析",
+      "不自动确认、收发货、冲销或TECO"
     ],
     "en": [
       "Do not present correlation as proven causation",
-      "Validate quantity and cost variance separately",
-      "Return no actual variance evidence when postings are absent",
-      "Never reverse, revalue or settle orders automatically"
+      "Validate plan, confirmation, receipt, and component quantities separately",
+      "Do not aggregate different materials, items, or units",
+      "Analyze cost through the separate cost Agent",
+      "Never confirm, post goods movements, reverse, or TECO an order"
     ]
   },
   "workflow": [
@@ -78,12 +114,14 @@
       },
       "operations": {
         "zh": [
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrder_2",
           "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderItem_2",
           "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderOperation_2",
           "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderComponent_2",
           "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem"
         ],
         "en": [
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrder_2",
           "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderItem_2",
           "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderOperation_2",
           "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderComponent_2",
@@ -177,10 +215,39 @@
           "plan": {
             "service_name": "API_PRODUCTION_ORDER_2_SRV",
             "odata_version": "2.0",
-            "entity_set": "A_ProductionOrderItem_2",
+            "entity_set": "A_ProductionOrder_2",
             "http_method": "GET",
             "plan_kind": "multi_step",
             "steps": [
+              {
+                "step_id": "production_order_header",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrder_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderType",
+                  "Material",
+                  "ProductionPlant",
+                  "CompanyCode",
+                  "ProductionUnit",
+                  "OrderIsConfirmed",
+                  "OrderIsPartiallyConfirmed",
+                  "OrderIsDelivered",
+                  "OrderIsTechnicallyCompleted",
+                  "OrderIsClosed"
+                ],
+                "rationale": "Load the exact production-order identity and completion state.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
               {
                 "step_id": "production_order_items",
                 "service_name": "API_PRODUCTION_ORDER_2_SRV",
@@ -194,7 +261,8 @@
                   "ProductionPlant",
                   "MfgOrderItemPlannedTotalQty",
                   "MfgOrderItemGoodsReceiptQty",
-                  "MfgOrderItemActualDeviationQty"
+                  "MfgOrderItemActualDeviationQty",
+                  "ProductionUnit"
                 ],
                 "rationale": "Load production-order items.",
                 "filters": [
@@ -220,6 +288,7 @@
                   "OperationIsPartiallyConfirmed",
                   "OpPlannedTotalQuantity",
                   "OpTotalConfirmedYieldQty",
+                  "OperationUnit",
                   "OpErlstSchedldExecStrtDte",
                   "OpErlstSchedldExecEndDte"
                 ],
@@ -247,7 +316,8 @@
                   "Plant",
                   "RequiredQuantity",
                   "WithdrawnQuantity",
-                  "ConfirmedAvailableQuantity"
+                  "ConfirmedAvailableQuantity",
+                  "BaseUnit"
                 ],
                 "rationale": "Load production-order components.",
                 "filters": [
@@ -272,9 +342,13 @@
                   "ManufacturingOrder",
                   "Material",
                   "Plant",
+                  "GoodsMovementType",
                   "QuantityInBaseUnit",
+                  "MaterialBaseUnit",
                   "DebitCreditCode",
-                  "ReversedMaterialDocument"
+                  "ReversedMaterialDocument",
+                  "ReversedMaterialDocumentYear",
+                  "ReversedMaterialDocumentItem"
                 ],
                 "rationale": "Load material issues, receipts, and reversals.",
                 "filters": [
@@ -301,9 +375,7 @@
           "evidence": {
             "collect_production_variance": "{{steps.collect_production_variance.output}}"
           },
-          "known_gaps": [
-            "production_cost_relationship"
-          ]
+          "known_gaps": []
         }
       }
     ],
@@ -328,6 +400,128 @@
           "maxLength": 12,
           "pattern": "^[0-9]+$"
         },
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          }
+        },
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          }
+        },
+        "teco_status": {
+          "type": "string",
+          "title": {
+            "zh": "TECO状态",
+            "en": "TECO status"
+          }
+        },
+        "production_unit": {
+          "type": "string",
+          "title": {
+            "zh": "生产单位",
+            "en": "Production unit"
+          }
+        },
+        "planned_quantity": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "计划数量",
+            "en": "Planned quantity"
+          }
+        },
+        "confirmed_yield_quantity": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "最终工序确认产量",
+            "en": "Final-operation confirmed yield"
+          }
+        },
+        "goods_receipt_quantity": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "成品入库数量",
+            "en": "Finished-goods receipt quantity"
+          }
+        },
+        "receipt_variance_quantity": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "入库差异数量",
+            "en": "Receipt variance quantity"
+          }
+        },
+        "receipt_variance_percent": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "入库差异百分比",
+            "en": "Receipt variance percent"
+          }
+        },
+        "quantity_status": {
+          "type": "string",
+          "title": {
+            "zh": "数量状态",
+            "en": "Quantity status"
+          }
+        },
+        "operation_status": {
+          "type": "string",
+          "title": {
+            "zh": "工序状态",
+            "en": "Operation status"
+          }
+        },
+        "component_status": {
+          "type": "string",
+          "title": {
+            "zh": "组件状态",
+            "en": "Component status"
+          }
+        },
+        "movement_status": {
+          "type": "string",
+          "title": {
+            "zh": "物料移动状态",
+            "en": "Material movement status"
+          }
+        },
+        "cost_status": {
+          "type": "string",
+          "title": {
+            "zh": "成本状态",
+            "en": "Cost status"
+          }
+        },
+        "component_variance_count": {
+          "type": "integer",
+          "title": {
+            "zh": "存在差异的组件数",
+            "en": "Components with variance"
+          }
+        },
+        "reversal_count": {
+          "type": "integer",
+          "title": {
+            "zh": "冲销数量",
+            "en": "Reversal count"
+          }
+        },
+        "root_cause_candidates": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "title": {
+            "zh": "候选原因",
+            "en": "Candidate causes"
+          }
+        },
         "business_status": {
           "type": "string",
           "title": {
@@ -342,6 +536,13 @@
             "en": "Query-source completeness"
           }
         },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "证据完整性",
+            "en": "Evidence completeness"
+          }
+        },
         "business_report": {
           "type": "object",
           "title": {
@@ -352,41 +553,91 @@
       },
       "required": [
         "manufacturing_order",
+        "material",
+        "plant",
+        "teco_status",
+        "production_unit",
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "goods_receipt_quantity",
+        "receipt_variance_quantity",
+        "receipt_variance_percent",
+        "quantity_status",
+        "operation_status",
+        "component_status",
+        "movement_status",
+        "cost_status",
+        "component_variance_count",
+        "reversal_count",
+        "root_cause_candidates",
         "business_status",
         "source_complete",
+        "evidence_complete",
         "business_report"
       ],
       "additionalProperties": false
     },
     "outputMapping": {
       "manufacturing_order": "{{steps.evaluate_business_result.output.workflow_output.manufacturing_order}}",
+      "material": "{{steps.evaluate_business_result.output.workflow_output.material}}",
+      "plant": "{{steps.evaluate_business_result.output.workflow_output.plant}}",
+      "teco_status": "{{steps.evaluate_business_result.output.workflow_output.teco_status}}",
+      "production_unit": "{{steps.evaluate_business_result.output.workflow_output.production_unit}}",
+      "planned_quantity": "{{steps.evaluate_business_result.output.workflow_output.planned_quantity}}",
+      "confirmed_yield_quantity": "{{steps.evaluate_business_result.output.workflow_output.confirmed_yield_quantity}}",
+      "goods_receipt_quantity": "{{steps.evaluate_business_result.output.workflow_output.goods_receipt_quantity}}",
+      "receipt_variance_quantity": "{{steps.evaluate_business_result.output.workflow_output.receipt_variance_quantity}}",
+      "receipt_variance_percent": "{{steps.evaluate_business_result.output.workflow_output.receipt_variance_percent}}",
+      "quantity_status": "{{steps.evaluate_business_result.output.workflow_output.quantity_status}}",
+      "operation_status": "{{steps.evaluate_business_result.output.workflow_output.operation_status}}",
+      "component_status": "{{steps.evaluate_business_result.output.workflow_output.component_status}}",
+      "movement_status": "{{steps.evaluate_business_result.output.workflow_output.movement_status}}",
+      "cost_status": "{{steps.evaluate_business_result.output.workflow_output.cost_status}}",
+      "component_variance_count": "{{steps.evaluate_business_result.output.workflow_output.component_variance_count}}",
+      "reversal_count": "{{steps.evaluate_business_result.output.workflow_output.reversal_count}}",
+      "root_cause_candidates": "{{steps.evaluate_business_result.output.workflow_output.root_cause_candidates}}",
       "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
       "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.evidence_complete}}",
       "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
     },
     "acceptance": {
       "schemaVersion": "2.0",
       "comparisonMode": "business_semantic",
       "businessKeys": [
-        "manufacturing_order",
-        "cost_element"
+        "manufacturing_order"
       ],
       "facts": [
+        "teco_status",
+        "quantity_status",
+        "operation_status",
+        "component_status",
+        "movement_status",
+        "cost_status",
+        "evidence_complete",
         "business_status"
       ],
       "metrics": [
-        "operation_rows",
-        "movement_rows",
-        "cost_rows"
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "goods_receipt_quantity",
+        "receipt_variance_quantity",
+        "component_variance_count",
+        "reversal_count"
       ],
-      "decimalFields": [
-        "actual_amount"
+      "decimalFields": [],
+      "decimalMetricIds": [
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "goods_receipt_quantity",
+        "receipt_variance_quantity",
+        "component_variance_count",
+        "reversal_count"
       ],
-      "decimalMetricIds": [],
-      "currencyFields": [
-        "currency"
+      "currencyFields": [],
+      "unitFields": [
+        "production_unit"
       ],
-      "unitFields": [],
       "dateFields": [],
       "codeSetFields": [],
       "zeroPadFields": {},
@@ -421,70 +672,60 @@
           "证据不足",
           "无法确认"
         ],
-        "production_cost_evidence": [
-          "production cost evidence",
-          "cost items",
-          "成本证据",
-          "成本行项目"
-        ],
-        "production_cost_relationship": [
-          "production cost relationship",
-          "fi orderid",
-          "cost attribution",
-          "成本关系",
-          "成本归属"
+        "cost_not_assessed": [
+          "cost not assessed",
+          "not assessed by this agent",
+          "成本未评估",
+          "本agent未评估"
         ]
       },
       "summaryRecord": false,
       "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
-      "requiredLimitations": [
-        "production_cost_evidence",
-        "production_cost_relationship"
-      ],
+      "requiredLimitations": [],
       "businessStatusFromMetric": {},
       "limitationsFromMetrics": {},
       "blankValueKeywords": {},
-      "blockingLimitations": [
-        "production_cost_evidence",
-        "production_cost_relationship"
-      ],
+      "blockingLimitations": [],
       "ignoredNoticeKeywords": [
-        "empty cost table does not mean actual cost is zero",
-        "空成本表不表示实际成本为零"
+        "cost_status=not_assessed",
+        "成本状态=未评估"
       ],
       "zeroFactWhenMetricZero": {},
-      "recordScope": "",
-      "metricDefinitions": {},
-      "businessStatusDefinition": "",
+      "recordScope": "one_summary_record_per_manufacturing_order",
+      "factDefinitions": {
+        "cost_status": "Always not_assessed; production cost analysis belongs to product-cost-variance",
+        "quantity_status": "Compares order item planned quantity, final-operation confirmed yield, and order item goods receipt without summing operation yields"
+      },
+      "metricDefinitions": {
+        "planned_quantity": "Manufacturing order item planned quantity",
+        "confirmed_yield_quantity": "Confirmed yield of the proven final operation only",
+        "goods_receipt_quantity": "Manufacturing order item goods receipt quantity",
+        "receipt_variance_quantity": "goods_receipt_quantity minus planned_quantity",
+        "component_variance_count": "Count of order components whose withdrawn quantity differs from required quantity",
+        "reversal_count": "Count of 102 and 262 reversal movement rows"
+      },
+      "businessStatusDefinition": "normal only for a TECO order with complete, unit-consistent evidence and no quantity, component, or movement variance; attention for a TECO order with a confirmed variance; in_progress for a non-TECO order; inconclusive for incomplete or contradictory evidence",
       "businessStatusFromAnyPositiveMetric": {}
     }
   },
   "validation": {
-    "verdict": "BLOCKED",
-    "testedAt": "2026-08-20T07:45:35.827526+00:00",
-    "evidenceScope": "bounded",
+    "verdict": "PASS",
+    "testedAt": "2026-08-25T18:30:00+08:00",
+    "evidenceScope": "complete",
     "providers": [
       "codex-app-direct-sap",
+      "codex-app-server",
       "embedded-sap-odata"
     ],
     "summary": {
-      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
-      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+      "zh": "订单1001233三级真机验收一致：计划及最终工序确认7 PC、成品入库6 PC、三个组件足额领料、无冲销；判定为完工确认后少入库1 PC。",
+      "en": "Three-stage live acceptance matched for order 1001233: 7 PC planned and finally confirmed, 6 PC received, all three components fully withdrawn, and no reversals; the deterministic finding is a 1 PC receipt shortfall after confirmation."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
-    "executable": false,
+    "executable": true,
     "freeQueryComparison": "MATCH",
     "fixedAgentComparison": "MATCH",
-    "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "blockingLimitations": [
-      "production_cost_evidence",
-      "production_cost_relationship"
-    ],
-    "codexDirectBaselineHash": "sha256:cdb2f30a571e1f8bc14b56bfc0fbb9b1c1243c88b43e90b06cd4929e231eef00",
-    "freeQueryHash": "sha256:4d9afe1a85b0fc094d152253e5d821d0ca2fdcb24d9149be0cef65f845b9bd62",
-    "adjudicatedResultHash": "sha256:cdb2f30a571e1f8bc14b56bfc0fbb9b1c1243c88b43e90b06cd4929e231eef00",
-    "fixedAgentHash": "sha256:cdb2f30a571e1f8bc14b56bfc0fbb9b1c1243c88b43e90b06cd4929e231eef00",
-    "comparisonHash": "sha256:0c05e5c9d4503335a5758cad8356027298006e33bf566540e918665b84ac936d"
+    "blockingLimitations": []
   }
 }

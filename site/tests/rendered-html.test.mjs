@@ -34,8 +34,8 @@ test("CO detail pages render the exact manifest execution workflows", async () =
     assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, manifest.execution.steps.length);
     assert.equal((en.match(/class="workflow-step"/g) ?? []).length, manifest.execution.steps.length);
     assert.match(zh, /Embedded SAP OData Provider/);
-    if (manifest.execution.steps.some((step) => step.executor === "skill")) {
-      assert.match(zh, /sap-adt-table-export/);
+    for (const skillStep of manifest.execution.steps.filter((step) => step.executor === "skill")) {
+      assert.match(zh, new RegExp(skillStep.skillId));
     }
     assert.match(zh, /three-stage-live-acceptance\.md/);
   }

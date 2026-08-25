@@ -20,6 +20,7 @@ ALLOWED_RULE_OPERATIONS = {
     "evidence_summary",
     "extract_bounded_values",
     "resolve_mrp_analysis_context",
+    "resolve_production_cost_scope",
     "resolve_inventory_health_window",
     "evaluate_business_agent",
     "evaluate_p2p_status",

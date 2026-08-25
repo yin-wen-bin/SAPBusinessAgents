@@ -13,6 +13,19 @@
       "read_only": true,
       "validated": true,
       "timeout": 300
+    },
+    {
+      "skill_id": "sap-production-order-cost-analysis",
+      "description": {
+        "zh": "按生产订单、期间、账本、币种角色和成本要素读取计划、目标与实际成本的只读证据。",
+        "en": "Reads read-only production-order plan, target, and actual cost evidence by period, ledger, currency role, and cost element."
+      },
+      "entrypoint": "skills/CO/sap-production-order-cost-analysis/run.py",
+      "input_schema_path": "skills/CO/sap-production-order-cost-analysis/references/input.schema.json",
+      "output_schema_path": "skills/CO/sap-production-order-cost-analysis/references/output.schema.json",
+      "read_only": true,
+      "validated": true,
+      "timeout": 600
     }
   ]
 }

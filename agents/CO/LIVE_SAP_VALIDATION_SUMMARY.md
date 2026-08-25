@@ -1,6 +1,7 @@
 # CO 五类 Agent Embedded + ADT 真机校验总览
 
-- 测试时间：2026-08-19T16:25:21.378132+00:00
+- 原始批次测试时间：2026-08-19T16:25:21.378132+00:00
+- `product-cost-variance` 增量复测：2026-08-25
 - 主通道：Embedded GET-only OData
 - ADT 技术预检：`complete`
 - 自动 Provider 回退调用：`0`；SE16N 调用：`0`
@@ -10,8 +11,10 @@
 | --- | --- | ---: | --- | --- |
 | `cost-center-expense-anomaly` | PASS | 3 | true | none |
 | `co-month-end-allocation-settlement` | PARTIAL | 1 | false | allocation_cycle, allocation_cycle_evidence, object_status, object_status_evidence, settlement_rule |
-| `product-cost-variance` | PARTIAL | 2 | false | standard_cost, standard_cost_evidence |
+| `product-cost-variance` | BLOCKED | 2 + read-only ADT Skill | false | production_cost_evidence |
 | `budget-rolling-forecast` | PASS | 2 | true | none |
 | `internal-order-project-control` | PARTIAL | 4 | false | budget, commitment, control_object_not_found, master, master_evidence |
 
 候选发现使用显式 top，仅用于选样，绝不作为源完整性证据。
+
+`product-cost-variance` 0.2.0 已取得 AUFK 订单—成本对象关系和完整实际成本期间；当前系统对发布的参数化生产订单成本 CDS 返回 HTTP 400，因此计划/目标成本仍未闭环，不能解除阻塞。

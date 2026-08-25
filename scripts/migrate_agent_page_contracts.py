@@ -48,12 +48,12 @@ BUSINESS_KEYS = {
     "mrp-exception-analysis": ["material", "plant", "mrp_element"],
     "production-order-monitoring": ["manufacturing_order", "operation"],
     "production-scheduling-capacity": ["plant", "work_center", "capacity_date"],
-    "production-variance-analysis": ["manufacturing_order", "cost_element"],
+    "production-variance-analysis": ["manufacturing_order"],
     "budget-rolling-forecast": ["company_code", "cost_center", "fiscal_year", "period"],
     "co-month-end-allocation-settlement": ["controlling_area", "fiscal_year", "period", "object_id"],
     "cost-center-expense-anomaly": ["controlling_area", "cost_center", "fiscal_year", "period"],
     "internal-order-project-control": ["object_type", "object_id", "fiscal_year", "period"],
-    "product-cost-variance": ["manufacturing_order", "material", "fiscal_year", "period"],
+    "product-cost-variance": ["manufacturing_order", "fiscal_year", "period"],
 }
 
 

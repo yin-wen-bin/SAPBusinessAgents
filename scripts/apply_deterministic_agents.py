@@ -406,16 +406,9 @@ def specs() -> dict[str, dict[str, Any]]:
     bucket_plan = [query("capacity_buckets", "API_WORK_CENTERS", "A_WorkCenterCapPerBucketSet", fields=["P_CapEvalStartDate", "P_CapEvalEndDate", "P_CapEvalBucketType", "Plant", "WorkCenter", "CapacityInternalID", "CapacityEvaluationTimePeriod", "WorkCenterAvailableCapacity", "WorkCenterCapRqmtInCapUnit", "WrkCtrRmngCapInCapUnit", "WorkCenterTotUtilznInTmePerd", "WorkCenterCapacityUnit"], filters=[filt("P_CapEvalStartDate", "{{input.date_from}}", kind="date_start"), filt("P_CapEvalEndDate", "{{input.date_to}}", kind="date_end"), filt("P_CapEvalBucketType", "D"), filt("Plant", "{{input.plant}}"), filt("WorkCenter", "{{input.work_center}}")], rationale="Load parameterized capacity buckets.")]
     result["production-scheduling-capacity"] = execution("production-scheduling-capacity", schedule_inputs, [sap_step("collect_scheduling_objects", schedule_plan, rationale="Collect orders, operations, and work-center evidence."), sap_step("collect_capacity_buckets", bucket_plan, rationale="Collect parameterized capacity buckets.", record_gap=True)])
 
-    # A manufacturing-order number is not an approved synonym for FI OrderID.
-    # Keep the quantity/material evidence deterministic and expose the missing
-    # production-cost relationship as a capability gap instead of guessing it.
-    variance_plan = prod_plan[1:2] + prod_plan[3:6]
-    result["production-variance-analysis"] = execution(
-        "production-variance-analysis",
-        prod_input,
-        [sap_step("collect_production_variance", variance_plan, rationale="Collect quantity and material variance evidence.")],
-        known_gaps=["production_cost_relationship"],
-    )
+    # production-variance-analysis 0.2.0 is maintained as a specialized
+    # five-source workflow with a dedicated deterministic rule.  Do not let
+    # this legacy bulk generator replace it with a generic evidence summary.
 
     return result
 

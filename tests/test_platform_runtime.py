@@ -733,6 +733,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "supplier-performance-risk",
         "mrp-exception-analysis",
         "production-order-monitoring",
+        "production-variance-analysis",
         "billing-block-diagnosis",
         "billing-completeness-check",
         "delivered-not-billed",

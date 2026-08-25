@@ -1,77 +1,81 @@
 {
-  "run_input": {},
-  "assessment": {
-    "api_complete": {
-      "order": true,
-      "actual_cost": true
-    },
-    "capability_gaps": [
-      "standard_cost"
-    ]
+  "run_input": {
+    "manufacturing_order": "DEMO1001",
+    "fiscal_year": "2026",
+    "period": 8
+  },
+  "scope": {
+    "scope_resolved": true,
+    "analysis_period_from": "2026008",
+    "analysis_period_to": "2026008"
   },
   "evidence": {
-    "production_orders": {
+    "production_order": {
       "source_complete": true,
       "step_results": {
-        "production_orders": {
+        "production_order": {
           "results": [
             {
-              "ManufacturingOrder": "DEMO"
+              "ManufacturingOrder": "DEMO1001",
+              "CompanyCode": "1710",
+              "Material": "DEMO-MATERIAL",
+              "ProductionPlant": "1710"
             }
-          ]
-        }
-      }
-    },
-    "actual_cost_items": {
-      "source_complete": true,
-      "step_results": {
-        "actual_cost_items": {
-          "results": [
-            {
-              "AmountInCompanyCodeCurrency": "500",
-              "CompanyCodeCurrency": "EUR"
-            }
-          ]
+          ],
+          "source_complete": true
         }
       }
     }
   },
   "fallbacks": {
-    "standard_cost": {
-      "header": {
-        "status": "complete",
-        "read_only": true,
-        "validated": true,
-        "source_complete": true,
-        "completeness": {
-          "source_complete": true,
-          "paging_complete": true
-        },
-        "validation_issues": [],
-        "rows": [
-          {
-            "KALNR": "1"
-          }
-        ]
+    "production_cost": {
+      "schema_version": 1,
+      "skill_id": "sap-production-order-cost-analysis",
+      "status": "complete",
+      "read_only": true,
+      "validated": true,
+      "order_context": {
+        "manufacturing_order": "DEMO1001",
+        "company_code": "1710",
+        "controlling_area": "A000",
+        "object_number": "ORDEMO1001"
       },
-      "period": {
-        "status": "complete",
-        "read_only": true,
-        "validated": true,
+      "analysis_scope": {
+        "analysis_period_from": "2026008",
+        "analysis_period_to": "2026008",
+        "ledger": "0L",
+        "currency_role": "10",
+        "target_cost_variant": 1
+      },
+      "cost_element_details": [
+        {
+          "company_code": "1710",
+          "controlling_area": "A000",
+          "ledger": "0L",
+          "currency_role": "10",
+          "cost_element": "400000",
+          "plan_cost": "500",
+          "target_cost": "480",
+          "actual_cost": "510",
+          "actual_target_variance": "30",
+          "currency": "EUR",
+          "analysis_period_from": "2026008",
+          "analysis_period_to": "2026008",
+          "evidence_source": "fixture"
+        }
+      ],
+      "relationship_evidence": {
+        "source": "AUFK",
         "source_complete": true,
-        "completeness": {
-          "source_complete": true,
-          "paging_complete": true
-        },
-        "validation_issues": [],
-        "rows": [
-          {
-            "KALNR": "1",
-            "PVPRS": "12",
-            "STPRS": "10"
-          }
-        ]
-      }
+        "relationship_fields": ["AUFNR", "OBJNR", "KOKRS", "BUKRS"]
+      },
+      "completeness": {
+        "source_complete": true,
+        "evidence_complete": true,
+        "paging_complete": true
+      },
+      "validation_issues": []
     }
-  }
+  },
+  "known_gaps": []
 }

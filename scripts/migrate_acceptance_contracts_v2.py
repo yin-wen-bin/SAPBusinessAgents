@@ -237,8 +237,11 @@ SPECS: dict[str, dict[str, Any]] = {
         decimals=["required_capacity", "available_capacity"], units=["unit"], dates=["capacity_date"],
     ),
     "production-variance-analysis": _spec(
-        ["manufacturing_order", "cost_element"], [],
-        ["operation_rows", "movement_rows", "cost_rows"], decimals=["actual_amount"], currencies=["currency"],
+        ["manufacturing_order"],
+        ["teco_status", "quantity_status", "operation_status", "component_status", "movement_status", "cost_status", "evidence_complete"],
+        ["planned_quantity", "confirmed_yield_quantity", "goods_receipt_quantity", "receipt_variance_quantity", "component_variance_count", "reversal_count"],
+        decimal_metrics=["planned_quantity", "confirmed_yield_quantity", "goods_receipt_quantity", "receipt_variance_quantity", "component_variance_count", "reversal_count"],
+        units=["production_unit"],
         inputs={"manufacturing_order": "manufacturing_order"},
     ),
     "cost-center-expense-anomaly": _spec(
@@ -253,10 +256,12 @@ SPECS: dict[str, dict[str, Any]] = {
         inputs={key: key for key in ("company_code", "controlling_area", "fiscal_year", "period", "internal_order")}, summary=True,
     ),
     "product-cost-variance": _spec(
-        ["company_code", "manufacturing_order", "material", "fiscal_year", "period"],
-        [], ["order_actual_amount", "standard_unit_price", "periodic_unit_price", "unit_price_variance"],
-        decimal_metrics=["order_actual_amount", "standard_unit_price", "periodic_unit_price", "unit_price_variance"],
-        inputs={key: key for key in ("company_code", "manufacturing_order", "material", "fiscal_year", "period")}, summary=True,
+        ["manufacturing_order", "cost_element"],
+        ["company_code", "controlling_area", "ledger", "currency_role", "currency", "cost_status"],
+        ["plan_cost_total", "target_cost_total", "actual_cost_total", "actual_target_variance"],
+        decimals=["plan_cost", "target_cost", "actual_cost", "actual_target_variance"],
+        decimal_metrics=["plan_cost_total", "target_cost_total", "actual_cost_total", "actual_target_variance"],
+        currencies=["currency"], inputs={"manufacturing_order": "manufacturing_order"},
     ),
     "budget-rolling-forecast": _spec(
         ["company_code", "cost_center", "fiscal_year", "current_period"],
@@ -697,27 +702,19 @@ for _agent_id, _blocking_items in {
         "billing_output_status_evidence",
         "billing_dispute_case_evidence",
     ],
-    "production-variance-analysis": ["production_cost_evidence", "production_cost_relationship"],
+    "production-variance-analysis": [],
     "demand-forecast-planning": ["pir_evidence", "sales_demand_period_evidence"],
     "mrp-exception-analysis": ["mrp_coverage_or_supply_demand_evidence"],
     "production-scheduling-capacity": ["complete_capacity_bucket_evidence"],
     "cost-center-expense-anomaly": ["plan_evidence_missing"],
     "budget-rolling-forecast": ["budget_evidence_missing"],
     "internal-order-project-control": ["master_evidence", "plan_evidence", "budget_evidence", "commitment_evidence", "control_object_not_found"],
-    "product-cost-variance": ["standard_cost_evidence"],
+    "product-cost-variance": ["production_cost_evidence", "production_cost_relationship"],
     "co-month-end-allocation-settlement": ["allocation_cycle_evidence", "object_status_evidence", "settlement_rule_evidence"],
 }.items():
     SPECS[_agent_id]["blockingLimitations"] = _blocking_items
 
 for _agent_id, _required, _keywords in (
-    (
-        "production-variance-analysis",
-        ["production_cost_evidence", "production_cost_relationship"],
-        {
-            "production_cost_evidence": ["production cost evidence", "cost items", "成本证据", "成本行项目"],
-            "production_cost_relationship": ["production cost relationship", "fi orderid", "cost attribution", "成本关系", "成本归属"],
-        },
-    ),
     (
         "demand-forecast-planning",
         ["pir_evidence", "sales_demand_period_evidence"],
@@ -763,8 +760,9 @@ for _agent_id, _required, _keywords in (
         "commitment_evidence": ["commitment_evidence", "commitment evidence", "commitment missing", "承诺"],
         "control_object_not_found": ["control object", "object not found", "控制对象"],
     }),
-    ("product-cost-variance", ["standard_cost_evidence"], {
-        "standard_cost_evidence": ["standard_cost_evidence"],
+    ("product-cost-variance", ["production_cost_evidence", "production_cost_relationship"], {
+        "production_cost_evidence": ["production_cost_evidence", "plan target actual cost", "计划目标实际成本"],
+        "production_cost_relationship": ["production_cost_relationship", "aufk", "成本对象关系"],
     }),
     ("co-month-end-allocation-settlement", ["allocation_cycle_evidence", "object_status_evidence", "settlement_rule_evidence"], {
         "allocation_cycle_evidence": ["allocation_cycle_evidence"],
@@ -988,9 +986,44 @@ SPECS["internal-order-project-control"]["valueMappings"] = {
     "object_type": {"internal_order": "INTERNAL_ORDER"}
 }
 SPECS["production-variance-analysis"]["ignoredNoticeKeywords"] = [
-    "empty cost table does not mean actual cost is zero",
-    "空成本表不表示实际成本为零",
+    "cost_status=not_assessed",
+    "成本状态=未评估",
 ]
+SPECS["production-variance-analysis"]["limitationKeywords"] = {
+    **COMMON_LIMITATION_KEYWORDS,
+    "cost_not_assessed": [
+        "cost not assessed",
+        "not assessed by this agent",
+        "成本未评估",
+        "本agent未评估",
+    ],
+}
+SPECS["production-variance-analysis"]["recordScope"] = "one_summary_record_per_manufacturing_order"
+SPECS["production-variance-analysis"]["factDefinitions"] = {
+    "cost_status": "Always not_assessed; production cost analysis belongs to product-cost-variance",
+    "quantity_status": "Compares order item planned quantity, final-operation confirmed yield, and order item goods receipt without summing operation yields",
+}
+SPECS["production-variance-analysis"]["metricDefinitions"] = {
+    "planned_quantity": "Manufacturing order item planned quantity",
+    "confirmed_yield_quantity": "Confirmed yield of the proven final operation only",
+    "goods_receipt_quantity": "Manufacturing order item goods receipt quantity",
+    "receipt_variance_quantity": "goods_receipt_quantity minus planned_quantity",
+    "component_variance_count": "Count of order components whose withdrawn quantity differs from required quantity",
+    "reversal_count": "Count of 102 and 262 reversal movement rows",
+}
+SPECS["production-variance-analysis"]["businessStatusDefinition"] = "normal only for a TECO order with complete, unit-consistent evidence and no quantity, component, or movement variance; attention for a TECO order with a confirmed variance; in_progress for a non-TECO order; inconclusive for incomplete or contradictory evidence"
+SPECS["product-cost-variance"]["constantDefaults"] = {"ledger": "0L", "currency_role": "10"}
+SPECS["product-cost-variance"]["recordScope"] = "one_record_per_manufacturing_order_cost_element_ledger_currency_period_scope"
+SPECS["product-cost-variance"]["factDefinitions"] = {
+    "cost_status": "normal within absolute 0.01; positive actual-minus-target is unfavorable, negative is favorable; target zero with actual cost is unplanned_cost; target with zero actual is planned_cost_not_consumed",
+}
+SPECS["product-cost-variance"]["metricDefinitions"] = {
+    "plan_cost_total": "Released production-order cost CDS plan cost summed only within one ledger, currency role, and currency",
+    "target_cost_total": "TargetCostVariant 1 target cost summed only within one comparable scope",
+    "actual_cost_total": "Released production-order cost CDS actual cost summed only within one comparable scope",
+    "actual_target_variance": "actual_cost_total minus target_cost_total",
+}
+SPECS["product-cost-variance"]["businessStatusDefinition"] = "normal only with complete comparable evidence and absolute actual-minus-target variance at most 0.01; attention for a complete confirmed variance; inconclusive whenever relationship, period, plan, target, actual, ledger, currency, or paging evidence is incomplete"
 SPECS["mrp-exception-analysis"]["requiredLimitations"] = []
 SPECS["mrp-exception-analysis"]["blockingLimitations"] = []
 SPECS["returns-credit-anomaly"]["fieldExtractors"] = {

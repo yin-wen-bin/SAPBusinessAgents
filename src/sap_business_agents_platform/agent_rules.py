@@ -2640,42 +2640,375 @@ def _production_schedule(inputs: JsonObject) -> JsonObject:
 
 
 def _production_variance(inputs: JsonObject) -> JsonObject:
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    requested_order = str(run_input.get("manufacturing_order") or "").strip()
+    headers = _rows(inputs, "production_order_header")
     items = _rows(inputs, "production_order_items")
     operations = _rows(inputs, "production_operations")
     components = _rows(inputs, "production_components")
     movements = _rows(inputs, "material_documents")
-    costs = _rows(inputs, "cost_items")
-    gaps = _gaps(inputs, *("production_cost_evidence",) if not costs else ())
-    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
-    records = [
-        {
-            "manufacturing_order": _text(row, "ManufacturingOrder", "OrderID") or str(run_input.get("manufacturing_order") or ""),
-            "cost_element": _text(row, "CostElement", "GLAccount"),
-            "actual_amount": _text(row, "AmountInCompanyCodeCurrency", "AmountInObjectCurrency"),
-            "currency": _text(row, "CompanyCodeCurrency", "ControllingObjectCurrency"),
-        }
-        for row in costs
-        if _text(row, "CostElement", "GLAccount")
-    ]
-    return _result(
-        inputs,
-        business_status="attention" if movements or costs else "partial",
-        headline_zh="生产偏差证据已按数量、工序、用料和成本分维度检查",
-        headline_en="Production variance evidence was checked separately for quantity, operations, material use, and cost",
-        overview_zh="没有实际活动时只报告“尚无过账证据”，不会解释为零偏差或表现正常。",
-        overview_en="No actual activity is reported as no posting evidence, not as zero variance or good performance.",
-        stages=[_stage("quantity", "订单数量", "Order quantity", len(items)), _stage("operations", "工序确认", "Operation confirmation", len(operations)), _stage("materials", "组件与领料", "Components and issues", len(components) + len(movements)), _stage("costs", "成本行项目", "Cost items", len(costs), state="confirmed" if costs else "unknown")],
-        metrics=[
-            {"id": "operation_rows", "value": len(operations)},
-            {"id": "movement_rows", "value": len(movements)},
-            {"id": "cost_rows", "value": len(costs)},
-        ],
-        gaps=gaps,
-        records=records,
-        allow_empty_records=True,
-        actions_zh=["对缺少实际活动或成本证据的订单补充过账与结算核查。"],
-        actions_en=["Add posting and settlement checks for orders without actual-activity or cost evidence."],
+    source_complete = _source_complete(inputs)
+    gaps = set(_gaps(inputs))
+
+    def scoped(rows: list[JsonObject]) -> list[JsonObject]:
+        matched: list[JsonObject] = []
+        for row in rows:
+            row_order = _text(row, "ManufacturingOrder")
+            if requested_order and row_order and row_order != requested_order:
+                gaps.add("production_order_scope_mismatch")
+                continue
+            matched.append(row)
+        return matched
+
+    headers = scoped(headers)
+    items = scoped(items)
+    operations = scoped(operations)
+    components = scoped(components)
+    movements = scoped(movements)
+
+    header = headers[0] if len(headers) == 1 else None
+    if len(headers) > 1:
+        gaps.add("production_order_header_conflict")
+    order_found = header is not None or bool(items or operations or components or movements)
+    if order_found and header is None:
+        gaps.add("production_order_header_missing")
+    teco = _truthy(header.get("OrderIsTechnicallyCompleted")) if header else False
+    teco_status = "confirmed" if teco else "not_confirmed" if header else "unknown"
+
+    comparable_item = items[0] if len(items) == 1 else None
+    if len(items) > 1:
+        gaps.add("multiple_production_order_items_not_comparable")
+    elif order_found and not items:
+        gaps.add("production_order_item_missing")
+    planned = _strict_decimal(comparable_item.get("MfgOrderItemPlannedTotalQty")) if comparable_item else None
+    received = _strict_decimal(comparable_item.get("MfgOrderItemGoodsReceiptQty")) if comparable_item else None
+    production_unit = _unit_key(
+        (comparable_item or {}).get("ProductionUnit") or (header or {}).get("ProductionUnit")
     )
+    if comparable_item and (planned is None or received is None or not production_unit):
+        gaps.add("production_quantity_evidence_incomplete")
+
+    receipt_variance = received - planned if received is not None and planned is not None else None
+    receipt_variance_percent = (
+        receipt_variance / abs(planned) * Decimal(100)
+        if receipt_variance is not None and planned not in {None, Decimal(0)}
+        else None
+    )
+    quantity_status = (
+        "unknown"
+        if receipt_variance is None
+        else "matched"
+        if receipt_variance == 0
+        else "short_receipt"
+        if receipt_variance < 0
+        else "over_receipt"
+    )
+
+    operation_keys = [_text(row, "ManufacturingOrderOperation") for row in operations]
+    if operations and (any(not item for item in operation_keys) or len(set(operation_keys)) != len(operation_keys)):
+        gaps.add("production_operation_sequence_incomplete")
+
+    def operation_sort_key(row: JsonObject) -> tuple[int, int | str]:
+        value = _text(row, "ManufacturingOrderOperation")
+        return (0, int(value)) if value.isdigit() else (1, value)
+
+    final_operation = sorted(operations, key=operation_sort_key)[-1] if operations else None
+    if order_found and final_operation is None:
+        gaps.add("final_production_operation_missing")
+    final_confirmed = bool(final_operation and _truthy(final_operation.get("OperationIsConfirmed")))
+    final_partial = bool(final_operation and _truthy(final_operation.get("OperationIsPartiallyConfirmed")))
+    confirmed_yield = (
+        _strict_decimal(final_operation.get("OpTotalConfirmedYieldQty"))
+        if final_operation and final_confirmed and not final_partial
+        else None
+    )
+    final_operation_unit = _unit_key((final_operation or {}).get("OperationUnit"))
+    if confirmed_yield is not None and not final_operation_unit:
+        confirmed_yield = None
+        gaps.add("production_operation_unit_missing")
+    if confirmed_yield is not None and final_operation_unit and production_unit and final_operation_unit != production_unit:
+        confirmed_yield = None
+        gaps.add("production_operation_unit_conflict")
+    operation_status = (
+        "unknown"
+        if not final_operation
+        else "partial"
+        if final_partial
+        else "confirmed"
+        if final_confirmed and confirmed_yield is not None
+        else "not_confirmed"
+    )
+
+    component_details: list[JsonObject] = []
+    component_variance_count = 0
+    for row in components:
+        required = _strict_decimal(row.get("RequiredQuantity"))
+        withdrawn = _strict_decimal(row.get("WithdrawnQuantity"))
+        unit = _unit_key(row.get("BaseUnit"))
+        if required is None or withdrawn is None or not unit:
+            gaps.add("production_component_evidence_incomplete")
+            variance = None
+            status = "unknown"
+        else:
+            variance = withdrawn - required
+            status = "matched" if variance == 0 else "variance"
+            if variance != 0:
+                component_variance_count += 1
+        component_details.append(
+            {
+                "reservation": _text(row, "Reservation"),
+                "reservation_item": _text(row, "ReservationItem"),
+                "material": _text(row, "Material"),
+                "required_quantity": str(required) if required is not None else None,
+                "withdrawn_quantity": str(withdrawn) if withdrawn is not None else None,
+                "variance_quantity": str(variance) if variance is not None else None,
+                "unit": unit or None,
+                "status": status,
+            }
+        )
+    component_status = (
+        "not_applicable"
+        if not components
+        else "unknown"
+        if any(item["status"] == "unknown" for item in component_details)
+        else "variance"
+        if component_variance_count
+        else "matched"
+    )
+
+    movement_details: list[JsonObject] = []
+    reversal_count = 0
+    receipt_movement_total = Decimal(0)
+    receipt_movement_comparable = True
+    recognized_movement_count = 0
+    movement_keys: set[tuple[str, str, str]] = set()
+    for row in movements:
+        movement_type = _text(row, "GoodsMovementType")
+        quantity = _strict_decimal(row.get("QuantityInBaseUnit"))
+        unit = _unit_key(row.get("MaterialBaseUnit"))
+        direction = Decimal(1) if movement_type in {"101", "261"} else Decimal(-1) if movement_type in {"102", "262"} else None
+        if direction is not None:
+            recognized_movement_count += 1
+        if movement_type in {"102", "262"}:
+            reversal_count += 1
+            if not _text(row, "ReversedMaterialDocument"):
+                gaps.add("material_movement_reversal_reference_incomplete")
+        movement_key = (
+            _text(row, "MaterialDocumentYear"),
+            _text(row, "MaterialDocument"),
+            _text(row, "MaterialDocumentItem"),
+        )
+        if not all(movement_key) or movement_key in movement_keys:
+            gaps.add("material_movement_business_key_incomplete")
+        movement_keys.add(movement_key)
+        if movement_type in {"101", "102"}:
+            if quantity is None or not unit or (production_unit and unit != production_unit):
+                receipt_movement_comparable = False
+                gaps.add("goods_receipt_movement_unit_conflict")
+            else:
+                receipt_movement_total += quantity * (direction or Decimal(0))
+        movement_details.append(
+            {
+                "material_document_year": _text(row, "MaterialDocumentYear"),
+                "material_document": _text(row, "MaterialDocument"),
+                "material_document_item": _text(row, "MaterialDocumentItem"),
+                "material": _text(row, "Material"),
+                "movement_type": movement_type,
+                "quantity": str(quantity) if quantity is not None else None,
+                "unit": unit or None,
+                "debit_credit_code": _text(row, "DebitCreditCode"),
+                "reversed_document": _text(row, "ReversedMaterialDocument"),
+                "reversed_document_year": _text(row, "ReversedMaterialDocumentYear"),
+                "reversed_document_item": _text(row, "ReversedMaterialDocumentItem"),
+            }
+        )
+    if received is not None and movements and receipt_movement_comparable and receipt_movement_total != received:
+        gaps.add("goods_receipt_document_mismatch")
+    if received not in {None, Decimal(0)} and not movements:
+        gaps.add("goods_receipt_movement_evidence_missing")
+    movement_status = (
+        "no_activity"
+        if not movements
+        else "reversal_present"
+        if reversal_count
+        else "documented"
+        if recognized_movement_count
+        else "supporting_only"
+    )
+
+    root_causes: list[JsonObject] = []
+    if confirmed_yield is not None and received is not None:
+        if planned is not None and confirmed_yield == planned and received < confirmed_yield:
+            root_causes.append(
+                {
+                    "code": "receipt_shortfall_after_confirmation",
+                    "severity": "high",
+                    "confirmed_yield_quantity": str(confirmed_yield),
+                    "goods_receipt_quantity": str(received),
+                }
+            )
+        elif planned is not None and confirmed_yield < planned:
+            root_causes.append(
+                {
+                    "code": "production_yield_shortfall",
+                    "severity": "high",
+                    "planned_quantity": str(planned),
+                    "confirmed_yield_quantity": str(confirmed_yield),
+                }
+            )
+        elif planned is not None and confirmed_yield > planned:
+            root_causes.append(
+                {
+                    "code": "production_over_confirmation",
+                    "severity": "medium",
+                    "planned_quantity": str(planned),
+                    "confirmed_yield_quantity": str(confirmed_yield),
+                }
+            )
+    if component_variance_count:
+        root_causes.append(
+            {
+                "code": "component_issue_variance",
+                "severity": "medium",
+                "affected_component_count": component_variance_count,
+            }
+        )
+    if reversal_count:
+        root_causes.append(
+            {
+                "code": "material_movement_reversal_effect",
+                "severity": "medium",
+                "reversal_count": reversal_count,
+            }
+        )
+
+    evidence_complete = bool(source_complete and not gaps and order_found)
+    has_variance = bool(
+        receipt_variance not in {None, Decimal(0)}
+        or component_variance_count
+        or reversal_count
+        or root_causes
+    )
+    business_status = (
+        "inconclusive"
+        if not source_complete or gaps
+        else "not_found"
+        if not order_found
+        else "in_progress"
+        if not teco
+        else "attention"
+        if has_variance
+        else "normal"
+    )
+    material = _text(comparable_item or {}, "Material") or _text(header or {}, "Material")
+    plant = _text(comparable_item or {}, "ProductionPlant", "Plant") or _text(header or {}, "ProductionPlant", "Plant")
+    headline_zh = (
+        f"生产已确认 {confirmed_yield} {production_unit}，但库存只收到 {received} {production_unit}"
+        if any(item.get("code") == "receipt_shortfall_after_confirmation" for item in root_causes)
+        else "生产数量与物料差异检查完成"
+        if business_status in {"normal", "attention"}
+        else "生产数量与物料差异证据尚不能形成最终结论"
+    )
+    headline_en = (
+        f"Production confirmed {confirmed_yield} {production_unit}, but inventory received only {received} {production_unit}"
+        if any(item.get("code") == "receipt_shortfall_after_confirmation" for item in root_causes)
+        else "Production quantity and material variance check completed"
+        if business_status in {"normal", "attention"}
+        else "Production quantity and material evidence is not yet conclusive"
+    )
+    findings = [dict(item) for item in root_causes]
+    result = _result(
+        inputs,
+        business_status=business_status,
+        headline_zh=headline_zh,
+        headline_en=headline_en,
+        overview_zh="本Agent分别核对计划数量、最终工序确认、成品入库、组件领料和冲销；成本不在本Agent范围内。",
+        overview_en="This Agent checks planned quantity, final-operation confirmation, finished-goods receipt, component issues, and reversals separately; cost is outside its scope.",
+        stages=[
+            _stage("order", "生产订单状态", "Production order status", len(headers), state=teco_status),
+            _stage("quantity", "计划与入库数量", "Planned and received quantity", len(items), state=quantity_status),
+            _stage("operations", "最终工序确认", "Final operation confirmation", len(operations), state=operation_status),
+            _stage("components", "组件领料", "Component issues", len(components), state=component_status),
+            _stage("movements", "物料移动与冲销", "Material movements and reversals", len(movements), state=movement_status),
+            _stage("cost", "成本分析", "Cost analysis", 0, state="not_assessed"),
+        ],
+        findings=findings,
+        metrics=[
+            {"id": "planned_quantity", "value": str(planned) if planned is not None else None, "unit": production_unit or None},
+            {"id": "confirmed_yield_quantity", "value": str(confirmed_yield) if confirmed_yield is not None else None, "unit": production_unit or None},
+            {"id": "goods_receipt_quantity", "value": str(received) if received is not None else None, "unit": production_unit or None},
+            {"id": "receipt_variance_quantity", "value": str(receipt_variance) if receipt_variance is not None else None, "unit": production_unit or None},
+            {"id": "component_variance_count", "value": component_variance_count},
+            {"id": "reversal_count", "value": reversal_count},
+        ],
+        gaps=sorted(gaps),
+        limitations=["cost_not_assessed"],
+        records=component_details + movement_details,
+        allow_empty_records=True,
+        preserve_business_status_on_gap=True,
+        source_complete_override=source_complete,
+        actions_zh=["按候选原因复核最终工序确认、成品收货和组件领退料；需要成本分析时运行独立的生产订单成本差异Agent。"],
+        actions_en=["Review final-operation confirmation, finished-goods receipt, and component issues/reversals; run the separate production-order cost Agent when cost analysis is required."],
+    )
+    quantity_detail = {
+        "planned_quantity": str(planned) if planned is not None else None,
+        "confirmed_yield_quantity": str(confirmed_yield) if confirmed_yield is not None else None,
+        "goods_receipt_quantity": str(received) if received is not None else None,
+        "receipt_variance_quantity": str(receipt_variance) if receipt_variance is not None else None,
+        "receipt_variance_percent": str(receipt_variance_percent) if receipt_variance_percent is not None else None,
+        "unit": production_unit or None,
+    }
+    operation_details = [
+        {
+            "operation": _text(row, "ManufacturingOrderOperation"),
+            "work_center": _text(row, "WorkCenter"),
+            "planned_quantity": _text(row, "OpPlannedTotalQuantity"),
+            "confirmed_yield_quantity": _text(row, "OpTotalConfirmedYieldQty"),
+            "unit": _text(row, "OperationUnit"),
+            "confirmed": _truthy(row.get("OperationIsConfirmed")),
+            "partially_confirmed": _truthy(row.get("OperationIsPartiallyConfirmed")),
+        }
+        for row in sorted(operations, key=operation_sort_key)
+    ]
+    result["rule_id"] = "production_quantity_material_variance_v2"
+    result["business_report"].update(
+        {
+            "quantity_detail": quantity_detail,
+            "operation_details": operation_details,
+            "component_details": component_details,
+            "movement_details": movement_details,
+            "root_cause_candidates": root_causes,
+        }
+    )
+    result["workflow_output"].update(
+        {
+            "manufacturing_order": requested_order,
+            "material": material,
+            "plant": plant,
+            "teco_status": teco_status,
+            "production_unit": production_unit,
+            "planned_quantity": str(planned) if planned is not None else None,
+            "confirmed_yield_quantity": str(confirmed_yield) if confirmed_yield is not None else None,
+            "goods_receipt_quantity": str(received) if received is not None else None,
+            "receipt_variance_quantity": str(receipt_variance) if receipt_variance is not None else None,
+            "receipt_variance_percent": str(receipt_variance_percent) if receipt_variance_percent is not None else None,
+            "quantity_status": quantity_status,
+            "operation_status": operation_status,
+            "component_status": component_status,
+            "movement_status": movement_status,
+            "cost_status": "not_assessed",
+            "component_variance_count": component_variance_count,
+            "reversal_count": reversal_count,
+            "root_cause_candidates": root_causes,
+            "source_complete": source_complete,
+            "evidence_complete": evidence_complete,
+            "business_status": business_status,
+            "business_report": result["business_report"],
+        }
+    )
+    result["business_status"] = business_status
+    result["business_complete"] = evidence_complete
+    return result
 
 
 def _material_shortage_procurement(inputs: JsonObject) -> JsonObject:
@@ -4100,6 +4433,16 @@ def _inventory_health_balancing(inputs: JsonObject) -> JsonObject:
         "not_candidate": {"zh": "未发现风险", "en": "No risk found"},
         "unknown": {"zh": "无法确认", "en": "Unknown"},
         "not_requested": {"zh": "未启用", "en": "Not enabled"},
+        "matched": {"zh": "数量一致", "en": "Quantities match"},
+        "short_receipt": {"zh": "入库数量不足", "en": "Receipt shortfall"},
+        "over_receipt": {"zh": "入库数量超出", "en": "Receipt overage"},
+        "partial": {"zh": "部分完成", "en": "Partially complete"},
+        "not_applicable": {"zh": "不适用", "en": "Not applicable"},
+        "documented": {"zh": "凭证已核对", "en": "Documents verified"},
+        "reversal_present": {"zh": "存在冲销", "en": "Reversal present"},
+        "supporting_only": {"zh": "仅有辅助凭证", "en": "Supporting evidence only"},
+        "no_activity": {"zh": "未发现业务活动", "en": "No activity found"},
+        "not_assessed": {"zh": "本Agent未评估", "en": "Not assessed by this Agent"},
     }
     records = [{
         "snapshot_date": snapshot.isoformat(),
@@ -4688,63 +5031,248 @@ def _co_month_end_allocation_settlement(inputs: JsonObject) -> JsonObject:
 
 
 def _product_cost_variance(inputs: JsonObject) -> JsonObject:
-    orders = _rows(inputs, "production_orders") + _adt_rows(inputs, "order")
-    actual = _rows(inputs, "actual_cost_items") + _adt_rows(inputs, "actual_cost")
-    costing = _adt_rows(inputs, "standard_cost")
-    complete, missing = _required_topics(inputs, "order", "actual_cost", "standard_cost")
-    actual_total = _sum_amount(actual)
-    actual_available = bool(actual)
-    periodic_prices = [
-        _decimal(row.get("PVPRS"))
-        for row in costing
-        if row.get("PVPRS") not in {None, ""}
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    requested_order = str(run_input.get("manufacturing_order") or "").strip()
+    orders = _rows(inputs, "production_order")
+    scope = inputs.get("scope") if isinstance(inputs.get("scope"), dict) else {}
+    cost_payload = _fallback(inputs, "production_cost")
+    details = [
+        dict(row)
+        for row in cost_payload.get("cost_element_details") or []
+        if isinstance(row, dict)
     ]
-    standard_prices = [
-        _decimal(row.get("STPRS"))
-        for row in costing
-        if row.get("STPRS") not in {None, ""}
-    ]
-    periodic = sum(periodic_prices, Decimal(0)) if periodic_prices else None
-    standard = sum(standard_prices, Decimal(0)) if standard_prices else None
-    price_variance = periodic - standard if periodic is not None and standard is not None else None
-    findings: list[JsonObject] = []
-    if not orders:
-        findings.append({"code": "PRODUCTION_ORDER_NOT_CONFIRMED", "severity": "high"})
-    if price_variance is None:
-        findings.append({"code": "STANDARD_PERIODIC_PRICE_NOT_COMPARABLE", "severity": "high"})
-    elif price_variance != 0:
-        findings.append({"code": "PRODUCT_COST_VARIANCE", "severity": "medium", "value": str(price_variance)})
-    return _result(
+    gaps = set(_gaps(inputs))
+    order_source_complete = _source_complete(
+        {"evidence": {"production_order": (inputs.get("evidence") or {}).get("production_order")}}
+    )
+    if len(orders) != 1:
+        gaps.add("production_order_evidence")
+    order = orders[0] if len(orders) == 1 else {}
+    if order and _text(order, "ManufacturingOrder") != requested_order:
+        gaps.add("production_order_scope_mismatch")
+
+    relationship = (
+        cost_payload.get("relationship_evidence")
+        if isinstance(cost_payload.get("relationship_evidence"), dict)
+        else {}
+    )
+    order_context = (
+        cost_payload.get("order_context")
+        if isinstance(cost_payload.get("order_context"), dict)
+        else {}
+    )
+    relationship_complete = bool(
+        relationship.get("source_complete") is True
+        and relationship.get("source") == "AUFK"
+        and str(order_context.get("manufacturing_order") or "").strip() == requested_order
+        and str(order_context.get("company_code") or "").strip()
+        and str(order_context.get("controlling_area") or "").strip()
+        and str(order_context.get("object_number") or "").strip()
+    )
+    if not relationship_complete:
+        gaps.add("production_cost_relationship")
+    order_company = _text(order, "CompanyCode")
+    skill_company = str(order_context.get("company_code") or "").strip()
+    if order_company and skill_company and order_company != skill_company:
+        gaps.add("production_cost_relationship_conflict")
+
+    completeness = (
+        cost_payload.get("completeness")
+        if isinstance(cost_payload.get("completeness"), dict)
+        else {}
+    )
+    cost_complete = bool(
+        cost_payload.get("status") == "complete"
+        and cost_payload.get("validated") is True
+        and cost_payload.get("read_only") is True
+        and completeness.get("source_complete") is True
+        and completeness.get("evidence_complete") is True
+        and completeness.get("paging_complete") is True
+        and not cost_payload.get("validation_issues")
+    )
+    if not cost_complete:
+        gaps.add("production_cost_evidence")
+        for issue in cost_payload.get("validation_issues") or []:
+            if isinstance(issue, dict) and issue.get("code"):
+                gaps.add(str(issue["code"]))
+    if not scope.get("scope_resolved"):
+        gaps.add("production_cost_period_scope")
+
+    normalized_details: list[JsonObject] = []
+    currencies: set[str] = set()
+    ledgers: set[str] = set()
+    roles: set[str] = set()
+    plan_total = Decimal(0)
+    target_total = Decimal(0)
+    actual_total = Decimal(0)
+    for row in details:
+        plan = _strict_decimal(row.get("plan_cost"))
+        target = _strict_decimal(row.get("target_cost"))
+        actual = _strict_decimal(row.get("actual_cost"))
+        variance = _strict_decimal(row.get("actual_target_variance"))
+        cost_element = _text(row, "cost_element")
+        currency = _text(row, "currency")
+        ledger = _text(row, "ledger")
+        role = _text(row, "currency_role")
+        if (
+            not cost_element
+            or not currency
+            or not ledger
+            or not role
+            or None in {plan, target, actual, variance}
+        ):
+            gaps.add("production_cost_element_evidence_incomplete")
+        elif actual - target != variance:
+            gaps.add("production_cost_variance_reconciliation_mismatch")
+        if plan is not None:
+            plan_total += plan
+        if target is not None:
+            target_total += target
+        if actual is not None:
+            actual_total += actual
+        if currency:
+            currencies.add(currency)
+        if ledger:
+            ledgers.add(ledger)
+        if role:
+            roles.add(role)
+        normalized_details.append(
+            {
+                **row,
+                "plan_cost": str(plan) if plan is not None else None,
+                "target_cost": str(target) if target is not None else None,
+                "actual_cost": str(actual) if actual is not None else None,
+                "actual_target_variance": str(variance) if variance is not None else None,
+            }
+        )
+    if cost_complete and not details:
+        gaps.add("production_cost_evidence_empty")
+    if len(currencies) > 1 or len(ledgers) > 1 or len(roles) > 1:
+        gaps.add("production_cost_scope_not_comparable")
+
+    variance_total = actual_total - target_total if details else None
+    tolerance = Decimal("0.01")
+    if variance_total is None:
+        cost_status = "unknown"
+    elif target_total == 0 and actual_total != 0:
+        cost_status = "unplanned_cost"
+    elif target_total != 0 and actual_total == 0:
+        cost_status = "planned_cost_not_consumed"
+    elif abs(variance_total) <= tolerance:
+        cost_status = "normal"
+    elif variance_total > 0:
+        cost_status = "unfavorable_variance"
+    else:
+        cost_status = "favorable_variance"
+    variance_percent = (
+        variance_total / abs(target_total) * Decimal(100)
+        if variance_total is not None and target_total != 0
+        else None
+    )
+    source_complete = bool(order_source_complete and cost_complete)
+    evidence_complete = bool(source_complete and relationship_complete and not gaps)
+    business_status = (
+        "inconclusive"
+        if not evidence_complete
+        else "normal"
+        if cost_status == "normal"
+        else "attention"
+    )
+    findings = [
+        {
+            "code": cost_status,
+            "severity": "medium",
+            "actual_target_variance": str(variance_total),
+        }
+    ] if business_status == "attention" else []
+    headline_zh = (
+        "生产订单成本证据尚不足，不能形成差异结论"
+        if business_status == "inconclusive"
+        else f"生产订单实际成本与目标成本差异为 {variance_total} {next(iter(currencies), '')}".strip()
+    )
+    headline_en = (
+        "Production-order cost evidence is insufficient for a variance conclusion"
+        if business_status == "inconclusive"
+        else f"Production-order actual-to-target cost variance is {variance_total} {next(iter(currencies), '')}".strip()
+    )
+    result = _result(
         inputs,
-        business_status=(
-            "capability_blocked"
-            if not complete or not orders or standard is None or periodic is None
-            else "attention" if findings else "normal"
-        ),
-        headline_zh=(f"周期价格与标准价格差异为 {price_variance}" if price_variance is not None else "产品成本差异证据不可比较"),
-        headline_en=(f"Periodic-to-standard price variance is {price_variance}" if price_variance is not None else "Product-cost variance evidence is not comparable"),
-        overview_zh="产品成本结论区分订单实际发生额与物料分类账单位价格；两者不在单位和归属完整前混合汇总。",
-        overview_en="Product-cost conclusions keep order actual amounts separate from Material Ledger unit prices until units and attribution are complete.",
+        business_status=business_status,
+        headline_zh=headline_zh,
+        headline_en=headline_en,
+        overview_zh="本Agent按生产订单、成本要素、期间、账本和币种比较计划、目标与实际成本；标准单价不作为订单目标成本。",
+        overview_en="This Agent compares plan, target, and actual costs by production order, cost element, period, ledger, and currency; standard price is not used as order target cost.",
         stages=[
-            _stage("order", "生产订单", "Production order", len(orders), state="confirmed" if _topic_complete(inputs, "order") else "unknown"),
-            _stage("actual", "订单实际成本", "Order actual cost", len(actual), state="confirmed" if _topic_complete(inputs, "actual_cost") else "unknown"),
-            _stage("standard", "标准与周期成本", "Standard and periodic cost", len(costing), state="confirmed" if _topic_complete(inputs, "standard_cost") else "unknown"),
+            _stage("order", "生产订单", "Production order", len(orders), state="confirmed" if len(orders) == 1 else "unknown"),
+            _stage("relationship", "订单与成本对象关系", "Order-to-cost-object relationship", 1 if relationship_complete else 0, state="confirmed" if relationship_complete else "unknown"),
+            _stage("period", "成本分析期间", "Cost analysis period", 1 if scope.get("scope_resolved") else 0, state="confirmed" if scope.get("scope_resolved") else "unknown"),
+            _stage("cost", "计划、目标与实际成本", "Plan, target, and actual costs", len(details), state="confirmed" if cost_complete else "unknown"),
         ],
         findings=findings,
         metrics=[
-            {"id": "order_actual_amount", "value": str(actual_total) if actual_available else None},
-            {"id": "standard_unit_price", "value": str(standard) if standard is not None else None},
-            {"id": "periodic_unit_price", "value": str(periodic) if periodic is not None else None},
-            {"id": "unit_price_variance", "value": str(price_variance) if price_variance is not None else None},
+            {"id": "plan_cost_total", "value": str(plan_total) if details else None, "currency": next(iter(currencies), None)},
+            {"id": "target_cost_total", "value": str(target_total) if details else None, "currency": next(iter(currencies), None)},
+            {"id": "actual_cost_total", "value": str(actual_total) if details else None, "currency": next(iter(currencies), None)},
+            {"id": "actual_target_variance", "value": str(variance_total) if variance_total is not None else None, "currency": next(iter(currencies), None)},
         ],
-        gaps=_gaps(inputs, *missing),
-        limitations=["standard_cost_evidence"] if standard is None or periodic is None else [],
-        actions_zh=["由产品成本会计复核物料分类账期间、价格单位、订单归属和结算状态。"],
-        actions_en=["Have product-cost accounting review the Material Ledger period, price unit, order attribution, and settlement status."],
-        source_complete_override=(
-            _topic_complete(inputs, "order") and _topic_complete(inputs, "actual_cost")
-        ),
+        gaps=sorted(gaps),
+        limitations=sorted(gaps),
+        records=normalized_details,
+        allow_empty_records=True,
+        preserve_business_status_on_gap=True,
+        source_complete_override=source_complete,
+        actions_zh=["先补齐发布成本CDS或经对账的COSP/COSS证据，再由产品成本会计解释成本要素差异。"] if business_status == "inconclusive" else ["由产品成本会计按成本要素复核差异方向和业务原因。"],
+        actions_en=["Complete the released cost CDS or reconciled COSP/COSS evidence before interpreting cost-element variance."] if business_status == "inconclusive" else ["Have product-cost accounting review the direction and business cause by cost element."],
     )
+    material = _text(order, "Material")
+    plant = _text(order, "ProductionPlant")
+    analysis_from = str(scope.get("analysis_period_from") or "")
+    analysis_to = str(scope.get("analysis_period_to") or "")
+    ledger = next(iter(ledgers), str((cost_payload.get("analysis_scope") or {}).get("ledger") or ""))
+    role = next(iter(roles), str((cost_payload.get("analysis_scope") or {}).get("currency_role") or ""))
+    result["rule_id"] = "production_order_cost_variance_v2"
+    result["business_report"].update(
+        {
+            "cost_element_details": normalized_details,
+            "relationship_evidence": relationship,
+            "analysis_scope": {
+                "from": analysis_from,
+                "to": analysis_to,
+                "ledger": ledger,
+                "currency_role": role,
+                "target_cost_variant": 1,
+            },
+        }
+    )
+    result["workflow_output"].update(
+        {
+            "manufacturing_order": requested_order,
+            "company_code": skill_company or order_company,
+            "controlling_area": str(order_context.get("controlling_area") or ""),
+            "material": material,
+            "plant": plant,
+            "analysis_period_from": analysis_from,
+            "analysis_period_to": analysis_to,
+            "ledger": ledger,
+            "currency_role": role,
+            "target_cost_variant": 1,
+            "plan_cost_total": str(plan_total) if details else None,
+            "target_cost_total": str(target_total) if details else None,
+            "actual_cost_total": str(actual_total) if details else None,
+            "actual_target_variance": str(variance_total) if variance_total is not None else None,
+            "actual_target_variance_percent": str(variance_percent) if variance_percent is not None else None,
+            "cost_status": cost_status,
+            "cost_element_details": normalized_details,
+            "relationship_evidence": relationship,
+            "source_complete": source_complete,
+            "evidence_complete": evidence_complete,
+            "business_status": business_status,
+            "business_report": result["business_report"],
+        }
+    )
+    result["business_status"] = business_status
+    result["business_complete"] = evidence_complete
+    return result
 
 
 def _budget_rolling_forecast(inputs: JsonObject) -> JsonObject:

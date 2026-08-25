@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any
 
 from .agent_rules import evaluate_business_agent
@@ -29,6 +30,8 @@ API_CAPABILITY_GAP_CODES = frozenset(
 def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "resolve_mrp_analysis_context":
         return resolve_mrp_analysis_context(inputs)
+    if operation == "resolve_production_cost_scope":
+        return resolve_production_cost_scope(inputs)
     if operation == "resolve_inventory_health_window":
         return resolve_inventory_health_window(inputs)
     if operation == "assess_inventory_batch_expiry":
@@ -68,6 +71,106 @@ def resolve_mrp_analysis_context(inputs: dict[str, Any]) -> dict[str, Any]:
         "rule_id": "mrp_analysis_context_v1",
         "status": "complete",
         "analysis_date": date.today().isoformat(),
+    }
+
+
+def resolve_production_cost_scope(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the fixed production-cost period from user input or live postings."""
+
+    run_input = inputs.get("run_input")
+    if not isinstance(run_input, dict):
+        raise ValueError("resolve_production_cost_scope requires run_input")
+    fiscal_year = str(run_input.get("fiscal_year") or "").strip()
+    period_value = run_input.get("period")
+    period = int(period_value) if period_value not in {None, ""} else None
+    if period is not None and not fiscal_year:
+        raise ValueError("fiscal_year is required when period is supplied")
+    if fiscal_year and not re.fullmatch(r"[0-9]{4}", fiscal_year):
+        raise ValueError("fiscal_year must use YYYY")
+    if period is not None and not 1 <= period <= 16:
+        raise ValueError("period must be between 1 and 16")
+
+    actual_payload = inputs.get("actual_cost")
+    rows: list[dict[str, Any]] = []
+    for step in _step_results(actual_payload).values():
+        rows.extend(
+            dict(row) for row in step.get("results") or [] if isinstance(row, dict)
+        )
+    observed: list[tuple[int, int]] = []
+    scope_values: dict[str, set[str]] = {
+        "company_code": set(),
+        "controlling_area": set(),
+        "currency": set(),
+    }
+    invalid_rows = 0
+    for row in rows:
+        row_year = str(row.get("FiscalYear") or "").strip()
+        row_period = str(row.get("FiscalPeriod") or "").strip()
+        if not row_year.isdigit() or len(row_year) != 4 or not row_period.isdigit():
+            invalid_rows += 1
+        else:
+            parsed_period = int(row_period)
+            if 1 <= parsed_period <= 16:
+                observed.append((int(row_year), parsed_period))
+            else:
+                invalid_rows += 1
+        for target, field in (
+            ("company_code", "CompanyCode"),
+            ("controlling_area", "ControllingArea"),
+            ("currency", "CompanyCodeCurrency"),
+        ):
+            value = str(row.get(field) or "").strip()
+            if value:
+                scope_values[target].add(value)
+
+    if fiscal_year and period is not None:
+        period_from = period_to = f"{fiscal_year}{period:03d}"
+        scope_source = "user_period"
+    elif fiscal_year:
+        period_from = f"{fiscal_year}001"
+        period_to = f"{fiscal_year}016"
+        scope_source = "user_fiscal_year"
+    elif observed and _source_complete(actual_payload) and invalid_rows == 0:
+        low, high = min(observed), max(observed)
+        period_from = f"{low[0]:04d}{low[1]:03d}"
+        period_to = f"{high[0]:04d}{high[1]:03d}"
+        scope_source = "actual_cost_postings"
+    else:
+        period_from = period_to = ""
+        scope_source = "unresolved"
+
+    conflicts = [name for name, values in scope_values.items() if len(values) > 1]
+    source_complete = _source_complete(actual_payload)
+    resolved = bool(period_from and period_to and not conflicts)
+    return {
+        "rule_id": "production_cost_scope_v1",
+        "status": "complete" if resolved else "inconclusive",
+        "scope_resolved": resolved,
+        "scope_source": scope_source,
+        "analysis_period_from": period_from,
+        "analysis_period_to": period_to,
+        "company_code": next(iter(scope_values["company_code"]), ""),
+        "controlling_area": next(iter(scope_values["controlling_area"]), ""),
+        "currency": next(iter(scope_values["currency"]), ""),
+        "actual_cost_source_complete": source_complete,
+        "actual_cost_row_count": len(rows),
+        "validation_issues": [
+            *(
+                [{"code": "actual_cost_period_invalid"}]
+                if invalid_rows
+                else []
+            ),
+            *(
+                [{"code": "actual_cost_scope_conflict", "fields": conflicts}]
+                if conflicts
+                else []
+            ),
+            *(
+                [{"code": "analysis_period_not_derivable"}]
+                if not period_from
+                else []
+            ),
+        ],
     }
 
 

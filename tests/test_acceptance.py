@@ -863,10 +863,7 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
             "due-delivery-prioritization": [
                 "current_stock_not_historical_atp"
             ],
-            "production-variance-analysis": [
-                "production_cost_evidence",
-                "production_cost_relationship",
-            ],
+            "production-variance-analysis": [],
             "demand-forecast-planning": [
                 "pir_evidence",
                 "sales_demand_period_evidence",
@@ -884,7 +881,10 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
                 "commitment_evidence",
                 "control_object_not_found",
             ],
-            "product-cost-variance": ["standard_cost_evidence"],
+            "product-cost-variance": [
+                "production_cost_evidence",
+                "production_cost_relationship",
+            ],
             "co-month-end-allocation-settlement": [
                 "allocation_cycle_evidence",
                 "object_status_evidence",

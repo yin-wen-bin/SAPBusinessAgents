@@ -122,7 +122,7 @@ test("catalog discovers thirty valid agents with step-level tools", () => {
     "mrp-exception-analysis": "PASS",
     "production-order-monitoring": "PASS",
     "production-scheduling-capacity": "BLOCKED",
-    "production-variance-analysis": "BLOCKED",
+    "production-variance-analysis": "PASS",
   });
   assert.ok(ppAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(ppAgents.every((agent) => agent.workflow.every((step) => step.operations.zh.length === step.operations.en.length)));
