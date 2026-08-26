@@ -5,33 +5,22 @@
 `BLOCKED` / `executable=false`
 
 - Tested at: `2026-08-25`
-- Sample: manufacturing order `1001233`
-- Direct/Embedded SAP access: GET-only
-- Fixed-Agent run: `acceptance_fe28cce43bbd431e`
-- Fixed-Agent result: `inconclusive`
-- Blocking limitation: `production_cost_evidence`
+- Sample: manufacturing order `1001233`, fiscal period `2020/011`, target-cost variant `1`
+- Cost source: `I_MfgOrderActlPlanTgtLdgrCost`
 - SAP write operations: none
+- Blocking limitation: `free_query_skill_execution`
 
-## Confirmed evidence
+## Reconciliation
 
-- The production-order API returned exactly one order with company code `1710`, controlling area context `A000`, material `EWMS4-50`, and plant `1710`.
-- The operational accounting OData query returned six complete actual-cost rows, all in fiscal year `2020`, period `011`, ledger/currency context compatible with the order.
-- AUFK returned exactly one complete row and proved `AUFNR -> OBJNR/KOKRS/BUKRS` for the same order.
-- Live ADT DDL metadata confirms both `C_MfgOrdActlPlnTgtLdgrCost` and `I_MfgOrderActlPlanTgtLdgrCost`, including the five parameters and plan, target, and actual cost fields.
+| Stage | Result | Evidence |
+| --- | --- | --- |
+| Direct ADT multiline POST baseline | MATCH | HTTP 200; `totalRows=21`; 21 returned rows; complete |
+| Standalone `sap-production-order-cost-analysis` | MATCH | 21 raw rows; 8 cost elements; source and evidence complete |
+| Fixed SAPBusinessAgents Agent | MATCH | `acceptance_b0d862aca7c64733`; complete and validated |
+| Free query | BLOCKED | `run_dadcfcabc3da4c93` used invalid bindings; corrected `run_17d7a4dd62814b11` was rejected by the Harness single-use gap-token gate |
 
-## Blocking evidence
-
-Bounded ADT Data Preview rejected both released parameterized CDS queries with HTTP 400. The dedicated Skill therefore returned:
-
-```text
-status=partial
-source_complete=false
-evidence_complete=false
-validation_issue=parameterized_production_cost_cds_unavailable
-```
-
-No plan cost, target cost, actual cost total, variance, or cost-element row is emitted as zero. The Agent remains blocked until the released CDS can be executed or an `AUFK + ACDOCA + COSP/COSS` fallback is both available and reconciled to SAP standard cost analysis on a live sample.
+The three successful stages agree on plan `-164.26 USD`, target `-140.08 USD`, actual `211.96 USD`, and actual-minus-target `352.04 USD`, as well as order, ledger `0L`, currency, period, raw-row count, cost-element count, and completeness.
 
 ## Acceptance decision
 
-The new interface, period derivation, AUFK relationship contract, read-only Skill, deterministic cost rule, and fail-closed report are implemented. The current target does not meet the plan/target/actual evidence acceptance gate, so free-query comparison and PASS promotion are intentionally not claimed.
+The production-cost evidence gap is closed. Promotion to `PASS/executable=true` is intentionally withheld because the required free-query comparison did not execute the Skill and therefore cannot be claimed as `MATCH`. After the Harness execution gate is repaired, the free query must reproduce the same complete evidence and totals before promotion.

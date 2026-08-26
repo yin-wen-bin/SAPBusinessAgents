@@ -18,7 +18,7 @@ The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV reval
 | CO | `co-month-end-allocation-settlement` | BLOCKED | false | MATCH | MATCH | bounded | allocation_cycle_evidence, object_status_evidence, settlement_rule_evidence |
 | CO | `cost-center-expense-anomaly` | BLOCKED | false | MATCH | MATCH | bounded | plan_evidence_missing |
 | CO | `internal-order-project-control` | BLOCKED | false | MATCH | MATCH | bounded | budget_evidence, commitment_evidence, control_object_not_found, master_evidence, plan_evidence |
-| CO | `product-cost-variance` | BLOCKED | false | NOT_TESTED | BLOCKED | bounded | production_cost_evidence |
+| CO | `product-cost-variance` | BLOCKED | false | BLOCKED | MATCH | complete | free_query_skill_execution |
 | FI | `ap-payment` | PASS | true | MATCH | MATCH | complete | none |
 | FI | `ar-collection` | PASS | true | MATCH | MATCH | complete | none |
 | FI | `gr-ir-clearing` | PASS | true | MATCH | MATCH | complete | none |

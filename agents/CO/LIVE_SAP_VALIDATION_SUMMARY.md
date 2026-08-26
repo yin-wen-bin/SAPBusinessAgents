@@ -11,10 +11,10 @@
 | --- | --- | ---: | --- | --- |
 | `cost-center-expense-anomaly` | PASS | 3 | true | none |
 | `co-month-end-allocation-settlement` | PARTIAL | 1 | false | allocation_cycle, allocation_cycle_evidence, object_status, object_status_evidence, settlement_rule |
-| `product-cost-variance` | BLOCKED | 2 + read-only ADT Skill | false | production_cost_evidence |
+| `product-cost-variance` | BLOCKED | 2 + read-only ADT Skill | true | free_query_skill_execution |
 | `budget-rolling-forecast` | PASS | 2 | true | none |
 | `internal-order-project-control` | PARTIAL | 4 | false | budget, commitment, control_object_not_found, master, master_evidence |
 
 候选发现使用显式 top，仅用于选样，绝不作为源完整性证据。
 
-`product-cost-variance` 0.2.0 已取得 AUFK 订单—成本对象关系和完整实际成本期间；当前系统对发布的参数化生产订单成本 CDS 返回 HTTP 400，因此计划/目标成本仍未闭环，不能解除阻塞。
+`product-cost-variance` 0.2.0 的直接 ADT、独立 Skill 和固定 Agent 已完整对账：21 条原始记录、8 个成本要素，计划 `-164.26 USD`、目标 `-140.08 USD`、实际 `211.96 USD`、差异 `352.04 USD`。自由查询的 Skill 调用仍被 Harness gap token 门禁阻止，因此保持 `BLOCKED/executable=false`。

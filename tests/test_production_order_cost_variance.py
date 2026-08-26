@@ -173,7 +173,7 @@ def test_missing_released_cost_evidence_stays_inconclusive() -> None:
     assert "parameterized_production_cost_cds_unavailable" in result["missing_evidence"]
 
 
-def test_manifest_uses_new_skill_and_remains_blocked_until_live_cost_evidence() -> None:
+def test_manifest_uses_new_skill_and_remains_blocked_until_free_query_acceptance() -> None:
     manifest = json.loads(
         (ROOT / "agents/CO/product-cost-variance/agent.json").read_text(encoding="utf-8")
     )
@@ -183,7 +183,9 @@ def test_manifest_uses_new_skill_and_remains_blocked_until_live_cost_evidence() 
     assert [step["skillId"] for step in skill_steps] == ["sap-production-order-cost-analysis"]
     assert manifest["validation"]["verdict"] == "BLOCKED"
     assert manifest["validation"]["executable"] is False
-    assert manifest["validation"]["blockingLimitations"] == ["production_cost_evidence"]
+    assert manifest["validation"]["blockingLimitations"] == ["free_query_skill_execution"]
+    assert manifest["validation"]["fixedAgentComparison"] == "MATCH"
+    assert manifest["validation"]["freeQueryComparison"] == "BLOCKED"
     assert "standard_cost_evidence" not in json.dumps(manifest)
     with pytest.raises(InputValidationError) as exc_info:
         _validate_input(

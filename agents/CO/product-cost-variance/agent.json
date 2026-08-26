@@ -13,7 +13,7 @@
   "tags": ["Production Order", "Plan Cost", "Target Cost", "Actual Cost", "Cost Element"],
   "sapModules": ["CO-PC", "PP-SFC"],
   "transactions": [],
-  "tables": ["AUFK", "ACDOCA", "C_MfgOrdActlPlnTgtLdgrCost"],
+  "tables": ["AUFK", "ACDOCA", "I_MfgOrderActlPlanTgtLdgrCost"],
   "systems": ["SAP S/4HANA"],
   "inputs": {
     "zh": ["生产订单", "会计年度", "期间"],
@@ -261,19 +261,19 @@
   },
   "validation": {
     "verdict": "BLOCKED",
-    "testedAt": "2026-08-25T18:10:00+08:00",
-    "evidenceScope": "bounded",
+    "testedAt": "2026-08-25T23:18:00+08:00",
+    "evidenceScope": "complete",
     "providers": ["codex-app-direct-sap", "embedded-sap-odata", "sap-production-order-cost-analysis"],
     "summary": {
-      "zh": "AUFK已证明订单与成本对象关系，实际成本期间可由OData取得；当前ADT Data Preview对发布的参数化成本CDS返回HTTP 400，计划与目标成本证据仍不完整。",
-      "en": "AUFK proves the order-to-cost-object relationship and OData provides actual-cost periods; ADT Data Preview currently returns HTTP 400 for the released parameterized cost CDS, so plan and target cost evidence remain incomplete."
+      "zh": "直接ADT、独立Skill和固定Agent已对账一致并形成完整成本证据；自由查询的Skill调用被Harness单次gap token门禁拒绝，因此仍保持BLOCKED。",
+      "en": "Direct ADT, the standalone Skill, and the fixed Agent reconcile with complete cost evidence; the free-query Skill call was rejected by the Harness single-use gap-token gate, so the Agent remains BLOCKED."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
     "executable": false,
-    "freeQueryComparison": "NOT_TESTED",
-    "fixedAgentComparison": "BLOCKED",
+    "freeQueryComparison": "BLOCKED",
+    "fixedAgentComparison": "MATCH",
     "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "blockingLimitations": ["production_cost_evidence"]
+    "blockingLimitations": ["free_query_skill_execution"]
   }
 }
