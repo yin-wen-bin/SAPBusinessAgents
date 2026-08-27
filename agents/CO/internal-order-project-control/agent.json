@@ -11,7 +11,7 @@
     "en": "Combines order/WBS actual, plan, budget, and commitments into a read-only EAC and budget-risk assessment."
   },
   "status": "Three-stage live acceptance blocked",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "owner": "CO-OM-OPA / PS",
   "tags": [
     "Internal Order",
@@ -27,9 +27,7 @@
   "transactions": [],
   "tables": [
     "AUFK",
-    "PRPS",
-    "BPJA",
-    "COOI"
+    "BPJA"
   ],
   "systems": [
     "SAP S/4HANA"
@@ -37,28 +35,68 @@
   "inputs": {
     "zh": [
       "公司代码",
-      "fiscal year",
-      "object type",
-      "object id",
-      "planning category"
+      "会计年度",
+      "对象类型",
+      "对象编号",
+      "计划类别（可选）"
     ],
     "en": [
       "Company code",
       "Fiscal Year",
       "Object Type",
       "Object Id",
-      "Planning Category"
+      "Planning Category (optional)"
     ]
   },
   "outputs": {
     "zh": [
       "业务状态",
       "查询源完整性",
+      "控制证据完整性",
+      "已解析控制对象",
+      "实际成本",
+      "计划成本",
+      "预算",
+      "承诺",
+      "预计完工成本",
+      "剩余预算",
+      "预算消耗百分比",
+      "实际成本状态",
+      "计划状态",
+      "预算状态",
+      "承诺状态",
+      "按值类型的承诺状态",
+      "承诺币种角色",
+      "预算账本",
+      "预算币种角色",
+      "比较币种",
+      "对象模式验收状态",
+      "证据缺口",
       "结构化业务报告"
     ],
     "en": [
       "Business status",
       "Query-source completeness",
+      "Control-evidence completeness",
+      "Resolved control object",
+      "Actual cost",
+      "Plan cost",
+      "Budget",
+      "Commitments",
+      "Estimate at completion",
+      "Remaining budget",
+      "Budget consumption percent",
+      "Actual-cost status",
+      "Plan status",
+      "Budget status",
+      "Commitment status",
+      "Commitment status by value type",
+      "Commitment currency role",
+      "Budget ledger",
+      "Budget currency role",
+      "Comparison currency",
+      "Object-mode acceptance status",
+      "Evidence gaps",
       "Structured business report"
     ]
   },
@@ -66,14 +104,18 @@
     "zh": [
       "全部 SAP 访问严格只读",
       "Embedded OData 为唯一主 provider",
-      "仅 schema 能力缺口触发 ADT",
+      "WBS 只通过已验证 resolver 解析；内部订单继续通过 AUFK 解析",
+      "承诺只通过专用 Skill 读取，不再投影 COOI 金额字段",
+      "ADT 仅读 Skill 只读取清单声明的 AUFK/BPJA 证据",
       "不启用自动 Provider 回退或 SE16N",
       "不完整证据不得生成确定结论"
     ],
     "en": [
       "All SAP access is strictly read-only",
       "Embedded OData is the sole primary provider",
-      "Only schema capability gaps trigger ADT",
+      "WBS objects are resolved only by the validated resolver; internal orders remain AUFK-resolved",
+      "Commitments are read only through the dedicated Skill; COOI amount projection is no longer used",
+      "The read-only ADT Skill reads only manifest-declared AUFK/BPJA evidence",
       "Never use automatic Provider fallback or SE16N",
       "Incomplete evidence cannot produce a confirmed conclusion"
     ]
@@ -208,6 +250,58 @@
       ]
     },
     {
+      "id": "execute-discover_order_plan",
+      "title": {
+        "zh": "发现内部订单计划类别",
+        "en": "Discover internal-order planning categories"
+      },
+      "description": {
+        "zh": "仅在用户未填写计划类别时，查询精确对象和年度的可用类别。",
+        "en": "Discover categories for the exact object and year only when the user omitted the planning category."
+      },
+      "operations": {
+        "zh": ["GET API_FINPLANNINGENTRYITEM_SRV@2.0/A_FinPlanningEntryItem"],
+        "en": ["GET API_FINPLANNINGENTRYITEM_SRV@2.0/A_FinPlanningEntryItem"]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `discover_order_plan` / `execute_plan`",
+            "en": "Execute `discover_order_plan` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": ["discover_order_plan"]
+    },
+    {
+      "id": "execute-discover_wbs_plan",
+      "title": {
+        "zh": "发现 WBS 计划类别",
+        "en": "Discover WBS planning categories"
+      },
+      "description": {
+        "zh": "仅在用户未填写计划类别时，查询精确 WBS 和年度的可用类别。",
+        "en": "Discover categories for the exact WBS and year only when the user omitted the planning category."
+      },
+      "operations": {
+        "zh": ["GET API_FINPLANNINGENTRYITEM_SRV@2.0/A_FinPlanningEntryItem"],
+        "en": ["GET API_FINPLANNINGENTRYITEM_SRV@2.0/A_FinPlanningEntryItem"]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `discover_wbs_plan` / `execute_plan`",
+            "en": "Execute `discover_wbs_plan` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": ["discover_wbs_plan"]
+    },
+    {
       "id": "execute-assess",
       "title": {
         "zh": "评估证据完整性",
@@ -246,15 +340,15 @@
         "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "执行清单步骤 `object_kind`，只解释已经取得的证据，不访问或修改 SAP。",
-        "en": "Run manifest step `object_kind` and interpret collected evidence without accessing or changing SAP."
+        "zh": "规范化对象类型和编号；内部订单生成 AUFK 查询键，WBS 保留外部编号原貌交给 resolver。",
+        "en": "Normalize object type and ID; prepare an AUFK key for internal orders and preserve the WBS external ID for the resolver."
       },
       "operations": {
         "zh": [
-          "rule.classify_control_object"
+          "rule.prepare_control_object_lookup"
         ],
         "en": [
-          "rule.classify_control_object"
+          "rule.prepare_control_object_lookup"
         ]
       },
       "tools": [
@@ -262,8 +356,8 @@
           "name": "classify_control_object",
           "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "执行 `object_kind` / `classify_control_object`",
-            "en": "Execute `object_kind` / `classify_control_object`"
+            "zh": "执行 `object_kind` / `prepare_control_object_lookup`",
+            "en": "Execute `object_kind` / `prepare_control_object_lookup`"
           }
         }
       ],
@@ -304,35 +398,35 @@
       ]
     },
     {
-      "id": "execute-adt_wbs_master",
+      "id": "execute-wbs_object_resolver",
       "title": {
-        "zh": "按条件补充表级证据",
-        "en": "Conditionally supplement table evidence"
+        "zh": "解析 WBS 控制对象",
+        "en": "Resolve WBS control object"
       },
       "description": {
-        "zh": "仅在清单条件成立时执行 `adt_wbs_master`；条件为假时记录 skipped，不连接 Skill。",
-        "en": "Run `adt_wbs_master` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+        "zh": "WBS 路径通过两个固定只读 OData 源精确解析内部编号、对象号和项目关系。",
+        "en": "On the WBS path, resolve internal ID, object number, and project relationship through two fixed read-only OData sources."
       },
       "operations": {
         "zh": [
-          "sap-adt-table-export.execute"
+          "sap-wbs-object-resolver.execute"
         ],
         "en": [
-          "sap-adt-table-export.execute"
+          "sap-wbs-object-resolver.execute"
         ]
       },
       "tools": [
         {
-          "name": "sap-adt-table-export",
+          "name": "sap-wbs-object-resolver",
           "kind": "Read-only SAPSkillhub Skill",
           "purpose": {
-            "zh": "执行 `adt_wbs_master` / `execute`",
-            "en": "Execute `adt_wbs_master` / `execute`"
+            "zh": "执行 `wbs_object_resolver` / `execute`",
+            "en": "Execute `wbs_object_resolver` / `execute`"
           }
         }
       ],
       "executionStepIds": [
-        "adt_wbs_master"
+        "wbs_object_resolver"
       ]
     },
     {
@@ -342,15 +436,15 @@
         "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "执行清单步骤 `object_numbers`，只解释已经取得的证据，不访问或修改 SAP。",
-        "en": "Run manifest step `object_numbers` and interpret collected evidence without accessing or changing SAP."
+        "zh": "验证 AUFK 或 WBS resolver 的关系证据，统一生成 resolved_object。",
+        "en": "Validate AUFK or WBS-resolver relationship evidence and produce one shared resolved_object."
       },
       "operations": {
         "zh": [
-          "rule.extract_bounded_values"
+          "rule.resolve_control_object_master"
         ],
         "en": [
-          "rule.extract_bounded_values"
+          "rule.resolve_control_object_master"
         ]
       },
       "tools": [
@@ -358,8 +452,8 @@
           "name": "extract_bounded_values",
           "kind": "Local deterministic rule",
           "purpose": {
-            "zh": "执行 `object_numbers` / `extract_bounded_values`",
-            "en": "Execute `object_numbers` / `extract_bounded_values`"
+            "zh": "执行 `object_numbers` / `resolve_control_object_master`",
+            "en": "Execute `object_numbers` / `resolve_control_object_master`"
           }
         }
       ],
@@ -400,35 +494,35 @@
       ]
     },
     {
-      "id": "execute-adt_commitment",
+      "id": "execute-commitment_evidence",
       "title": {
-        "zh": "按条件补充表级证据",
-        "en": "Conditionally supplement table evidence"
+        "zh": "读取控制对象承诺",
+        "en": "Read control-object commitments"
       },
       "description": {
-        "zh": "仅在清单条件成立时执行 `adt_commitment`；条件为假时记录 skipped，不连接 Skill。",
-        "en": "Run `adt_commitment` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+        "zh": "仅通过专用 Skill 读取严格财政年度/会计期间的结构化承诺；来源未验证时记录精确缺口。",
+        "en": "Read structured commitments only through the dedicated fiscal-year/accounting-period Skill; record an exact gap when the source is unvalidated."
       },
       "operations": {
         "zh": [
-          "sap-adt-table-export.execute"
+          "sap-control-object-commitment-evidence.execute"
         ],
         "en": [
-          "sap-adt-table-export.execute"
+          "sap-control-object-commitment-evidence.execute"
         ]
       },
       "tools": [
         {
-          "name": "sap-adt-table-export",
+          "name": "sap-control-object-commitment-evidence",
           "kind": "Read-only SAPSkillhub Skill",
           "purpose": {
-            "zh": "执行 `adt_commitment` / `execute`",
-            "en": "Execute `adt_commitment` / `execute`"
+            "zh": "执行 `commitment_evidence` / `execute`",
+            "en": "Execute `commitment_evidence` / `execute`"
           }
         }
       ],
       "executionStepIds": [
-        "adt_commitment"
+        "commitment_evidence"
       ]
     },
     {
@@ -486,7 +580,7 @@
           "maxLength": 4,
           "pattern": "^[0-9]{4}$",
           "title": {
-            "zh": "fiscal year",
+            "zh": "会计年度",
             "en": "Fiscal Year"
           }
         },
@@ -494,7 +588,7 @@
           "type": "string",
           "pattern": "^(INTERNAL_ORDER|WBS)$",
           "title": {
-            "zh": "object type",
+            "zh": "对象类型",
             "en": "Object Type"
           }
         },
@@ -502,9 +596,9 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 24,
-          "pattern": "^[0-9A-Za-z_.-]+$",
+          "pattern": "^[0-9A-Za-z_./ -]+$",
           "title": {
-            "zh": "object id",
+            "zh": "对象编号",
             "en": "Object Id"
           }
         },
@@ -513,8 +607,8 @@
           "minLength": 1,
           "maxLength": 10,
           "title": {
-            "zh": "planning category",
-            "en": "Planning Category"
+            "zh": "计划类别（可选）",
+            "en": "Planning Category (optional)"
           }
         }
       },
@@ -522,8 +616,7 @@
         "object_type",
         "object_id",
         "company_code",
-        "fiscal_year",
-        "planning_category"
+        "fiscal_year"
       ],
       "additionalProperties": false
     },
@@ -544,6 +637,93 @@
             "en": "Query-source completeness"
           }
         },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "控制证据完整性",
+            "en": "Control-evidence completeness"
+          }
+        },
+        "resolved_object": {
+          "type": "object",
+          "title": {
+            "zh": "已解析控制对象",
+            "en": "Resolved control object"
+          }
+        },
+        "actual_amount": {
+          "type": ["string", "null"],
+          "title": {"zh": "实际成本", "en": "Actual cost"}
+        },
+        "plan_amount": {
+          "type": ["string", "null"],
+          "title": {"zh": "计划成本", "en": "Plan cost"}
+        },
+        "budget_amount": {
+          "type": ["string", "null"],
+          "title": {"zh": "预算", "en": "Budget"}
+        },
+        "commitment_amount": {
+          "type": ["string", "null"],
+          "title": {"zh": "承诺", "en": "Commitments"}
+        },
+        "estimate_at_completion": {
+          "type": ["string", "null"],
+          "title": {"zh": "预计完工成本", "en": "Estimate at completion"}
+        },
+        "remaining_budget": {
+          "type": ["string", "null"],
+          "title": {"zh": "剩余预算", "en": "Remaining budget"}
+        },
+        "budget_consumption_percent": {
+          "type": ["string", "null"],
+          "title": {"zh": "预算消耗百分比", "en": "Budget consumption percent"}
+        },
+        "actual_status": {
+          "type": "string",
+          "title": {"zh": "实际成本状态", "en": "Actual-cost status"}
+        },
+        "plan_status": {
+          "type": "string",
+          "title": {"zh": "计划状态", "en": "Plan status"}
+        },
+        "budget_status": {
+          "type": "string",
+          "title": {"zh": "预算状态", "en": "Budget status"}
+        },
+        "commitment_status": {
+          "type": "string",
+          "title": {"zh": "承诺状态", "en": "Commitment status"}
+        },
+        "commitment_status_by_type": {
+          "type": "object",
+          "title": {"zh": "按值类型的承诺状态", "en": "Commitment status by value type"}
+        },
+        "commitment_currency_role": {
+          "type": ["string", "null"],
+          "title": {"zh": "承诺币种角色", "en": "Commitment currency role"}
+        },
+        "budget_ledger": {
+          "type": ["string", "null"],
+          "title": {"zh": "预算账本", "en": "Budget ledger"}
+        },
+        "budget_currency_role": {
+          "type": ["string", "null"],
+          "title": {"zh": "预算币种角色", "en": "Budget currency role"}
+        },
+        "comparison_currency": {
+          "type": ["string", "null"],
+          "title": {"zh": "比较币种", "en": "Comparison currency"}
+        },
+        "mode_acceptance_status": {
+          "type": "string",
+          "title": {"zh": "对象模式验收状态", "en": "Object-mode acceptance status"}
+        },
+        "evidence_gaps": {
+          "type": "array",
+          "items": {"type": "string"},
+          "title": {"zh": "证据缺口", "en": "Evidence gaps"}
+        },
         "business_report": {
           "type": "object",
           "title": {
@@ -555,6 +735,26 @@
       "required": [
         "business_status",
         "source_complete",
+        "evidence_complete",
+        "resolved_object",
+        "actual_amount",
+        "plan_amount",
+        "budget_amount",
+        "commitment_amount",
+        "estimate_at_completion",
+        "remaining_budget",
+        "budget_consumption_percent",
+        "actual_status",
+        "plan_status",
+        "budget_status",
+        "commitment_status",
+        "commitment_status_by_type",
+        "commitment_currency_role",
+        "budget_ledger",
+        "budget_currency_role",
+        "comparison_currency",
+        "mode_acceptance_status",
+        "evidence_gaps",
         "business_report"
       ],
       "additionalProperties": false
@@ -562,261 +762,35 @@
     "outputMapping": {
       "business_status": "{{steps.evaluate.output.workflow_output.business_status}}",
       "source_complete": "{{steps.evaluate.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate.output.workflow_output.evidence_complete}}",
+      "resolved_object": "{{steps.evaluate.output.workflow_output.resolved_object}}",
+      "actual_amount": "{{steps.evaluate.output.workflow_output.actual_amount}}",
+      "plan_amount": "{{steps.evaluate.output.workflow_output.plan_amount}}",
+      "budget_amount": "{{steps.evaluate.output.workflow_output.budget_amount}}",
+      "commitment_amount": "{{steps.evaluate.output.workflow_output.commitment_amount}}",
+      "estimate_at_completion": "{{steps.evaluate.output.workflow_output.estimate_at_completion}}",
+      "remaining_budget": "{{steps.evaluate.output.workflow_output.remaining_budget}}",
+      "budget_consumption_percent": "{{steps.evaluate.output.workflow_output.budget_consumption_percent}}",
+      "actual_status": "{{steps.evaluate.output.workflow_output.actual_status}}",
+      "plan_status": "{{steps.evaluate.output.workflow_output.plan_status}}",
+      "budget_status": "{{steps.evaluate.output.workflow_output.budget_status}}",
+      "commitment_status": "{{steps.evaluate.output.workflow_output.commitment_status}}",
+      "commitment_status_by_type": "{{steps.evaluate.output.workflow_output.commitment_status_by_type}}",
+      "commitment_currency_role": "{{steps.evaluate.output.workflow_output.commitment_currency_role}}",
+      "budget_ledger": "{{steps.evaluate.output.workflow_output.budget_ledger}}",
+      "budget_currency_role": "{{steps.evaluate.output.workflow_output.budget_currency_role}}",
+      "comparison_currency": "{{steps.evaluate.output.workflow_output.comparison_currency}}",
+      "mode_acceptance_status": "{{steps.evaluate.output.workflow_output.mode_acceptance_status}}",
+      "evidence_gaps": "{{steps.evaluate.output.workflow_output.evidence_gaps}}",
       "business_report": "{{steps.evaluate.output.workflow_output.business_report}}"
     },
     "steps": [
       {
-        "id": "read_order_actual",
-        "executor": "sap_read",
-        "operation": "execute_plan",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "request": {
-          "plan": {
-            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
-            "odata_version": "2.0",
-            "entity_set": "A_OperationalAcctgDocItemCube",
-            "http_method": "GET",
-            "plan_kind": "direct",
-            "select_fields": [
-              "CompanyCode",
-              "FiscalYear",
-              "FiscalPeriod",
-              "AccountingDocument",
-              "AccountingDocumentItem",
-              "ControllingArea",
-              "CostCenter",
-              "OrderID",
-              "WBSElementInternalID",
-              "Material",
-              "Plant",
-              "GLAccount",
-              "PostingDate",
-              "AmountInCompanyCodeCurrency",
-              "CompanyCodeCurrency"
-            ],
-            "filters": [
-              {
-                "field": "CompanyCode",
-                "operator": "eq",
-                "value": "{{input.company_code}}",
-                "value_type": "string"
-              },
-              {
-                "field": "FiscalYear",
-                "operator": "eq",
-                "value": "{{input.fiscal_year}}",
-                "value_type": "string"
-              },
-              {
-                "field": "OrderID",
-                "operator": "eq",
-                "value": "{{input.object_id}}",
-                "value_type": "string"
-              }
-            ],
-            "rationale": "Read internal-order actual cost."
-          }
-        }
-      },
-      {
-        "id": "read_wbs_actual",
-        "executor": "sap_read",
-        "operation": "execute_plan",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "request": {
-          "plan": {
-            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
-            "odata_version": "2.0",
-            "entity_set": "A_OperationalAcctgDocItemCube",
-            "http_method": "GET",
-            "plan_kind": "direct",
-            "select_fields": [
-              "CompanyCode",
-              "FiscalYear",
-              "FiscalPeriod",
-              "AccountingDocument",
-              "AccountingDocumentItem",
-              "ControllingArea",
-              "CostCenter",
-              "OrderID",
-              "WBSElementInternalID",
-              "Material",
-              "Plant",
-              "GLAccount",
-              "PostingDate",
-              "AmountInCompanyCodeCurrency",
-              "CompanyCodeCurrency"
-            ],
-            "filters": [
-              {
-                "field": "CompanyCode",
-                "operator": "eq",
-                "value": "{{input.company_code}}",
-                "value_type": "string"
-              },
-              {
-                "field": "FiscalYear",
-                "operator": "eq",
-                "value": "{{input.fiscal_year}}",
-                "value_type": "string"
-              },
-              {
-                "field": "WBSElementInternalID",
-                "operator": "eq",
-                "value": "{{input.object_id}}",
-                "value_type": "string"
-              }
-            ],
-            "rationale": "Read WBS actual cost when the identifier is internal."
-          }
-        }
-      },
-      {
-        "id": "read_order_plan",
-        "executor": "sap_read",
-        "operation": "execute_plan",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "request": {
-          "plan": {
-            "service_name": "API_FINPLANNINGENTRYITEM_SRV",
-            "odata_version": "2.0",
-            "entity_set": "A_FinPlanningEntryItem",
-            "http_method": "GET",
-            "plan_kind": "direct",
-            "select_fields": [
-              "ID",
-              "Ledger",
-              "PlanningCategory",
-              "LedgerFiscalYear",
-              "FiscalPeriod",
-              "CompanyCode",
-              "CostCenter",
-              "OrderID",
-              "WBSElementExternalID",
-              "Plant",
-              "GLAccount",
-              "AmountInCompanyCodeCurrency",
-              "CompanyCodeCurrency"
-            ],
-            "filters": [
-              {
-                "field": "CompanyCode",
-                "operator": "eq",
-                "value": "{{input.company_code}}",
-                "value_type": "string"
-              },
-              {
-                "field": "LedgerFiscalYear",
-                "operator": "eq",
-                "value": "{{input.fiscal_year}}",
-                "value_type": "string"
-              },
-              {
-                "field": "PlanningCategory",
-                "operator": "eq",
-                "value": "{{input.planning_category}}",
-                "value_type": "string"
-              },
-              {
-                "field": "OrderID",
-                "operator": "eq",
-                "value": "{{input.object_id}}",
-                "value_type": "string"
-              }
-            ],
-            "rationale": "Read internal-order plan cost."
-          }
-        }
-      },
-      {
-        "id": "read_wbs_plan",
-        "executor": "sap_read",
-        "operation": "execute_plan",
-        "readOnly": true,
-        "failurePolicy": "record_gap",
-        "request": {
-          "plan": {
-            "service_name": "API_FINPLANNINGENTRYITEM_SRV",
-            "odata_version": "2.0",
-            "entity_set": "A_FinPlanningEntryItem",
-            "http_method": "GET",
-            "plan_kind": "direct",
-            "select_fields": [
-              "ID",
-              "Ledger",
-              "PlanningCategory",
-              "LedgerFiscalYear",
-              "FiscalPeriod",
-              "CompanyCode",
-              "CostCenter",
-              "OrderID",
-              "WBSElementExternalID",
-              "Plant",
-              "GLAccount",
-              "AmountInCompanyCodeCurrency",
-              "CompanyCodeCurrency"
-            ],
-            "filters": [
-              {
-                "field": "CompanyCode",
-                "operator": "eq",
-                "value": "{{input.company_code}}",
-                "value_type": "string"
-              },
-              {
-                "field": "LedgerFiscalYear",
-                "operator": "eq",
-                "value": "{{input.fiscal_year}}",
-                "value_type": "string"
-              },
-              {
-                "field": "PlanningCategory",
-                "operator": "eq",
-                "value": "{{input.planning_category}}",
-                "value_type": "string"
-              },
-              {
-                "field": "WBSElementExternalID",
-                "operator": "eq",
-                "value": "{{input.object_id}}",
-                "value_type": "string"
-              }
-            ],
-            "rationale": "Read WBS plan cost when the identifier is external."
-          }
-        }
-      },
-      {
-        "id": "assess",
-        "executor": "rule",
-        "operation": "assess_api_evidence",
-        "inputMapping": {
-          "checks": {
-            "actual": {
-              "order": "{{steps.read_order_actual.output}}",
-              "wbs": "{{steps.read_wbs_actual.output}}"
-            },
-            "plan": {
-              "order": "{{steps.read_order_plan.output}}",
-              "wbs": "{{steps.read_wbs_plan.output}}"
-            }
-          },
-          "capability_gaps": [
-            "master",
-            "budget",
-            "commitment"
-          ]
-        }
-      },
-      {
         "id": "object_kind",
         "executor": "rule",
-        "operation": "classify_control_object",
+        "operation": "prepare_control_object_lookup",
         "inputMapping": {
-          "object_type": "{{input.object_type}}"
+          "run_input": "{{input}}"
         }
       },
       {
@@ -839,6 +813,8 @@
             "OBJNR",
             "KOKRS",
             "BUKRS",
+            "AUTYP",
+            "AUART",
             "LOEKZ",
             "PHAS3"
           ],
@@ -846,20 +822,17 @@
             {
               "field": "AUFNR",
               "operator": "eq",
-              "value": "{{input.object_id}}"
+              "value": "{{steps.object_kind.output.lookup_id}}"
             }
-          ],
-          "order_by": [
-            "AUFNR"
           ],
           "max_rows": 10
         }
       },
       {
-        "id": "adt_wbs_master",
+        "id": "wbs_object_resolver",
         "executor": "skill",
         "operation": "execute",
-        "skillId": "sap-adt-table-export",
+        "skillId": "sap-wbs-object-resolver",
         "readOnly": true,
         "failurePolicy": "record_gap",
         "when": {
@@ -868,40 +841,165 @@
         },
         "inputMapping": {
           "schema_version": 1,
-          "source_type": "table",
-          "object": "PRPS",
-          "fields": [
-            "PSPNR",
-            "POSID",
-            "OBJNR",
-            "KOKRS",
-            "BUKRS",
-            "LOEVM"
-          ],
-          "filters": [
-            {
-              "field": "POSID",
-              "operator": "eq",
-              "value": "{{input.object_id}}"
-            }
-          ],
-          "order_by": [
-            "PSPNR"
-          ],
-          "max_rows": 10
+          "wbs_external_id": "{{steps.object_kind.output.external_object_id}}",
+          "company_code": "{{input.company_code}}"
         }
       },
       {
         "id": "object_numbers",
         "executor": "rule",
-        "operation": "extract_bounded_values",
+        "operation": "resolve_control_object_master",
         "inputMapping": {
-          "payload": {
-            "order": "{{steps.adt_order_master.output}}",
-            "wbs": "{{steps.adt_wbs_master.output}}"
-          },
-          "field": "OBJNR",
-          "max_values": 20
+          "lookup": "{{steps.object_kind.output}}",
+          "company_code": "{{input.company_code}}",
+          "order_master": "{{steps.adt_order_master.output}}",
+          "wbs_resolver": "{{steps.wbs_object_resolver.output}}"
+        }
+      },
+      {
+        "id": "read_order_actual",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.object_numbers.output.can_read_order}}", "equals": true},
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": ["CompanyCode", "FiscalYear", "FiscalPeriod", "AccountingDocument", "AccountingDocumentItem", "ControllingArea", "OrderID", "WBSElementInternalID", "GLAccount", "PostingDate", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"],
+            "filters": [
+              {"field": "CompanyCode", "operator": "eq", "value": "{{steps.object_numbers.output.company_code}}", "value_type": "string"},
+              {"field": "FiscalYear", "operator": "eq", "value": "{{input.fiscal_year}}", "value_type": "string"},
+              {"field": "OrderID", "operator": "eq", "value": "{{steps.object_numbers.output.external_id}}", "value_type": "string"}
+            ],
+            "rationale": "Read actual cost only after AUFK proves one internal-order relationship."
+          }
+        }
+      },
+      {
+        "id": "read_wbs_actual",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.object_numbers.output.can_read_wbs}}", "equals": true},
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": ["CompanyCode", "FiscalYear", "FiscalPeriod", "AccountingDocument", "AccountingDocumentItem", "ControllingArea", "OrderID", "WBSElementInternalID", "GLAccount", "PostingDate", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"],
+            "filters": [
+              {"field": "CompanyCode", "operator": "eq", "value": "{{steps.object_numbers.output.company_code}}", "value_type": "string"},
+              {"field": "FiscalYear", "operator": "eq", "value": "{{input.fiscal_year}}", "value_type": "string"},
+              {"field": "WBSElementInternalID", "operator": "eq", "value": "{{steps.object_numbers.output.internal_id}}", "value_type": "string"}
+            ],
+            "rationale": "Read actual cost only after the WBS resolver proves the external-to-internal relationship."
+          }
+        }
+      },
+      {
+        "id": "read_order_plan",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.object_numbers.output.can_read_order_plan}}", "equals": true},
+        "request": {
+          "plan": {
+            "service_name": "API_FINPLANNINGENTRYITEM_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_FinPlanningEntryItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": ["ID", "Ledger", "PlanningCategory", "LedgerFiscalYear", "FiscalPeriod", "CompanyCode", "OrderID", "WBSElementExternalID", "GLAccount", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"],
+            "filters": [
+              {"field": "CompanyCode", "operator": "eq", "value": "{{steps.object_numbers.output.company_code}}", "value_type": "string"},
+              {"field": "LedgerFiscalYear", "operator": "eq", "value": "{{input.fiscal_year}}", "value_type": "string"},
+              {"field": "PlanningCategory", "operator": "eq", "value": "{{steps.object_numbers.output.planning_category}}", "value_type": "string"},
+              {"field": "OrderID", "operator": "eq", "value": "{{steps.object_numbers.output.external_id}}", "value_type": "string"}
+            ],
+            "rationale": "Use the exact planning category supplied by the user for the resolved internal order."
+          }
+        }
+      },
+      {
+        "id": "read_wbs_plan",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.object_numbers.output.can_read_wbs_plan}}", "equals": true},
+        "request": {
+          "plan": {
+            "service_name": "API_FINPLANNINGENTRYITEM_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_FinPlanningEntryItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": ["ID", "Ledger", "PlanningCategory", "LedgerFiscalYear", "FiscalPeriod", "CompanyCode", "OrderID", "WBSElementExternalID", "GLAccount", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"],
+            "filters": [
+              {"field": "CompanyCode", "operator": "eq", "value": "{{steps.object_numbers.output.company_code}}", "value_type": "string"},
+              {"field": "LedgerFiscalYear", "operator": "eq", "value": "{{input.fiscal_year}}", "value_type": "string"},
+              {"field": "PlanningCategory", "operator": "eq", "value": "{{steps.object_numbers.output.planning_category}}", "value_type": "string"},
+              {"field": "WBSElementExternalID", "operator": "eq", "value": "{{steps.object_numbers.output.external_id}}", "value_type": "string"}
+            ],
+            "rationale": "Use the exact planning category supplied by the user for the resolved WBS."
+          }
+        }
+      },
+      {
+        "id": "discover_order_plan",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.object_numbers.output.can_discover_order_plan}}", "equals": true},
+        "request": {
+          "plan": {
+            "service_name": "API_FINPLANNINGENTRYITEM_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_FinPlanningEntryItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": ["ID", "Ledger", "PlanningCategory", "LedgerFiscalYear", "FiscalPeriod", "CompanyCode", "OrderID", "WBSElementExternalID", "GLAccount", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"],
+            "filters": [
+              {"field": "CompanyCode", "operator": "eq", "value": "{{steps.object_numbers.output.company_code}}", "value_type": "string"},
+              {"field": "LedgerFiscalYear", "operator": "eq", "value": "{{input.fiscal_year}}", "value_type": "string"},
+              {"field": "OrderID", "operator": "eq", "value": "{{steps.object_numbers.output.external_id}}", "value_type": "string"}
+            ],
+            "rationale": "Discover planning categories only when the user omitted the category."
+          }
+        }
+      },
+      {
+        "id": "discover_wbs_plan",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {"source": "{{steps.object_numbers.output.can_discover_wbs_plan}}", "equals": true},
+        "request": {
+          "plan": {
+            "service_name": "API_FINPLANNINGENTRYITEM_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_FinPlanningEntryItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": ["ID", "Ledger", "PlanningCategory", "LedgerFiscalYear", "FiscalPeriod", "CompanyCode", "OrderID", "WBSElementExternalID", "GLAccount", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"],
+            "filters": [
+              {"field": "CompanyCode", "operator": "eq", "value": "{{steps.object_numbers.output.company_code}}", "value_type": "string"},
+              {"field": "LedgerFiscalYear", "operator": "eq", "value": "{{input.fiscal_year}}", "value_type": "string"},
+              {"field": "WBSElementExternalID", "operator": "eq", "value": "{{steps.object_numbers.output.external_id}}", "value_type": "string"}
+            ],
+            "rationale": "Discover planning categories only when the user omitted the category."
+          }
         }
       },
       {
@@ -912,7 +1010,7 @@
         "readOnly": true,
         "failurePolicy": "record_gap",
         "when": {
-          "source": "{{steps.object_numbers.output.has_values}}",
+          "source": "{{steps.object_numbers.output.ready}}",
           "equals": true
         },
         "inputMapping": {
@@ -924,92 +1022,70 @@
             "GJAHR",
             "WRTTP",
             "VERSN",
-            "WTG001",
-            "WTG002",
-            "WTG003",
-            "WTG004",
-            "WTG005",
-            "WTG006",
-            "WTG007",
-            "WTG008",
-            "WTG009",
-            "WTG010",
-            "WTG011",
-            "WTG012"
+            "LEDNR",
+            "TWAER",
+            "WTJHR",
+            "WLJHR",
+            "WTJHV",
+            "WLJHV"
           ],
           "filters": [
             {
               "field": "OBJNR",
-              "operator": "in",
-              "values": "{{steps.object_numbers.output.values}}"
+              "operator": "eq",
+              "value": "{{steps.object_numbers.output.object_number}}"
             },
             {
               "field": "GJAHR",
               "operator": "eq",
               "value": "{{input.fiscal_year}}"
             }
-          ],
-          "order_by": [
-            "OBJNR",
-            "GJAHR",
-            "WRTTP",
-            "VERSN"
           ],
           "max_rows": 1000
         }
       },
       {
-        "id": "adt_commitment",
+        "id": "commitment_evidence",
         "executor": "skill",
         "operation": "execute",
-        "skillId": "sap-adt-table-export",
+        "skillId": "sap-control-object-commitment-evidence",
         "readOnly": true,
         "failurePolicy": "record_gap",
         "when": {
-          "source": "{{steps.object_numbers.output.has_values}}",
+          "source": "{{steps.object_numbers.output.ready}}",
           "equals": true
         },
         "inputMapping": {
           "schema_version": 1,
-          "source_type": "table",
-          "object": "COOI",
-          "fields": [
-            "OBJNR",
-            "GJAHR",
-            "WRTTP",
-            "VERSN",
-            "WTG001",
-            "WTG002",
-            "WTG003",
-            "WTG004",
-            "WTG005",
-            "WTG006",
-            "WTG007",
-            "WTG008",
-            "WTG009",
-            "WTG010",
-            "WTG011",
-            "WTG012"
-          ],
-          "filters": [
-            {
-              "field": "OBJNR",
-              "operator": "in",
-              "values": "{{steps.object_numbers.output.values}}"
-            },
-            {
-              "field": "GJAHR",
-              "operator": "eq",
-              "value": "{{input.fiscal_year}}"
+          "resolved_object": {
+            "object_type": "{{steps.object_numbers.output.object_type}}",
+            "external_id": "{{steps.object_numbers.output.external_id}}",
+            "internal_id": "{{steps.object_numbers.output.internal_id}}",
+            "object_number": "{{steps.object_numbers.output.object_number}}",
+            "company_code": "{{steps.object_numbers.output.company_code}}",
+            "controlling_area": "{{steps.object_numbers.output.controlling_area}}"
+          },
+          "fiscal_year": "{{input.fiscal_year}}",
+          "period_from": 1,
+          "period_to": 16,
+          "commitment_types": ["21", "22", "24", "26"]
+        }
+      },
+      {
+        "id": "assess",
+        "executor": "rule",
+        "operation": "assess_api_evidence",
+        "inputMapping": {
+          "checks": {
+            "actual": {"order": "{{steps.read_order_actual.output}}", "wbs": "{{steps.read_wbs_actual.output}}"},
+            "plan": {
+              "order_requested": "{{steps.read_order_plan.output}}",
+              "wbs_requested": "{{steps.read_wbs_plan.output}}",
+              "order_discovery": "{{steps.discover_order_plan.output}}",
+              "wbs_discovery": "{{steps.discover_wbs_plan.output}}"
             }
-          ],
-          "order_by": [
-            "OBJNR",
-            "GJAHR",
-            "WRTTP",
-            "VERSN"
-          ],
-          "max_rows": 1000
+          },
+          "capability_gaps": []
         }
       },
       {
@@ -1019,20 +1095,34 @@
         "inputMapping": {
           "agent_id": "internal-order-project-control",
           "run_input": "{{input}}",
-          "assessment": "{{steps.assess.output}}",
+          "resolved_object": "{{steps.object_numbers.output}}",
           "evidence": {
             "order_actual": "{{steps.read_order_actual.output}}",
             "wbs_actual": "{{steps.read_wbs_actual.output}}",
             "order_plan": "{{steps.read_order_plan.output}}",
-            "wbs_plan": "{{steps.read_wbs_plan.output}}"
+            "wbs_plan": "{{steps.read_wbs_plan.output}}",
+            "order_plan_discovery": "{{steps.discover_order_plan.output}}",
+            "wbs_plan_discovery": "{{steps.discover_wbs_plan.output}}"
           },
           "fallbacks": {
             "master": {
               "order": "{{steps.adt_order_master.output}}",
-              "wbs": "{{steps.adt_wbs_master.output}}"
+              "wbs": "{{steps.wbs_object_resolver.output}}"
             },
             "budget": "{{steps.adt_budget.output}}",
-            "commitment": "{{steps.adt_commitment.output}}"
+            "commitment": "{{steps.commitment_evidence.output}}"
+          },
+          "control_value_types": {
+            "config_version": 2,
+            "budget": ["41"],
+            "version": "000",
+            "budget_ledger": null,
+            "budget_currency_role": null,
+            "commitment_types": ["21", "22", "24", "26"],
+            "mode_acceptance": {
+              "INTERNAL_ORDER": "BLOCKED",
+              "WBS": "BLOCKED"
+            }
           },
           "known_gaps": []
         }
@@ -1057,7 +1147,7 @@
         "commitment_amount",
         "estimate_at_completion",
         "remaining_budget",
-        "budget_consumption_pct"
+        "budget_consumption_percent"
       ],
       "decimalFields": [],
       "decimalMetricIds": [
@@ -1067,7 +1157,7 @@
         "commitment_amount",
         "estimate_at_completion",
         "remaining_budget",
-        "budget_consumption_pct"
+        "budget_consumption_percent"
       ],
       "currencyFields": [],
       "unitFields": [],
@@ -1138,26 +1228,78 @@
           "control object",
           "object not found",
           "控制对象"
+        ],
+        "budget_ledger_ambiguous": [
+          "budget_ledger_ambiguous",
+          "budget ledger ambiguous",
+          "预算账本不唯一"
+        ],
+        "wbs_commitment_source_unavailable": [
+          "wbs_commitment_source_unavailable",
+          "WBS commitment source unavailable",
+          "WBS 承诺来源不可用"
+        ],
+        "internal_order_commitment_source_unavailable": [
+          "internal_order_commitment_source_unavailable",
+          "internal-order commitment source unavailable",
+          "内部订单承诺来源不可用"
+        ],
+        "currency_not_comparable": [
+          "currency_not_comparable",
+          "currency not comparable",
+          "币种不可比"
+        ],
+        "wbs_mode_acceptance": [
+          "wbs_mode_acceptance",
+          "WBS mode acceptance",
+          "WBS 模式验收"
+        ],
+        "internal_order_mode_acceptance": [
+          "internal_order_mode_acceptance",
+          "internal-order mode acceptance",
+          "内部订单模式验收"
+        ],
+        "free_query_comparison": [
+          "free_query_comparison",
+          "free-query comparison",
+          "自由查询对比"
+        ],
+        "test_data_gap": [
+          "test_data_gap",
+          "complete live sample",
+          "完整真机样本"
         ]
       },
       "summaryRecord": true,
       "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
       "requiredLimitations": [
-        "master_evidence",
         "plan_evidence",
         "budget_evidence",
         "commitment_evidence",
-        "control_object_not_found"
+        "budget_ledger_ambiguous",
+        "wbs_commitment_source_unavailable",
+        "internal_order_commitment_source_unavailable",
+        "currency_not_comparable",
+        "wbs_mode_acceptance",
+        "internal_order_mode_acceptance",
+        "free_query_comparison",
+        "test_data_gap"
       ],
       "businessStatusFromMetric": {},
       "limitationsFromMetrics": {},
       "blankValueKeywords": {},
       "blockingLimitations": [
-        "master_evidence",
         "plan_evidence",
         "budget_evidence",
         "commitment_evidence",
-        "control_object_not_found"
+        "budget_ledger_ambiguous",
+        "wbs_commitment_source_unavailable",
+        "internal_order_commitment_source_unavailable",
+        "currency_not_comparable",
+        "wbs_mode_acceptance",
+        "internal_order_mode_acceptance",
+        "free_query_comparison",
+        "test_data_gap"
       ],
       "ignoredNoticeKeywords": [],
       "zeroFactWhenMetricZero": {},
@@ -1169,33 +1311,37 @@
   },
   "validation": {
     "verdict": "BLOCKED",
-    "testedAt": "2026-08-20T08:46:57.717907+00:00",
+    "testedAt": "2026-08-27T19:00:00+08:00",
     "evidenceScope": "bounded",
     "providers": [
       "codex-app-direct-sap",
-      "embedded-sap-odata"
+      "embedded-sap-odata",
+      "sap-adt-table-export",
+      "sap-wbs-object-resolver",
+      "sap-control-object-commitment-evidence"
     ],
     "summary": {
-      "zh": "三级结果语义一致，但真实能力或证据缺口阻止执行。",
-      "en": "The three stages are semantically consistent, but a live capability or evidence gap blocks execution."
+      "zh": "0.4.0 已删除已解决的 WBS 外部编号转换缺口，并增加按21/22/24/26分类、预算账本/币种角色和两种对象模式独立验收门禁。目标系统尚未激活 WBS 标准承诺服务；内部订单 COSP/COSS 金额投影仍不稳定，预算权威账本、计划、币种可比性和四路径完整样本也尚未通过。",
+      "en": "Version 0.4.0 removes the resolved WBS external-ID gap and adds 21/22/24/26 status, budget-ledger/currency-role evidence, and independent object-mode acceptance gates. The target WBS commitment service is not active; internal-order COSP/COSS amount projection remains unstable, and authoritative budget-ledger, plan, currency-comparability, and complete four-path samples have not passed."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
     "executable": false,
-    "freeQueryComparison": "MATCH",
-    "fixedAgentComparison": "MATCH",
+    "freeQueryComparison": "NOT_TESTED",
+    "fixedAgentComparison": "BLOCKED",
     "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
     "blockingLimitations": [
+      "budget_ledger_ambiguous",
       "budget_evidence",
       "commitment_evidence",
-      "control_object_not_found",
-      "master_evidence",
-      "plan_evidence"
-    ],
-    "codexDirectBaselineHash": "sha256:4fdd3fe60659759f1eb79074ffec18c615a3a00013e950449d05f37291b22c97",
-    "freeQueryHash": "sha256:4fdd3fe60659759f1eb79074ffec18c615a3a00013e950449d05f37291b22c97",
-    "adjudicatedResultHash": "sha256:4fdd3fe60659759f1eb79074ffec18c615a3a00013e950449d05f37291b22c97",
-    "fixedAgentHash": "sha256:cec9e64dba5e41998e033e54b36fa016672307e5b19be508403681b2dd95c450",
-    "comparisonHash": "sha256:8addc87aea784bc0619bc101ebae1fdbf92911edb23aaee70a356730c81dafeb"
+      "currency_not_comparable",
+      "free_query_comparison",
+      "plan_evidence",
+      "test_data_gap",
+      "wbs_mode_acceptance",
+      "internal_order_mode_acceptance",
+      "wbs_commitment_source_unavailable",
+      "internal_order_commitment_source_unavailable"
+    ]
   }
 }

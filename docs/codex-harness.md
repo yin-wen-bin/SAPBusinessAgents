@@ -32,7 +32,7 @@ App Server 子进程只直接加载仓库内的两个 MCP Server。启动参数�
 
 只有 `sap_live` 和满足完整性契约的 `sap_skill` 可以支持 `customer_business_fact`。`web_reference` 与 `external_tool` 只能支持产品文档、业务语义或诊断。
 
-API 不足时，`sap_evidence_assess` 只有在 Catalog、实时 Schema 和计划验证均已执行后，才会签发绑定 run 与 `sap-adt-table-export` 的单次 `gap_token`。SAPBusinessAgents 不选择或传递 SAPSkillhub connection profile。ADT 请求的公开 Schema固定为 `schema_version=1`、`source_type`、对象、字段、有界过滤、升序稳定键和 `max_rows<=30000`。
+API 不足时，`sap_evidence_assess` 只有在 Catalog、实时 Schema 和计划验证均已执行后，才会为 `config/skills.json` 中已注册、可用、`read_only=true`、`validated=true` 的 Skill 签发绑定 run、Skill 和精确输入哈希的单次 `gap_token`。非 ADT Skill 必须在签发前提交完整 `skill_input` 并通过其可信 JSON Schema；跨 run、跨 Skill、输入变化、过期或重复使用都会被拒绝。SAPBusinessAgents 不选择或传递 SAPSkillhub connection profile。`sap-adt-table-export` 继续使用固定的声明式 Schema：`schema_version=1`、`source_type`、对象、字段、有界过滤、可选且经实时 DDIC 证明的升序稳定键，以及 `max_rows<=30000`。
 
 原始 SAP 结果只写入忽略目录 `.local-data/harness/<run>/evidence/`。模型只获得至多 200 行的标准化页面和 `evidence_ref`；OData `__metadata` 与内部 URL 不进入模型、事件或公开结果。
 

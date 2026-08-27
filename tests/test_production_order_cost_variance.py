@@ -173,7 +173,7 @@ def test_missing_released_cost_evidence_stays_inconclusive() -> None:
     assert "parameterized_production_cost_cds_unavailable" in result["missing_evidence"]
 
 
-def test_manifest_uses_new_skill_and_remains_blocked_until_free_query_acceptance() -> None:
+def test_manifest_uses_new_skill_and_is_enabled_after_three_stage_acceptance() -> None:
     manifest = json.loads(
         (ROOT / "agents/CO/product-cost-variance/agent.json").read_text(encoding="utf-8")
     )
@@ -181,11 +181,12 @@ def test_manifest_uses_new_skill_and_remains_blocked_until_free_query_acceptance
     assert manifest["execution"]["inputSchema"]["required"] == ["manufacturing_order"]
     skill_steps = [step for step in manifest["execution"]["steps"] if step["executor"] == "skill"]
     assert [step["skillId"] for step in skill_steps] == ["sap-production-order-cost-analysis"]
-    assert manifest["validation"]["verdict"] == "BLOCKED"
-    assert manifest["validation"]["executable"] is False
-    assert manifest["validation"]["blockingLimitations"] == ["free_query_skill_execution"]
+    assert manifest["validation"]["verdict"] == "PASS"
+    assert manifest["validation"]["executable"] is True
+    assert manifest["validation"]["blockingLimitations"] == []
     assert manifest["validation"]["fixedAgentComparison"] == "MATCH"
-    assert manifest["validation"]["freeQueryComparison"] == "BLOCKED"
+    assert manifest["validation"]["freeQueryComparison"] == "MATCH"
+    assert manifest["validation"]["freeQueryHash"] == manifest["validation"]["fixedAgentHash"]
     assert "standard_cost_evidence" not in json.dumps(manifest)
     with pytest.raises(InputValidationError) as exc_info:
         _validate_input(

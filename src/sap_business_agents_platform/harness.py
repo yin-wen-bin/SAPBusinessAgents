@@ -262,6 +262,17 @@ class HarnessToolBroker:
             str((call.get("safe_input") or {}).get("gap_token") or "")
             for call in calls
             if call.get("tool_name") == "sap_skill_execute"
+            and not (
+                isinstance(call.get("output"), dict)
+                and call["output"].get("code")
+                in {
+                    "gap_token_invalid",
+                    "gap_token_expired",
+                    "gap_token_input_mismatch",
+                    "skill_input_invalid",
+                    "skill_not_approved",
+                }
+            )
         }
         for call in calls:
             output = call.get("output")
@@ -269,17 +280,25 @@ class HarnessToolBroker:
                 call.get("tool_name") != "sap_evidence_assess"
                 or call.get("status") != "completed"
                 or not isinstance(output, dict)
-                or output.get("adt_eligible") is not True
+                or not (
+                    output.get("skill_eligible") is True
+                    or output.get("adt_eligible") is True
+                )
             ):
                 continue
             token = str(output.get("gap_token") or "")
             if not token:
                 continue
-            self._gap_tokens[token] = {
+            token_fingerprint = (
+                token if token.startswith("sha256:") else _capability_fingerprint(token)
+            )
+            self._gap_tokens[token_fingerprint] = {
                 "run_id": run_id,
-                "skill_id": "sap-adt-table-export",
+                "skill_id": str(output.get("skill_id") or "sap-adt-table-export"),
+                "skill_input_hash": str(output.get("skill_input_hash") or ""),
                 "missing_evidence": output.get("missing_evidence") or ["source_completeness"],
                 "used": _capability_fingerprint(token) in used_fingerprints,
+                "expires_at_epoch": int(output.get("expires_at_epoch") or 0),
             }
 
     def authenticate(self, run_id: str, token: str) -> bool:
@@ -323,10 +342,7 @@ class HarnessToolBroker:
             if existing.get("status") in {"completed", "failed"} and isinstance(
                 existing.get("output"), dict
             ):
-                return {
-                    **_client_tool_output(existing["output"]),
-                    "idempotent_replay": True,
-                }
+                return self._completed_tool_replay(run_id, tool_name, existing["output"])
             return _unknown_recovered_call(existing)
         budgeted_calls = [
             call for call in calls if call.get("tool_name") != "sap_final_report_validate"
@@ -353,10 +369,7 @@ class HarnessToolBroker:
             if existing.get("status") in {"completed", "failed"} and isinstance(
                 existing.get("output"), dict
             ):
-                return {
-                    **_client_tool_output(existing["output"]),
-                    "idempotent_replay": True,
-                }
+                return self._completed_tool_replay(run_id, tool_name, existing["output"])
             return _unknown_recovered_call(existing)
 
         self.store.append_event(
@@ -389,7 +402,10 @@ class HarnessToolBroker:
             status = "failed"
         evidence_ref = str(output.get("evidence_ref") or "") or None
         self.store.complete_harness_tool_call(
-            call_id, status=status, output=output, evidence_ref=evidence_ref
+            call_id,
+            status=status,
+            output=_stored_tool_output(tool_name, output),
+            evidence_ref=evidence_ref,
         )
         self.store.append_event(
             run_id,
@@ -404,6 +420,33 @@ class HarnessToolBroker:
             },
         )
         return _client_tool_output(output)
+
+    def _completed_tool_replay(
+        self, run_id: str, tool_name: str, output: dict[str, Any]
+    ) -> dict[str, Any]:
+        replay = _client_tool_output(output)
+        stored_token = str(output.get("gap_token") or "")
+        if (
+            tool_name == "sap_evidence_assess"
+            and output.get("skill_eligible") is True
+            and stored_token.startswith("sha256:")
+        ):
+            gap_token = secrets.token_urlsafe(24)
+            expires_at_epoch = int(time.time()) + max(60, self.settings.max_run_seconds)
+            self._gap_tokens[_capability_fingerprint(gap_token)] = {
+                "run_id": run_id,
+                "skill_id": str(output.get("skill_id") or "sap-adt-table-export"),
+                "skill_input_hash": str(output.get("skill_input_hash") or ""),
+                "missing_evidence": output.get("missing_evidence") or ["source_completeness"],
+                "used": False,
+                "expires_at_epoch": expires_at_epoch,
+            }
+            replay = {
+                **replay,
+                "gap_token": gap_token,
+                "expires_at_epoch": expires_at_epoch,
+            }
+        return {**replay, "idempotent_replay": True}
 
     def _set_run_phase(self, run_id: str, tool_name: str) -> None:
         record = self.store.get_run(run_id)
@@ -680,6 +723,12 @@ class HarnessToolBroker:
     def _assess_evidence(self, run_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         references = [str(item) for item in arguments.get("evidence_refs") or []]
         missing = [str(item) for item in arguments.get("missing_evidence") or [] if str(item)]
+        skill_id = str(arguments.get("skill_id") or "sap-adt-table-export").strip()
+        skill_input = arguments.get("skill_input")
+        if skill_input is not None and not isinstance(skill_input, dict):
+            raise ToolAdmissionError(
+                "skill_input must be an object.", code="skill_input_invalid"
+            )
         metadata: list[dict[str, Any]] = []
         for reference in references:
             _raw, meta = self._read_evidence(run_id, reference)
@@ -690,24 +739,49 @@ class HarnessToolBroker:
         complete = bool(metadata) and all(item.get("source_complete") is True for item in metadata)
         needs_skill = bool(missing) or not complete
         gap_token: str | None = None
+        skill_input_hash = ""
+        expires_at_epoch = 0
         if needs_skill and prerequisite.issubset(attempted):
+            self._approved_skill(skill_id)
+            if skill_id != "sap-adt-table-export" and skill_input is None:
+                raise ToolAdmissionError(
+                    "The exact Skill input is required before issuing a non-ADT gap token.",
+                    code="skill_input_required",
+                )
+            if skill_input is not None:
+                try:
+                    self.skills.validate_input(skill_id, skill_input)
+                except Exception as exc:
+                    raise ToolAdmissionError(
+                        "The requested Skill input does not match its approved contract.",
+                        code="skill_input_invalid",
+                    ) from exc
+                skill_input_hash = _json_fingerprint(skill_input)
             gap_token = secrets.token_urlsafe(24)
-            self._gap_tokens[gap_token] = {
+            expires_at_epoch = int(time.time()) + max(60, self.settings.max_run_seconds)
+            self._gap_tokens[_capability_fingerprint(gap_token)] = {
                 "run_id": run_id,
-                "skill_id": "sap-adt-table-export",
+                "skill_id": skill_id,
+                "skill_input_hash": skill_input_hash,
                 "missing_evidence": missing or ["source_completeness"],
                 "used": False,
+                "expires_at_epoch": expires_at_epoch,
             }
         result = {
             "ok": True,
             "source_complete": complete and not missing,
             "missing_evidence": missing,
-            "adt_eligible": gap_token is not None,
+            "skill_eligible": gap_token is not None,
+            "adt_eligible": gap_token is not None and skill_id == "sap-adt-table-export",
+            "skill_id": skill_id,
+            "skill_input_hash": skill_input_hash or None,
             "gap_token": gap_token,
+            "expires_at_epoch": expires_at_epoch or None,
             "reason": (
-                "Required OData evidence is incomplete and the deterministic prerequisite gate passed."
+                f"Required OData evidence is incomplete and the deterministic prerequisite gate "
+                f"approved the read-only Skill {skill_id}."
                 if gap_token
-                else "ADT is not required or the OData-first prerequisite gate has not passed."
+                else "A Skill is not required or the OData-first prerequisite gate has not passed."
             ),
         }
         self.store.append_event(
@@ -716,6 +790,25 @@ class HarnessToolBroker:
             {key: value for key, value in result.items() if key != "gap_token"},
         )
         return result
+
+    def _approved_skill(self, skill_id: str) -> dict[str, Any]:
+        try:
+            skill = self.skills.get(skill_id)
+        except Exception as exc:
+            raise ToolAdmissionError(
+                "The requested Skill is not in the approved runtime catalog.",
+                code="skill_not_approved",
+            ) from exc
+        if (
+            skill.get("read_only") is not True
+            or skill.get("validated") is not True
+            or skill.get("available") is not True
+        ):
+            raise ToolAdmissionError(
+                "The requested Skill is not approved and available for read-only automation.",
+                code="skill_not_approved",
+            )
+        return skill
 
     def _assess_inventory_fifo(
         self, run_id: str, arguments: dict[str, Any]
@@ -1051,7 +1144,7 @@ class HarnessToolBroker:
     async def _execute_skill(self, run_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         skill_id = str(arguments.get("skill_id") or "")
         token = str(arguments.get("gap_token") or "")
-        gap = self._gap_tokens.get(token)
+        gap = self._gap_tokens.get(_capability_fingerprint(token))
         if (
             not gap
             or gap["run_id"] != run_id
@@ -1059,13 +1152,31 @@ class HarnessToolBroker:
             or gap["used"]
         ):
             raise ToolAdmissionError("A valid single-use evidence gap token is required.", code="gap_token_invalid")
-        if skill_id != "sap-adt-table-export":
-            raise ToolAdmissionError("Only the approved ADT read-only skill is allowed.")
+        expires_at_epoch = int(gap.get("expires_at_epoch") or 0)
+        if expires_at_epoch and int(time.time()) > expires_at_epoch:
+            raise ToolAdmissionError(
+                "The single-use evidence gap token has expired.", code="gap_token_expired"
+            )
+        self._approved_skill(skill_id)
         payload = _require_object(arguments.get("input") or {}, "input")
+        expected_input_hash = str(gap.get("skill_input_hash") or "")
+        if expected_input_hash and not hmac.compare_digest(
+            expected_input_hash, _json_fingerprint(payload)
+        ):
+            raise ToolAdmissionError(
+                "The Skill input does not match the input authorized by the gap token.",
+                code="gap_token_input_mismatch",
+            )
         # Contract errors happen before SAP is contacted and therefore do not
         # consume the single-use execution capability. Once validation passes,
         # the token is burned before starting the Skill subprocess.
-        self.skills.validate_input(skill_id, payload)
+        try:
+            self.skills.validate_input(skill_id, payload)
+        except Exception as exc:
+            raise ToolAdmissionError(
+                "The requested Skill input does not match its approved contract.",
+                code="skill_input_invalid",
+            ) from exc
         gap["used"] = True
         output = await self.skills.execute(skill_id, payload)
         evidence_ref = self._save_evidence(run_id, "sap_skill", output)
@@ -1826,11 +1937,22 @@ be referenced by customer_business_fact blocks.
 On Windows, use concise ASCII English for SAP planning and filter arguments whenever an equivalent
 exists. The final presentation is intentionally bilingual UTF-8 and may include Chinese in the
 sap_final_report_validate payload.
-OData is mandatory before ADT: call sap_evidence_assess only after catalog, live schema, and plan
-validation; call sap_skill_execute only with the resulting single-use gap token. Never expose SAP
+OData is mandatory before any Skill: call sap_evidence_assess only after catalog, live schema, and
+plan validation. When a registered read-only Skill is needed, pass its exact skill_id and skill_input
+to sap_evidence_assess, then call sap_skill_execute once with the resulting run-, Skill-, and
+input-bound gap token. Never expose SAP
 URLs, credentials, clients, local paths, raw rows, connection profiles, or hidden reasoning.
 For sap-adt-table-export, order_by is optional. Omit it unless a trusted live-DDIC result supplied
 the exact complete stable key; never infer a stable key from familiar table names or selected fields.
+For sap-production-order-cost-analysis, preserve the exact metric ids plan_cost_total,
+target_cost_total, actual_cost_total, and actual_target_variance. When its complete preview contains
+cost-element details, include one evidence-backed table row per cost element with the exact keys
+manufacturing_order, cost_element, company_code, controlling_area, ledger, currency_role, currency,
+plan_cost, target_cost, actual_cost, actual_target_variance, analysis_period_from,
+analysis_period_to, evidence_source, and business_status. Add manufacturing_order from the exact
+authorized Skill input. With complete comparable evidence, use business_status=attention when the
+absolute total actual-minus-target variance exceeds 0.01 and business_status=normal otherwise; do
+not invent or rename cost values.
 For a sales-document item incompletion gap, use the VBUV incompletion log after the OData-first gate,
 filter exactly by VBELN (and POSNR for a preflight), select only live-validated fields such as VBELN,
 POSNR, ETENR, TBNAM, FDNAM, FEHGR, and STATG, and omit order_by so the Skill resolves the live key.
@@ -2087,6 +2209,13 @@ def _capability_fingerprint(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _json_fingerprint(value: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def _presentation_hash(value: RunPresentation | dict[str, Any]) -> str:
     presentation = (
         value if isinstance(value, RunPresentation) else RunPresentation.model_validate(value)
@@ -2102,6 +2231,16 @@ def _client_tool_output(value: dict[str, Any]) -> dict[str, Any]:
     """Remove control-plane-only values before returning a tool response."""
 
     return {key: item for key, item in value.items() if not str(key).startswith("_")}
+
+
+def _stored_tool_output(tool_name: str, value: dict[str, Any]) -> dict[str, Any]:
+    """Persist capability tokens only as fingerprints while returning them once to Codex."""
+
+    stored = dict(value)
+    token = stored.get("gap_token")
+    if tool_name == "sap_evidence_assess" and isinstance(token, str) and token:
+        stored["gap_token"] = _capability_fingerprint(token)
+    return stored
 
 
 def _validated_presentation_snapshot(

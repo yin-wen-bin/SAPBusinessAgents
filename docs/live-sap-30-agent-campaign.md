@@ -2,12 +2,12 @@
 
 All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgents. Embedded SAP execution is GET-only; approved supplemental ADT evidence may use the Skill's read-only Data Preview transport. No SAP write operation is allowed, and raw rows, URLs, and credentials remain in ignored local artifacts.
 
-The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV revalidation. The `inventory-health-balancing` row reflects the 2026-08-24 FIFO quantity-aging and batch-expiry revalidation. The two production-variance rows reflect the 2026-08-25 two-phase implementation and revalidation. All other rows retain their original campaign evidence.
+The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV revalidation. The `inventory-health-balancing` row reflects the 2026-08-24 FIFO quantity-aging and batch-expiry revalidation. The PP production-variance row reflects the 2026-08-25 revalidation. The CO product-cost-variance row reflects 2026-08-26; internal-order/project-control reflects its 0.4.0 resolver, value-type, ledger/currency-role, and fail-closed commitment revalidation on 2026-08-27. All other rows retain their original campaign evidence.
 
 ## Summary
 
-- PASS / executable: 18
-- BLOCKED / disabled: 12
+- PASS / executable: 19
+- BLOCKED / disabled: 11
 - FAIL / disabled: 0
 
 ## Agent results
@@ -17,8 +17,8 @@ The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV reval
 | CO | `budget-rolling-forecast` | BLOCKED | false | MATCH | MATCH | bounded | budget_evidence_missing |
 | CO | `co-month-end-allocation-settlement` | BLOCKED | false | MATCH | MATCH | bounded | allocation_cycle_evidence, object_status_evidence, settlement_rule_evidence |
 | CO | `cost-center-expense-anomaly` | BLOCKED | false | MATCH | MATCH | bounded | plan_evidence_missing |
-| CO | `internal-order-project-control` | BLOCKED | false | MATCH | MATCH | bounded | budget_evidence, commitment_evidence, control_object_not_found, master_evidence, plan_evidence |
-| CO | `product-cost-variance` | BLOCKED | false | BLOCKED | MATCH | complete | free_query_skill_execution |
+| CO | `internal-order-project-control` | BLOCKED | false | NOT_TESTED | BLOCKED | bounded | budget_ledger_ambiguous, commitment_evidence, currency_not_comparable, internal_order_commitment_source_unavailable, internal_order_mode_acceptance, plan_evidence, test_data_gap, wbs_commitment_source_unavailable, wbs_mode_acceptance |
+| CO | `product-cost-variance` | PASS | true | MATCH | MATCH | complete | none |
 | FI | `ap-payment` | PASS | true | MATCH | MATCH | complete | none |
 | FI | `ar-collection` | PASS | true | MATCH | MATCH | complete | none |
 | FI | `gr-ir-clearing` | PASS | true | MATCH | MATCH | complete | none |

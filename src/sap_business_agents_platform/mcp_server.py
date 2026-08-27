@@ -127,12 +127,20 @@ _SAP_TOOLS = [
     },
     {
         "name": "sap_evidence_assess",
-        "description": "Deterministically assess evidence completeness and issue an ADT gap token only after the OData-first gate.",
+        "description": "Deterministically assess evidence completeness and issue a run-, Skill-, and input-bound single-use token for an approved read-only Skill only after the OData-first gate.",
         "inputSchema": _schema(
             {
                 "question": {"type": "string"},
                 "evidence_refs": {"type": "array", "items": {"type": "string"}},
                 "missing_evidence": {"type": "array", "items": {"type": "string"}},
+                "skill_id": {
+                    "type": "string",
+                    "description": "Approved read-only Skill needed to close the evidence gap. Defaults to sap-adt-table-export for compatibility.",
+                },
+                "skill_input": {
+                    "type": "object",
+                    "description": "Exact Skill input to validate and bind to the token. Required for non-ADT Skills.",
+                },
             },
             ["question", "evidence_refs", "missing_evidence"],
         ),
@@ -176,12 +184,12 @@ _SAP_TOOLS = [
     },
     {
         "name": "sap_skill_execute",
-        "description": "Execute one approved SAPSkillhub read-only skill with a single-use deterministic evidence-gap token. ADT order_by is optional and must be omitted unless a trusted live-DDIC result supplied the exact stable key.",
+        "description": "Execute one registered, available, read-only, validated SAPSkillhub Skill with the matching single-use evidence-gap token. The backend revalidates the Skill-specific input contract. For sap-adt-table-export, omit order_by unless trusted live DDIC supplied the exact stable key.",
         "inputSchema": _schema(
             {
-                "skill_id": {"type": "string", "enum": ["sap-adt-table-export"]},
+                "skill_id": {"type": "string"},
                 "gap_token": {"type": "string"},
-                "input": _ADT_INPUT_SCHEMA,
+                "input": {"type": "object"},
             },
             ["skill_id", "gap_token", "input"],
         ),

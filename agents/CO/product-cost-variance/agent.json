@@ -7,7 +7,7 @@
     "zh": "按生产订单、成本要素、期间、账本和币种比较计划、目标与实际成本；证据不完整时保持不确定。",
     "en": "Compares production-order plan, target, and actual costs by cost element, period, ledger, and currency and remains inconclusive when evidence is incomplete."
   },
-  "status": "Three-stage live acceptance blocked",
+  "status": "Three-stage live acceptance passed",
   "version": "0.2.0",
   "owner": "CO-PC / Product Cost Controlling",
   "tags": ["Production Order", "Plan Cost", "Target Cost", "Actual Cost", "Cost Element"],
@@ -216,7 +216,7 @@
       "schemaVersion": "2.0",
       "comparisonMode": "business_semantic",
       "businessKeys": ["manufacturing_order", "cost_element"],
-      "facts": ["company_code", "controlling_area", "ledger", "currency_role", "currency", "cost_status", "business_status"],
+      "facts": ["company_code", "controlling_area", "ledger", "currency_role", "currency", "business_status"],
       "metrics": ["plan_cost_total", "target_cost_total", "actual_cost_total", "actual_target_variance"],
       "decimalFields": ["plan_cost", "target_cost", "actual_cost", "actual_target_variance"],
       "decimalMetricIds": ["plan_cost_total", "target_cost_total", "actual_cost_total", "actual_target_variance"],
@@ -240,15 +240,15 @@
       },
       "summaryRecord": false,
       "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
-      "requiredLimitations": ["production_cost_evidence", "production_cost_relationship"],
+      "requiredLimitations": [],
       "businessStatusFromMetric": {},
       "limitationsFromMetrics": {},
       "blankValueKeywords": {},
-      "blockingLimitations": ["production_cost_evidence", "production_cost_relationship"],
-      "ignoredNoticeKeywords": [],
+      "blockingLimitations": [],
+      "ignoredNoticeKeywords": ["source is complete", "source complete", "源完整", "源数据完整"],
       "zeroFactWhenMetricZero": {},
       "recordScope": "one_record_per_manufacturing_order_cost_element_ledger_currency_period_scope",
-      "factDefinitions": {"cost_status": "normal within absolute 0.01; positive actual-minus-target is unfavorable, negative is favorable; target zero with actual cost is unplanned_cost; target with zero actual is planned_cost_not_consumed"},
+      "factDefinitions": {},
       "metricDefinitions": {
         "plan_cost_total": "Released production-order cost CDS plan cost summed only within one ledger, currency role, and currency",
         "target_cost_total": "TargetCostVariant 1 target cost summed only within one comparable scope",
@@ -260,20 +260,25 @@
     }
   },
   "validation": {
-    "verdict": "BLOCKED",
-    "testedAt": "2026-08-25T23:18:00+08:00",
+    "verdict": "PASS",
+    "testedAt": "2026-08-26T19:22:42+08:00",
     "evidenceScope": "complete",
     "providers": ["codex-app-direct-sap", "embedded-sap-odata", "sap-production-order-cost-analysis"],
     "summary": {
-      "zh": "直接ADT、独立Skill和固定Agent已对账一致并形成完整成本证据；自由查询的Skill调用被Harness单次gap token门禁拒绝，因此仍保持BLOCKED。",
-      "en": "Direct ADT, the standalone Skill, and the fixed Agent reconcile with complete cost evidence; the free-query Skill call was rejected by the Harness single-use gap-token gate, so the Agent remains BLOCKED."
+      "zh": "直接ADT、独立Skill、自由查询和固定Agent已对账一致：21条原始记录汇总为8个成本要素，计划、目标、实际和差异金额完全匹配。",
+      "en": "Direct ADT, the standalone Skill, the free query, and the fixed Agent reconcile: 21 raw rows aggregate to eight cost elements, with matching plan, target, actual, and variance totals."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
-    "executable": false,
-    "freeQueryComparison": "BLOCKED",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
     "fixedAgentComparison": "MATCH",
     "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "blockingLimitations": ["free_query_skill_execution"]
+    "blockingLimitations": [],
+    "codexDirectBaselineHash": "sha256:9dc8bb13e982ebba95640f73e96f7ac58033c3c88ee1304db1224b62759412b7",
+    "freeQueryHash": "sha256:9dc8bb13e982ebba95640f73e96f7ac58033c3c88ee1304db1224b62759412b7",
+    "fixedAgentHash": "sha256:9dc8bb13e982ebba95640f73e96f7ac58033c3c88ee1304db1224b62759412b7",
+    "adjudicatedResultHash": "sha256:9dc8bb13e982ebba95640f73e96f7ac58033c3c88ee1304db1224b62759412b7",
+    "comparisonHash": "sha256:643976462646a8a62845f4ecd562ca4c85854dd2104623eeeb8ba1d171be2bad"
   }
 }

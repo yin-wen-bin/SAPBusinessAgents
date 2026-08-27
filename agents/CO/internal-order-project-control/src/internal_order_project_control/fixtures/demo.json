@@ -1,59 +1,60 @@
 {
-  "run_input": {},
-  "assessment": {
-    "api_complete": {
-      "actual": true,
-      "plan": true
-    },
-    "capability_gaps": [
-      "master",
-      "budget",
-      "commitment"
-    ]
+  "run_input": {
+    "object_type": "INTERNAL_ORDER",
+    "object_id": "600468",
+    "company_code": "1310",
+    "fiscal_year": "2026",
+    "planning_category": "PLAN"
+  },
+  "resolved_object": {
+    "rule_id": "control_object_master_resolution_v3",
+    "status": "complete",
+    "ready": true,
+    "source_complete": true,
+    "object_type": "INTERNAL_ORDER",
+    "external_id": "600468",
+    "internal_id": "000000600468",
+    "object_number": "OR000000600468",
+    "company_code": "1310",
+    "controlling_area": "1300",
+    "order_category": "01",
+    "order_type": "Z601",
+    "issues": []
   },
   "evidence": {
     "order_actual": {
+      "ok": true,
       "source_complete": true,
-      "step_results": {
-        "order_actual": {
-          "results": [
-            {
-              "AmountInCompanyCodeCurrency": "400",
-              "CompanyCodeCurrency": "EUR"
-            }
-          ]
-        }
+      "data": {
+        "results": [
+          {"OrderID": "600468", "AmountInCompanyCodeCurrency": "100.00", "CompanyCodeCurrency": "USD"},
+          {"OrderID": "600468", "AmountInCompanyCodeCurrency": "-100.00", "CompanyCodeCurrency": "USD"},
+          {"OrderID": "600468", "AmountInCompanyCodeCurrency": "50.00", "CompanyCodeCurrency": "USD"},
+          {"OrderID": "600468", "AmountInCompanyCodeCurrency": "-50.00", "CompanyCodeCurrency": "USD"}
+        ]
       }
     },
-    "wbs_actual": {
-      "source_complete": true,
-      "step_results": {
-        "wbs_actual": {
-          "results": []
-        }
-      }
-    },
+    "wbs_actual": {"status": "skipped", "reason": "condition_false", "required": false},
     "order_plan": {
+      "ok": true,
       "source_complete": true,
-      "step_results": {
-        "order_plan": {
-          "results": [
-            {
-              "AmountInCompanyCodeCurrency": "900",
-              "CompanyCodeCurrency": "EUR"
-            }
-          ]
-        }
+      "data": {
+        "results": [
+          {"OrderID": "600468", "PlanningCategory": "PLAN", "AmountInCompanyCodeCurrency": "900.00", "CompanyCodeCurrency": "USD"}
+        ]
       }
     },
-    "wbs_plan": {
+    "wbs_plan": {"status": "skipped", "reason": "condition_false", "required": false},
+    "order_plan_discovery": {
+      "ok": true,
       "source_complete": true,
-      "step_results": {
-        "wbs_plan": {
-          "results": []
-        }
+      "data": {
+        "results": [
+          {"OrderID": "600468", "PlanningCategory": "PLAN", "AmountInCompanyCodeCurrency": "900.00", "CompanyCodeCurrency": "USD"}
+        ]
       }
-    }
+    },
+    "wbs_plan_discovery": {"status": "skipped", "reason": "condition_false", "required": false}
   },
   "fallbacks": {
     "master": {
@@ -62,66 +63,71 @@
         "read_only": true,
         "validated": true,
         "source_complete": true,
-        "completeness": {
-          "source_complete": true,
-          "paging_complete": true
-        },
+        "completeness": {"source_complete": true, "paging_complete": true},
         "validation_issues": [],
         "rows": [
-          {
-            "AUFNR": "DEMO",
-            "OBJNR": "ORDEMO"
-          }
+          {"AUFNR": "000000600468", "OBJNR": "OR000000600468", "KOKRS": "1300", "BUKRS": "1310", "AUTYP": "01", "AUART": "Z601"}
         ]
       },
-      "wbs": {
-        "status": "complete",
-        "read_only": true,
-        "validated": true,
-        "source_complete": true,
-        "completeness": {
-          "source_complete": true,
-          "paging_complete": true
-        },
-        "validation_issues": [],
-        "rows": []
-      }
+      "wbs": {"status": "skipped", "reason": "condition_false", "required": false}
     },
     "budget": {
       "status": "complete",
       "read_only": true,
       "validated": true,
       "source_complete": true,
-      "completeness": {
-        "source_complete": true,
-        "paging_complete": true
-      },
+      "completeness": {"source_complete": true, "paging_complete": true},
       "validation_issues": [],
       "rows": [
-        {
-          "OBJNR": "ORDEMO",
-          "WTG001": "1000",
-          "WAERS": "EUR"
-        }
+        {"OBJNR": "OR000000600468", "GJAHR": "2026", "WRTTP": "41", "VERSN": "000", "LEDNR": "0001", "TWAER": "USD", "WTJHR": "1000.00"}
       ]
     },
     "commitment": {
+      "schema_version": 1,
+      "skill_id": "sap-control-object-commitment-evidence",
+      "run_id": "demo-commitment",
       "status": "complete",
       "read_only": true,
       "validated": true,
-      "source_complete": true,
-      "completeness": {
-        "source_complete": true,
-        "paging_complete": true
+      "resolved_object": {
+        "object_type": "INTERNAL_ORDER",
+        "external_id": "600468",
+        "internal_id": "000000600468",
+        "object_number": "OR000000600468",
+        "company_code": "1310",
+        "controlling_area": "1300"
       },
+      "analysis_scope": {"fiscal_year": "2026", "period_from": 1, "period_to": 16, "commitment_types": ["21", "22", "24", "26"]},
+      "relationship_evidence": {"object_type": "INTERNAL_ORDER", "object_number_prefix_valid": true, "source_id": "demo"},
+      "source_profile": {"version": "demo", "status": "validated", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "commitment_details": [
+        {"source_key": "demo-21", "object_number": "OR000000600468", "fiscal_year": "2026", "accounting_period": 1, "commitment_type": "21", "cost_element": "400000", "purchasing_requisition": "10000001", "purchasing_requisition_item": "10", "purchasing_document": "", "purchasing_document_item": "", "amount": "0", "currency": "USD", "currency_role": "10", "synthetic_zero": true},
+        {"source_key": "demo-22", "object_number": "OR000000600468", "fiscal_year": "2026", "accounting_period": 1, "commitment_type": "22", "cost_element": "400000", "purchasing_requisition": "", "purchasing_requisition_item": "", "purchasing_document": "4500000010", "purchasing_document_item": "10", "amount": "200.00", "currency": "USD", "currency_role": "10", "synthetic_zero": false},
+        {"source_key": "demo-24", "object_number": "OR000000600468", "fiscal_year": "2026", "accounting_period": 1, "commitment_type": "24", "cost_element": "400000", "purchasing_requisition": "", "purchasing_requisition_item": "", "purchasing_document": "", "purchasing_document_item": "", "amount": "0", "currency": "USD", "currency_role": "10", "synthetic_zero": true},
+        {"source_key": "demo-26", "object_number": "OR000000600468", "fiscal_year": "2026", "accounting_period": 1, "commitment_type": "26", "cost_element": "400000", "purchasing_requisition": "", "purchasing_requisition_item": "", "purchasing_document": "", "purchasing_document_item": "", "amount": "0", "currency": "USD", "currency_role": "10", "synthetic_zero": true}
+      ],
+      "commitment_totals": {
+        "groups": [
+          {"commitment_type": "21", "currency": "USD", "currency_role": "10", "amount": "0"},
+          {"commitment_type": "22", "currency": "USD", "currency_role": "10", "amount": "200.00"},
+          {"commitment_type": "24", "currency": "USD", "currency_role": "10", "amount": "0"},
+          {"commitment_type": "26", "currency": "USD", "currency_role": "10", "amount": "0"}
+        ]
+      },
+      "completeness": {"source_complete": true, "evidence_complete": true, "paging_complete": true, "scope_complete": true, "total_rows": 4, "returned_rows": 4, "truncated": false},
       "validation_issues": [],
-      "rows": [
-        {
-          "OBJNR": "ORDEMO",
-          "WTG001": "200",
-          "WAERS": "EUR"
-        }
-      ]
+      "started_at": "2026-08-27T00:00:00Z",
+      "completed_at": "2026-08-27T00:00:01Z",
+      "artifacts": []
     }
+  },
+  "control_value_types": {
+    "config_version": 2,
+    "budget": ["41"],
+    "version": "000",
+    "budget_ledger": "0001",
+    "budget_currency_role": "company_code_currency",
+    "commitment_types": ["21", "22", "24", "26"],
+    "mode_acceptance": {"INTERNAL_ORDER": "PASS", "WBS": "PASS"}
   }
 }

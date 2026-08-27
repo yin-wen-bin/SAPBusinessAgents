@@ -722,6 +722,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
     repository = AgentRepository(root / "agents")
     records = repository.list()
     assert [record["slug"] for record in repository.executable()] == [
+        "product-cost-variance",
         "ap-payment",
         "ar-collection",
         "gr-ir-clearing",

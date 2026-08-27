@@ -17,6 +17,8 @@ ALLOWED_RULE_OPERATIONS = {
     "prepare_billing_block_code_text_lookups",
     "assess_o2c_document_flow",
     "classify_control_object",
+    "prepare_control_object_lookup",
+    "resolve_control_object_master",
     "evidence_summary",
     "extract_bounded_values",
     "resolve_mrp_analysis_context",

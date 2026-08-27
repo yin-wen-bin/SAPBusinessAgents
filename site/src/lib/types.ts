@@ -66,6 +66,7 @@ export interface ExecutionInputSchema {
   type: "object";
   properties: Record<string, ExecutionInputProperty>;
   required?: string[];
+  dependentRequired?: Record<string, string[]>;
   additionalProperties?: boolean;
   dateRangePairs?: Array<{
     from: string;

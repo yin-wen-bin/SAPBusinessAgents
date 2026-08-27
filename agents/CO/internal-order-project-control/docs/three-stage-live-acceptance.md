@@ -1,50 +1,49 @@
-# Three-stage live SAP acceptance: internal-order-project-control
+# Four-path live SAP acceptance: internal-order-project-control 0.4.0
 
 ## Verdict
 
 `BLOCKED` / `executable=false`
 
-- Case: `internal-order-project-control-live-001`
-- Tested at: `2026-08-20T08:46:57.717907+00:00`
-- Direct baseline runtime: `codex_app_direct_sap`
-- Used SAPBusinessAgents for baseline: `false`
-- Free-query comparison: `MATCH`
-- Fixed-Agent comparison: `MATCH`
-- Blocking limitations: `budget_evidence, commitment_evidence, control_object_not_found, master_evidence, plan_evidence`
+- Tested at: 2026-08-27
+- Direct WBS relationship baseline: `MATCH`
+- Standalone resolver: `MATCH`
+- SAPBusinessAgents SkillRegistry resolver execution: `MATCH`
+- Fixed-Agent complete comparison: `BLOCKED`
+- Free-query complete comparison: `NOT_TESTED`
 - SAP write operations: none
 
-## Evidence hashes
+The WBS resolver itself is live-validated and independently executable, so `wbs_external_id_conversion` is closed. That does not make the full Agent executable: the commitment Skill remains unvalidated because the target has no approved period-bearing WBS SOAP binding and the internal-order COSP/COSS amount projection is unstable. Plan, budget-ledger/currency, complete test data, and full direct/Skill/free-query/fixed-Agent comparisons remain separate gates.
 
-- Codex direct baseline: `sha256:4fdd3fe60659759f1eb79074ffec18c615a3a00013e950449d05f37291b22c97`
-- SAPBusinessAgents free query: `sha256:4fdd3fe60659759f1eb79074ffec18c615a3a00013e950449d05f37291b22c97`
-- Adjudicated result: `sha256:4fdd3fe60659759f1eb79074ffec18c615a3a00013e950449d05f37291b22c97`
-- Fixed Agent: `sha256:cec9e64dba5e41998e033e54b36fa016672307e5b19be508403681b2dd95c450`
+## Comparison
 
-## Comparison diagnostics
+| Path | Direct target evidence | Skill / Agent result | Conclusion |
+|---|---|---|---|
+| WBS relationship | Project V2 and Financial WBS each return one exact row; metadata fingerprints match; six relationship checks agree | Standalone resolver and registry execution return `complete/resolved`, two rows total, `evidence_complete=true` | MATCH for resolver scope |
+| WBS commitment | Official operation semantics documented, but no target SOAP binding | `partial/wbs_commitment_source_unavailable`, no details or totals | Stable fail-closed MATCH |
+| Internal-order commitment | COSP key evidence proves a type22/ledger00/CNY row and COSS proves an empty key result; period amount projection repeatedly fails with `Unknown column VERS` | `partial/internal_order_commitment_source_unavailable`, no details or totals | Stable fail-closed MATCH; amount scope blocked |
+| Fixed Agent | v4 manifest is wired to both Skills and exposes separate mode gates | Agent remains disabled; complete business comparison cannot run | BLOCKED |
+| Free query | Resolver gap-token contract has automated regression coverage | No qualified complete object-mode business sample | NOT_TESTED |
 
-- Free-query differences: `[]`
-- Fixed-Agent differences: `[]`
+## Blocking limitations
 
-## Sanitized case scope
+- `plan_evidence`
+- `budget_evidence`
+- `commitment_evidence`
+- `budget_ledger_ambiguous`
+- `currency_not_comparable`
+- `wbs_commitment_source_unavailable`
+- `internal_order_commitment_source_unavailable`
+- `wbs_mode_acceptance`
+- `internal_order_mode_acceptance`
+- `test_data_gap`
+- `free_query_comparison`
 
-- Selection rule: first independently discovered live sample satisfying the case criteria after real-time schema validation and stable-key ordering.
-- Structured input fields: `company_code, fiscal_year, object_id, object_type, planning_category` (values remain in ignored artifacts).
-- Business-condition fields: `company_code, fiscal_year, object_id, object_type, planning_category` (values remain in ignored artifacts).
-- Accepted business grain: `company_code, object_type, object_id, fiscal_year`.
+## Release gate
 
-## Direct baseline source coverage
+1. Activate and fingerprint an authoritative period-bearing WBS commitment source and, independently, an internal-order source.
+2. Pass nonzero and authoritative-zero baselines for every supported object mode and requested value type.
+3. Prove a versioned budget-ledger rule and comparable currency/currency-role scope.
+4. Complete direct SAP, standalone Skill, free query, and fixed Agent comparison for each mode being declared complete.
+5. Only a mode whose four paths all match may close `commitment_evidence`; unrelated gaps remain independent.
 
-| Source | Service | OData | Entity | Rows | Pages | Stable order | Paging complete | Source complete |
-|---|---|:---:|---|---:|---:|---|:---:|:---:|
-| internal_order_actual | API_OPLACCTGDOCITEMCUBE_SRV | 2.0 | A_OperationalAcctgDocItemCube | 1 | 1 | CompanyCode, FiscalYear, AccountingDocument, AccountingDocumentItem | true | true |
-| internal_order_plan | API_FINPLANNINGENTRYITEM_SRV | 2.0 | A_FinPlanningEntryItem | 0 | 1 | ID | true | true |
-
-Schema/query manifests:
-- `internal_order_actual` schema `sha256:65f619d00b9b12395e17fdff88b15260b6256e80405991dd2279c133c1ec6b67`; query `sha256:3768db0c3f95401f3a607c7401f2f9d108b426173469c656944f47ce6e33622b`.
-- `internal_order_plan` schema `sha256:2e3a3a0b113bf55428ffcddf129bc27ec1bee9b05f5da17f39ae308b4183eacd`; query `sha256:71241692ce764c33604d314a0c4ded970ba3ccc7e68e1b46c9843705966852c4`.
-
-## Repair and adjudication outcome
-
-The final comparison uses stable business keys, deterministic facts, Decimal-aware metrics, currencies, units, limitations, and completeness rather than display prose or row order. Platform and fixed-Agent corrections are covered by the campaign regression suite; runtime logic contains no test-document constants.
-
-Raw SAP rows, URLs, credentials, business identifiers, and connection details remain in ignored local artifacts.
+Until then, validation remains `BLOCKED`, `executable=false`, and historical evidence is not rewritten.

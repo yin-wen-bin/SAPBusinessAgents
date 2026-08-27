@@ -11,3 +11,5 @@
 A complete empty actual-cost query is valid bounded evidence but does not create a zero target cost. Network, authentication, authorization, timeout, malformed response, explicit top, and paging limits remain inconclusive. There is no automatic Provider fallback or SE16N fallback.
 
 Cost evidence is accepted only with `status=complete`, `read_only=true`, `validated=true`, `source_complete=true`, `evidence_complete=true`, `paging_complete=true`, no validation issue, and a matching order relationship. Plan, target, and actual values are compared only within one ledger, currency role, currency, and period scope.
+
+Free queries must attempt registered GET-only OData evidence first. If the evidence assessment proves a gap that requires this Skill, the Harness may issue a short-lived single-use token bound to the current run, `sap-production-order-cost-analysis`, and the exact validated input. A token cannot be reused for another run, Skill, or input, and the raw token is never persisted in run records or logs.

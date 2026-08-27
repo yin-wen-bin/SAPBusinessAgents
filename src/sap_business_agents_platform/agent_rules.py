@@ -5331,86 +5331,457 @@ def _budget_rolling_forecast(inputs: JsonObject) -> JsonObject:
     )
 
 
-def _sum_period_fields(rows: list[JsonObject]) -> Decimal:
-    total = Decimal(0)
-    for row in rows:
-        period_fields = [key for key in row if key.startswith(("WTG", "WKG")) and key[3:].isdigit()]
-        if period_fields:
-            total += sum((_decimal(row.get(key)) for key in period_fields), Decimal(0))
-        else:
-            total += _amount(row)
-    return total
-
-
 def _internal_order_project_control(inputs: JsonObject) -> JsonObject:
-    actual = _rows(inputs, "order_actual", "wbs_actual") + _adt_rows(inputs, "actual")
-    plan = _rows(inputs, "order_plan", "wbs_plan") + _adt_rows(inputs, "plan")
-    masters = _adt_rows(inputs, "master")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    resolved = inputs.get("resolved_object") if isinstance(inputs.get("resolved_object"), dict) else {}
+    object_type = str(resolved.get("object_type") or run_input.get("object_type") or "").upper()
+    actual = _rows(inputs, "order_actual" if object_type == "INTERNAL_ORDER" else "wbs_actual")
+    requested_category = str(run_input.get("planning_category") or "").strip().upper()
+    plan_topic = (
+        "order_plan" if object_type == "INTERNAL_ORDER" else "wbs_plan"
+    ) if requested_category else (
+        "order_plan_discovery" if object_type == "INTERNAL_ORDER" else "wbs_plan_discovery"
+    )
+    all_plan = _rows(inputs, plan_topic)
     budgets = _adt_rows(inputs, "budget")
-    commitments = _adt_rows(inputs, "commitment")
-    complete, missing = _required_topics(inputs, "actual", "plan", "master", "budget", "commitment")
-    actual_total = _sum_amount(actual)
-    plan_total = _sum_amount(plan)
-    budget_total = _sum_period_fields(budgets)
-    commitment_total = _sum_period_fields(commitments)
-    plan_available = bool(plan)
-    budget_available = bool(budgets)
-    commitment_available = bool(commitments)
-    eac = actual_total + commitment_total if commitment_available else None
-    variance = budget_total - eac if budget_available and eac is not None else None
-    currencies = _currency_set(actual + plan + budgets + commitments)
-    comparable = complete and budget_available and eac is not None and len(currencies) <= 1 and budget_total != 0
-    consumption_pct = eac / abs(budget_total) * Decimal(100) if comparable and eac is not None else None
+    fallbacks = inputs.get("fallbacks") if isinstance(inputs.get("fallbacks"), dict) else {}
+    commitment_payload = (
+        fallbacks.get("commitment")
+        if isinstance(fallbacks.get("commitment"), dict)
+        else {}
+    )
+    commitment_details = [
+        dict(row)
+        for row in commitment_payload.get("commitment_details") or []
+        if isinstance(row, dict)
+    ]
+    commitment_totals_payload = (
+        commitment_payload.get("commitment_totals")
+        if isinstance(commitment_payload.get("commitment_totals"), dict)
+        else {}
+    )
+    commitment_groups = [
+        dict(row)
+        for row in commitment_totals_payload.get("groups") or []
+        if isinstance(row, dict)
+    ]
+    config = inputs.get("control_value_types") if isinstance(inputs.get("control_value_types"), dict) else {}
+    budget_types = {str(value) for value in config.get("budget", ["41"])}
+    accepted_version = str(config.get("version") or "000")
+    requested_commitment_types = {
+        str(value) for value in config.get("commitment_types", ["21", "22", "24", "26"])
+    }
+    mode_acceptance = config.get("mode_acceptance") if isinstance(config.get("mode_acceptance"), dict) else {}
+    mode_acceptance_status = str(mode_acceptance.get(object_type) or "not_tested").strip().lower()
+    mode_accepted = mode_acceptance_status in {"pass", "passed", "match"}
+    fiscal_year = str(run_input.get("fiscal_year") or "")
+    object_number = str(resolved.get("object_number") or "")
+
+    def payload_complete(value: Any) -> bool:
+        flags: list[bool] = []
+
+        def visit(item: Any) -> None:
+            if isinstance(item, dict):
+                if isinstance(item.get("source_complete"), bool):
+                    flags.append(bool(item["source_complete"]))
+                completeness = item.get("completeness")
+                if isinstance(completeness, dict) and isinstance(completeness.get("paging_complete"), bool):
+                    flags.append(bool(completeness["paging_complete"]))
+                for child in item.values():
+                    visit(child)
+            elif isinstance(item, list):
+                for child in item:
+                    visit(child)
+
+        visit(value)
+        return bool(flags) and all(flags)
+
+    evidence = inputs.get("evidence") if isinstance(inputs.get("evidence"), dict) else {}
+    actual_payload = evidence.get("order_actual" if object_type == "INTERNAL_ORDER" else "wbs_actual")
+    plan_payload = evidence.get(plan_topic)
+    master_complete = bool(resolved.get("ready") is True and resolved.get("source_complete") is True)
+    actual_complete = master_complete and payload_complete(actual_payload)
+    plan_query_complete = master_complete and payload_complete(plan_payload)
+    budget_query_complete = master_complete and payload_complete(fallbacks.get("budget"))
+    commitment_completeness = (
+        commitment_payload.get("completeness")
+        if isinstance(commitment_payload.get("completeness"), dict)
+        else {}
+    )
+    commitment_query_complete = bool(
+        master_complete
+        and commitment_payload.get("status") == "complete"
+        and commitment_payload.get("read_only") is True
+        and commitment_payload.get("validated") is True
+        and commitment_completeness.get("source_complete") is True
+        and commitment_completeness.get("paging_complete") is True
+        and commitment_completeness.get("scope_complete") is True
+        and commitment_completeness.get("evidence_complete") is True
+        and isinstance(commitment_payload.get("commitment_totals"), dict)
+    )
+
+    categories = sorted(
+        {
+            str(row.get("PlanningCategory") or "").strip().upper()
+            for row in all_plan
+            if str(row.get("PlanningCategory") or "").strip()
+        }
+    )
+    if requested_category:
+        selected_category = requested_category
+        plan = [row for row in all_plan if str(row.get("PlanningCategory") or "").strip().upper() == requested_category]
+        plan_status = "confirmed" if plan else "not_available"
+    elif len(categories) == 1:
+        selected_category = categories[0]
+        plan = list(all_plan)
+        plan_status = "confirmed"
+    elif not categories:
+        selected_category = ""
+        plan = []
+        plan_status = "not_available"
+    else:
+        selected_category = ""
+        plan = []
+        plan_status = "ambiguous"
+
+    def strict_total(rows: list[JsonObject], field: str) -> tuple[Decimal | None, bool]:
+        if not rows:
+            return None, False
+        values = [_strict_decimal(row.get(field)) for row in rows]
+        if any(value is None for value in values):
+            return None, False
+        return sum((value for value in values if value is not None), Decimal(0)), True
+
+    actual_values = [_strict_decimal(row.get("AmountInCompanyCodeCurrency")) for row in actual]
+    actual_valid = actual_complete and all(value is not None for value in actual_values)
+    actual_total = (
+        sum((value for value in actual_values if value is not None), Decimal(0))
+        if actual_valid
+        else None
+    )
+    plan_total, plan_amount_valid = strict_total(plan, "AmountInCompanyCodeCurrency")
+
+    budget_candidates = [
+        row
+        for row in budgets
+        if str(row.get("OBJNR") or "").strip() == object_number
+        and str(row.get("GJAHR") or "").strip() == fiscal_year
+        and str(row.get("WRTTP") or "").strip() in budget_types
+        and str(row.get("VERSN") or "").strip() == accepted_version
+    ]
+    configured_budget_ledger = str(config.get("budget_ledger") or "").strip()
+    budget_ledgers = {str(row.get("LEDNR") or "").strip() for row in budget_candidates if row.get("LEDNR")}
+    budget_ledger_ambiguous = (
+        not configured_budget_ledger
+        or configured_budget_ledger not in budget_ledgers
+        or len({ledger for ledger in budget_ledgers if ledger == configured_budget_ledger}) != 1
+    )
+    budget_matching = [
+        row for row in budget_candidates
+        if not configured_budget_ledger or str(row.get("LEDNR") or "").strip() == configured_budget_ledger
+    ]
+    unsupported_types = sorted(
+        {
+            f"BPJA:{str(row.get('WRTTP') or '').strip()}"
+            for row in budgets
+            if str(row.get("WRTTP") or "").strip() not in budget_types
+        }
+    )
+    budget_total, budget_amount_valid = strict_total(budget_matching, "WTJHR")
+    commitment_values = [_strict_decimal(row.get("amount")) for row in commitment_groups]
+    commitment_types = {
+        str(row.get("commitment_type") or "").strip()
+        for row in commitment_groups
+        if row.get("commitment_type")
+    }
+    commitment_roles = {
+        str(row.get("currency_role") or "").strip().upper()
+        for row in commitment_groups
+        if row.get("currency_role")
+    }
+    commitment_status_by_type = {
+        commitment_type: (
+            "confirmed"
+            if commitment_query_complete
+            and any(
+                str(row.get("commitment_type") or "").strip() == commitment_type
+                and _strict_decimal(row.get("amount")) is not None
+                and bool(str(row.get("currency") or "").strip())
+                and bool(str(row.get("currency_role") or "").strip())
+                for row in commitment_groups
+            )
+            else "unknown"
+        )
+        for commitment_type in sorted(requested_commitment_types)
+    }
+    commitment_amount_valid = bool(
+        commitment_query_complete
+        and commitment_groups
+        and all(value is not None for value in commitment_values)
+        and len(commitment_roles) == 1
+        and commitment_types == requested_commitment_types
+        and all(value == "confirmed" for value in commitment_status_by_type.values())
+    )
+    commitment_total = (
+        sum((value for value in commitment_values if value is not None), Decimal(0))
+        if commitment_amount_valid
+        else None
+    )
+    if budget_ledger_ambiguous:
+        budget_total, budget_amount_valid = None, False
+
+    actual_currencies = {
+        str(row.get("CompanyCodeCurrency") or "").strip().upper() for row in actual if row.get("CompanyCodeCurrency")
+    }
+    plan_currencies = {
+        str(row.get("CompanyCodeCurrency") or "").strip().upper() for row in plan if row.get("CompanyCodeCurrency")
+    }
+    budget_currencies = {str(row.get("TWAER") or "").strip().upper() for row in budget_matching if row.get("TWAER")}
+    commitment_currencies = {
+        str(row.get("currency") or "").strip().upper()
+        for row in commitment_groups
+        if row.get("currency")
+    }
+    currencies = actual_currencies | plan_currencies | budget_currencies | commitment_currencies
+
+    def currency_role(value: Any) -> str:
+        normalized = str(value or "").strip().upper()
+        return {
+            "10": "company_code_currency",
+            "COMPANY_CODE": "company_code_currency",
+            "COMPANY_CODE_CURRENCY": "company_code_currency",
+            "TRANSACTION": "transaction_currency",
+            "TRANSACTION_CURRENCY": "transaction_currency",
+        }.get(normalized, normalized.lower())
+
+    budget_currency_role = currency_role(config.get("budget_currency_role"))
+    commitment_currency_role = (
+        currency_role(next(iter(commitment_roles))) if len(commitment_roles) == 1 else ""
+    )
+    currency_roles = {
+        role
+        for role in (
+            "company_code_currency" if actual_currencies else "",
+            "company_code_currency" if plan_currencies else "",
+            budget_currency_role if budget_currencies else "",
+            commitment_currency_role if commitment_currencies else "",
+        )
+        if role
+    }
+    currency_sets_complete = all(
+        len(item) == 1
+        for item in (actual_currencies, plan_currencies, budget_currencies, commitment_currencies)
+    )
+    currency_role_complete = bool(budget_currency_role and commitment_currency_role)
+    currency_comparable = bool(
+        currency_sets_complete
+        and len(currencies) == 1
+        and currency_role_complete
+        and currency_roles == {"company_code_currency"}
+    )
+    comparison_currency = next(iter(currencies)) if currency_comparable else None
+
+    evidence_gaps: list[str] = []
     findings: list[JsonObject] = []
-    business_gaps: list[str] = []
-    if not masters:
-        findings.append({"code": "CONTROL_OBJECT_NOT_CONFIRMED", "severity": "high"})
-        business_gaps.append("master_evidence")
-        business_gaps.append("control_object_not_found")
-    if len(currencies) > 1:
-        findings.append({"code": "CURRENCY_NOT_COMPARABLE", "severity": "high"})
-    if not plan_available:
-        findings.append({"code": "PLAN_EVIDENCE_MISSING", "severity": "high"})
-        business_gaps.append("plan_evidence")
-    if not commitment_available:
-        findings.append({"code": "COMMITMENT_EVIDENCE_MISSING", "severity": "high"})
-        business_gaps.append("commitment_evidence")
-    if not budget_available:
-        findings.append({"code": "BUDGET_EVIDENCE_MISSING", "severity": "high"})
-        business_gaps.append("budget_evidence")
-    elif budget_total == 0:
-        findings.append({"code": "BUDGET_MISSING_OR_ZERO", "severity": "high"})
-    if comparable and eac is not None and eac > budget_total:
-        findings.append({"code": "EAC_EXCEEDS_BUDGET", "severity": "high", "variance": str(-variance)})
-    return _result(
+    if not master_complete:
+        evidence_gaps.extend(str(item) for item in resolved.get("issues") or ["master_evidence"])
+        evidence_gaps.append("master_evidence")
+    if not actual_valid:
+        evidence_gaps.append("actual_evidence")
+    if not plan_query_complete or plan_status != "confirmed" or not plan_amount_valid:
+        evidence_gaps.append("plan_evidence" if plan_status != "ambiguous" else "plan_category_ambiguous")
+    if not budget_query_complete or not budget_amount_valid:
+        evidence_gaps.append("budget_evidence")
+    if budget_ledger_ambiguous:
+        evidence_gaps.append("budget_ledger_ambiguous")
+        findings.append({"code": "BUDGET_LEDGER_AMBIGUOUS", "severity": "high", "ledgers": sorted(budget_ledgers)})
+    if not commitment_query_complete or not commitment_amount_valid:
+        evidence_gaps.append("commitment_evidence")
+    if mode_acceptance_status not in {"pass", "passed", "match"}:
+        evidence_gaps.append(
+            "wbs_mode_acceptance" if object_type == "WBS" else "internal_order_mode_acceptance"
+        )
+    for topic in ("budget", "commitment"):
+        payload = fallbacks.get(topic)
+        if not isinstance(payload, dict):
+            continue
+        for issue in payload.get("validation_issues") or []:
+            if isinstance(issue, dict) and issue.get("code"):
+                evidence_gaps.append(str(issue["code"]))
+    if unsupported_types:
+        evidence_gaps.append("unsupported_value_type")
+        findings.append({"code": "UNSUPPORTED_VALUE_TYPE", "severity": "high", "values": unsupported_types})
+    if not currency_comparable:
+        evidence_gaps.append("currency_not_comparable")
+        findings.append({"code": "CURRENCY_NOT_COMPARABLE", "severity": "high", "currencies": sorted(currencies)})
+
+    source_complete = all(
+        (master_complete, actual_complete, plan_query_complete, budget_query_complete, commitment_query_complete)
+    )
+    evidence_gaps = sorted(set(evidence_gaps))
+    evidence_complete = source_complete and not evidence_gaps and mode_accepted
+    calculation_ready = bool(
+        evidence_complete
+        and actual_total is not None
+        and plan_total is not None
+        and budget_total is not None
+        and commitment_total is not None
+        and currency_comparable
+    )
+    eac = actual_total + commitment_total if calculation_ready else None
+    remaining = budget_total - eac if budget_total is not None and eac is not None else None
+    consumption_pct = (
+        eac / abs(budget_total) * Decimal(100)
+        if budget_total not in {None, Decimal(0)} and eac is not None
+        else None
+    )
+    if evidence_complete and eac is not None and budget_total is not None and eac > budget_total:
+        findings.append({"code": "EAC_EXCEEDS_BUDGET", "severity": "high", "excess": str(eac - budget_total)})
+        business_status = "attention"
+    elif evidence_complete:
+        business_status = "normal"
+    elif str(resolved.get("status") or "") == "blocked":
+        business_status = "blocked"
+    else:
+        business_status = "inconclusive"
+
+    def status(complete: bool, available: bool) -> str:
+        return "confirmed" if complete and available else "not_available" if complete else "unknown"
+
+    actual_status = status(actual_complete and actual_valid, actual_total is not None)
+    budget_status = status(budget_query_complete and budget_amount_valid, budget_total is not None)
+    commitment_status = status(commitment_query_complete and commitment_amount_valid, commitment_total is not None)
+    metric_values = {
+        "actual_amount": str(actual_total) if actual_total is not None else None,
+        "plan_amount": str(plan_total) if plan_total is not None else None,
+        "budget_amount": str(budget_total) if budget_total is not None else None,
+        "commitment_amount": str(commitment_total) if commitment_total is not None else None,
+        "estimate_at_completion": str(eac) if eac is not None else None,
+        "remaining_budget": str(remaining) if remaining is not None else None,
+        "budget_consumption_percent": (
+            str(consumption_pct.quantize(Decimal("0.01"))) if consumption_pct is not None else None
+        ),
+    }
+    metrics = [{"id": key, "value": value} for key, value in metric_values.items()]
+    headline_zh = (
+        f"预计完工成本占预算 {metric_values['budget_consumption_percent']}%"
+        if evidence_complete and metric_values["budget_consumption_percent"] is not None
+        else "订单/项目控制证据尚不完整"
+    )
+    headline_en = (
+        f"Estimate at completion consumes {metric_values['budget_consumption_percent']}% of budget"
+        if evidence_complete and metric_values["budget_consumption_percent"] is not None
+        else "Order/project control evidence is incomplete"
+    )
+    result = _result(
         inputs,
-        business_status="capability_blocked" if not complete else ("attention" if findings else "normal"),
-        headline_zh=(f"预计完工成本占预算 {consumption_pct.quantize(Decimal('0.01'))}%" if consumption_pct is not None else "订单/项目预算控制证据不可比较"),
-        headline_en=(f"Estimate at completion consumes {consumption_pct.quantize(Decimal('0.01'))}% of budget" if consumption_pct is not None else "Order/project budget-control evidence is not comparable"),
-        overview_zh="EAC 仅按实际加承诺计算；计划、预算、币种或对象归属不完整时不输出确定超预算结论。",
-        overview_en="EAC is calculated only as actual plus commitments; no confirmed over-budget conclusion is emitted when plan, budget, currency, or object attribution is incomplete.",
+        business_status=business_status,
+        headline_zh=headline_zh,
+        headline_en=headline_en,
+        overview_zh="预计完工成本只按实际成本加未清承诺计算；计划金额用于对比，不参与 EAC。缺失证据不会按零处理。",
+        overview_en="EAC is actual cost plus open commitments only; plan is comparative and is not included in EAC. Missing evidence is never treated as zero.",
         stages=[
-            _stage("master", "订单/WBS 主数据", "Order/WBS master", len(masters), state="confirmed" if _topic_complete(inputs, "master") else "unknown"),
-            _stage("actual", "实际成本", "Actual cost", len(actual), state="confirmed" if _topic_complete(inputs, "actual") else "unknown"),
-            _stage("plan", "计划成本", "Planned cost", len(plan), state="confirmed" if _topic_complete(inputs, "plan") else "unknown"),
-            _stage("budget", "预算", "Budget", len(budgets), state="confirmed" if _topic_complete(inputs, "budget") else "unknown"),
-            _stage("commitment", "承诺", "Commitments", len(commitments), state="confirmed" if _topic_complete(inputs, "commitment") else "unknown"),
+            _stage("master", "订单/WBS 主数据", "Order/WBS master", 1 if master_complete else 0, state="confirmed" if master_complete else "unknown"),
+            _stage("actual", "实际成本", "Actual cost", len(actual), state=actual_status),
+            _stage("plan", "计划成本", "Planned cost", len(plan), state="confirmed" if plan_status == "confirmed" else "unknown"),
+            _stage("budget", "预算", "Budget", len(budget_matching), state=budget_status),
+            _stage("commitment", "承诺", "Commitments", len(commitment_details), state=commitment_status),
         ],
         findings=findings,
-        metrics=[
-            {"id": "actual_amount", "value": str(actual_total)},
-            {"id": "plan_amount", "value": str(plan_total) if plan_available else None},
-            {"id": "budget_amount", "value": str(budget_total) if budget_available else None},
-            {"id": "commitment_amount", "value": str(commitment_total) if commitment_available else None},
-            {"id": "estimate_at_completion", "value": str(eac) if eac is not None else None},
-            {"id": "remaining_budget", "value": str(variance) if variance is not None else None},
-            {"id": "budget_consumption_pct", "value": str(consumption_pct.quantize(Decimal("0.01"))) if consumption_pct is not None else None},
-        ],
-        gaps=_gaps(inputs, *missing, *business_gaps),
-        actions_zh=["由内部订单或项目负责人复核承诺、未过账成本、预算补充和结算计划。"],
-        actions_en=["Have the internal-order or project owner review commitments, unposted cost, budget supplements, and settlement plans."],
-        source_complete_override=complete,
+        metrics=metrics,
+        gaps=evidence_gaps,
+        limitations=["no_currency_conversion"] if not currency_comparable else [],
+        actions_zh=["补齐报告中列出的计划、预算、承诺或对象主数据证据后重新运行。"] if evidence_gaps else ["由订单或项目负责人复核预计完工成本和剩余预算。"],
+        actions_en=["Complete the listed plan, budget, commitment, or object-master evidence and rerun."] if evidence_gaps else ["Have the order or project owner review EAC and remaining budget."],
+        source_complete_override=source_complete,
+        preserve_business_status_on_gap=True,
     )
+    resolved_public = {
+        key: resolved.get(key)
+        for key in (
+            "object_type",
+            "external_id",
+            "internal_id",
+            "object_number",
+            "company_code",
+            "controlling_area",
+            "project_internal_id",
+            "project_external_id",
+            "order_category",
+            "order_type",
+        )
+    }
+    extras: JsonObject = {
+        "resolved_object": resolved_public,
+        **metric_values,
+        "actual_status": actual_status,
+        "plan_status": plan_status,
+        "selected_planning_category": selected_category or None,
+        "available_planning_categories": categories,
+        "budget_status": budget_status,
+        "commitment_status": commitment_status,
+        "commitment_status_by_type": commitment_status_by_type,
+        "commitment_currency_role": commitment_currency_role or None,
+        "budget_ledger": configured_budget_ledger or None,
+        "budget_currency_role": budget_currency_role or None,
+        "comparison_currency": comparison_currency,
+        "mode_acceptance_status": mode_acceptance_status,
+        "evidence_complete": evidence_complete,
+        "evidence_gaps": evidence_gaps,
+    }
+    result.update(extras)
+    result["rule_id"] = "internal_order_project_control_deterministic_v4"
+    result["status"] = "complete" if evidence_complete else "inconclusive"
+    result["business_complete"] = evidence_complete
+    result["business_report"].update(
+        {
+            "source_complete": source_complete,
+            "evidence_complete": evidence_complete,
+            "resolved_object": resolved_public,
+            "selected_planning_category": selected_category or None,
+            "available_planning_categories": categories,
+            "budget_ledger": configured_budget_ledger or None,
+            "budget_currency_role": budget_currency_role or None,
+            "commitment_currency_role": commitment_currency_role or None,
+            "comparison_currency": comparison_currency,
+            "mode_acceptance_status": mode_acceptance_status,
+            "evidence_tables": [
+                {
+                    "id": "object_relationship",
+                    "title": {"zh": "控制对象关系", "en": "Control-object relationship"},
+                    "columns": ["object_type", "external_id", "internal_id", "object_number", "company_code", "controlling_area"],
+                    "rows": [resolved_public],
+                },
+                {
+                    "id": "actual_and_plan",
+                    "title": {"zh": "实际与计划", "en": "Actual and plan"},
+                    "columns": ["actual_amount", "plan_amount", "planning_category", "currency"],
+                    "rows": [{"actual_amount": metric_values["actual_amount"], "plan_amount": metric_values["plan_amount"], "planning_category": selected_category or None, "currency": comparison_currency}],
+                },
+                {
+                    "id": "budget",
+                    "title": {"zh": "预算", "en": "Budget"},
+                    "columns": ["budget_amount", "ledger", "value_type", "currency", "currency_role"],
+                    "rows": [{"budget_amount": metric_values["budget_amount"], "ledger": configured_budget_ledger or None, "value_type": accepted_version and "/".join(sorted(budget_types)), "currency": next(iter(budget_currencies), None), "currency_role": budget_currency_role or None}],
+                },
+                {
+                    "id": "commitments_by_type",
+                    "title": {"zh": "按值类型的承诺", "en": "Commitments by value type"},
+                    "columns": ["commitment_type", "amount", "currency", "currency_role", "status"],
+                    "rows": [{**row, "status": commitment_status_by_type.get(str(row.get("commitment_type") or ""), "unknown")} for row in commitment_groups],
+                },
+                {
+                    "id": "eac_and_remaining_budget",
+                    "title": {"zh": "预计完工成本与剩余预算", "en": "EAC and remaining budget"},
+                    "columns": ["estimate_at_completion", "remaining_budget", "budget_consumption_percent", "currency"],
+                    "rows": [{"estimate_at_completion": metric_values["estimate_at_completion"], "remaining_budget": metric_values["remaining_budget"], "budget_consumption_percent": metric_values["budget_consumption_percent"], "currency": comparison_currency}],
+                },
+            ],
+        }
+    )
+    result["workflow_output"].update(extras)
+    result["workflow_output"]["business_report"] = result["business_report"]
+    return result
 
 
 _EVALUATORS: dict[str, Callable[[JsonObject], JsonObject]] = {

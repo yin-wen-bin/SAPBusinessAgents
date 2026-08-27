@@ -2,13 +2,13 @@
 
 ## Verdict
 
-`BLOCKED` / `executable=false`
+`PASS` / `executable=true`
 
-- Tested at: `2026-08-25`
+- Tested at: `2026-08-26`
 - Sample: manufacturing order `1001233`, fiscal period `2020/011`, target-cost variant `1`
 - Cost source: `I_MfgOrderActlPlanTgtLdgrCost`
 - SAP write operations: none
-- Blocking limitation: `free_query_skill_execution`
+- Blocking limitation: none
 
 ## Reconciliation
 
@@ -16,11 +16,13 @@
 | --- | --- | --- |
 | Direct ADT multiline POST baseline | MATCH | HTTP 200; `totalRows=21`; 21 returned rows; complete |
 | Standalone `sap-production-order-cost-analysis` | MATCH | 21 raw rows; 8 cost elements; source and evidence complete |
-| Fixed SAPBusinessAgents Agent | MATCH | `acceptance_b0d862aca7c64733`; complete and validated |
-| Free query | BLOCKED | `run_dadcfcabc3da4c93` used invalid bindings; corrected `run_17d7a4dd62814b11` was rejected by the Harness single-use gap-token gate |
+| Fixed SAPBusinessAgents Agent | MATCH | `acceptance_43e0f4902a42456e`; complete and validated |
+| Free query | MATCH | `run_2e948659365248b6`; approved Skill executed through a run-, Skill-, and input-bound single-use token; complete and validated |
 
-The three successful stages agree on plan `-164.26 USD`, target `-140.08 USD`, actual `211.96 USD`, and actual-minus-target `352.04 USD`, as well as order, ledger `0L`, currency, period, raw-row count, cost-element count, and completeness.
+All four stages agree on plan `-164.26 USD`, target `-140.08 USD`, actual `211.96 USD`, and actual-minus-target `352.04 USD`, as well as order, ledger `0L`, currency role `10`, period, 21 raw rows, eight cost elements, and completeness. The normalized free-query and fixed-Agent business evidence hashes are both `sha256:9dc8bb13e982ebba95640f73e96f7ac58033c3c88ee1304db1224b62759412b7`.
 
 ## Acceptance decision
 
-The production-cost evidence gap is closed. Promotion to `PASS/executable=true` is intentionally withheld because the required free-query comparison did not execute the Skill and therefore cannot be claimed as `MATCH`. After the Harness execution gate is repaired, the free query must reproduce the same complete evidence and totals before promotion.
+The production-cost evidence and free-query execution gaps are closed. The Harness now issues generic gap tokens only for registered, available, `read_only=true`, `validated=true` Skills after OData evidence assessment. Each token is bound to one run, one Skill, and the exact validated input, expires, and is consumed once. The Agent is promoted to `PASS/executable=true` because both required comparison paths are `MATCH`.
+
+Earlier runs `run_dadcfcabc3da4c93` and `run_17d7a4dd62814b11` remain immutable evidence of the pre-fix field-binding and gate failures; they are not used as acceptance evidence.

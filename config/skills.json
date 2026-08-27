@@ -26,6 +26,32 @@
       "read_only": true,
       "validated": true,
       "timeout": 600
+    },
+    {
+      "skill_id": "sap-wbs-object-resolver",
+      "description": {
+        "zh": "通过两个固定只读 OData 源将 WBS 外部编号解析为唯一控制对象。",
+        "en": "Resolves one WBS external ID to a unique control object through two fixed read-only OData sources."
+      },
+      "entrypoint": "skills/CO/sap-wbs-object-resolver/run.py",
+      "input_schema_path": "skills/CO/sap-wbs-object-resolver/references/input.schema.json",
+      "output_schema_path": "skills/CO/sap-wbs-object-resolver/references/output.schema.json",
+      "read_only": true,
+      "validated": true,
+      "timeout": 120
+    },
+    {
+      "skill_id": "sap-control-object-commitment-evidence",
+      "description": {
+        "zh": "按财政年度和会计期间读取 WBS 或内部订单的权威剩余承诺；目标来源未验证时关闭。",
+        "en": "Reads authoritative remaining commitments for a WBS or internal order by fiscal year and accounting period; disabled until a target source is validated."
+      },
+      "entrypoint": "skills/CO/sap-control-object-commitment-evidence/run.py",
+      "input_schema_path": "skills/CO/sap-control-object-commitment-evidence/references/input.schema.json",
+      "output_schema_path": "skills/CO/sap-control-object-commitment-evidence/references/output.schema.json",
+      "read_only": true,
+      "validated": false,
+      "timeout": 180
     }
   ]
 }

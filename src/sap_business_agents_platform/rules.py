@@ -46,6 +46,10 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
         return prepare_billing_block_code_text_lookups(inputs)
     if operation == "classify_control_object":
         return classify_control_object(inputs)
+    if operation == "prepare_control_object_lookup":
+        return prepare_control_object_lookup(inputs)
+    if operation == "resolve_control_object_master":
+        return resolve_control_object_master(inputs)
     if operation == "assess_o2c_document_flow":
         return assess_o2c_document_flow(inputs)
     if operation == "evidence_summary":
@@ -440,6 +444,163 @@ def assess_billing_block_incompletion(inputs: dict[str, Any]) -> dict[str, Any]:
         "needs_adt": {"item_incompletion": needs_adt},
         "adt_sales_order": _internal_sd_key(sales_order, 10),
         "adt_preflight_item": ordered_items[0] if ordered_items else "",
+    }
+
+
+def prepare_control_object_lookup(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one public control-object identifier into its bounded master lookup."""
+
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else inputs
+    object_type = str(run_input.get("object_type") or "").strip().upper()
+    object_id = str(run_input.get("object_id") or "").strip()
+    planning_category = str(run_input.get("planning_category") or "").strip().upper()
+    if object_type not in {"INTERNAL_ORDER", "WBS"}:
+        raise ValueError("prepare_control_object_lookup requires INTERNAL_ORDER or WBS")
+    if not object_id:
+        raise ValueError("prepare_control_object_lookup requires object_id")
+    if object_type == "INTERNAL_ORDER":
+        object_id = object_id.upper()
+    lookup_id = object_id.zfill(12) if object_type == "INTERNAL_ORDER" and object_id.isdigit() else object_id
+    return {
+        "rule_id": "control_object_lookup_v3",
+        "status": "complete",
+        "object_type": object_type,
+        "external_object_id": object_id,
+        "lookup_id": lookup_id,
+        "planning_category": planning_category,
+        "has_planning_category": bool(planning_category),
+        "discover_planning_category": not bool(planning_category),
+        "is_internal_order": object_type == "INTERNAL_ORDER",
+        "is_wbs": object_type == "WBS",
+    }
+
+
+def resolve_control_object_master(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Validate AUFK or resolver evidence and expose authoritative downstream keys."""
+
+    lookup = inputs.get("lookup")
+    if not isinstance(lookup, dict):
+        raise ValueError("resolve_control_object_master requires lookup")
+    object_type = str(lookup.get("object_type") or "").strip().upper()
+    company_code = str(inputs.get("company_code") or "").strip().upper()
+    wbs_resolver = inputs.get("wbs_resolver")
+    using_wbs_resolver = object_type == "WBS" and isinstance(wbs_resolver, dict)
+    payload = inputs.get("order_master") if object_type == "INTERNAL_ORDER" else inputs.get("wbs_master")
+    rows: list[dict[str, Any]] = []
+    for group in _collect_values(payload, "rows"):
+        if isinstance(group, list):
+            rows.extend(dict(row) for row in group if isinstance(row, dict))
+    source_flags = _collect_source_complete(payload)
+    source_complete = bool(source_flags) and all(source_flags)
+    issues: list[str] = []
+    candidates: list[dict[str, Any]] = []
+
+    if object_type == "INTERNAL_ORDER":
+        lookup_id = str(lookup.get("lookup_id") or "").strip().upper()
+        for row in rows:
+            order = str(row.get("AUFNR") or "").strip().upper()
+            if order == lookup_id:
+                candidates.append(row)
+        if candidates and any(str(row.get("AUTYP") or "").strip() != "01" for row in candidates):
+            issues.append("object_type_mismatch")
+            candidates = []
+        company_field = "BUKRS"
+        internal_field = "AUFNR"
+        external_id = str(lookup.get("external_object_id") or "")
+        controlling_fields = ("KOKRS",)
+    elif object_type == "WBS":
+        external_id = str(lookup.get("external_object_id") or "").strip()
+        if using_wbs_resolver:
+            completeness = (
+                wbs_resolver.get("completeness")
+                if isinstance(wbs_resolver.get("completeness"), dict)
+                else {}
+            )
+            source_complete = bool(
+                wbs_resolver.get("status") == "complete"
+                and wbs_resolver.get("resolution_status") == "resolved"
+                and wbs_resolver.get("read_only") is True
+                and wbs_resolver.get("validated") is True
+                and completeness.get("source_complete") is True
+                and completeness.get("paging_complete") is True
+                and completeness.get("evidence_complete") is True
+            )
+            resolved = (
+                wbs_resolver.get("resolved_object")
+                if isinstance(wbs_resolver.get("resolved_object"), dict)
+                else {}
+            )
+            candidates = [dict(resolved)] if resolved else []
+            if resolved and str(resolved.get("object_type") or "").upper() != "WBS":
+                issues.append("object_type_mismatch")
+            company_field = "company_code"
+            internal_field = "internal_id"
+            controlling_fields = ("controlling_area",)
+            if not source_complete:
+                for issue in wbs_resolver.get("validation_issues") or []:
+                    if isinstance(issue, dict) and issue.get("code"):
+                        issues.append(str(issue["code"]))
+        else:
+            candidates = [
+                row
+                for row in rows
+                if str(row.get("POSID") or "").strip() == external_id
+            ]
+            company_field = "PBUKR"
+            internal_field = "PSPNR"
+            controlling_fields = ("PKOKR", "KOKRS")
+    else:
+        raise ValueError("resolve_control_object_master requires INTERNAL_ORDER or WBS")
+
+    if not source_complete:
+        issues.append("master_source_incomplete")
+    if len(candidates) != 1:
+        issues.append("control_object_not_found" if not candidates else "control_object_ambiguous")
+    row = candidates[0] if len(candidates) == 1 else {}
+    observed_company = str(row.get(company_field) or row.get("BUKRS") or "").strip().upper()
+    if row and (not observed_company or observed_company != company_code):
+        issues.append("company_code_mismatch")
+    internal_id = str(row.get(internal_field) or "").strip().upper()
+    object_number = str(row.get("object_number") or row.get("OBJNR") or "").strip().upper()
+    controlling_area = next(
+        (str(row.get(field) or "").strip().upper() for field in controlling_fields if row.get(field)),
+        "",
+    )
+    if row and (not internal_id or not object_number or not controlling_area):
+        issues.append("master_key_incomplete")
+    if object_type == "WBS" and row:
+        observed_external = str(row.get("external_id") or row.get("POSID") or "").strip()
+        if observed_external != external_id:
+            issues.append("wbs_external_id_mismatch")
+        external_id = observed_external
+
+    ready = bool(row) and source_complete and not issues
+    has_planning_category = bool(str(lookup.get("planning_category") or "").strip())
+    return {
+        "rule_id": "control_object_master_resolution_v3",
+        "status": "complete" if ready else ("blocked" if not source_complete else "inconclusive"),
+        "ready": ready,
+        "source_complete": source_complete,
+        "object_type": object_type,
+        "is_internal_order": object_type == "INTERNAL_ORDER",
+        "is_wbs": object_type == "WBS",
+        "can_read_order": ready and object_type == "INTERNAL_ORDER",
+        "can_read_wbs": ready and object_type == "WBS",
+        "can_read_order_plan": ready and object_type == "INTERNAL_ORDER" and has_planning_category,
+        "can_discover_order_plan": ready and object_type == "INTERNAL_ORDER" and not has_planning_category,
+        "can_read_wbs_plan": ready and object_type == "WBS" and has_planning_category,
+        "can_discover_wbs_plan": ready and object_type == "WBS" and not has_planning_category,
+        "planning_category": str(lookup.get("planning_category") or "").strip().upper(),
+        "external_id": external_id,
+        "internal_id": internal_id,
+        "object_number": object_number,
+        "company_code": observed_company,
+        "controlling_area": controlling_area,
+        "order_category": str(row.get("AUTYP") or "").strip(),
+        "order_type": str(row.get("AUART") or "").strip(),
+        "project_internal_id": str(row.get("project_internal_id") or "").strip(),
+        "project_external_id": str(row.get("project_external_id") or "").strip(),
+        "issues": sorted(set(issues)),
     }
 
 

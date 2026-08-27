@@ -267,9 +267,36 @@ class InventorySapRead(FakeSapRead):
         return await super().execute_plan(plan)
 
 class FakeSkills:
+    def list(self):
+        return [
+            {
+                "skill_id": skill_id,
+                "read_only": True,
+                "validated": True,
+                "available": True,
+            }
+            for skill_id in (
+                "sap-adt-table-export",
+                "sap-production-order-cost-analysis",
+                "sap-wbs-object-resolver",
+            )
+        ]
+
+    def get(self, skill_id: str):
+        for skill in self.list():
+            if skill["skill_id"] == skill_id:
+                return skill
+        raise KeyError(skill_id)
+
     def validate_input(self, skill_id: str, input_payload):
         if input_payload.get("schema_version") != 1:
             raise ValueError("invalid mock skill input")
+        if skill_id == "sap-wbs-object-resolver" and set(input_payload) != {
+            "schema_version",
+            "wbs_external_id",
+            "company_code",
+        }:
+            raise ValueError("invalid mock resolver input")
 
     async def execute(self, skill_id: str, input_payload):
         return {
@@ -1124,8 +1151,256 @@ async def _broker_scenario(tmp_path: Path) -> None:
     assert recovered_skill["source_type"] == "sap_skill"
 
 
+def test_broker_issues_input_bound_tokens_for_any_approved_read_only_skill(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        store = RunStore(settings.database_path)
+        run_id = "run_generic_skill"
+        store.create_run(
+            run_id,
+            RunCreate(mode=RunMode.free_query, query="production order cost variance"),
+        )
+        broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+        token = broker.open_session(run_id)
+        await broker.handle(run_id, token, "sap_catalog_search", {"query": "production cost"})
+        await broker.handle(
+            run_id,
+            token,
+            "sap_schema_get",
+            {
+                "service_name": "API_TEST_SRV",
+                "odata_version": "2.0",
+                "entity_sets": ["A_Test"],
+            },
+        )
+        plan = {
+            "service_name": "API_TEST_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_Test",
+            "http_method": "GET",
+        }
+        await broker.handle(run_id, token, "sap_query_validate", {"plan": plan})
+        executed = await broker.handle(run_id, token, "sap_query_execute", {"plan": plan})
+        skill_input = {
+            "schema_version": 1,
+            "manufacturing_order": "1001233",
+            "fiscal_year": "2020",
+            "period": 11,
+            "target_cost_variant": 1,
+        }
+        assessed = await broker.handle(
+            run_id,
+            token,
+            "sap_evidence_assess",
+            {
+                "question": "production order cost variance",
+                "evidence_refs": [executed["evidence_ref"]],
+                "missing_evidence": ["plan target and actual production costs"],
+                "skill_id": "sap-production-order-cost-analysis",
+                "skill_input": skill_input,
+            },
+        )
+        assert assessed["skill_eligible"] is True
+        assert assessed["adt_eligible"] is False
+        assert assessed["skill_id"] == "sap-production-order-cost-analysis"
+        assert assessed["skill_input_hash"].startswith("sha256:")
+        stored_assessment = next(
+            call
+            for call in store.list_harness_tool_calls(run_id)
+            if call["tool_name"] == "sap_evidence_assess"
+            and (call.get("safe_input") or {}).get("question")
+            == "production order cost variance"
+        )
+        assert stored_assessment["output"]["gap_token"].startswith("sha256:")
+        assert assessed["gap_token"] not in json.dumps(stored_assessment)
+
+        missing_input = await broker.handle(
+            run_id,
+            token,
+            "sap_evidence_assess",
+            {
+                "question": "missing Skill input",
+                "evidence_refs": [executed["evidence_ref"]],
+                "missing_evidence": ["cost evidence without a bound input"],
+                "skill_id": "sap-production-order-cost-analysis",
+            },
+        )
+        assert missing_input["code"] == "skill_input_required"
+        unapproved = await broker.handle(
+            run_id,
+            token,
+            "sap_evidence_assess",
+            {
+                "question": "unapproved Skill",
+                "evidence_refs": [executed["evidence_ref"]],
+                "missing_evidence": ["unapproved evidence"],
+                "skill_id": "unapproved-skill",
+                "skill_input": {"schema_version": 1},
+            },
+        )
+        assert unapproved["code"] == "skill_not_approved"
+
+        other_run_id = "run_generic_skill_other"
+        store.create_run(
+            other_run_id,
+            RunCreate(mode=RunMode.free_query, query="other run"),
+        )
+        other_token = broker.open_session(other_run_id)
+        cross_run = await broker.handle(
+            other_run_id,
+            other_token,
+            "sap_skill_execute",
+            {
+                "skill_id": "sap-production-order-cost-analysis",
+                "gap_token": assessed["gap_token"],
+                "input": skill_input,
+            },
+        )
+        assert cross_run["code"] == "gap_token_invalid"
+
+        mismatched = await broker.handle(
+            run_id,
+            token,
+            "sap_skill_execute",
+            {
+                "skill_id": "sap-production-order-cost-analysis",
+                "gap_token": assessed["gap_token"],
+                "input": {**skill_input, "period": 12},
+            },
+        )
+        assert mismatched["code"] == "gap_token_input_mismatch"
+        wrong_skill = await broker.handle(
+            run_id,
+            token,
+            "sap_skill_execute",
+            {
+                "skill_id": "sap-adt-table-export",
+                "gap_token": assessed["gap_token"],
+                "input": skill_input,
+            },
+        )
+        assert wrong_skill["code"] == "gap_token_invalid"
+        completed = await broker.handle(
+            run_id,
+            token,
+            "sap_skill_execute",
+            {
+                "skill_id": "sap-production-order-cost-analysis",
+                "gap_token": assessed["gap_token"],
+                "input": skill_input,
+            },
+        )
+        assert completed["source_type"] == "sap_skill"
+        reused = await broker.handle(
+            run_id,
+            token,
+            "sap_skill_execute",
+            {
+                "skill_id": "sap-production-order-cost-analysis",
+                "gap_token": assessed["gap_token"],
+                "input": skill_input,
+            },
+        )
+        assert reused["idempotent_replay"] is True
+
+        pending = await broker.handle(
+            run_id,
+            token,
+            "sap_evidence_assess",
+            {
+                "question": "production order cost variance after restart",
+                "evidence_refs": [executed["evidence_ref"]],
+                "missing_evidence": ["restart-safe cost evidence"],
+                "skill_id": "sap-production-order-cost-analysis",
+                "skill_input": skill_input,
+            },
+        )
+        broker.close_session(run_id)
+        recovered = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+        recovered_token = recovered.open_session(run_id)
+        recovered_skill = await recovered.handle(
+            run_id,
+            recovered_token,
+            "sap_skill_execute",
+            {
+                "skill_id": "sap-production-order-cost-analysis",
+                "gap_token": pending["gap_token"],
+                "input": skill_input,
+            },
+        )
+        assert recovered_skill["source_type"] == "sap_skill"
+
+    asyncio.run(scenario())
+
+
 def test_dynamic_gateway_only_runs_admitted_pure_compute() -> None:
     asyncio.run(_dynamic_gateway_scenario())
+
+
+def test_broker_binds_wbs_resolver_token_to_exact_skill_and_input(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        store = RunStore(settings.database_path)
+        run_id = "run_wbs_resolver"
+        store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="resolve WBS"))
+        broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+        token = broker.open_session(run_id)
+        await broker.handle(run_id, token, "sap_catalog_search", {"query": "WBS"})
+        await broker.handle(
+            run_id,
+            token,
+            "sap_schema_get",
+            {"service_name": "API_TEST_SRV", "odata_version": "2.0", "entity_sets": ["A_Test"]},
+        )
+        plan = {"service_name": "API_TEST_SRV", "odata_version": "2.0", "entity_set": "A_Test", "http_method": "GET"}
+        await broker.handle(run_id, token, "sap_query_validate", {"plan": plan})
+        executed = await broker.handle(run_id, token, "sap_query_execute", {"plan": plan})
+        resolver_input = {"schema_version": 1, "wbs_external_id": "P-100.01", "company_code": "1710"}
+        assessed = await broker.handle(
+            run_id,
+            token,
+            "sap_evidence_assess",
+            {
+                "question": "resolve one WBS",
+                "evidence_refs": [executed["evidence_ref"]],
+                "missing_evidence": ["authoritative WBS relationship"],
+                "skill_id": "sap-wbs-object-resolver",
+                "skill_input": resolver_input,
+            },
+        )
+        assert assessed["skill_eligible"] is True
+        changed = await broker.handle(
+            run_id,
+            token,
+            "sap_skill_execute",
+            {"skill_id": "sap-wbs-object-resolver", "gap_token": assessed["gap_token"], "input": {**resolver_input, "company_code": "1010"}},
+        )
+        assert changed["code"] == "gap_token_input_mismatch"
+        wrong_skill = await broker.handle(
+            run_id,
+            token,
+            "sap_skill_execute",
+            {"skill_id": "sap-production-order-cost-analysis", "gap_token": assessed["gap_token"], "input": resolver_input},
+        )
+        assert wrong_skill["code"] == "gap_token_invalid"
+        completed = await broker.handle(
+            run_id,
+            token,
+            "sap_skill_execute",
+            {"skill_id": "sap-wbs-object-resolver", "gap_token": assessed["gap_token"], "input": resolver_input},
+        )
+        assert completed["source_type"] == "sap_skill"
+        replay = await broker.handle(
+            run_id,
+            token,
+            "sap_skill_execute",
+            {"skill_id": "sap-wbs-object-resolver", "gap_token": assessed["gap_token"], "input": resolver_input},
+        )
+        assert replay["idempotent_replay"] is True
+
+    asyncio.run(scenario())
 
 
 async def _dynamic_gateway_scenario() -> None:
