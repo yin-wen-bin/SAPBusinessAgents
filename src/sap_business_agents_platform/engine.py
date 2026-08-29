@@ -884,6 +884,56 @@ class RunCoordinator:
                 total_units=total_nodes,
                 determinate=True,
             )
+            try:
+                should_run = _workflow_run_if_matches(
+                    node,
+                    record.input,
+                    node_outputs,
+                )
+            except WorkflowError as exc:
+                raise RunExecutionError(str(exc), code=exc.code, detail=exc.detail) from exc
+            if not should_run:
+                degraded = True
+                blocked_nodes.add(node_id)
+                skipped_completeness = {
+                    "source_complete": False,
+                    "business_complete": False,
+                    "reason": "The node's required upstream collection was empty.",
+                    "missing_evidence": ["workflow_node_skipped_empty_input"],
+                }
+                result.node_results.append(
+                    {
+                        "node_id": node_id,
+                        "agent_id": agent_id,
+                        "status": "skipped",
+                        "reason": "Required upstream collection is empty.",
+                        "error": {
+                            "code": "node_skipped_empty_input",
+                            "message": "Required upstream collection is empty.",
+                        },
+                        "completeness": skipped_completeness,
+                    }
+                )
+                self.store.append_event(
+                    run_id,
+                    "node_skipped_empty_input",
+                    {
+                        "node_id": node_id,
+                        "agent_id": agent_id,
+                        "reason": "Required upstream collection is empty.",
+                    },
+                )
+                self.store.update_run(run_id, result_json=result)
+                self._set_progress(
+                    run_id,
+                    phase="validating_evidence",
+                    state="active",
+                    current_node_id=node_id,
+                    completed_units=node_index + 1,
+                    total_units=total_nodes,
+                    determinate=True,
+                )
+                continue
             self.store.append_event(
                 run_id,
                 "node_started",
@@ -1380,8 +1430,29 @@ class RunCoordinator:
                 if str(gap)
             }
         )
+        output_source_flags: list[bool] = []
+        output_evidence_flags: list[bool] = []
+        for item in result.node_results:
+            if isinstance(item.get("output"), dict):
+                _collect_workflow_completeness_flags(
+                    item["output"],
+                    output_source_flags,
+                    output_evidence_flags,
+                )
+        if any(value is False for value in output_source_flags):
+            source_complete = False
+            missing.append("workflow_node_source_incomplete")
+        if any(value is False for value in output_evidence_flags):
+            business_complete = False
+            missing.append("workflow_node_evidence_incomplete")
         if any(item.get("status") == "skipped" for item in result.node_results):
             missing.append("workflow_node_skipped")
+            source_complete = False
+            business_complete = False
+            if "source_complete" in result.workflow_output:
+                result.workflow_output["source_complete"] = False
+            if "evidence_complete" in result.workflow_output:
+                result.workflow_output["evidence_complete"] = False
         result.completeness = Completeness(
             source_complete=source_complete,
             business_complete=business_complete and not degraded,
@@ -2805,17 +2876,30 @@ def _resolve_workflow_output(
     node_outputs: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     output: dict[str, Any] = {}
+    required = {str(item) for item in workflow.get("outputSchema", {}).get("required") or []}
     for item in workflow.get("outputs") or []:
         name = str(item.get("name") or "")
-        if item.get("aggregate") is not None:
-            output[name] = _resolve_workflow_aggregate(
-                item["aggregate"], workflow_input, node_outputs
-            )
-        else:
-            value = _resolve_workflow_source(
-                item.get("source") or {}, workflow_input, node_outputs
-            )
-            output[name] = apply_transform(value, item.get("transform"))
+        try:
+            if item.get("aggregate") is not None:
+                output[name] = _resolve_workflow_aggregate(
+                    item["aggregate"],
+                    workflow_input,
+                    node_outputs,
+                    conditional_nodes={
+                        str(node.get("id") or "")
+                        for node in workflow.get("nodes") or []
+                        if isinstance(node, dict) and isinstance(node.get("runIf"), dict)
+                    },
+                )
+            else:
+                value = _resolve_workflow_source(
+                    item.get("source") or {}, workflow_input, node_outputs
+                )
+                output[name] = apply_transform(value, item.get("transform"))
+        except WorkflowError as exc:
+            if exc.code == "workflow_output_unavailable" and name not in required:
+                continue
+            raise
     return output
 
 
@@ -2896,10 +2980,20 @@ def _resolve_workflow_aggregate(
     aggregate: dict[str, Any],
     workflow_input: dict[str, Any],
     node_outputs: dict[str, dict[str, Any]],
+    conditional_nodes: set[str] | None = None,
 ) -> Any:
     values: list[Any] = []
     for source in aggregate.get("sources") or []:
-        value = _resolve_workflow_source(source, workflow_input, node_outputs)
+        try:
+            value = _resolve_workflow_source(source, workflow_input, node_outputs)
+        except WorkflowError as exc:
+            if (
+                exc.code == "workflow_output_unavailable"
+                and source.get("scope") == "node_output"
+                and str(source.get("nodeId") or "") in (conditional_nodes or set())
+            ):
+                continue
+            raise
         values.extend(value if isinstance(value, list) else [value])
     operator = str(aggregate.get("operator") or "")
     if operator == "collect":
@@ -2916,6 +3010,41 @@ def _resolve_workflow_aggregate(
             raise WorkflowError("Cannot aggregate an empty status list.", code="workflow_output_unavailable")
         return min((str(value) for value in values), key=lambda value: rank.get(value, -1))
     raise WorkflowError("Workflow aggregate is unsupported.", code="mapping_failed")
+
+
+def _workflow_run_if_matches(
+    node: dict[str, Any],
+    workflow_input: dict[str, Any],
+    node_outputs: dict[str, dict[str, Any]],
+) -> bool:
+    condition = node.get("runIf")
+    if not isinstance(condition, dict):
+        return True
+    if condition.get("operator") != "non_empty":
+        raise WorkflowError("Workflow runIf operator is unsupported.", code="mapping_failed")
+    value = _resolve_workflow_source(
+        condition.get("source") or {}, workflow_input, node_outputs
+    )
+    return isinstance(value, (str, list, dict)) and len(value) > 0
+
+
+def _collect_workflow_completeness_flags(
+    value: Any,
+    source_flags: list[bool],
+    evidence_flags: list[bool],
+) -> None:
+    if isinstance(value, dict):
+        if isinstance(value.get("source_complete"), bool):
+            source_flags.append(value["source_complete"])
+        if isinstance(value.get("evidence_complete"), bool):
+            evidence_flags.append(value["evidence_complete"])
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                _collect_workflow_completeness_flags(child, source_flags, evidence_flags)
+    elif isinstance(value, list):
+        for child in value:
+            if isinstance(child, (dict, list)):
+                _collect_workflow_completeness_flags(child, source_flags, evidence_flags)
 
 
 def _normalize_free_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:

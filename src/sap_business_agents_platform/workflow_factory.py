@@ -16,6 +16,7 @@ from .database import RunStore
 from .engine import RunCoordinator
 from .models import RunStatus, TERMINAL_STATUSES, WorkflowDraftRecord, utc_now
 from .workflow_composer import (
+    WORKFLOW_COMPILER_VERSION,
     WorkflowCompositionError,
     compact_agent_catalog,
     compile_workflow_proposal,
@@ -126,6 +127,7 @@ class WorkflowDraftService:
             "clarification_question": "",
             "clarification_history": [],
             "error": None,
+            "compiler_version": WORKFLOW_COMPILER_VERSION,
         }
         draft.updated_at = utc_now()
         self.store.save_workflow_draft(draft)
@@ -158,6 +160,11 @@ class WorkflowDraftService:
 
     def reconcile(self, draft_id: str) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
+        previous_revision = draft.revision
+        migrated = self._ensure_compiler_v2(draft)
+        if migrated.revision != previous_revision:
+            return migrated
+        draft = migrated
         if draft.status != "needs_agents":
             return draft
         current_catalog = compact_agent_catalog(self.agents)
@@ -266,7 +273,7 @@ class WorkflowDraftService:
         *,
         auto_discover: bool,
     ) -> WorkflowDraftRecord:
-        current = self.store.get_workflow_draft(draft_id)
+        current = self._ensure_compiler_v2(self.store.get_workflow_draft(draft_id))
         gaps = list(current.composition.get("gaps") or [])
         if gaps:
             raise WorkflowDraftError(
@@ -285,30 +292,58 @@ class WorkflowDraftService:
         if auto_discover:
             validation_input = await self._discover_missing_inputs(draft, validation_input)
         review_workflow = getattr(self.author, "review_workflow", None)
-        if callable(review_workflow):
-            try:
-                provider_id = str(
-                    draft.composition.get("runtime_provider_id") or "codex"
-                )
-                pin = getattr(self.author, "pin", None)
-                context = pin(provider_id) if callable(pin) else nullcontext()
-                with context:
-                    review = await review_workflow(
+        if not callable(review_workflow):
+            self._fail_runtime_review(
+                draft,
+                code="workflow_runtime_review_unavailable",
+                message="The selected Agent Runtime does not support workflow review.",
+                error_type="UnsupportedCapability",
+            )
+        try:
+            provider_id = str(
+                draft.composition.get("runtime_provider_id") or "codex"
+            )
+            pin = getattr(self.author, "pin", None)
+            context = pin(provider_id) if callable(pin) else nullcontext()
+            with context:
+                raw_review = await asyncio.wait_for(
+                    review_workflow(
                         workflow=draft.workflow,
                         agent_contracts=self._agent_contracts(draft.workflow),
                         validation_input={key: "<provided>" for key in validation_input},
                         thread_id=draft.thread_id,
-                    )
-                draft.thread_id = str(review.get("thread_id") or draft.thread_id or "") or None
-                draft.validation["codex_review"] = {
-                    "zh": str(review.get("zh") or ""),
-                    "en": str(review.get("en") or ""),
+                    ),
+                    timeout=min(180.0, max(1.0, float(self.settings.max_run_seconds))),
+                )
+            review = _validated_runtime_review(raw_review)
+        except Exception as exc:
+            self._fail_runtime_review(
+                draft,
+                code="workflow_runtime_review_unavailable",
+                message="Agent Runtime review was unavailable or returned an invalid contract.",
+                error_type=type(exc).__name__,
+            )
+        draft.thread_id = str(raw_review.get("thread_id") or draft.thread_id or "") or None
+        draft.validation["runtime_review"] = review
+        if review["verdict"] == "block":
+            draft.status = "needs_review"
+            draft.validation_run_id = None
+            draft.validation.update(
+                {
+                    "valid": True,
+                    "live_status": "blocked",
+                    "issues": review["issues"],
+                    "workflow_hash": workflow_digest(draft.workflow),
                 }
-            except Exception as exc:
-                draft.validation["codex_review"] = {
-                    "warning": "Agent Runtime review was unavailable; deterministic validation continued.",
-                    "error_type": type(exc).__name__,
-                }
+            )
+            draft.updated_at = utc_now()
+            self._write_draft(draft)
+            self.store.save_workflow_draft(draft)
+            raise WorkflowDraftError(
+                "Agent Runtime blocked live validation. Resolve the reported workflow issues first.",
+                code="workflow_runtime_review_blocked",
+                detail={"review": review},
+            )
         run_id = await self.coordinator.submit_workflow_snapshot(
             draft.workflow,
             validation_input,
@@ -340,6 +375,48 @@ class WorkflowDraftService:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return draft
+
+    def _fail_runtime_review(
+        self,
+        draft: WorkflowDraftRecord,
+        *,
+        code: str,
+        message: str,
+        error_type: str,
+    ) -> None:
+        issue = {
+            "code": code,
+            "severity": "error",
+            "node_id": None,
+            "port": None,
+            "message": {
+                "zh": "Agent Runtime 复核不可用或返回格式无效，真机验证已停止。",
+                "en": message,
+            },
+        }
+        draft.status = "needs_review"
+        draft.validation_run_id = None
+        draft.validation.update(
+            {
+                "valid": True,
+                "live_status": "blocked",
+                "issues": [issue],
+                "runtime_review": {
+                    "verdict": "block",
+                    "issues": [issue],
+                    "summary": {
+                        "zh": "Agent Runtime 复核失败，未启动 SAP 查询。",
+                        "en": message,
+                    },
+                    "error_type": error_type,
+                },
+                "workflow_hash": workflow_digest(draft.workflow),
+            }
+        )
+        draft.updated_at = utc_now()
+        self._write_draft(draft)
+        self.store.save_workflow_draft(draft)
+        raise WorkflowDraftError(message, code=code, detail={"review": draft.validation["runtime_review"]})
 
     def _schedule_composition(
         self, draft_id: str, *, clarification_input: str | None = None
@@ -421,6 +498,7 @@ class WorkflowDraftService:
             composition["clarification_history"] = list(
                 draft.composition.get("clarification_history") or []
             )
+            composition["runtime_provider_id"] = provider_id
             composition["reconciling"] = False
             diff = _json_diff(draft.workflow, workflow)
             draft.workflow = workflow
@@ -451,6 +529,76 @@ class WorkflowDraftService:
             draft.composition["reconciling"] = False
             draft.updated_at = utc_now()
             self.store.save_workflow_draft(draft)
+
+    def _ensure_compiler_v2(self, draft: WorkflowDraftRecord) -> WorkflowDraftRecord:
+        if draft.status == "published":
+            return draft
+        stages = draft.composition.get("stages")
+        requirement = str(draft.composition.get("requirement") or "").strip()
+        if not isinstance(stages, list) or not stages or not requirement:
+            return draft
+        catalog = compact_agent_catalog(self.agents)
+        if (
+            int(draft.composition.get("compiler_version") or 0) >= WORKFLOW_COMPILER_VERSION
+            and draft.composition.get("catalog_digest") == catalog["digest"]
+        ):
+            return draft
+        proposal = {
+            "intent": deepcopy_json(draft.composition.get("intent") or {}),
+            "title": deepcopy_json(draft.workflow.get("title") or {}),
+            "description": deepcopy_json(draft.workflow.get("description") or {}),
+            "validation_defaults": deepcopy_json(
+                draft.composition.get("validation_defaults") or {}
+            ),
+            "stages": deepcopy_json(stages),
+        }
+        try:
+            workflow, composition = compile_workflow_proposal(
+                workflow_id=str(draft.workflow["id"]),
+                requirement=requirement,
+                locale=str(draft.composition.get("locale") or "zh"),
+                proposal=proposal,
+                catalog=catalog,
+                agents=self.agents,
+            )
+        except WorkflowCompositionError as exc:
+            raise WorkflowDraftError(
+                str(exc),
+                code=getattr(exc, "code", "workflow_recompile_failed"),
+                detail=getattr(exc, "detail", None),
+            ) from exc
+        previous_gaps = {
+            str(item.get("gap_id") or ""): item
+            for item in draft.composition.get("gaps") or []
+            if isinstance(item, dict)
+        }
+        for gap in composition.get("gaps") or []:
+            prior = previous_gaps.get(str(gap.get("gap_id") or "")) or {}
+            if prior.get("agent_draft_id"):
+                gap["agent_draft_id"] = prior["agent_draft_id"]
+                gap["status"] = prior.get("status") or "agent_draft_created"
+        composition["clarification_history"] = deepcopy_json(
+            draft.composition.get("clarification_history") or []
+        )
+        composition["runtime_provider_id"] = str(
+            draft.composition.get("runtime_provider_id") or "codex"
+        )
+        composition["reconciling"] = False
+        diff = _json_diff(draft.workflow, workflow)
+        draft.workflow = workflow
+        draft.composition = composition
+        if diff:
+            draft.revision += 1
+        draft.status = "needs_agents" if composition.get("gaps") else "draft"
+        draft.validation_run_id = None
+        draft.validation = {
+            "valid": False,
+            "issues": ["Workflow was recompiled with compiler version 2 and must be validated."],
+        }
+        draft.updated_at = utc_now()
+        self._write_draft(draft)
+        self.store.save_workflow_draft(draft, diff=diff if diff else None)
+        return draft
 
     def publish(self, draft_id: str, *, acknowledge_inconclusive: bool) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
@@ -640,7 +788,7 @@ class WorkflowDraftService:
     ) -> dict[str, Any]:
         resolved = dict(supplied)
         required = [str(item) for item in draft.workflow["inputSchema"].get("required") or []]
-        missing = [name for name in required if resolved.get(name) in (None, "")]
+        missing = [name for name in required if _validation_input_is_missing(resolved.get(name))]
         if not missing:
             return resolved
         if "as_of" in missing:
@@ -653,6 +801,15 @@ class WorkflowDraftService:
                 "entity_set": "A_PurchaseOrder",
                 "field": "PurchaseOrder",
                 "select_fields": ["PurchaseOrder", "CompanyCode", "Supplier"],
+                "cardinality": "scalar",
+            },
+            "purchase_orders": {
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrder",
+                "field": "PurchaseOrder",
+                "select_fields": ["PurchaseOrder", "CompanyCode", "Supplier"],
+                "cardinality": "array",
             },
             "sales_order": {
                 "service_name": "API_SALES_ORDER_SRV",
@@ -660,12 +817,27 @@ class WorkflowDraftService:
                 "entity_set": "A_SalesOrder",
                 "field": "SalesOrder",
                 "select_fields": ["SalesOrder", "SoldToParty"],
+                "cardinality": "scalar",
+            },
+            "sales_orders": {
+                "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_SalesOrder",
+                "field": "SalesOrder",
+                "select_fields": ["SalesOrder", "SoldToParty"],
+                "cardinality": "array",
             },
         }
         for name in list(missing):
             spec = discovery_specs.get(name)
             if not spec:
                 continue
+            property_schema = (
+                draft.workflow.get("inputSchema", {}).get("properties", {}).get(name, {})
+            )
+            minimum_items = max(1, int(property_schema.get("minItems") or 1))
+            discovery_limit = max(5, minimum_items)
+            discovery_limit = min(discovery_limit, 50)
             plan = {
                 "service_name": spec["service_name"],
                 "odata_version": spec["odata_version"],
@@ -673,7 +845,8 @@ class WorkflowDraftService:
                 "http_method": "GET",
                 "plan_kind": "direct",
                 "select_fields": spec["select_fields"],
-                "top": 5,
+                "order_by": [spec["field"]],
+                "top": discovery_limit,
                 "rationale": "Bounded read-only candidate discovery for workflow validation.",
             }
             validation = await self.sap_read.validate_plan(plan, "workflow validation candidate")
@@ -681,15 +854,29 @@ class WorkflowDraftService:
                 continue
             response = await self.sap_read.execute_plan(plan, "workflow validation candidate")
             rows = _extract_rows(response)
-            candidates = [str(row.get(spec["field"]) or "").strip() for row in rows]
-            candidates = [candidate for candidate in candidates if candidate]
-            if candidates:
+            candidates = list(
+                dict.fromkeys(
+                    candidate
+                    for candidate in (
+                        str(row.get(spec["field"]) or "").strip() for row in rows
+                    )
+                    if candidate
+                )
+            )
+            if spec["cardinality"] == "array" and len(candidates) >= minimum_items:
+                resolved[name] = candidates[:minimum_items]
+                missing.remove(name)
+            elif spec["cardinality"] == "scalar" and candidates:
                 resolved[name] = candidates[0]
                 missing.remove(name)
         if missing:
             raise WorkflowDraftError(
                 "Automatic candidate discovery could not provide: " + ", ".join(missing),
                 code="workflow_validation_input_unavailable",
+                detail={
+                    "missing_fields": missing,
+                    "supported_fields": sorted(discovery_specs),
+                },
             )
         return resolved
 
@@ -738,6 +925,82 @@ def _extract_rows(value: Any) -> list[dict[str, Any]]:
         for child in value:
             rows.extend(_extract_rows(child))
     return rows
+
+
+def _validation_input_is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def deepcopy_json(value: Any) -> Any:
+    return json.loads(json.dumps(value))
+
+
+def _validated_runtime_review(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("verdict") not in {"pass", "block"}:
+        raise WorkflowDraftError(
+            "Agent Runtime review did not return a valid verdict.",
+            code="workflow_runtime_review_unavailable",
+        )
+    raw_issues = value.get("issues")
+    summary = value.get("summary")
+    if not isinstance(raw_issues, list) or not isinstance(summary, dict):
+        raise WorkflowDraftError(
+            "Agent Runtime review did not return issues and a bilingual summary.",
+            code="workflow_runtime_review_unavailable",
+        )
+    if not all(isinstance(summary.get(language), str) for language in ("zh", "en")):
+        raise WorkflowDraftError(
+            "Agent Runtime review summary is invalid.",
+            code="workflow_runtime_review_unavailable",
+        )
+    issues: list[dict[str, Any]] = []
+    for raw in raw_issues:
+        if not isinstance(raw, dict):
+            raise WorkflowDraftError(
+                "Agent Runtime review issue is invalid.",
+                code="workflow_runtime_review_unavailable",
+            )
+        message = raw.get("message")
+        if (
+            not str(raw.get("code") or "").strip()
+            or raw.get("severity") not in {"error", "warning", "info"}
+            or not isinstance(message, dict)
+            or not all(str(message.get(language) or "").strip() for language in ("zh", "en"))
+        ):
+            raise WorkflowDraftError(
+                "Agent Runtime review issue contract is invalid.",
+                code="workflow_runtime_review_unavailable",
+            )
+        issues.append(
+            {
+                "code": str(raw["code"]),
+                "severity": str(raw["severity"]),
+                "node_id": str(raw["node_id"]) if raw.get("node_id") is not None else None,
+                "port": str(raw["port"]) if raw.get("port") is not None else None,
+                "message": {"zh": str(message["zh"]), "en": str(message["en"])},
+            }
+        )
+    if value["verdict"] == "pass" and any(item["severity"] == "error" for item in issues):
+        raise WorkflowDraftError(
+            "Agent Runtime review returned pass with blocking issues.",
+            code="workflow_runtime_review_unavailable",
+        )
+    if value["verdict"] == "block" and not issues:
+        raise WorkflowDraftError(
+            "Agent Runtime review returned block without an issue.",
+            code="workflow_runtime_review_unavailable",
+        )
+    return {
+        "verdict": str(value["verdict"]),
+        "issues": issues,
+        "summary": {"zh": str(summary["zh"]), "en": str(summary["en"])},
+    }
 
 
 def _json_diff(before: Any, after: Any, path: str = "") -> list[dict[str, Any]]:

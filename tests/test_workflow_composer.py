@@ -156,6 +156,19 @@ def test_compiler_pins_agents_and_connects_only_declared_same_name_ports() -> No
     }
     assert ("p2p", "ap_payment_scopes", "ap_payment_scopes") in node_bindings
     assert set(workflow["inputSchema"]["required"]) == {"purchase_orders", "as_of"}
+    assert set(workflow["inputSchema"]["properties"]) == {"purchase_orders", "as_of"}
+    ap_node = next(item for item in workflow["nodes"] if item["id"] == "ap")
+    assert ap_node["runIf"] == {
+        "source": {"scope": "node_output", "nodeId": "p2p", "port": "ap_payment_scopes"},
+        "operator": "non_empty",
+    }
+    query_mode = next(
+        item
+        for item in workflow["connections"]
+        if item["to"] == {"nodeId": "ap", "port": "query_mode"}
+    )
+    assert query_mode["from"] == {"scope": "constant", "value": "p2p_evidence"}
+    assert composition["compiler_version"] == 2
     assert composition["validation_defaults"] == {
         "purchase_orders": ["4500000030"],
         "as_of": "2026-08-25",
@@ -183,6 +196,38 @@ def test_compiler_infers_one_unambiguous_same_name_binding() -> None:
         if item["from"]["scope"] == "node_output"
     }
     assert ("p2p", "ap_payment_scopes", "ap_payment_scopes") in node_bindings
+
+
+def test_compiler_selects_direct_branch_for_standalone_ap() -> None:
+    root = Path(__file__).resolve().parents[1]
+    agents = AgentRepository(root / "agents")
+    proposal = _proposal()
+    proposal["stages"] = [proposal["stages"][1]]
+    proposal["stages"][0]["bindings"] = []
+    workflow, _composition = compile_workflow_proposal(
+        workflow_id="generated-direct-ap-review",
+        requirement="按公司代码和供应商复核应付付款",
+        locale="zh",
+        proposal=proposal,
+        catalog=compact_agent_catalog(agents),
+        agents=agents,
+    )
+
+    assert set(workflow["inputSchema"]["properties"]) == {
+        "company_code",
+        "supplier",
+        "as_of",
+    }
+    assert set(workflow["inputSchema"]["required"]) == {
+        "company_code",
+        "supplier",
+        "as_of",
+    }
+    assert "runIf" not in workflow["nodes"][0]
+    query_mode = next(
+        item for item in workflow["connections"] if item["to"]["port"] == "query_mode"
+    )
+    assert query_mode["from"] == {"scope": "constant", "value": "direct"}
 
 
 def test_composition_api_supports_one_clarification_then_generates_draft(tmp_path: Path) -> None:

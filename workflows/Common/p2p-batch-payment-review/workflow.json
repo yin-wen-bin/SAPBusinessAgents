@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "p2p-batch-payment-review",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": {
     "zh": "P2P 批量付款复核",
     "en": "P2P Batch Payment Review"
@@ -56,15 +56,15 @@
       "source_complete": {"type": "boolean"},
       "evidence_complete": {"type": "boolean"}
     },
-    "required": ["p2p_details", "ap_details", "batch_status", "source_complete", "evidence_complete"],
+    "required": ["p2p_details", "batch_status", "source_complete", "evidence_complete"],
     "additionalProperties": false
   },
   "nodes": [
     {
       "id": "p2p",
       "agentId": "procure-to-pay-status",
-      "agentVersion": "0.3.0",
-      "agentDigest": "sha256:988285975cc8708f4491cb1ed55445b4082beaaed9cd11eea23917205949ed1d",
+      "agentVersion": "0.3.1",
+      "agentDigest": "sha256:5c74c770f7c50be110d39654d7effabab2c7932acf59a232db01d50c503482d7",
       "position": {"x": 100, "y": 120}
     },
     {
@@ -72,13 +72,22 @@
       "agentId": "ap-payment",
       "agentVersion": "0.2.0",
       "agentDigest": "sha256:922fb829b67251c159975fcd36a9144cb9bb9a1378c9ac6ff48f9d1f6318f9d6",
-      "position": {"x": 480, "y": 120}
+      "position": {"x": 480, "y": 120},
+      "runIf": {
+        "source": {"scope": "node_output", "nodeId": "p2p", "port": "ap_payment_scopes"},
+        "operator": "non_empty"
+      }
     }
   ],
   "connections": [
     {
       "from": {"scope": "workflow_input", "port": "purchase_orders"},
       "to": {"nodeId": "p2p", "port": "purchase_orders"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "from": {"scope": "constant", "value": "p2p_evidence"},
+      "to": {"nodeId": "ap", "port": "query_mode"},
       "transform": {"type": "identity"}
     },
     {

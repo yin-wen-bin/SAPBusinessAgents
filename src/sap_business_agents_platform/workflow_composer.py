@@ -10,10 +10,20 @@ from .workflows import normalize_workflow, validate_workflow
 
 
 ALLOWED_PORT_TYPES = {"string", "integer", "number", "boolean", "object", "array"}
+WORKFLOW_COMPILER_VERSION = 2
 
 
 class WorkflowCompositionError(ValueError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "workflow_composition_invalid",
+        detail: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = detail
 
 
 def compact_agent_catalog(agents: Any) -> dict[str, Any]:
@@ -118,36 +128,60 @@ def compile_workflow_proposal(
     accepted_sources: set[str] = set()
     processed_stage_ids: set[str] = set()
 
+    node_by_stage = {str(item["id"]): item for item in nodes}
+    guarded_stage_ids: set[str] = set()
     for stage in stages:
         agent = selected_by_stage.get(stage["id"])
         if agent is None:
             continue
         agent_input = agent["execution"]["inputSchema"]
         properties = agent_input.get("properties") or {}
-        required = {str(item) for item in agent_input.get("required") or []}
+        top_level_required = {str(item) for item in agent_input.get("required") or []}
         bindings = {
             str(item.get("input_port") or ""): item
             for item in stage.get("bindings") or []
             if isinstance(item, dict)
         }
-        for port, port_schema in properties.items():
-            binding = bindings.get(str(port))
-            source = _validated_binding_source(
-                binding,
+        available_sources = {
+            str(port): _available_source(
+                binding=bindings.get(str(port)),
                 target_port=str(port),
                 target_schema=port_schema,
                 selected_by_stage=selected_by_stage,
                 allowed_source_ids=processed_stage_ids,
             )
-            if source is None:
-                source = _unique_compatible_source(
-                    target_port=str(port),
-                    target_schema=port_schema,
-                    selected_by_stage=selected_by_stage,
-                    allowed_source_ids=processed_stage_ids,
-                )
+            for port, port_schema in properties.items()
+        }
+        branch = _select_input_branch(
+            agent_input,
+            available_sources=available_sources,
+            explicit_binding_ports={port for port in bindings if port},
+            node_id=str(stage["id"]),
+        )
+        if branch is None:
+            active_ports = list(properties)
+            required = set(top_level_required)
+            constants: dict[str, Any] = {}
+        else:
+            branch_required = {str(item) for item in branch.get("required") or []}
+            constants = {
+                str(port): constraint["const"]
+                for port, constraint in (branch.get("properties") or {}).items()
+                if isinstance(constraint, dict) and "const" in constraint
+            }
+            active = top_level_required | branch_required | set(constants)
+            active_ports = [str(port) for port in properties if str(port) in active]
+            required = top_level_required | branch_required
+
+        non_empty_guards: list[dict[str, Any]] = []
+        for port in active_ports:
+            port_schema = properties[port]
+            source = available_sources.get(port)
+            if port in constants:
+                source = {"scope": "constant", "value": constants[port]}
             if source is not None:
-                accepted_sources.add(str(source["nodeId"]))
+                if source.get("scope") == "node_output":
+                    accepted_sources.add(str(source["nodeId"]))
                 connections.append(
                     {
                         "from": source,
@@ -155,6 +189,12 @@ def compile_workflow_proposal(
                         "transform": {"type": "identity"},
                     }
                 )
+                if _requires_non_empty_guard(
+                    target_schema=port_schema,
+                    source=source,
+                    selected_by_stage=selected_by_stage,
+                ):
+                    non_empty_guards.append(deepcopy(source))
                 continue
             public_name = _public_input_name(
                 input_schema["properties"], str(port), stage["id"], port_schema
@@ -169,6 +209,18 @@ def compile_workflow_proposal(
                     "transform": {"type": "identity"},
                 }
             )
+        if len(non_empty_guards) > 1:
+            raise WorkflowCompositionError(
+                f"Node {stage['id']} requires more than one independent non-empty guard.",
+                code="workflow_non_empty_guard_ambiguous",
+                detail={"node_id": stage["id"], "sources": non_empty_guards},
+            )
+        if non_empty_guards:
+            node_by_stage[str(stage["id"])]["runIf"] = {
+                "source": non_empty_guards[0],
+                "operator": "non_empty",
+            }
+            guarded_stage_ids.add(str(stage["id"]))
         processed_stage_ids.add(stage["id"])
 
     terminal_ids = [
@@ -199,7 +251,8 @@ def compile_workflow_proposal(
                 continue
             name = f"{stage['id']}_{port}"
             output_schema["properties"][name] = deepcopy(available[port])
-            output_schema["required"].append(name)
+            if stage["id"] not in guarded_stage_ids:
+                output_schema["required"].append(name)
             outputs.append(
                 {
                     "name": name,
@@ -211,7 +264,7 @@ def compile_workflow_proposal(
     title = _localized(proposal.get("title"), fallback=requirement[:80])
     description = _localized(proposal.get("description"), fallback=requirement)
     workflow = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "id": workflow_id,
         "version": "0.1.0",
         "title": title,
@@ -244,6 +297,7 @@ def compile_workflow_proposal(
         "validation_defaults": safe_defaults,
         "clarification_question": "",
         "error": None,
+        "compiler_version": WORKFLOW_COMPILER_VERSION,
     }
     return workflow, composition
 
@@ -300,6 +354,113 @@ def _validated_binding_source(
     if source_type != target_type and not (source_type == "integer" and target_type == "number"):
         return None
     return {"scope": "node_output", "nodeId": source_stage, "port": source_port}
+
+
+def _available_source(
+    *,
+    binding: Any,
+    target_port: str,
+    target_schema: dict[str, Any],
+    selected_by_stage: dict[str, dict[str, Any]],
+    allowed_source_ids: set[str],
+) -> dict[str, Any] | None:
+    return _validated_binding_source(
+        binding,
+        target_port=target_port,
+        target_schema=target_schema,
+        selected_by_stage=selected_by_stage,
+        allowed_source_ids=allowed_source_ids,
+    ) or _unique_compatible_source(
+        target_port=target_port,
+        target_schema=target_schema,
+        selected_by_stage=selected_by_stage,
+        allowed_source_ids=allowed_source_ids,
+    )
+
+
+def _select_input_branch(
+    input_schema: dict[str, Any],
+    *,
+    available_sources: dict[str, dict[str, Any] | None],
+    explicit_binding_ports: set[str],
+    node_id: str,
+) -> dict[str, Any] | None:
+    branches = input_schema.get("oneOf")
+    if not isinstance(branches, list) or not branches:
+        return None
+    top_required = {str(item) for item in input_schema.get("required") or []}
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+    for index, raw_branch in enumerate(branches):
+        if not isinstance(raw_branch, dict):
+            continue
+        required = {str(item) for item in raw_branch.get("required") or []}
+        constants = {
+            str(port): value["const"]
+            for port, value in (raw_branch.get("properties") or {}).items()
+            if isinstance(value, dict) and "const" in value
+        }
+        forbidden = {
+            str(item)
+            for item in ((raw_branch.get("not") or {}).get("required") or [])
+        }
+        relevant = top_required | required | set(constants)
+        if any(available_sources.get(port) is not None for port in forbidden):
+            continue
+        if any(port not in relevant for port in explicit_binding_ports):
+            continue
+        upstream_score = sum(
+            1
+            for port in required
+            if (available_sources.get(port) or {}).get("scope") == "node_output"
+        )
+        explicit_score = sum(1 for port in required if port in explicit_binding_ports)
+        candidates.append((upstream_score, explicit_score, raw_branch))
+    if not candidates:
+        raise WorkflowCompositionError(
+            f"Node {node_id} does not satisfy any oneOf input branch.",
+            code="workflow_branch_unmatched",
+            detail={"node_id": node_id},
+        )
+    best_score = max((item[0], item[1]) for item in candidates)
+    best = [item[2] for item in candidates if (item[0], item[1]) == best_score]
+    if len(best) == 1:
+        return best[0]
+    direct = [
+        branch
+        for branch in best
+        if any(
+            isinstance(value, dict) and value.get("const") == "direct"
+            for value in (branch.get("properties") or {}).values()
+        )
+    ]
+    if best_score == (0, 0) and len(direct) == 1:
+        return direct[0]
+    raise WorkflowCompositionError(
+        f"Node {node_id} has an ambiguous oneOf input branch.",
+        code="workflow_branch_ambiguous",
+        detail={"node_id": node_id, "candidate_count": len(best)},
+    )
+
+
+def _requires_non_empty_guard(
+    *,
+    target_schema: dict[str, Any],
+    source: dict[str, Any],
+    selected_by_stage: dict[str, dict[str, Any]],
+) -> bool:
+    if source.get("scope") != "node_output":
+        return False
+    if str(target_schema.get("type") or "") != "array" or int(target_schema.get("minItems") or 0) < 1:
+        return False
+    source_node = str(source.get("nodeId") or "")
+    source_port = str(source.get("port") or "")
+    agent = selected_by_stage.get(source_node) or {}
+    source_schema = (
+        ((agent.get("execution") or {}).get("outputSchema") or {}).get("properties") or {}
+    ).get(source_port)
+    if not isinstance(source_schema, dict) or str(source_schema.get("type") or "") != "array":
+        return False
+    return int(source_schema.get("minItems") or 0) < int(target_schema.get("minItems") or 0)
 
 
 def _unique_compatible_source(

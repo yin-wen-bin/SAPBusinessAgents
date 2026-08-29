@@ -42,8 +42,42 @@ AUTHOR_OUTPUT_SCHEMA: dict[str, Any] = {
 
 WORKFLOW_REVIEW_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {"zh": {"type": "string"}, "en": {"type": "string"}},
-    "required": ["zh", "en"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["pass", "block"]},
+        "issues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "minLength": 1},
+                    "severity": {
+                        "type": "string",
+                        "enum": ["error", "warning", "info"],
+                    },
+                    "node_id": {"type": ["string", "null"]},
+                    "port": {"type": ["string", "null"]},
+                    "message": {
+                        "type": "object",
+                        "properties": {
+                            "zh": {"type": "string", "minLength": 1},
+                            "en": {"type": "string", "minLength": 1},
+                        },
+                        "required": ["zh", "en"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["code", "severity", "node_id", "port", "message"],
+                "additionalProperties": False,
+            },
+        },
+        "summary": {
+            "type": "object",
+            "properties": {"zh": {"type": "string"}, "en": {"type": "string"}},
+            "required": ["zh", "en"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["verdict", "issues", "summary"],
     "additionalProperties": False,
 }
 
@@ -290,7 +324,10 @@ Workflow: {_safe_json(workflow, limit=40_000)}
 Pinned Agent contracts: {_safe_json(agent_contracts, limit=30_000)}
 Validation input shape: {_safe_json(validation_input, limit=5_000)}
 
-Return a concise Chinese and English review. A bounded candidate does not prove source completeness.
+Return the structured verdict, issues and bilingual summary. Use verdict=block for any ambiguous
+oneOf branch, implicit mode selection, incompatible cardinality, missing required mapping, unsafe
+operation, or incomplete completeness propagation. Use verdict=pass only when no blocking issue
+remains. A bounded candidate does not prove source completeness.
 """.strip()
         async with AsyncCodex() as codex:
             if thread_id:
@@ -315,7 +352,12 @@ Return a concise Chinese and English review. A bounded candidate does not prove 
                 )
             result = await thread.run(prompt, output_schema=WORKFLOW_REVIEW_OUTPUT_SCHEMA)
             raw = json.loads(result.final_response)
-            return {"zh": str(raw["zh"]), "en": str(raw["en"]), "thread_id": thread.id}
+            return {
+                "verdict": str(raw["verdict"]),
+                "issues": list(raw["issues"]),
+                "summary": dict(raw["summary"]),
+                "thread_id": thread.id,
+            }
 
     async def repair_workflow(
         self,

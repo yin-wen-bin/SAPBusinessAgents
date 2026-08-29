@@ -210,6 +210,10 @@ export interface WorkflowNodeDefinition {
     maxConcurrency?: number;
     onItemError?: "collect_inconclusive";
   };
+  runIf?: {
+    source: WorkflowSource;
+    operator: "non_empty";
+  };
 }
 
 export interface WorkflowSource {
@@ -286,6 +290,7 @@ export interface WorkflowComposition {
   locale?: Locale;
   intent?: LocalizedText;
   catalog_digest?: string;
+  compiler_version?: number;
   stages?: WorkflowCompositionStage[];
   gaps?: WorkflowCompositionGap[];
   validation_defaults?: Record<string, unknown>;

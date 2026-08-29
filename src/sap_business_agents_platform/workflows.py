@@ -143,6 +143,8 @@ def validate_workflow(
             if workflow.get("schemaVersion") != 2:
                 raise WorkflowError(f"{location}.forEach requires workflow schemaVersion 2")
             _validate_foreach(node, workflow, node_by_id, agent_by_node, location)
+        if node.get("runIf") is not None and workflow.get("schemaVersion") != 2:
+            raise WorkflowError(f"{location}.runIf requires workflow schemaVersion 2")
     if drift:
         raise WorkflowError(
             "One or more Agent versions changed after workflow validation.",
@@ -184,6 +186,17 @@ def validate_workflow(
                 f"{target_type.get('type')!r}",
                 code="workflow_port_type_mismatch",
             )
+    for index, node in enumerate(nodes):
+        node_id = str(node["id"])
+        if node.get("runIf") is not None:
+            _validate_run_if(
+                node,
+                workflow,
+                node_by_id,
+                agent_by_node,
+                dependencies,
+                f"{source}.nodes[{index}]",
+            )
     for node_id, agent in agent_by_node.items():
         input_schema = agent["execution"]["inputSchema"]
         required = input_schema.get("required") or []
@@ -203,6 +216,15 @@ def validate_workflow(
                 f"Node {node_id} is missing required inputs: {', '.join(missing)}",
                 code="workflow_required_input_unmapped",
             )
+        _validate_one_of_mapping(
+            node_id,
+            input_schema,
+            {
+                str((item.get("to") or {}).get("port") or ""): item.get("from") or {}
+                for item in connections
+                if str((item.get("to") or {}).get("nodeId") or "") == node_id
+            },
+        )
     topological_order(workflow)
     _validate_outputs(workflow, node_by_id, agent_by_node)
     return drift
@@ -221,6 +243,10 @@ def topological_order(workflow: dict[str, Any]) -> list[str]:
         source = foreach.get("source") if isinstance(foreach, dict) else None
         if isinstance(source, dict) and source.get("scope") == "node_output":
             dependencies[str(node.get("id"))].add(str(source.get("nodeId")))
+        run_if = node.get("runIf") if isinstance(node, dict) else None
+        run_source = run_if.get("source") if isinstance(run_if, dict) else None
+        if isinstance(run_source, dict) and run_source.get("scope") == "node_output":
+            dependencies[str(node.get("id"))].add(str(run_source.get("nodeId")))
     remaining = {node: set(values) for node, values in dependencies.items()}
     order: list[str] = []
     while remaining:
@@ -417,6 +443,84 @@ def _validate_foreach(
         raise WorkflowError(f"{location}.forEach.onItemError is unsupported")
 
 
+def _validate_run_if(
+    node: dict[str, Any],
+    workflow: dict[str, Any],
+    nodes: dict[str, dict[str, Any]],
+    agents: dict[str, dict[str, Any]],
+    dependencies: dict[str, set[str]],
+    location: str,
+) -> None:
+    condition = node.get("runIf")
+    if not isinstance(condition, dict):
+        raise WorkflowError(f"{location}.runIf must be an object")
+    if condition.get("operator") != "non_empty":
+        raise WorkflowError(f"{location}.runIf.operator must be non_empty")
+    source = condition.get("source")
+    if not isinstance(source, dict) or source.get("scope") not in {
+        "workflow_input",
+        "node_output",
+    }:
+        raise WorkflowError(
+            f"{location}.runIf.source must be a workflow input or prior node output"
+        )
+    source_type = _source_type(
+        source,
+        workflow,
+        nodes,
+        agents,
+        dependencies,
+        str(node.get("id") or ""),
+        f"{location}.runIf",
+    )
+    if source_type not in {"array", "object", "string"}:
+        raise WorkflowError(f"{location}.runIf.source must be a collection or string")
+
+
+def _validate_one_of_mapping(
+    node_id: str,
+    input_schema: dict[str, Any],
+    mappings: dict[str, dict[str, Any]],
+) -> None:
+    branches = input_schema.get("oneOf")
+    if not isinstance(branches, list) or not branches:
+        return
+    matches: list[int] = []
+    for index, branch in enumerate(branches):
+        if not isinstance(branch, dict):
+            continue
+        required = {str(item) for item in branch.get("required") or []}
+        if not required.issubset(mappings):
+            continue
+        constants = {
+            str(port): constraint["const"]
+            for port, constraint in (branch.get("properties") or {}).items()
+            if isinstance(constraint, dict) and "const" in constraint
+        }
+        if any(
+            port not in mappings
+            or mappings[port].get("scope") != "constant"
+            or mappings[port].get("value") != expected
+            for port, expected in constants.items()
+        ):
+            continue
+        forbidden = {
+            str(item)
+            for item in ((branch.get("not") or {}).get("required") or [])
+        }
+        if forbidden and forbidden.issubset(mappings):
+            continue
+        matches.append(index)
+    if len(matches) == 1:
+        return
+    code = "workflow_branch_unmatched" if not matches else "workflow_branch_ambiguous"
+    raise WorkflowError(
+        f"Node {node_id} must explicitly satisfy exactly one oneOf input branch.",
+        code=code,
+        detail={"node_id": node_id, "matching_branches": matches},
+    )
+
+
 def _foreach_item_schema(
     foreach: dict[str, Any],
     workflow: dict[str, Any],
@@ -556,11 +660,38 @@ def _validate_outputs(
                 output.get("source") or {}, workflow, nodes, agents, dummy_dependencies, "", f"workflow.outputs[{index}]"
             )
             transformed = _validate_transform(source_type, output.get("transform") or {"type": "identity"}, f"workflow.outputs[{index}]")
+        if name in set(workflow["outputSchema"].get("required") or []) and _output_is_conditional_only(
+            output, nodes
+        ):
+            raise WorkflowError(
+                f"workflow.outputs[{index}] is conditional and cannot be required",
+                code="workflow_conditional_output_required",
+            )
         if not _types_compatible(transformed, _schema_primary_type(declared[name].get("type"))):
             raise WorkflowError(f"workflow.outputs[{index}] has an incompatible type")
     missing = sorted(set(workflow["outputSchema"].get("required") or []).difference(seen))
     if missing:
         raise WorkflowError("Required workflow outputs are not mapped: " + ", ".join(missing))
+
+
+def _output_is_conditional_only(
+    output: dict[str, Any], nodes: dict[str, dict[str, Any]]
+) -> bool:
+    aggregate = output.get("aggregate")
+    sources = (
+        aggregate.get("sources")
+        if isinstance(aggregate, dict)
+        else [output.get("source") or {}]
+    )
+    node_sources = [
+        source
+        for source in sources or []
+        if isinstance(source, dict) and source.get("scope") == "node_output"
+    ]
+    return bool(node_sources) and all(
+        isinstance(nodes.get(str(source.get("nodeId") or ""), {}).get("runIf"), dict)
+        for source in node_sources
+    )
 
 
 def _types_compatible(source: str, target: str) -> bool:

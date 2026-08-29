@@ -487,7 +487,23 @@ select {
 .workflow-composition-state { display: flex; align-items: center; gap: .7rem; color: #285462; }
 .workflow-composition-state.is-error { border-color: #ddb0b0; background: #fff7f7; color: #962b2b; }
 .workflow-spinner { width: 16px; height: 16px; border: 2px solid #b7d8dc; border-top-color: #0a7884; border-radius: 50%; animation: workflow-spin .8s linear infinite; }
+.workflow-spinner--button { display: inline-block; width: 12px; height: 12px; margin-right: .45rem; border-color: rgb(255 255 255 / 45%); border-top-color: white; vertical-align: -2px; }
 @keyframes workflow-spin { to { transform: rotate(360deg); } }
+
+.workflow-validation-feedback {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  margin-bottom: .85rem;
+  border: 1px solid #a9ccd1;
+  border-radius: .7rem;
+  background: #f3fbfb;
+  padding: .8rem 1rem;
+  color: #285462;
+  font-weight: 700;
+}
+.workflow-validation-feedback.is-success { border-color: #aad5bd; background: #f3fbf6; color: #24623d; }
+.workflow-validation-feedback.is-error { border-color: #ddb0b0; background: #fff7f7; color: #962b2b; }
 
 .workflow-clarification-card .eyebrow,
 .workflow-gap-panel .eyebrow { margin: 0; }
@@ -602,6 +618,10 @@ select {
 .workflow-validation-panel { margin-top: .85rem; display: grid; gap: .8rem; }
 .workflow-validation-panel h2 { margin: .4rem 0 0; font-size: 1rem; }
 .workflow-validation-panel p { margin: 0; color: #53636f; }
+.workflow-validation-inputs label > span { display: flex; align-items: center; gap: .45rem; }
+.workflow-validation-inputs label > span em { border-radius: .3rem; background: #e9f3f4; padding: .1rem .35rem; color: #0a6670; font-size: .68rem; font-style: normal; font-weight: 800; }
+.workflow-validation-inputs label.is-required textarea,
+.workflow-validation-inputs label.is-required input { border-color: #86aeb5; }
 .workflow-validation-issues { margin: 0; padding-left: 1.25rem; color: #425760; }
 
 @media (max-width: 1100px) {

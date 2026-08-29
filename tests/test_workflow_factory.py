@@ -22,6 +22,12 @@ from sap_business_agents_platform.workflows import (
 
 
 class WorkflowSapProvider:
+    purchase_order_candidates = ["4500000001", "4500000002"]
+    sales_order_candidates = ["5814", "5837"]
+
+    def __init__(self) -> None:
+        self.execute_count = 0
+
     async def health(self) -> dict[str, Any]:
         return {"ok": True, "data": {"runtime_enabled": True, "read_only": True}}
 
@@ -36,13 +42,49 @@ class WorkflowSapProvider:
 
     async def validate_plan(self, plan: dict[str, Any], query: str = "") -> dict[str, Any]:
         assert plan.get("http_method") == "GET"
+        if plan.get("plan_kind") == "direct" and query == "workflow validation candidate":
+            expected_field = {
+                "A_PurchaseOrder": "PurchaseOrder",
+                "A_SalesOrder": "SalesOrder",
+            }[plan["entity_set"]]
+            assert plan.get("order_by") == [expected_field]
+            assert 1 <= int(plan.get("top") or 0) <= 50
         return {"ok": True, "status": "validated", "query": query}
 
     async def execute_plan(
         self, plan: dict[str, Any], query: str = "", conversation_id: str | None = None
     ) -> dict[str, Any]:
         del query, conversation_id
+        self.execute_count += 1
         entity = plan.get("entity_set")
+        if entity == "A_PurchaseOrder" and plan.get("plan_kind") == "direct":
+            return {
+                "ok": True,
+                "data": {
+                    "results": [
+                        {
+                            "PurchaseOrder": purchase_order,
+                            "CompanyCode": "1010",
+                            "Supplier": "1000123",
+                        }
+                        for purchase_order in self.purchase_order_candidates
+                    ],
+                    "source_complete": False,
+                },
+                "pagination": {"has_next": False, "total_count_known": False},
+            }
+        if entity == "A_SalesOrder" and plan.get("plan_kind") == "direct":
+            return {
+                "ok": True,
+                "data": {
+                    "results": [
+                        {"SalesOrder": sales_order, "SoldToParty": "17100001"}
+                        for sales_order in self.sales_order_candidates
+                    ],
+                    "source_complete": False,
+                },
+                "pagination": {"has_next": False, "total_count_known": False},
+            }
         if entity == "A_PurchaseOrder" and plan.get("plan_kind") == "multi_step":
             invoice_key = {
                 "CompanyCode": "1010",
@@ -129,6 +171,63 @@ class WorkflowPlanner:
     async def plan(self, *args: Any, **kwargs: Any) -> PlannerDecision:
         raise AssertionError("Published workflow execution must not invoke Codex planning")
 
+    async def review_workflow(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "verdict": "pass",
+            "issues": [],
+            "summary": {"zh": "工作流契约通过复核。", "en": "Workflow contract passed review."},
+            "thread_id": "workflow-review-thread",
+        }
+
+
+class EmptyWorkflowDiscoveryProvider(WorkflowSapProvider):
+    purchase_order_candidates: list[str] = []
+    sales_order_candidates: list[str] = []
+
+
+class EmptyP2PEvidenceProvider(WorkflowSapProvider):
+    async def execute_plan(
+        self, plan: dict[str, Any], query: str = "", conversation_id: str | None = None
+    ) -> dict[str, Any]:
+        if plan.get("entity_set") == "A_PurchaseOrder" and plan.get("plan_kind") == "multi_step":
+            self.execute_count += 1
+            step_ids = [str(item.get("step_id") or "") for item in plan.get("steps") or []]
+            return {
+                "ok": True,
+                "case_id": "empty-p2p-evidence",
+                "step_results": {
+                    step_id: {"results": [], "source_complete": True}
+                    for step_id in step_ids
+                    if step_id
+                },
+                "source_complete": True,
+                "pagination": {"has_next": False, "total_count_known": True},
+            }
+        return await super().execute_plan(plan, query, conversation_id)
+
+
+class BlockingWorkflowPlanner(WorkflowPlanner):
+    async def review_workflow(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "verdict": "block",
+            "issues": [
+                {
+                    "code": "workflow_mapping_review_failed",
+                    "severity": "error",
+                    "node_id": "ap",
+                    "port": "ap_payment_scopes",
+                    "message": {"zh": "应付证据映射不明确。", "en": "AP evidence mapping is ambiguous."},
+                }
+            ],
+            "summary": {"zh": "必须先修复映射。", "en": "Fix the mapping before validation."},
+            "thread_id": "blocked-review-thread",
+        }
+
+
+class InvalidReviewPlanner(WorkflowPlanner):
+    async def review_workflow(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"zh": "旧格式", "en": "Legacy format"}
+
 
 def _settings(tmp_path: Path) -> Settings:
     root = Path(__file__).resolve().parents[1]
@@ -175,20 +274,43 @@ def _p2p_ap_workflow() -> dict[str, Any]:
             "properties": {
                 "payment_status": {"type": "string"},
                 "payment_report": {"type": "object"},
+                "p2p_details": {"type": "array", "items": {"type": "object"}},
+                "source_complete": {"type": "boolean"},
             },
-            "required": ["payment_status", "payment_report"],
+            "required": ["p2p_details", "source_complete"],
             "additionalProperties": False,
         },
         "nodes": [
             {"id": "p2p", "agentId": p2p["slug"], "agentVersion": p2p["version"], "agentDigest": agent_digest(p2p)},
-            {"id": "ap", "agentId": ap["slug"], "agentVersion": ap["version"], "agentDigest": agent_digest(ap)},
+            {
+                "id": "ap",
+                "agentId": ap["slug"],
+                "agentVersion": ap["version"],
+                "agentDigest": agent_digest(ap),
+                "runIf": {
+                    "source": {"scope": "node_output", "nodeId": "p2p", "port": "ap_payment_scopes"},
+                    "operator": "non_empty",
+                },
+            },
         ],
         "connections": [
             {"from": {"scope": "workflow_input", "port": "purchase_orders"}, "to": {"nodeId": "p2p", "port": "purchase_orders"}, "transform": {"type": "identity"}},
+            {"from": {"scope": "constant", "value": "p2p_evidence"}, "to": {"nodeId": "ap", "port": "query_mode"}, "transform": {"type": "identity"}},
             {"from": {"scope": "node_output", "nodeId": "p2p", "port": "ap_payment_scopes"}, "to": {"nodeId": "ap", "port": "ap_payment_scopes"}, "transform": {"type": "identity"}},
             {"from": {"scope": "workflow_input", "port": "as_of"}, "to": {"nodeId": "ap", "port": "as_of"}, "transform": {"type": "identity"}},
         ],
         "outputs": [
+            {"name": "p2p_details", "source": {"scope": "node_output", "nodeId": "p2p", "port": "po_results"}, "transform": {"type": "identity"}},
+            {
+                "name": "source_complete",
+                "aggregate": {
+                    "operator": "all_true",
+                    "sources": [
+                        {"scope": "node_output", "nodeId": "p2p", "port": "source_complete"},
+                        {"scope": "node_output", "nodeId": "ap", "port": "source_complete"},
+                    ],
+                },
+            },
             {"name": "payment_status", "source": {"scope": "node_output", "nodeId": "ap", "port": "business_status"}, "transform": {"type": "identity"}},
             {"name": "payment_report", "source": {"scope": "node_output", "nodeId": "ap", "port": "business_report"}, "transform": {"type": "identity"}},
         ],
@@ -282,6 +404,31 @@ def test_workflow_schema_validates_ports_order_and_cycles() -> None:
         raise AssertionError("Cycle or duplicate target mapping should be rejected")
 
 
+def test_workflow_one_of_branch_requires_explicit_constant_and_rejects_conflict() -> None:
+    root = Path(__file__).resolve().parents[1]
+    agents = AgentRepository(root / "agents")
+    workflow = _p2p_ap_workflow()
+    workflow["connections"] = [
+        item for item in workflow["connections"] if item["to"]["port"] != "query_mode"
+    ]
+    try:
+        validate_workflow(workflow, agents)
+    except WorkflowError as exc:
+        assert exc.code == "workflow_branch_unmatched"
+    else:
+        raise AssertionError("Implicit oneOf mode selection must be rejected")
+
+    workflow = _p2p_ap_workflow()
+    query_mode = next(item for item in workflow["connections"] if item["to"]["port"] == "query_mode")
+    query_mode["from"]["value"] = "direct"
+    try:
+        validate_workflow(workflow, agents)
+    except WorkflowError as exc:
+        assert exc.code == "workflow_branch_unmatched"
+    else:
+        raise AssertionError("A conflicting oneOf branch must be rejected")
+
+
 def test_workflow_v2_foreach_grouping_and_aggregates_execute_in_stable_order(
     tmp_path: Path,
 ) -> None:
@@ -362,6 +509,7 @@ def _p2p_ap_foreach_workflow() -> dict[str, Any]:
     }
     workflow["connections"] = [
         workflow["connections"][0],
+        workflow["connections"][1],
         {
             "from": {"scope": "iteration_item", "pointer": "/items"},
             "to": {"nodeId": "ap", "port": "ap_payment_scopes"},
@@ -380,12 +528,7 @@ def _p2p_ap_foreach_workflow() -> dict[str, Any]:
             "evidence_complete": {"type": "boolean"},
             "scope_results": {"type": "array", "items": {"type": "object"}},
         },
-        "required": [
-            "payment_status",
-            "source_complete",
-            "evidence_complete",
-            "scope_results",
-        ],
+        "required": [],
         "additionalProperties": False,
     }
     workflow["outputs"] = [
@@ -556,6 +699,130 @@ def test_workflow_draft_live_validation_executes_pinned_agents_without_codex_run
             f"/api/authoring/workflows/{draft['draft_id']}/revisions"
         ).json()["items"][0]
         assert retained_revision["diff"] == initial_revision["diff"]
+
+
+def test_workflow_live_validation_auto_discovers_required_array_and_date(tmp_path: Path) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=WorkflowPlanner(),
+        embedded_provider=WorkflowSapProvider(),
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/authoring/workflows",
+            json={"workflow": _p2p_ap_workflow()},
+        ).json()
+        validation = client.post(
+            f"/api/authoring/workflows/{created['draft_id']}/validate",
+            json={"autoDiscover": True, "input": {"purchase_orders": []}},
+        )
+        assert validation.status_code == 202, validation.text
+        run = _wait(client, validation.json()["validation_run_id"])
+        p2p_input = run["result"]["node_results"][0]["input"]
+        ap_input = run["result"]["node_results"][1]["input"]
+        assert p2p_input["purchase_orders"] == ["4500000001"]
+        assert ap_input["as_of"]
+        events = app.state.store.events_after(validation.json()["validation_run_id"])
+        discovery = next(item for item in events if item.type == "candidate_discovery_completed")
+        assert discovery.data == {
+            "auto_discover": True,
+            "input_fields": ["as_of", "purchase_orders"],
+        }
+
+
+def test_workflow_live_validation_reports_structured_missing_discovery_fields(tmp_path: Path) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=WorkflowPlanner(),
+        embedded_provider=EmptyWorkflowDiscoveryProvider(),
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/authoring/workflows",
+            json={"workflow": _p2p_ap_workflow()},
+        ).json()
+        validation = client.post(
+            f"/api/authoring/workflows/{created['draft_id']}/validate",
+            json={"autoDiscover": True, "input": {}},
+        )
+        assert validation.status_code == 409
+        envelope = validation.json()["detail"]
+        assert envelope["code"] == "workflow_validation_input_unavailable"
+        assert envelope["detail"]["missing_fields"] == ["purchase_orders"]
+        assert "purchase_orders" in envelope["detail"]["supported_fields"]
+
+
+def test_empty_upstream_collection_skips_ap_without_creating_child_run(tmp_path: Path) -> None:
+    provider = EmptyP2PEvidenceProvider()
+    app = create_app(
+        _settings(tmp_path),
+        planner=WorkflowPlanner(),
+        embedded_provider=provider,
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/authoring/workflows", json={"workflow": _p2p_ap_workflow()}
+        ).json()
+        validation = client.post(
+            f"/api/authoring/workflows/{created['draft_id']}/validate",
+            json={
+                "autoDiscover": False,
+                "input": {"purchase_orders": ["9999999999"], "as_of": "2026-08-29"},
+            },
+        )
+        assert validation.status_code == 202, validation.text
+        run = _wait(client, validation.json()["validation_run_id"])
+        assert run["status"] == "inconclusive"
+        assert run["result"]["workflow_output"]["p2p_details"]
+        assert run["result"]["workflow_output"]["source_complete"] is False
+        skipped = run["result"]["node_results"][1]
+        assert skipped["status"] == "skipped"
+        assert skipped["error"]["code"] == "node_skipped_empty_input"
+        children = [
+            item
+            for item in client.get("/api/runs").json()
+            if item["parent_run_id"] == run["run_id"] and item["node_id"] == "ap"
+        ]
+        assert children == []
+        events = [item.type for item in app.state.store.events_after(run["run_id"])]
+        assert "node_skipped_empty_input" in events
+
+
+def test_runtime_review_block_and_invalid_contract_fail_closed_before_sap(tmp_path: Path) -> None:
+    for planner in (BlockingWorkflowPlanner(), InvalidReviewPlanner()):
+        case_root = tmp_path / type(planner).__name__
+        provider = WorkflowSapProvider()
+        app = create_app(
+            _settings(case_root),
+            planner=planner,
+            embedded_provider=provider,
+        )
+        with TestClient(app) as client:
+            created = client.post(
+                "/api/authoring/workflows", json={"workflow": _p2p_ap_workflow()}
+            ).json()
+            response = client.post(
+                f"/api/authoring/workflows/{created['draft_id']}/validate",
+                json={
+                    "autoDiscover": False,
+                    "input": {"purchase_orders": ["4500000001"], "as_of": "2026-08-29"},
+                },
+            )
+            assert response.status_code == 409
+            expected = (
+                "workflow_runtime_review_blocked"
+                if isinstance(planner, BlockingWorkflowPlanner)
+                else "workflow_runtime_review_unavailable"
+            )
+            assert response.json()["detail"]["code"] == expected
+            latest = client.get(
+                f"/api/authoring/workflows/{created['draft_id']}"
+            ).json()
+            assert latest["status"] == "needs_review"
+            assert latest["validation_run_id"] is None
+            assert latest["validation"]["runtime_review"]["verdict"] == "block"
+            assert client.get("/api/runs").json() == []
+            assert provider.execute_count == 0
 
 
 def test_workflow_agent_version_drift_fails_closed() -> None:

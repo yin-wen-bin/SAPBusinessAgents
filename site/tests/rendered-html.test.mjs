@@ -196,6 +196,7 @@ test("dual-mode prototype renders free-query and run pages", async () => {
 test("workflow builder is rendered and consistently localized", async () => {
   const zh = await readPage("zh", "workflows");
   const en = await readPage("en", "workflows");
+  const builderSource = await readFile(path.join("src", "components", "WorkflowBuilder.tsx"), "utf8");
   assert.match(zh, /用一句话生成工作流/);
   assert.match(zh, /你希望完成什么业务任务/);
   assert.match(zh, /从空白画布开始/);
@@ -210,6 +211,12 @@ test("workflow builder is rendered and consistently localized", async () => {
   assert.match(en, /Validate live with Agent Runtime/);
   assert.match(en, /Publish fixed workflow/);
   assert.doesNotMatch(en, />工作流编排</);
+  assert.match(builderSource, /正在通过只读 SAP 查询自动发现真机样本并启动验证/);
+  assert.match(builderSource, /workflow_validation_input_unavailable/);
+  assert.match(builderSource, /missing_fields/);
+  assert.match(builderSource, /aria-required=\{required\}/);
+  assert.match(builderSource, /workflow-spinner--button/);
+  assert.match(builderSource, /workflow-validation-feedback is-/);
 });
 
 test("detail pages render workflow and step-level tools", async () => {
@@ -249,7 +256,7 @@ test("P2P detail page renders the complete bilingual API workflow", async () => 
   assert.match(zh, /API_MATERIAL_DOCUMENT_SRV/);
   assert.match(zh, /API_SUPPLIERINVOICE_PROCESS_SRV/);
   assert.match(zh, /API_OPLACCTGDOCITEMCUBE_SRV/);
-  assert.match(zh, /multi-po-runtime-live-acceptance\.md/);
+  assert.match(zh, /p2p-ap-workflow-live-acceptance\.md/);
   assert.match(zh, /执行这个 Agent/);
   assert.match(zh, /purchase_order/);
 
@@ -257,5 +264,5 @@ test("P2P detail page renders the complete bilingual API workflow", async () => 
   assert.equal((en.match(/class="step-operations"/g) ?? []).length, manifest.execution.steps.length);
   assert.match(en, /Detailed operations/);
   assert.match(en, /APIs, SAPSkills &amp; tools used at this step/);
-  assert.match(en, /multi-po-runtime-live-acceptance\.md/);
+  assert.match(en, /p2p-ap-workflow-live-acceptance\.md/);
 });

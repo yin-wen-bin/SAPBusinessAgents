@@ -35,6 +35,7 @@ type Draft = {
 
 type BuilderProps = { apiBase: string; locale: Locale; runPath: string; askPath: string };
 type AgentNodeData = { agent: AgentDefinition; locale: Locale };
+type ValidationFeedback = { kind: "progress" | "success" | "error"; text: string };
 
 const labels = {
   zh: {
@@ -64,6 +65,10 @@ const labels = {
     agents: "可用 Agents",
     save: "保存草稿",
     validate: "Agent Runtime 真机验证",
+    validating: "正在启动真机验证…",
+    discovering: "正在通过只读 SAP 查询自动发现真机样本并启动验证…",
+    validationAccepted: "真机验证已启动",
+    autoDiscoverFailed: "未能自动发现以下必填输入，请手工填写后重试",
     publish: "发布固定工作流",
     acknowledge: "我确认并接受本次验证中的完整性缺口",
     selectNode: "选择一个节点配置输入映射",
@@ -72,7 +77,8 @@ const labels = {
     workflowId: "工作流标识",
     workflowName: "工作流名称",
     validationInputs: "真机验证输入",
-    autoDiscover: "留空时自动发现可用的真机样本",
+    autoDiscover: "必填业务主键留空时，系统会通过有界、只读的 SAP 查询自动发现一个真机样本；也可以手工填写以验证指定业务数据。",
+    required: "必填",
     noIssues: "尚未发现结构或运行问题。",
     validationDetail: "验证说明",
     constant: "常量",
@@ -107,6 +113,10 @@ const labels = {
     agents: "Available Agents",
     save: "Save draft",
     validate: "Validate live with Agent Runtime",
+    validating: "Starting live validation…",
+    discovering: "Discovering a live candidate through a bounded, read-only SAP query and starting validation…",
+    validationAccepted: "Live validation started",
+    autoDiscoverFailed: "A live candidate could not be discovered for these required inputs. Enter them and try again",
     publish: "Publish fixed workflow",
     acknowledge: "I acknowledge the completeness gaps in this validation",
     selectNode: "Select a node to configure its input mappings",
@@ -115,7 +125,8 @@ const labels = {
     workflowId: "Workflow ID",
     workflowName: "Workflow name",
     validationInputs: "Live validation input",
-    autoDiscover: "Leave blank to discover a usable live candidate automatically",
+    autoDiscover: "When a required business key is blank, the system uses a bounded, read-only SAP query to discover one live candidate. You can enter a value to validate specific business data instead.",
+    required: "required",
     noIssues: "No structural or runtime issue is currently reported.",
     validationDetail: "Validation detail",
     constant: "Constant",
@@ -191,6 +202,8 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: B
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [validationFeedback, setValidationFeedback] = useState<ValidationFeedback | null>(null);
   const [acknowledge, setAcknowledge] = useState(false);
   const [validationInputs, setValidationInputs] = useState<Record<string, string>>({});
   const pollTimer = useRef<number | null>(null);
@@ -409,7 +422,10 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: B
 
   const validate = async () => {
     if (!draft) return;
-    setBusy(true); setMessage("");
+    const requiredInputs = draft.workflow.inputSchema.required ?? [];
+    const needsDiscovery = requiredInputs.some((name) => !(validationInputs[name] ?? "").trim());
+    setBusy(true); setValidating(true); setMessage("");
+    setValidationFeedback({ kind: "progress", text: needsDiscovery ? t.discovering : t.validating });
     try {
       let current = draft;
       if (current.status === "draft") {
@@ -431,12 +447,24 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: B
         }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail?.message ?? payload.detail ?? "Validation failed");
-      applyDraft(payload as Draft); setMessage(`${t.validate} · ${payload.validation_run_id}`);
+      if (!response.ok) {
+        const envelope = payload.detail && typeof payload.detail === "object" ? payload.detail : {};
+        const errorDetail = envelope.detail && typeof envelope.detail === "object" ? envelope.detail : {};
+        const missingFields: string[] = Array.isArray(errorDetail.missing_fields) ? errorDetail.missing_fields.map((item: unknown) => String(item)) : [];
+        if (envelope.code === "workflow_validation_input_unavailable" && missingFields.length) {
+          const localizedFields = missingFields.map((name) => current.workflow.inputSchema.properties[name]?.title?.[locale] ?? name);
+          throw new Error(`${t.autoDiscoverFailed}: ${localizedFields.join(locale === "zh" ? "、" : ", ")}`);
+        }
+        const latestResponse = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(current.draft_id)}`);
+        if (latestResponse.ok) applyDraft((await latestResponse.json()) as Draft);
+        throw new Error(envelope.message ?? payload.detail ?? "Validation failed");
+      }
+      applyDraft(payload as Draft);
+      setValidationFeedback({ kind: "success", text: `${t.validationAccepted} · ${payload.validation_run_id}` });
       pollDraft(payload.draft_id);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally { setBusy(false); }
+      setValidationFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+    } finally { setBusy(false); setValidating(false); }
   };
 
   const publish = async () => {
@@ -470,10 +498,12 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: B
           {draft && <button onClick={() => setAdvanced((value) => !value)}>{advanced ? t.hideAdvanced : t.advanced}</button>}
           {!draft && <button disabled={busy} onClick={createManualDraft}>{t.manual}</button>}
           {advanced && <button disabled={busy || !draft} onClick={save}>{t.save}</button>}
-          <button disabled={busy || !canValidate} onClick={validate}>{t.validate}</button>
+          <button disabled={busy || !canValidate} onClick={validate}>{validating && <span className="workflow-spinner workflow-spinner--button" />}{validating ? t.validating : t.validate}</button>
           <button disabled={busy || gaps.length > 0 || !["validated", "inconclusive"].includes(draft?.status ?? "")} onClick={publish}>{t.publish}</button>
         </div>
       </header>
+
+      {validationFeedback && <section className={`workflow-validation-feedback is-${validationFeedback.kind}`} role={validationFeedback.kind === "error" ? "alert" : "status"} aria-live="polite">{validationFeedback.kind === "progress" && <span className="workflow-spinner" />}{validationFeedback.text}</section>}
 
       <section className="workflow-intent-panel">
         <label htmlFor="workflow-requirement"><strong>{t.requirement}</strong></label>
@@ -538,7 +568,10 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: B
         {draft.validation_run_id && <a href={`${runPath}?run=${encodeURIComponent(draft.validation_run_id)}`}>{t.openRun}</a>}
         <h2>{t.validationInputs}</h2>
         <p>{t.autoDiscover}</p>
-        <div className="workflow-validation-inputs">{Object.entries(draft.workflow.inputSchema.properties ?? {}).filter(([, schema]) => schema["x-sapba-workflow-only"] !== true).map(([name, schema]) => <label key={name}><span>{schema.title?.[locale] ?? name}</span>{schema.type === "array" ? <textarea rows={4} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? (locale === "zh" ? "每行或用逗号分隔" : "One per line or comma-separated")} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} /> : <input type={schema.format === "date" ? "date" : schema.type === "number" || schema.type === "integer" ? "number" : "text"} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? name} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} />}</label>)}</div>
+        <div className="workflow-validation-inputs">{Object.entries(draft.workflow.inputSchema.properties ?? {}).filter(([, schema]) => schema["x-sapba-workflow-only"] !== true).map(([name, schema]) => {
+          const required = (draft.workflow.inputSchema.required ?? []).includes(name);
+          return <label className={required ? "is-required" : ""} key={name}><span>{schema.title?.[locale] ?? name}{required && <em>{t.required}</em>}</span>{schema.type === "array" ? <textarea rows={4} aria-required={required} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? (locale === "zh" ? "每行或用逗号分隔" : "One per line or comma-separated")} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} /> : <input type={schema.format === "date" ? "date" : schema.type === "number" || schema.type === "integer" ? "number" : "text"} aria-required={required} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? name} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} />}</label>;
+        })}</div>
         <label><input type="checkbox" checked={acknowledge} onChange={(event) => setAcknowledge(event.target.checked)} />{t.acknowledge}</label>
         {message && <p role="status">{message}</p>}
         <h2>{t.validationDetail}</h2>
@@ -568,12 +601,20 @@ function validationMessages(validation: Record<string, unknown> | undefined, loc
   const issues = Array.isArray(validation.issues) ? validation.issues : [];
   for (const issue of issues) {
     if (typeof issue === "string") messages.push(issue);
-    else if (issue && typeof issue === "object" && "message" in issue) messages.push(String(issue.message));
+    else if (issue && typeof issue === "object" && "message" in issue) {
+      const structured = issue as Record<string, unknown>;
+      const message = structured.message;
+      const localized = message && typeof message === "object" ? (message as Record<string, unknown>)[locale] : message;
+      const location = [structured.node_id, structured.port].filter(Boolean).join(" · ");
+      messages.push(`${location ? `${location}: ` : ""}${String(localized ?? structured.code ?? "")}`);
+    }
   }
-  const review = validation.codex_review;
+  const review = validation.runtime_review ?? validation.codex_review;
   if (review && typeof review === "object") {
-    const localized = (review as Record<string, unknown>)[locale];
-    const warning = (review as Record<string, unknown>).warning;
+    const reviewRecord = review as Record<string, unknown>;
+    const summary = reviewRecord.summary;
+    const localized = summary && typeof summary === "object" ? (summary as Record<string, unknown>)[locale] : reviewRecord[locale];
+    const warning = reviewRecord.warning;
     if (localized) messages.push(String(localized));
     else if (warning) messages.push(String(warning));
   }

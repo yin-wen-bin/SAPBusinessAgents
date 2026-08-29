@@ -247,6 +247,9 @@ Explain purpose, inputs, fixed steps, evidence provenance and limitations. Retur
         prompt = f"""
 Review this strictly read-only deterministic workflow. Check graph intent, declared
 ports, mappings and completeness propagation. Do not call tools or execute SAP.
+Return verdict=block for ambiguous branches, implicit mode selection, incompatible
+cardinality, missing mappings, unsafe operations, or incomplete completeness propagation.
+Return verdict=pass only when no blocking issue remains.
 
 Workflow: {_safe_json(workflow, limit=40_000)}
 Pinned Agent contracts: {_safe_json(agent_contracts, limit=30_000)}
@@ -255,7 +258,12 @@ Validation input shape: {_safe_json(validation_input, limit=5_000)}
         raw, session_id = await self._structured_turn(
             prompt, WORKFLOW_REVIEW_OUTPUT_SCHEMA, thread_id=thread_id
         )
-        return {"zh": str(raw["zh"]), "en": str(raw["en"]), "thread_id": session_id}
+        return {
+            "verdict": str(raw["verdict"]),
+            "issues": list(raw["issues"]),
+            "summary": dict(raw["summary"]),
+            "thread_id": session_id,
+        }
 
     async def repair_workflow(
         self,
