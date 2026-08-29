@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import uuid
+from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -115,6 +116,9 @@ class WorkflowDraftService:
         draft.composition = {
             "requirement": requirement,
             "locale": locale,
+            "runtime_provider_id": str(
+                getattr(self.author, "current_provider_id", "codex")
+            ),
             "catalog_digest": "",
             "stages": [],
             "gaps": [],
@@ -283,12 +287,18 @@ class WorkflowDraftService:
         review_workflow = getattr(self.author, "review_workflow", None)
         if callable(review_workflow):
             try:
-                review = await review_workflow(
-                    workflow=draft.workflow,
-                    agent_contracts=self._agent_contracts(draft.workflow),
-                    validation_input={key: "<provided>" for key in validation_input},
-                    thread_id=draft.thread_id,
+                provider_id = str(
+                    draft.composition.get("runtime_provider_id") or "codex"
                 )
+                pin = getattr(self.author, "pin", None)
+                context = pin(provider_id) if callable(pin) else nullcontext()
+                with context:
+                    review = await review_workflow(
+                        workflow=draft.workflow,
+                        agent_contracts=self._agent_contracts(draft.workflow),
+                        validation_input={key: "<provided>" for key in validation_input},
+                        thread_id=draft.thread_id,
+                    )
                 draft.thread_id = str(review.get("thread_id") or draft.thread_id or "") or None
                 draft.validation["codex_review"] = {
                     "zh": str(review.get("zh") or ""),
@@ -296,7 +306,7 @@ class WorkflowDraftService:
                 }
             except Exception as exc:
                 draft.validation["codex_review"] = {
-                    "warning": "Codex review was unavailable; deterministic validation continued.",
+                    "warning": "Agent Runtime review was unavailable; deterministic validation continued.",
                     "error_type": type(exc).__name__,
                 }
         run_id = await self.coordinator.submit_workflow_snapshot(
@@ -352,25 +362,33 @@ class WorkflowDraftService:
             supports = getattr(self.author, "supports", None)
             if not callable(compose) or (callable(supports) and not supports("compose_workflow")):
                 raise WorkflowDraftError(
-                    "The selected Codex runtime does not support workflow composition.",
+                    "The selected Agent Runtime does not support workflow composition.",
                     code="workflow_composition_unavailable",
                 )
             catalog = compact_agent_catalog(self.agents)
-            result = await compose(
-                requirement=requirement,
-                catalog=catalog,
-                locale=locale,
-                thread_id=draft.thread_id,
-                clarification_input=clarification_input,
-                previous=draft.composition,
+            provider_id = str(
+                draft.composition.get("runtime_provider_id")
+                or getattr(self.author, "current_provider_id", "codex")
             )
+            draft.composition["runtime_provider_id"] = provider_id
+            pin = getattr(self.author, "pin", None)
+            context = pin(provider_id) if callable(pin) else nullcontext()
+            with context:
+                result = await compose(
+                    requirement=requirement,
+                    catalog=catalog,
+                    locale=locale,
+                    thread_id=draft.thread_id,
+                    clarification_input=clarification_input,
+                    previous=draft.composition,
+                )
             draft = self.store.get_workflow_draft(draft_id)
             draft.thread_id = str(result.get("thread_id") or draft.thread_id or "") or None
             if result.get("needs_clarification"):
                 question = str(result.get("clarification_question") or "").strip()
                 if not question:
                     raise WorkflowCompositionError(
-                        "Codex requested clarification without returning a question."
+                        "The Agent Runtime requested clarification without returning a question."
                     )
                 draft.status = "waiting_input"
                 draft.composition.update(
@@ -551,20 +569,26 @@ class WorkflowDraftService:
             self.store.save_workflow_draft(draft)
             return
         try:
-            proposal = await repair(
-                workflow=draft.workflow,
-                agent_contracts=self._agent_contracts(draft.workflow),
-                error=record.error or {},
-                thread_id=draft.thread_id,
+            provider_id = str(
+                draft.composition.get("runtime_provider_id") or "codex"
             )
+            pin = getattr(self.author, "pin", None)
+            context = pin(provider_id) if callable(pin) else nullcontext()
+            with context:
+                proposal = await repair(
+                    workflow=draft.workflow,
+                    agent_contracts=self._agent_contracts(draft.workflow),
+                    error=record.error or {},
+                    thread_id=draft.thread_id,
+                )
             connections = proposal.get("connections")
             if not isinstance(connections, list):
-                raise WorkflowDraftError("Codex repair did not return a connection list.")
+                raise WorkflowDraftError("Agent Runtime repair did not return a connection list.")
             before_nodes = draft.workflow.get("nodes")
             repaired = json.loads(json.dumps(draft.workflow))
             repaired["connections"] = connections
             if repaired.get("nodes") != before_nodes:
-                raise WorkflowDraftError("Codex repair attempted to change workflow nodes.")
+                raise WorkflowDraftError("Agent Runtime repair attempted to change workflow nodes.")
             repaired = normalize_workflow(repaired, self.agents)
             validate_workflow(repaired, self.agents, require_pins=True)
         except Exception as exc:

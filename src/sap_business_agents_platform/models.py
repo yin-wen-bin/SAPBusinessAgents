@@ -198,6 +198,15 @@ class HarnessLimits(BaseModel):
     reached_kind: Literal["tool_calls", "turns", "runtime_seconds"] | None = None
 
 
+class RuntimeSnapshot(BaseModel):
+    provider_id: str
+    sdk_id: str
+    version: str | None = None
+    configuration_digest: str
+    capabilities: list[str] = Field(default_factory=list)
+    selected_at: str | None = None
+
+
 class HarnessResult(BaseModel):
     runtime: Literal["codex_app_server"] = "codex_app_server"
     protocol: Literal["agent_runtime.v2"] = "agent_runtime.v2"
@@ -239,6 +248,7 @@ class RunResult(BaseModel):
     presentation: RunPresentation | None = None
     errors: list[dict[str, Any]] = Field(default_factory=list)
     thread_id: str | None = None
+    runtime: RuntimeSnapshot | None = None
     harness: HarnessResult | None = None
     started_at: str | None = None
     completed_at: str | None = None
@@ -257,6 +267,7 @@ class RunRecord(BaseModel):
     plan: dict[str, Any] | None = None
     result: RunResult | None = None
     thread_id: str | None = None
+    runtime: RuntimeSnapshot | None = None
     error: dict[str, Any] | None = None
     cancel_requested: bool = False
     created_at: str

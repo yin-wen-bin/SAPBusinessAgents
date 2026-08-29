@@ -144,7 +144,7 @@ test("catalog and Agent run entry points are consistently localized", async () =
   const guidedEn = await readPage("en", "agents", "FI", "ap-payment");
   assert.match(guidedZh, /执行引擎严格按照已定义步骤运行/);
   assert.match(guidedZh, /执行这个 Agent/);
-  assert.match(guidedEn, /The runtime follows the declared steps exactly/);
+  assert.match(guidedEn, /The deterministic engine follows the declared steps exactly/);
   assert.match(guidedEn, /Run this Agent/);
   assert.doesNotMatch(guidedZh, /该 Agent 的确定性工作流尚未接入/);
 
@@ -187,9 +187,10 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(plugins, /插件与能力/);
   assert.match(plugins, /data-plugin-manager/);
   assert.match(plugins, /禁止 SAP 写入/);
-  assert.match(settings, /SDK 版本与更新/);
-  assert.match(settings, /检查全部更新/);
+  assert.match(settings, /Agent Runtime 与 SDK/);
+  assert.match(settings, /检查全部 Runtime/);
   assert.match(settings, /data-sdk-manager/);
+  assert.match(settings, /设为默认 Runtime/);
 });
 
 test("workflow builder is rendered and consistently localized", async () => {
@@ -199,14 +200,14 @@ test("workflow builder is rendered and consistently localized", async () => {
   assert.match(zh, /你希望完成什么业务任务/);
   assert.match(zh, /从空白画布开始/);
   assert.match(zh, /生成工作流草稿/);
-  assert.match(zh, /Codex 真机验证/);
+  assert.match(zh, /Agent Runtime 真机验证/);
   assert.match(zh, /发布固定工作流/);
   assert.doesNotMatch(zh, />Workflow builder</);
   assert.match(en, /Generate a workflow from one request/);
   assert.match(en, /What business task should this workflow complete/);
   assert.match(en, /Start with a blank canvas/);
   assert.match(en, /Generate workflow draft/);
-  assert.match(en, /Validate live with Codex/);
+  assert.match(en, /Validate live with Agent Runtime/);
   assert.match(en, /Publish fixed workflow/);
   assert.doesNotMatch(en, />工作流编排</);
 });

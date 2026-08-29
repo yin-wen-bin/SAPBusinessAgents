@@ -96,7 +96,7 @@ agents/<模块>/<agent-slug>/
 
 原型的 FastAPI 服务只监听 `127.0.0.1`。固定 Agent 由确定性工作流引擎运行；“直接询问 SAP”默认创建持久 Codex App Server thread，并通过 Native Web Search、仓库内 SAP Tool Broker MCP 和动态工具准入 Gateway 执行观察—修订循环。所有 SAP 请求仍需通过实时元数据、业务关系和 GET-only 校验。默认限制为 12 turn、40 次平台工具调用和 600 秒；超限保持 `INCONCLUSIVE`，不自动回退旧 Planner。运行状态、SSE 事件和证据引用保存在 `.local-data/`，Agent 草稿只写入 `.prototype/authoring/`。完整契约见 [Codex Harness 自由查询原型](docs/codex-harness.md)。
 
-本机运行时采用不依赖 Cordis 的 Python/FastAPI 微内核。核心只负责运行状态、SSE、确定性工作流、证据完整性和只读策略；能力通过 `config/plugins/` 中的版本化清单注册。SAP 数据通道固定为进程内的 Embedded OData Provider，另有 SAPSkillhub、Codex Runtime 和业务 Agent 包。运行记录会保存实际 `plugin_id`、版本、能力、调用编号和耗时。
+本机运行时采用不依赖 Cordis 的 Python/FastAPI 微内核。核心只负责运行状态、SSE、确定性工作流、证据完整性和只读策略；能力通过 `config/plugins/` 中的版本化清单注册。SAP 数据通道固定为进程内的 Embedded OData Provider，另有 SAPSkillhub、可切换 Agent Runtime 和业务 Agent 包。运行记录会保存实际 Runtime Provider、SDK版本、配置摘要、`plugin_id`、能力、调用编号和耗时。
 
 ```mermaid
 flowchart LR
@@ -107,7 +107,7 @@ flowchart LR
     BROKER --> AGENT["business_agent.v1"]
     BROKER --> SAPREAD["sap_read.v2"]
     BROKER --> SKILL["skill_catalog.v1 / skill_execute.v1"]
-    BROKER --> CODEX["Codex App Server / agent_runtime.v2 / authoring.v1"]
+    BROKER --> RUNTIME["Agent Runtime Router / Codex / WorkBuddy"]
     FIXED --> BROKER
     FREE --> BROKER
     CORE --> DB["SQLite / SSE / 本地制品"]
@@ -299,11 +299,15 @@ Copy-Item .env.example .env
 .\.venv\Scripts\sap-business-agents.exe --port 8765
 ```
 
-In another terminal, run `npm run dev` under `site/`. Fixed Agents execute their declared steps without Codex. Free queries default to a persistent Codex App Server Harness with Native Web Search, the repository-owned SAP Tool Broker MCP, and a dynamic read-only tool-admission gateway. Every SAP request is still revalidated and executed by the GET-only Embedded Provider. State and evidence references are stored under `.local-data/`; generated drafts remain isolated under `.prototype/authoring/`. Only read-only, validated Skills explicitly listed in `config/skills.json` can be executed. See [Codex Harness](docs/codex-harness.md).
+In another terminal, run `npm run dev` under `site/`. Fixed Agents execute their declared steps without an Agent Runtime. Free queries use the globally selected Runtime: Codex remains the default persistent App Server Harness, while WorkBuddy uses the same live-schema validation and deterministic GET-only execution path after it passes acceptance. Every SAP request is revalidated and executed by the Embedded Provider. State and evidence references are stored under `.local-data/`; generated drafts remain isolated under `.prototype/authoring/`. Only read-only, validated Skills explicitly listed in `config/skills.json` can be executed. See [Codex Harness](docs/codex-harness.md).
 
 The local runtime is a Python/FastAPI microkernel without Cordis. It routes versioned capabilities from trusted manifests under `config/plugins/`: `business_agent.v1`, `sap_read.v2`, `skill_catalog.v1`, `skill_execute.v1`, `agent_runtime.v2`, and `authoring.v1`. Plugins can be inspected, health-checked, enabled, or disabled through the local plugin page and API; every evidence-producing call records plugin identity and duration. See [Local plugin platform](docs/local-plugin-platform.md).
 
-“My workflows” is natural-language-first: Codex matches executable repository Agents, while a trusted server-side compiler pins versions and digests and builds the typed DAG. Uncertain capabilities become blocking gaps that can open a contract-prefilled free query and produce a review-only Agent draft. The visual DAG remains available as the advanced editor. Live validation is GET-only, and published runtime execution never calls Codex. See [User-defined workflows](docs/user-workflows.md).
+“My workflows” is natural-language-first: the selected Agent Runtime matches executable repository Agents, while a trusted server-side compiler pins versions and digests and builds the typed DAG. Uncertain capabilities become blocking gaps that can open a contract-prefilled free query and produce a review-only Agent draft. The visual DAG remains available as the advanced editor. Live validation is GET-only, and published deterministic workflow execution never calls an Agent Runtime. See [User-defined workflows](docs/user-workflows.md).
+
+### Agent Runtime selection
+
+The system settings page reads the versioned registry at `config/sdks.json`. Codex and WorkBuddy have implemented adapters; DeepSeek Harness and Claude Agent SDK are reserved and cannot be selected. A runtime becomes selectable only after installation, platform, existing-login, provider, safety, and live free-query gates pass. Changing the global default affects new tasks only. Every free-query run persists its provider, SDK version and configuration digest, and no automatic fallback is performed.
 
 ### Runtime dependency version policy
 

@@ -48,8 +48,15 @@ from .plugins import (
     official_plugin_manifests,
 )
 from .sap_read import EmbeddedODataProvider, SapReadError, SapReadProvider
+from .runtime import (
+    CodexRuntimeProbe,
+    RuntimeRouter,
+    StaticRuntimeRouter,
+    WorkBuddyRuntimeProbe,
+)
 from .sdk_manager import SDKManager, SDKManagerError
 from .skills import SkillRegistry
+from .workbuddy_planner import WorkBuddyPlanner
 from .workflow_factory import WorkflowDraftError, WorkflowDraftService
 from .workflows import WorkflowError, WorkflowRepository
 
@@ -65,6 +72,11 @@ class LocalConfigUpdate(BaseModel):
 class PluginEnableUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool
+
+
+class RuntimeDefaultUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider_id: str
 
 
 def create_app(
@@ -99,7 +111,27 @@ def create_app(
     selected_provider = "embedded"
     selected_plugin_id = "embedded-sap-odata"
     planner_supplied = planner is not None
-    planner = planner or CodexPlanner(settings.repository_root, model=settings.codex_model)
+    sdk_registry = sdk_manager or SDKManager(
+        settings.repository_root / "config" / "sdks.json",
+        settings.repository_root,
+        runtime_probes={
+            "codex": CodexRuntimeProbe(),
+            "workbuddy": WorkBuddyRuntimeProbe(settings.repository_root),
+        },
+        selection_path=settings.sdk_runtime_state_path,
+    )
+    if planner_supplied:
+        runtime_planner = StaticRuntimeRouter(planner)
+    else:
+        runtime_planner = RuntimeRouter(
+            sdk_registry,
+            {
+                "codex": CodexPlanner(
+                    settings.repository_root, model=settings.codex_model
+                ),
+                "workbuddy": WorkBuddyPlanner(settings.repository_root),
+            },
+        )
     plugin_manager = PluginManager(
         settings.plugin_manifest_root,
         settings.plugin_state_path,
@@ -109,7 +141,9 @@ def create_app(
     )
     plugin_manager.bind_provider("embedded-sap-odata", embedded)
     plugin_manager.bind_provider("sapskillhub", SkillhubPluginProvider(skill_registry))
-    plugin_manager.bind_provider("codex-runtime", CodexRuntimePluginProvider(planner))
+    plugin_manager.bind_provider(
+        "codex-runtime", CodexRuntimePluginProvider(runtime_planner)
+    )
     plugin_manager.bind_provider(
         "business-agent-catalog", BusinessAgentPluginProvider(agents)
     )
@@ -138,11 +172,6 @@ def create_app(
     workflow_drafts = WorkflowDraftService(
         settings, store, business_agents, coordinator, sap_read, agent_runtime
     )
-    sdk_registry = sdk_manager or SDKManager(
-        settings.repository_root / "config" / "sdks.json",
-        settings.repository_root,
-    )
-
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await plugin_manager.start()
@@ -187,6 +216,9 @@ def create_app(
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
+        default_runtime_id = str(
+            getattr(sdk_registry, "default_provider_id", "codex")
+        )
         sap_read_plugin = plugin_manager.get(selected_plugin_id)
         sap_read_status = sap_read_plugin.get("health") or {
             "ok": False,
@@ -204,10 +236,19 @@ def create_app(
             },
             "codex_sdk_installed": importlib.util.find_spec("openai_codex") is not None,
             "free_query_runtime": {
-                "selected": settings.free_query_runtime,
-                "harness_enabled": harness is not None,
-                "protocol": "agent_runtime.v2" if harness is not None else "agent_runtime.v1",
-                "native_web_search": harness is not None,
+                "selected": default_runtime_id,
+                "execution_mode": (
+                    "harness"
+                    if harness is not None and default_runtime_id == "codex"
+                    else "validated_plan"
+                ),
+                "harness_enabled": harness is not None and default_runtime_id == "codex",
+                "protocol": (
+                    "agent_runtime.v2"
+                    if harness is not None and default_runtime_id == "codex"
+                    else "agent_runtime.v1"
+                ),
+                "native_web_search": harness is not None and default_runtime_id == "codex",
                 "automatic_fallback": False,
             },
             "executable_agents": len(agents.executable()),
@@ -730,8 +771,68 @@ def create_app(
             "skillhub_available": settings.skillhub_root.is_dir(),
             "codex_sdk_installed": importlib.util.find_spec("openai_codex") is not None,
             "codex_model": settings.codex_model,
+            "default_agent_runtime": str(
+                getattr(sdk_registry, "default_provider_id", "codex")
+            ),
             "data_root": str(settings.data_root),
         }
+
+    @app.get("/api/system/sdk-runtimes")
+    def list_sdk_runtimes() -> dict[str, Any]:
+        return {
+            "default_provider_id": str(
+                getattr(sdk_registry, "default_provider_id", "codex")
+            ),
+            "items": sdk_registry.list(),
+        }
+
+    @app.post("/api/system/sdk-runtimes/check")
+    async def check_all_sdk_runtimes() -> dict[str, Any]:
+        return {
+            "default_provider_id": str(
+                getattr(sdk_registry, "default_provider_id", "codex")
+            ),
+            "items": await sdk_registry.check_all(),
+        }
+
+    @app.post("/api/system/sdk-runtimes/{provider_id}/check")
+    async def check_sdk_runtime(provider_id: str) -> dict[str, Any]:
+        try:
+            check_provider = getattr(sdk_registry, "check_provider", None)
+            if not callable(check_provider):
+                raise SDKManagerError(
+                    "Runtime checks are unavailable.",
+                    code="runtime_check_unavailable",
+                )
+            return {"item": await check_provider(provider_id)}
+        except SDKManagerError as exc:
+            status_code = 404 if exc.code == "runtime_not_found" else 409
+            raise HTTPException(
+                status_code,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.put("/api/system/sdk-runtimes/default")
+    def set_default_sdk_runtime(payload: RuntimeDefaultUpdate) -> dict[str, Any]:
+        try:
+            set_default = getattr(sdk_registry, "set_default", None)
+            if not callable(set_default):
+                raise SDKManagerError(
+                    "Runtime selection is unavailable.",
+                    code="runtime_selection_unavailable",
+                )
+            item = set_default(payload.provider_id)
+            return {
+                "default_provider_id": payload.provider_id,
+                "item": item,
+                "message": "The default Agent Runtime was updated for new tasks.",
+            }
+        except SDKManagerError as exc:
+            status_code = 404 if exc.code == "runtime_not_found" else 409
+            raise HTTPException(
+                status_code,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
 
     @app.get("/api/system/sdks")
     def list_sdks() -> dict[str, Any]:

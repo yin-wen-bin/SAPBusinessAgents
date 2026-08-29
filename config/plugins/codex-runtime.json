@@ -1,12 +1,12 @@
 {
   "schema_version": "1.0",
   "plugin_id": "codex-runtime",
-  "version": "0.144.4",
+  "version": "1.0.0",
   "name": {
-    "zh": "Codex 运行层",
-    "en": "Codex Runtime"
+    "zh": "Agent Runtime 路由",
+    "en": "Agent Runtime Router"
   },
-  "publisher": "OpenAI",
+  "publisher": "SAPBusinessAgents",
   "enabled": true,
   "capabilities": [
     {
@@ -27,8 +27,7 @@
     }
   ],
   "transport": {
-    "type": "codex_app_server",
-    "entrypoint": "codex app-server --listen stdio://",
+    "type": "builtin",
     "loopback_only": true
   },
   "permissions": {

@@ -435,13 +435,34 @@ class CodexRuntimePluginProvider:
         self.planner = planner
 
     async def health(self) -> dict[str, Any]:
+        provider_id = str(getattr(self.planner, "current_provider_id", "codex"))
+        manager = getattr(self.planner, "manager", None)
+        runtime = None
+        if manager is not None:
+            runtime = next(
+                (
+                    item
+                    for item in manager.list()
+                    if item.get("provider_id") == provider_id
+                ),
+                None,
+            )
+        installed = (
+            bool(runtime.get("installed"))
+            if isinstance(runtime, dict)
+            else importlib.util.find_spec("openai_codex") is not None
+        )
         return {
-            "ok": importlib.util.find_spec("openai_codex") is not None,
+            "ok": installed,
             "data": {
-                "sdk_installed": importlib.util.find_spec("openai_codex") is not None,
-                "runtime": "codex_app_server",
+                "provider_id": provider_id,
+                "sdk_installed": installed,
+                "runtime": (
+                    "codex_app_server" if provider_id == "codex" else "validated_plan"
+                ),
                 "starts_on_demand": True,
                 "read_only_sandbox": True,
+                "automatic_fallback": False,
             },
         }
 
@@ -452,7 +473,7 @@ class CodexRuntimePluginProvider:
         method = getattr(self.planner, "ground_plan", None)
         if not callable(method):
             raise PluginError(
-                "Codex runtime does not support schema grounding.",
+                "The selected Agent Runtime does not support schema grounding.",
                 code="operation_unavailable",
             )
         return await method(*args, **kwargs)
@@ -460,20 +481,20 @@ class CodexRuntimePluginProvider:
     async def summarize(self, *args: Any, **kwargs: Any) -> Any:
         method = getattr(self.planner, "summarize", None)
         if not callable(method):
-            raise PluginError("Codex runtime does not support summarize.", code="operation_unavailable")
+            raise PluginError("The selected Agent Runtime does not support summarization.", code="operation_unavailable")
         return await method(*args, **kwargs)
 
     async def author_draft(self, *args: Any, **kwargs: Any) -> Any:
         method = getattr(self.planner, "author_draft", None)
         if not callable(method):
-            raise PluginError("Codex runtime does not support authoring.", code="operation_unavailable")
+            raise PluginError("The selected Agent Runtime does not support authoring.", code="operation_unavailable")
         return await method(*args, **kwargs)
 
     async def compose_workflow(self, *args: Any, **kwargs: Any) -> Any:
         method = getattr(self.planner, "compose_workflow", None)
         if not callable(method):
             raise PluginError(
-                "Codex runtime does not support workflow composition.",
+                "The selected Agent Runtime does not support workflow composition.",
                 code="operation_unavailable",
             )
         return await method(*args, **kwargs)
@@ -481,13 +502,13 @@ class CodexRuntimePluginProvider:
     async def review_workflow(self, *args: Any, **kwargs: Any) -> Any:
         method = getattr(self.planner, "review_workflow", None)
         if not callable(method):
-            raise PluginError("Codex runtime does not support workflow review.", code="operation_unavailable")
+            raise PluginError("The selected Agent Runtime does not support workflow review.", code="operation_unavailable")
         return await method(*args, **kwargs)
 
     async def repair_workflow(self, *args: Any, **kwargs: Any) -> Any:
         method = getattr(self.planner, "repair_workflow", None)
         if not callable(method):
-            raise PluginError("Codex runtime does not support workflow repair.", code="operation_unavailable")
+            raise PluginError("The selected Agent Runtime does not support workflow repair.", code="operation_unavailable")
         return await method(*args, **kwargs)
 
 
@@ -649,6 +670,44 @@ class AgentRuntimeCapability:
             return False
         return callable(getattr(getattr(binding.provider, "planner", None), operation, None))
 
+    @property
+    def current_provider_id(self) -> str:
+        return str(getattr(self._planner(), "current_provider_id", "codex"))
+
+    def snapshot(self, provider_id: str | None = None) -> dict[str, Any]:
+        method = getattr(self._planner(), "snapshot", None)
+        if not callable(method):
+            return {
+                "provider_id": "codex",
+                "sdk_id": "codex-python-sdk",
+                "version": None,
+                "configuration_digest": "legacy-agent-runtime",
+                "capabilities": ["planning"],
+                "selected_at": None,
+            }
+        return method(provider_id)
+
+    def pin(self, provider_id: str | None) -> Any:
+        method = getattr(self._planner(), "pin", None)
+        if not callable(method):
+            from contextlib import nullcontext
+
+            return nullcontext()
+        return method(provider_id)
+
+    def bind_events(self, sink: Any) -> Any:
+        method = getattr(self._planner(), "bind_events", None)
+        if not callable(method):
+            from contextlib import nullcontext
+
+            return nullcontext()
+        return method(sink)
+
+    async def cancel(self, thread_id: str | None = None) -> None:
+        method = getattr(self._planner(), "cancel", None)
+        if callable(method):
+            await method(thread_id)
+
     async def plan(self, *args: Any, **kwargs: Any) -> Any:
         return await self.manager.invoke("agent_runtime.v1", "plan", *args, **kwargs)
 
@@ -675,6 +734,13 @@ class AgentRuntimeCapability:
         return await self.manager.invoke(
             "workflow_authoring.v1", "repair_workflow", *args, **kwargs
         )
+
+    def _planner(self) -> Any:
+        provider = self.manager._providers.get("codex-runtime")
+        if provider is not None:
+            return getattr(provider, "planner", provider)
+        binding = self.manager.resolve("agent_runtime.v1", "plan")
+        return getattr(binding.provider, "planner", binding.provider)
 
 
 def official_plugin_manifests() -> list[PluginManifest]:
@@ -723,9 +789,9 @@ def official_plugin_manifests() -> list[PluginManifest]:
         {
             "schema_version": "1.0",
             "plugin_id": "codex-runtime",
-            "version": "0.144.4",
-            "name": {"zh": "Codex 运行层", "en": "Codex Runtime"},
-            "publisher": "OpenAI",
+            "version": "1.0.0",
+            "name": {"zh": "Agent Runtime 路由", "en": "Agent Runtime Router"},
+            "publisher": "SAPBusinessAgents",
             "capabilities": [
                 {
                     "capability": "agent_runtime.v2",
@@ -746,7 +812,7 @@ def official_plugin_manifests() -> list[PluginManifest]:
                     "operations": ["compose_workflow", "review_workflow", "repair_workflow"],
                 },
             ],
-            "transport": {"type": "codex_app_server", "entrypoint": "codex app-server --listen stdio://", "loopback_only": True},
+            "transport": {"type": "builtin", "loopback_only": True},
             "permissions": {},
         },
         {

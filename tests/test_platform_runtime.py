@@ -1441,6 +1441,9 @@ def test_free_query_uses_codex_plan_then_embedded_validation(tmp_path: Path) -> 
         run = _wait(client, response.json()["run_id"])
         assert run["status"] == "inconclusive"
         assert run["thread_id"] == "thread-001"
+        assert run["runtime"]["provider_id"] == "codex"
+        assert run["runtime"]["sdk_id"] == "codex-python-sdk"
+        assert run["result"]["runtime"] == run["runtime"]
         assert planner.calls == 1
         assert len(embedded.validated_plans) == 2
         assert embedded.validated_plans[-1:] == embedded.executed_plans

@@ -11,7 +11,7 @@ const destination = runPath(base, locale);
 const copy = locale === "zh" ? {
   eyebrow: "自由 SAP 查询",
   title: "没有合适的 Agent？直接询问 SAP",
-  body: "Codex 运行插件从已注册的只读能力目录生成查询计划；当前 SAP 只读 Provider 会再次验证元数据、字段和 GET 边界。",
+  body: "当前默认 Agent Runtime 从已注册的只读能力目录生成查询计划；SAP 只读 Provider 会再次验证元数据、字段和 GET 边界。",
   placeholder: "例如：查询供应商 1000123 上个月到期但尚未付款的采购订单",
   submit: "开始只读查询",
   safety: "仅允许 SAP Provider GET 和已批准的只读 Skill",
@@ -20,7 +20,7 @@ const copy = locale === "zh" ? {
 } : {
   eyebrow: "Free SAP query",
   title: "No matching Agent? Ask SAP directly",
-  body: "The Codex runtime plugin authors a plan from registered read-only capabilities; the selected SAP read Provider revalidates metadata, fields, and the GET-only boundary.",
+  body: "The current default Agent Runtime authors a plan from registered read-only capabilities; the SAP read Provider revalidates metadata, fields, and the GET-only boundary.",
   placeholder: "Example: find purchase orders for supplier 1000123 that were due last month but remain unpaid",
   submit: "Start read-only query",
   safety: "Only SAP Provider GET and approved read-only Skills are allowed",

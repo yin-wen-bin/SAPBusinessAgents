@@ -16,7 +16,7 @@ const base = import.meta.env.BASE_URL;
 
 <SiteLayout
   title={locale === "zh" ? "直接询问 SAP — SAP Business Agents" : "Ask SAP — SAP Business Agents"}
-  description={locale === "zh" ? "通过 Codex 和内嵌 SAP 只读 Provider 执行受控的自由查询。" : "Run a guarded free SAP query through Codex and the embedded SAP read Provider."}
+  description={locale === "zh" ? "通过当前默认 Agent Runtime 和内嵌 SAP 只读 Provider 执行受控的自由查询。" : "Run a guarded free SAP query through the current default Agent Runtime and embedded SAP read Provider."}
   locale={locale}
   alternateHref={askPath(base, other)}
 >

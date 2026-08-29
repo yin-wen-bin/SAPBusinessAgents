@@ -7,10 +7,10 @@ const { locale } = Astro.props;
 const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const copy = locale === "zh" ? {
   eyebrow: "系统配置",
-  title: "SDK 版本与更新",
-  body: "集中查看 SAPBusinessAgents 使用的 SDK。检查更新只访问对应官方包注册表；更新操作仅允许执行系统白名单中预先注册的包。",
-  checkAll: "检查全部更新",
-  loading: "正在读取本机 SDK 信息…",
+  title: "Agent Runtime 与 SDK",
+  body: "选择新任务使用的 Agent Runtime，并集中检查安装、登录、平台兼容性和 SDK 版本。固定 Agent 不受此设置影响。",
+  checkAll: "检查全部 Runtime",
+  loading: "正在读取本机 Agent Runtime 信息…",
   unavailable: "无法连接本机 API，请先启动 SAPBusinessAgents。",
   current: "当前版本",
   latest: "最新版本",
@@ -19,7 +19,7 @@ const copy = locale === "zh" ? {
   checkedAt: "检查时间",
   notChecked: "尚未检查",
   notInstalled: "未安装",
-  check: "检查更新",
+  check: "检查状态与更新",
   checking: "正在检查…",
   update: "更新到最新版本",
   updating: "正在更新…",
@@ -31,12 +31,39 @@ const copy = locale === "zh" ? {
   restart: "更新完成。请重启 SAPBusinessAgents，使新 SDK 版本对所有任务生效。",
   updated: "SDK 更新完成。",
   confirmUpdate: "将更新本机 SDK 依赖，运行中的任务不会自动切换版本。确定继续吗？",
+  provider: "Runtime Provider",
+  authentication: "登录状态",
+  authenticated: "已复用本机登录",
+  unauthenticated: "登录不可用",
+  authUnknown: "尚未检查",
+  platform: "平台兼容性",
+  supported: "支持当前平台",
+  unsupported: "不支持当前平台",
+  capabilities: "平台能力",
+  blockers: "不可用原因",
+  selected: "当前默认",
+  select: "设为默认 Runtime",
+  selecting: "正在切换…",
+  reserved: "预留",
+  planned: "待验收",
+  switchConfirm: "只会影响新创建的任务；运行中和等待补充信息的任务继续使用原 Runtime。确定切换吗？",
+  switched: "默认 Agent Runtime 已更新，新任务将使用该 Runtime。",
+  blockerLabels: {
+    native_windows_runtime_unavailable: "官方 Runtime 暂不支持原生 Windows",
+    sdk_not_installed: "SDK 尚未安装",
+    platform_not_supported: "当前操作系统不受支持",
+    provider_not_implemented: "Runtime Provider 尚未实现",
+    authentication_not_configured: "认证方式尚未配置",
+    authentication_not_checked: "尚未检查本机登录状态",
+    authentication_unavailable: "本机登录不可用",
+    free_query_live_acceptance_required: "自由 SAP 查询真机验收尚未通过",
+  },
 } : {
   eyebrow: "System settings",
-  title: "SDK versions and updates",
-  body: "View the SDKs used by SAPBusinessAgents in one place. Update checks only contact the relevant package registry, and updates are restricted to pre-registered allowlisted packages.",
-  checkAll: "Check all updates",
-  loading: "Reading local SDK information…",
+  title: "Agent Runtimes and SDKs",
+  body: "Select the Agent Runtime for new tasks and inspect installation, login, platform compatibility, and SDK versions. Fixed Agents are unaffected.",
+  checkAll: "Check all runtimes",
+  loading: "Reading local Agent Runtime information…",
   unavailable: "Cannot reach the local API. Start SAPBusinessAgents first.",
   current: "Current version",
   latest: "Latest version",
@@ -45,7 +72,7 @@ const copy = locale === "zh" ? {
   checkedAt: "Last checked",
   notChecked: "Not checked",
   notInstalled: "Not installed",
-  check: "Check for updates",
+  check: "Check status and updates",
   checking: "Checking…",
   update: "Update to latest",
   updating: "Updating…",
@@ -57,6 +84,33 @@ const copy = locale === "zh" ? {
   restart: "Update completed. Restart SAPBusinessAgents so every task uses the new SDK version.",
   updated: "SDK update completed.",
   confirmUpdate: "This will update a local SDK dependency. Running tasks will not switch versions automatically. Continue?",
+  provider: "Runtime provider",
+  authentication: "Login status",
+  authenticated: "Local login available",
+  unauthenticated: "Login unavailable",
+  authUnknown: "Not checked",
+  platform: "Platform compatibility",
+  supported: "Current platform supported",
+  unsupported: "Current platform unsupported",
+  capabilities: "Capabilities",
+  blockers: "Unavailable because",
+  selected: "Current default",
+  select: "Set as default runtime",
+  selecting: "Switching…",
+  reserved: "Reserved",
+  planned: "Pending acceptance",
+  switchConfirm: "Only new tasks will switch. Running and waiting tasks remain pinned to their original runtime. Continue?",
+  switched: "The default Agent Runtime was updated for new tasks.",
+  blockerLabels: {
+    native_windows_runtime_unavailable: "The official runtime does not support native Windows",
+    sdk_not_installed: "The SDK is not installed",
+    platform_not_supported: "The current operating system is unsupported",
+    provider_not_implemented: "The Runtime Provider is not implemented",
+    authentication_not_configured: "Authentication is not configured",
+    authentication_not_checked: "The local login has not been checked",
+    authentication_unavailable: "The local login is unavailable",
+    free_query_live_acceptance_required: "Live free-SAP-query acceptance has not passed",
+  },
 };
 ---
 
@@ -93,6 +147,7 @@ const copy = locale === "zh" ? {
   const checkedTime = (value) => value
     ? new Date(value).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")
     : copy.notChecked;
+  const blockerText = (value) => copy.blockerLabels?.[value] || value;
 
   const responseError = async (response) => {
     try {
@@ -104,6 +159,11 @@ const copy = locale === "zh" ? {
   };
 
   const stateFor = (sdk) => {
+    if (sdk.selected) return { key: "ready", text: copy.selected };
+    if (sdk.availability === "reserved" || sdk.availability === "reserved_blocked") {
+      return { key: "pending", text: copy.reserved };
+    }
+    if (sdk.availability === "planned") return { key: "pending", text: copy.planned };
     if (sdk.check_status === "failed") return { key: "failed", text: copy.failedState };
     if (!sdk.installed) return { key: "failed", text: copy.notInstalled };
     if (sdk.update_available) return { key: "update", text: copy.updateState };
@@ -134,10 +194,31 @@ const copy = locale === "zh" ? {
 
       const facts = element("dl", "plugin-facts sdk-facts");
       facts.append(
+        element("dt", "", copy.provider), element("dd", "", sdk.provider_id),
         element("dt", "", copy.package), element("dd", "", sdk.package_name),
         element("dt", "", copy.ecosystem), element("dd", "", sdk.ecosystem),
+        element("dt", "", copy.authentication),
+        element(
+          "dd",
+          "",
+          sdk.authenticated === true
+            ? copy.authenticated
+            : sdk.authenticated === false
+              ? copy.unauthenticated
+              : copy.authUnknown,
+        ),
+        element("dt", "", copy.platform),
+        element("dd", "", sdk.platform_supported ? copy.supported : copy.unsupported),
+        element("dt", "", copy.capabilities),
+        element("dd", "", (sdk.capabilities || []).join(", ") || "—"),
         element("dt", "", copy.checkedAt), element("dd", "", checkedTime(sdk.checked_at)),
       );
+      if (sdk.blockers?.length) {
+        facts.append(
+          element("dt", "", copy.blockers),
+          element("dd", "sdk-error", sdk.blockers.map(blockerText).join(locale === "zh" ? "；" : "; ")),
+        );
+      }
       if (sdk.error?.message) {
         facts.append(element("dt", "", copy.failedState), element("dd", "sdk-error", sdk.error.message));
       }
@@ -148,7 +229,10 @@ const copy = locale === "zh" ? {
       check.addEventListener("click", async () => {
         check.disabled = true; check.textContent = copy.checking;
         try {
-          const response = await fetch(`${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/check`, { method: "POST" });
+          const response = await fetch(
+            apiBase + "/api/system/sdk-runtimes/" + encodeURIComponent(sdk.provider_id) + "/check",
+            { method: "POST" },
+          );
           if (!response.ok) throw new Error(await responseError(response));
           await load();
         } catch (error) {
@@ -158,6 +242,35 @@ const copy = locale === "zh" ? {
         }
       });
       actions.append(check);
+
+      if (sdk.selectable && !sdk.selected) {
+        const select = element("button", "sdk-update-button", copy.select);
+        select.type = "button";
+        select.addEventListener("click", async () => {
+          if (!window.confirm(copy.switchConfirm)) return;
+          select.disabled = true;
+          select.textContent = copy.selecting;
+          try {
+            const response = await fetch(apiBase + "/api/system/sdk-runtimes/default", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ provider_id: sdk.provider_id }),
+            });
+            if (!response.ok) throw new Error(await responseError(response));
+            alert.hidden = false;
+            alert.dataset.tone = "success";
+            alert.textContent = copy.switched;
+            await load();
+          } catch (error) {
+            alert.hidden = false;
+            alert.dataset.tone = "error";
+            alert.textContent = String(error.message || error);
+          } finally {
+            select.disabled = false;
+          }
+        });
+        actions.append(select);
+      }
 
       if (sdk.update_available && sdk.update_enabled) {
         const update = element("button", "sdk-update-button", copy.update);
@@ -194,7 +307,7 @@ const copy = locale === "zh" ? {
   };
 
   const load = async () => {
-    const response = await fetch(`${apiBase}/api/system/sdks`);
+    const response = await fetch(apiBase + "/api/system/sdk-runtimes");
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json();
     render(payload.items || []);
@@ -205,7 +318,7 @@ const copy = locale === "zh" ? {
     button.disabled = true;
     alert.hidden = false; alert.dataset.tone = ""; alert.textContent = copy.checking;
     try {
-      const response = await fetch(`${apiBase}/api/system/sdks/check`, { method: "POST" });
+      const response = await fetch(apiBase + "/api/system/sdk-runtimes/check", { method: "POST" });
       if (!response.ok) throw new Error(await responseError(response));
       const payload = await response.json();
       render(payload.items || []);

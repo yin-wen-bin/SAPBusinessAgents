@@ -11,6 +11,7 @@ dependencies = [
   "fastapi>=0.115,<1.0",
   "httpx>=0.28,<1.0",
   "jsonschema>=4.23,<5.0",
+  "codebuddy-agent-sdk>=0.3.247,<0.4",
   "openai-codex>=0.144.4",
   "packaging>=24",
   "pydantic>=2.12,<3.0",

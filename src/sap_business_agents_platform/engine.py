@@ -7,6 +7,7 @@ import json
 import re
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import date
 from io import StringIO
 from pathlib import Path
@@ -126,19 +127,21 @@ class RunCoordinator:
     async def start(self) -> None:
         if self._worker_task is None:
             self._worker_task = asyncio.create_task(self._worker(), name="sapba-local-worker")
-            if self.harness is not None:
-                for record in self.store.list_recoverable_free_query_runs():
-                    self.store.update_run(record.run_id, status=RunStatus.queued, error_json=None)
-                    self.store.append_event(
-                        record.run_id,
-                        "harness_resumed",
-                        {
-                            "thread_id": record.thread_id,
-                            "reason": "runtime_restart",
-                            "sap_queries_replayed": False,
-                        },
-                    )
-                    await self._queue.put(record.run_id)
+            for record in self.store.list_recoverable_free_query_runs():
+                self.store.update_run(record.run_id, status=RunStatus.queued, error_json=None)
+                self.store.append_event(
+                    record.run_id,
+                    "runtime_resumed",
+                    {
+                        "thread_id": record.thread_id,
+                        "runtime_provider_id": (
+                            record.runtime.provider_id if record.runtime else "codex"
+                        ),
+                        "reason": "runtime_restart",
+                        "sap_queries_replayed": False,
+                    },
+                )
+                await self._queue.put(record.run_id)
 
     async def stop(self) -> None:
         if self._worker_task is not None:
@@ -210,7 +213,18 @@ class RunCoordinator:
                 ) from exc
             request = request.model_copy(update={"input": normalized_input})
         run_id = f"run_{uuid.uuid4().hex[:16]}"
-        self.store.create_run(run_id, request)
+        runtime_snapshot: dict[str, Any] | None = None
+        if request.mode == RunMode.free_query:
+            snapshot = getattr(self.planner, "snapshot", None)
+            if callable(snapshot):
+                try:
+                    runtime_snapshot = snapshot()
+                except Exception as exc:
+                    raise RunExecutionError(
+                        str(exc),
+                        code=str(getattr(exc, "code", "runtime_not_selectable")),
+                    ) from exc
+        self.store.create_run(run_id, request, runtime=runtime_snapshot)
         if defaulted_fields:
             self.store.append_event(
                 run_id,
@@ -223,7 +237,11 @@ class RunCoordinator:
             )
         if workflow is not None:
             self.store.save_workflow_snapshot(run_id, workflow)
-        self.store.append_event(run_id, "run_queued", {"mode": request.mode.value})
+        queued_event: dict[str, Any] = {"mode": request.mode.value}
+        if runtime_snapshot:
+            queued_event["runtime_provider_id"] = runtime_snapshot["provider_id"]
+            queued_event["runtime_sdk_id"] = runtime_snapshot["sdk_id"]
+        self.store.append_event(run_id, "run_queued", queued_event)
         await self._queue.put(run_id)
         return run_id
 
@@ -332,6 +350,7 @@ class RunCoordinator:
         record = self.store.get_run(run_id)
         if (
             record.mode == RunMode.free_query
+            and (record.runtime is None or record.runtime.provider_id == "codex")
             and self.harness is not None
             and record.status not in TERMINAL_STATUSES
             and await self.harness.steer(run_id, value)
@@ -353,8 +372,17 @@ class RunCoordinator:
             return
         self.store.update_run(run_id, cancel_requested=True)
         self.store.append_event(run_id, "cancellation_requested", {})
-        if record.mode == RunMode.free_query and self.harness is not None:
-            await self.harness.interrupt(run_id)
+        if record.mode == RunMode.free_query:
+            provider_id = record.runtime.provider_id if record.runtime else "codex"
+            if provider_id == "codex" and self.harness is not None:
+                await self.harness.interrupt(run_id)
+            else:
+                pin = getattr(self.planner, "pin", None)
+                context = pin(provider_id) if callable(pin) else nullcontext()
+                with context:
+                    cancel = getattr(self.planner, "cancel", None)
+                    if callable(cancel):
+                        await cancel(record.thread_id)
 
     async def _worker(self) -> None:
         while True:
@@ -1397,10 +1425,29 @@ class RunCoordinator:
         )
 
     async def _execute_free_query(self, run_id: str) -> None:
-        if self.harness is not None and self.settings.free_query_runtime == "harness":
-            await self._execute_free_query_harness(run_id)
-            return
-        await self._execute_free_query_legacy(run_id)
+        record = self.store.get_run(run_id)
+        provider_id = record.runtime.provider_id if record.runtime else "codex"
+        pin = getattr(self.planner, "pin", None)
+        context = pin(provider_id) if callable(pin) else nullcontext()
+        bind_events = getattr(self.planner, "bind_events", None)
+        event_context = (
+            bind_events(
+                lambda event_type, data: self.store.append_event(
+                    run_id, event_type, data
+                )
+            )
+            if callable(bind_events)
+            else nullcontext()
+        )
+        with context, event_context:
+            if (
+                provider_id == "codex"
+                and self.harness is not None
+                and self.settings.free_query_runtime == "harness"
+            ):
+                await self._execute_free_query_harness(run_id)
+                return
+            await self._execute_free_query_legacy(run_id)
 
     async def _execute_free_query_harness(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
@@ -1592,11 +1639,14 @@ class RunCoordinator:
             )
             return
         if not decision.plan:
-            raise RunExecutionError("Codex did not return a query plan.", code="codex_plan_missing")
+            raise RunExecutionError(
+                "The selected Agent Runtime did not return a query plan.",
+                code="codex_plan_missing",
+            )
         decision = await self._ground_and_validate_free_plan(run_id, planner_query, decision)
         if not decision.plan:
             raise RunExecutionError(
-                "Codex could not produce a plan supported by the live SAP schemas.",
+                "The selected Agent Runtime could not produce a plan supported by the live SAP schemas.",
                 code="codex_grounded_plan_missing",
             )
         self.store.update_run(run_id, thread_id=decision.thread_id)
@@ -1644,7 +1694,7 @@ class RunCoordinator:
                 validation = await self.sap_read.validate_plan(sap_plan, query)
                 if validation.get("ok") is not True:
                     raise RunExecutionError(
-                        f"The selected SAP Provider rejected Codex step {step_id}.",
+                        f"The selected SAP Provider rejected Agent Runtime step {step_id}.",
                         code="free_query_plan_rejected",
                         detail=validation,
                     )
@@ -1679,7 +1729,7 @@ class RunCoordinator:
                     skill = self.skills.get(skill_id)
                 except KeyError as exc:
                     raise RunExecutionError(
-                        f"Codex selected an unregistered Skill: {skill_id}",
+                        f"The selected Agent Runtime chose an unregistered Skill: {skill_id}",
                         code="unregistered_skill_rejected",
                     ) from exc
                 rendered_input = _render_template(step.get("input") or {}, context)
@@ -1716,7 +1766,7 @@ class RunCoordinator:
                 }
             else:
                 raise RunExecutionError(
-                    f"Codex selected an unsupported tool: {tool}",
+                    f"The selected Agent Runtime chose an unsupported tool: {tool}",
                     code="unregistered_tool_rejected",
                 )
             context["steps"][step_id] = {"output": output}
@@ -1787,7 +1837,7 @@ class RunCoordinator:
                 summary_errors.append(
                     {
                         "code": "codex_summary_skipped_deadline",
-                        "message": "Codex explanation was skipped to preserve the run deadline.",
+                        "message": "Agent Runtime explanation was skipped to preserve the run deadline.",
                         "detail": "SAP evidence and deterministic rule results remain available.",
                     }
                 )
@@ -1807,7 +1857,7 @@ class RunCoordinator:
                     summary_errors.append(
                         {
                             "code": "codex_summary_timeout",
-                            "message": "Codex explanation exceeded its bounded summary time.",
+                            "message": "Agent Runtime explanation exceeded its bounded summary time.",
                             "detail": "SAP evidence and deterministic rule results remain available.",
                         }
                     )
@@ -1960,10 +2010,10 @@ class RunCoordinator:
             )
             raise RunExecutionError(
                 (
-                    "The schema-grounded Codex plan uses an unapproved cross-entity "
+                    "The schema-grounded Agent Runtime plan uses an unapproved cross-entity "
                     "business relationship."
                     if relationship_rejected
-                    else "The selected SAP Provider rejected the schema-grounded Codex plan."
+                    else "The selected SAP Provider rejected the schema-grounded Agent Runtime plan."
                 ),
                 code=(
                     "free_query_relationship_rejected"
@@ -2091,6 +2141,8 @@ class RunCoordinator:
         *,
         output_schema: dict[str, Any] | None = None,
     ) -> None:
+        if result.runtime is None:
+            result.runtime = self.store.get_run(run_id).runtime
         completeness_evidence, evidence_scope = _completeness_evidence_scope(result)
         flags = rules._collect_source_complete(completeness_evidence)
         evidence_source_complete = (

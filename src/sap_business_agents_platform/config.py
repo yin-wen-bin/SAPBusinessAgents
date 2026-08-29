@@ -51,6 +51,10 @@ class Settings:
         return self.data_root / "plugins" / "registry.json"
 
     @property
+    def sdk_runtime_state_path(self) -> Path:
+        return self.data_root / "sdk-runtimes" / "default.json"
+
+    @property
     def odata_service_registry_path(self) -> Path:
         return self.repository_root / "config" / "odata-services.json"
 

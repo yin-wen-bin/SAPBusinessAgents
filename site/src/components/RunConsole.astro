@@ -75,6 +75,8 @@ const labels = locale === "zh" ? {
     summary_started: "正在整理业务结论", run_completed: "查询已完成",
     run_inconclusive: "查询结束，但现有证据不足以确认结论", run_failed: "查询未能完成",
     cancellation_requested: "正在取消查询", run_cancelled: "查询已取消",
+    agent_runtime_turn_started: "Agent Runtime 开始新的分析轮次", agent_runtime_response_received: "Agent Runtime 已返回新的分析结果",
+    agent_runtime_turn_completed: "Agent Runtime 分析轮次完成", agent_runtime_turn_failed: "Agent Runtime 分析轮次失败",
     harness_started: "Codex Harness 已启动", harness_resumed: "Codex Harness 已从持久线程恢复", codex_turn_started: "Codex 开始新的分析轮次",
     assistant_message: "Codex 已更新查询判断", web_search_started: "正在联网检索参考资料",
     web_search_completed: "联网检索完成", tool_discovery_started: "正在发现可用工具",
@@ -100,6 +102,7 @@ const labels = locale === "zh" ? {
   failureAction: "请记录运行编号并联系系统支持人员核对失败原因，然后重新执行。",
   pendingConclusion: "正在查询，完成后将在这里显示业务结论",
   pendingOverview: "系统正在读取 SAP 数据并核验证据，请留在本页等待结果。",
+  runtimeLabel: "Agent Runtime",
   mode: { agent: "固定 Agent", free_query: "自由 SAP 查询", workflow: "组合工作流", guided: "Agent 引导查询" },
   artifact: { "report.md": "业务报告", "business-stages.csv": "阶段结果表", "pr-actions.csv": "采购申请待办", "po-expedite-actions.csv": "采购订单催交待办", "source-candidates.csv": "有效货源候选", "gr-ir-follow-up.csv": "GR/IR待处理清单", "gr-ir-needs-confirmation.csv": "GR/IR证据缺口", "gr-ir-all-records.csv": "全部GR/IR核对记录", "evidence.csv": "证据明细", "result.json": "技术 JSON" },
 } : {
@@ -169,6 +172,8 @@ const labels = locale === "zh" ? {
     summary_started: "Preparing the business conclusion", run_completed: "Query completed",
     run_inconclusive: "Query ended without enough evidence for a firm conclusion", run_failed: "Query could not be completed",
     cancellation_requested: "Cancelling the query", run_cancelled: "Query cancelled",
+    agent_runtime_turn_started: "Agent Runtime analysis turn started", agent_runtime_response_received: "Agent Runtime returned an analysis update",
+    agent_runtime_turn_completed: "Agent Runtime analysis turn completed", agent_runtime_turn_failed: "Agent Runtime analysis turn failed",
     harness_started: "Codex Harness started", harness_resumed: "Codex Harness resumed from its persistent thread", codex_turn_started: "Codex analysis turn started",
     assistant_message: "Codex updated its query assessment", web_search_started: "Searching public references",
     web_search_completed: "Web search completed", tool_discovery_started: "Discovering useful tools",
@@ -194,6 +199,7 @@ const labels = locale === "zh" ? {
   failureAction: "Record the run ID, ask system support to review the failure, and then run the query again.",
   pendingConclusion: "The business conclusion will appear here when the query finishes",
   pendingOverview: "The system is reading SAP data and validating evidence. Keep this page open for the result.",
+  runtimeLabel: "Agent Runtime",
   mode: { agent: "Fixed Agent", free_query: "Free SAP query", workflow: "Composite workflow", guided: "Agent-guided query" },
   artifact: { "report.md": "Business report", "business-stages.csv": "Stage results", "pr-actions.csv": "Purchase requisition actions", "po-expedite-actions.csv": "PO expediting actions", "source-candidates.csv": "Valid source candidates", "gr-ir-follow-up.csv": "GR/IR follow-up", "gr-ir-needs-confirmation.csv": "GR/IR evidence gaps", "gr-ir-all-records.csv": "All GR/IR reconciliation records", "evidence.csv": "Evidence details", "result.json": "Technical JSON" },
 };
@@ -853,7 +859,10 @@ const labels = locale === "zh" ? {
     currentRun = run;
     const modeLabel = run.mode === "free_query" && run.agent_id ? labels.mode.guided : (labels.mode[run.mode] || run.mode);
     const subject = run.agent_id || run.workflow_id;
-    root.querySelector("[data-run-identity]").textContent = `${modeLabel}${subject ? ` · ${subject}` : ""} · ${run.run_id}`;
+    const runtimeIdentity = run.mode === "free_query" && run.runtime?.provider_id
+      ? ` · ${labels.runtimeLabel}: ${run.runtime.provider_id}${run.runtime.version ? ` ${run.runtime.version}` : ""}`
+      : "";
+    root.querySelector("[data-run-identity]").textContent = `${modeLabel}${subject ? ` · ${subject}` : ""}${runtimeIdentity} · ${run.run_id}`;
     const progressState = run.progress?.state || (terminal.has(run.status) ? run.status : "active");
     root.querySelector("[data-run-status]").textContent = labels.progressState[progressState] || labels.phaseLabels[progressIndex(run)] || labels.connecting;
     root.querySelector("[data-plan]").textContent = format(run.plan || run.result?.plan);

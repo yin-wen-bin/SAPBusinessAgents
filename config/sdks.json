@@ -1,20 +1,124 @@
 {
-  "schema_version": 1,
-  "sdks": [
+  "schemaVersion": 2,
+  "defaultProviderId": "codex",
+  "providers": [
     {
-      "sdk_id": "codex-python-sdk",
+      "providerId": "codex",
+      "sdkId": "codex-python-sdk",
       "name": {
-        "zh": "Codex SDK",
-        "en": "Codex SDK"
+        "zh": "Codex Python SDK",
+        "en": "Codex Python SDK"
       },
       "description": {
-        "zh": "用于自由 SAP 查询规划、线程恢复和结果解释的 Codex Python SDK。",
-        "en": "Codex Python SDK used for free-query planning, thread continuation, and result explanation."
+        "zh": "当前默认 Agent Runtime，用于自由 SAP 查询、结果解释、Agent Factory 和工作流编写。",
+        "en": "The current default Agent Runtime for free SAP queries, result explanation, Agent Factory, and workflow authoring."
       },
       "ecosystem": "python",
-      "package_name": "openai-codex",
-      "update_enabled": true,
-      "restart_required": true
+      "packageName": "openai-codex",
+      "moduleName": "openai_codex",
+      "availability": "active",
+      "selectable": true,
+      "platforms": ["windows"],
+      "capabilities": [
+        "planning",
+        "tool_calling",
+        "streaming",
+        "resume",
+        "structured_output",
+        "cancel",
+        "authoring",
+        "workflow_authoring"
+      ],
+      "authentication": "existing_login",
+      "providerImplemented": true,
+      "liveValidated": true,
+      "updateEnabled": true,
+      "restartRequired": true,
+      "blockers": []
+    },
+    {
+      "providerId": "workbuddy",
+      "sdkId": "codebuddy-agent-sdk",
+      "name": {
+        "zh": "腾讯 WorkBuddy / CodeBuddy Agent SDK",
+        "en": "Tencent WorkBuddy / CodeBuddy Agent SDK"
+      },
+      "description": {
+        "zh": "已实现受控适配器；复用本机 CodeBuddy 登录态，在完成自由查询真机验收前保持不可选择。",
+        "en": "A controlled adapter is implemented and reuses the local CodeBuddy login; it remains unavailable until live free-query acceptance passes."
+      },
+      "ecosystem": "python",
+      "packageName": "codebuddy-agent-sdk",
+      "moduleName": "codebuddy_agent_sdk",
+      "availability": "planned",
+      "selectable": false,
+      "platforms": ["windows"],
+      "capabilities": [
+        "planning",
+        "mcp",
+        "streaming",
+        "resume",
+        "structured_output",
+        "cancel",
+        "authoring",
+        "workflow_authoring"
+      ],
+      "authentication": "existing_login",
+      "providerImplemented": true,
+      "liveValidated": false,
+      "updateEnabled": true,
+      "restartRequired": true,
+      "blockers": ["free_query_live_acceptance_required"]
+    },
+    {
+      "providerId": "deepseek-harness",
+      "sdkId": "deepseek-harness-sdk",
+      "name": {
+        "zh": "DeepSeek Harness SDK",
+        "en": "DeepSeek Harness SDK"
+      },
+      "description": {
+        "zh": "预留 Agent Runtime；官方运行时当前不提供原生 Windows 版本。",
+        "en": "Reserved Agent Runtime; its official runtime does not currently provide native Windows support."
+      },
+      "ecosystem": "python",
+      "packageName": "deepseek-harness-sdk",
+      "moduleName": "deepseek_harness",
+      "availability": "reserved_blocked",
+      "selectable": false,
+      "platforms": ["linux-x64", "linux-arm64", "darwin-arm64"],
+      "capabilities": ["planning", "tool_calling", "streaming", "resume", "cancel"],
+      "authentication": "not_configured",
+      "providerImplemented": false,
+      "liveValidated": false,
+      "updateEnabled": false,
+      "restartRequired": true,
+      "blockers": ["native_windows_runtime_unavailable"]
+    },
+    {
+      "providerId": "claude-agent",
+      "sdkId": "claude-agent-sdk",
+      "name": {
+        "zh": "Claude Agent SDK",
+        "en": "Claude Agent SDK"
+      },
+      "description": {
+        "zh": "预留 Agent Runtime；尚未实现 Provider、认证和 SAP 真机验收。",
+        "en": "Reserved Agent Runtime; provider, authentication, and live SAP acceptance are not yet implemented."
+      },
+      "ecosystem": "python",
+      "packageName": "claude-agent-sdk",
+      "moduleName": "claude_agent_sdk",
+      "availability": "reserved",
+      "selectable": false,
+      "platforms": ["windows", "linux-x64", "linux-arm64", "darwin-arm64"],
+      "capabilities": ["planning", "tool_calling", "streaming", "resume", "cancel"],
+      "authentication": "not_configured",
+      "providerImplemented": false,
+      "liveValidated": false,
+      "updateEnabled": false,
+      "restartRequired": true,
+      "blockers": ["provider_not_implemented", "authentication_not_configured", "free_query_live_acceptance_required"]
     }
   ]
 }

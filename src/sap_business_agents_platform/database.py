@@ -15,6 +15,7 @@ from .models import (
     RunRecord,
     RunResult,
     RunStatus,
+    RuntimeSnapshot,
     WorkflowDraftRecord,
     utc_now,
 )
@@ -52,7 +53,8 @@ class RunStore:
                     created_at TEXT NOT NULL,
                     started_at TEXT,
                     completed_at TEXT,
-                    progress_json TEXT
+                    progress_json TEXT,
+                    runtime_json TEXT
                 );
                 CREATE TABLE IF NOT EXISTS events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,6 +142,8 @@ class RunStore:
                     connection.execute(f"ALTER TABLE runs ADD COLUMN {name} TEXT")
             if "progress_json" not in columns:
                 connection.execute("ALTER TABLE runs ADD COLUMN progress_json TEXT")
+            if "runtime_json" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN runtime_json TEXT")
             draft_columns = {
                 str(row[1]) for row in connection.execute("PRAGMA table_info(drafts)").fetchall()
             }
@@ -161,14 +165,15 @@ class RunStore:
         *,
         parent_run_id: str | None = None,
         node_id: str | None = None,
+        runtime: RuntimeSnapshot | dict[str, Any] | None = None,
     ) -> RunRecord:
         created_at = utc_now()
         with self._lock, self._connect() as connection:
             connection.execute(
                 """INSERT INTO runs
                 (run_id, mode, status, agent_id, workflow_id, parent_run_id, node_id,
-                 query, input_json, created_at, progress_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 query, input_json, created_at, progress_json, runtime_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     request.mode.value,
@@ -181,6 +186,7 @@ class RunStore:
                     _dump(request.input),
                     created_at,
                     _dump(RunProgress(updated_at=created_at)),
+                    _dump(runtime) if runtime is not None else None,
                 ),
             )
         return self.get_run(run_id)
@@ -220,6 +226,7 @@ class RunStore:
         allowed = {
             "status", "query", "input_json", "plan_json", "result_json", "thread_id",
             "error_json", "cancel_requested", "started_at", "completed_at", "progress_json",
+            "runtime_json",
         }
         encoded: dict[str, Any] = {}
         for key, value in values.items():
@@ -597,6 +604,11 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         plan=_load(row["plan_json"], None),
         result=RunResult.model_validate(result_data) if result_data else None,
         thread_id=row["thread_id"],
+        runtime=(
+            RuntimeSnapshot.model_validate(_load(row["runtime_json"], {}))
+            if "runtime_json" in row.keys() and row["runtime_json"]
+            else None
+        ),
         error=_load(row["error_json"], None),
         cancel_requested=bool(row["cancel_requested"]),
         created_at=row["created_at"],

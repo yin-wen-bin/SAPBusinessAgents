@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -59,17 +60,22 @@ class AgentDraftService:
         authoring_supported = not callable(supports) or bool(supports("author_draft"))
         if callable(author_draft) and authoring_supported and run.thread_id:
             try:
-                authored = await author_draft(
-                    thread_id=run.thread_id,
-                    query=query,
-                    plan=run.plan,
-                    evidence=run.result.evidence,
-                    completeness=run.result.completeness.model_dump(mode="json"),
-                    correction=correction,
-                )
+                pin = getattr(self.author, "pin", None)
+                provider_id = run.runtime.provider_id if run.runtime else "codex"
+                context = pin(provider_id) if callable(pin) else nullcontext()
+                with context:
+                    authored = await author_draft(
+                        thread_id=run.thread_id,
+                        query=query,
+                        plan=run.plan,
+                        evidence=run.result.evidence,
+                        completeness=run.result.completeness.model_dump(mode="json"),
+                        correction=correction,
+                    )
             except Exception as exc:
                 raise DraftError(
-                    "Codex could not author the bilingual draft content; no draft files were written."
+                    "The selected Agent Runtime could not author the bilingual draft content; "
+                    "no draft files were written."
                 ) from exc
         draft_dir.mkdir(parents=True, exist_ok=False)
         (draft_dir / "agent.json").write_text(
