@@ -132,6 +132,13 @@
       "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
       "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "PurchasingDocumentItem",
+      "semantic": "purchase_order_item_id"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_OperationalAcctgDocItemCube",
       "field": "OrderID",
       "semantic": "internal_order_id"
     },
@@ -246,6 +253,41 @@
       "entity_set": "A_SuplrInvcItemPurOrdRef",
       "field": "PurchaseOrder",
       "semantic": "purchase_order_id"
+    },
+    {
+      "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SuplrInvcItemPurOrdRef",
+      "field": "PurchaseOrderItem",
+      "semantic": "purchase_order_item_id"
+    },
+    {
+      "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SuplrInvcItemPurOrdRef",
+      "field": "SupplierInvoice",
+      "semantic": "supplier_invoice_id"
+    },
+    {
+      "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SuplrInvcItemPurOrdRef",
+      "field": "FiscalYear",
+      "semantic": "fiscal_year"
+    },
+    {
+      "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SupplierInvoice",
+      "field": "SupplierInvoice",
+      "semantic": "supplier_invoice_id"
+    },
+    {
+      "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_SupplierInvoice",
+      "field": "FiscalYear",
+      "semantic": "fiscal_year"
     },
     {
       "service_name": "API_PAYMENT_ADVICE_SRV",
@@ -1504,6 +1546,22 @@
       }
     },
     {
+      "id": "fi-operational-purchase-order-item",
+      "modes": ["binding"],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "PurchasingDocumentItem",
+        "odata_version": "2.0"
+      },
+      "target": {
+        "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+        "entity_set": "A_PurchaseOrderItem",
+        "field": "PurchaseOrderItem",
+        "odata_version": "2.0"
+      }
+    },
+    {
       "id": "fi-operational-material-document-po",
       "modes": [
         "binding"
@@ -1522,6 +1580,22 @@
       }
     },
     {
+      "id": "fi-operational-material-document-po-item",
+      "modes": ["binding"],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "PurchasingDocumentItem",
+        "odata_version": "2.0"
+      },
+      "target": {
+        "service_name": "API_MATERIAL_DOCUMENT_SRV",
+        "entity_set": "A_MaterialDocumentItem",
+        "field": "PurchaseOrderItem",
+        "odata_version": "2.0"
+      }
+    },
+    {
       "id": "fi-operational-supplier-invoice-po",
       "modes": [
         "binding"
@@ -1536,6 +1610,54 @@
         "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
         "entity_set": "A_SuplrInvcItemPurOrdRef",
         "field": "PurchaseOrder",
+        "odata_version": "2.0"
+      }
+    },
+    {
+      "id": "fi-operational-supplier-invoice-po-item",
+      "modes": ["binding"],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "PurchasingDocumentItem",
+        "odata_version": "2.0"
+      },
+      "target": {
+        "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "entity_set": "A_SuplrInvcItemPurOrdRef",
+        "field": "PurchaseOrderItem",
+        "odata_version": "2.0"
+      }
+    },
+    {
+      "id": "supplier-invoice-item-header-document",
+      "modes": ["binding"],
+      "source": {
+        "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "entity_set": "A_SuplrInvcItemPurOrdRef",
+        "field": "SupplierInvoice",
+        "odata_version": "2.0"
+      },
+      "target": {
+        "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "entity_set": "A_SupplierInvoice",
+        "field": "SupplierInvoice",
+        "odata_version": "2.0"
+      }
+    },
+    {
+      "id": "supplier-invoice-item-header-year",
+      "modes": ["binding"],
+      "source": {
+        "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "entity_set": "A_SuplrInvcItemPurOrdRef",
+        "field": "FiscalYear",
+        "odata_version": "2.0"
+      },
+      "target": {
+        "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "entity_set": "A_SupplierInvoice",
+        "field": "FiscalYear",
         "odata_version": "2.0"
       }
     },

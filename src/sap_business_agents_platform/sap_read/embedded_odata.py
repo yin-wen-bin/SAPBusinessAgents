@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -796,33 +797,74 @@ class EmbeddedODataProvider:
         else:
             chunks = [[]]
 
+        partition = step.get("partition") if isinstance(step.get("partition"), dict) else None
+        step_limit = (
+            min(int(partition.get("maxTotalResults") or self.max_results), 50000)
+            if partition
+            else self.max_results
+        )
         all_rows: list[dict[str, Any]] = []
         requests: list[dict[str, Any]] = []
         validation_issues: list[dict[str, Any]] = []
         complete = True
         truncated = False
-        for binding_chunk in chunks:
+        partition_count = 0
+        max_concurrent_chunks = int(step.get("max_concurrent_chunks") or 1)
+
+        async def execute_chunk(
+            chunk_index: int,
+            binding_chunk: list[str],
+        ) -> tuple[int, dict[str, Any]]:
             pieces = list(literal_filter)
             if binding_chunk:
                 pieces.append("(" + " or ".join(binding_chunk) + ")")
-            result = await self._fetch_all(
-                service,
-                version,
-                service_binding,
-                entity,
-                step,
-                " and ".join(f"({item})" for item in pieces if item),
-                remaining=max(0, self.max_results - len(all_rows)),
+            base_filter = " and ".join(f"({item})" for item in pieces if item)
+            if partition:
+                result = await self._fetch_adaptive_date_partitions(
+                    service,
+                    version,
+                    service_binding,
+                    entity,
+                    step,
+                    base_filter,
+                    remaining=step_limit,
+                )
+            else:
+                result = await self._fetch_all(
+                    service,
+                    version,
+                    service_binding,
+                    entity,
+                    step,
+                    base_filter,
+                    remaining=step_limit,
+                )
+            return chunk_index, result
+
+        limit_reached = False
+        for batch_start in range(0, len(chunks), max_concurrent_chunks):
+            batch = chunks[batch_start : batch_start + max_concurrent_chunks]
+            completed = await asyncio.gather(
+                *(
+                    execute_chunk(batch_start + offset, binding_chunk)
+                    for offset, binding_chunk in enumerate(batch)
+                )
             )
-            all_rows.extend(result["results"])
-            requests.extend(result["requests"])
-            complete = complete and result["source_complete"]
-            truncated = truncated or result["source_truncated"]
-            validation_issues.extend(result.get("validation_issues") or [])
-            if len(all_rows) >= self.max_results:
-                truncated = True
-                complete = False
-                all_rows = all_rows[: self.max_results]
+            for chunk_index, result in completed:
+                all_rows.extend(result["results"])
+                requests.extend(result["requests"])
+                complete = complete and result["source_complete"]
+                truncated = truncated or result["source_truncated"]
+                validation_issues.extend(result.get("validation_issues") or [])
+                partition_count += int(result.get("partition_count") or 0)
+                more_chunks = chunk_index < len(chunks) - 1
+                if len(all_rows) > step_limit or (len(all_rows) >= step_limit and more_chunks):
+                    truncated = True
+                    complete = False
+                    all_rows = all_rows[:step_limit]
+                    limit_reached = True
+                    break
+            if limit_reached:
                 break
         aggregate_order = [str(item) for item in step.get("order_by") or []]
         if not aggregate_order and step.get("top") is None:
@@ -859,6 +901,109 @@ class EmbeddedODataProvider:
             "source_truncated": truncated,
             "requests": requests,
             "validation_issues": validation_issues,
+            "partition_count": partition_count,
+        }
+
+    async def _fetch_adaptive_date_partitions(
+        self,
+        service: str,
+        version: str,
+        service_binding: ODataServiceBinding,
+        entity: str,
+        step: dict[str, Any],
+        base_filter: str,
+        *,
+        remaining: int,
+    ) -> dict[str, Any]:
+        partition = step.get("partition") or {}
+        field = self._validate_identifier(str(partition.get("field") or ""), "partition field")
+        start = date.fromisoformat(str(partition.get("from") or ""))
+        end = date.fromisoformat(str(partition.get("to") or ""))
+        max_partitions = int(partition.get("maxPartitions") or 366)
+        if remaining <= 0:
+            return {
+                "results": [],
+                "requests": [],
+                "source_complete": False,
+                "source_truncated": True,
+                "validation_issues": [{"code": "partition_total_limit_reached"}],
+                "partition_count": 0,
+            }
+
+        pending: list[tuple[date, date]] = [(start, end)]
+        completed_leaves = 0
+        rows: list[dict[str, Any]] = []
+        requests: list[dict[str, Any]] = []
+        validation_issues: list[dict[str, Any]] = []
+        source_complete = True
+        source_truncated = False
+
+        while pending:
+            range_start, range_end = pending.pop(0)
+            lower = self._odata_literal(range_start.isoformat(), "date_start", version)
+            upper = self._odata_literal(range_end.isoformat(), "date_end", version)
+            partition_filter = f"{field} ge {lower} and {field} le {upper}"
+            effective_filter = (
+                f"({base_filter}) and ({partition_filter})" if base_filter else partition_filter
+            )
+            available = min(self.max_results, remaining - len(rows))
+            if available <= 0:
+                source_complete = False
+                source_truncated = True
+                validation_issues.append({"code": "partition_total_limit_reached"})
+                break
+            result = await self._fetch_all(
+                service,
+                version,
+                service_binding,
+                entity,
+                step,
+                effective_filter,
+                remaining=available,
+            )
+            requests.extend(result.get("requests") or [])
+            validation_issues.extend(result.get("validation_issues") or [])
+            if result.get("source_complete") is True:
+                rows.extend(result.get("results") or [])
+                completed_leaves += 1
+                continue
+
+            can_split = range_start < range_end and completed_leaves + len(pending) + 2 <= max_partitions
+            if can_split and len(rows) < remaining:
+                midpoint = range_start + timedelta(days=(range_end - range_start).days // 2)
+                pending[0:0] = [
+                    (range_start, midpoint),
+                    (midpoint + timedelta(days=1), range_end),
+                ]
+                continue
+
+            rows.extend((result.get("results") or [])[: max(0, remaining - len(rows))])
+            completed_leaves += 1
+            source_complete = False
+            source_truncated = True
+            validation_issues.append(
+                {
+                    "code": (
+                        "partition_day_overflow"
+                        if range_start == range_end
+                        else "partition_limit_reached"
+                    ),
+                    "field": field,
+                    "from": range_start.isoformat(),
+                    "to": range_end.isoformat(),
+                }
+            )
+            if len(rows) >= remaining:
+                validation_issues.append({"code": "partition_total_limit_reached"})
+                break
+
+        return {
+            "results": rows,
+            "requests": requests,
+            "source_complete": source_complete and not pending,
+            "source_truncated": source_truncated or bool(pending),
+            "validation_issues": validation_issues,
+            "partition_count": completed_leaves,
         }
 
     async def _execute_function_import(
@@ -1256,6 +1401,40 @@ class EmbeddedODataProvider:
             top = step.get("top")
             if top is not None and (not isinstance(top, int) or isinstance(top, bool) or top <= 0):
                 issues.append({"code": "invalid_top", "step_id": step_id})
+            partition = step.get("partition")
+            if partition is not None:
+                if not isinstance(partition, dict):
+                    issues.append({"code": "invalid_partition", "step_id": step_id})
+                else:
+                    field = str(partition.get("field") or "")
+                    strategy = str(partition.get("strategy") or "")
+                    try:
+                        start = date.fromisoformat(str(partition.get("from") or ""))
+                        end = date.fromisoformat(str(partition.get("to") or ""))
+                    except ValueError:
+                        start = end = None
+                        issues.append({"code": "invalid_partition_date", "step_id": step_id})
+                    if not _IDENTIFIER.fullmatch(field):
+                        issues.append({"code": "invalid_partition_field", "step_id": step_id})
+                    if strategy != "adaptive_date":
+                        issues.append({"code": "unsupported_partition_strategy", "step_id": step_id})
+                    if start is not None and end is not None and (start > end or (end - start).days > 50000):
+                        issues.append({"code": "invalid_partition_range", "step_id": step_id})
+                    max_partitions = partition.get("maxPartitions", 366)
+                    if not isinstance(max_partitions, int) or isinstance(max_partitions, bool) or not 1 <= max_partitions <= 366:
+                        issues.append({"code": "invalid_partition_limit", "step_id": step_id})
+                    max_total = partition.get("maxTotalResults", self.max_results)
+                    if not isinstance(max_total, int) or isinstance(max_total, bool) or not 1 <= max_total <= 50000:
+                        issues.append({"code": "invalid_partition_total_limit", "step_id": step_id})
+                    if top is not None:
+                        issues.append({"code": "partition_with_top_forbidden", "step_id": step_id})
+            max_concurrent_chunks = step.get("max_concurrent_chunks", 1)
+            if (
+                not isinstance(max_concurrent_chunks, int)
+                or isinstance(max_concurrent_chunks, bool)
+                or not 1 <= max_concurrent_chunks <= 8
+            ):
+                issues.append({"code": "invalid_chunk_concurrency", "step_id": step_id})
             for order in step.get("order_by") or []:
                 if not _IDENTIFIER.fullmatch(str(order)):
                     issues.append({"code": "invalid_order_by_expression", "step_id": step_id})
@@ -1290,6 +1469,9 @@ class EmbeddedODataProvider:
         for item in step.get("filter_from_previous") or []:
             if isinstance(item, dict):
                 uses.append((str(item.get("field") or ""), "filter"))
+        partition = step.get("partition")
+        if isinstance(partition, dict):
+            uses.append((str(partition.get("field") or ""), "filter"))
         output = step.get("output_contract")
         if isinstance(output, dict):
             for key in ("requested_fields", "display_fields", "support_fields"):

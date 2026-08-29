@@ -11,7 +11,7 @@
     "en": "Links PO history to open GR/IR balances, explains causes, aging and ownership, and proposes controlled cleanup actions."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "MM-IV / FI-GL",
   "tags": [
     "GR/IR",
@@ -52,6 +52,13 @@
       "截止日期",
       "业务状态",
       "查询源完整性",
+      "业务证据完整性",
+      "分析基准日期",
+      "已检查项目数",
+      "已匹配项目数",
+      "待处理项目数",
+      "无法确认项目数",
+      "待处理记录",
       "结构化业务报告"
     ],
     "en": [
@@ -61,6 +68,13 @@
       "End date",
       "Business status",
       "Query-source completeness",
+      "Business-evidence completeness",
+      "Analysis date",
+      "Items examined",
+      "Items matched",
+      "Items requiring follow-up",
+      "Inconclusive items",
+      "Follow-up records",
       "Structured business report"
     ]
   },
@@ -92,13 +106,17 @@
           "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube",
           "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
           "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem",
-          "GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SuplrInvcItemPurOrdRef"
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader",
+          "GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SuplrInvcItemPurOrdRef",
+          "GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SupplierInvoice"
         ],
         "en": [
           "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube",
           "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
           "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem",
-          "GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SuplrInvcItemPurOrdRef"
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader",
+          "GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SuplrInvcItemPurOrdRef",
+          "GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SupplierInvoice"
         ]
       },
       "tools": [
@@ -150,7 +168,7 @@
   ],
   "execution": {
     "mode": "deterministic",
-    "timeoutSeconds": 300,
+    "timeoutSeconds": 900,
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -290,18 +308,6 @@
                     "operator": "eq",
                     "value": "{{input.gl_account}}",
                     "value_type": "string"
-                  },
-                  {
-                    "field": "PostingDate",
-                    "operator": "ge",
-                    "value": "{{input.date_from}}",
-                    "value_type": "date_start"
-                  },
-                  {
-                    "field": "PostingDate",
-                    "operator": "le",
-                    "value": "{{input.date_to}}",
-                    "value_type": "date_end"
                   }
                 ],
                 "order_by": [
@@ -309,7 +315,81 @@
                   "FiscalYear",
                   "AccountingDocument",
                   "AccountingDocumentItem"
-                ]
+                ],
+                "partition": {
+                  "field": "PostingDate",
+                  "strategy": "adaptive_date",
+                  "from": "{{input.date_from}}",
+                  "to": "{{input.date_to}}",
+                  "maxPartitions": 366,
+                  "maxTotalResults": 50000
+                }
+              },
+              {
+                "step_id": "grir_gl_history",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "GLAccount",
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "PostingDate",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
+                  "DebitCreditCode"
+                ],
+                "rationale": "Expand complete GR/IR history through the analysis date for candidate purchase-order items.",
+                "max_concurrent_chunks": 8,
+                "filters": [
+                  {
+                    "field": "CompanyCode",
+                    "operator": "eq",
+                    "value": "{{input.company_code}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "GLAccount",
+                    "operator": "eq",
+                    "value": "{{input.gl_account}}",
+                    "value_type": "string"
+                  }
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "PurchasingDocument",
+                    "source_step_id": "gl_items",
+                    "source_field": "PurchasingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "PurchasingDocumentItem",
+                    "source_step_id": "gl_items",
+                    "source_field": "PurchasingDocumentItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ],
+                "order_by": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
+                ],
+                "partition": {
+                  "field": "PostingDate",
+                  "strategy": "adaptive_date",
+                  "from": "1900-01-01",
+                  "to": "{{input.date_to}}",
+                  "maxPartitions": 366,
+                  "maxTotalResults": 50000
+                }
               },
               {
                 "step_id": "purchase_order_items",
@@ -328,11 +408,19 @@
                   "DocumentCurrency"
                 ],
                 "rationale": "Load purchase-order items referenced by GR/IR lines.",
+                "max_concurrent_chunks": 8,
                 "filter_from_previous": [
                   {
                     "field": "PurchaseOrder",
                     "source_step_id": "gl_items",
                     "source_field": "PurchasingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "PurchaseOrderItem",
+                    "source_step_id": "gl_items",
+                    "source_field": "PurchasingDocumentItem",
                     "fanout": true,
                     "fetch_all_for_binding": true
                   }
@@ -352,16 +440,59 @@
                   "PurchaseOrderItem",
                   "Material",
                   "Plant",
-                  "QuantityInBaseUnit",
+                  "GoodsMovementType",
+                  "QuantityInEntryUnit",
+                  "EntryUnit",
+                  "MaterialBaseUnit",
                   "DebitCreditCode",
-                  "ReversedMaterialDocument"
+                  "ReversedMaterialDocument",
+                  "ReversedMaterialDocumentYear",
+                  "ReversedMaterialDocumentItem"
                 ],
                 "rationale": "Load receipt and reversal evidence.",
+                "max_concurrent_chunks": 8,
                 "filter_from_previous": [
                   {
                     "field": "PurchaseOrder",
                     "source_step_id": "gl_items",
                     "source_field": "PurchasingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "PurchaseOrderItem",
+                    "source_step_id": "gl_items",
+                    "source_field": "PurchasingDocumentItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "material_document_headers",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentHeader",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "PostingDate"
+                ],
+                "rationale": "Resolve authoritative posting dates for receipt, return, and reversal documents.",
+                "max_concurrent_chunks": 8,
+                "filter_from_previous": [
+                  {
+                    "field": "MaterialDocumentYear",
+                    "source_step_id": "material_documents",
+                    "source_field": "MaterialDocumentYear",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "MaterialDocument",
+                    "source_step_id": "material_documents",
+                    "source_field": "MaterialDocument",
                     "fanout": true,
                     "fetch_all_for_binding": true
                   }
@@ -380,15 +511,58 @@
                   "PurchaseOrder",
                   "PurchaseOrderItem",
                   "QuantityInPurchaseOrderUnit",
+                  "PurchaseOrderQuantityUnit",
                   "SupplierInvoiceItemAmount",
                   "DocumentCurrency"
                 ],
                 "rationale": "Load supplier invoice references.",
+                "max_concurrent_chunks": 8,
                 "filter_from_previous": [
                   {
                     "field": "PurchaseOrder",
                     "source_step_id": "gl_items",
                     "source_field": "PurchasingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "PurchaseOrderItem",
+                    "source_step_id": "gl_items",
+                    "source_field": "PurchasingDocumentItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "supplier_invoice_headers",
+                "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_SupplierInvoice",
+                "http_method": "GET",
+                "select_fields": [
+                  "SupplierInvoice",
+                  "FiscalYear",
+                  "CompanyCode",
+                  "PostingDate",
+                  "SupplierInvoiceStatus",
+                  "SupplierInvoiceIsCreditMemo",
+                  "DocumentCurrency"
+                ],
+                "rationale": "Resolve invoice posting dates and credit-memo direction for signed quantity netting.",
+                "max_concurrent_chunks": 8,
+                "filter_from_previous": [
+                  {
+                    "field": "SupplierInvoice",
+                    "source_step_id": "supplier_invoice_items",
+                    "source_field": "SupplierInvoice",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "FiscalYear",
+                    "source_step_id": "supplier_invoice_items",
+                    "source_field": "FiscalYear",
                     "fanout": true,
                     "fetch_all_for_binding": true
                   }
@@ -504,6 +678,63 @@
             "en": "Query-source completeness"
           }
         },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务证据完整性",
+            "en": "Business-evidence completeness"
+          }
+        },
+        "analysis_date": {
+          "type": "string",
+          "format": "date",
+          "title": {
+            "zh": "分析基准日期",
+            "en": "Analysis date"
+          }
+        },
+        "examined_item_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "已检查项目数",
+            "en": "Items examined"
+          }
+        },
+        "matched_item_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "已匹配项目数",
+            "en": "Items matched"
+          }
+        },
+        "follow_up_item_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "待处理项目数",
+            "en": "Items requiring follow-up"
+          }
+        },
+        "unknown_item_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "无法确认项目数",
+            "en": "Inconclusive items"
+          }
+        },
+        "action_required_records": {
+          "type": "array",
+          "title": {
+            "zh": "待处理记录",
+            "en": "Follow-up records"
+          },
+          "items": {
+            "type": "object"
+          }
+        },
         "business_report": {
           "type": "object",
           "title": {
@@ -519,6 +750,13 @@
         "date_to",
         "business_status",
         "source_complete",
+        "evidence_complete",
+        "analysis_date",
+        "examined_item_count",
+        "matched_item_count",
+        "follow_up_item_count",
+        "unknown_item_count",
+        "action_required_records",
         "business_report"
       ],
       "additionalProperties": false
@@ -530,6 +768,13 @@
       "date_to": "{{steps.evaluate_business_result.output.workflow_output.date_to}}",
       "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
       "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.evidence_complete}}",
+      "analysis_date": "{{steps.evaluate_business_result.output.workflow_output.analysis_date}}",
+      "examined_item_count": "{{steps.evaluate_business_result.output.workflow_output.examined_item_count}}",
+      "matched_item_count": "{{steps.evaluate_business_result.output.workflow_output.matched_item_count}}",
+      "follow_up_item_count": "{{steps.evaluate_business_result.output.workflow_output.follow_up_item_count}}",
+      "unknown_item_count": "{{steps.evaluate_business_result.output.workflow_output.unknown_item_count}}",
+      "action_required_records": "{{steps.evaluate_business_result.output.workflow_output.action_required_records}}",
       "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
     },
     "acceptance": {
@@ -541,38 +786,46 @@
       ],
       "facts": [
         "material",
-        "receipt_rows",
-        "invoice_rows",
+        "receipt_quantity",
+        "invoice_quantity",
+        "gr_ir_open_amount",
+        "primary_reason",
+        "reconciliation_status",
         "business_status"
       ],
       "metrics": [
-        "receipt_rows",
-        "invoice_rows",
-        "gl_rows"
+        "examined_item_count",
+        "matched_item_count",
+        "follow_up_item_count",
+        "unknown_item_count"
       ],
       "decimalFields": [
-        "receipt_rows",
-        "invoice_rows",
         "receipt_quantity",
-        "invoice_quantity"
+        "invoice_quantity",
+        "quantity_difference",
+        "gr_ir_open_amount"
       ],
       "decimalMetricIds": [
-        "receipt_rows",
-        "invoice_rows",
-        "gl_rows"
+        "examined_item_count",
+        "matched_item_count",
+        "follow_up_item_count",
+        "unknown_item_count"
       ],
-      "currencyFields": [],
+      "currencyFields": [
+        "currency"
+      ],
       "unitFields": [
         "unit"
       ],
-      "dateFields": [],
+      "dateFields": [
+        "analysis_date",
+        "oldest_open_date"
+      ],
       "codeSetFields": [],
       "zeroPadFields": {},
       "booleanFields": [],
       "inputDefaults": {},
-      "constantDefaults": {
-        "business_status": "attention"
-      },
+      "constantDefaults": {},
       "fieldAliases": {
         "purchase_order": [
           "Purchase Order",
@@ -586,16 +839,6 @@
         "material": [
           "Material",
           "物料"
-        ],
-        "receipt_rows": [
-          "Receipt Rows",
-          "GR Rows",
-          "收货行数"
-        ],
-        "invoice_rows": [
-          "Invoice Rows",
-          "IR Rows",
-          "发票行数"
         ],
         "receipt_quantity": [
           "Receipt Quantity",
@@ -616,10 +859,22 @@
           "单位",
           "收货单位"
         ],
-        "gl_rows": [
-          "G/L Rows",
-          "GL Rows",
-          "总账行数"
+        "gr_ir_open_amount": [
+          "GR/IR Open Amount",
+          "Open Amount",
+          "GR/IR未平金额"
+        ],
+        "primary_reason": [
+          "Primary Reason",
+          "主要原因"
+        ],
+        "reconciliation_status": [
+          "Reconciliation Status",
+          "核对状态"
+        ],
+        "business_status": [
+          "Business Status",
+          "业务状态"
         ]
       },
       "fieldExtractors": {},
@@ -657,23 +912,36 @@
       "blockingLimitations": [],
       "ignoredNoticeKeywords": [],
       "zeroFactWhenMetricZero": {},
-      "recordScope": "",
-      "metricDefinitions": {},
-      "businessStatusDefinition": "",
+      "recordScope": "One reconciliation record per purchase-order item discovered from company-code GR/IR G/L activity inside date_from through date_to. The selected items are then evaluated over their complete SAP history through date_to. G/L rows without an attributable purchase-order item remain explicit inconclusive evidence and make evidence_complete=false.",
+      "factDefinitions": {
+        "receipt_quantity": "Net material-document quantity through date_to for the exact purchase order and item, using QuantityInEntryUnit and debit-credit sign (S/D positive, H/C negative). Posting date comes from the material-document header. Units must be consistent.",
+        "invoice_quantity": "Net supplier-invoice quantity through date_to for the exact purchase order and item, using QuantityInPurchaseOrderUnit and the invoice/credit-memo sign. Units must be consistent.",
+        "gr_ir_open_amount": "Net company-code-currency G/L amount through date_to for the exact purchase order and item, using AmountInCompanyCodeCurrency and debit-credit sign. Currencies must be consistent.",
+        "primary_reason": "evidence_incomplete for missing, conflicting, truncated, or unattributable evidence; otherwise return_pending, gr_without_ir, ir_without_gr, quantity_difference when absolute net quantity difference exceeds 0.001, price_difference when quantities match but absolute GR/IR balance exceeds 0.01, or matched.",
+        "reconciliation_status": "unknown for evidence_incomplete; matched for matched; requires_action for every other confirmed reason.",
+        "business_status": "inconclusive for unknown reconciliation status, normal for matched, and attention for requires_action."
+      },
+      "metricDefinitions": {
+        "examined_item_count": "Number of distinct purchase-order items in the reconciliation scope.",
+        "matched_item_count": "Number of records whose reconciliation_status is matched.",
+        "follow_up_item_count": "Number of records whose reconciliation_status is requires_action.",
+        "unknown_item_count": "Number of records whose reconciliation_status is unknown."
+      },
+      "businessStatusDefinition": "Overall inconclusive whenever source_complete or evidence_complete is false; otherwise attention when follow_up_item_count is positive; otherwise normal.",
       "businessStatusFromAnyPositiveMetric": {}
     }
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-08-20T05:18:57.447730+00:00",
+    "testedAt": "2026-08-29T05:34:59.867989+00:00",
     "evidenceScope": "complete",
     "providers": [
       "codex-app-direct-sap",
       "embedded-sap-odata"
     ],
     "summary": {
-      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
-      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+      "zh": "独立直连基线、自由查询和固定 Agent 的 GR/IR v2 业务语义一致。",
+      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent for GR/IR v2."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
     "executable": true,
@@ -681,10 +949,11 @@
     "fixedAgentComparison": "MATCH",
     "baselineRuntime": "codex_app_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "codexDirectBaselineHash": "sha256:17d34938c2aa4efe05609860b3a9011527b134c52107acc53f684a05f12a08d2",
-    "freeQueryHash": "sha256:69d970ce8e6e6259c7e609fbbb236aa914ee93445d0d17bf3c962ba46ab6ba27",
-    "adjudicatedResultHash": "sha256:17d34938c2aa4efe05609860b3a9011527b134c52107acc53f684a05f12a08d2",
-    "fixedAgentHash": "sha256:5babb44d972d7da82a65b9faf37c687f87a06957ae13cced90e96206ce374bb0",
-    "comparisonHash": "sha256:c5ee72a9960b9fd888401bdd7ef3cedf848b1ee0a92b5680b074b2de364de9b4"
+    "codexDirectBaselineHash": "sha256:1dad0132ac54844e52d4339e50af327e4cbaed7a100dd1c1db8f4db1d2808a8d",
+    "freeQueryHash": "sha256:a336b8cade77f2befb0f913093aff9c023157c02d722f3bce59dee265e6f11c2",
+    "adjudicatedResultHash": "sha256:1dad0132ac54844e52d4339e50af327e4cbaed7a100dd1c1db8f4db1d2808a8d",
+    "fixedAgentHash": "sha256:c727e5bbe5f97eb9aa8b2bd09e72800636075fa5160a651da7d40c1cb980b889",
+    "comparisonHash": "sha256:118dee099766a7bd99d63fd16799eeca25eaf7ceee4855f605857ed7351228c7",
+    "blockingLimitations": []
   }
 }

@@ -68,12 +68,27 @@ def _normalize_run(
     if reports:
         rule_result = reports[-1]
         report = rule_result["business_report"]
+        report_records = [
+            dict(item)
+            for item in report.get("records") or []
+            if isinstance(item, dict)
+        ]
+        if not report_records:
+            acceptance_tables = [
+                item
+                for item in report.get("action_tables") or []
+                if isinstance(item, dict) and item.get("acceptance_records") is True
+            ]
+            if len(acceptance_tables) > 1:
+                raise ValueError("business report contains multiple acceptance-record tables")
+            if acceptance_tables:
+                report_records = [
+                    dict(item)
+                    for item in acceptance_tables[0].get("rows") or []
+                    if isinstance(item, dict)
+                ]
         normalized = {
-            "records": [
-                dict(item)
-                for item in report.get("records") or []
-                if isinstance(item, dict)
-            ],
+            "records": report_records,
             "metrics": {
                 str(item.get("id") or item.get("name")): item.get("value")
                 for item in report.get("metrics") or []

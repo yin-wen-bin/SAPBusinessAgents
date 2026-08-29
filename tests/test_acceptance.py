@@ -343,6 +343,80 @@ def test_table_aliases_are_applied_once_when_source_names_overlap_canonical_fiel
     ]
 
 
+def test_hidden_action_table_can_supply_complete_acceptance_records() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "2.0",
+            "case_id": "grir-live-001",
+            "agent_id": "gr-ir-clearing",
+            "question": {"zh": "核对GR/IR", "en": "Reconcile GR/IR"},
+            "input": {},
+            "business_conditions": {},
+            "expected_grain": ["purchase_order", "purchase_order_item"],
+            "expected_output": {
+                "record_fields": [
+                    "purchase_order",
+                    "purchase_order_item",
+                    "business_status",
+                ],
+                "metric_ids": ["examined_item_count"],
+                "minimum_primary_evidence_rows": 1,
+                "allow_empty_result": False,
+                "evidence_scope": "complete",
+            },
+        }
+    )
+    normalized = _normalize_run(
+        {
+            "result": {
+                "completeness": {"source_complete": True},
+                "rule_results": [
+                    {
+                        "business_status": "normal",
+                        "business_report": {
+                            "records": [],
+                            "metrics": [{"id": "examined_item_count", "value": 1}],
+                            "action_tables": [
+                                {
+                                    "id": "all_reconciliation_records",
+                                    "display": False,
+                                    "acceptance_records": True,
+                                    "rows": [
+                                        {
+                                            "purchase_order": "1",
+                                            "purchase_order_item": "10",
+                                            "business_status": "normal",
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+        case,
+        {
+            "business_keys": ["purchase_order", "purchase_order_item"],
+            "facts": ["business_status"],
+            "metrics": ["examined_item_count"],
+            "required_limitations": [],
+            "field_aliases": {},
+            "input_defaults": {},
+            "constant_defaults": {},
+        },
+    )
+
+    assert normalized["records"] == [
+        {
+            "purchase_order": "1",
+            "purchase_order_item": "10",
+            "business_status": "normal",
+        }
+    ]
+    assert normalized["metrics"] == {"examined_item_count": 1}
+
+
 def test_positive_diagnostic_notice_is_not_reported_as_a_limitation() -> None:
     case = CanonicalTestCase.from_dict(
         {

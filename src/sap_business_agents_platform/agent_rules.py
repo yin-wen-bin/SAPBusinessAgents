@@ -5,6 +5,8 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Callable
 
+from .grir import evaluate_odata_grir
+
 
 JsonObject = dict[str, Any]
 SAP_V2_DATE = re.compile(r"^/Date\((-?\d+)(?:[+-]\d{4})?\)/$")
@@ -89,6 +91,22 @@ def _source_complete(inputs: JsonObject) -> bool:
 
     visit(inputs.get("evidence"))
     return bool(flags) and all(flags)
+
+
+def _step_source_complete(inputs: JsonObject, step_id: str) -> bool:
+    evidence = inputs.get("evidence")
+    entries = evidence.values() if isinstance(evidence, dict) else []
+    for payload in entries:
+        if not isinstance(payload, dict):
+            continue
+        step_results = payload.get("step_results")
+        data = payload.get("data")
+        if not isinstance(step_results, dict) and isinstance(data, dict):
+            step_results = data.get("step_results")
+        result = step_results.get(step_id) if isinstance(step_results, dict) else None
+        if isinstance(result, dict):
+            return result.get("source_complete") is True and result.get("source_truncated") is not True
+    return False
 
 
 def _fallback(inputs: JsonObject, topic: str) -> JsonObject:
@@ -1775,72 +1793,168 @@ def _ar_collection(inputs: JsonObject) -> JsonObject:
 
 
 def _grir(inputs: JsonObject) -> JsonObject:
-    pos = _rows(inputs, "purchase_orders", "purchase_order_items")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    pos = _rows(inputs, "purchase_order_items", "purchase_orders")
     receipts = _rows(inputs, "material_documents")
+    receipt_headers = _rows(inputs, "material_document_headers")
     invoices = _rows(inputs, "supplier_invoice_items")
-    gl = _rows(inputs, "gl_items")
-    attention = bool(gl) or len(receipts) != len(invoices)
-    po_items = [
-        row
-        for row in pos
-        if _text(row, "PurchaseOrder") and _text(row, "PurchaseOrderItem")
+    invoice_headers = _rows(inputs, "supplier_invoice_headers")
+    candidate_gl = _rows(inputs, "gl_items")
+    full_gl = _rows(inputs, "grir_gl_history")
+    if not full_gl:
+        full_gl = candidate_gl
+    analysis_date = _date(run_input.get("date_to")) or date.today()
+    required_steps = [
+        "gl_items",
+        "grir_gl_history",
+        "purchase_order_items",
+        "material_documents",
+        "material_document_headers",
+        "supplier_invoice_items",
+        "supplier_invoice_headers",
     ]
-    records: list[JsonObject] = []
-    for row in po_items:
-        po = _text(row, "PurchaseOrder")
-        item = _text(row, "PurchaseOrderItem")
-        item_receipts = [
-            value
-            for value in receipts
-            if _text(value, "PurchaseOrder") == po
-            and _text(value, "PurchaseOrderItem") == item
-        ]
-        item_invoices = [
-            value
-            for value in invoices
-            if _text(value, "PurchaseOrder") == po
-            and _text(value, "PurchaseOrderItem") == item
-        ]
-        records.append(
-            {
-                "purchase_order": po,
-                "purchase_order_item": item,
-                "material": _text(row, "Material"),
-                "receipt_rows": len(item_receipts),
-                "invoice_rows": len(item_invoices),
-                "receipt_quantity": str(
-                    sum(
-                        (_decimal(value.get("QuantityInEntryUnit") or value.get("QuantityInBaseUnit")))
-                        for value in item_receipts
-                    )
-                ),
-                "invoice_quantity": str(
-                    sum(
-                        (_decimal(value.get("QuantityInPurchaseOrderUnit")))
-                        for value in item_invoices
-                    )
-                ),
-                "unit": _text(
-                    row,
-                    "PurchaseOrderQuantityUnit",
-                    "OrderQuantityUnit",
-                    "OrderPriceUnit",
-                ),
-            }
-        )
-    return _result(
-        inputs,
-        business_status="attention" if attention else "normal",
-        headline_zh=f"GR/IR 范围包含 {len(pos)} 条采购证据、{len(receipts)} 条收货和 {len(invoices)} 条发票",
-        headline_en=f"GR/IR scope contains {len(pos)} purchasing, {len(receipts)} receipt, and {len(invoices)} invoice evidence row(s)",
-        overview_zh="规则按采购项目保留收货、冲销、发票和总账证据，用于净额和账龄分析。",
-        overview_en="Receipt, reversal, invoice, and G/L evidence is retained by purchase-order item for netting and aging.",
-        stages=[_stage("purchase_order", "采购订单", "Purchase orders", len(pos)), _stage("receipt", "收货与冲销", "Receipts and reversals", len(receipts)), _stage("invoice", "供应商发票", "Supplier invoices", len(invoices)), _stage("gl", "GR/IR 总账", "GR/IR G/L", len(gl))],
-        metrics=[{"id": "receipt_rows", "value": len(receipts)}, {"id": "invoice_rows", "value": len(invoices)}, {"id": "gl_rows", "value": len(gl)}],
-        records=records,
-        actions_zh=["复核收货与发票不一致的采购项目。"] if attention else [],
-        actions_en=["Review purchase-order items whose receipt and invoice evidence does not align."] if attention else [],
+    incomplete_steps = [
+        f"{step_id}_incomplete"
+        for step_id in required_steps
+        if not _step_source_complete(inputs, step_id)
+    ]
+    source_complete = not incomplete_steps and _source_complete(inputs)
+    analysis = evaluate_odata_grir(
+        analysis_date=analysis_date,
+        po_items=pos,
+        material_documents=receipts,
+        material_document_headers=receipt_headers,
+        supplier_invoice_items=invoices,
+        supplier_invoice_headers=invoice_headers,
+        gl_items=full_gl,
+        candidate_gl_items=candidate_gl,
+        source_complete=source_complete,
+        incomplete_steps=incomplete_steps,
     )
+    follow_up_count = int(analysis["follow_up_item_count"])
+    unknown_count = int(analysis["unknown_item_count"])
+    matched_count = int(analysis["matched_item_count"])
+    business_status = str(analysis["business_status"])
+    if business_status == "normal":
+        headline_zh = f"已核对 {analysis['examined_item_count']} 个采购项目，当前范围没有需要后续处理的GR/IR差异"
+        headline_en = f"Reconciled {analysis['examined_item_count']} purchase-order item(s); no GR/IR follow-up is required in the current scope"
+    elif business_status == "attention":
+        headline_zh = f"发现 {follow_up_count} 个需要后续处理的GR/IR项目"
+        headline_en = f"Found {follow_up_count} GR/IR item(s) requiring follow-up"
+    else:
+        headline_zh = f"已确认 {follow_up_count} 个待处理项目，另有 {unknown_count} 个项目因证据限制无法确认"
+        headline_en = f"Confirmed {follow_up_count} follow-up item(s); {unknown_count} additional item(s) remain inconclusive because of evidence limits"
+    metrics = [
+        {"id": "examined_item_count", "label": {"zh": "已检查项目", "en": "Items examined"}, "value": analysis["examined_item_count"]},
+        {"id": "matched_item_count", "label": {"zh": "已匹配", "en": "Matched"}, "value": matched_count},
+        {"id": "follow_up_item_count", "label": {"zh": "确认需处理", "en": "Confirmed follow-up"}, "value": follow_up_count},
+        {"id": "unknown_item_count", "label": {"zh": "无法确认", "en": "Inconclusive"}, "value": unknown_count},
+    ]
+    result = _result(
+        inputs,
+        business_status=business_status,
+        headline_zh=headline_zh,
+        headline_en=headline_en,
+        overview_zh="系统按采购订单项目核对净收货数量、净发票数量、GR/IR总账净余额、冲销、币种和账龄；前台只显示确认需处理和证据不足的项目。",
+        overview_en="The rule reconciles net receipt quantity, net invoice quantity, GR/IR G/L balance, reversals, currency, and aging by purchase-order item; the page shows only confirmed follow-up and inconclusive items.",
+        stages=[
+            _stage("candidate", "候选项目发现", "Candidate discovery", len(candidate_gl), state="confirmed" if _step_source_complete(inputs, "gl_items") else "unknown"),
+            _stage("purchase_order", "采购订单项目", "Purchase-order items", len(pos), state="confirmed" if _step_source_complete(inputs, "purchase_order_items") else "unknown"),
+            _stage("receipt", "收货、退货与冲销", "Receipts, returns, and reversals", len(receipts), state="confirmed" if _step_source_complete(inputs, "material_documents") else "unknown"),
+            _stage("receipt_header", "物料凭证过账日期", "Material-document posting dates", len(receipt_headers), state="confirmed" if _step_source_complete(inputs, "material_document_headers") else "unknown"),
+            _stage("invoice", "供应商发票与贷项", "Supplier invoices and credits", len(invoices), state="confirmed" if _step_source_complete(inputs, "supplier_invoice_items") else "unknown"),
+            _stage("gl", "GR/IR总账历史", "GR/IR G/L history", len(full_gl), state="confirmed" if _step_source_complete(inputs, "grir_gl_history") or (not _rows(inputs, "grir_gl_history") and _step_source_complete(inputs, "gl_items")) else "unknown"),
+        ],
+        metrics=metrics,
+        gaps=list(analysis["evidence_gaps"]),
+        limitations=(
+            ["当前查询或证据存在范围限制；已确认异常仍被保留，但当前结果不能代表全部GR/IR项目。"]
+            if business_status == "inconclusive"
+            else []
+        ),
+        actions_zh=(["按严重程度、账龄和未清金额处理待办清单；只有确认不会再发生后续业务并完成审批后才评估MR11。"] if follow_up_count else []),
+        actions_en=(["Process the follow-up list by severity, age, and open amount; assess MR11 only after confirming no further business and completing approval."] if follow_up_count else []),
+        source_complete_override=bool(analysis["source_complete"]),
+        records=[],
+        allow_empty_records=True,
+        preserve_business_status_on_gap=True,
+    )
+    columns = [
+        {"key": "purchase_order", "label": {"zh": "采购订单", "en": "Purchase order"}},
+        {"key": "purchase_order_item", "label": {"zh": "项目", "en": "Item"}},
+        {"key": "material", "label": {"zh": "物料", "en": "Material"}},
+        {"key": "receipt_quantity", "label": {"zh": "净收货数量", "en": "Net receipt quantity"}, "format": "decimal"},
+        {"key": "invoice_quantity", "label": {"zh": "净发票数量", "en": "Net invoice quantity"}, "format": "decimal"},
+        {"key": "unit", "label": {"zh": "单位", "en": "Unit"}},
+        {"key": "gr_ir_open_amount", "label": {"zh": "GR/IR未平金额", "en": "GR/IR open amount"}, "format": "decimal"},
+        {"key": "currency", "label": {"zh": "币种", "en": "Currency"}},
+        {"key": "oldest_open_date", "label": {"zh": "最早未平日期", "en": "Oldest open date"}, "format": "date"},
+        {"key": "age_days", "label": {"zh": "账龄天数", "en": "Age in days"}, "format": "integer"},
+        {"key": "primary_reason", "label": {"zh": "主要原因", "en": "Primary reason"}, "format": "status"},
+        {"key": "severity", "label": {"zh": "优先级", "en": "Priority"}, "format": "status"},
+        {"key": "responsible_team", "label": {"zh": "建议责任方", "en": "Suggested owner"}},
+        {"key": "recommended_action", "label": {"zh": "建议动作", "en": "Recommended action"}},
+        {"key": "material_document_refs", "label": {"zh": "物料凭证", "en": "Material documents"}},
+        {"key": "supplier_invoice_refs", "label": {"zh": "供应商发票", "en": "Supplier invoices"}},
+        {"key": "accounting_document_refs", "label": {"zh": "财务凭证", "en": "Accounting documents"}},
+    ]
+    result["business_report"]["action_tables"] = [
+        {
+            "id": "confirmed_follow_up",
+            "title": {"zh": "已确认需要处理", "en": "Confirmed follow-up"},
+            "columns": columns,
+            "rows": analysis["action_records"],
+            "total_rows": follow_up_count,
+            "source_complete": bool(analysis["source_complete"]),
+            "artifact_name": "gr-ir-follow-up.csv",
+            "display": True,
+            "empty_state": {"zh": "当前范围没有已确认的待处理项目。", "en": "No confirmed follow-up item was found in the current scope."},
+        },
+        {
+            "id": "needs_confirmation",
+            "title": {"zh": "证据不足，需要确认", "en": "Evidence incomplete; confirmation required"},
+            "columns": columns,
+            "rows": analysis["unknown_records"],
+            "total_rows": unknown_count,
+            "source_complete": bool(analysis["source_complete"]),
+            "artifact_name": "gr-ir-needs-confirmation.csv",
+            "display": True,
+            "empty_state": {"zh": "没有因证据不足而无法判断的项目。", "en": "No item remains inconclusive because of missing evidence."},
+        },
+        {
+            "id": "all_reconciliation_records",
+            "title": {"zh": "全部核对记录", "en": "All reconciliation records"},
+            "columns": columns,
+            "rows": analysis["records"],
+            "total_rows": analysis["examined_item_count"],
+            "source_complete": bool(analysis["source_complete"]),
+            "artifact_name": "gr-ir-all-records.csv",
+            "display": False,
+            "acceptance_records": True,
+        },
+    ]
+    result["rule_id"] = "gr_ir_clearing_deterministic_v2"
+    result["status"] = "complete" if business_status in {"normal", "attention"} else "inconclusive"
+    result["business_status"] = business_status
+    result["business_complete"] = bool(analysis["evidence_complete"])
+    result["source_complete"] = bool(analysis["source_complete"])
+    result["workflow_output"].update(
+        {
+            "analysis_date": analysis_date.isoformat(),
+            "examined_item_count": analysis["examined_item_count"],
+            "matched_item_count": matched_count,
+            "follow_up_item_count": follow_up_count,
+            "unknown_item_count": unknown_count,
+            "source_complete": bool(analysis["source_complete"]),
+            "evidence_complete": bool(analysis["evidence_complete"]),
+            "business_status": business_status,
+            "action_required_records": analysis["action_records"],
+            "business_report": result["business_report"],
+        }
+    )
+    if business_status == "inconclusive":
+        result["business_report"]["tone"] = "info"
+    return result
 
 
 def _month_end(inputs: JsonObject) -> JsonObject:

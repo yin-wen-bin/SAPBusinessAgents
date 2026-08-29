@@ -1,51 +1,69 @@
-# Three-stage live SAP acceptance: gr-ir-clearing
+# Three-stage live SAP acceptance: gr-ir-clearing 0.2.0
 
 ## Verdict
 
 `PASS` / `executable=true`
 
-- Case: `gr-ir-clearing-live-001`
-- Tested at: `2026-08-20T05:18:57.447730+00:00`
-- Direct baseline runtime: `codex_app_direct_sap`
-- Used SAPBusinessAgents for baseline: `false`
-- Free-query comparison: `MATCH`
-- Fixed-Agent comparison: `MATCH`
-- Normalized business records: `72`
-- Required limitations preserved: `none`
-- SAP write operations: none
+- Tested at: `2026-08-29T05:34:59.867989+00:00`.
+- Direct baseline runtime: `codex_app_direct_sap`.
+- Used SAPBusinessAgents for the direct baseline: `false`.
+- Free-query comparison: `MATCH`.
+- Fixed-Agent comparison: `MATCH`.
+- SAP write operations: none.
+
+## Sanitized acceptance scope
+
+The case used an exact company code, GR/IR account, and one-day activity window in
+ignored local artifacts. The activity window discovered candidate purchase-order
+items; each candidate was then expanded through the cutoff date using complete
+GR/IR G/L, purchase-order item, material-document item and header, and supplier-
+invoice item and header evidence.
+
+The accepted business grain is one record per purchase order and item. The result
+contained 72 records: 72 matched, 0 confirmed follow-up, and 0 inconclusive. All
+three paths reported `source_complete=true` and complete business evidence.
+
+## Independent direct-SAP baseline
+
+- Every SAP request used HTTP GET.
+- Live metadata was read for every entity before execution.
+- All 23 bounded source chunks used complete stable-key paging.
+- The six entity sets returned 288 G/L rows across candidate and history reads,
+  72 purchase-order items, 72 material-document items, 11 material-document
+  headers, 72 supplier-invoice items, and 11 supplier-invoice headers.
+- The baseline business logic independently applied signed receipt quantity,
+  signed invoice or credit quantity, signed company-code-currency G/L amount,
+  quantity tolerance `0.001`, and amount tolerance `0.01`.
+
+## Codex free-query path
+
+- Run: `run_17b5f9dcebca4a59`.
+- The Harness used live catalog discovery, live schemas, validation, GET-only SAP
+  execution, evidence assessment, bounded pure computation, and final-report
+  validation.
+- Two initial order expressions were rejected before execution and corrected from
+  live schema evidence. Rejected plans did not reach SAP.
+- Seven executed evidence plans were complete and the final result matched the
+  independent baseline at record, fact, unit, currency, metric, limitation, and
+  completeness level.
+
+## Fixed-Agent path
+
+- Run: `acceptance_f998462d81fe465e`.
+- Rule: `gr_ir_clearing_deterministic_v2`.
+- The deterministic Agent executed only its declared GET-only evidence plan and
+  produced the same 72 records and four metrics as the baseline.
+- The business UI exposes only confirmed follow-up and evidence-incomplete lists;
+  the complete reconciliation remains a hidden acceptance table and downloadable
+  audit CSV.
 
 ## Evidence hashes
 
-- Codex direct baseline: `sha256:17d34938c2aa4efe05609860b3a9011527b134c52107acc53f684a05f12a08d2`
-- SAPBusinessAgents free query: `sha256:69d970ce8e6e6259c7e609fbbb236aa914ee93445d0d17bf3c962ba46ab6ba27`
-- Adjudicated result: `sha256:17d34938c2aa4efe05609860b3a9011527b134c52107acc53f684a05f12a08d2`
-- Fixed Agent: `sha256:5babb44d972d7da82a65b9faf37c687f87a06957ae13cced90e96206ce374bb0`
-- Fixed comparison: `sha256:c5ee72a9960b9fd888401bdd7ef3cedf848b1ee0a92b5680b074b2de364de9b4`
+- Direct baseline: `sha256:1dad0132ac54844e52d4339e50af327e4cbaed7a100dd1c1db8f4db1d2808a8d`.
+- Free query: `sha256:a336b8cade77f2befb0f913093aff9c023157c02d722f3bce59dee265e6f11c2`.
+- Adjudicated result: `sha256:1dad0132ac54844e52d4339e50af327e4cbaed7a100dd1c1db8f4db1d2808a8d`.
+- Fixed Agent: `sha256:c727e5bbe5f97eb9aa8b2bd09e72800636075fa5160a651da7d40c1cb980b889`.
+- Fixed comparison: `sha256:118dee099766a7bd99d63fd16799eeca25eaf7ceee4855f605857ed7351228c7`.
 
-## Sanitized case scope
-
-- Selection rule: first independently discovered live sample satisfying the case criteria after real-time schema validation and stable-key ordering.
-- Structured input fields: `company_code, date_from, date_to, gl_account` (values remain in ignored artifacts).
-- Business-condition fields: `company_code, date_from, date_to, gl_account` (values remain in ignored artifacts).
-- Accepted business grain: `purchase_order, purchase_order_item`.
-
-## Direct baseline source coverage
-
-| Source | Service | OData | Entity | Rows | Pages | Stable order | Paging complete | Source complete |
-|---|---|:---:|---|---:|---:|---|:---:|:---:|
-| gl_items | API_OPLACCTGDOCITEMCUBE_SRV | 2.0 | A_OperationalAcctgDocItemCube | 144 | 1 | CompanyCode, FiscalYear, AccountingDocument, AccountingDocumentItem | true | true |
-| purchase_order_items | API_PURCHASEORDER_PROCESS_SRV | 2.0 | A_PurchaseOrderItem | 72 | 1 | PurchaseOrder, PurchaseOrderItem | true | true |
-| material_documents | API_MATERIAL_DOCUMENT_SRV | 2.0 | A_MaterialDocumentItem | 72 | 1 | MaterialDocumentYear, MaterialDocument, MaterialDocumentItem | true | true |
-| supplier_invoice_items | API_SUPPLIERINVOICE_PROCESS_SRV | 2.0 | A_SuplrInvcItemPurOrdRef | 72 | 1 | SupplierInvoice, FiscalYear, SupplierInvoiceItem | true | true |
-
-Schema/query manifests:
-- `gl_items` schema `sha256:65f619d00b9b12395e17fdff88b15260b6256e80405991dd2279c133c1ec6b67`; query `sha256:447b1f4f7b32df949b19c1bfdc35dc373071309a1947483b784a7b6ffaa214d7`.
-- `purchase_order_items` schema `sha256:4b533b032e4c22cd43e2ec1ed8c3e41d57621e6f37ffa4894468e8f32bc91f32`; query `sha256:92ae41d6744a6987bfd0a489b73407695b2ff6390abaeab3984e7d012aee2a89`.
-- `material_documents` schema `sha256:4de095109c47983878622572c2d95c6383e7c2fbf520cb15241582078d28852e`; query `sha256:88ed2bf658dd98b11f766e1c903db9148089ce386283916b0cecd6d36ff53644`.
-- `supplier_invoice_items` schema `sha256:e69492f061cc8f7d3fe1b63ac581ab129c30216531e2f0680ae92ab077335d49`; query `sha256:0e3784f827e806f1ecb43cd70a060e123cbda83ffd2f6756ad8c342279fb24ac`.
-
-## Repair and adjudication outcome
-
-The final comparison uses stable business keys, deterministic facts, Decimal-aware metrics, currencies, units, limitations, and completeness rather than display prose or row order. Platform and fixed-Agent corrections are covered by the campaign regression suite; runtime logic contains no test-document constants.
-
-Raw SAP rows, URLs, credentials, business identifiers, and connection details remain in ignored local artifacts.
+Raw SAP rows, URLs, credentials, connection details, business identifiers, and
+amounts remain only in ignored local artifacts.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import pytest
@@ -171,6 +172,13 @@ _METADATA = """<?xml version="1.0" encoding="utf-8"?>
   </edmx:DataServices>
 </edmx:Edmx>
 """
+
+
+_PARTITION_METADATA = _METADATA.replace(
+    '<Property Name="Amount" Type="Edm.Decimal" Nullable="true" />',
+    '<Property Name="Amount" Type="Edm.Decimal" Nullable="true" />\n'
+    '        <Property Name="PostingDate" Type="Edm.DateTime" Nullable="false" />',
+)
 
 
 def test_embedded_provider_validates_live_schema_and_executes_get_only(tmp_path: Path) -> None:
@@ -342,3 +350,153 @@ def test_embedded_provider_uses_metadata_keys_for_complete_manual_paging(tmp_pat
     assert [row["OrderID"] for row in result["data"]["results"]] == ["41", "42", "43"]
     assert entity_requests[0].url.params["$orderby"] == "OrderID"
     assert entity_requests[1].url.params["$skip"] == "2"
+
+
+def test_embedded_provider_adaptively_partitions_a_full_date_range(tmp_path: Path) -> None:
+    entity_requests: list[httpx.Request] = []
+    rows_by_date = {
+        "2026-01-01": {"OrderID": "1", "Amount": "1", "PostingDate": "/Date(1767225600000)/"},
+        "2026-01-02": {"OrderID": "2", "Amount": "2", "PostingDate": "/Date(1767312000000)/"},
+        "2026-01-03": {"OrderID": "3", "Amount": "3", "PostingDate": "/Date(1767398400000)/"},
+        "2026-01-04": {"OrderID": "4", "Amount": "4", "PostingDate": "/Date(1767484800000)/"},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/$metadata"):
+            return httpx.Response(200, text=_PARTITION_METADATA)
+        entity_requests.append(request)
+        expression = request.url.params["$filter"]
+        dates = re.findall(r"datetime'(\d{4}-\d{2}-\d{2})T", expression)
+        assert len(dates) == 2
+        start, end = dates
+        rows = [row for day, row in rows_by_date.items() if start <= day <= end]
+        return httpx.Response(200, json={"d": {"results": rows[:2]}})
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        page_size=2,
+        max_results=2,
+        transport=httpx.MockTransport(handler),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
+    )
+    plan = {
+        "service_name": "API_TEST_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_Order",
+        "http_method": "GET",
+        "select_fields": ["OrderID", "Amount", "PostingDate"],
+        "order_by": ["OrderID"],
+        "partition": {
+            "field": "PostingDate",
+            "strategy": "adaptive_date",
+            "from": "2026-01-01",
+            "to": "2026-01-04",
+            "maxPartitions": 8,
+            "maxTotalResults": 10,
+        },
+    }
+
+    validation = asyncio.run(provider.validate_plan(plan))
+    assert validation["ok"] is True
+    result = asyncio.run(provider.execute_plan(plan))
+
+    assert result["source_complete"] is True
+    assert [row["OrderID"] for row in result["data"]["results"]] == ["1", "2", "3", "4"]
+    assert result["step_results"]["step_1"]["partition_count"] == 4
+    assert len(entity_requests) > 1
+    assert all(request.method == "GET" for request in entity_requests)
+
+
+def test_embedded_provider_bounds_parallel_binding_chunks(tmp_path: Path) -> None:
+    class ConcurrentProvider(EmbeddedODataProvider):
+        active_chunks = 0
+        max_active_chunks = 0
+
+        async def _fetch_all(
+            self,
+            service,
+            version,
+            service_binding,
+            entity,
+            step,
+            filter_expression,
+            *,
+            remaining,
+        ):
+            del service_binding, step, remaining
+            if not filter_expression:
+                return {
+                    "results": [
+                        {"OrderID": str(index), "Amount": str(index)}
+                        for index in range(80)
+                    ],
+                    "requests": [],
+                    "source_complete": True,
+                    "source_truncated": False,
+                    "validation_issues": [],
+                }
+            self.active_chunks += 1
+            self.max_active_chunks = max(self.max_active_chunks, self.active_chunks)
+            try:
+                await asyncio.sleep(0.01)
+            finally:
+                self.active_chunks -= 1
+            return {
+                "results": [],
+                "requests": [],
+                "source_complete": True,
+                "source_truncated": False,
+                "validation_issues": [],
+            }
+
+    provider = ConcurrentProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=_METADATA)
+            if request.url.path.endswith("/$metadata")
+            else httpx.Response(500)
+        ),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
+    )
+    plan = {
+        "service_name": "API_TEST_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_Order",
+        "http_method": "GET",
+        "plan_kind": "multi_step",
+        "steps": [
+            {
+                "step_id": "source",
+                "service_name": "API_TEST_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_Order",
+                "http_method": "GET",
+                "select_fields": ["OrderID", "Amount"],
+            },
+            {
+                "step_id": "target",
+                "service_name": "API_TEST_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_Order",
+                "http_method": "GET",
+                "select_fields": ["OrderID", "Amount"],
+                "max_concurrent_chunks": 4,
+                "filter_from_previous": [
+                    {
+                        "field": "OrderID",
+                        "source_step_id": "source",
+                        "source_field": "OrderID",
+                    }
+                ],
+            },
+        ],
+    }
+
+    result = asyncio.run(provider.execute_plan(plan))
+
+    assert result["source_complete"] is True
+    assert provider.max_active_chunks == 4

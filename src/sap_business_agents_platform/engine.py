@@ -2920,6 +2920,18 @@ def _presentation_value(
             "attention": LocalizedText(zh="需要关注", en="Attention required"),
             "complete": LocalizedText(zh="已完成", en="Complete"),
             "partial_complete": LocalizedText(zh="部分完成", en="Partially complete"),
+            "requires_action": LocalizedText(zh="需要处理", en="Follow-up required"),
+            "gr_without_ir": LocalizedText(zh="已收货但缺少发票", en="Goods receipt without invoice"),
+            "ir_without_gr": LocalizedText(zh="已有发票但缺少收货", en="Invoice without goods receipt"),
+            "quantity_difference": LocalizedText(zh="收货与发票数量不一致", en="Receipt and invoice quantity differ"),
+            "price_difference": LocalizedText(zh="数量一致但金额未平", en="Quantity matches but value remains open"),
+            "return_pending": LocalizedText(zh="退货或贷项尚未匹配", en="Return or credit remains unmatched"),
+            "unit_conflict": LocalizedText(zh="计量单位不一致", en="Unit of measure conflict"),
+            "currency_conflict": LocalizedText(zh="币种不一致", en="Currency conflict"),
+            "evidence_incomplete": LocalizedText(zh="证据不足", en="Evidence incomplete"),
+            "high": LocalizedText(zh="高", en="High"),
+            "medium": LocalizedText(zh="中", en="Medium"),
+            "low": LocalizedText(zh="低", en="Low"),
         }
         normalized = str(value or "").strip().lower()
         if normalized in labels:
@@ -3064,7 +3076,9 @@ def _default_presentation(
                 )
             )
         action_tables = [
-            item for item in report.get("action_tables") or [] if isinstance(item, dict)
+            item
+            for item in report.get("action_tables") or []
+            if isinstance(item, dict) and item.get("display") is not False
         ]
         for table_index, table in enumerate(action_tables):
             table_columns = [
@@ -3365,6 +3379,18 @@ def _markdown_business_value(value: Any, value_format: str = "text") -> str:
             "inconclusive": "无法确认",
             "normal": "正常",
             "attention": "需要关注",
+            "requires_action": "需要处理",
+            "gr_without_ir": "已收货但缺少发票",
+            "ir_without_gr": "已有发票但缺少收货",
+            "quantity_difference": "收货与发票数量不一致",
+            "price_difference": "数量一致但金额未平",
+            "return_pending": "退货或贷项尚未匹配",
+            "unit_conflict": "计量单位不一致",
+            "currency_conflict": "币种不一致",
+            "evidence_incomplete": "证据不足",
+            "high": "高",
+            "medium": "中",
+            "low": "低",
         }
         normalized = str(value or "").strip().lower()
         if normalized in labels:
@@ -3432,7 +3458,7 @@ def _business_markdown_report(
         action_tables = [
             table
             for table in business_report.get("action_tables") or []
-            if isinstance(table, dict)
+            if isinstance(table, dict) and table.get("display") is not False
         ]
         for table in action_tables:
             columns = [
