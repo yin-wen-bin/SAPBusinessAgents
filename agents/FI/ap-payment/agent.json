@@ -7,11 +7,11 @@
     "en": "AP Payment Assistant"
   },
   "summary": {
-    "zh": "查询供应商未清项目与付款状态，并用可解释规则识别重复、冻结、异常账户和逾期风险。",
-    "en": "Checks vendor open items and payment status, then explains duplicate, block, bank-account and overdue risks."
+    "zh": "既可独立查询单一公司代码和供应商，也可消费 P2P 批量证据，在不重复查询主凭证链的前提下复核到期、逾期、折扣、冻结、重复候选和付款准备度。",
+    "en": "Runs independently for one company code and supplier or consumes batched P2P evidence to review due, overdue, discount, block, duplicate-candidate, and payment-readiness status without re-querying the main document chain."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "FI-AP",
   "tags": [
     "Accounts Payable",
@@ -43,19 +43,33 @@
   },
   "outputs": {
     "zh": [
+      "查询模式",
       "公司代码",
       "供应商编号",
       "查询基准日",
+      "分组付款复核结果",
       "业务状态",
       "查询源完整性",
+      "业务证据完整性",
+      "付款运行证据完整性",
+      "银行主数据证据完整性",
+      "银行扣款证据完整性",
+      "银行扣款核验状态",
       "结构化业务报告"
     ],
     "en": [
+      "Query mode",
       "Company code",
       "Supplier",
       "As-of date",
+      "Payment review scope results",
       "Business status",
       "Query-source completeness",
+      "Business-evidence completeness",
+      "Payment-run evidence completeness",
+      "Bank-master evidence completeness",
+      "Bank-settlement evidence completeness",
+      "Bank-settlement verification status",
       "Structured business report"
     ]
   },
@@ -79,15 +93,21 @@
         "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "执行清单步骤 `collect_ap_evidence`，通过实时 Schema 校验后的 GET 请求读取证据。",
-        "en": "Run manifest step `collect_ap_evidence` using GET requests validated against live schema."
+        "zh": "direct 模式按公司代码和供应商读取 FI 供应商行；p2p_evidence 模式直接消费类型化 ap_payment_scopes，不重复查询 PO→GR→Invoice→FI 主链。",
+        "en": "In direct mode, read FI supplier items by company code and supplier; in p2p_evidence mode, consume typed ap_payment_scopes without re-querying the PO→GR→Invoice→FI chain."
       },
       "operations": {
         "zh": [
-          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
+          "根据输入自动确定 direct 或 p2p_evidence 模式；显式模式与输入分支冲突时由 oneOf 契约拒绝。",
+          "direct：GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube，并按公司代码、供应商、供应商科目类型和基准日精确过滤。",
+          "p2p_evidence：读取 P2P 输出的 ap_payment_scopes[]，保留每组证据引用及 source_complete/evidence_complete，不再次访问主凭证链。",
+          "付款运行、银行主数据和银行结算证据保持独立；缺失时标记 unknown/not_assessed。"
         ],
         "en": [
-          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
+          "Infer direct or p2p_evidence mode from the input; reject an explicit mode that conflicts with its oneOf branch.",
+          "direct: GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube with exact company-code, supplier, supplier-account-type, and as-of filters.",
+          "p2p_evidence: read P2P ap_payment_scopes[] with per-scope evidence references and source/evidence completeness, without accessing the main document chain again.",
+          "Keep payment-run, bank-master, and bank-settlement evidence independent and report unknown/not_assessed when absent."
         ]
       },
       "tools": [
@@ -111,15 +131,25 @@
         "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
-        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
+        "zh": "使用唯一的生产规则实现截止日重建、净到期日、现金折扣、付款冻结、付款准备度和重复付款候选；任何银行证据缺口都不会被解释为无风险。",
+        "en": "Use the single production rule implementation for cutoff reconstruction, net due date, cash discount, payment blocks, payment readiness, and duplicate-payment candidates; missing bank evidence is never interpreted as no risk."
       },
       "operations": {
         "zh": [
-          "rule.evaluate_business_agent"
+          "只使用 SAP NetDueDate/FAEDT 作为到期日，不把基准日或付款条件基准日当作到期日。",
+          "按基准日排除之后过账的行，并把基准日后才清账的行重建为当日未清。",
+          "分别判定未到期、到期、逾期、付款冻结、折扣可用和付款准备度。",
+          "只有供应商、金额、币种、日期和证据均完整时才确认重复付款候选。",
+          "批量输出 scope_results[]；顶层状态按最差分组状态汇总，source_complete 与 evidence_complete 保持独立。",
+          "SAP 清账或付款凭证不自动等同于银行实际扣款，bank_settlement_status 保持 not_assessed。"
         ],
         "en": [
-          "rule.evaluate_business_agent"
+          "Use only SAP NetDueDate/FAEDT as the due date; never substitute the query cutoff or payment-terms baseline date.",
+          "Exclude postings after the cutoff and reconstruct items cleared after the cutoff as open on that date.",
+          "Assess not-due, due, overdue, payment-blocked, discount-available, and payment-readiness states separately.",
+          "Confirm a duplicate-payment candidate only when supplier, amount, currency, dates, and evidence are complete.",
+          "Emit scope_results[] and aggregate the top-level status by the worst scope while keeping source_complete and evidence_complete separate.",
+          "Never equate SAP clearing or a payment document with actual bank debit; bank_settlement_status remains not_assessed."
         ]
       },
       "tools": [
@@ -133,6 +163,7 @@
         }
       ],
       "executionStepIds": [
+        "prepare_ap_input",
         "evaluate_business_result"
       ]
     }
@@ -143,6 +174,15 @@
     "inputSchema": {
       "type": "object",
       "properties": {
+        "query_mode": {
+          "type": "string",
+          "enum": ["direct", "p2p_evidence"],
+          "x-sapba-workflow-only": true,
+          "title": {
+            "zh": "查询模式",
+            "en": "Query mode"
+          }
+        },
         "company_code": {
           "type": "string",
           "title": {
@@ -197,21 +237,115 @@
           "maxLength": 10,
           "format": "date",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "ap_payment_scopes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "x-sapba-workflow-only": true,
+          "title": {
+            "zh": "P2P 应付证据分组",
+            "en": "P2P AP evidence scopes"
+          },
+          "items": {
+            "type": "object",
+            "properties": {
+              "scope_id": {"type": "string"},
+              "company_code": {"type": "string"},
+              "supplier": {"type": "string"},
+              "purchase_orders": {"type": "array", "items": {"type": "string"}},
+              "supplier_invoices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "supplier_invoice": {"type": "string"},
+                    "fiscal_year": {"type": "string"},
+                    "supplier_invoice_items": {"type": "array", "items": {"type": "string"}}
+                  },
+                  "required": ["supplier_invoice", "fiscal_year", "supplier_invoice_items"],
+                  "additionalProperties": false
+                }
+              },
+              "fi_supplier_items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "purchase_order": {"type": "string"},
+                    "purchase_order_item": {"type": "string"},
+                    "company_code": {"type": "string"},
+                    "supplier": {"type": "string"},
+                    "fiscal_year": {"type": "string"},
+                    "accounting_document": {"type": "string"},
+                    "accounting_document_item": {"type": "string"},
+                    "original_reference_document": {"type": "string"},
+                    "posting_date": {"type": "string"},
+                    "net_due_date": {"type": "string"},
+                    "cash_discount_due_date": {"type": "string"},
+                    "payment_blocking_reason": {"type": "string"},
+                    "amount": {"type": "string"},
+                    "currency": {"type": "string"},
+                    "amount_allocation_ratio": {"type": "string"},
+                    "amount_attribution_status": {"type": "string"},
+                    "is_cleared": {"type": "boolean"},
+                    "clearing_document": {"type": "string"},
+                    "clearing_fiscal_year": {"type": "string"},
+                    "clearing_date": {"type": "string"},
+                    "payment_method": {"type": "string"},
+                    "clearing_document_type": {"type": "string"},
+                    "payment_document_status": {"type": "string"}
+                  },
+                  "required": ["purchase_order", "company_code", "supplier", "is_cleared"],
+                  "additionalProperties": false
+                }
+              },
+              "source_complete": {"type": "boolean"},
+              "evidence_complete": {"type": "boolean"},
+              "payment_run_evidence_complete": {"type": "boolean"},
+              "bank_master_evidence_complete": {"type": "boolean"},
+              "bank_settlement_evidence_complete": {"type": "boolean"},
+              "evidence_refs": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["scope_id", "company_code", "supplier", "purchase_orders", "fi_supplier_items", "source_complete", "evidence_complete", "evidence_refs"],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
-        "company_code",
-        "supplier",
         "as_of"
+      ],
+      "oneOf": [
+        {
+          "properties": {"query_mode": {"const": "direct"}},
+          "required": ["company_code", "supplier"],
+          "not": {"required": ["ap_payment_scopes"]}
+        },
+        {
+          "properties": {"query_mode": {"const": "p2p_evidence"}},
+          "required": ["ap_payment_scopes"]
+        }
       ],
       "additionalProperties": false
     },
     "steps": [
       {
+        "id": "prepare_ap_input",
+        "executor": "rule",
+        "operation": "prepare_ap_input",
+        "inputMapping": {
+          "run_input": "{{input}}"
+        }
+      },
+      {
         "id": "collect_ap_evidence",
         "executor": "sap_read",
         "operation": "execute_plan",
         "readOnly": true,
+        "when": {
+          "source": "{{steps.prepare_ap_input.output.query_direct}}",
+          "equals": true
+        },
         "request": {
           "plan": {
             "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
@@ -236,6 +370,7 @@
               "PurchasingDocumentItem",
               "PostingDate",
               "NetDueDate",
+              "CashDiscount1DueDate",
               "ClearingDate",
               "ClearingIsReversed",
               "IsOpenItemManaged",
@@ -310,6 +445,13 @@
     "outputSchema": {
       "type": "object",
       "properties": {
+        "query_mode": {
+          "type": "string",
+          "title": {
+            "zh": "查询模式",
+            "en": "Query mode"
+          }
+        },
         "company_code": {
           "type": "string",
           "title": {
@@ -324,9 +466,8 @@
             "zh": "例如：1010",
             "en": "Example: 1010"
           },
-          "minLength": 1,
           "maxLength": 4,
-          "pattern": "^[0-9A-Za-z_-]+$"
+          "pattern": "^[0-9A-Za-z_-]*$"
         },
         "supplier": {
           "type": "string",
@@ -342,9 +483,8 @@
             "zh": "例如：1000123",
             "en": "Example: 1000123"
           },
-          "minLength": 1,
           "maxLength": 10,
-          "pattern": "^[0-9A-Za-z_-]+$"
+          "pattern": "^[0-9A-Za-z_-]*$"
         },
         "as_of": {
           "type": "string",
@@ -365,6 +505,33 @@
           "format": "date",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
         },
+        "scope_results": {
+          "type": "array",
+          "title": {
+            "zh": "分组付款复核结果",
+            "en": "Payment review scope results"
+          },
+          "items": {
+            "type": "object",
+            "properties": {
+              "scope_id": {"type": "string"},
+              "company_code": {"type": "string"},
+              "supplier": {"type": "string"},
+              "purchase_orders": {"type": "array", "items": {"type": "string"}},
+              "business_status": {"type": "string", "enum": ["inconclusive", "blocked", "in_progress", "complete"]},
+              "open_item_count": {"type": "integer"},
+              "payment_blocked_count": {"type": "integer"},
+              "source_complete": {"type": "boolean"},
+              "evidence_complete": {"type": "boolean"},
+              "payment_run_evidence_complete": {"type": "boolean"},
+              "bank_master_evidence_complete": {"type": "boolean"},
+              "bank_settlement_evidence_complete": {"type": "boolean"},
+              "bank_settlement_status": {"type": "string", "const": "not_assessed"}
+            },
+            "required": ["scope_id", "company_code", "supplier", "purchase_orders", "business_status", "open_item_count", "payment_blocked_count", "source_complete", "evidence_complete", "payment_run_evidence_complete", "bank_master_evidence_complete", "bank_settlement_evidence_complete", "bank_settlement_status"],
+            "additionalProperties": false
+          }
+        },
         "business_status": {
           "type": "string",
           "title": {
@@ -379,6 +546,33 @@
             "en": "Query-source completeness"
           }
         },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务证据完整性",
+            "en": "Business-evidence completeness"
+          }
+        },
+        "payment_run_evidence_complete": {
+          "type": "boolean",
+          "title": {"zh": "付款运行证据完整性", "en": "Payment-run evidence completeness"}
+        },
+        "bank_master_evidence_complete": {
+          "type": "boolean",
+          "title": {"zh": "银行主数据证据完整性", "en": "Bank-master evidence completeness"}
+        },
+        "bank_settlement_evidence_complete": {
+          "type": "boolean",
+          "title": {"zh": "银行扣款证据完整性", "en": "Bank-settlement evidence completeness"}
+        },
+        "bank_settlement_status": {
+          "type": "string",
+          "const": "not_assessed",
+          "title": {
+            "zh": "银行扣款核验状态",
+            "en": "Bank-settlement verification status"
+          }
+        },
         "business_report": {
           "type": "object",
           "title": {
@@ -388,21 +582,33 @@
         }
       },
       "required": [
-        "company_code",
-        "supplier",
+        "query_mode",
         "as_of",
+        "scope_results",
         "business_status",
         "source_complete",
+        "evidence_complete",
+        "payment_run_evidence_complete",
+        "bank_master_evidence_complete",
+        "bank_settlement_evidence_complete",
+        "bank_settlement_status",
         "business_report"
       ],
       "additionalProperties": false
     },
     "outputMapping": {
+      "query_mode": "{{steps.evaluate_business_result.output.workflow_output.query_mode}}",
       "company_code": "{{steps.evaluate_business_result.output.workflow_output.company_code}}",
       "supplier": "{{steps.evaluate_business_result.output.workflow_output.supplier}}",
       "as_of": "{{steps.evaluate_business_result.output.workflow_output.as_of}}",
+      "scope_results": "{{steps.evaluate_business_result.output.workflow_output.scope_results}}",
       "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
       "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.evidence_complete}}",
+      "payment_run_evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.payment_run_evidence_complete}}",
+      "bank_master_evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.bank_master_evidence_complete}}",
+      "bank_settlement_evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.bank_settlement_evidence_complete}}",
+      "bank_settlement_status": "{{steps.evaluate_business_result.output.workflow_output.bank_settlement_status}}",
       "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
     },
     "acceptance": {
@@ -437,26 +643,24 @@
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-08-19T16:53:02.948562+00:00",
+    "testedAt": "2026-08-29T07:00:00+00:00",
     "evidenceScope": "complete",
     "providers": [
-      "codex-app-direct-sap",
+      "sapclaw_runtime",
       "embedded-sap-odata"
     ],
     "summary": {
-      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
-      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+      "zh": "AP 0.2.0 已消费真实 P2P 类型化证据，并通过批量与 foreach 两条工作流路径复核到期、现金折扣和证据缺口；付款运行、银行主数据和银行扣款完整性保持独立。",
+      "en": "AP 0.2.0 consumed live typed P2P evidence through both batch and foreach workflows, reviewing due dates, cash discounts, and evidence gaps while keeping payment-run, bank-master, and bank-debit completeness independent."
     },
-    "reportPath": "docs/three-stage-live-acceptance.md",
+    "reportPath": "docs/p2p-evidence-workflow-live-acceptance.md",
     "executable": true,
-    "freeQueryComparison": "MATCH",
+    "acceptanceMode": "deterministic_runtime",
+    "freeQueryComparison": "NOT_TESTED",
     "fixedAgentComparison": "MATCH",
-    "baselineRuntime": "codex_app_direct_sap",
+    "baselineRuntime": "sapclaw_runtime",
     "usedSapBusinessAgentsForBaseline": false,
-    "codexDirectBaselineHash": "sha256:1eea802a5ff8c9a67e42126bf74880ab8a429be25f3b9dc26a5cfab904773065",
-    "freeQueryHash": "sha256:8794d72192043679af8bad0c1c14b0db3236a73f0769093c5cbff41100a9c51c",
-    "adjudicatedResultHash": "sha256:1eea802a5ff8c9a67e42126bf74880ab8a429be25f3b9dc26a5cfab904773065",
-    "fixedAgentHash": "sha256:0e9e58d83b63a6e526cb024242d27410ad6a6d86684205a2885430b1a3591f9e",
-    "comparisonHash": "sha256:b2a6b9251dabd592910c57529a2dc8b47559f89a2131604eddc31325b94b7d2b"
+    "runtimeCaseIds": ["899033a9-4183-45e0-8923-7133aece8f01"],
+    "workflowRunIds": ["run_676139ae75814a04", "run_2e167ea3921448ae"]
   }
 }

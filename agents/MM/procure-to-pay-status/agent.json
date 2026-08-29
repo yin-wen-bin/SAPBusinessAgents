@@ -7,11 +7,11 @@
     "en": "Procure-to-Pay Status Assistant"
   },
   "summary": {
-    "zh": "从采购订单出发，跨 PO、收货、发票、FI 与付款凭证逐行项目判断端到端状态和阻塞原因。",
-    "en": "Traces each PO item across receipt, invoice, FI and payment documents to explain end-to-end status and blockers."
+    "zh": "一次接收最多 50 张采购订单，分块查询 PO、收货、发票、FI 与付款凭证，并逐单解释端到端状态、阻塞原因和 AP 交接证据。",
+    "en": "Accepts up to 50 purchase orders, queries PO, receipt, invoice, FI, and payment evidence in bounded chunks, and explains per-PO status, blockers, and typed AP handoff evidence."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "owner": "MM / FI-AP",
   "tags": [
     "Procure-to-Pay",
@@ -32,37 +32,33 @@
   ],
   "inputs": {
     "zh": [
-      "采购订单号"
+      "采购订单号列表"
     ],
     "en": [
-      "Purchase order"
+      "Purchase orders"
     ]
   },
   "outputs": {
     "zh": [
-      "采购订单",
-      "公司代码",
-      "供应商",
+      "采购订单列表",
+      "公司代码列表",
+      "供应商列表",
+      "逐采购订单结果",
+      "应付账款证据分组",
       "业务状态",
       "查询源完整性",
       "业务证据完整性",
-      "GR/IR 匹配状态",
-      "应付清账状态",
-      "SAP 付款凭证状态",
-      "银行扣款核验状态",
       "结构化业务报告"
     ],
     "en": [
-      "Purchase order",
-      "Company code",
-      "Supplier",
+      "Purchase orders",
+      "Company codes",
+      "Suppliers",
+      "Per-PO results",
+      "AP evidence scopes",
       "Business status",
       "Query-source completeness",
       "Business-evidence completeness",
-      "GR/IR matching status",
-      "AP clearing status",
-      "SAP payment-document status",
-      "Bank-settlement verification status",
       "Structured business report"
     ]
   },
@@ -86,23 +82,33 @@
         "en": "Read SAP evidence"
       },
       "description": {
-        "zh": "执行清单步骤 `collect_p2p_evidence`，通过实时 Schema 校验后的 GET 请求读取证据。",
-        "en": "Run manifest step `collect_p2p_evidence` using GET requests validated against live schema."
+        "zh": "校验 1–50 个唯一数字 PO，按每组最多 10 张拆分 GET 请求；每块和每个分页都成功后才把查询源标记为完整。",
+        "en": "Validate 1–50 unique numeric POs and split GET requests into chunks of at most 10; query-source completeness is true only when every chunk and page succeeds."
       },
       "operations": {
         "zh": [
+          "校验 purchase_orders 数组；拒绝空值、重复值、字符串冒充数组和超过 50 张的批次，不自动补零。",
+          "把采购订单号按 10 张一组拆分；同一步只允许一个可分块的直接 in 过滤，最多并发 4 组。",
           "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrder",
           "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
           "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem",
+          "按物料凭证号和年度关联 GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader",
           "GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SuplrInvcItemPurOrdRef",
-          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
+          "按发票号和年度关联 GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SupplierInvoice",
+          "从 PO 引用的发票 FI 凭证扩展 GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube，再按清账凭证键读取付款凭证类型。",
+          "所有块读取至 has_next=false；任一块失败、截断或超过结果上限时 source_complete=false。"
         ],
         "en": [
+          "Validate the purchase_orders array; reject empty, duplicate, scalar-string, or over-50 input without zero-padding identifiers.",
+          "Split PO numbers into groups of 10; allow one directly chunked in-filter per step and run at most four chunks concurrently.",
           "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrder",
           "GET API_PURCHASEORDER_PROCESS_SRV@2.0/A_PurchaseOrderItem",
           "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem",
+          "Join material-document number and year to GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentHeader",
           "GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SuplrInvcItemPurOrdRef",
-          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
+          "Join supplier-invoice number and year to GET API_SUPPLIERINVOICE_PROCESS_SRV@2.0/A_SupplierInvoice",
+          "Expand invoice FI documents referenced by each PO through GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube, then read payment-document types by clearing key.",
+          "Read every chunk until has_next=false; any failed, truncated, or over-limit chunk makes source_complete=false."
         ]
       },
       "tools": [
@@ -126,15 +132,25 @@
         "en": "Run deterministic business rules"
       },
       "description": {
-        "zh": "执行清单步骤 `validate_p2p_evidence`，只解释已经取得的证据，不访问或修改 SAP。",
-        "en": "Run manifest step `validate_p2p_evidence` and interpret collected evidence without accessing or changing SAP."
+        "zh": "按输入顺序隔离每张 PO 的技术键和证据，计算净收货、净发票、GR/IR、清账与付款凭证，并生成按公司代码和供应商分组的最小化 AP 证据。",
+        "en": "Isolate technical keys and evidence per PO in input order, calculate net receipt, invoice, GR/IR, clearing, and payment-document status, then produce minimal AP evidence grouped by company code and supplier."
       },
       "operations": {
         "zh": [
-          "rule.evaluate_p2p_status"
+          "按 PO 技术键隔离收货、发票、FI 和清账记录，防止批次内串数据。",
+          "净额处理多次收货、退货、冲销、多发票和贷项；单位或币种不可比较时只将对应结论标记为 inconclusive。",
+          "只有清账凭证类型属于 KZ/ZP/PY 时确认 SAP 付款凭证；该结论不代表银行实际扣款。",
+          "逐 PO 输出 po_results[]，批次业务状态按 inconclusive > not_found > blocked > in_progress > complete 汇总。",
+          "按公司代码 + 供应商生成 ap_payment_scopes[]，只携带发票/FI/清账键、到期日、冻结、金额币种、证据引用和完整性。",
+          "顶层 source_complete 与 evidence_complete 分别取所有 PO 的逻辑 AND。"
         ],
         "en": [
-          "rule.evaluate_p2p_status"
+          "Partition receipt, invoice, FI, and clearing rows by PO technical keys so evidence cannot leak across the batch.",
+          "Net multiple receipts, returns, reversals, invoices, and credits; make only the affected conclusion inconclusive when units or currencies cannot be compared.",
+          "Confirm an SAP payment document only when the clearing document type is KZ, ZP, or PY; this does not prove an actual bank debit.",
+          "Emit po_results[] in input order and aggregate batch status by inconclusive > not_found > blocked > in_progress > complete.",
+          "Build ap_payment_scopes[] by company code and supplier with only invoice/FI/clearing keys, due date, block, amount/currency, evidence references, and completeness.",
+          "Compute top-level source_complete and evidence_complete as separate logical AND values across all POs."
         ]
       },
       "tools": [
@@ -158,52 +174,156 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "purchase_order": {
-          "type": "string",
+        "purchase_orders": {
+          "type": "array",
           "title": {
-            "zh": "采购订单号",
-            "en": "Purchase order"
+            "zh": "采购订单号列表",
+            "en": "Purchase orders"
           },
           "description": {
-            "zh": "只输入采购订单号，例如 4500000030；不要输入完整句子。",
-            "en": "Enter only the purchase-order number, for example 4500000030; do not enter a sentence."
+            "zh": "输入 1 至 50 个采购订单号，可使用换行、逗号或分号分隔。",
+            "en": "Enter 1 to 50 purchase-order numbers separated by new lines, commas, or semicolons."
           },
           "placeholder": {
-            "zh": "例如：4500000030",
-            "en": "Example: 4500000030"
+            "zh": "例如：4500000030\n4500000031",
+            "en": "Example: 4500000030\n4500000031"
           },
-          "minLength": 1,
-          "maxLength": 10,
-          "pattern": "^[0-9]+$"
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10,
+            "pattern": "^[0-9]+$"
+          }
         }
       },
       "required": [
-        "purchase_order"
+        "purchase_orders"
       ],
       "additionalProperties": false
     },
     "outputSchema": {
       "type": "object",
       "properties": {
-        "purchase_order": {
-          "type": "string",
+        "purchase_orders": {
+          "type": "array",
           "title": {
-            "zh": "采购订单",
-            "en": "Purchase order"
+            "zh": "采购订单列表",
+            "en": "Purchase orders"
+          },
+          "items": {"type": "string"}
+        },
+        "company_codes": {
+          "type": "array",
+          "title": {
+            "zh": "公司代码列表",
+            "en": "Company codes"
+          },
+          "items": {"type": "string"}
+        },
+        "suppliers": {
+          "type": "array",
+          "title": {
+            "zh": "供应商列表",
+            "en": "Suppliers"
+          },
+          "items": {"type": "string"}
+        },
+        "po_results": {
+          "type": "array",
+          "title": {
+            "zh": "逐采购订单结果",
+            "en": "Per-PO results"
+          },
+          "items": {
+            "type": "object",
+            "properties": {
+              "purchase_order": {"type": "string"},
+              "company_code": {"type": "string"},
+              "supplier": {"type": "string"},
+              "business_status": {"type": "string", "enum": ["inconclusive", "not_found", "blocked", "in_progress", "complete"]},
+              "source_complete": {"type": "boolean"},
+              "evidence_complete": {"type": "boolean"},
+              "gr_ir_match_status": {"type": "string"},
+              "ap_clearing_status": {"type": "string"},
+              "payment_document_status": {"type": "string"},
+              "bank_settlement_status": {"type": "string", "const": "not_assessed"},
+              "business_report": {"type": "object"}
+            },
+            "required": ["purchase_order", "company_code", "supplier", "business_status", "source_complete", "evidence_complete", "gr_ir_match_status", "ap_clearing_status", "payment_document_status", "bank_settlement_status", "business_report"],
+            "additionalProperties": false
           }
         },
-        "company_code": {
-          "type": "string",
+        "ap_payment_scopes": {
+          "type": "array",
           "title": {
-            "zh": "公司代码",
-            "en": "Company code"
-          }
-        },
-        "supplier": {
-          "type": "string",
-          "title": {
-            "zh": "供应商",
-            "en": "Supplier"
+            "zh": "应付账款证据分组",
+            "en": "AP evidence scopes"
+          },
+          "items": {
+            "type": "object",
+            "properties": {
+              "scope_id": {"type": "string"},
+              "company_code": {"type": "string"},
+              "supplier": {"type": "string"},
+              "purchase_orders": {"type": "array", "items": {"type": "string"}},
+              "supplier_invoices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "supplier_invoice": {"type": "string"},
+                    "fiscal_year": {"type": "string"},
+                    "supplier_invoice_items": {"type": "array", "items": {"type": "string"}}
+                  },
+                  "required": ["supplier_invoice", "fiscal_year", "supplier_invoice_items"],
+                  "additionalProperties": false
+                }
+              },
+              "fi_supplier_items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "purchase_order": {"type": "string"},
+                    "purchase_order_item": {"type": "string"},
+                    "company_code": {"type": "string"},
+                    "supplier": {"type": "string"},
+                    "fiscal_year": {"type": "string"},
+                    "accounting_document": {"type": "string"},
+                    "accounting_document_item": {"type": "string"},
+                    "original_reference_document": {"type": "string"},
+                    "posting_date": {"type": "string"},
+                    "net_due_date": {"type": "string"},
+                    "cash_discount_due_date": {"type": "string"},
+                    "payment_blocking_reason": {"type": "string"},
+                    "amount": {"type": "string"},
+                    "currency": {"type": "string"},
+                    "amount_allocation_ratio": {"type": "string"},
+                    "amount_attribution_status": {"type": "string"},
+                    "is_cleared": {"type": "boolean"},
+                    "clearing_document": {"type": "string"},
+                    "clearing_fiscal_year": {"type": "string"},
+                    "clearing_date": {"type": "string"},
+                    "payment_method": {"type": "string"},
+                    "clearing_document_type": {"type": "string"},
+                    "payment_document_status": {"type": "string"}
+                  },
+                  "required": ["purchase_order", "company_code", "supplier", "is_cleared"],
+                  "additionalProperties": false
+                }
+              },
+              "source_complete": {"type": "boolean"},
+              "evidence_complete": {"type": "boolean"},
+              "payment_run_evidence_complete": {"type": "boolean"},
+              "bank_master_evidence_complete": {"type": "boolean"},
+              "bank_settlement_evidence_complete": {"type": "boolean"},
+              "evidence_refs": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["scope_id", "company_code", "supplier", "purchase_orders", "supplier_invoices", "fi_supplier_items", "source_complete", "evidence_complete", "payment_run_evidence_complete", "bank_master_evidence_complete", "bank_settlement_evidence_complete", "evidence_refs"],
+            "additionalProperties": false
           }
         },
         "business_status": {
@@ -227,34 +347,6 @@
             "en": "Business-evidence completeness"
           }
         },
-        "gr_ir_match_status": {
-          "type": "string",
-          "title": {
-            "zh": "GR/IR 匹配状态",
-            "en": "GR/IR matching status"
-          }
-        },
-        "ap_clearing_status": {
-          "type": "string",
-          "title": {
-            "zh": "应付清账状态",
-            "en": "AP clearing status"
-          }
-        },
-        "payment_document_status": {
-          "type": "string",
-          "title": {
-            "zh": "SAP 付款凭证状态",
-            "en": "SAP payment-document status"
-          }
-        },
-        "bank_settlement_status": {
-          "type": "string",
-          "title": {
-            "zh": "银行扣款核验状态",
-            "en": "Bank-settlement verification status"
-          }
-        },
         "business_report": {
           "type": "object",
           "title": {
@@ -264,29 +356,27 @@
         }
       },
       "required": [
-        "purchase_order",
+        "purchase_orders",
+        "company_codes",
+        "suppliers",
+        "po_results",
+        "ap_payment_scopes",
         "business_status",
         "source_complete",
         "evidence_complete",
-        "gr_ir_match_status",
-        "ap_clearing_status",
-        "payment_document_status",
-        "bank_settlement_status",
         "business_report"
       ],
       "additionalProperties": false
     },
     "outputMapping": {
-      "purchase_order": "{{steps.validate_p2p_evidence.output.workflow_output.purchase_order}}",
-      "company_code": "{{steps.validate_p2p_evidence.output.workflow_output.company_code}}",
-      "supplier": "{{steps.validate_p2p_evidence.output.workflow_output.supplier}}",
+      "purchase_orders": "{{steps.validate_p2p_evidence.output.workflow_output.purchase_orders}}",
+      "company_codes": "{{steps.validate_p2p_evidence.output.workflow_output.company_codes}}",
+      "suppliers": "{{steps.validate_p2p_evidence.output.workflow_output.suppliers}}",
+      "po_results": "{{steps.validate_p2p_evidence.output.workflow_output.po_results}}",
+      "ap_payment_scopes": "{{steps.validate_p2p_evidence.output.workflow_output.ap_payment_scopes}}",
       "business_status": "{{steps.validate_p2p_evidence.output.workflow_output.business_status}}",
       "source_complete": "{{steps.validate_p2p_evidence.output.workflow_output.source_complete}}",
       "evidence_complete": "{{steps.validate_p2p_evidence.output.workflow_output.evidence_complete}}",
-      "gr_ir_match_status": "{{steps.validate_p2p_evidence.output.workflow_output.gr_ir_match_status}}",
-      "ap_clearing_status": "{{steps.validate_p2p_evidence.output.workflow_output.ap_clearing_status}}",
-      "payment_document_status": "{{steps.validate_p2p_evidence.output.workflow_output.payment_document_status}}",
-      "bank_settlement_status": "{{steps.validate_p2p_evidence.output.workflow_output.bank_settlement_status}}",
       "business_report": "{{steps.validate_p2p_evidence.output.workflow_output.business_report}}"
     },
     "steps": [
@@ -310,14 +400,27 @@
                 "odata_version": "2.0",
                 "entity_set": "A_PurchaseOrder",
                 "http_method": "GET",
+                "select_fields": [
+                  "PurchaseOrder",
+                  "CompanyCode",
+                  "Supplier",
+                  "DocumentCurrency",
+                  "PurchaseOrderDate",
+                  "PurchasingDocumentDeletionCode"
+                ],
+                "order_by": [
+                  "PurchaseOrder"
+                ],
                 "filters": [
                   {
                     "field": "PurchaseOrder",
-                    "operator": "eq",
-                    "value": "{{input.purchase_order}}",
-                    "value_type": "string"
+                    "operator": "in",
+                    "value": "{{input.purchase_orders}}",
+                    "value_type": "string",
+                    "chunk_size": 10
                   }
                 ],
+                "max_concurrent_chunks": 4,
                 "rationale": "Load the requested PO header."
               },
               {
@@ -326,14 +429,32 @@
                 "odata_version": "2.0",
                 "entity_set": "A_PurchaseOrderItem",
                 "http_method": "GET",
+                "select_fields": [
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Material",
+                  "Plant",
+                  "OrderQuantity",
+                  "PurchaseOrderQuantityUnit",
+                  "DocumentCurrency",
+                  "PurchasingDocumentDeletionCode",
+                  "IsCompletelyDelivered",
+                  "IsFinallyInvoiced"
+                ],
+                "order_by": [
+                  "PurchaseOrder",
+                  "PurchaseOrderItem"
+                ],
                 "filters": [
                   {
                     "field": "PurchaseOrder",
-                    "operator": "eq",
-                    "value": "{{input.purchase_order}}",
-                    "value_type": "string"
+                    "operator": "in",
+                    "value": "{{input.purchase_orders}}",
+                    "value_type": "string",
+                    "chunk_size": 10
                   }
                 ],
+                "max_concurrent_chunks": 4,
                 "rationale": "Load every item for the requested PO."
               },
               {
@@ -342,15 +463,74 @@
                 "odata_version": "2.0",
                 "entity_set": "A_MaterialDocumentItem",
                 "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "GoodsMovementType",
+                  "GoodsMovementIsCancelled",
+                  "ReversedMaterialDocumentYear",
+                  "ReversedMaterialDocument",
+                  "ReversedMaterialDocumentItem",
+                  "QuantityInEntryUnit",
+                  "EntryUnit",
+                  "QuantityInBaseUnit",
+                  "MaterialBaseUnit",
+                  "DebitCreditCode",
+                  "Supplier"
+                ],
+                "order_by": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem"
+                ],
                 "filters": [
                   {
                     "field": "PurchaseOrder",
-                    "operator": "eq",
-                    "value": "{{input.purchase_order}}",
-                    "value_type": "string"
+                    "operator": "in",
+                    "value": "{{input.purchase_orders}}",
+                    "value_type": "string",
+                    "chunk_size": 10
                   }
                 ],
+                "max_concurrent_chunks": 4,
                 "rationale": "Load receipt, return and reversal evidence."
+              },
+              {
+                "step_id": "material_document_headers",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentHeader",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "PostingDate",
+                  "DocumentDate"
+                ],
+                "order_by": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "MaterialDocument",
+                    "source_step_id": "material_documents",
+                    "source_field": "MaterialDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "MaterialDocumentYear",
+                    "source_step_id": "material_documents",
+                    "source_field": "MaterialDocumentYear",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ],
+                "rationale": "Load posting dates for every material-document key."
               },
               {
                 "step_id": "supplier_invoice_items",
@@ -358,15 +538,79 @@
                 "odata_version": "2.0",
                 "entity_set": "A_SuplrInvcItemPurOrdRef",
                 "http_method": "GET",
+                "select_fields": [
+                  "SupplierInvoice",
+                  "FiscalYear",
+                  "SupplierInvoiceItem",
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Plant",
+                  "DocumentCurrency",
+                  "SupplierInvoiceItemAmount",
+                  "QuantityInPurchaseOrderUnit",
+                  "PurchaseOrderQuantityUnit",
+                  "IsSubsequentDebitCredit",
+                  "IsFinallyInvoiced"
+                ],
+                "order_by": [
+                  "FiscalYear",
+                  "SupplierInvoice",
+                  "SupplierInvoiceItem"
+                ],
                 "filters": [
                   {
                     "field": "PurchaseOrder",
-                    "operator": "eq",
-                    "value": "{{input.purchase_order}}",
-                    "value_type": "string"
+                    "operator": "in",
+                    "value": "{{input.purchase_orders}}",
+                    "value_type": "string",
+                    "chunk_size": 10
                   }
                 ],
+                "max_concurrent_chunks": 4,
                 "rationale": "Load supplier-invoice references for the PO."
+              },
+              {
+                "step_id": "supplier_invoice_headers",
+                "service_name": "API_SUPPLIERINVOICE_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_SupplierInvoice",
+                "http_method": "GET",
+                "select_fields": [
+                  "SupplierInvoice",
+                  "FiscalYear",
+                  "CompanyCode",
+                  "DocumentDate",
+                  "PostingDate",
+                  "DocumentCurrency",
+                  "InvoiceGrossAmount",
+                  "SupplierInvoiceStatus",
+                  "SupplierInvoiceIsCreditMemo",
+                  "IsReversal",
+                  "IsReversed",
+                  "ReverseDocument",
+                  "ReverseDocumentFiscalYear"
+                ],
+                "order_by": [
+                  "FiscalYear",
+                  "SupplierInvoice"
+                ],
+                "filter_from_previous": [
+                  {
+                    "field": "SupplierInvoice",
+                    "source_step_id": "supplier_invoice_items",
+                    "source_field": "SupplierInvoice",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "FiscalYear",
+                    "source_step_id": "supplier_invoice_items",
+                    "source_field": "FiscalYear",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ],
+                "rationale": "Confirm posting, credit-memo and reversal status for every supplier invoice."
               },
               {
                 "step_id": "accounting_items",
@@ -383,6 +627,9 @@
                   "PurchasingDocumentItem",
                   "Supplier",
                   "AccountingDocumentType",
+                  "OriginalReferenceDocument",
+                  "InvoiceReference",
+                  "InvoiceReferenceFiscalYear",
                   "GLAccount",
                   "FinancialAccountType",
                   "DebitCreditCode",
@@ -392,18 +639,32 @@
                   "ClearingDocFiscalYear",
                   "ClearingDate",
                   "IsCleared",
+                  "PostingDate",
+                  "NetDueDate",
+                  "CashDiscount1DueDate",
+                  "PaymentBlockingReason",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency",
                   "PaymentMethod",
                   "HouseBank",
                   "HouseBankAccount"
                 ],
+                "order_by": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
+                ],
                 "filters": [
                   {
                     "field": "PurchasingDocument",
-                    "operator": "eq",
-                    "value": "{{input.purchase_order}}",
-                    "value_type": "string"
+                    "operator": "in",
+                    "value": "{{input.purchase_orders}}",
+                    "value_type": "string",
+                    "chunk_size": 10
                   }
                 ],
+                "max_concurrent_chunks": 4,
                 "rationale": "Discover FI document keys from rows that directly reference the PO; these filtered rows are not treated as complete accounting documents."
               },
               {
@@ -418,6 +679,9 @@
                   "AccountingDocument",
                   "AccountingDocumentItem",
                   "AccountingDocumentType",
+                  "OriginalReferenceDocument",
+                  "InvoiceReference",
+                  "InvoiceReferenceFiscalYear",
                   "PurchasingDocument",
                   "PurchasingDocumentItem",
                   "GLAccount",
@@ -430,9 +694,21 @@
                   "ClearingAccountingDocument",
                   "ClearingDocFiscalYear",
                   "ClearingDate",
+                  "PostingDate",
+                  "NetDueDate",
+                  "CashDiscount1DueDate",
+                  "PaymentBlockingReason",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency",
                   "PaymentMethod",
                   "HouseBank",
                   "HouseBankAccount"
+                ],
+                "order_by": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
                 ],
                 "filter_from_previous": [
                   {
@@ -487,6 +763,12 @@
                   "HouseBankAccount",
                   "Supplier"
                 ],
+                "order_by": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
+                ],
                 "filter_from_previous": [
                   {
                     "field": "AccountingDocument",
@@ -533,7 +815,8 @@
             ],
             "payment_document_types": [
               "KZ",
-              "ZP"
+              "ZP",
+              "PY"
             ],
             "gr_ir_amount_tolerance": "0.01"
           }
@@ -582,9 +865,7 @@
       "codeSetFields": [],
       "zeroPadFields": {},
       "booleanFields": [],
-      "inputDefaults": {
-        "purchase_order": "purchase_order"
-      },
+      "inputDefaults": {},
       "constantDefaults": {},
       "fieldAliases": {
         "unit": [
@@ -661,26 +942,24 @@
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-08-20T08:35:46.484710+00:00",
+    "testedAt": "2026-08-29T07:00:00+00:00",
     "evidenceScope": "complete",
     "providers": [
-      "codex-app-direct-sap",
+      "sapclaw_runtime",
       "embedded-sap-odata"
     ],
     "summary": {
-      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
-      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+      "zh": "P2P 0.3.0 已用真实 SAP 的三张混合公司/供应商 PO 验证；Runtime、固定批量工作流和 foreach 路径均完成只读执行，分页完整且批次状态一致。",
+      "en": "P2P 0.3.0 was validated on three live SAP POs spanning companies and suppliers; Runtime, fixed batch workflow, and foreach execution all completed read-only with complete paging and consistent batch status."
     },
-    "reportPath": "docs/three-stage-live-acceptance.md",
+    "reportPath": "docs/multi-po-runtime-live-acceptance.md",
     "executable": true,
-    "freeQueryComparison": "MATCH",
+    "acceptanceMode": "deterministic_runtime",
+    "freeQueryComparison": "NOT_TESTED",
     "fixedAgentComparison": "MATCH",
-    "baselineRuntime": "codex_app_direct_sap",
+    "baselineRuntime": "sapclaw_runtime",
     "usedSapBusinessAgentsForBaseline": false,
-    "codexDirectBaselineHash": "sha256:05285c457573ca44a998fbfcc201c3e1b5ff7bf67db35636e33462617a6a6f6a",
-    "freeQueryHash": "sha256:ee0184b898bb692672aca8d093fe4cb230fbe4f9b047b8ba9caee38b1b66be3c",
-    "adjudicatedResultHash": "sha256:05285c457573ca44a998fbfcc201c3e1b5ff7bf67db35636e33462617a6a6f6a",
-    "fixedAgentHash": "sha256:05285c457573ca44a998fbfcc201c3e1b5ff7bf67db35636e33462617a6a6f6a",
-    "comparisonHash": "sha256:e6961bdc769cf4bfcf56b60b67be82dd692a96913286fdbb9aea85104debe6c7"
+    "runtimeCaseIds": ["899033a9-4183-45e0-8923-7133aece8f01"],
+    "workflowRunIds": ["run_676139ae75814a04", "run_2e167ea3921448ae"]
   }
 }

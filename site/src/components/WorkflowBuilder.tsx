@@ -160,7 +160,7 @@ const nodeTypes = { agent: AgentNode };
 
 function emptyWorkflow(): WorkflowDefinition {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: `workflow-${crypto.randomUUID().slice(0, 8)}`,
     version: "0.1.0",
     title: { zh: "未命名工作流", en: "Untitled workflow" },
@@ -177,7 +177,7 @@ function emptyWorkflow(): WorkflowDefinition {
 }
 
 function connectionId(item: WorkflowConnectionDefinition): string {
-  const from = item.from.scope === "node_output" ? `${item.from.nodeId}:${item.from.port}` : `${item.from.scope}:${item.from.port ?? "value"}`;
+  const from = item.from.scope === "node_output" ? `${item.from.nodeId}:${item.from.port}` : item.from.scope === "iteration_item" ? `iteration:${item.from.pointer ?? "/"}` : `${item.from.scope}:${item.from.port ?? "value"}`;
   return `${from}->${item.to.nodeId}:${item.to.port}`;
 }
 
@@ -298,9 +298,12 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: B
       while (workflow.nodes.some((node) => node.id === nodeId)) nodeId = `${agent.slug.replace(/-/g, "_")}_${++suffix}`;
       workflow.nodes.push({ id: nodeId, agentId: agent.slug, position: { x: 100 + workflow.nodes.length * 360, y: 120 } });
       for (const [port, schema] of Object.entries(agent.execution!.inputSchema.properties)) {
+        if (schema["x-sapba-workflow-only"] === true) continue;
         const inputName = uniqueInputName(workflow.inputSchema, port, nodeId);
         workflow.inputSchema.properties[inputName] = structuredClone(schema);
-        workflow.inputSchema.required = [...(workflow.inputSchema.required ?? []), inputName];
+        if ((agent.execution!.inputSchema.required ?? []).includes(port)) {
+          workflow.inputSchema.required = [...(workflow.inputSchema.required ?? []), inputName];
+        }
         workflow.connections.push({
           from: { scope: "workflow_input", port: inputName },
           to: { nodeId, port },
@@ -535,7 +538,7 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: B
         {draft.validation_run_id && <a href={`${runPath}?run=${encodeURIComponent(draft.validation_run_id)}`}>{t.openRun}</a>}
         <h2>{t.validationInputs}</h2>
         <p>{t.autoDiscover}</p>
-        <div className="workflow-validation-inputs">{Object.entries(draft.workflow.inputSchema.properties ?? {}).map(([name, schema]) => <label key={name}><span>{schema.title?.[locale] ?? name}</span><input type={schema.format === "date" ? "date" : schema.type === "number" || schema.type === "integer" ? "number" : "text"} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? name} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} /></label>)}</div>
+        <div className="workflow-validation-inputs">{Object.entries(draft.workflow.inputSchema.properties ?? {}).filter(([, schema]) => schema["x-sapba-workflow-only"] !== true).map(([name, schema]) => <label key={name}><span>{schema.title?.[locale] ?? name}</span>{schema.type === "array" ? <textarea rows={4} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? (locale === "zh" ? "每行或用逗号分隔" : "One per line or comma-separated")} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} /> : <input type={schema.format === "date" ? "date" : schema.type === "number" || schema.type === "integer" ? "number" : "text"} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? name} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} />}</label>)}</div>
         <label><input type="checkbox" checked={acknowledge} onChange={(event) => setAcknowledge(event.target.checked)} />{t.acknowledge}</label>
         {message && <p role="status">{message}</p>}
         <h2>{t.validationDetail}</h2>
@@ -552,6 +555,7 @@ function localizedText(value: { zh?: string; en?: string } | undefined, locale: 
 
 function coerceValidationInput(value: string, type?: ExecutionInputProperty["type"]): unknown {
   const scalarType = Array.isArray(type) ? type.find((item) => item !== "null") : type;
+  if (scalarType === "array") return Array.from(new Set(value.split(/[\r\n,;，；]+/).map((item) => item.trim()).filter(Boolean)));
   if (scalarType === "integer") return Number.parseInt(value, 10);
   if (scalarType === "number") return Number(value);
   if (scalarType === "boolean") return value.toLowerCase() === "true";
@@ -579,22 +583,73 @@ function validationMessages(validation: Record<string, unknown> | undefined, loc
 }
 
 function NodeInspector({ workflow, nodeId, agent, agents, locale, onChange, onRemove, removeLabel }: { workflow: WorkflowDefinition; nodeId: string; agent: AgentDefinition; agents: Map<string, AgentDefinition>; locale: Locale; onChange: (fn: (workflow: WorkflowDefinition) => void) => void; onRemove: () => void; removeLabel: string }) {
+  const node = workflow.nodes.find((item) => item.id === nodeId)!;
   const mappings = Object.keys(agent.execution?.inputSchema.properties ?? {});
-  const options = workflow.nodes.flatMap((node) => {
-    if (node.id === nodeId) return [];
-    const sourceAgent = agents.get(node.agentId);
-    return Object.keys(sourceAgent?.execution?.outputSchema?.properties ?? {}).map((port) => ({ value: `${node.id}:${port}`, label: `${sourceAgent?.title[locale]} · ${port}` }));
+  const options = workflow.nodes.flatMap((candidate) => {
+    if (candidate.id === nodeId) return [];
+    const sourceAgent = agents.get(candidate.agentId);
+    return Object.keys(sourceAgent?.execution?.outputSchema?.properties ?? {}).map((port) => ({ value: `${candidate.id}:${port}`, label: `${sourceAgent?.title[locale]} · ${port}` }));
   });
-  return <div>{mappings.map((port) => {
-    const connection = workflow.connections.find((item) => item.to.nodeId === nodeId && item.to.port === port);
-    const value = connection?.from.scope === "node_output" ? `${connection.from.nodeId}:${connection.from.port}` : connection?.from.scope === "workflow_input" ? `input:${connection.from.port}` : "constant";
-    return <label className="workflow-mapping-row" key={port}><span>{port}</span><select value={value} onChange={(event) => onChange((next) => {
-      removeTargetMapping(next, nodeId, port, false);
-      if (event.target.value.startsWith("input:")) next.connections.push({ from: { scope: "workflow_input", port: event.target.value.slice(6) }, to: { nodeId, port }, transform: { type: "identity" } });
-      else if (event.target.value === "constant") next.connections.push({ from: { scope: "constant", value: "" }, to: { nodeId, port }, transform: { type: "identity" } });
-      else { const [sourceNode, sourcePort] = event.target.value.split(":"); next.connections.push({ from: { scope: "node_output", nodeId: sourceNode, port: sourcePort }, to: { nodeId, port }, transform: { type: "identity" } }); }
-    })}>{Object.keys(workflow.inputSchema.properties).map((name) => <option key={name} value={`input:${name}`}>{name}</option>)}{options.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}<option value="constant">Constant</option></select>{connection?.from.scope === "constant" && <input value={String(connection.from.value ?? "")} onChange={(event) => onChange((next) => { const item = next.connections.find((entry) => entry.to.nodeId === nodeId && entry.to.port === port); if (item) item.from.value = event.target.value; })} />}</label>;
-  })}<button className="danger-button" onClick={onRemove}>{removeLabel}</button></div>;
+  const arraySources = [
+    ...Object.entries(workflow.inputSchema.properties).filter(([, schema]) => schema.type === "array").map(([port]) => ({ value: `input:${port}`, label: `${locale === "zh" ? "工作流输入" : "Workflow input"} · ${port}` })),
+    ...workflow.nodes.flatMap((candidate) => {
+      if (candidate.id === nodeId) return [];
+      const sourceAgent = agents.get(candidate.agentId);
+      return Object.entries(sourceAgent?.execution?.outputSchema?.properties ?? {}).filter(([, schema]) => schema.type === "array").map(([port]) => ({ value: `node:${candidate.id}:${port}`, label: `${sourceAgent?.title[locale]} · ${port}` }));
+    }),
+  ];
+  const foreachSource = node.forEach?.source.scope === "workflow_input" ? `input:${node.forEach.source.port}` : node.forEach?.source.scope === "node_output" ? `node:${node.forEach.source.nodeId}:${node.forEach.source.port}` : "";
+  const groupByText = Object.entries(node.forEach?.groupBy ?? {}).map(([name, pointer]) => `${name}=${pointer}`).join(", ");
+  const aggregateRules = workflow.outputs.filter((item) => item.aggregate?.sources.some((source) => source.nodeId === nodeId));
+
+  return <div>
+    <section className="workflow-loop-editor">
+      <label><input type="checkbox" checked={Boolean(node.forEach)} onChange={(event) => onChange((next) => {
+        const target = next.nodes.find((item) => item.id === nodeId)!;
+        if (!event.target.checked) { delete target.forEach; return; }
+        next.schemaVersion = 2;
+        const selected = arraySources[0]?.value ?? "";
+        target.forEach = {
+          source: parseForeachSource(selected),
+          maxItems: 50,
+          maxConcurrency: 4,
+          onItemError: "collect_inconclusive",
+        };
+      })} />{locale === "zh" ? "按集合逐项执行（foreach）" : "Execute once per collection item (foreach)"}</label>
+      {node.forEach && <>
+        <label><span>{locale === "zh" ? "循环来源" : "Loop source"}</span><select value={foreachSource} onChange={(event) => onChange((next) => { next.nodes.find((item) => item.id === nodeId)!.forEach!.source = parseForeachSource(event.target.value); })}>{arraySources.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+        <label><span>{locale === "zh" ? "分组键（名称=JSON Pointer）" : "Group keys (name=JSON Pointer)"}</span><input value={groupByText} placeholder="company_code=/company_code, supplier=/supplier" onChange={(event) => onChange((next) => {
+          const spec = next.nodes.find((item) => item.id === nodeId)!.forEach!;
+          const entries = event.target.value.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean).map((item) => item.split("=", 2).map((part) => part.trim())).filter((item) => item.length === 2 && item[0] && item[1]);
+          if (entries.length) spec.groupBy = Object.fromEntries(entries); else delete spec.groupBy;
+        })} /></label>
+        <label><span>{locale === "zh" ? "最大项目数" : "Maximum items"}</span><input type="number" min={1} max={50} value={node.forEach.maxItems ?? 50} onChange={(event) => onChange((next) => { next.nodes.find((item) => item.id === nodeId)!.forEach!.maxItems = Number(event.target.value); })} /></label>
+        <label><span>{locale === "zh" ? "最大并发" : "Maximum concurrency"}</span><input type="number" min={1} max={8} value={node.forEach.maxConcurrency ?? 4} onChange={(event) => onChange((next) => { next.nodes.find((item) => item.id === nodeId)!.forEach!.maxConcurrency = Number(event.target.value); })} /></label>
+      </>}
+    </section>
+    {mappings.map((port) => {
+      const connection = workflow.connections.find((item) => item.to.nodeId === nodeId && item.to.port === port);
+      const value = connection?.from.scope === "node_output" ? `${connection.from.nodeId}:${connection.from.port}` : connection?.from.scope === "workflow_input" ? `input:${connection.from.port}` : connection?.from.scope === "iteration_item" ? `iteration:${connection.from.pointer ?? "/"}` : "constant";
+      return <label className="workflow-mapping-row" key={port}><span>{port}</span><select value={value} onChange={(event) => onChange((next) => {
+        removeTargetMapping(next, nodeId, port, false);
+        const selected = event.target.value;
+        if (selected.startsWith("input:")) next.connections.push({ from: { scope: "workflow_input", port: selected.slice(6) }, to: { nodeId, port }, transform: { type: "identity" } });
+        else if (selected.startsWith("iteration:")) next.connections.push({ from: { scope: "iteration_item", pointer: selected.slice(10) || "/" }, to: { nodeId, port }, transform: { type: "identity" } });
+        else if (selected === "constant") next.connections.push({ from: { scope: "constant", value: "" }, to: { nodeId, port }, transform: { type: "identity" } });
+        else { const [sourceNode, sourcePort] = selected.split(":"); next.connections.push({ from: { scope: "node_output", nodeId: sourceNode, port: sourcePort }, to: { nodeId, port }, transform: { type: "identity" } }); }
+      })}>{Object.keys(workflow.inputSchema.properties).map((name) => <option key={name} value={`input:${name}`}>{name}</option>)}{node.forEach && <><option value="iteration:/">{locale === "zh" ? "当前迭代项" : "Current iteration item"}</option><option value="iteration:/items">{locale === "zh" ? "当前分组项目数组" : "Current grouped items"}</option></>}{value.startsWith("iteration:") && !["iteration:/", "iteration:/items"].includes(value) && <option value={value}>{value}</option>}{options.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}<option value="constant">Constant</option></select>
+      {connection && <select aria-label={`${port} transform`} value={connection.transform?.type ?? "identity"} onChange={(event) => onChange((next) => { const item = next.connections.find((entry) => entry.to.nodeId === nodeId && entry.to.port === port); if (item) item.transform = { type: event.target.value }; })}><option value="identity">identity</option><option value="wrap_array">wrap_array</option></select>}
+      {connection?.from.scope === "constant" && <input value={String(connection.from.value ?? "")} onChange={(event) => onChange((next) => { const item = next.connections.find((entry) => entry.to.nodeId === nodeId && entry.to.port === port); if (item) item.from.value = event.target.value; })} />}</label>;
+    })}
+    {aggregateRules.length > 0 && <section className="workflow-aggregate-summary"><strong>{locale === "zh" ? "聚合规则" : "Aggregation rules"}</strong><ul>{aggregateRules.map((item) => <li key={item.name}>{item.name}: {item.aggregate!.operator}{item.aggregate!.precedence?.length ? ` (${item.aggregate!.precedence.join(" > ")})` : ""}</li>)}</ul></section>}
+    <button className="danger-button" onClick={onRemove}>{removeLabel}</button>
+  </div>;
+}
+
+function parseForeachSource(value: string): { scope: "workflow_input" | "node_output"; port: string; nodeId?: string } {
+  if (value.startsWith("input:")) return { scope: "workflow_input", port: value.slice(6) };
+  const [, nodeId = "", port = ""] = value.split(":");
+  return { scope: "node_output", nodeId, port };
 }
 
 function uniqueInputName(schema: ExecutionInputSchema, port: string, nodeId: string): string {
@@ -618,6 +673,6 @@ function removeNode(workflow: WorkflowDefinition, nodeId: string) {
   const targets = workflow.connections.filter((item) => item.to.nodeId === nodeId);
   workflow.connections = workflow.connections.filter((item) => item.to.nodeId !== nodeId && !(item.from.scope === "node_output" && item.from.nodeId === nodeId));
   for (const item of targets) if (item.from.scope === "workflow_input" && item.from.port && !workflow.connections.some((entry) => entry.from.scope === "workflow_input" && entry.from.port === item.from.port)) { delete workflow.inputSchema.properties[item.from.port]; workflow.inputSchema.required = (workflow.inputSchema.required ?? []).filter((name) => name !== item.from.port); }
-  workflow.outputs = workflow.outputs.filter((item) => !(item.source.scope === "node_output" && item.source.nodeId === nodeId));
+  workflow.outputs = workflow.outputs.filter((item) => !(item.source?.scope === "node_output" && item.source.nodeId === nodeId) && !item.aggregate?.sources.some((source) => source.scope === "node_output" && source.nodeId === nodeId));
   for (const name of Object.keys(workflow.outputSchema.properties).filter((name) => name.startsWith(`${nodeId}_`))) { delete workflow.outputSchema.properties[name]; workflow.outputSchema.required = (workflow.outputSchema.required ?? []).filter((item) => item !== name); }
 }

@@ -36,7 +36,7 @@ def _proposal(*, with_gap: bool = False) -> dict[str, Any]:
             "confidence": "high",
             "reason": {"zh": "覆盖采购凭证链", "en": "Covers the procurement chain"},
             "bindings": [],
-            "requested_outputs": ["purchase_order"],
+            "requested_outputs": ["purchase_orders"],
         },
         {
             "id": "ap",
@@ -46,14 +46,9 @@ def _proposal(*, with_gap: bool = False) -> dict[str, Any]:
             "reason": {"zh": "覆盖供应商付款状态", "en": "Covers supplier payment status"},
             "bindings": [
                 {
-                    "input_port": "company_code",
+                    "input_port": "ap_payment_scopes",
                     "source_stage_id": "p2p",
-                    "source_output_port": "company_code",
-                },
-                {
-                    "input_port": "supplier",
-                    "source_stage_id": "p2p",
-                    "source_output_port": "supplier",
+                    "source_output_port": "ap_payment_scopes",
                 },
             ],
             "requested_outputs": [],
@@ -98,7 +93,7 @@ def _proposal(*, with_gap: bool = False) -> dict[str, Any]:
         "intent": {"zh": "复核采购付款", "en": "Review procurement payment"},
         "title": {"zh": "采购付款复核", "en": "Procurement payment review"},
         "description": {"zh": "只读复核采购付款", "en": "Read-only payment review"},
-        "validation_defaults": {"purchase_order": "4500000030", "as_of": "2026-08-25"},
+        "validation_defaults": {"purchase_orders": ["4500000030"], "as_of": "2026-08-25"},
         "stages": stages,
     }
 
@@ -159,11 +154,10 @@ def test_compiler_pins_agents_and_connects_only_declared_same_name_ports() -> No
         for item in workflow["connections"]
         if item["from"]["scope"] == "node_output"
     }
-    assert ("p2p", "company_code", "company_code") in node_bindings
-    assert ("p2p", "supplier", "supplier") in node_bindings
-    assert set(workflow["inputSchema"]["required"]) == {"purchase_order", "as_of"}
+    assert ("p2p", "ap_payment_scopes", "ap_payment_scopes") in node_bindings
+    assert set(workflow["inputSchema"]["required"]) == {"purchase_orders", "as_of"}
     assert composition["validation_defaults"] == {
-        "purchase_order": "4500000030",
+        "purchase_orders": ["4500000030"],
         "as_of": "2026-08-25",
     }
     assert composition["gaps"] == []
@@ -188,8 +182,7 @@ def test_compiler_infers_one_unambiguous_same_name_binding() -> None:
         for item in workflow["connections"]
         if item["from"]["scope"] == "node_output"
     }
-    assert ("p2p", "company_code", "company_code") in node_bindings
-    assert ("p2p", "supplier", "supplier") in node_bindings
+    assert ("p2p", "ap_payment_scopes", "ap_payment_scopes") in node_bindings
 
 
 def test_composition_api_supports_one_clarification_then_generates_draft(tmp_path: Path) -> None:

@@ -6,10 +6,12 @@ import { runPath } from "../lib/urls";
 interface Props { locale: Locale; agent: AgentDefinition }
 const { locale, agent } = Astro.props;
 const execution = agent.execution;
+const deterministicRuntimeAccepted = agent.validation?.acceptanceMode === "deterministic_runtime"
+  && agent.validation?.freeQueryComparison === "NOT_TESTED";
 const executable = Boolean(
   agent.validation?.verdict === "PASS"
   && agent.validation?.executable === true
-  && agent.validation?.freeQueryComparison === "MATCH"
+  && (agent.validation?.freeQueryComparison === "MATCH" || deterministicRuntimeAccepted)
   && agent.validation?.fixedAgentComparison === "MATCH"
 );
 const base = import.meta.env.BASE_URL;
@@ -40,6 +42,8 @@ const labels = locale === "zh" ? {
   dateOrder: "结束日期不能早于开始日期。",
   maxDays: "日期范围不能超过 {limit} 天。",
   invalidNumber: "{field}必须是有效数字。",
+  minItems: "{field}至少需要 {limit} 项。",
+  maxItems: "{field}最多允许 {limit} 项。",
   normalizationConflict: "该输入映射到相互冲突的 SAP 格式规则，请联系平台管理员。",
   validationRequired: "该 Agent 尚未通过真机三级验收，当前不可执行。",
 } : {
@@ -66,6 +70,8 @@ const labels = locale === "zh" ? {
   dateOrder: "The end date must not be earlier than the start date.",
   maxDays: "The date range must not exceed {limit} days.",
   invalidNumber: "{field} must be a valid number.",
+  minItems: "{field} must contain at least {limit} item(s).",
+  maxItems: "{field} must contain no more than {limit} item(s).",
   normalizationConflict: "This input maps to conflicting SAP formatting rules. Contact the platform administrator.",
   validationRequired: "This Agent has not passed three-stage live acceptance and cannot run yet.",
 };
@@ -83,6 +89,8 @@ const runtimeMessages = {
   dateOrder: labels.dateOrder,
   maxDays: labels.maxDays,
   invalidNumber: labels.invalidNumber,
+  minItems: labels.minItems,
+  maxItems: labels.maxItems,
   normalizationConflict: labels.normalizationConflict,
   validationRequired: labels.validationRequired,
 };
@@ -109,26 +117,39 @@ const runtimeMessages = {
     <form class="agent-run-form" novalidate>
       {execution ? (
         <div class="runtime-field-grid">
-          {Object.entries(execution.inputSchema.properties).map(([name, property]) => (
+          {Object.entries(execution.inputSchema.properties).filter(([, property]) => property["x-sapba-workflow-only"] !== true).map(([name, property]) => (
             <label>
               <span>{property.title?.[locale] || name}</span>
               {property.description && <small class="runtime-field-help">{property.description[locale]}</small>}
-              <input
-                name={name}
-                type={property.format === "date" ? "date" : property.type === "integer" || property.type === "number" ? "number" : "text"}
-                value={property.default === undefined ? "" : String(property.default)}
-                placeholder={property.placeholder?.[locale]}
-                minlength={property.minLength}
-                maxlength={property.maxLength}
-                min={property.minimum}
-                max={property.maximum}
-                step={property.type === "integer" ? 1 : undefined}
-                data-value-type={property.type}
-                pattern={property.pattern}
-                inputmode={property.pattern === "^[0-9]+$" ? "numeric" : undefined}
-                title={property.description?.[locale]}
-                required={execution.inputSchema.required?.includes(name)}
-              />
+              {property.type === "array" ? (
+                <textarea
+                  name={name}
+                  rows={5}
+                  placeholder={property.placeholder?.[locale]}
+                  data-value-type="array"
+                  data-item-pattern={property.items?.pattern}
+                  data-min-items={property.minItems}
+                  data-max-items={property.maxItems}
+                  required={execution.inputSchema.required?.includes(name)}
+                >{Array.isArray(property.default) ? property.default.join("\n") : ""}</textarea>
+              ) : (
+                <input
+                  name={name}
+                  type={property.format === "date" ? "date" : property.type === "integer" || property.type === "number" ? "number" : "text"}
+                  value={property.default === undefined ? "" : String(property.default)}
+                  placeholder={property.placeholder?.[locale]}
+                  minlength={property.minLength}
+                  maxlength={property.maxLength}
+                  min={property.minimum}
+                  max={property.maximum}
+                  step={property.type === "integer" ? 1 : undefined}
+                  data-value-type={property.type}
+                  pattern={property.pattern}
+                  inputmode={property.pattern === "^[0-9]+$" ? "numeric" : undefined}
+                  title={property.description?.[locale]}
+                  required={execution.inputSchema.required?.includes(name)}
+                />
+              )}
               <small class="runtime-field-error" data-field-error={name} role="alert" hidden></small>
             </label>
           ))}
@@ -195,7 +216,7 @@ const runtimeMessages = {
       item.hidden = true;
       item.textContent = "";
     });
-    form.querySelectorAll<HTMLInputElement>("input[aria-invalid]").forEach((field) => {
+    form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[aria-invalid], textarea[aria-invalid]").forEach((field) => {
       field.removeAttribute("aria-invalid");
     });
   };
@@ -207,7 +228,7 @@ const runtimeMessages = {
   };
 
   const showFieldError = (form: HTMLFormElement, name: string, message: string) => {
-    const field = form.querySelector<HTMLInputElement>(`input[name="${CSS.escape(name)}"]`);
+    const field = form.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${CSS.escape(name)}"]`);
     const target = form.querySelector<HTMLElement>(`[data-field-error="${CSS.escape(name)}"]`);
     field?.setAttribute("aria-invalid", "true");
     if (target) {
@@ -222,25 +243,33 @@ const runtimeMessages = {
     dateRangePairs: Array<{ from?: string; to?: string; maxDays?: number }>,
   ) => {
     let valid = true;
-    form.querySelectorAll<HTMLInputElement>("input[name]").forEach((field) => {
+    form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[name], textarea[name]").forEach((field) => {
       const value = field.value.trim();
       const label = fieldLabel(form, field.name);
       let message = "";
+      const arrayValues = field.dataset.valueType === "array" ? parseArrayInput(value) : [];
+      const itemPattern = field.dataset.itemPattern ? new RegExp(field.dataset.itemPattern) : null;
       if (field.required && !value) {
         message = formatMessage(messages.required, { field: label });
-      } else if (value && field.minLength > 0 && value.length < field.minLength) {
-        message = formatMessage(messages.minLength, { field: label, limit: field.minLength });
-      } else if (value && field.maxLength > 0 && value.length > field.maxLength) {
-        message = formatMessage(messages.maxLength, { field: label, limit: field.maxLength });
-      } else if (value && field.validity.patternMismatch) {
+      } else if (field.dataset.valueType === "array" && Number(field.dataset.minItems || 0) > arrayValues.length) {
+        message = formatMessage(messages.minItems, { field: label, limit: field.dataset.minItems || "" });
+      } else if (field.dataset.valueType === "array" && Number(field.dataset.maxItems || 0) > 0 && arrayValues.length > Number(field.dataset.maxItems)) {
+        message = formatMessage(messages.maxItems, { field: label, limit: field.dataset.maxItems || "" });
+      } else if (field.dataset.valueType === "array" && itemPattern && arrayValues.some((item) => !itemPattern.test(item))) {
         message = formatMessage(messages.invalidFormat, { field: label });
-      } else if (value && field.type === "date" && Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
+      } else if (field instanceof HTMLInputElement && value && field.minLength > 0 && value.length < field.minLength) {
+        message = formatMessage(messages.minLength, { field: label, limit: field.minLength });
+      } else if (field instanceof HTMLInputElement && value && field.maxLength > 0 && value.length > field.maxLength) {
+        message = formatMessage(messages.maxLength, { field: label, limit: field.maxLength });
+      } else if (field instanceof HTMLInputElement && value && field.validity.patternMismatch) {
+        message = formatMessage(messages.invalidFormat, { field: label });
+      } else if (field instanceof HTMLInputElement && value && field.type === "date" && Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
         message = formatMessage(messages.invalidDate, { field: label });
-      } else if (value && field.type === "number" && !Number.isFinite(field.valueAsNumber)) {
+      } else if (field instanceof HTMLInputElement && value && field.type === "number" && !Number.isFinite(field.valueAsNumber)) {
         message = formatMessage(messages.invalidNumber, { field: label });
-      } else if (value && field.validity.rangeUnderflow) {
+      } else if (field instanceof HTMLInputElement && value && field.validity.rangeUnderflow) {
         message = formatMessage(messages.minimum, { field: label, limit: field.min || "" });
-      } else if (value && field.validity.rangeOverflow) {
+      } else if (field instanceof HTMLInputElement && value && field.validity.rangeOverflow) {
         message = formatMessage(messages.maximum, { field: label, limit: field.max || "" });
       }
       if (message) {
@@ -270,6 +299,10 @@ const runtimeMessages = {
     return valid;
   };
 
+  const parseArrayInput = (value: string): string[] => Array.from(new Set(
+    value.split(/[\n,;，；]+/u).map((item) => item.trim()).filter(Boolean),
+  ));
+
   const constraintMessage = (
     form: HTMLFormElement,
     messages: LocalizedMessages,
@@ -282,6 +315,8 @@ const runtimeMessages = {
     if (constraint === "required") return formatMessage(messages.required, { field: label });
     if (constraint === "min_length") return formatMessage(messages.minLength, { field: label, limit });
     if (constraint === "max_length") return formatMessage(messages.maxLength, { field: label, limit });
+    if (constraint === "min_items") return formatMessage(messages.minItems, { field: label, limit });
+    if (constraint === "max_items") return formatMessage(messages.maxItems, { field: label, limit });
     if (constraint === "date") return formatMessage(messages.invalidDate, { field: label });
     if (constraint === "minimum") return formatMessage(messages.minimum, { field: label, limit });
     if (constraint === "maximum") return formatMessage(messages.maximum, { field: label, limit });
@@ -342,17 +377,19 @@ const runtimeMessages = {
       if (!validateClientInput(form, messages, dateRangePairs)) {
         showSummary(error, messages.invalidInput);
         if (button) button.disabled = false;
-        form.querySelector<HTMLInputElement>('input[aria-invalid="true"]')?.focus();
+        form.querySelector<HTMLInputElement | HTMLTextAreaElement>('[aria-invalid="true"]')?.focus();
         return;
       }
       const mode = panel.dataset.runMode === "agent" ? "agent" : "free_query";
       const formData = new FormData(form);
-      const input: Record<string, string | number> = {};
+      const input: Record<string, unknown> = {};
       if (mode === "agent") {
-        form.querySelectorAll<HTMLInputElement>("input[name]").forEach((field) => {
+        form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[name], textarea[name]").forEach((field) => {
           const value = field.value.trim();
           if (!value) return;
-          input[field.name] = field.dataset.valueType === "integer"
+          input[field.name] = field.dataset.valueType === "array"
+            ? parseArrayInput(value)
+            : field.dataset.valueType === "integer"
             ? Number(value)
             : field.dataset.valueType === "number"
               ? Number(value)

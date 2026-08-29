@@ -581,13 +581,22 @@ select {
 .workflow-mapping-row > span { font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .workflow-mapping-row select,
 .workflow-mapping-row input,
+.workflow-loop-editor select,
+.workflow-loop-editor input,
 .workflow-metadata-fields input,
-.workflow-validation-inputs input { width: 100%; border: 1px solid #b7c8d0; border-radius: .45rem; padding: .55rem; background: white; }
+.workflow-validation-inputs input,
+.workflow-validation-inputs textarea { width: 100%; border: 1px solid #b7c8d0; border-radius: .45rem; padding: .55rem; background: white; }
 .workflow-metadata-fields,
 .workflow-validation-inputs { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .workflow-metadata-fields { grid-template-columns: 1fr; margin-bottom: 1.25rem; }
 .workflow-metadata-fields label,
 .workflow-validation-inputs label { display: grid; gap: .3rem; font-weight: 700; font-size: .82rem; }
+.workflow-loop-editor { display: grid; gap: .65rem; margin-bottom: 1rem; padding: .75rem; border: 1px solid #d5e0e5; border-radius: .6rem; background: #f7fafb; }
+.workflow-loop-editor label { display: grid; gap: .3rem; font-size: .82rem; }
+.workflow-loop-editor label:first-child { display: flex; align-items: center; }
+.workflow-loop-editor label:first-child input { width: auto; }
+.workflow-aggregate-summary { margin: .8rem 0; padding-top: .7rem; border-top: 1px solid #d5e0e5; }
+.workflow-aggregate-summary ul { margin: .45rem 0 0; padding-left: 1.15rem; font-size: .82rem; }
 .danger-button { color: #9a2424 !important; border-color: #d8aaaa !important; }
 
 .workflow-validation-panel { margin-top: .85rem; display: grid; gap: .8rem; }
@@ -1112,6 +1121,7 @@ select {
 .free-query-form textarea,
 .guided-agent-question textarea,
 .runtime-field-grid input,
+.runtime-field-grid textarea,
 .run-input-form textarea {
   width: 100%;
   box-sizing: border-box;
@@ -1126,6 +1136,7 @@ select {
 .free-query-form textarea:focus,
 .guided-agent-question textarea:focus,
 .runtime-field-grid input:focus,
+.runtime-field-grid textarea:focus,
 .run-input-form textarea:focus {
   outline: 0;
   border-color: var(--color-primary);
@@ -1191,7 +1202,8 @@ button:disabled {
     font-weight: 500;
   }
 
-  .runtime-field-grid input[aria-invalid="true"] {
+.runtime-field-grid input[aria-invalid="true"],
+.runtime-field-grid textarea[aria-invalid="true"] {
     border-color: #bb2020;
     box-shadow: 0 0 0 3px rgba(187, 32, 32, 0.1);
   }

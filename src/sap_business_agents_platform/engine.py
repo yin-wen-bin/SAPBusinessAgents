@@ -12,6 +12,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from jsonschema import Draft202012Validator, FormatChecker
+
 from . import rules
 from .codex_planner import Planner
 from .config import Settings
@@ -859,6 +861,28 @@ class RunCoordinator:
                 "node_started",
                 {"node_id": node_id, "agent_id": agent_id},
             )
+            if isinstance(node.get("forEach"), dict):
+                node_output, foreach_degraded = await self._execute_foreach_node(
+                    run_id=run_id,
+                    workflow=workflow,
+                    node=node,
+                    workflow_input=record.input,
+                    node_outputs=node_outputs,
+                    result=result,
+                )
+                node_outputs[node_id] = node_output
+                degraded = degraded or foreach_degraded
+                self.store.update_run(run_id, result_json=result)
+                self._set_progress(
+                    run_id,
+                    phase="validating_evidence",
+                    state="active",
+                    current_node_id=node_id,
+                    completed_units=node_index + 1,
+                    total_units=total_nodes,
+                    determinate=True,
+                )
+                continue
             try:
                 node_input = _resolve_node_input(
                     workflow,
@@ -1081,6 +1105,230 @@ class RunCoordinator:
             determinate=True,
         )
         self._complete_workflow_result(run_id, result, degraded=degraded or bool(blocked_nodes))
+
+    async def _execute_foreach_node(
+        self,
+        *,
+        run_id: str,
+        workflow: dict[str, Any],
+        node: dict[str, Any],
+        workflow_input: dict[str, Any],
+        node_outputs: dict[str, dict[str, Any]],
+        result: RunResult,
+    ) -> tuple[dict[str, Any], bool]:
+        node_id = str(node["id"])
+        agent_id = str(node["agentId"])
+        foreach = node["forEach"]
+        collection = _resolve_workflow_source(
+            foreach.get("source") or {}, workflow_input, node_outputs
+        )
+        if not isinstance(collection, list):
+            raise RunExecutionError(
+                f"Workflow foreach source for {node_id} is not an array.",
+                code="workflow_contract_violation",
+            )
+        iteration_items = _group_iteration_items(collection, foreach.get("groupBy"))
+        maximum = int(foreach.get("maxItems") or 50)
+        if len(iteration_items) > maximum:
+            raise RunExecutionError(
+                f"Workflow foreach node {node_id} exceeds maxItems={maximum}.",
+                code="workflow_foreach_limit_exceeded",
+            )
+        concurrency = int(foreach.get("maxConcurrency") or 4)
+        semaphore = asyncio.Semaphore(concurrency)
+        agent = self.agents.get(agent_id)
+
+        async def run_item(index: int, iteration_item: Any) -> dict[str, Any]:
+            async with semaphore:
+                self._ensure_not_cancelled(run_id)
+                self.store.append_event(
+                    run_id,
+                    "foreach_item_started",
+                    {"node_id": node_id, "agent_id": agent_id, "iteration_index": index},
+                )
+                node_input = _resolve_node_input(
+                    workflow,
+                    node_id,
+                    workflow_input,
+                    node_outputs,
+                    iteration_item,
+                )
+                node_input, defaulted_fields = _resolve_server_defaults(
+                    node_input, agent["execution"]["inputSchema"]
+                )
+                node_input = self.normalizer.normalize_input(
+                    node_input,
+                    agent["execution"]["inputSchema"],
+                    field_references=discover_agent_input_references(agent),
+                )
+                _validate_input(node_input, agent["execution"]["inputSchema"])
+                if defaulted_fields:
+                    self.store.append_event(
+                        run_id,
+                        "input_defaults_applied",
+                        {
+                            "scope": "workflow_iteration",
+                            "node_id": node_id,
+                            "iteration_index": index,
+                            "fields": defaulted_fields,
+                        },
+                    )
+                child_run_id = f"run_{uuid.uuid4().hex[:16]}"
+                self.store.create_run(
+                    child_run_id,
+                    RunCreate(mode=RunMode.agent, agentId=agent_id, input=node_input),
+                    parent_run_id=run_id,
+                    node_id=node_id,
+                )
+                self.store.append_event(
+                    child_run_id,
+                    "run_queued",
+                    {
+                        "mode": RunMode.agent.value,
+                        "parent_run_id": run_id,
+                        "node_id": node_id,
+                        "iteration_index": index,
+                    },
+                )
+                try:
+                    await self._execute(child_run_id)
+                except Exception as exc:
+                    self._finish_error(child_run_id, exc, RunStatus.failed)
+                child = self.store.get_run(child_run_id)
+                if child.status in {RunStatus.failed, RunStatus.cancelled} or child.result is None:
+                    error = child.error or {
+                        "code": "workflow_node_failed",
+                        "message": f"Agent iteration {node_id}[{index}] did not return a result.",
+                    }
+                    if str(error.get("code") or "") in {
+                        "agent_version_mismatch",
+                        "write_operation_rejected",
+                        "workflow_contract_violation",
+                        "agent_input_invalid",
+                        "mapping_failed",
+                    }:
+                        raise RunExecutionError(
+                            str(error.get("message") or "Workflow iteration failed."),
+                            code=str(error.get("code") or "workflow_node_failed"),
+                            detail={"node_id": node_id, "iteration_index": index},
+                        )
+                    self.store.append_event(
+                        run_id,
+                        "foreach_item_inconclusive",
+                        {"node_id": node_id, "iteration_index": index, "error": error},
+                    )
+                    return {
+                        "iteration_index": index,
+                        "run_id": child_run_id,
+                        "status": "inconclusive",
+                        "input": node_input,
+                        "error": error,
+                    }
+                output = child.result.workflow_output
+                validate_value(
+                    output,
+                    agent["execution"]["outputSchema"],
+                    label=f"Node {node_id}[{index}] output",
+                )
+                self.store.append_event(
+                    run_id,
+                    "foreach_item_completed",
+                    {
+                        "node_id": node_id,
+                        "iteration_index": index,
+                        "run_id": child_run_id,
+                        "status": child.status.value,
+                    },
+                )
+                return {
+                    "iteration_index": index,
+                    "run_id": child_run_id,
+                    "status": child.status.value,
+                    "input": node_input,
+                    "output": output,
+                    "completeness": child.result.completeness.model_dump(mode="json"),
+                    "child_result": child.result,
+                }
+
+        iterations = await asyncio.gather(
+            *(run_item(index, item) for index, item in enumerate(iteration_items))
+        )
+        iterations.sort(key=lambda item: int(item["iteration_index"]))
+        degraded = any(item.get("status") != RunStatus.completed.value for item in iterations)
+        port_values: dict[str, list[Any]] = {
+            str(port): []
+            for port in (agent["execution"]["outputSchema"].get("properties") or {})
+        }
+        for iteration in iterations:
+            output = iteration.get("output")
+            if isinstance(output, dict):
+                for port in port_values:
+                    if port in output:
+                        port_values[port].append(output[port])
+            else:
+                if "business_status" in port_values:
+                    port_values["business_status"].append("inconclusive")
+                for port in ("source_complete", "evidence_complete"):
+                    if port in port_values:
+                        port_values[port].append(False)
+        child_completeness = [
+            item["completeness"]
+            for item in iterations
+            if isinstance(item.get("completeness"), dict)
+        ]
+        completeness = {
+            "source_complete": bool(iterations)
+            and len(child_completeness) == len(iterations)
+            and all(item.get("source_complete") is True for item in child_completeness),
+            "business_complete": bool(iterations)
+            and len(child_completeness) == len(iterations)
+            and all(item.get("business_complete") is True for item in child_completeness),
+            "missing_evidence": sorted(
+                {
+                    str(gap)
+                    for item in child_completeness
+                    for gap in item.get("missing_evidence") or []
+                    if str(gap)
+                }
+                | ({"workflow_iteration_failed"} if degraded else set())
+            ),
+        }
+        node_result = {
+            "node_id": node_id,
+            "agent_id": agent_id,
+            "status": "inconclusive" if degraded else "completed",
+            "iterations": [
+                {key: value for key, value in item.items() if key != "child_result"}
+                for item in iterations
+            ],
+            "output": port_values,
+            "completeness": completeness,
+        }
+        result.node_results.append(node_result)
+        for iteration in iterations:
+            child_result = iteration.get("child_result")
+            if child_result is None:
+                continue
+            index = int(iteration["iteration_index"])
+            result.evidence.extend(
+                [
+                    {**item, "node_id": node_id, "agent_id": agent_id, "iteration_index": index}
+                    for item in child_result.evidence
+                ]
+            )
+            result.tool_calls.extend(
+                [
+                    {**item, "node_id": node_id, "agent_id": agent_id, "iteration_index": index}
+                    for item in child_result.tool_calls
+                ]
+            )
+            result.rule_results.extend(
+                [
+                    {**item, "node_id": node_id, "agent_id": agent_id, "iteration_index": index}
+                    for item in child_result.rule_results
+                ]
+            )
+        return port_values, degraded
 
     def _complete_workflow_result(
         self, run_id: str, result: RunResult, *, degraded: bool
@@ -2213,6 +2461,81 @@ def _validate_input(
             if not isinstance(dependencies, list):
                 continue
             dependent_missing = [
+                str(name) for name in dependencies if value.get(str(name)) in (None, "")
+            ]
+            if dependent_missing:
+                raise InputValidationError(
+                    f"Input {trigger} requires: {', '.join(dependent_missing)}",
+                    code=error_code,
+                    fields=dependent_missing,
+                    constraint="dependent_required",
+                    detail={"trigger": str(trigger)},
+                )
+    properties = schema.get("properties") or {}
+    unknown = sorted(set(value).difference(properties))
+    if schema.get("additionalProperties") is False and unknown:
+        raise InputValidationError(
+            "Unknown input fields: " + ", ".join(unknown),
+            code=error_code,
+            fields=[str(name) for name in unknown],
+            constraint="additional_properties",
+        )
+
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    errors = sorted(validator.iter_errors(value), key=lambda item: list(item.absolute_path))
+    if errors:
+        error = errors[0]
+        path = [str(item) for item in error.absolute_path]
+        field = path[0] if path else None
+        constraint_map = {
+            "minLength": "min_length",
+            "maxLength": "max_length",
+            "minItems": "min_items",
+            "maxItems": "max_items",
+            "uniqueItems": "unique_items",
+            "additionalProperties": "additional_properties",
+            "dependentRequired": "dependent_required",
+        }
+        constraint = constraint_map.get(str(error.validator), str(error.validator or "schema"))
+        fields: list[str] = [field] if field else []
+        if error.validator == "required":
+            required_names = [str(item) for item in error.validator_value or []]
+            fields = [name for name in required_names if name not in value]
+            field = fields[0] if len(fields) == 1 else None
+        detail: dict[str, Any] = {"constraint": constraint}
+        if field:
+            detail["field"] = field
+        if fields:
+            detail["fields"] = fields
+        if error.validator in {"minimum", "minLength", "minItems"}:
+            detail["minimum"] = error.validator_value
+        if error.validator in {"maximum", "maxLength", "maxItems"}:
+            detail["maximum"] = error.validator_value
+        message = "Input does not satisfy the declared contract."
+        if field and error.validator == "maxLength":
+            message = f"Input {field} must contain at most {error.validator_value} character(s)."
+        elif field and error.validator == "minLength":
+            message = f"Input {field} must contain at least {error.validator_value} character(s)."
+        elif field and error.validator == "pattern":
+            message = f"Input {field} has an invalid format."
+        elif field and error.validator == "type":
+            message = f"Input {field} has an invalid type."
+        raise InputValidationError(
+            message,
+            code=error_code,
+            field=field,
+            fields=None if field else (fields or None),
+            constraint=constraint,
+            detail={key: item for key, item in detail.items() if key not in {"constraint", "field", "fields"}},
+        )
+    dependent_required = schema.get("dependentRequired")
+    if isinstance(dependent_required, dict):
+        for trigger, dependencies in dependent_required.items():
+            if trigger not in value or value.get(trigger) in (None, ""):
+                continue
+            if not isinstance(dependencies, list):
+                continue
+            dependent_missing = [
                 str(name)
                 for name in dependencies
                 if value.get(str(name)) in (None, "")
@@ -2406,13 +2729,14 @@ def _resolve_node_input(
     node_id: str,
     workflow_input: dict[str, Any],
     node_outputs: dict[str, dict[str, Any]],
+    iteration_item: Any = None,
 ) -> dict[str, Any]:
     resolved: dict[str, Any] = {}
     for connection in iter_node_connections(workflow, node_id):
         target = connection.get("to") or {}
         port = str(target.get("port") or "")
         value = _resolve_workflow_source(
-            connection.get("from") or {}, workflow_input, node_outputs
+            connection.get("from") or {}, workflow_input, node_outputs, iteration_item
         )
         try:
             resolved[port] = apply_transform(value, connection.get("transform"))
@@ -2431,10 +2755,15 @@ def _resolve_workflow_output(
     output: dict[str, Any] = {}
     for item in workflow.get("outputs") or []:
         name = str(item.get("name") or "")
-        value = _resolve_workflow_source(
-            item.get("source") or {}, workflow_input, node_outputs
-        )
-        output[name] = apply_transform(value, item.get("transform"))
+        if item.get("aggregate") is not None:
+            output[name] = _resolve_workflow_aggregate(
+                item["aggregate"], workflow_input, node_outputs
+            )
+        else:
+            value = _resolve_workflow_source(
+                item.get("source") or {}, workflow_input, node_outputs
+            )
+            output[name] = apply_transform(value, item.get("transform"))
     return output
 
 
@@ -2442,6 +2771,7 @@ def _resolve_workflow_source(
     source: dict[str, Any],
     workflow_input: dict[str, Any],
     node_outputs: dict[str, dict[str, Any]],
+    iteration_item: Any = None,
 ) -> Any:
     scope = source.get("scope")
     if scope == "constant":
@@ -2463,7 +2793,77 @@ def _resolve_workflow_source(
                 code="workflow_output_unavailable",
             )
         return node_outputs[node_id][port]
+    if scope == "iteration_item":
+        if iteration_item is None:
+            raise WorkflowError(
+                "Iteration item is unavailable outside a foreach node.",
+                code="workflow_output_unavailable",
+            )
+        return _json_pointer_get(iteration_item, str(source.get("pointer") or ""))
     raise WorkflowError("Workflow mapping source is unsupported.", code="mapping_failed")
+
+
+def _json_pointer_get(value: Any, pointer: str) -> Any:
+    if pointer in {"", "/"}:
+        return value
+    if not pointer.startswith("/"):
+        raise WorkflowError("JSON Pointer must start with /.", code="mapping_failed")
+    current = value
+    for raw in pointer[1:].split("/"):
+        part = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+        else:
+            raise WorkflowError("JSON Pointer did not resolve.", code="mapping_failed")
+    return current
+
+
+def _group_iteration_items(items: list[Any], group_by: Any) -> list[Any]:
+    if group_by is None:
+        return list(items)
+    if not isinstance(group_by, dict) or not group_by:
+        raise WorkflowError("foreach.groupBy must be a non-empty object.", code="mapping_failed")
+    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for item in items:
+        key_values = tuple(_json_pointer_get(item, str(pointer)) for pointer in group_by.values())
+        try:
+            hash(key_values)
+        except TypeError as exc:
+            raise WorkflowError("foreach.groupBy values must be scalar.", code="mapping_failed") from exc
+        group = grouped.setdefault(
+            key_values,
+            {"key": dict(zip(group_by.keys(), key_values, strict=True)), "items": []},
+        )
+        group["items"].append(item)
+    return list(grouped.values())
+
+
+def _resolve_workflow_aggregate(
+    aggregate: dict[str, Any],
+    workflow_input: dict[str, Any],
+    node_outputs: dict[str, dict[str, Any]],
+) -> Any:
+    values: list[Any] = []
+    for source in aggregate.get("sources") or []:
+        value = _resolve_workflow_source(source, workflow_input, node_outputs)
+        values.extend(value if isinstance(value, list) else [value])
+    operator = str(aggregate.get("operator") or "")
+    if operator == "collect":
+        collected: list[Any] = []
+        for value in values:
+            collected.extend(value if isinstance(value, list) else [value])
+        return collected
+    if operator == "all_true":
+        return bool(values) and all(value is True for value in values)
+    if operator == "status_precedence":
+        precedence = [str(item) for item in aggregate.get("precedence") or []]
+        rank = {status: index for index, status in enumerate(precedence)}
+        if not values:
+            raise WorkflowError("Cannot aggregate an empty status list.", code="workflow_output_unavailable")
+        return min((str(value) for value in values), key=lambda value: rank.get(value, -1))
+    raise WorkflowError("Workflow aggregate is unsupported.", code="mapping_failed")
 
 
 def _normalize_free_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:

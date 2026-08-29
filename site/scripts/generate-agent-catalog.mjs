@@ -158,16 +158,17 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
   }
   if (agent.schemaVersion === 2) validateExecution(agent.execution, source);
   if (agent.systems.includes("SAP ECC")) throw new Error(`${source}.systems must not advertise SAP ECC`);
-  const localizedSchemaTitles = (schema, location) => {
+  const localizedSchemaTitles = (schema, location, excludeWorkflowOnly = false) => {
     const result = { zh: [], en: [] };
     for (const [name, property] of Object.entries(schema?.properties ?? {})) {
+      if (excludeWorkflowOnly && property["x-sapba-workflow-only"] === true) continue;
       requireLocalized(property.title, `${location}.properties.${name}.title`);
       result.zh.push(property.title.zh);
       result.en.push(property.title.en);
     }
     return result;
   };
-  if (JSON.stringify(agent.inputs) !== JSON.stringify(localizedSchemaTitles(agent.execution.inputSchema, `${source}.execution.inputSchema`))) {
+  if (JSON.stringify(agent.inputs) !== JSON.stringify(localizedSchemaTitles(agent.execution.inputSchema, `${source}.execution.inputSchema`, true))) {
     throw new Error(`${source}.inputs must mirror execution.inputSchema titles`);
   }
   if (!agent.execution.outputSchema) throw new Error(`${source}.execution.outputSchema is required`);
@@ -203,6 +204,9 @@ function validateLiveValidation(validation, source) {
   }
   if (validation.executable !== undefined && typeof validation.executable !== "boolean") {
     throw new Error(`${source}.validation.executable must be boolean`);
+  }
+  if (validation.acceptanceMode !== undefined && !["three_stage", "deterministic_runtime"].includes(validation.acceptanceMode)) {
+    throw new Error(`${source}.validation.acceptanceMode is invalid`);
   }
   for (const field of ["freeQueryComparison", "fixedAgentComparison"]) {
     if (validation[field] !== undefined && !["MATCH", "MISMATCH", "BLOCKED", "NOT_TESTED"].includes(validation[field])) {

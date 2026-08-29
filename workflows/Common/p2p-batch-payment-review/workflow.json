@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 2,
+  "id": "p2p-batch-payment-review",
+  "version": "1.0.0",
+  "title": {
+    "zh": "P2P 批量付款复核",
+    "en": "P2P Batch Payment Review"
+  },
+  "description": {
+    "zh": "先由 P2P Agent 查询最多 50 张采购订单并形成分组应付证据，再由 AP Agent 复核到期、冻结、重复候选和付款准备度。",
+    "en": "Query up to 50 purchase orders with the P2P Agent, hand typed AP evidence groups to the AP Agent, then review due dates, blocks, duplicate candidates, and payment readiness."
+  },
+  "mode": "deterministic",
+  "readOnly": true,
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "purchase_orders": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 50,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        },
+        "title": {
+          "zh": "采购订单号（最多 50 张）",
+          "en": "Purchase orders (up to 50)"
+        }
+      },
+      "as_of": {
+        "type": "string",
+        "format": "date",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+        "title": {
+          "zh": "查询基准日",
+          "en": "As-of date"
+        }
+      }
+    },
+    "required": ["purchase_orders", "as_of"],
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "p2p_details": {"type": "array", "items": {"type": "object"}},
+      "ap_details": {"type": "array", "items": {"type": "object"}},
+      "batch_status": {
+        "type": "string",
+        "enum": ["inconclusive", "not_found", "blocked", "in_progress", "complete"]
+      },
+      "source_complete": {"type": "boolean"},
+      "evidence_complete": {"type": "boolean"}
+    },
+    "required": ["p2p_details", "ap_details", "batch_status", "source_complete", "evidence_complete"],
+    "additionalProperties": false
+  },
+  "nodes": [
+    {
+      "id": "p2p",
+      "agentId": "procure-to-pay-status",
+      "agentVersion": "0.3.0",
+      "agentDigest": "sha256:988285975cc8708f4491cb1ed55445b4082beaaed9cd11eea23917205949ed1d",
+      "position": {"x": 100, "y": 120}
+    },
+    {
+      "id": "ap",
+      "agentId": "ap-payment",
+      "agentVersion": "0.2.0",
+      "agentDigest": "sha256:922fb829b67251c159975fcd36a9144cb9bb9a1378c9ac6ff48f9d1f6318f9d6",
+      "position": {"x": 480, "y": 120}
+    }
+  ],
+  "connections": [
+    {
+      "from": {"scope": "workflow_input", "port": "purchase_orders"},
+      "to": {"nodeId": "p2p", "port": "purchase_orders"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "from": {"scope": "node_output", "nodeId": "p2p", "port": "ap_payment_scopes"},
+      "to": {"nodeId": "ap", "port": "ap_payment_scopes"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "from": {"scope": "workflow_input", "port": "as_of"},
+      "to": {"nodeId": "ap", "port": "as_of"},
+      "transform": {"type": "identity"}
+    }
+  ],
+  "outputs": [
+    {
+      "name": "p2p_details",
+      "source": {"scope": "node_output", "nodeId": "p2p", "port": "po_results"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "name": "ap_details",
+      "source": {"scope": "node_output", "nodeId": "ap", "port": "scope_results"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "name": "batch_status",
+      "aggregate": {
+        "operator": "status_precedence",
+        "sources": [
+          {"scope": "node_output", "nodeId": "p2p", "port": "business_status"},
+          {"scope": "node_output", "nodeId": "ap", "port": "business_status"}
+        ],
+        "precedence": ["inconclusive", "not_found", "blocked", "in_progress", "complete"]
+      }
+    },
+    {
+      "name": "source_complete",
+      "aggregate": {
+        "operator": "all_true",
+        "sources": [
+          {"scope": "node_output", "nodeId": "p2p", "port": "source_complete"},
+          {"scope": "node_output", "nodeId": "ap", "port": "source_complete"}
+        ]
+      }
+    },
+    {
+      "name": "evidence_complete",
+      "aggregate": {
+        "operator": "all_true",
+        "sources": [
+          {"scope": "node_output", "nodeId": "p2p", "port": "evidence_complete"},
+          {"scope": "node_output", "nodeId": "ap", "port": "evidence_complete"}
+        ]
+      }
+    }
+  ],
+  "policies": {
+    "onInconclusive": "continue_if_required_outputs_present"
+  }
+}

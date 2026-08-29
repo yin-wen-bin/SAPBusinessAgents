@@ -57,6 +57,34 @@ def test_validate_input_enforces_string_length_and_pattern() -> None:
             raise AssertionError(f"Expected invalid sales-order input to be rejected: {invalid}")
 
 
+def test_p2p_multi_po_contract_accepts_one_to_fifty_unique_numeric_strings() -> None:
+    root = Path(__file__).resolve().parents[1]
+    schema = AgentRepository(root / "agents").get("procure-to-pay-status")["execution"][
+        "inputSchema"
+    ]
+    _validate_input({"purchase_orders": ["1"]}, schema)
+    _validate_input(
+        {"purchase_orders": [str(4500000000 + index) for index in range(50)]},
+        schema,
+    )
+
+    invalid_values = [
+        {"purchase_orders": []},
+        {"purchase_orders": [str(4500000000 + index) for index in range(51)]},
+        {"purchase_orders": ["4500000001", "4500000001"]},
+        {"purchase_orders": "4500000001"},
+        {"purchase_orders": ["PO-4500000001"]},
+        {"purchase_orders": [""]},
+    ]
+    for invalid in invalid_values:
+        try:
+            _validate_input(invalid, schema)
+        except ValueError as exc:
+            assert getattr(exc, "code", None) == "agent_input_invalid"
+        else:
+            raise AssertionError(f"Expected invalid P2P batch input to be rejected: {invalid}")
+
+
 def test_validate_input_accepts_punctuated_sap_identifier_and_rejects_controls() -> None:
     schema = {
         "type": "object",
@@ -934,7 +962,7 @@ def test_fixed_agent_runs_without_codex_and_persists_events(tmp_path: Path) -> N
             json={
                 "mode": "agent",
                 "agentId": "procure-to-pay-status",
-                "input": {"purchase_order": "4500000001"},
+                "input": {"purchase_orders": ["4500000001"]},
             },
         )
         assert response.status_code == 202
@@ -943,11 +971,11 @@ def test_fixed_agent_runs_without_codex_and_persists_events(tmp_path: Path) -> N
         assert run["result"]["completeness"]["source_complete"] is True
         assert len(embedded.executed_plans) == 1
         assert planner.calls == 0
-        assert run["result"]["rule_results"][0]["rule_id"] == "p2p_deterministic_status_v2"
+        assert run["result"]["rule_results"][0]["rule_id"] == "p2p_deterministic_status_v3"
         assert run["result"]["summary"]["zh"]
         assert run["result"]["presentation"]["schema_version"] == "1.0"
         assert any(
-            block["type"] == "table"
+            block["type"] in {"table", "key_value"}
             for block in run["result"]["presentation"]["blocks"]
         )
         assert run["result"]["tool_calls"][0]["plugin_id"] == "embedded-sap-odata"
@@ -961,7 +989,7 @@ def test_fixed_agent_runs_without_codex_and_persists_events(tmp_path: Path) -> N
         report = client.get(f"/api/runs/{run['run_id']}/artifacts/report.md")
         assert report.status_code == 200
         assert "## 业务结论" in report.text
-        assert "## 各阶段结果" in report.text
+        assert "## 关键业务指标" in report.text
         assert "## 建议下一步" in report.text
         events = app.state.store.events_after(run["run_id"])
         assert "step_started" in {event.type for event in events}
@@ -987,7 +1015,7 @@ def test_embedded_provider_is_the_only_sap_read_capability(
             json={
                 "mode": "agent",
                 "agentId": "procure-to-pay-status",
-                "input": {"purchase_order": "4500000001"},
+                "input": {"purchase_orders": ["4500000001"]},
             },
         )
         run = _wait(client, response.json()["run_id"])
@@ -1291,7 +1319,7 @@ def test_disabling_codex_does_not_block_fixed_agent_but_blocks_free_query(
             json={
                 "mode": "agent",
                 "agentId": "procure-to-pay-status",
-                "input": {"purchase_order": "4500000001"},
+                "input": {"purchase_orders": ["4500000001"]},
             },
         )
         fixed_run = _wait(client, fixed.json()["run_id"])

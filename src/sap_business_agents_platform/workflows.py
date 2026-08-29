@@ -6,7 +6,10 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-from .manifests import ManifestError, validate_execution
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError
+
+from .manifests import ManifestError, validate_execution, validator_schema
 
 
 ALLOWED_TRANSFORMS = {
@@ -16,6 +19,7 @@ ALLOWED_TRANSFORMS = {
     "format_date",
     "first",
     "join",
+    "wrap_array",
 }
 
 
@@ -93,8 +97,8 @@ def validate_workflow(
     source: str = "workflow.json",
     require_pins: bool = True,
 ) -> list[str]:
-    if workflow.get("schemaVersion") != 1:
-        raise WorkflowError(f"{source}.schemaVersion must be 1")
+    if workflow.get("schemaVersion") not in {1, 2}:
+        raise WorkflowError(f"{source}.schemaVersion must be 1 or 2")
     workflow_id = str(workflow.get("id") or "")
     if not re.fullmatch(r"[a-z][a-z0-9-]*", workflow_id):
         raise WorkflowError(f"{source}.id is invalid")
@@ -135,6 +139,10 @@ def validate_workflow(
             drift.append(node_id)
         node_by_id[node_id] = node
         agent_by_node[node_id] = agent
+        if node.get("forEach") is not None:
+            if workflow.get("schemaVersion") != 2:
+                raise WorkflowError(f"{location}.forEach requires workflow schemaVersion 2")
+            _validate_foreach(node, workflow, node_by_id, agent_by_node, location)
     if drift:
         raise WorkflowError(
             "One or more Agent versions changed after workflow validation.",
@@ -208,6 +216,11 @@ def topological_order(workflow: dict[str, Any]) -> list[str]:
         target = connection.get("to") or {}
         if source.get("scope") == "node_output":
             dependencies[str(target.get("nodeId"))].add(str(source.get("nodeId")))
+    for node in workflow.get("nodes") or []:
+        foreach = node.get("forEach") if isinstance(node, dict) else None
+        source = foreach.get("source") if isinstance(foreach, dict) else None
+        if isinstance(source, dict) and source.get("scope") == "node_output":
+            dependencies[str(node.get("id"))].add(str(source.get("nodeId")))
     remaining = {node: set(values) for node, values in dependencies.items()}
     order: list[str] = []
     while remaining:
@@ -246,6 +259,8 @@ def apply_transform(value: Any, transform: dict[str, Any] | None) -> Any:
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise WorkflowError("join transform requires a string list.", code="mapping_failed")
         return str(transform.get("separator") or ",").join(value)
+    if kind == "wrap_array":
+        return [value]
     raise WorkflowError(f"Unsupported workflow transform: {kind}", code="mapping_failed")
 
 
@@ -280,6 +295,18 @@ def validate_value(value: dict[str, Any], schema: dict[str, Any], *, label: str)
                 f"{label}.{name} does not match type {expected}",
                 code="workflow_contract_violation",
             )
+    errors = sorted(
+        Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(value),
+        key=lambda item: list(item.absolute_path),
+    )
+    if errors:
+        error = errors[0]
+        path = ".".join(str(item) for item in error.absolute_path)
+        suffix = f".{path}" if path else ""
+        raise WorkflowError(
+            f"{label}{suffix} violates {error.validator or 'schema'}",
+            code="workflow_contract_violation",
+        )
 
 
 def _validate_object_schema(value: Any, location: str) -> None:
@@ -287,6 +314,10 @@ def _validate_object_schema(value: Any, location: str) -> None:
         value.get("properties"), dict
     ):
         raise WorkflowError(f"{location} must be an object JSON Schema")
+    try:
+        Draft202012Validator.check_schema(validator_schema(value))
+    except SchemaError as exc:
+        raise WorkflowError(f"{location} must be a valid JSON Schema") from exc
 
 
 def _property_schema(schema: dict[str, Any], name: str, location: str) -> dict[str, Any]:
@@ -315,7 +346,19 @@ def _source_type(
             raise WorkflowError(f"{location}.from.nodeId is unavailable")
         dependencies[target_node].add(source_node)
         output_schema = agents[source_node]["execution"]["outputSchema"]
-        return _schema_primary_type(_property_schema(output_schema, str(source.get("port") or ""), location).get("type"))
+        source_port_type = _schema_primary_type(
+            _property_schema(output_schema, str(source.get("port") or ""), location).get("type")
+        )
+        return "array" if nodes[source_node].get("forEach") is not None else source_port_type
+    if scope == "iteration_item":
+        node = nodes.get(target_node) or {}
+        foreach = node.get("forEach")
+        if not isinstance(foreach, dict):
+            raise WorkflowError(f"{location} uses iteration_item outside a foreach node")
+        item_schema = _foreach_item_schema(foreach, workflow, nodes, agents, location)
+        pointer = str(source.get("pointer") or "")
+        selected = _schema_at_pointer(item_schema, pointer, location)
+        return _schema_primary_type(selected.get("type"))
     if scope == "constant":
         return _json_type(source.get("value"))
     raise WorkflowError(f"{location}.from.scope is unsupported")
@@ -343,7 +386,140 @@ def _validate_transform(source_type: str, transform: Any, location: str) -> str:
         if source_type != "array":
             raise WorkflowError(f"{location}.{kind} requires an array source")
         return "string" if kind == "join" else str(transform.get("resultType") or "string")
+    if kind == "wrap_array":
+        return "array"
     return source_type
+
+
+def _validate_foreach(
+    node: dict[str, Any],
+    workflow: dict[str, Any],
+    nodes: dict[str, dict[str, Any]],
+    agents: dict[str, dict[str, Any]],
+    location: str,
+) -> None:
+    foreach = node.get("forEach")
+    if not isinstance(foreach, dict):
+        raise WorkflowError(f"{location}.forEach must be an object")
+    source = foreach.get("source")
+    if not isinstance(source, dict) or source.get("scope") not in {"workflow_input", "node_output"}:
+        raise WorkflowError(f"{location}.forEach.source must be a workflow input or prior node output")
+    item_schema = _foreach_item_schema(foreach, workflow, nodes, agents, location)
+    if not isinstance(item_schema, dict):
+        raise WorkflowError(f"{location}.forEach source must declare array items")
+    maximum = foreach.get("maxItems", 50)
+    concurrency = foreach.get("maxConcurrency", 4)
+    if not isinstance(maximum, int) or isinstance(maximum, bool) or not 1 <= maximum <= 50:
+        raise WorkflowError(f"{location}.forEach.maxItems must be between 1 and 50")
+    if not isinstance(concurrency, int) or isinstance(concurrency, bool) or not 1 <= concurrency <= 8:
+        raise WorkflowError(f"{location}.forEach.maxConcurrency must be between 1 and 8")
+    if foreach.get("onItemError", "collect_inconclusive") != "collect_inconclusive":
+        raise WorkflowError(f"{location}.forEach.onItemError is unsupported")
+
+
+def _foreach_item_schema(
+    foreach: dict[str, Any],
+    workflow: dict[str, Any],
+    nodes: dict[str, dict[str, Any]],
+    agents: dict[str, dict[str, Any]],
+    location: str,
+) -> dict[str, Any]:
+    source = foreach.get("source") or {}
+    if source.get("scope") == "workflow_input":
+        schema = _property_schema(
+            workflow["inputSchema"], str(source.get("port") or ""), f"{location}.forEach.source"
+        )
+    elif source.get("scope") == "node_output":
+        source_node = str(source.get("nodeId") or "")
+        if source_node not in nodes:
+            raise WorkflowError(f"{location}.forEach.source node must precede the foreach node")
+        schema = _property_schema(
+            agents[source_node]["execution"]["outputSchema"],
+            str(source.get("port") or ""),
+            f"{location}.forEach.source",
+        )
+    else:
+        raise WorkflowError(f"{location}.forEach.source is unsupported")
+    if _schema_primary_type(schema.get("type")) != "array" or not isinstance(schema.get("items"), dict):
+        raise WorkflowError(f"{location}.forEach.source must be an array with an item schema")
+    item_schema = schema["items"]
+    group_by = foreach.get("groupBy")
+    if group_by is None:
+        return item_schema
+    if not isinstance(group_by, dict) or not group_by:
+        raise WorkflowError(f"{location}.forEach.groupBy must be a non-empty object")
+    key_properties: dict[str, Any] = {}
+    for name, pointer in group_by.items():
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", str(name)) or not isinstance(pointer, str):
+            raise WorkflowError(f"{location}.forEach.groupBy contains an invalid key")
+        key_properties[str(name)] = _schema_at_pointer(item_schema, pointer, location)
+    return {
+        "type": "object",
+        "properties": {
+            "key": {"type": "object", "properties": key_properties, "required": list(key_properties), "additionalProperties": False},
+            "items": {"type": "array", "items": item_schema},
+        },
+        "required": ["key", "items"],
+        "additionalProperties": False,
+    }
+
+
+def _schema_at_pointer(schema: dict[str, Any], pointer: str, location: str) -> dict[str, Any]:
+    if pointer in {"", "/"}:
+        return schema
+    if not pointer.startswith("/"):
+        raise WorkflowError(f"{location} JSON Pointer must start with /")
+    current: Any = schema
+    for raw in pointer[1:].split("/"):
+        part = raw.replace("~1", "/").replace("~0", "~")
+        if not isinstance(current, dict):
+            raise WorkflowError(f"{location} JSON Pointer is outside the declared schema")
+        if _schema_primary_type(current.get("type")) == "object":
+            current = (current.get("properties") or {}).get(part)
+        elif _schema_primary_type(current.get("type")) == "array" and part.isdigit():
+            current = current.get("items")
+        else:
+            current = None
+        if not isinstance(current, dict):
+            raise WorkflowError(f"{location} JSON Pointer is outside the declared schema")
+    return current
+
+
+def _validate_aggregate(
+    aggregate: Any,
+    workflow: dict[str, Any],
+    nodes: dict[str, dict[str, Any]],
+    agents: dict[str, dict[str, Any]],
+    dependencies: dict[str, set[str]],
+    location: str,
+) -> str:
+    if not isinstance(aggregate, dict):
+        raise WorkflowError(f"{location}.aggregate must be an object")
+    operator = str(aggregate.get("operator") or "")
+    if operator not in {"status_precedence", "all_true", "collect"}:
+        raise WorkflowError(f"{location}.aggregate.operator is unsupported")
+    sources = aggregate.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise WorkflowError(f"{location}.aggregate.sources must be non-empty")
+    source_types = [
+        _source_type(source, workflow, nodes, agents, dependencies, "", location)
+        for source in sources
+        if isinstance(source, dict)
+    ]
+    if len(source_types) != len(sources):
+        raise WorkflowError(f"{location}.aggregate.sources contains an invalid source")
+    if operator == "status_precedence":
+        precedence = aggregate.get("precedence")
+        if not isinstance(precedence, list) or not precedence or len(precedence) != len(set(precedence)):
+            raise WorkflowError(f"{location}.aggregate.precedence must contain unique statuses")
+        if any(item not in {"string", "array"} for item in source_types):
+            raise WorkflowError(f"{location}.aggregate.status_precedence requires strings")
+        return "string"
+    if operator == "all_true":
+        if any(item not in {"boolean", "array"} for item in source_types):
+            raise WorkflowError(f"{location}.aggregate.all_true requires booleans")
+        return "boolean"
+    return "array"
 
 
 def _validate_outputs(
@@ -365,10 +541,21 @@ def _validate_outputs(
         if name not in declared or name in seen:
             raise WorkflowError(f"workflow.outputs[{index}].name is undeclared or duplicated")
         seen.add(name)
-        source_type = _source_type(
-            output.get("source") or {}, workflow, nodes, agents, dummy_dependencies, "", f"workflow.outputs[{index}]"
-        )
-        transformed = _validate_transform(source_type, output.get("transform") or {"type": "identity"}, f"workflow.outputs[{index}]")
+        aggregate = output.get("aggregate")
+        if aggregate is not None:
+            transformed = _validate_aggregate(
+                aggregate,
+                workflow,
+                nodes,
+                agents,
+                dummy_dependencies,
+                f"workflow.outputs[{index}]",
+            )
+        else:
+            source_type = _source_type(
+                output.get("source") or {}, workflow, nodes, agents, dummy_dependencies, "", f"workflow.outputs[{index}]"
+            )
+            transformed = _validate_transform(source_type, output.get("transform") or {"type": "identity"}, f"workflow.outputs[{index}]")
         if not _types_compatible(transformed, _schema_primary_type(declared[name].get("type"))):
             raise WorkflowError(f"workflow.outputs[{index}] has an incompatible type")
     missing = sorted(set(workflow["outputSchema"].get("required") or []).difference(seen))

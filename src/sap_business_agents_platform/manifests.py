@@ -6,6 +6,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError, ValidationError
+
 
 ALLOWED_EXECUTORS = {"sap_read", "skill", "rule"}
 ALLOWED_SAP_READ_OPERATIONS = {"execute_plan", "execute_get"}
@@ -15,6 +18,7 @@ ALLOWED_RULE_OPERATIONS = {
     "assess_adt_preflight",
     "assess_billing_block_incompletion",
     "prepare_billing_block_code_text_lookups",
+    "prepare_ap_input",
     "assess_o2c_document_flow",
     "classify_control_object",
     "prepare_control_object_lookup",
@@ -73,6 +77,7 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
     inputs = execution.get("inputSchema")
     if not isinstance(inputs, dict) or inputs.get("type") != "object":
         raise ManifestError(f"{source}.execution.inputSchema must be an object JSON Schema")
+    _validate_json_schema(inputs, f"{source}.execution.inputSchema")
     input_properties = inputs.get("properties")
     if not isinstance(input_properties, dict):
         raise ManifestError(f"{source}.execution.inputSchema.properties must be an object")
@@ -85,6 +90,7 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
     if outputs is not None:
         if not isinstance(outputs, dict) or outputs.get("type") != "object":
             raise ManifestError(f"{source}.execution.outputSchema must be an object JSON Schema")
+        _validate_json_schema(outputs, f"{source}.execution.outputSchema")
         if not isinstance(outputs.get("properties"), dict):
             raise ManifestError(f"{source}.execution.outputSchema.properties must be an object")
         _validate_output_display(
@@ -153,23 +159,32 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
 
 def is_agent_executable(agent: dict[str, Any]) -> bool:
     validation = agent.get("validation")
+    deterministic_runtime = bool(
+        isinstance(validation, dict)
+        and validation.get("acceptanceMode") == "deterministic_runtime"
+        and validation.get("freeQueryComparison") == "NOT_TESTED"
+    )
     return bool(
         agent.get("execution")
         and isinstance(validation, dict)
         and validation.get("verdict") == "PASS"
         and validation.get("executable") is True
-        and validation.get("freeQueryComparison") == "MATCH"
+        and (validation.get("freeQueryComparison") == "MATCH" or deterministic_runtime)
         and validation.get("fixedAgentComparison") == "MATCH"
     )
 
 
-def _localized_titles(properties: Any, source: str) -> dict[str, list[str]]:
+def _localized_titles(
+    properties: Any, source: str, *, exclude_workflow_only: bool = False
+) -> dict[str, list[str]]:
     if not isinstance(properties, dict):
         raise ManifestError(f"{source}.properties must be an object")
     values = {"zh": [], "en": []}
     for name, schema in properties.items():
         if not isinstance(schema, dict):
             raise ManifestError(f"{source}.properties.{name} must be an object")
+        if exclude_workflow_only and schema.get("x-sapba-workflow-only") is True:
+            continue
         title = schema.get("title")
         if not isinstance(title, dict) or not all(str(title.get(locale) or "").strip() for locale in values):
             raise ManifestError(f"{source}.properties.{name}.title must be bilingual")
@@ -203,6 +218,21 @@ def _validate_input_server_defaults(properties: dict[str, Any], source: str) -> 
 
 
 def _validate_schema_default(value: Any, schema: dict[str, Any], source: str) -> None:
+    try:
+        Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
+    except ValidationError as exc:
+        messages = {
+            "pattern": "default does not match pattern",
+            "minLength": "default is shorter than minLength",
+            "maxLength": "default exceeds maxLength",
+            "minimum": "default is less than minimum",
+            "maximum": "default exceeds maximum",
+            "type": "default has the wrong type",
+        }
+        message = messages.get(str(exc.validator), "default does not satisfy its JSON Schema")
+        raise ManifestError(f"{source}.{message}") from exc
+    except SchemaError as exc:
+        raise ManifestError(f"{source}.default does not satisfy its JSON Schema") from exc
     value_type = schema.get("type")
     if value_type == "string":
         if not isinstance(value, str):
@@ -243,6 +273,29 @@ def _validate_schema_default(value: Any, schema: dict[str, Any], source: str) ->
             raise ManifestError(f"{source}.default is below minimum")
         if isinstance(maximum, (int, float)) and value > maximum:
             raise ManifestError(f"{source}.default is above maximum")
+
+
+def _validate_json_schema(schema: dict[str, Any], source: str) -> None:
+    try:
+        Draft202012Validator.check_schema(validator_schema(schema))
+    except SchemaError as exc:
+        raise ManifestError(f"{source} is not a valid JSON Schema") from exc
+
+
+def validator_schema(value: Any) -> Any:
+    """Return the standard JSON Schema view of bilingual UI annotations."""
+
+    if isinstance(value, list):
+        return [validator_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result: dict[str, Any] = {}
+    for key, child in value.items():
+        if key in {"title", "description"} and isinstance(child, dict):
+            result[key] = str(child.get("en") or child.get("zh") or "")
+        else:
+            result[key] = validator_schema(child)
+    return result
 
 
 def _validate_output_display(properties: dict[str, Any], source: str) -> None:
@@ -299,7 +352,11 @@ def _validate_output_display(properties: dict[str, Any], source: str) -> None:
 def _validate_page_contract(agent: dict[str, Any], inputs: dict[str, Any], source: str) -> None:
     if "SAP ECC" in (agent.get("systems") or []):
         raise ManifestError(f"{source}.systems must not advertise SAP ECC")
-    expected_inputs = _localized_titles(inputs.get("properties"), f"{source}.execution.inputSchema")
+    expected_inputs = _localized_titles(
+        inputs.get("properties"),
+        f"{source}.execution.inputSchema",
+        exclude_workflow_only=True,
+    )
     if agent.get("inputs") != expected_inputs:
         raise ManifestError(f"{source}.inputs must mirror execution.inputSchema titles")
     outputs = (agent.get("execution") or {}).get("outputSchema")
@@ -422,6 +479,11 @@ def _validate_live_acceptance(value: Any, source: str) -> None:
         raise ManifestError(f"{source}.validation.verdict is invalid")
     if value.get("executable") is not None and not isinstance(value.get("executable"), bool):
         raise ManifestError(f"{source}.validation.executable must be boolean")
+    if value.get("acceptanceMode") is not None and value.get("acceptanceMode") not in {
+        "three_stage",
+        "deterministic_runtime",
+    }:
+        raise ManifestError(f"{source}.validation.acceptanceMode is invalid")
     for field in ("freeQueryComparison", "fixedAgentComparison"):
         if value.get(field) is not None and value.get(field) not in {
             "MATCH",

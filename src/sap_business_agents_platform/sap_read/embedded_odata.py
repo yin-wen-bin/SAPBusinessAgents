@@ -781,7 +781,7 @@ class EmbeddedODataProvider:
             if not item.get("value_type") and field_type:
                 item["value_type"] = field_type
             typed_filters.append(item)
-        literal_filter = self._literal_filters(typed_filters, version)
+        literal_filter_groups = self._literal_filter_groups(typed_filters, version)
         binding_groups = self._binding_filter_groups(
             step.get("filter_from_previous") or [], prior, service, version, entity,
             metadata_rules,
@@ -790,12 +790,22 @@ class EmbeddedODataProvider:
             return self._empty_result(
                 service_name=service, odata_version=version, entity_set=entity
             )
-        chunks: list[list[str]] = []
+        binding_chunks: list[list[str]] = []
         if binding_groups:
             for offset in range(0, len(binding_groups), 20):
-                chunks.append(binding_groups[offset : offset + 20])
+                binding_chunks.append(binding_groups[offset : offset + 20])
         else:
-            chunks = [[]]
+            binding_chunks = [[]]
+        chunks = [
+            (literal_group, binding_chunk)
+            for literal_group in literal_filter_groups
+            for binding_chunk in binding_chunks
+        ]
+        if len(chunks) > 100:
+            raise SapReadError(
+                "The query expands to more than 100 filter chunks.",
+                code="filter_chunk_limit_exceeded",
+            )
 
         partition = step.get("partition") if isinstance(step.get("partition"), dict) else None
         step_limit = (
@@ -813,9 +823,10 @@ class EmbeddedODataProvider:
 
         async def execute_chunk(
             chunk_index: int,
+            literal_group: list[str],
             binding_chunk: list[str],
         ) -> tuple[int, dict[str, Any]]:
-            pieces = list(literal_filter)
+            pieces = list(literal_group)
             if binding_chunk:
                 pieces.append("(" + " or ".join(binding_chunk) + ")")
             base_filter = " and ".join(f"({item})" for item in pieces if item)
@@ -846,8 +857,8 @@ class EmbeddedODataProvider:
             batch = chunks[batch_start : batch_start + max_concurrent_chunks]
             completed = await asyncio.gather(
                 *(
-                    execute_chunk(batch_start + offset, binding_chunk)
-                    for offset, binding_chunk in enumerate(batch)
+                    execute_chunk(batch_start + offset, literal_group, binding_chunk)
+                    for offset, (literal_group, binding_chunk) in enumerate(batch)
                 )
             )
             for chunk_index, result in completed:
@@ -1438,9 +1449,27 @@ class EmbeddedODataProvider:
             for order in step.get("order_by") or []:
                 if not _IDENTIFIER.fullmatch(str(order)):
                     issues.append({"code": "invalid_order_by_expression", "step_id": step_id})
+            chunked_filter_count = 0
             for item in step.get("filters") or []:
                 if not isinstance(item, dict) or str(item.get("operator") or "eq").lower() not in _OPERATORS:
                     issues.append({"code": "unsupported_filter_operator", "step_id": step_id})
+                    continue
+                if item.get("chunk_size") is not None:
+                    chunked_filter_count += 1
+                    chunk_size = item.get("chunk_size")
+                    if (
+                        str(item.get("operator") or "").lower() != "in"
+                        or not isinstance(chunk_size, int)
+                        or isinstance(chunk_size, bool)
+                        or not 1 <= chunk_size <= 20
+                        or not isinstance(item.get("value"), list)
+                        or not item.get("value")
+                    ):
+                        issues.append({"code": "invalid_chunked_filter", "step_id": step_id})
+            if chunked_filter_count > 1:
+                issues.append(
+                    {"code": "multiple_chunked_filters_not_supported", "step_id": step_id}
+                )
         return issues
 
     def _plan_steps(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1554,6 +1583,52 @@ class EmbeddedODataProvider:
                     f"{field} {operator} {self._odata_literal(value, value_type, odata_version)}"
                 )
         return expressions
+
+    def _literal_filter_groups(
+        self, filters: list[dict[str, Any]], odata_version: str
+    ) -> list[list[str]]:
+        chunked = [
+            item
+            for item in filters
+            if item.get("chunk_size") is not None
+        ]
+        if not chunked:
+            return [self._literal_filters(filters, odata_version)]
+        if len(chunked) != 1:
+            raise SapReadError(
+                "Only one chunked literal filter is allowed per step.",
+                code="multiple_chunked_filters_not_supported",
+            )
+        target = chunked[0]
+        if str(target.get("operator") or "").lower() != "in":
+            raise SapReadError(
+                "chunk_size is supported only for an in filter.",
+                code="invalid_chunked_filter",
+            )
+        values = target.get("value")
+        if not isinstance(values, list) or not values:
+            raise SapReadError(
+                "A chunked in filter requires a non-empty array value.",
+                code="invalid_chunked_filter",
+            )
+        chunk_size = target.get("chunk_size")
+        if (
+            not isinstance(chunk_size, int)
+            or isinstance(chunk_size, bool)
+            or not 1 <= chunk_size <= 20
+        ):
+            raise SapReadError(
+                "chunk_size must be an integer between 1 and 20.",
+                code="invalid_chunked_filter",
+            )
+        static_filters = [item for item in filters if item is not target]
+        groups: list[list[str]] = []
+        for offset in range(0, len(values), chunk_size):
+            child = dict(target)
+            child.pop("chunk_size", None)
+            child["value"] = values[offset : offset + chunk_size]
+            groups.append(self._literal_filters([*static_filters, child], odata_version))
+        return groups
 
     @staticmethod
     def _odata_literal(value: Any, value_type: Any, odata_version: str = "2.0") -> str:

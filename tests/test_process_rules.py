@@ -153,6 +153,123 @@ def _evaluate_p2p(
     )
 
 
+def test_p2p_multi_po_partitions_evidence_and_builds_ap_scopes() -> None:
+    first = _p2p_steps()
+    first["purchase_order"][0]["Supplier"] = "1000001"
+    first["material_documents"][0]["PurchaseOrder"] = "4500000041"
+    first["supplier_invoice_items"][0]["PurchaseOrder"] = "4500000041"
+    second = json.loads(json.dumps(first))
+    replacements = {
+        "4500000041": "4500000042",
+        "5000000029": "5000000030",
+        "5100000025": "5100000026",
+        "2000000006": "2000000007",
+        "1000001": "1000002",
+    }
+    for rows in second.values():
+        for row in rows:
+            for field, value in list(row.items()):
+                row[field] = replacements.get(str(value), value)
+    steps = {
+        step_id: [*first.get(step_id, []), *second.get(step_id, [])]
+        for step_id in set(first) | set(second)
+    }
+    result = rules.evaluate_p2p_status(
+        {
+            "run_input": {"purchase_orders": ["4500000041", "4500000042"]},
+            "sap_read": _response(steps),
+            "rule_config": {
+                "goods_receipt_document_types": ["WE"],
+                "supplier_invoice_document_types": ["RE"],
+                "payment_document_types": ["KZ", "ZP", "PY"],
+                "gr_ir_amount_tolerance": "0.01",
+            },
+        }
+    )
+
+    assert result["rule_id"] == "p2p_deterministic_status_v3"
+    assert result["business_status"] == "complete"
+    assert [item["purchase_order"] for item in result["po_results"]] == [
+        "4500000041",
+        "4500000042",
+    ]
+    assert {scope["supplier"] for scope in result["ap_payment_scopes"]} == {
+        "1000001",
+        "1000002",
+    }
+    assert all(scope["source_complete"] for scope in result["ap_payment_scopes"])
+
+
+def test_p2p_multi_po_reports_missing_po_without_dropping_it() -> None:
+    steps = _p2p_steps()
+    steps["purchase_order"][0]["Supplier"] = "1000001"
+    steps["material_documents"][0]["PurchaseOrder"] = "4500000041"
+    steps["supplier_invoice_items"][0]["PurchaseOrder"] = "4500000041"
+    result = rules.evaluate_p2p_status(
+        {
+            "run_input": {"purchase_orders": ["4500000041", "4500000999"]},
+            "sap_read": _response(steps),
+            "rule_config": {
+                "goods_receipt_document_types": ["WE"],
+                "supplier_invoice_document_types": ["RE"],
+                "payment_document_types": ["KZ", "ZP"],
+                "gr_ir_amount_tolerance": "0.01",
+            },
+        }
+    )
+
+    assert result["business_status"] == "not_found"
+    assert result["po_results"][1]["business_status"] == "not_found"
+
+
+def test_p2p_shared_fi_document_allocates_vendor_amount_without_cross_po_duplication() -> None:
+    first = _p2p_steps()
+    first["purchase_order"][0]["Supplier"] = "1000001"
+    first["material_documents"][0].update(
+        {"PurchaseOrder": "4500000041", "PurchaseOrderItem": "10"}
+    )
+    first["supplier_invoice_items"][0].update(
+        {"PurchaseOrder": "4500000041", "PurchaseOrderItem": "10"}
+    )
+    second = json.loads(json.dumps(first))
+    for rows in second.values():
+        for row in rows:
+            if row.get("PurchaseOrder") == "4500000041":
+                row["PurchaseOrder"] = "4500000042"
+            if row.get("PurchasingDocument") == "4500000041":
+                row["PurchasingDocument"] = "4500000042"
+    steps = {
+        "purchase_order": [*first["purchase_order"], *second["purchase_order"]],
+        "purchase_order_items": [*first["purchase_order_items"], *second["purchase_order_items"]],
+        "material_documents": [*first["material_documents"], *second["material_documents"]],
+        "supplier_invoice_items": [*first["supplier_invoice_items"], *second["supplier_invoice_items"]],
+        "accounting_items": [*first["accounting_items"], *second["accounting_items"]],
+        "full_accounting_documents": first["full_accounting_documents"],
+        "clearing_documents": first["clearing_documents"],
+    }
+    result = rules.evaluate_p2p_status(
+        {
+            "run_input": {"purchase_orders": ["4500000041", "4500000042"]},
+            "sap_read": _response(steps),
+            "rule_config": {
+                "goods_receipt_document_types": ["WE"],
+                "supplier_invoice_document_types": ["RE"],
+                "payment_document_types": ["KZ", "ZP", "PY"],
+                "gr_ir_amount_tolerance": "0.01",
+            },
+        }
+    )
+
+    scope = result["ap_payment_scopes"][0]
+    allocated = scope["fi_supplier_items"]
+    assert len(allocated) == 2
+    assert {item["amount_attribution_status"] for item in allocated} == {
+        "allocated_by_invoice_fi_amount"
+    }
+    assert {item["amount_allocation_ratio"] for item in allocated} == {"0.5"}
+    assert {item["amount"] for item in allocated} == {"-17.500"}
+
+
 def test_p2p_expands_full_documents_and_separates_grir_clearing_and_payment() -> None:
     result = _evaluate_p2p(_p2p_steps())
 
@@ -200,15 +317,94 @@ def test_p2p_never_treats_a_nonpayment_clearing_document_as_payment() -> None:
     assert "清账编号本身不等同于付款" in payment_stage["detail"]["zh"]
 
 
-def test_p2p_payment_requires_method_and_house_bank_information() -> None:
+def test_p2p_payment_document_type_is_independent_from_bank_context() -> None:
     missing_method = _evaluate_p2p(_p2p_steps(payment_method=""))
     missing_bank = _evaluate_p2p(_p2p_steps(house_bank=""))
 
     assert missing_method["stages"]["ap_clearing"]["state"] == "confirmed"
-    assert missing_method["stages"]["payment_document"]["state"] == "not_confirmed"
-    assert missing_bank["stages"]["payment_document"]["state"] == "not_confirmed"
-    assert missing_method["counts"]["payment_documents"] == 0
-    assert missing_bank["counts"]["payment_documents"] == 0
+    assert missing_method["stages"]["payment_document"]["state"] == "confirmed"
+    assert missing_bank["stages"]["payment_document"]["state"] == "confirmed"
+    assert missing_method["counts"]["payment_documents"] == 1
+    assert missing_bank["counts"]["payment_documents"] == 1
+    assert missing_method["stages"]["bank_settlement"]["state"] == "not_assessed"
+    assert missing_bank["stages"]["bank_settlement"]["state"] == "not_assessed"
+
+
+def test_p2p_quantity_evidence_nets_return_and_credit_memo_in_po_unit() -> None:
+    steps = _p2p_steps()
+    steps["material_documents"] = [
+        {
+            "PurchaseOrder": "4500000041",
+            "PurchaseOrderItem": "10",
+            "GoodsMovementType": "101",
+            "QuantityInEntryUnit": "10",
+            "EntryUnit": "PC",
+        },
+        {
+            "PurchaseOrder": "4500000041",
+            "PurchaseOrderItem": "10",
+            "GoodsMovementType": "161",
+            "QuantityInEntryUnit": "2",
+            "EntryUnit": "PC",
+        },
+    ]
+    steps["supplier_invoice_items"] = [
+        {
+            "SupplierInvoice": "5100000025",
+            "FiscalYear": "2017",
+            "SupplierInvoiceItem": "1",
+            "PurchaseOrder": "4500000041",
+            "PurchaseOrderItem": "10",
+            "QuantityInPurchaseOrderUnit": "10",
+            "PurchaseOrderQuantityUnit": "PC",
+        },
+        {
+            "SupplierInvoice": "5100000026",
+            "FiscalYear": "2017",
+            "SupplierInvoiceItem": "1",
+            "PurchaseOrder": "4500000041",
+            "PurchaseOrderItem": "10",
+            "QuantityInPurchaseOrderUnit": "3",
+            "PurchaseOrderQuantityUnit": "PC",
+        },
+    ]
+    steps["supplier_invoice_headers"] = [
+        {"SupplierInvoice": "5100000025", "FiscalYear": "2017", "SupplierInvoiceStatus": "5"},
+        {
+            "SupplierInvoice": "5100000026",
+            "FiscalYear": "2017",
+            "SupplierInvoiceStatus": "5",
+            "SupplierInvoiceIsCreditMemo": True,
+        },
+    ]
+
+    result = _evaluate_p2p(steps)
+    record = result["business_report"]["records"][0]
+
+    assert result["stages"]["goods_receipt"]["state"] == "confirmed"
+    assert result["stages"]["supplier_invoice"]["state"] == "confirmed"
+    assert record["net_received_quantity"] == "8"
+    assert record["net_invoiced_quantity"] == "7"
+    assert record["quantity_evidence_status"] == "complete"
+
+
+def test_p2p_quantity_unit_conflict_fails_quantity_conclusion_closed() -> None:
+    steps = _p2p_steps()
+    steps["material_documents"] = [
+        {
+            "PurchaseOrder": "4500000041",
+            "PurchaseOrderItem": "10",
+            "GoodsMovementType": "101",
+            "QuantityInEntryUnit": "10",
+            "EntryUnit": "KG",
+        }
+    ]
+
+    result = _evaluate_p2p(steps)
+
+    assert result["evidence_complete"] is False
+    assert result["stages"]["goods_receipt"]["state"] == "unknown"
+    assert result["business_report"]["records"][0]["quantity_evidence_status"] == "inconclusive"
 
 
 def test_p2p_grir_uses_signed_amounts_instead_of_iscleared() -> None:

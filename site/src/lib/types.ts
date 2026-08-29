@@ -45,16 +45,21 @@ export interface ExecutionInputProperty {
   "x-sapba-sap-identifier"?: boolean;
   minLength?: number;
   maxLength?: number;
+  minItems?: number;
+  maxItems?: number;
+  uniqueItems?: boolean;
   minimum?: number;
   maximum?: number;
   pattern?: string;
   format?: string;
   enum?: Array<string | number | boolean | null>;
+  const?: string | number | boolean | null;
   items?: ExecutionInputProperty;
   properties?: Record<string, ExecutionInputProperty>;
   required?: string[];
   additionalProperties?: boolean;
   deprecated?: boolean;
+  "x-sapba-workflow-only"?: boolean;
   "x-sapba-display"?: {
     visible?: boolean;
     format?: "text" | "enum" | "enum_list" | "status";
@@ -67,6 +72,11 @@ export interface ExecutionInputSchema {
   properties: Record<string, ExecutionInputProperty>;
   required?: string[];
   dependentRequired?: Record<string, string[]>;
+  oneOf?: Array<{
+    properties?: Record<string, Partial<ExecutionInputProperty>>;
+    required?: string[];
+    not?: { required?: string[] };
+  }>;
   additionalProperties?: boolean;
   dateRangePairs?: Array<{
     from: string;
@@ -100,8 +110,11 @@ export interface AgentValidation {
   summary: LocalizedText;
   reportPath: string;
   executable?: boolean;
+  acceptanceMode?: "three_stage" | "deterministic_runtime";
   caseId?: string;
-  baselineRuntime?: "codex_app_direct_sap";
+  baselineRuntime?: "codex_app_direct_sap" | "sapclaw_runtime";
+  runtimeCaseIds?: string[];
+  workflowRunIds?: string[];
   usedSapBusinessAgentsForBaseline?: false;
   codexDirectBaselineHash?: string;
   freeQueryHash?: string;
@@ -190,12 +203,20 @@ export interface WorkflowNodeDefinition {
   agentVersion?: string;
   agentDigest?: string;
   position?: { x: number; y: number };
+  forEach?: {
+    source: WorkflowSource;
+    groupBy?: Record<string, string>;
+    maxItems?: number;
+    maxConcurrency?: number;
+    onItemError?: "collect_inconclusive";
+  };
 }
 
 export interface WorkflowSource {
-  scope: "workflow_input" | "node_output" | "constant";
+  scope: "workflow_input" | "node_output" | "constant" | "iteration_item";
   nodeId?: string;
   port?: string;
+  pointer?: string;
   value?: unknown;
 }
 
@@ -206,7 +227,7 @@ export interface WorkflowConnectionDefinition {
 }
 
 export interface WorkflowDefinition {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   id: string;
   version: string;
   title: LocalizedText;
@@ -217,7 +238,16 @@ export interface WorkflowDefinition {
   outputSchema: ExecutionInputSchema;
   nodes: WorkflowNodeDefinition[];
   connections: WorkflowConnectionDefinition[];
-  outputs: Array<{ name: string; source: WorkflowSource; transform?: { type: string } }>;
+  outputs: Array<{
+    name: string;
+    source?: WorkflowSource;
+    transform?: { type: string };
+    aggregate?: {
+      operator: "status_precedence" | "all_true" | "collect";
+      sources: WorkflowSource[];
+      precedence?: string[];
+    };
+  }>;
   policies: { onInconclusive: "continue_if_required_outputs_present" };
 }
 

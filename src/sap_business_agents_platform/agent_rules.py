@@ -1634,73 +1634,301 @@ def _billing_dispute(inputs: JsonObject) -> JsonObject:
 
 
 def _ap_payment(inputs: JsonObject) -> JsonObject:
-    items = [
-        row
-        for row in _rows(inputs, "collect_ap_evidence", "supplier_items", "clearing_documents")
-        if str(row.get("FinancialAccountType") or "K") == "K"
-        and _truthy(row.get("IsOpenItemManaged"))
-    ]
-    cutoff = _date((inputs.get("run_input") or {}).get("as_of"))
-    open_items: list[JsonObject] = []
-    normalized_records: list[JsonObject] = []
-    for row in items:
-        clearing_date = _date(row.get("ClearingDate"))
-        if cutoff is None or clearing_date is None or clearing_date > cutoff:
-            open_items.append(row)
-            normalized_records.append(
-                {
-                    "company_code": str(row.get("CompanyCode") or ""),
-                    "fiscal_year": str(row.get("FiscalYear") or ""),
-                    "accounting_document": str(row.get("AccountingDocument") or ""),
-                    "accounting_document_item": str(row.get("AccountingDocumentItem") or ""),
-                    "ledger": str(row.get("Ledger") or ""),
-                    "posting_date": (
-                        _date(row.get("PostingDate")).isoformat()
-                        if _date(row.get("PostingDate")) is not None
-                        else ""
-                    ),
-                    "debit_credit": str(row.get("DebitCreditCode") or ""),
-                    "amount": str(row.get("AmountInTransactionCurrency") or ""),
-                    "currency": str(row.get("TransactionCurrency") or ""),
-                    "as_of_status": (
-                        "open_subsequently_cleared" if clearing_date is not None else "open"
-                    ),
-                    "clearing_date": clearing_date.isoformat() if clearing_date is not None else "",
-                    "clearing_document": str(row.get("ClearingAccountingDocument") or ""),
-                    "payment_evidence_status": "bank_settlement_not_proven",
-                }
-            )
-    blocked = [row for row in open_items if row.get("PaymentBlockingReason")]
-    gaps = _gaps(
-        inputs,
-        "bank_settlement_not_proven",
-        "payment_run_and_bank_master_evidence",
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    inferred_mode = "p2p_evidence" if run_input.get("ap_payment_scopes") else "direct"
+    query_mode = str(run_input.get("query_mode") or inferred_mode)
+    cutoff = _date(run_input.get("as_of"))
+    scopes = run_input.get("ap_payment_scopes") if query_mode == "p2p_evidence" else None
+    if query_mode == "p2p_evidence":
+        scopes = [dict(item) for item in scopes or [] if isinstance(item, dict)]
+        items = [
+            _ap_row_from_p2p(scope, row)
+            for scope in scopes
+            for row in scope.get("fi_supplier_items") or []
+            if isinstance(row, dict)
+        ]
+        source_complete = bool(scopes) and all(scope.get("source_complete") is True for scope in scopes)
+        evidence_complete = bool(scopes) and all(scope.get("evidence_complete") is True for scope in scopes)
+    else:
+        items = [
+            row
+            for row in _rows(inputs, "collect_ap_evidence", "supplier_items", "clearing_documents")
+            if str(row.get("FinancialAccountType") or "K").upper() == "K"
+            and _truthy(row.get("IsOpenItemManaged"))
+        ]
+        direct_scope_id = f"{run_input.get('company_code', '')}:{run_input.get('supplier', '')}"
+        items = [{**row, "ScopeID": direct_scope_id} for row in items]
+        scopes = [
+            {
+                "scope_id": direct_scope_id,
+                "company_code": str(run_input.get("company_code") or ""),
+                "supplier": str(run_input.get("supplier") or ""),
+                "purchase_orders": [],
+                "source_complete": _source_complete(inputs),
+                "evidence_complete": _source_complete(inputs),
+            }
+        ]
+        source_complete = _source_complete(inputs)
+        evidence_complete = source_complete
+
+    payment_run_evidence_complete = bool(scopes) and all(
+        scope.get("payment_run_evidence_complete") is True for scope in scopes
     )
-    return _result(
+    bank_master_evidence_complete = bool(scopes) and all(
+        scope.get("bank_master_evidence_complete") is True for scope in scopes
+    )
+    bank_settlement_evidence_complete = bool(scopes) and all(
+        scope.get("bank_settlement_evidence_complete") is True for scope in scopes
+    )
+
+    open_items: list[JsonObject] = []
+    records: list[JsonObject] = []
+    missing_due_date = 0
+    overdue = 0
+    due_now = 0
+    blocked = 0
+    discount_available = 0
+    for row in items:
+        posting_date = _date(row.get("PostingDate"))
+        clearing_date = _date(row.get("ClearingDate"))
+        if cutoff is not None and posting_date is not None and posting_date > cutoff:
+            continue
+        if cutoff is not None and clearing_date is not None and clearing_date <= cutoff:
+            continue
+        open_items.append(row)
+        due_date = _date(row.get("NetDueDate"))
+        discount_date = _date(row.get("CashDiscount1DueDate"))
+        payment_block = _text(row, "PaymentBlockingReason")
+        if due_date is None:
+            readiness = "unknown_due_date"
+            missing_due_date += 1
+        elif cutoff is not None and due_date < cutoff:
+            readiness = "overdue_blocked" if payment_block else "overdue_ready"
+            overdue += 1
+        elif cutoff is not None and due_date == cutoff:
+            readiness = "due_blocked" if payment_block else "due_ready"
+            due_now += 1
+        else:
+            readiness = "not_due"
+        if payment_block:
+            blocked += 1
+        if discount_date is not None and cutoff is not None and cutoff <= discount_date:
+            discount_available += 1
+        records.append(
+            {
+                "scope_id": _text(row, "ScopeID"),
+                "purchase_order": _text(row, "PurchasingDocument"),
+                "company_code": _text(row, "CompanyCode"),
+                "supplier": _text(row, "Supplier"),
+                "fiscal_year": _text(row, "FiscalYear"),
+                "accounting_document": _text(row, "AccountingDocument"),
+                "accounting_document_item": _text(row, "AccountingDocumentItem"),
+                "ledger": _text(row, "Ledger"),
+                "posting_date": posting_date.isoformat() if posting_date else "",
+                "net_due_date": due_date.isoformat() if due_date else "",
+                "cash_discount_due_date": discount_date.isoformat() if discount_date else "",
+                "debit_credit": _text(row, "DebitCreditCode"),
+                "amount": _text(row, "AmountInTransactionCurrency", "AmountInCompanyCodeCurrency"),
+                "currency": _text(row, "TransactionCurrency", "CompanyCodeCurrency"),
+                "payment_blocking_reason": payment_block,
+                "payment_readiness": readiness,
+                "as_of_status": "open_subsequently_cleared" if clearing_date else "open",
+                "clearing_date": clearing_date.isoformat() if clearing_date else "",
+                "clearing_document": _text(row, "ClearingAccountingDocument"),
+                "payment_evidence_status": "bank_settlement_not_proven",
+            }
+        )
+
+    duplicate_findings = _ap_duplicate_findings(records)
+    scope_results = _ap_scope_results(scopes, records, source_complete, evidence_complete)
+    if not source_complete or not evidence_complete or cutoff is None or missing_due_date:
+        business_status = "inconclusive"
+    elif blocked or duplicate_findings:
+        business_status = "blocked"
+    elif open_items:
+        business_status = "in_progress"
+    else:
+        business_status = "complete"
+    gaps = _gaps(inputs, "bank_settlement_not_proven", "payment_run_and_bank_master_evidence")
+    if missing_due_date:
+        gaps.append("net_due_date_evidence")
+    result = _result(
         inputs,
-        business_status="attention" if open_items else "partial",
-        headline_zh=f"发现 {len(open_items)} 条供应商未清项，其中 {len(blocked)} 条存在付款冻结",
-        headline_en=f"Found {len(open_items)} supplier open item(s), including {len(blocked)} payment-blocked item(s)",
-        overview_zh="已检查未清、到期、冻结和清账证据；当前不包含完整付款运行和银行主数据。",
-        overview_en="Open, due, blocked, and clearing evidence was checked; complete payment-run and bank-master evidence is not included.",
-        stages=[_stage("supplier_items", "供应商行项目", "Supplier items", len(items)), _stage("payment_run", "付款运行与银行证据", "Payment run and bank evidence", 0, state="unknown")],
-        metrics=[{"id": "open_items", "value": len(open_items)}, {"id": "payment_blocked", "value": len(blocked)}],
-        gaps=gaps,
-        records=normalized_records,
+        business_status=business_status,
+        headline_zh=f"发现 {len(open_items)} 条截止日未清项，其中 {blocked} 条付款冻结、{overdue} 条逾期",
+        headline_en=f"Found {len(open_items)} open item(s) at the cutoff, including {blocked} payment-blocked and {overdue} overdue item(s)",
+        overview_zh="已分别核验截止日未清状态、SAP净到期日、付款冻结、现金折扣和重复候选；付款运行、银行主数据及实际扣款仍是独立证据。",
+        overview_en="As-of open status, SAP net due date, payment blocks, cash discounts, and duplicate candidates were checked separately; payment-run, bank-master, and actual-debit evidence remain independent.",
+        stages=[
+            _stage("supplier_items", "供应商行项目", "Supplier items", len(items), state="confirmed" if source_complete else "unknown"),
+            _stage("payment_readiness", "付款准备度", "Payment readiness", len(open_items), state="unknown" if missing_due_date else "confirmed"),
+            _stage("payment_run", "付款运行与银行证据", "Payment run and bank evidence", 0, state="unknown"),
+        ],
+        findings=duplicate_findings,
+        metrics=[
+            {"id": "open_items", "value": len(open_items)},
+            {"id": "payment_blocked", "value": blocked},
+            {"id": "overdue_items", "value": overdue},
+            {"id": "due_today", "value": due_now},
+            {"id": "cash_discount_available", "value": discount_available},
+            {"id": "duplicate_candidates", "value": len(duplicate_findings)},
+        ],
+        gaps=sorted(set(gaps)),
+        records=records,
+        preserve_business_status_on_gap=True,
+        source_complete_override=source_complete,
         record_columns=[
+            {"key": "purchase_order", "label": {"zh": "采购订单", "en": "Purchase order"}},
             {"key": "accounting_document", "label": {"zh": "会计凭证", "en": "Accounting document"}},
-            {"key": "accounting_document_item", "label": {"zh": "行项目", "en": "Item"}},
-            {"key": "posting_date", "label": {"zh": "过账日期", "en": "Posting date"}, "format": "date"},
-            {"key": "debit_credit", "label": {"zh": "借贷方向", "en": "Debit/Credit"}},
+            {"key": "net_due_date", "label": {"zh": "净到期日", "en": "Net due date"}, "format": "date"},
+            {"key": "payment_blocking_reason", "label": {"zh": "付款冻结", "en": "Payment block"}},
             {"key": "amount", "label": {"zh": "金额", "en": "Amount"}, "format": "decimal"},
             {"key": "currency", "label": {"zh": "币种", "en": "Currency"}},
-            {"key": "as_of_status", "label": {"zh": "截止日状态", "en": "As-of status"}, "format": "status"},
-            {"key": "clearing_document", "label": {"zh": "当前清账凭证", "en": "Current clearing document"}},
+            {"key": "payment_readiness", "label": {"zh": "付款准备度", "en": "Payment readiness"}, "format": "status"},
             {"key": "payment_evidence_status", "label": {"zh": "付款证据", "en": "Payment evidence"}, "format": "status"},
         ],
-        actions_zh=["由应付人员复核到期日、付款冻结和付款运行。"],
-        actions_en=["Have AP review due dates, payment blocks, and the payment run."],
+        actions_zh=["按到期日、付款冻结和重复候选复核付款清单；银行证据缺失时不得判断已实际扣款。"],
+        actions_en=["Review the payment list by due date, payment block, and duplicate candidates; do not claim an actual bank debit without bank evidence."],
     )
+    result["evidence_complete"] = evidence_complete
+    result["payment_run_evidence_complete"] = payment_run_evidence_complete
+    result["bank_master_evidence_complete"] = bank_master_evidence_complete
+    result["bank_settlement_evidence_complete"] = bank_settlement_evidence_complete
+    result["scope_results"] = scope_results
+    scalar_company_code = str(run_input.get("company_code") or "")
+    scalar_supplier = str(run_input.get("supplier") or "")
+    if query_mode == "p2p_evidence" and len(scope_results) == 1:
+        scalar_company_code = str(scope_results[0].get("company_code") or "")
+        scalar_supplier = str(scope_results[0].get("supplier") or "")
+    result["workflow_output"] = {
+        "query_mode": query_mode,
+        "company_code": scalar_company_code,
+        "supplier": scalar_supplier,
+        "as_of": str(run_input.get("as_of") or ""),
+        "scope_results": scope_results,
+        "business_status": business_status,
+        "source_complete": source_complete,
+        "evidence_complete": evidence_complete,
+        "payment_run_evidence_complete": payment_run_evidence_complete,
+        "bank_master_evidence_complete": bank_master_evidence_complete,
+        "bank_settlement_evidence_complete": bank_settlement_evidence_complete,
+        "bank_settlement_status": "not_assessed",
+        "business_report": result["business_report"],
+    }
+    return result
+
+
+def _ap_row_from_p2p(scope: JsonObject, row: JsonObject) -> JsonObject:
+    return {
+        "ScopeID": _text(scope, "scope_id"),
+        "CompanyCode": _text(row, "company_code") or _text(scope, "company_code"),
+        "Supplier": _text(row, "supplier") or _text(scope, "supplier"),
+        "PurchasingDocument": _text(row, "purchase_order"),
+        "PurchasingDocumentItem": _text(row, "purchase_order_item"),
+        "FiscalYear": _text(row, "fiscal_year"),
+        "AccountingDocument": _text(row, "accounting_document"),
+        "AccountingDocumentItem": _text(row, "accounting_document_item"),
+        "OriginalReferenceDocument": _text(row, "original_reference_document"),
+        "FinancialAccountType": "K",
+        "IsOpenItemManaged": True,
+        "PostingDate": _text(row, "posting_date"),
+        "NetDueDate": _text(row, "net_due_date"),
+        "CashDiscount1DueDate": _text(row, "cash_discount_due_date"),
+        "PaymentBlockingReason": _text(row, "payment_blocking_reason"),
+        "AmountInTransactionCurrency": _text(row, "amount"),
+        "TransactionCurrency": _text(row, "currency"),
+        "IsCleared": bool(row.get("is_cleared")),
+        "ClearingAccountingDocument": _text(row, "clearing_document"),
+        "ClearingDocFiscalYear": _text(row, "clearing_fiscal_year"),
+        "ClearingDate": _text(row, "clearing_date"),
+        "PaymentMethod": _text(row, "payment_method"),
+        "ClearingDocumentType": _text(row, "clearing_document_type"),
+        "PaymentDocumentStatus": _text(row, "payment_document_status"),
+    }
+
+
+def _ap_duplicate_findings(records: list[JsonObject]) -> list[JsonObject]:
+    groups: dict[tuple[str, str, str], list[JsonObject]] = {}
+    for row in records:
+        amount = _strict_decimal(row.get("amount"))
+        key = (_text(row, "supplier"), str(abs(amount)) if amount is not None else "", _text(row, "currency"))
+        if all(key):
+            groups.setdefault(key, []).append(row)
+    findings: list[JsonObject] = []
+    for (supplier, amount, currency), rows in groups.items():
+        documents = list(dict.fromkeys(_text(row, "accounting_document") for row in rows if _text(row, "accounting_document")))
+        dates = [_date(row.get("posting_date")) for row in rows]
+        valid_dates = [item for item in dates if item is not None]
+        if len(documents) < 2 or len(valid_dates) != len(rows):
+            continue
+        if (max(valid_dates) - min(valid_dates)).days > 7:
+            continue
+        findings.append(
+            {
+                "rule_id": "POTENTIAL_DUPLICATE_PAYMENT",
+                "severity": "high",
+                "status": "candidate",
+                "explanation": {
+                    "zh": f"供应商 {supplier} 存在 {len(documents)} 张金额和币种相同、过账日期相近的未清凭证。",
+                    "en": f"Supplier {supplier} has {len(documents)} open documents with the same amount and currency posted within seven days.",
+                },
+                "evidence": {"documents": documents, "amount": amount, "currency": currency},
+            }
+        )
+    return findings
+
+
+def _ap_scope_results(
+    scopes: list[JsonObject],
+    records: list[JsonObject],
+    source_complete: bool,
+    evidence_complete: bool,
+) -> list[JsonObject]:
+    results: list[JsonObject] = []
+    for scope in scopes:
+        scope_id = _text(scope, "scope_id")
+        company_code = _text(scope, "company_code")
+        supplier = _text(scope, "supplier")
+        scoped = [
+            row
+            for row in records
+            if (not scope_id or _text(row, "scope_id") == scope_id)
+            and (not company_code or _text(row, "company_code") == company_code)
+            and (not supplier or _text(row, "supplier") == supplier)
+        ]
+        blocked = sum(bool(_text(row, "payment_blocking_reason")) for row in scoped)
+        unknown = any(_text(row, "payment_readiness") == "unknown_due_date" for row in scoped)
+        status = (
+            "inconclusive"
+            if unknown or not source_complete or not evidence_complete
+            else "blocked"
+            if blocked
+            else "in_progress"
+            if scoped
+            else "complete"
+            if scope.get("fi_supplier_items")
+            else "in_progress"
+            if scope.get("purchase_orders")
+            else "complete"
+        )
+        results.append(
+            {
+                "scope_id": scope_id,
+                "company_code": company_code,
+                "supplier": supplier,
+                "purchase_orders": list(scope.get("purchase_orders") or []),
+                "business_status": status,
+                "open_item_count": len(scoped),
+                "payment_blocked_count": blocked,
+                "source_complete": bool(scope.get("source_complete", source_complete)),
+                "evidence_complete": bool(scope.get("evidence_complete", evidence_complete)),
+                "payment_run_evidence_complete": scope.get("payment_run_evidence_complete") is True,
+                "bank_master_evidence_complete": scope.get("bank_master_evidence_complete") is True,
+                "bank_settlement_evidence_complete": scope.get("bank_settlement_evidence_complete") is True,
+                "bank_settlement_status": "not_assessed",
+            }
+        )
+    return results
 
 
 def _ar_collection(inputs: JsonObject) -> JsonObject:

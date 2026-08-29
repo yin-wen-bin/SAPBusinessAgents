@@ -1,4 +1,9 @@
-"""Explainable AP payment risk rules."""
+"""Legacy fixture-only AP rules.
+
+The executable AP Agent uses ``sap_business_agents_platform.agent_rules`` as
+its single production rule implementation.  This module remains only for the
+standalone mock CLI regression suite and must not be used for live SAP facts.
+"""
 
 from __future__ import annotations
 

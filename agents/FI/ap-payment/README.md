@@ -1,6 +1,8 @@
 # AP Payment Assistant
 
-供应商付款状态查询与付款风险检查的可运行纵向切片。实现完全位于 `agents/FI/ap-payment/`，不依赖或改写其他 Agent。
+> 说明：本目录下的 `ap_payment_assistant` Python 包是历史 fixture/CLI 回归工具，不是网站或工作流调用的生产规则引擎。AP 0.2.0 唯一的生产规则实现位于 `src/sap_business_agents_platform/agent_rules.py`，重复候选、逾期、到期、现金折扣、付款冻结和证据完整性均由该实现统一计算。历史包不再作为真实 SAP 结论来源，尤其不得用其 mock 银行数据判断实际付款或“无风险”。
+
+供应商付款状态查询与付款风险检查的本地 fixture 纵向切片。实现完全位于 `agents/FI/ap-payment/`，用于保留意图解析和展示兼容回归。
 
 支持的问题包括：
 
@@ -9,9 +11,9 @@
 - “发票 INV-PAID-001 付款了吗？”
 - “检查供应商 10001234 的付款风险”
 
-当前实现使用可替换的 JSON mock。业务逻辑不依赖具体 SAP SDK，接入真实 SAP 时只需实现 `SapApDataAdapter`。
+当前工具只使用 JSON mock。真实 SAP 接入必须走 Agent manifest、平台生产规则和 GET-only Provider，不应通过实现 `SapApDataAdapter` 把这个历史 CLI 重新接入生产。
 
-## 快速运行
+## Fixture 回归运行
 
 在 PowerShell 中：
 

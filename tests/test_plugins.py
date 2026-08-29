@@ -500,3 +500,91 @@ def test_embedded_provider_bounds_parallel_binding_chunks(tmp_path: Path) -> Non
 
     assert result["source_complete"] is True
     assert provider.max_active_chunks == 4
+
+
+def test_embedded_provider_splits_fifty_literal_in_values_into_five_stable_chunks(
+    tmp_path: Path,
+) -> None:
+    entity_filters: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/$metadata"):
+            return httpx.Response(200, text=_METADATA)
+        expression = request.url.params["$filter"]
+        entity_filters.append(expression)
+        values = re.findall(r"OrderID eq '([^']+)'", expression)
+        return httpx.Response(
+            200,
+            json={"d": {"results": [{"OrderID": value, "Amount": value} for value in values]}},
+        )
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        transport=httpx.MockTransport(handler),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
+    )
+    values = [str(index) for index in range(1, 51)]
+    result = asyncio.run(
+        provider.execute_plan(
+            {
+                "service_name": "API_TEST_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_Order",
+                "http_method": "GET",
+                "select_fields": ["OrderID", "Amount"],
+                "filters": [
+                    {
+                        "field": "OrderID",
+                        "operator": "in",
+                        "value": values,
+                        "value_type": "string",
+                        "chunk_size": 10,
+                    }
+                ],
+                "max_concurrent_chunks": 4,
+                "order_by": ["OrderID"],
+            }
+        )
+    )
+
+    assert result["source_complete"] is True
+    assert len(entity_filters) == 5
+    assert all(len(re.findall(r"OrderID eq", expression)) == 10 for expression in entity_filters)
+    assert [row["OrderID"] for row in result["data"]["results"]] == values
+
+
+def test_embedded_provider_rejects_multiple_literal_chunk_filters(tmp_path: Path) -> None:
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=_METADATA)
+            if request.url.path.endswith("/$metadata")
+            else httpx.Response(500)
+        ),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
+    )
+    validation = asyncio.run(
+        provider.validate_plan(
+            {
+                "service_name": "API_TEST_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_Order",
+                "http_method": "GET",
+                "select_fields": ["OrderID", "Amount"],
+                "filters": [
+                    {"field": "OrderID", "operator": "in", "value": ["1", "2"], "chunk_size": 1},
+                    {"field": "Amount", "operator": "in", "value": ["1", "2"], "chunk_size": 1},
+                ],
+            }
+        )
+    )
+
+    assert validation["ok"] is False
+    assert any(
+        issue["code"] == "multiple_chunked_filters_not_supported"
+        for issue in validation["validation_issues"]
+    )

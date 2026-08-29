@@ -245,7 +245,7 @@ test("P2P detail page renders the complete bilingual API workflow", async () => 
   assert.match(zh, /API_MATERIAL_DOCUMENT_SRV/);
   assert.match(zh, /API_SUPPLIERINVOICE_PROCESS_SRV/);
   assert.match(zh, /API_OPLACCTGDOCITEMCUBE_SRV/);
-  assert.match(zh, /three-stage-live-acceptance\.md/);
+  assert.match(zh, /multi-po-runtime-live-acceptance\.md/);
   assert.match(zh, /执行这个 Agent/);
   assert.match(zh, /purchase_order/);
 
@@ -253,5 +253,5 @@ test("P2P detail page renders the complete bilingual API workflow", async () => 
   assert.equal((en.match(/class="step-operations"/g) ?? []).length, manifest.execution.steps.length);
   assert.match(en, /Detailed operations/);
   assert.match(en, /APIs, SAPSkills &amp; tools used at this step/);
-  assert.match(en, /three-stage-live-acceptance\.md/);
+  assert.match(en, /multi-po-runtime-live-acceptance\.md/);
 });

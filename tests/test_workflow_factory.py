@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import time
 import subprocess
 from dataclasses import replace
@@ -43,6 +44,15 @@ class WorkflowSapProvider:
         del query, conversation_id
         entity = plan.get("entity_set")
         if entity == "A_PurchaseOrder" and plan.get("plan_kind") == "multi_step":
+            invoice_key = {
+                "CompanyCode": "1010",
+                "FiscalYear": "2026",
+                "AccountingDocument": "5100000001",
+                "AccountingDocumentItem": "1",
+                "AccountingDocumentType": "RE",
+                "PurchasingDocument": "4500000001",
+                "PurchasingDocumentItem": "10",
+            }
             step_results = {
                 "purchase_order": {
                     "results": [{"PurchaseOrder": "4500000001", "CompanyCode": "1010", "Supplier": "1000123"}],
@@ -50,13 +60,19 @@ class WorkflowSapProvider:
                 },
                 "purchase_order_items": {"results": [{"PurchaseOrder": "4500000001"}], "source_complete": True},
                 "material_documents": {"results": [{"PurchaseOrder": "4500000001", "GoodsMovementType": "101"}], "source_complete": True},
-                "supplier_invoice_items": {"results": [{"PurchaseOrder": "4500000001"}], "source_complete": True},
+                "material_document_headers": {"results": [], "source_complete": True},
+                "supplier_invoice_items": {"results": [{"PurchaseOrder": "4500000001", "SupplierInvoice": "5100000001", "FiscalYear": "2026"}], "source_complete": True},
+                "supplier_invoice_headers": {"results": [{"SupplierInvoice": "5100000001", "FiscalYear": "2026"}], "source_complete": True},
                 "accounting_items": {
-                    "results": [{"CompanyCode": "1010", "Supplier": "1000123", "IsCleared": True, "ClearingAccountingDocument": "9", "ClearingDocFiscalYear": "2026"}],
+                    "results": [invoice_key],
+                    "source_complete": True,
+                },
+                "full_accounting_documents": {
+                    "results": [{**invoice_key, "FinancialAccountType": "K", "Supplier": "1000123", "PostingDate": "2026-08-01", "NetDueDate": "2026-08-31", "AmountInTransactionCurrency": "100.00", "TransactionCurrency": "CNY", "IsCleared": True, "ClearingAccountingDocument": "9", "ClearingDocFiscalYear": "2026", "ClearingDate": "2026-08-15"}],
                     "source_complete": True,
                 },
                 "clearing_documents": {
-                    "results": [{"CompanyCode": "1010", "Supplier": "1000123", "AccountingDocumentType": "ZP", "HouseBank": "HB1", "PaymentMethod": "T"}],
+                    "results": [{"CompanyCode": "1010", "FiscalYear": "2026", "AccountingDocument": "9", "Supplier": "1000123", "AccountingDocumentType": "ZP", "HouseBank": "HB1", "PaymentMethod": "T"}],
                     "source_complete": True,
                 },
             }
@@ -132,7 +148,7 @@ def _p2p_ap_workflow() -> dict[str, Any]:
     p2p = agents.get("procure-to-pay-status")
     ap = agents.get("ap-payment")
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "id": "p2p-payment-review",
         "version": "0.1.0",
         "title": {"zh": "采购到付款复核", "en": "P2P payment review"},
@@ -142,10 +158,16 @@ def _p2p_ap_workflow() -> dict[str, Any]:
         "inputSchema": {
             "type": "object",
             "properties": {
-                "purchase_order": {"type": "string", "pattern": "^[0-9]+$"},
+                "purchase_orders": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": True,
+                    "items": {"type": "string", "pattern": "^[0-9]{1,10}$"},
+                },
                 "as_of": {"type": "string", "format": "date"},
             },
-            "required": ["purchase_order", "as_of"],
+            "required": ["purchase_orders", "as_of"],
             "additionalProperties": False,
         },
         "outputSchema": {
@@ -162,9 +184,8 @@ def _p2p_ap_workflow() -> dict[str, Any]:
             {"id": "ap", "agentId": ap["slug"], "agentVersion": ap["version"], "agentDigest": agent_digest(ap)},
         ],
         "connections": [
-            {"from": {"scope": "workflow_input", "port": "purchase_order"}, "to": {"nodeId": "p2p", "port": "purchase_order"}, "transform": {"type": "identity"}},
-            {"from": {"scope": "node_output", "nodeId": "p2p", "port": "company_code"}, "to": {"nodeId": "ap", "port": "company_code"}, "transform": {"type": "identity"}},
-            {"from": {"scope": "node_output", "nodeId": "p2p", "port": "supplier"}, "to": {"nodeId": "ap", "port": "supplier"}, "transform": {"type": "identity"}},
+            {"from": {"scope": "workflow_input", "port": "purchase_orders"}, "to": {"nodeId": "p2p", "port": "purchase_orders"}, "transform": {"type": "identity"}},
+            {"from": {"scope": "node_output", "nodeId": "p2p", "port": "ap_payment_scopes"}, "to": {"nodeId": "ap", "port": "ap_payment_scopes"}, "transform": {"type": "identity"}},
             {"from": {"scope": "workflow_input", "port": "as_of"}, "to": {"nodeId": "ap", "port": "as_of"}, "transform": {"type": "identity"}},
         ],
         "outputs": [
@@ -251,7 +272,7 @@ def test_workflow_schema_validates_ports_order_and_cycles() -> None:
     validate_workflow(workflow, agents)
     assert topological_order(workflow) == ["p2p", "ap"]
     workflow["connections"].append(
-        {"from": {"scope": "node_output", "nodeId": "ap", "port": "company_code"}, "to": {"nodeId": "p2p", "port": "purchase_order"}, "transform": {"type": "identity"}}
+        {"from": {"scope": "node_output", "nodeId": "ap", "port": "company_code"}, "to": {"nodeId": "p2p", "port": "purchase_orders"}, "transform": {"type": "identity"}}
     )
     try:
         validate_workflow(workflow, agents)
@@ -259,6 +280,154 @@ def test_workflow_schema_validates_ports_order_and_cycles() -> None:
         pass
     else:
         raise AssertionError("Cycle or duplicate target mapping should be rejected")
+
+
+def test_workflow_v2_foreach_grouping_and_aggregates_execute_in_stable_order(
+    tmp_path: Path,
+) -> None:
+    workflow = _p2p_ap_foreach_workflow()
+    agents = AgentRepository(Path(__file__).resolve().parents[1] / "agents")
+    validate_workflow(workflow, agents)
+    assert topological_order(workflow) == ["p2p", "ap"]
+
+    app = create_app(
+        _settings(tmp_path),
+        planner=WorkflowPlanner(),
+        embedded_provider=WorkflowSapProvider(),
+    )
+    with TestClient(app) as client:
+        created = client.post("/api/authoring/workflows", json={"workflow": workflow})
+        assert created.status_code == 201, created.text
+        validation = client.post(
+            f"/api/authoring/workflows/{created.json()['draft_id']}/validate",
+            json={
+                "autoDiscover": False,
+                "input": {"purchase_orders": ["4500000001"], "as_of": "2026-08-17"},
+            },
+        )
+        assert validation.status_code == 202, validation.text
+        run = _wait(client, validation.json()["validation_run_id"])
+        assert run["status"] == "inconclusive"
+        foreach_result = run["result"]["node_results"][1]
+        assert foreach_result["iterations"][0]["iteration_index"] == 0
+        assert foreach_result["iterations"][0]["input"]["ap_payment_scopes"][0][
+            "scope_id"
+        ] == "1010:1000123"
+        assert run["result"]["workflow_output"] == {
+            "payment_status": "complete",
+            "source_complete": True,
+            "evidence_complete": True,
+            "scope_results": [
+                {
+                    "scope_id": "1010:1000123",
+                    "company_code": "1010",
+                    "supplier": "1000123",
+                    "purchase_orders": ["4500000001"],
+                    "business_status": "complete",
+                    "open_item_count": 0,
+                    "payment_blocked_count": 0,
+                        "source_complete": True,
+                        "evidence_complete": True,
+                        "payment_run_evidence_complete": False,
+                        "bank_master_evidence_complete": False,
+                        "bank_settlement_evidence_complete": False,
+                        "bank_settlement_status": "not_assessed",
+                }
+            ],
+        }
+        child_runs = [
+            item
+            for item in client.get("/api/runs").json()
+            if item["parent_run_id"] == run["run_id"] and item["node_id"] == "ap"
+        ]
+        assert len(child_runs) == 1
+
+
+def _p2p_ap_foreach_workflow() -> dict[str, Any]:
+    workflow = deepcopy(_p2p_ap_workflow())
+    workflow["id"] = "p2p-payment-review-foreach"
+    workflow["nodes"][1]["forEach"] = {
+        "source": {
+            "scope": "node_output",
+            "nodeId": "p2p",
+            "port": "ap_payment_scopes",
+        },
+        "groupBy": {
+            "company_code": "/company_code",
+            "supplier": "/supplier",
+        },
+        "maxItems": 50,
+        "maxConcurrency": 4,
+        "onItemError": "collect_inconclusive",
+    }
+    workflow["connections"] = [
+        workflow["connections"][0],
+        {
+            "from": {"scope": "iteration_item", "pointer": "/items"},
+            "to": {"nodeId": "ap", "port": "ap_payment_scopes"},
+            "transform": {"type": "identity"},
+        },
+        workflow["connections"][-1],
+    ]
+    workflow["outputSchema"] = {
+        "type": "object",
+        "properties": {
+            "payment_status": {
+                "type": "string",
+                "enum": ["inconclusive", "blocked", "in_progress", "complete"],
+            },
+            "source_complete": {"type": "boolean"},
+            "evidence_complete": {"type": "boolean"},
+            "scope_results": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": [
+            "payment_status",
+            "source_complete",
+            "evidence_complete",
+            "scope_results",
+        ],
+        "additionalProperties": False,
+    }
+    workflow["outputs"] = [
+        {
+            "name": "payment_status",
+            "aggregate": {
+                "operator": "status_precedence",
+                "sources": [
+                    {"scope": "node_output", "nodeId": "ap", "port": "business_status"}
+                ],
+                "precedence": ["inconclusive", "blocked", "in_progress", "complete"],
+            },
+        },
+        {
+            "name": "source_complete",
+            "aggregate": {
+                "operator": "all_true",
+                "sources": [
+                    {"scope": "node_output", "nodeId": "ap", "port": "source_complete"}
+                ],
+            },
+        },
+        {
+            "name": "evidence_complete",
+            "aggregate": {
+                "operator": "all_true",
+                "sources": [
+                    {"scope": "node_output", "nodeId": "ap", "port": "evidence_complete"}
+                ],
+            },
+        },
+        {
+            "name": "scope_results",
+            "aggregate": {
+                "operator": "collect",
+                "sources": [
+                    {"scope": "node_output", "nodeId": "ap", "port": "scope_results"}
+                ],
+            },
+        },
+    ]
+    return workflow
 
 
 def test_workflow_allows_unmapped_required_inputs_with_server_defaults_only() -> None:
@@ -362,7 +531,7 @@ def test_workflow_draft_live_validation_executes_pinned_agents_without_codex_run
             f"/api/authoring/workflows/{draft['draft_id']}/validate",
             json={
                 "autoDiscover": False,
-                "input": {"purchase_order": "4500000001", "as_of": "2026-08-17"},
+                "input": {"purchase_orders": ["4500000001"], "as_of": "2026-08-17"},
             },
         )
         assert validation.status_code == 202, validation.text
@@ -373,15 +542,11 @@ def test_workflow_draft_live_validation_executes_pinned_agents_without_codex_run
             "procure-to-pay-status",
             "ap-payment",
         ]
-        assert run["result"]["node_results"][1]["input"] == {
-            "company_code": "1010",
-            "supplier": "1000123",
-            "as_of": "2026-08-17",
-        }
-        assert run["result"]["workflow_output"]["payment_status"] in {
-            "attention",
-            "capability_blocked",
-        }
+        ap_input = run["result"]["node_results"][1]["input"]
+        assert ap_input["as_of"] == "2026-08-17"
+        assert ap_input["ap_payment_scopes"][0]["scope_id"] == "1010:1000123"
+        assert ap_input["ap_payment_scopes"][0]["purchase_orders"] == ["4500000001"]
+        assert run["result"]["workflow_output"]["payment_status"] == "complete"
         events = [item.type for item in app.state.store.events_after(run_id)]
         assert "workflow_started" in events
         assert "node_inconclusive" in events
@@ -467,7 +632,7 @@ def test_validated_workflow_publishes_to_new_local_branch_with_revision(tmp_path
         created = client.post("/api/authoring/workflows", json={"workflow": _p2p_ap_workflow()}).json()
         validation = client.post(
             f"/api/authoring/workflows/{created['draft_id']}/validate",
-            json={"autoDiscover": False, "input": {"purchase_order": "4500000001", "as_of": "2026-08-17"}},
+            json={"autoDiscover": False, "input": {"purchase_orders": ["4500000001"], "as_of": "2026-08-17"}},
         )
         _wait(client, validation.json()["validation_run_id"])
         settled = _wait_draft(client, created["draft_id"])
