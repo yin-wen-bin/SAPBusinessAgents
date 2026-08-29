@@ -23,10 +23,13 @@ from sap_business_agents_platform.models import (
     LocalizedText,
     PlannerDecision,
     PresentationBlock,
+    PresentationColumn,
+    PresentationRow,
     RunCreate,
     RunMode,
     RunPresentation,
     RunResult,
+    RunStatus,
 )
 from sap_business_agents_platform.skills import SkillError, SkillRegistry
 
@@ -55,6 +58,98 @@ def test_validate_input_enforces_string_length_and_pattern() -> None:
             pass
         else:
             raise AssertionError(f"Expected invalid sales-order input to be rejected: {invalid}")
+
+
+def test_presentation_table_endpoint_pages_persisted_records_beyond_inline_limit(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    run_id = "run_presentation_paging"
+    app.state.store.create_run(
+        run_id,
+        RunCreate(mode=RunMode.agent, agentId="ap-payment", input={}),
+    )
+    records = [
+        {
+            "accounting_document": f"DOC{index:04d}",
+            "amount": str(index),
+            "supplier_bank_account": "must-not-be-projected",
+        }
+        for index in range(207)
+    ]
+    columns = [
+        PresentationColumn(
+            key="accounting_document",
+            label=LocalizedText(zh="会计凭证", en="Accounting document"),
+        ),
+        PresentationColumn(
+            key="amount",
+            label=LocalizedText(zh="金额", en="Amount"),
+            format="decimal",
+        ),
+    ]
+    result = RunResult(
+        run_id=run_id,
+        mode=RunMode.agent,
+        agent_id="ap-payment",
+        rule_results=[
+            {
+                "rule_id": "pageable_records",
+                "business_report": {
+                    "records": records,
+                    "record_columns": [
+                        {"key": "accounting_document"},
+                        {"key": "amount", "format": "decimal"},
+                    ],
+                },
+            }
+        ],
+        presentation=RunPresentation(
+            title=LocalizedText(zh="供应商未清项", en="Supplier open items"),
+            blocks=[
+                PresentationBlock(
+                    type="table",
+                    title=LocalizedText(zh="业务记录", en="Business records"),
+                    columns=columns,
+                    rows=[
+                        PresentationRow(
+                            values=[
+                                LocalizedText(
+                                    zh=record["accounting_document"],
+                                    en=record["accounting_document"],
+                                ),
+                                LocalizedText(zh=record["amount"], en=record["amount"]),
+                            ]
+                        )
+                        for record in records[:200]
+                    ],
+                    total_rows=len(records),
+                )
+            ],
+        ),
+    )
+    app.state.store.update_run(
+        run_id,
+        status=RunStatus.completed,
+        result_json=result.model_dump(mode="json"),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/runs/{run_id}/presentation/blocks/0/rows",
+            params={"offset": 200, "limit": 20},
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_rows"] == 207
+    assert payload["has_next"] is False
+    assert len(payload["rows"]) == 7
+    assert payload["rows"][0]["values"][0]["zh"] == "DOC0200"
+    assert "must-not-be-projected" not in response.text
 
 
 def test_p2p_multi_po_contract_accepts_one_to_fifty_unique_numeric_strings() -> None:

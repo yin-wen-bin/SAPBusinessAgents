@@ -3750,6 +3750,120 @@ def _default_presentation(
     return RunPresentation(schema_version="1.0", title=title, blocks=blocks)
 
 
+def presentation_table_page(
+    result: RunResult,
+    block_index: int,
+    *,
+    offset: int,
+    limit: int,
+    output_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a projected page for a truncated deterministic presentation table.
+
+    Persisted presentations intentionally keep at most 200 rows.  The complete
+    deterministic records remain in the business report, so pages can be rebuilt
+    without re-running SAP or exposing fields that are not declared by the table.
+    """
+    if result.presentation is None:
+        raise ValueError("Run result has no presentation.")
+    if block_index < 0 or block_index >= len(result.presentation.blocks):
+        raise ValueError("Presentation block was not found.")
+    block = result.presentation.blocks[block_index]
+    if block.type != "table":
+        raise ValueError("Presentation block is not a table.")
+    report = _find_business_report(result.rule_results)
+    if report is None:
+        raise ValueError("Run result has no pageable business report.")
+    source_kind, records = _presentation_table_records(report, block)
+    total_rows = len(records)
+    page_records = records[offset : offset + limit]
+    rows = [
+        PresentationRow(
+            values=[
+                _presentation_value(
+                    record.get(column.key),
+                    column.format,
+                    (
+                        _output_property_schema(output_schema, column.key)
+                        if source_kind == "records"
+                        else None
+                    ),
+                )
+                for column in block.columns
+            ],
+            evidence_refs=[
+                str(ref)
+                for ref in record.get("_evidence_refs") or []
+                if str(ref)
+            ],
+        )
+        for record in page_records
+    ]
+    return {
+        "block_index": block_index,
+        "offset": offset,
+        "limit": limit,
+        "rows": [row.model_dump(mode="json") for row in rows],
+        "total_rows": total_rows,
+        "has_next": offset + len(rows) < total_rows,
+    }
+
+
+def _presentation_table_records(
+    report: dict[str, Any], block: PresentationBlock
+) -> tuple[str, list[dict[str, Any]]]:
+    block_title = block.title or LocalizedText(zh="", en="")
+    block_titles = {block_title.zh.strip(), block_title.en.strip()} - {""}
+    block_keys = [column.key for column in block.columns]
+    records = [item for item in report.get("records") or [] if isinstance(item, dict)]
+    record_columns = [
+        str(item.get("key") or "")
+        for item in report.get("record_columns") or []
+        if isinstance(item, dict) and str(item.get("key") or "")
+    ]
+    business_record_titles = {"业务记录", "Business record", "Business records"}
+    if records and (
+        block_titles & business_record_titles
+        or (
+            len(records) == block.total_rows
+            and block_keys
+            and [key for key in record_columns if key in block_keys] == block_keys
+        )
+    ):
+        return "records", records
+
+    candidates: list[tuple[str, list[dict[str, Any]]]] = []
+    for source_name in ("action_tables", "evidence_tables"):
+        for table_index, table in enumerate(report.get(source_name) or []):
+            if not isinstance(table, dict):
+                continue
+            table_records = [
+                item for item in table.get("rows") or [] if isinstance(item, dict)
+            ]
+            table_keys = [
+                str(item.get("key") or "")
+                for item in table.get("columns") or []
+                if isinstance(item, dict) and str(item.get("key") or "")
+            ]
+            table_title = _text_pair(
+                table.get("title"),
+                str(table.get("id") or f"{source_name}_{table_index + 1}"),
+            )
+            title_matches = bool(
+                block_titles & {table_title.zh.strip(), table_title.en.strip()}
+            )
+            shape_matches = (
+                len(table_records) == block.total_rows and table_keys == block_keys
+            )
+            if table_records and title_matches and shape_matches:
+                return f"{source_name}:{table_index}", table_records
+            if table_records and shape_matches:
+                candidates.append((f"{source_name}:{table_index}", table_records))
+    if len(candidates) == 1:
+        return candidates[0]
+    raise ValueError("Presentation table does not have a pageable record source.")
+
+
 def _localized_text(value: Any, locale: str = "zh") -> str:
     if isinstance(value, dict):
         return str(value.get(locale) or value.get("zh") or value.get("en") or "")

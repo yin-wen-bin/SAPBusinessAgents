@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .codex_planner import CodexPlanner, Planner
 from .config import Settings
 from .database import RunStore
-from .engine import RunCoordinator, RunExecutionError
+from .engine import RunCoordinator, RunExecutionError, presentation_table_page
 from .factory import AgentDraftService, DraftError
 from .harness import CodexHarnessController, HarnessToolBroker
 from .manifests import AgentRepository
@@ -361,6 +361,39 @@ def create_app(
             return store.get_run(run_id).model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(404, "Run not found") from exc
+
+    @app.get("/api/runs/{run_id}/presentation/blocks/{block_index}/rows")
+    def get_presentation_table_rows(
+        run_id: str,
+        block_index: int,
+        offset: int = Query(0, ge=0),
+        limit: int = Query(200, ge=1, le=200),
+    ) -> dict[str, Any]:
+        try:
+            record = store.get_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Run not found") from exc
+        if record.result is None:
+            raise HTTPException(409, "Run result is not available")
+        output_schema: dict[str, Any] | None = None
+        if record.agent_id:
+            try:
+                manifest = agents.get(record.agent_id)
+            except KeyError:
+                manifest = {}
+            execution = manifest.get("execution") if isinstance(manifest, dict) else None
+            candidate = execution.get("outputSchema") if isinstance(execution, dict) else None
+            output_schema = candidate if isinstance(candidate, dict) else None
+        try:
+            return presentation_table_page(
+                record.result,
+                block_index,
+                offset=offset,
+                limit=limit,
+                output_schema=output_schema,
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
     @app.get("/api/runs/{run_id}/artifacts/{name}")
     def download_artifact(run_id: str, name: str) -> FileResponse:

@@ -86,7 +86,7 @@ const labels = locale === "zh" ? {
     codex_turn_failed: "Codex 分析轮次失败", harness_completed: "Codex Harness 查询完成", harness_interrupted: "Codex Harness 已中断",
   },
   table: { stage: "业务阶段", state: "状态", detail: "说明", metric: "指标", value: "结果", object: "查询对象", purpose: "用途", result: "结果", count: "记录数" },
-  presentation: { showing: "显示", of: "共", previous: "上一页", next: "下一页", displayed: "展示范围", unlimited: "不限", calls: "工具调用", budgeted: "预算型", turns: "轮次", runtime: "运行时间", seconds: "秒" },
+  presentation: { showing: "显示", of: "共", previous: "上一页", next: "下一页", displayed: "已加载", loading: "正在加载更多结果…", loadError: "无法加载下一页，请重试或下载 result.json。", unlimited: "不限", calls: "工具调用", budgeted: "预算型", turns: "轮次", runtime: "运行时间", seconds: "秒" },
   evidenceState: { found: "已找到", not_found: "未找到", limited: "范围受限", failed: "读取失败" },
   reportState: { success: "流程已确认", warning: "需要继续处理", info: "现有证据不足", error: "查询失败", running: "查询中" },
   complete: "当前查询范围已完整返回",
@@ -180,7 +180,7 @@ const labels = locale === "zh" ? {
     codex_turn_failed: "Codex analysis turn failed", harness_completed: "Codex Harness completed", harness_interrupted: "Codex Harness interrupted",
   },
   table: { stage: "Business stage", state: "Status", detail: "Explanation", metric: "Metric", value: "Result", object: "Query object", purpose: "Purpose", result: "Result", count: "Rows" },
-  presentation: { showing: "Showing", of: "of", previous: "Previous", next: "Next", displayed: "Display scope", unlimited: "unlimited", calls: "Tool calls", budgeted: "budgeted", turns: "Turns", runtime: "Runtime", seconds: "s" },
+  presentation: { showing: "Showing", of: "of", previous: "Previous", next: "Next", displayed: "Loaded", loading: "Loading more results…", loadError: "Unable to load the next page. Retry or download result.json.", unlimited: "unlimited", calls: "Tool calls", budgeted: "budgeted", turns: "Turns", runtime: "Runtime", seconds: "s" },
   evidenceState: { found: "Found", not_found: "Not found", limited: "Limited scope", failed: "Read failed" },
   reportState: { success: "Process confirmed", warning: "Follow-up required", info: "Evidence is incomplete", error: "Query failed", running: "Query in progress" },
   complete: "The current query scope was returned in full",
@@ -512,7 +512,7 @@ const labels = locale === "zh" ? {
     section.append(heading);
   };
 
-  const renderPresentationTable = (section, block) => {
+  const renderPresentationTable = (section, block, run, blockIndex) => {
     const wrap = document.createElement("div"); wrap.className = "run-table-wrap";
     const table = document.createElement("table"); table.className = "run-business-table presentation-table";
     const columnCount = Array.isArray(block.columns) ? block.columns.length : 0;
@@ -529,12 +529,18 @@ const labels = locale === "zh" ? {
     });
     head.append(headRow); const body = document.createElement("tbody");
     table.append(head, body); wrap.append(table); section.append(wrap);
-    const rows = Array.isArray(block.rows) ? block.rows : [];
+    const rows = Array.isArray(block.rows) ? [...block.rows] : [];
     const pageSize = 20; let page = 0;
+    let total = Number.isInteger(block.total_rows) ? block.total_rows : rows.length;
+    let loading = false;
     const controls = document.createElement("div"); controls.className = "presentation-pagination";
     const status = document.createElement("span");
     const previous = document.createElement("button"); previous.type = "button"; previous.textContent = labels.presentation.previous;
     const next = document.createElement("button"); next.type = "button"; next.textContent = labels.presentation.next;
+    const note = document.createElement("small"); note.className = "presentation-scope-note"; note.setAttribute("aria-live", "polite");
+    const updateNote = (message = "") => {
+      note.textContent = message || `${labels.presentation.displayed}: ${rows.length}/${total}`;
+    };
     const renderPage = () => {
       body.replaceChildren();
       const start = page * pageSize; const end = Math.min(rows.length, start + pageSize);
@@ -547,25 +553,46 @@ const labels = locale === "zh" ? {
         });
         body.append(row);
       });
-      const total = Number.isInteger(block.total_rows) ? block.total_rows : rows.length;
       status.textContent = labels.presentation.showing + " " + (rows.length ? start + 1 : 0) + "–" + end + " " + labels.presentation.of + " " + total;
-      previous.disabled = page === 0; next.disabled = end >= rows.length;
+      previous.disabled = loading || page === 0; next.disabled = loading || end >= total;
+      updateNote();
+    };
+    const loadThrough = async (targetStart) => {
+      while (targetStart >= rows.length && rows.length < total) {
+        loading = true; renderPage(); updateNote(labels.presentation.loading);
+        const requestLimit = Math.min(200, total - rows.length);
+        try {
+          const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(run.run_id)}/presentation/blocks/${blockIndex}/rows?offset=${rows.length}&limit=${requestLimit}`);
+          if (!response.ok) throw new Error(await response.text());
+          const payload = await response.json();
+          const incoming = Array.isArray(payload.rows) ? payload.rows : [];
+          total = Number.isInteger(payload.total_rows) ? payload.total_rows : total;
+          if (!incoming.length) throw new Error("The presentation page was empty.");
+          rows.push(...incoming);
+        } catch (error) {
+          loading = false; renderPage(); updateNote(labels.presentation.loadError);
+          return false;
+        }
+        loading = false;
+      }
+      return targetStart < rows.length;
     };
     previous.addEventListener("click", () => { if (page > 0) { page -= 1; renderPage(); } });
-    next.addEventListener("click", () => { if ((page + 1) * pageSize < rows.length) { page += 1; renderPage(); } });
+    next.addEventListener("click", async () => {
+      const targetStart = (page + 1) * pageSize;
+      if (targetStart >= total || loading) return;
+      if (targetStart >= rows.length && !(await loadThrough(targetStart))) return;
+      page += 1; renderPage();
+    });
     controls.append(previous, status, next);
-    if (rows.length > pageSize || block.display_truncated) section.append(controls);
-    if (block.display_truncated) {
-      const note = document.createElement("small"); note.className = "presentation-scope-note";
-      note.textContent = labels.presentation.displayed + ": " + rows.length + "/" + (block.total_rows ?? rows.length);
-      section.append(note);
-    }
+    if (total > pageSize || block.display_truncated) section.append(controls);
+    if (block.display_truncated) section.append(note);
     renderPage();
   };
 
   const renderPresentation = (run, presentation) => {
     const container = root.querySelector("[data-presentation-blocks]"); container.replaceChildren();
-    (presentation.blocks || []).forEach((block) => {
+    (presentation.blocks || []).forEach((block, blockIndex) => {
       const section = document.createElement("section");
       section.className = "presentation-block presentation-block-" + (block.type || "text");
       section.dataset.tone = block.tone || "neutral"; appendBlockTitle(section, block);
@@ -588,7 +615,7 @@ const labels = locale === "zh" ? {
           item.append(label, value); grid.append(item);
         }); section.append(grid);
       } else if (block.type === "table") {
-        renderPresentationTable(section, block);
+        renderPresentationTable(section, block, run, blockIndex);
       } else if (block.type === "bullet_list") {
         const list = document.createElement("ul");
         (block.items || []).forEach((value) => {

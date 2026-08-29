@@ -173,6 +173,9 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /presentation-block-/);
   assert.match(run, /预算型/);
   assert.match(run, /const pageSize = 20/);
+  assert.match(run, /presentation\/blocks\/\$\{blockIndex\}\/rows\?offset=/);
+  assert.match(run, /targetStart >= rows\.length/);
+  assert.match(run, /rows\.push\(\.\.\.incoming\)/);
   assert.match(run, /cell\.textContent = localized\(value\)/);
   assert.match(run, /presentation-table-wide/);
   assert.match(run, /columnCount \* 118/);
