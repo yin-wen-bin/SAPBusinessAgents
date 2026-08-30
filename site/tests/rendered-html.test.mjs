@@ -184,6 +184,8 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /技术详情（供 IT 支持和审计使用）/);
   assert.match(run, /<details class="run-technical-details">/);
   assert.match(run, /原始 SAP 证据/);
+  assert.match(run, /未执行付款准备复核：没有可复核的上游证据/);
+  assert.match(run, /node_skipped_empty_input/);
   assert.match(plugins, /插件与能力/);
   assert.match(plugins, /data-plugin-manager/);
   assert.match(plugins, /禁止 SAP 写入/);
@@ -201,15 +203,17 @@ test("workflow builder is rendered and consistently localized", async () => {
   assert.match(zh, /你希望完成什么业务任务/);
   assert.match(zh, /从空白画布开始/);
   assert.match(zh, /生成工作流草稿/);
-  assert.match(zh, /Agent Runtime 真机验证/);
-  assert.match(zh, /发布固定工作流/);
+  assert.match(zh, /真机验证/);
+  assert.match(zh, /发布工作流/);
+  assert.match(zh, /检查工作流/);
   assert.doesNotMatch(zh, />Workflow builder</);
   assert.match(en, /Generate a workflow from one request/);
   assert.match(en, /What business task should this workflow complete/);
   assert.match(en, /Start with a blank canvas/);
   assert.match(en, /Generate workflow draft/);
-  assert.match(en, /Validate live with Agent Runtime/);
-  assert.match(en, /Publish fixed workflow/);
+  assert.match(en, /Live validation/);
+  assert.match(en, /Publish workflow/);
+  assert.match(en, /Review workflow/);
   assert.doesNotMatch(en, />工作流编排</);
   assert.match(builderSource, /正在通过只读 SAP 查询自动发现真机样本并启动验证/);
   assert.match(builderSource, /workflow_validation_input_unavailable/);
@@ -217,6 +221,26 @@ test("workflow builder is rendered and consistently localized", async () => {
   assert.match(builderSource, /aria-required=\{required\}/);
   assert.match(builderSource, /workflow-spinner--button/);
   assert.match(builderSource, /workflow-validation-feedback is-/);
+  assert.match(builderSource, /Agent Runtime 真机验证/);
+  assert.match(builderSource, /草稿已生成/);
+  assert.match(builderSource, /下一步：检查工作流/);
+  assert.match(builderSource, /平台已清理非业务终态输出/);
+  assert.match(builderSource, /重新生成草稿/);
+  assert.match(builderSource, /dismissedRequestedOutputs/);
+  assert.match(builderSource, /设计预审未通过/);
+  assert.match(builderSource, /未启动样本发现、SAP查询或验证运行/);
+  assert.match(builderSource, /workflow_runtime_review_blocked/);
+  assert.match(builderSource, /preflightIssues/);
+  assert.match(builderSource, /真机验证测试报告/);
+  assert.match(builderSource, /本次真机验证存在以下证据完整性缺口/);
+  assert.match(builderSource, /Live validation test report/);
+  assert.match(builderSource, /validation-report/);
+  assert.match(builderSource, /validationReportDigest/);
+  assert.match(builderSource, /acceptedGapCodes/);
+  assert.doesNotMatch(builderSource, /真机验证已启动/);
+  assert.doesNotMatch(builderSource, /我确认并接受本次验证中的完整性缺口/);
+  assert.match(builderSource, /条件终态/);
+  assert.match(builderSource, /node\.onSkip\?\.reasonCode/);
 });
 
 test("detail pages render workflow and step-level tools", async () => {

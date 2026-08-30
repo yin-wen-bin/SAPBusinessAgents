@@ -220,7 +220,8 @@ Explain purpose, inputs, fixed steps, evidence provenance and limitations. Retur
             thread_id=thread_id,
             system_prompt=(
                 "Compose deterministic read-only workflows only from the supplied Agent "
-                "catalog. Do not call tools, inspect files, execute SAP, or edit files."
+                "catalog. Do not call tools, inspect files, execute SAP, or edit files. "
+                "Request only business-result and completeness output ports; omit input-context echoes unless a later stage consumes them."
             ),
         )
         proposal = json.loads(str(raw.get("proposal_json") or "{}"))
@@ -242,18 +243,27 @@ Explain purpose, inputs, fixed steps, evidence provenance and limitations. Retur
         workflow: dict[str, Any],
         agent_contracts: list[dict[str, Any]],
         validation_input: dict[str, Any],
+        review_contract: dict[str, Any],
         thread_id: str | None = None,
     ) -> dict[str, Any]:
         prompt = f"""
 Review this strictly read-only deterministic workflow. Check graph intent, declared
 ports, mappings and completeness propagation. Do not call tools or execute SAP.
 Return verdict=block for ambiguous branches, implicit mode selection, incompatible
-cardinality, missing mappings, unsafe operations, or incomplete completeness propagation.
-Return verdict=pass only when no blocking issue remains.
+cardinality, missing mappings, unsafe operations, optional terminal outputs, missing conditional
+onSkip outputs, or incomplete completeness propagation. Use issue codes
+workflow_terminal_output_optional, workflow_conditional_skip_output_missing, and
+workflow_completeness_propagation_missing for those contract failures. Return verdict=pass only
+when no blocking issue remains.
 
 Workflow: {_safe_json(workflow, limit=40_000)}
 Pinned Agent contracts: {_safe_json(agent_contracts, limit=30_000)}
 Validation input shape: {_safe_json(validation_input, limit=5_000)}
+Authoritative platform review contract: {_safe_json(review_contract, limit=15_000)}
+
+The authoritative platform review contract defines the only Agent output ports that a conditional
+skip path must synthesize. Do not require unconsumed Agent execution-context outputs merely because
+they are required by the full Agent output schema.
 """.strip()
         raw, session_id = await self._structured_turn(
             prompt, WORKFLOW_REVIEW_OUTPUT_SCHEMA, thread_id=thread_id

@@ -362,17 +362,54 @@ class WorkflowDraftUpdate(BaseModel):
     workflow: dict[str, Any]
 
 
+class WorkflowValidationExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    output: str = Field(min_length=1, pattern=r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
+    operator: Literal["equals", "one_of", "exists", "non_empty", "decimal_within"]
+    expected: Any = None
+    tolerance: str | int | float | None = None
+
+    @model_validator(mode="after")
+    def validate_expectation_shape(self) -> "WorkflowValidationExpectation":
+        if self.operator in {"equals", "decimal_within"} and "expected" not in self.model_fields_set:
+            raise ValueError(f"expected is required for {self.operator}")
+        if self.operator == "one_of" and (
+            "expected" not in self.model_fields_set
+            or not isinstance(self.expected, list)
+            or not self.expected
+        ):
+            raise ValueError("one_of requires a non-empty expected array")
+        if self.operator == "decimal_within" and self.tolerance is None:
+            raise ValueError("decimal_within requires tolerance")
+        if self.operator != "decimal_within" and self.tolerance is not None:
+            raise ValueError("tolerance is only valid for decimal_within")
+        if self.operator in {"exists", "non_empty"} and "expected" in self.model_fields_set:
+            raise ValueError(f"expected is not valid for {self.operator}")
+        return self
+
+
 class WorkflowValidationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     auto_discover: bool = Field(default=True, alias="autoDiscover")
     input: dict[str, Any] = Field(default_factory=dict)
+    expectations: list[WorkflowValidationExpectation] = Field(
+        default_factory=list, max_length=20
+    )
 
 
 class WorkflowPublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     acknowledge_inconclusive: bool = Field(default=False, alias="acknowledgeInconclusive")
+    validation_run_id: str | None = Field(default=None, alias="validationRunId")
+    validation_report_digest: str | None = Field(
+        default=None,
+        alias="validationReportDigest",
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    accepted_gap_codes: list[str] = Field(default_factory=list, alias="acceptedGapCodes")
 
 
 class WorkflowDraftRecord(BaseModel):

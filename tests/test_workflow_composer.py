@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import time
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from sap_business_agents_platform.app import create_app
 from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.manifests import AgentRepository
 from sap_business_agents_platform.workflow_composer import (
+    WorkflowCompositionError,
     compact_agent_catalog,
     compile_workflow_proposal,
 )
@@ -51,7 +53,17 @@ def _proposal(*, with_gap: bool = False) -> dict[str, Any]:
                     "source_output_port": "ap_payment_scopes",
                 },
             ],
-            "requested_outputs": [],
+            "requested_outputs": [
+                "scope_results",
+                "business_status",
+                "source_complete",
+                "evidence_complete",
+                "payment_run_evidence_complete",
+                "bank_master_evidence_complete",
+                "bank_settlement_evidence_complete",
+                "bank_settlement_status",
+                "business_report",
+            ],
         },
     ]
     if with_gap:
@@ -121,6 +133,19 @@ class CompositionPlanner:
         }
 
 
+class EchoOutputCompositionPlanner(CompositionPlanner):
+    async def compose_workflow(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls += 1
+        proposal = _proposal(with_gap=self.with_gap)
+        proposal["stages"][1]["requested_outputs"].extend(["query_mode", "as_of"])
+        return {
+            "needs_clarification": False,
+            "clarification_question": "",
+            "proposal": proposal,
+            "thread_id": "workflow-echo-thread",
+        }
+
+
 def _wait_draft(client: TestClient, draft_id: str) -> dict[str, Any]:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
@@ -162,13 +187,37 @@ def test_compiler_pins_agents_and_connects_only_declared_same_name_ports() -> No
         "source": {"scope": "node_output", "nodeId": "p2p", "port": "ap_payment_scopes"},
         "operator": "non_empty",
     }
+    assert ap_node["onSkip"]["reasonCode"] == "no_ap_payment_scopes"
+    assert ap_node["onSkip"]["outputs"] == {
+        "scope_results": [],
+        "business_status": "inconclusive",
+        "source_complete": False,
+        "evidence_complete": False,
+        "payment_run_evidence_complete": False,
+        "bank_master_evidence_complete": False,
+        "bank_settlement_evidence_complete": False,
+        "bank_settlement_status": "not_assessed",
+        "business_report": {
+            "status": "inconclusive",
+            "reason_code": "no_ap_payment_scopes",
+            "summary": {
+                "zh": "P2P 未生成可供付款准备复核的应付证据分组，AP 阶段未执行。",
+                "en": "P2P produced no AP evidence scope for payment-readiness review, so the AP stage was not executed.",
+            },
+        },
+    }
+    ap_required = {
+        f"ap_{port}"
+        for port in ap_node["onSkip"]["outputs"]
+    }
+    assert ap_required.issubset(set(workflow["outputSchema"]["required"]))
     query_mode = next(
         item
         for item in workflow["connections"]
         if item["to"] == {"nodeId": "ap", "port": "query_mode"}
     )
     assert query_mode["from"] == {"scope": "constant", "value": "p2p_evidence"}
-    assert composition["compiler_version"] == 2
+    assert composition["compiler_version"] == 4
     assert composition["validation_defaults"] == {
         "purchase_orders": ["4500000030"],
         "as_of": "2026-08-25",
@@ -230,6 +279,77 @@ def test_compiler_selects_direct_branch_for_standalone_ap() -> None:
     assert query_mode["from"] == {"scope": "constant", "value": "direct"}
 
 
+def test_compiler_dismisses_unconsumed_conditional_input_echo_outputs() -> None:
+    root = Path(__file__).resolve().parents[1]
+    agents = AgentRepository(root / "agents")
+    proposal = _proposal()
+    proposal["stages"][1]["requested_outputs"].extend(["query_mode", "as_of"])
+
+    workflow, composition = compile_workflow_proposal(
+        workflow_id="generated-normalized-skip-output",
+        requirement="检查采购订单付款状态",
+        locale="zh",
+        proposal=proposal,
+        catalog=compact_agent_catalog(agents),
+        agents=agents,
+    )
+
+    ap_node = next(item for item in workflow["nodes"] if item["id"] == "ap")
+    assert "query_mode" not in ap_node["onSkip"]["outputs"]
+    assert "as_of" not in ap_node["onSkip"]["outputs"]
+    assert "ap_query_mode" not in workflow["outputSchema"]["properties"]
+    assert "ap_as_of" not in workflow["outputSchema"]["properties"]
+    assert composition["proposal_snapshot"] == proposal
+    assert composition["output_normalization"]["dismissed_requested_outputs"] == [
+        {
+            "stage_id": "ap",
+            "port": "query_mode",
+            "reason_code": "conditional_context_echo_not_terminal",
+        },
+        {
+            "stage_id": "ap",
+            "port": "as_of",
+            "reason_code": "conditional_context_echo_not_terminal",
+        },
+    ]
+
+
+def test_compiler_still_rejects_an_unsafe_required_business_output() -> None:
+    root = Path(__file__).resolve().parents[1]
+    base = AgentRepository(root / "agents")
+
+    class UnsafeBusinessOutputRepository:
+        def _agent(self, agent_id: str) -> dict[str, Any]:
+            agent = deepcopy(base.get(agent_id))
+            if agent_id == "ap-payment":
+                output_schema = agent["execution"]["outputSchema"]
+                output_schema["properties"]["decision_reason"] = {"type": "string"}
+                output_schema["required"].append("decision_reason")
+            return agent
+
+        def get(self, agent_id: str) -> dict[str, Any]:
+            return self._agent(agent_id)
+
+        def executable(self) -> list[dict[str, Any]]:
+            return [self._agent(item["slug"]) for item in base.executable()]
+
+    agents = UnsafeBusinessOutputRepository()
+    try:
+        compile_workflow_proposal(
+            workflow_id="generated-unsafe-business-output",
+            requirement="检查采购订单付款状态",
+            locale="zh",
+            proposal=_proposal(),
+            catalog=compact_agent_catalog(agents),
+            agents=agents,
+        )
+    except WorkflowCompositionError as exc:
+        assert exc.code == "workflow_conditional_skip_output_unavailable"
+        assert exc.detail == {"node_id": "ap", "port": "decision_reason"}
+    else:
+        raise AssertionError("An unsafe required business output was accepted")
+
+
 def test_composition_api_supports_one_clarification_then_generates_draft(tmp_path: Path) -> None:
     planner = CompositionPlanner(clarify_once=True)
     app = create_app(_settings(tmp_path), planner=planner)
@@ -250,6 +370,73 @@ def test_composition_api_supports_one_clarification_then_generates_draft(tmp_pat
         assert generated["status"] == "draft"
         assert generated["composition"]["clarification_history"][0]["answer"] == "只核验 SAP 付款凭证"
         assert planner.calls == 2
+
+
+def test_composition_api_normalizes_runtime_input_echo_outputs_and_keeps_audit(
+    tmp_path: Path,
+) -> None:
+    planner = EchoOutputCompositionPlanner()
+    app = create_app(_settings(tmp_path), planner=planner)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/authoring/workflows/compose",
+            json={"requirement": "检查采购订单付款状态", "locale": "zh"},
+        )
+        assert response.status_code == 202, response.text
+        generated = _wait_draft(client, response.json()["draft_id"])
+        assert generated["status"] == "draft"
+        assert generated["thread_id"] == "workflow-echo-thread"
+        assert generated["composition"]["compiler_version"] == 4
+        assert generated["composition"]["proposal_snapshot"]["stages"][1][
+            "requested_outputs"
+        ][-2:] == ["query_mode", "as_of"]
+        assert [
+            item["port"]
+            for item in generated["composition"]["output_normalization"][
+                "dismissed_requested_outputs"
+            ]
+        ] == ["query_mode", "as_of"]
+
+
+def test_legacy_failed_composition_reconciles_in_place_with_current_compiler(
+    tmp_path: Path,
+) -> None:
+    planner = EchoOutputCompositionPlanner()
+    app = create_app(_settings(tmp_path), planner=planner)
+    with TestClient(app) as client:
+        legacy = app.state.workflow_drafts.create(
+            {"zh": "旧草稿", "en": "Legacy draft"},
+            {"zh": "检查采购订单付款状态", "en": "Review PO payment status"},
+            None,
+        )
+        legacy.status = "needs_review"
+        legacy.composition = {
+            "requirement": "检查采购订单付款状态",
+            "locale": "zh",
+            "runtime_provider_id": "codex",
+            "compiler_version": 3,
+            "stages": [],
+            "gaps": [],
+            "error": {
+                "code": "workflow_conditional_skip_output_unavailable",
+                "message": "Node assess_payment_readiness cannot derive a safe skipped value for output query_mode.",
+                "type": "WorkflowCompositionError",
+            },
+        }
+        app.state.store.save_workflow_draft(legacy)
+
+        retry = client.post(
+            f"/api/authoring/workflows/{legacy.draft_id}/reconcile"
+        )
+        assert retry.status_code == 202, retry.text
+        assert retry.json()["draft_id"] == legacy.draft_id
+        assert retry.json()["status"] == "planning"
+        generated = _wait_draft(client, legacy.draft_id)
+        assert generated["draft_id"] == legacy.draft_id
+        assert generated["status"] == "draft"
+        assert generated["composition"]["compiler_version"] == 4
+        assert len(generated["workflow"]["nodes"]) == 2
+        assert planner.calls == 1
 
 
 def test_composition_rejects_blank_requirements(tmp_path: Path) -> None:

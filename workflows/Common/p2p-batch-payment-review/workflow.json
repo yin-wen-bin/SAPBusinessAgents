@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "p2p-batch-payment-review",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "title": {
     "zh": "P2P 批量付款复核",
     "en": "P2P Batch Payment Review"
@@ -49,6 +49,15 @@
     "properties": {
       "p2p_details": {"type": "array", "items": {"type": "object"}},
       "ap_details": {"type": "array", "items": {"type": "object"}},
+      "ap_status": {
+        "type": "string",
+        "enum": ["inconclusive", "blocked", "in_progress", "complete"]
+      },
+      "payment_run_evidence_complete": {"type": "boolean"},
+      "bank_master_evidence_complete": {"type": "boolean"},
+      "bank_settlement_evidence_complete": {"type": "boolean"},
+      "bank_settlement_status": {"type": "string", "const": "not_assessed"},
+      "ap_business_report": {"type": "object"},
       "batch_status": {
         "type": "string",
         "enum": ["inconclusive", "not_found", "blocked", "in_progress", "complete"]
@@ -56,7 +65,19 @@
       "source_complete": {"type": "boolean"},
       "evidence_complete": {"type": "boolean"}
     },
-    "required": ["p2p_details", "batch_status", "source_complete", "evidence_complete"],
+    "required": [
+      "p2p_details",
+      "ap_details",
+      "ap_status",
+      "payment_run_evidence_complete",
+      "bank_master_evidence_complete",
+      "bank_settlement_evidence_complete",
+      "bank_settlement_status",
+      "ap_business_report",
+      "batch_status",
+      "source_complete",
+      "evidence_complete"
+    ],
     "additionalProperties": false
   },
   "nodes": [
@@ -76,6 +97,27 @@
       "runIf": {
         "source": {"scope": "node_output", "nodeId": "p2p", "port": "ap_payment_scopes"},
         "operator": "non_empty"
+      },
+      "onSkip": {
+        "reasonCode": "no_ap_payment_scopes",
+        "outputs": {
+          "scope_results": [],
+          "business_status": "inconclusive",
+          "source_complete": false,
+          "evidence_complete": false,
+          "payment_run_evidence_complete": false,
+          "bank_master_evidence_complete": false,
+          "bank_settlement_evidence_complete": false,
+          "bank_settlement_status": "not_assessed",
+          "business_report": {
+            "status": "inconclusive",
+            "reason_code": "no_ap_payment_scopes",
+            "summary": {
+              "zh": "P2P 未生成可供付款准备复核的应付证据分组，AP 阶段未执行。",
+              "en": "P2P produced no AP evidence scope for payment-readiness review, so the AP stage was not executed."
+            }
+          }
+        }
       }
     }
   ],
@@ -110,6 +152,36 @@
     {
       "name": "ap_details",
       "source": {"scope": "node_output", "nodeId": "ap", "port": "scope_results"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "name": "ap_status",
+      "source": {"scope": "node_output", "nodeId": "ap", "port": "business_status"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "name": "payment_run_evidence_complete",
+      "source": {"scope": "node_output", "nodeId": "ap", "port": "payment_run_evidence_complete"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "name": "bank_master_evidence_complete",
+      "source": {"scope": "node_output", "nodeId": "ap", "port": "bank_master_evidence_complete"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "name": "bank_settlement_evidence_complete",
+      "source": {"scope": "node_output", "nodeId": "ap", "port": "bank_settlement_evidence_complete"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "name": "bank_settlement_status",
+      "source": {"scope": "node_output", "nodeId": "ap", "port": "bank_settlement_status"},
+      "transform": {"type": "identity"}
+    },
+    {
+      "name": "ap_business_report",
+      "source": {"scope": "node_output", "nodeId": "ap", "port": "business_report"},
       "transform": {"type": "identity"}
     },
     {

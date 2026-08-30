@@ -67,6 +67,7 @@ const labels = locale === "zh" ? {
     workflow_started: "组合工作流开始执行", node_started: "开始执行工作流节点",
     node_input_resolved: "节点输入已经准备好", node_completed: "工作流节点执行完成",
     node_inconclusive: "节点已执行，但证据仍不充分", node_skipped: "节点因缺少必需输入而跳过",
+    node_skipped_empty_input: "未执行付款准备复核：没有可复核的上游证据",
     mapping_failed: "节点输入输出映射失败", candidate_discovery_completed: "真机验证样本准备完成",
     codex_repair_applied: "Codex 已在受限范围内调整连接映射",
     tool_started: "正在读取 SAP 数据", tool_completed: "SAP 数据读取完成",
@@ -164,6 +165,7 @@ const labels = locale === "zh" ? {
     workflow_started: "Composite workflow started", node_started: "Workflow node started",
     node_input_resolved: "Node input is ready", node_completed: "Workflow node completed",
     node_inconclusive: "Node ran with inconclusive evidence", node_skipped: "Node skipped because required input was unavailable",
+    node_skipped_empty_input: "Payment-readiness review was not executed: no upstream evidence was available",
     mapping_failed: "Node input/output mapping failed", candidate_discovery_completed: "Live validation candidate prepared",
     codex_repair_applied: "Codex adjusted connection mappings within the allowed scope",
     tool_started: "Reading SAP data", tool_completed: "SAP data read completed",
@@ -446,6 +448,33 @@ const labels = locale === "zh" ? {
     return values[state] || titleCase(state);
   };
   const firstRule = (run) => (run.result?.rule_results || []).find((item) => item?.business_report || item?.stages);
+  const conditionalSkipBusinessReport = (run) => {
+    const skipped = (run.result?.node_results || []).find((item) => item?.status === "skipped" && item?.output?.business_report);
+    if (!skipped) return null;
+    const output = skipped.output || {};
+    const summary = localized(output.business_report?.summary) || localized(skipped.reason) || labels.fallbackSummary;
+    const completeFields = [
+      "source_complete", "evidence_complete", "payment_run_evidence_complete",
+      "bank_master_evidence_complete", "bank_settlement_evidence_complete",
+    ];
+    return {
+      tone: "info",
+      headline: summary,
+      overview: locale === "zh" ? "工作流保留了 P2P 查询结果，但没有把空证据解释为付款准备完成。" : "The workflow retained the P2P result without treating empty evidence as payment readiness.",
+      stages: [{
+        id: skipped.node_id,
+        label: friendlyId(skipped.agent_id || skipped.node_id),
+        state: "inconclusive",
+        state_label: stateLabel("inconclusive"),
+        detail: summary,
+      }],
+      metrics: [
+        ...completeFields.map((name) => ({ id: name, label: friendlyId(name), value: output[name] === true ? labels.complete : labels.incomplete })),
+        { id: "bank_settlement_status", label: friendlyId("bank_settlement_status"), value: stateLabel(output.bank_settlement_status || "not_assessed") },
+      ],
+      next_actions: [labels.fallbackAction],
+    };
+  };
 
   const failureGuidance = (run) => {
     if (run.status !== "failed") return null;
@@ -497,7 +526,7 @@ const labels = locale === "zh" ? {
     return { tone: firstGap ? "warning" : "success", headline, overview, stages: rows, next_actions: [labels.fallbackAction] };
   };
 
-  const businessReportFor = (run) => firstRule(run)?.business_report || fallbackBusinessReport(run);
+  const businessReportFor = (run) => conditionalSkipBusinessReport(run) || firstRule(run)?.business_report || fallbackBusinessReport(run);
   const legacyBusinessSections = () => [
     "[data-business-stages-wrap]", "[data-business-metrics-wrap]", "[data-business-findings-wrap]",
     "[data-missing-evidence-wrap]", "[data-next-actions-wrap]",
@@ -909,7 +938,7 @@ const labels = locale === "zh" ? {
   const eventNames = [
     "run_queued", "run_started", "progress_changed", "planning_started", "plan_created", "validation_started", "schema_received",
     "plan_grounded", "plan_canonicalized", "plan_repaired", "waiting_input", "input_received", "step_started",
-    "workflow_started", "node_started", "node_input_resolved", "node_completed", "node_inconclusive", "node_skipped",
+    "workflow_started", "node_started", "node_input_resolved", "node_completed", "node_inconclusive", "node_skipped", "node_skipped_empty_input",
     "mapping_failed", "candidate_discovery_completed", "codex_repair_applied",
     "tool_started", "tool_completed", "evidence_received", "rule_completed", "summary_started", "run_completed",
     "run_inconclusive", "run_failed", "cancellation_requested", "run_cancelled",

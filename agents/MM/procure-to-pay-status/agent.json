@@ -943,15 +943,15 @@
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-08-29T13:44:43+00:00",
+    "testedAt": "2026-08-29T16:35:00+00:00",
     "evidenceScope": "complete",
     "providers": [
       "sapclaw_runtime",
       "embedded-sap-odata"
     ],
     "summary": {
-      "zh": "P2P 0.3.1 已用真实 SAP 验证；输出契约明确限定最多 50 个 AP 证据分组，P2P→AP 固定工作流的非空和空分组路径均保持严格只读并正确传播完整性。",
-      "en": "P2P 0.3.1 was validated against live SAP; its output contract now caps AP evidence scopes at 50, and both non-empty and empty P2P-to-AP workflow paths stay strictly read-only with correct completeness propagation."
+      "zh": "P2P 0.3.1 已用真实 SAP 验证；compiler v3 工作流将 AP 终端结果设为必需，非空路径实际执行 AP，空分组路径返回显式不确定终态并保持严格只读。",
+      "en": "P2P 0.3.1 was validated against live SAP; the compiler v3 workflow requires the AP terminal outcome, executes AP for non-empty evidence, and returns an explicit inconclusive read-only outcome for empty evidence."
     },
     "reportPath": "docs/p2p-ap-workflow-live-acceptance.md",
     "executable": true,
@@ -961,6 +961,6 @@
     "baselineRuntime": "sapclaw_runtime",
     "usedSapBusinessAgentsForBaseline": false,
     "runtimeCaseIds": ["899033a9-4183-45e0-8923-7133aece8f01"],
-    "workflowRunIds": ["run_676139ae75814a04", "run_2e167ea3921448ae", "run_292a7f6bcb9b4019", "run_34e05adaa4414240"]
+    "workflowRunIds": ["run_676139ae75814a04", "run_2e167ea3921448ae", "run_292a7f6bcb9b4019", "run_34e05adaa4414240", "run_dab96ef9b5934dbf", "run_b0c4ab96de6f478d", "run_2c05536290a34b76", "run_c800d2d5519d4121"]
   }
 }

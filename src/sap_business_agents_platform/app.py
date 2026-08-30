@@ -722,7 +722,12 @@ def create_app(
     ) -> dict[str, Any]:
         try:
             draft = await workflow_drafts.validate_live(
-                draft_id, payload.input, auto_discover=payload.auto_discover
+                draft_id,
+                payload.input,
+                auto_discover=payload.auto_discover,
+                expectations=[
+                    item.model_dump(mode="json") for item in payload.expectations
+                ],
             )
             return draft.model_dump(mode="json")
         except KeyError as exc:
@@ -745,6 +750,9 @@ def create_app(
             return workflow_drafts.publish(
                 draft_id,
                 acknowledge_inconclusive=payload.acknowledge_inconclusive,
+                validation_run_id=payload.validation_run_id,
+                validation_report_digest=payload.validation_report_digest,
+                accepted_gap_codes=payload.accepted_gap_codes,
             ).model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(404, "Workflow draft not found") from exc
@@ -757,6 +765,39 @@ def create_app(
                     "detail": getattr(exc, "detail", None),
                 },
             ) from exc
+
+    @app.get("/api/authoring/workflows/{draft_id}/validation-report")
+    def workflow_validation_report(draft_id: str) -> dict[str, Any]:
+        try:
+            return workflow_drafts.validation_report(draft_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft or validation run not found") from exc
+        except WorkflowDraftError as exc:
+            raise HTTPException(
+                409,
+                {
+                    "code": exc.code,
+                    "message": str(exc),
+                    "detail": exc.detail,
+                },
+            ) from exc
+
+    @app.get("/api/authoring/workflows/{draft_id}/validation-artifacts/{name}")
+    def workflow_validation_artifact(draft_id: str, name: str) -> FileResponse:
+        try:
+            path, media_type = workflow_drafts.validation_artifact(draft_id, name)
+        except KeyError as exc:
+            raise HTTPException(404, "Validation artifact not found") from exc
+        except WorkflowDraftError as exc:
+            raise HTTPException(
+                409,
+                {
+                    "code": exc.code,
+                    "message": str(exc),
+                    "detail": exc.detail,
+                },
+            ) from exc
+        return FileResponse(path, media_type=media_type, filename=name)
 
     @app.get("/api/config/status")
     def config_status() -> dict[str, Any]:

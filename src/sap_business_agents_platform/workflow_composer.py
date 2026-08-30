@@ -6,11 +6,13 @@ import re
 from copy import deepcopy
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
 from .workflows import normalize_workflow, validate_workflow
 
 
 ALLOWED_PORT_TYPES = {"string", "integer", "number", "boolean", "object", "array"}
-WORKFLOW_COMPILER_VERSION = 2
+WORKFLOW_COMPILER_VERSION = 4
 
 
 class WorkflowCompositionError(ValueError):
@@ -78,6 +80,9 @@ def compile_workflow_proposal(
         agent_id = str(raw.get("agent_id") or "")
         confidence = str(raw.get("confidence") or "low").lower()
         selected = agent_id in eligible and confidence == "high"
+        runtime_requested_outputs = _deduplicate(
+            [str(item) for item in raw.get("requested_outputs") or []]
+        )
         stage = {
             "id": stage_id,
             "capability": _localized(raw.get("capability"), fallback=f"Stage {index}"),
@@ -85,7 +90,8 @@ def compile_workflow_proposal(
             "confidence": confidence if confidence in {"high", "medium", "low"} else "low",
             "reason": _localized(raw.get("reason"), fallback=""),
             "bindings": deepcopy(raw.get("bindings") or []),
-            "requested_outputs": [str(item) for item in raw.get("requested_outputs") or []],
+            "requested_outputs": runtime_requested_outputs,
+            "runtime_requested_outputs": deepcopy(runtime_requested_outputs),
         }
         stages.append(stage)
         if selected:
@@ -231,6 +237,15 @@ def compile_workflow_proposal(
     if not terminal_ids and selected_by_stage:
         terminal_ids = [next(reversed(selected_by_stage))]
 
+    consumed_output_ports: dict[str, set[str]] = {}
+    for connection in connections:
+        source = connection.get("from") or {}
+        if source.get("scope") != "node_output":
+            continue
+        consumed_output_ports.setdefault(str(source.get("nodeId") or ""), set()).add(
+            str(source.get("port") or "")
+        )
+
     output_schema: dict[str, Any] = {
         "type": "object",
         "properties": {},
@@ -238,20 +253,54 @@ def compile_workflow_proposal(
         "additionalProperties": False,
     }
     outputs: list[dict[str, Any]] = []
+    dismissed_requested_outputs: list[dict[str, str]] = []
     for stage in stages:
         agent = selected_by_stage.get(stage["id"])
         if agent is None:
             continue
         available = agent["execution"]["outputSchema"].get("properties") or {}
-        requested = list(stage.get("requested_outputs") or [])
+        agent_input_properties = set(
+            (agent["execution"].get("inputSchema") or {}).get("properties") or {}
+        )
+        agent_required_outputs = [
+            str(item)
+            for item in agent["execution"]["outputSchema"].get("required") or []
+        ]
+        runtime_requested = list(stage.get("runtime_requested_outputs") or [])
+        requested = list(runtime_requested)
         if stage["id"] in terminal_ids:
-            requested = [*requested, "business_status", "business_report"]
+            requested = [
+                *requested,
+                *(
+                    port
+                    for port in agent_required_outputs
+                    if port not in agent_input_properties
+                ),
+                "business_status",
+                "business_report",
+            ]
+        effective_requested: list[str] = []
         for port in _deduplicate(requested):
             if port not in available:
                 continue
+            if (
+                stage["id"] in guarded_stage_ids
+                and port in agent_input_properties
+                and port not in consumed_output_ports.get(str(stage["id"]), set())
+            ):
+                if port in runtime_requested:
+                    dismissed_requested_outputs.append(
+                        {
+                            "stage_id": str(stage["id"]),
+                            "port": port,
+                            "reason_code": "conditional_context_echo_not_terminal",
+                        }
+                    )
+                continue
+            effective_requested.append(port)
             name = f"{stage['id']}_{port}"
             output_schema["properties"][name] = deepcopy(available[port])
-            if stage["id"] not in guarded_stage_ids:
+            if stage["id"] not in guarded_stage_ids or stage["id"] in terminal_ids:
                 output_schema["required"].append(name)
             outputs.append(
                 {
@@ -260,6 +309,42 @@ def compile_workflow_proposal(
                     "transform": {"type": "identity"},
                 }
             )
+        stage["requested_outputs"] = effective_requested
+        if stage["id"] in guarded_stage_ids:
+            guard_source = (
+                (node_by_stage[str(stage["id"])].get("runIf") or {}).get("source")
+                or {}
+            )
+            guard_port = str(guard_source.get("port") or "")
+            reason_code = (
+                f"no_{guard_port}"
+                if re.fullmatch(r"[a-z][a-z0-9_]*", guard_port)
+                else "empty_upstream_collection"
+            )
+            skip_outputs: dict[str, Any] = {}
+            skip_ports = [
+                *(
+                    effective_requested
+                    if stage["id"] in terminal_ids
+                    else []
+                ),
+                *sorted(consumed_output_ports.get(str(stage["id"]), set())),
+            ]
+            for port in _deduplicate(skip_ports):
+                port_schema = available.get(port)
+                if not isinstance(port_schema, dict):
+                    continue
+                skip_outputs[port] = _safe_conditional_skip_value(
+                    port=port,
+                    schema=port_schema,
+                    node_id=str(stage["id"]),
+                    reason_code=reason_code,
+                )
+            if skip_outputs:
+                node_by_stage[str(stage["id"])]["onSkip"] = {
+                    "reasonCode": reason_code,
+                    "outputs": skip_outputs,
+                }
 
     title = _localized(proposal.get("title"), fallback=requirement[:80])
     description = _localized(proposal.get("description"), fallback=requirement)
@@ -298,8 +383,58 @@ def compile_workflow_proposal(
         "clarification_question": "",
         "error": None,
         "compiler_version": WORKFLOW_COMPILER_VERSION,
+        "proposal_snapshot": deepcopy(proposal),
+        "output_normalization": {
+            "dismissed_requested_outputs": dismissed_requested_outputs,
+        },
     }
     return workflow, composition
+
+
+def _safe_conditional_skip_value(
+    *, port: str, schema: dict[str, Any], node_id: str, reason_code: str
+) -> Any:
+    if "const" in schema:
+        candidate: Any = deepcopy(schema["const"])
+    elif schema.get("type") == "array":
+        candidate = []
+    elif port == "business_status" and schema.get("type") == "string":
+        allowed = schema.get("enum")
+        if isinstance(allowed, list) and "inconclusive" not in allowed:
+            candidate = None
+        else:
+            candidate = "inconclusive"
+    elif schema.get("type") == "boolean" and (
+        port in {"source_complete", "evidence_complete", "business_complete"}
+        or port.endswith("_evidence_complete")
+    ):
+        candidate = False
+    elif port == "business_report" and schema.get("type") == "object":
+        candidate = {
+            "status": "inconclusive",
+            "reason_code": reason_code,
+            "summary": {
+                "zh": (
+                    "P2P 未生成可供付款准备复核的应付证据分组，AP 阶段未执行。"
+                    if reason_code == "no_ap_payment_scopes"
+                    else "上游未生成可供最终阶段复核的业务证据，条件阶段未执行。"
+                ),
+                "en": (
+                    "P2P produced no AP evidence scope for payment-readiness review, so the AP stage was not executed."
+                    if reason_code == "no_ap_payment_scopes"
+                    else "The upstream stage produced no business evidence for final review, so the conditional stage was not executed."
+                ),
+            },
+        }
+    else:
+        candidate = None
+    if candidate is None or not Draft202012Validator(schema).is_valid(candidate):
+        raise WorkflowCompositionError(
+            f"Node {node_id} cannot derive a safe skipped value for output {port}.",
+            code="workflow_conditional_skip_output_unavailable",
+            detail={"node_id": node_id, "port": port},
+        )
+    return candidate
 
 
 def gap_free_query_prompt(gap: dict[str, Any], *, locale: str) -> str:

@@ -311,6 +311,7 @@ requirements; never claim a rule has been implemented or a process completed.
         workflow: dict[str, Any],
         agent_contracts: list[dict[str, Any]],
         validation_input: dict[str, Any],
+        review_contract: dict[str, Any],
         thread_id: str | None = None,
     ) -> dict[str, Any]:
         from openai_codex import ApprovalMode, AsyncCodex, Sandbox
@@ -323,11 +324,18 @@ Do not call tools, execute SAP, edit files, invent fields, or propose write oper
 Workflow: {_safe_json(workflow, limit=40_000)}
 Pinned Agent contracts: {_safe_json(agent_contracts, limit=30_000)}
 Validation input shape: {_safe_json(validation_input, limit=5_000)}
+Authoritative platform review contract: {_safe_json(review_contract, limit=15_000)}
 
 Return the structured verdict, issues and bilingual summary. Use verdict=block for any ambiguous
 oneOf branch, implicit mode selection, incompatible cardinality, missing required mapping, unsafe
-operation, or incomplete completeness propagation. Use verdict=pass only when no blocking issue
-remains. A bounded candidate does not prove source completeness.
+operation, optional terminal output, missing conditional onSkip output, or incomplete completeness
+propagation. Use issue codes workflow_terminal_output_optional,
+workflow_conditional_skip_output_missing, and workflow_completeness_propagation_missing for those
+three contract failures. Use verdict=pass only when no blocking issue remains. A bounded candidate
+does not prove source completeness. The authoritative platform review contract defines the only
+Agent output ports that a conditional skip path must synthesize. Do not require other Agent output
+fields merely because they appear in the Agent output schema; unconsumed execution-context outputs
+are not workflow terminal outputs.
 """.strip()
         async with AsyncCodex() as codex:
             if thread_id:
@@ -510,6 +518,7 @@ Rules:
 5. A binding may connect only an earlier selected stage output to a later input with the exact same port name. Otherwise omit the binding; the server will expose a workflow input.
 6. Concrete identifiers and dates in the requirement belong only in validation_defaults. Never make them workflow constants.
 7. Select no tools and describe no SAP write operation. Source completeness and business completion remain separate concepts.
+8. requested_outputs must contain business results and completeness results only. Do not request input-context echoes such as query_mode, dates, company codes, or identifiers unless a later stage actually consumes that exact output port.
 
 Return proposal_json as a JSON object with exactly this conceptual shape:
 {{

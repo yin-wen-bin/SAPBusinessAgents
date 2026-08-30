@@ -214,6 +214,10 @@ export interface WorkflowNodeDefinition {
     source: WorkflowSource;
     operator: "non_empty";
   };
+  onSkip?: {
+    reasonCode: string;
+    outputs: Record<string, unknown>;
+  };
 }
 
 export interface WorkflowSource {
@@ -283,6 +287,7 @@ export interface WorkflowCompositionStage {
   reason: LocalizedText;
   bindings: Array<Record<string, unknown>>;
   requested_outputs: string[];
+  runtime_requested_outputs?: string[];
 }
 
 export interface WorkflowComposition {
@@ -297,7 +302,20 @@ export interface WorkflowComposition {
   clarification_question?: string;
   clarification_history?: Array<{ question: string; answer: string }>;
   reconciling?: boolean;
-  error?: { code?: string; message?: string; type?: string } | null;
+  proposal_snapshot?: Record<string, unknown>;
+  output_normalization?: {
+    dismissed_requested_outputs?: Array<{
+      stage_id: string;
+      port: string;
+      reason_code: string;
+    }>;
+  };
+  error?: {
+    code?: string;
+    message?: string;
+    type?: string;
+    detail?: { node_id?: string; port?: string } | null;
+  } | null;
 }
 
 export interface AgentDefinition {

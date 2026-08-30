@@ -895,11 +895,21 @@ class RunCoordinator:
             if not should_run:
                 degraded = True
                 blocked_nodes.add(node_id)
+                on_skip = node.get("onSkip") if isinstance(node.get("onSkip"), dict) else {}
+                skipped_output = copy.deepcopy(on_skip.get("outputs") or {})
+                reason_code = str(
+                    on_skip.get("reasonCode") or "empty_upstream_collection"
+                )
+                if skipped_output:
+                    node_outputs[node_id] = skipped_output
                 skipped_completeness = {
                     "source_complete": False,
                     "business_complete": False,
                     "reason": "The node's required upstream collection was empty.",
-                    "missing_evidence": ["workflow_node_skipped_empty_input"],
+                    "missing_evidence": [
+                        "workflow_node_skipped_empty_input",
+                        reason_code,
+                    ],
                 }
                 result.node_results.append(
                     {
@@ -910,7 +920,9 @@ class RunCoordinator:
                         "error": {
                             "code": "node_skipped_empty_input",
                             "message": "Required upstream collection is empty.",
+                            "reason_code": reason_code,
                         },
+                        "output": skipped_output,
                         "completeness": skipped_completeness,
                     }
                 )
@@ -921,6 +933,8 @@ class RunCoordinator:
                         "node_id": node_id,
                         "agent_id": agent_id,
                         "reason": "Required upstream collection is empty.",
+                        "reason_code": reason_code,
+                        "explicit_terminal_output": bool(skipped_output),
                     },
                 )
                 self.store.update_run(run_id, result_json=result)

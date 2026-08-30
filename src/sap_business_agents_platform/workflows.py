@@ -22,6 +22,8 @@ ALLOWED_TRANSFORMS = {
     "wrap_array",
 }
 
+WORKFLOW_REVIEW_POLICY_VERSION = 2
+
 
 class WorkflowError(ValueError):
     def __init__(self, message: str, *, code: str = "workflow_invalid", detail: Any = None) -> None:
@@ -145,6 +147,11 @@ def validate_workflow(
             _validate_foreach(node, workflow, node_by_id, agent_by_node, location)
         if node.get("runIf") is not None and workflow.get("schemaVersion") != 2:
             raise WorkflowError(f"{location}.runIf requires workflow schemaVersion 2")
+        if node.get("onSkip") is not None and node.get("runIf") is None:
+            raise WorkflowError(
+                f"{location}.onSkip requires runIf",
+                code="workflow_conditional_skip_output_invalid",
+            )
     if drift:
         raise WorkflowError(
             "One or more Agent versions changed after workflow validation.",
@@ -175,6 +182,19 @@ def validate_workflow(
         if target_key in target_ports:
             raise WorkflowError(f"{location} maps the same target input more than once")
         target_ports.add(target_key)
+        if source_spec.get("scope") == "node_output":
+            source_node_id = str(source_spec.get("nodeId") or "")
+            source_port = str(source_spec.get("port") or "")
+            source_node = node_by_id.get(source_node_id) or {}
+            if isinstance(source_node.get("runIf"), dict) and not _conditional_skip_has_port(
+                source_node, source_port
+            ):
+                raise WorkflowError(
+                    f"{location} consumes conditional output "
+                    f"{source_node_id}.{source_port} without an onSkip value",
+                    code="workflow_conditional_skip_output_missing",
+                    detail={"node_id": source_node_id, "port": source_port},
+                )
         source_type = _source_type(
             source_spec, workflow, node_by_id, agent_by_node, dependencies, target_node, location
         )
@@ -195,6 +215,11 @@ def validate_workflow(
                 node_by_id,
                 agent_by_node,
                 dependencies,
+                f"{source}.nodes[{index}]",
+            )
+            _validate_on_skip(
+                node,
+                agent_by_node[node_id],
                 f"{source}.nodes[{index}]",
             )
     for node_id, agent in agent_by_node.items():
@@ -228,6 +253,97 @@ def validate_workflow(
     topological_order(workflow)
     _validate_outputs(workflow, node_by_id, agent_by_node)
     return drift
+
+
+def workflow_review_contract(workflow: dict[str, Any], agents: Any) -> dict[str, Any]:
+    """Build the deterministic contract that bounds an Agent Runtime review.
+
+    The Runtime may review graph semantics, but it must not expand conditional
+    skip requirements to Agent outputs that the workflow never consumes.
+    """
+
+    nodes = {
+        str(node.get("id") or ""): node
+        for node in workflow.get("nodes") or []
+        if isinstance(node, dict)
+    }
+    required_terminal_outputs = sorted(
+        str(name)
+        for name in workflow.get("outputSchema", {}).get("required") or []
+    )
+    required_terminal_set = set(required_terminal_outputs)
+    required_on_skip: dict[str, set[str]] = {
+        node_id: set()
+        for node_id, node in nodes.items()
+        if isinstance(node.get("runIf"), dict)
+    }
+
+    def require_source(source: Any) -> None:
+        if not isinstance(source, dict) or source.get("scope") != "node_output":
+            return
+        node_id = str(source.get("nodeId") or "")
+        port = str(source.get("port") or "")
+        if node_id in required_on_skip and port:
+            required_on_skip[node_id].add(port)
+
+    for connection in workflow.get("connections") or []:
+        if isinstance(connection, dict):
+            require_source(connection.get("from"))
+    for output in workflow.get("outputs") or []:
+        if not isinstance(output, dict) or str(output.get("name") or "") not in required_terminal_set:
+            continue
+        aggregate = output.get("aggregate")
+        if isinstance(aggregate, dict):
+            for source in aggregate.get("sources") or []:
+                require_source(source)
+        else:
+            require_source(output.get("source"))
+
+    selected_branches: dict[str, dict[str, Any]] = {}
+    connections = [item for item in workflow.get("connections") or [] if isinstance(item, dict)]
+    for node_id, node in nodes.items():
+        agent = agents.get(str(node.get("agentId") or ""))
+        input_schema = agent["execution"]["inputSchema"]
+        branches = input_schema.get("oneOf")
+        if not isinstance(branches, list) or not branches:
+            continue
+        mappings = {
+            str((item.get("to") or {}).get("port") or ""): item.get("from") or {}
+            for item in connections
+            if str((item.get("to") or {}).get("nodeId") or "") == node_id
+        }
+        matches: list[tuple[int, list[str]]] = []
+        for index, branch in enumerate(branches):
+            if not isinstance(branch, dict):
+                continue
+            required = sorted(str(item) for item in branch.get("required") or [])
+            if set(required).issubset(mappings):
+                matches.append((index, required))
+        if len(matches) != 1:
+            continue
+        branch_index, required_ports = matches[0]
+        constant_inputs = {
+            port: source.get("value")
+            for port, source in mappings.items()
+            if isinstance(source, dict) and source.get("scope") == "constant"
+        }
+        selected_branches[node_id] = {
+            "branch_index": branch_index,
+            "required_ports": required_ports,
+            "constant_inputs": constant_inputs,
+        }
+
+    return {
+        "review_policy_version": WORKFLOW_REVIEW_POLICY_VERSION,
+        "required_terminal_outputs": required_terminal_outputs,
+        "required_on_skip_outputs_by_node": {
+            node_id: sorted(ports) for node_id, ports in sorted(required_on_skip.items())
+        },
+        "selected_one_of_branches": selected_branches,
+        "completeness_outputs": sorted(
+            name for name in required_terminal_outputs if "complete" in name
+        ),
+    }
 
 
 def topological_order(workflow: dict[str, Any]) -> list[str]:
@@ -477,6 +593,55 @@ def _validate_run_if(
         raise WorkflowError(f"{location}.runIf.source must be a collection or string")
 
 
+def _validate_on_skip(
+    node: dict[str, Any], agent: dict[str, Any], location: str
+) -> None:
+    on_skip = node.get("onSkip")
+    if on_skip is None:
+        return
+    if not isinstance(on_skip, dict):
+        raise WorkflowError(
+            f"{location}.onSkip must be an object",
+            code="workflow_conditional_skip_output_invalid",
+        )
+    reason_code = on_skip.get("reasonCode")
+    if not isinstance(reason_code, str) or not re.fullmatch(
+        r"[a-z][a-z0-9_]*", reason_code
+    ):
+        raise WorkflowError(
+            f"{location}.onSkip.reasonCode is invalid",
+            code="workflow_conditional_skip_output_invalid",
+        )
+    outputs = on_skip.get("outputs")
+    if not isinstance(outputs, dict) or not outputs:
+        raise WorkflowError(
+            f"{location}.onSkip.outputs must be a non-empty object",
+            code="workflow_conditional_skip_output_invalid",
+        )
+    properties = agent["execution"]["outputSchema"].get("properties") or {}
+    for port, value in outputs.items():
+        schema = properties.get(str(port))
+        if not isinstance(schema, dict):
+            raise WorkflowError(
+                f"{location}.onSkip.outputs references undeclared port: {port}",
+                code="workflow_conditional_skip_output_invalid",
+                detail={"node_id": node.get("id"), "port": str(port)},
+            )
+        errors = sorted(
+            Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(
+                value
+            ),
+            key=lambda item: list(item.absolute_path),
+        )
+        if errors:
+            raise WorkflowError(
+                f"{location}.onSkip.outputs.{port} violates "
+                f"{errors[0].validator or 'schema'}",
+                code="workflow_conditional_skip_output_invalid",
+                detail={"node_id": node.get("id"), "port": str(port)},
+            )
+
+
 def _validate_one_of_mapping(
     node_id: str,
     input_schema: dict[str, Any],
@@ -660,12 +825,15 @@ def _validate_outputs(
                 output.get("source") or {}, workflow, nodes, agents, dummy_dependencies, "", f"workflow.outputs[{index}]"
             )
             transformed = _validate_transform(source_type, output.get("transform") or {"type": "identity"}, f"workflow.outputs[{index}]")
-        if name in set(workflow["outputSchema"].get("required") or []) and _output_is_conditional_only(
-            output, nodes
-        ):
+        if name in set(workflow["outputSchema"].get("required") or []):
+            missing_skip = _conditional_output_ports_without_skip(output, nodes)
+        else:
+            missing_skip = []
+        if missing_skip:
             raise WorkflowError(
-                f"workflow.outputs[{index}] is conditional and cannot be required",
-                code="workflow_conditional_output_required",
+                f"workflow.outputs[{index}] requires conditional outputs without onSkip values",
+                code="workflow_conditional_skip_output_missing",
+                detail={"sources": missing_skip},
             )
         if not _types_compatible(transformed, _schema_primary_type(declared[name].get("type"))):
             raise WorkflowError(f"workflow.outputs[{index}] has an incompatible type")
@@ -674,9 +842,9 @@ def _validate_outputs(
         raise WorkflowError("Required workflow outputs are not mapped: " + ", ".join(missing))
 
 
-def _output_is_conditional_only(
+def _conditional_output_ports_without_skip(
     output: dict[str, Any], nodes: dict[str, dict[str, Any]]
-) -> bool:
+) -> list[dict[str, str]]:
     aggregate = output.get("aggregate")
     sources = (
         aggregate.get("sources")
@@ -688,10 +856,22 @@ def _output_is_conditional_only(
         for source in sources or []
         if isinstance(source, dict) and source.get("scope") == "node_output"
     ]
-    return bool(node_sources) and all(
-        isinstance(nodes.get(str(source.get("nodeId") or ""), {}).get("runIf"), dict)
-        for source in node_sources
-    )
+    missing: list[dict[str, str]] = []
+    for source in node_sources:
+        node_id = str(source.get("nodeId") or "")
+        port = str(source.get("port") or "")
+        node = nodes.get(node_id) or {}
+        if isinstance(node.get("runIf"), dict) and not _conditional_skip_has_port(
+            node, port
+        ):
+            missing.append({"node_id": node_id, "port": port})
+    return missing
+
+
+def _conditional_skip_has_port(node: dict[str, Any], port: str) -> bool:
+    on_skip = node.get("onSkip")
+    outputs = on_skip.get("outputs") if isinstance(on_skip, dict) else None
+    return isinstance(outputs, dict) and port in outputs
 
 
 def _types_compatible(source: str, target: str) -> bool:
