@@ -1,0 +1,791 @@
+{
+  "schemaVersion": 2,
+  "id": "workflow-ec0e3072",
+  "version": "1.0.0",
+  "title": {
+    "zh": "采购订单到付款准备度工作流",
+    "en": "Purchase Order to Payment Readiness Workflow"
+  },
+  "description": {
+    "zh": "第一阶段批量追踪最多 50 张采购订单的端到端 P2P 状态并生成应付证据分组；第二阶段复用这些证据，检查到期、逾期、现金折扣、付款冻结、重复候选及付款准备度。工作流不执行付款、清账或任何 SAP 写操作，也不把清账凭证等同于银行实际扣款。",
+    "en": "The first stage traces the end-to-end P2P status of up to 50 purchase orders and produces grouped AP evidence. The second stage reuses that evidence to review due and overdue items, cash discounts, payment blocks, duplicate candidates, and payment readiness. The workflow never pays, clears, or performs SAP write operations, and does not treat a clearing document as proof of bank settlement."
+  },
+  "mode": "deterministic",
+  "readOnly": true,
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "purchase_orders": {
+        "type": "array",
+        "title": {
+          "zh": "采购订单号列表",
+          "en": "Purchase orders"
+        },
+        "description": {
+          "zh": "输入 1 至 50 个采购订单号，可使用换行、逗号或分号分隔。",
+          "en": "Enter 1 to 50 purchase-order numbers separated by new lines, commas, or semicolons."
+        },
+        "placeholder": {
+          "zh": "例如：4500000030\n4500000031",
+          "en": "Example: 4500000030\n4500000031"
+        },
+        "minItems": 1,
+        "maxItems": 50,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "as_of": {
+        "type": "string",
+        "title": {
+          "zh": "查询基准日",
+          "en": "As-of date"
+        },
+        "description": {
+          "zh": "请输入查询基准日。",
+          "en": "Enter the as-of date."
+        },
+        "placeholder": {
+          "zh": "YYYY-MM-DD",
+          "en": "YYYY-MM-DD"
+        },
+        "minLength": 1,
+        "maxLength": 10,
+        "format": "date",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      }
+    },
+    "required": [
+      "purchase_orders",
+      "as_of"
+    ],
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "trace_procure_to_pay_status_po_results": {
+        "type": "array",
+        "title": {
+          "zh": "逐采购订单结果",
+          "en": "Per-PO results"
+        },
+        "items": {
+          "type": "object",
+          "properties": {
+            "purchase_order": {
+              "type": "string"
+            },
+            "company_code": {
+              "type": "string"
+            },
+            "supplier": {
+              "type": "string"
+            },
+            "business_status": {
+              "type": "string",
+              "enum": [
+                "inconclusive",
+                "not_found",
+                "blocked",
+                "in_progress",
+                "complete"
+              ]
+            },
+            "source_complete": {
+              "type": "boolean"
+            },
+            "evidence_complete": {
+              "type": "boolean"
+            },
+            "gr_ir_match_status": {
+              "type": "string"
+            },
+            "ap_clearing_status": {
+              "type": "string"
+            },
+            "payment_document_status": {
+              "type": "string"
+            },
+            "bank_settlement_status": {
+              "type": "string",
+              "const": "not_assessed"
+            },
+            "business_report": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "purchase_order",
+            "company_code",
+            "supplier",
+            "business_status",
+            "source_complete",
+            "evidence_complete",
+            "gr_ir_match_status",
+            "ap_clearing_status",
+            "payment_document_status",
+            "bank_settlement_status",
+            "business_report"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "trace_procure_to_pay_status_ap_payment_scopes": {
+        "type": "array",
+        "maxItems": 50,
+        "title": {
+          "zh": "应付账款证据分组",
+          "en": "AP evidence scopes"
+        },
+        "items": {
+          "type": "object",
+          "properties": {
+            "scope_id": {
+              "type": "string"
+            },
+            "company_code": {
+              "type": "string"
+            },
+            "supplier": {
+              "type": "string"
+            },
+            "purchase_orders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "supplier_invoices": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "supplier_invoice": {
+                    "type": "string"
+                  },
+                  "fiscal_year": {
+                    "type": "string"
+                  },
+                  "supplier_invoice_items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "supplier_invoice",
+                  "fiscal_year",
+                  "supplier_invoice_items"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "fi_supplier_items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "purchase_order": {
+                    "type": "string"
+                  },
+                  "purchase_order_item": {
+                    "type": "string"
+                  },
+                  "company_code": {
+                    "type": "string"
+                  },
+                  "supplier": {
+                    "type": "string"
+                  },
+                  "fiscal_year": {
+                    "type": "string"
+                  },
+                  "accounting_document": {
+                    "type": "string"
+                  },
+                  "accounting_document_item": {
+                    "type": "string"
+                  },
+                  "original_reference_document": {
+                    "type": "string"
+                  },
+                  "posting_date": {
+                    "type": "string"
+                  },
+                  "net_due_date": {
+                    "type": "string"
+                  },
+                  "cash_discount_due_date": {
+                    "type": "string"
+                  },
+                  "payment_blocking_reason": {
+                    "type": "string"
+                  },
+                  "amount": {
+                    "type": "string"
+                  },
+                  "currency": {
+                    "type": "string"
+                  },
+                  "amount_allocation_ratio": {
+                    "type": "string"
+                  },
+                  "amount_attribution_status": {
+                    "type": "string"
+                  },
+                  "is_cleared": {
+                    "type": "boolean"
+                  },
+                  "clearing_document": {
+                    "type": "string"
+                  },
+                  "clearing_fiscal_year": {
+                    "type": "string"
+                  },
+                  "clearing_date": {
+                    "type": "string"
+                  },
+                  "payment_method": {
+                    "type": "string"
+                  },
+                  "clearing_document_type": {
+                    "type": "string"
+                  },
+                  "payment_document_status": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "purchase_order",
+                  "company_code",
+                  "supplier",
+                  "is_cleared"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "source_complete": {
+              "type": "boolean"
+            },
+            "evidence_complete": {
+              "type": "boolean"
+            },
+            "payment_run_evidence_complete": {
+              "type": "boolean"
+            },
+            "bank_master_evidence_complete": {
+              "type": "boolean"
+            },
+            "bank_settlement_evidence_complete": {
+              "type": "boolean"
+            },
+            "evidence_refs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "scope_id",
+            "company_code",
+            "supplier",
+            "purchase_orders",
+            "supplier_invoices",
+            "fi_supplier_items",
+            "source_complete",
+            "evidence_complete",
+            "payment_run_evidence_complete",
+            "bank_master_evidence_complete",
+            "bank_settlement_evidence_complete",
+            "evidence_refs"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "trace_procure_to_pay_status_business_status": {
+        "type": "string",
+        "title": {
+          "zh": "业务状态",
+          "en": "Business status"
+        }
+      },
+      "trace_procure_to_pay_status_source_complete": {
+        "type": "boolean",
+        "title": {
+          "zh": "查询源完整性",
+          "en": "Query-source completeness"
+        }
+      },
+      "trace_procure_to_pay_status_evidence_complete": {
+        "type": "boolean",
+        "title": {
+          "zh": "业务证据完整性",
+          "en": "Business-evidence completeness"
+        }
+      },
+      "trace_procure_to_pay_status_business_report": {
+        "type": "object",
+        "title": {
+          "zh": "结构化业务报告",
+          "en": "Structured business report"
+        }
+      },
+      "review_ap_payment_readiness_scope_results": {
+        "type": "array",
+        "title": {
+          "zh": "分组付款复核结果",
+          "en": "Payment review scope results"
+        },
+        "items": {
+          "type": "object",
+          "properties": {
+            "scope_id": {
+              "type": "string"
+            },
+            "company_code": {
+              "type": "string"
+            },
+            "supplier": {
+              "type": "string"
+            },
+            "purchase_orders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "business_status": {
+              "type": "string",
+              "enum": [
+                "inconclusive",
+                "blocked",
+                "in_progress",
+                "complete"
+              ]
+            },
+            "open_item_count": {
+              "type": "integer"
+            },
+            "payment_blocked_count": {
+              "type": "integer"
+            },
+            "source_complete": {
+              "type": "boolean"
+            },
+            "evidence_complete": {
+              "type": "boolean"
+            },
+            "payment_run_evidence_complete": {
+              "type": "boolean"
+            },
+            "bank_master_evidence_complete": {
+              "type": "boolean"
+            },
+            "bank_settlement_evidence_complete": {
+              "type": "boolean"
+            },
+            "bank_settlement_status": {
+              "type": "string",
+              "const": "not_assessed"
+            }
+          },
+          "required": [
+            "scope_id",
+            "company_code",
+            "supplier",
+            "purchase_orders",
+            "business_status",
+            "open_item_count",
+            "payment_blocked_count",
+            "source_complete",
+            "evidence_complete",
+            "payment_run_evidence_complete",
+            "bank_master_evidence_complete",
+            "bank_settlement_evidence_complete",
+            "bank_settlement_status"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "review_ap_payment_readiness_business_status": {
+        "type": "string",
+        "title": {
+          "zh": "业务状态",
+          "en": "Business status"
+        }
+      },
+      "review_ap_payment_readiness_source_complete": {
+        "type": "boolean",
+        "title": {
+          "zh": "查询源完整性",
+          "en": "Query-source completeness"
+        }
+      },
+      "review_ap_payment_readiness_evidence_complete": {
+        "type": "boolean",
+        "title": {
+          "zh": "业务证据完整性",
+          "en": "Business-evidence completeness"
+        }
+      },
+      "review_ap_payment_readiness_payment_run_evidence_complete": {
+        "type": "boolean",
+        "title": {
+          "zh": "付款运行证据完整性",
+          "en": "Payment-run evidence completeness"
+        }
+      },
+      "review_ap_payment_readiness_bank_master_evidence_complete": {
+        "type": "boolean",
+        "title": {
+          "zh": "银行主数据证据完整性",
+          "en": "Bank-master evidence completeness"
+        }
+      },
+      "review_ap_payment_readiness_bank_settlement_evidence_complete": {
+        "type": "boolean",
+        "title": {
+          "zh": "银行扣款证据完整性",
+          "en": "Bank-settlement evidence completeness"
+        }
+      },
+      "review_ap_payment_readiness_bank_settlement_status": {
+        "type": "string",
+        "const": "not_assessed",
+        "title": {
+          "zh": "银行扣款核验状态",
+          "en": "Bank-settlement verification status"
+        }
+      },
+      "review_ap_payment_readiness_business_report": {
+        "type": "object",
+        "title": {
+          "zh": "结构化业务报告",
+          "en": "Structured business report"
+        }
+      }
+    },
+    "required": [
+      "trace_procure_to_pay_status_po_results",
+      "trace_procure_to_pay_status_ap_payment_scopes",
+      "trace_procure_to_pay_status_business_status",
+      "trace_procure_to_pay_status_source_complete",
+      "trace_procure_to_pay_status_evidence_complete",
+      "trace_procure_to_pay_status_business_report",
+      "review_ap_payment_readiness_scope_results",
+      "review_ap_payment_readiness_business_status",
+      "review_ap_payment_readiness_source_complete",
+      "review_ap_payment_readiness_evidence_complete",
+      "review_ap_payment_readiness_payment_run_evidence_complete",
+      "review_ap_payment_readiness_bank_master_evidence_complete",
+      "review_ap_payment_readiness_bank_settlement_evidence_complete",
+      "review_ap_payment_readiness_bank_settlement_status",
+      "review_ap_payment_readiness_business_report"
+    ],
+    "additionalProperties": false
+  },
+  "nodes": [
+    {
+      "id": "trace_procure_to_pay_status",
+      "agentId": "procure-to-pay-status",
+      "position": {
+        "x": 100,
+        "y": 120
+      },
+      "agentVersion": "0.3.1",
+      "agentDigest": "sha256:5c74c770f7c50be110d39654d7effabab2c7932acf59a232db01d50c503482d7"
+    },
+    {
+      "id": "review_ap_payment_readiness",
+      "agentId": "ap-payment",
+      "position": {
+        "x": 460,
+        "y": 120
+      },
+      "runIf": {
+        "source": {
+          "scope": "node_output",
+          "nodeId": "trace_procure_to_pay_status",
+          "port": "ap_payment_scopes"
+        },
+        "operator": "non_empty"
+      },
+      "onSkip": {
+        "reasonCode": "no_ap_payment_scopes",
+        "outputs": {
+          "scope_results": [],
+          "business_status": "inconclusive",
+          "source_complete": false,
+          "evidence_complete": false,
+          "payment_run_evidence_complete": false,
+          "bank_master_evidence_complete": false,
+          "bank_settlement_evidence_complete": false,
+          "bank_settlement_status": "not_assessed",
+          "business_report": {
+            "status": "inconclusive",
+            "reason_code": "no_ap_payment_scopes",
+            "summary": {
+              "zh": "P2P 未生成可供付款准备复核的应付证据分组，AP 阶段未执行。",
+              "en": "P2P produced no AP evidence scope for payment-readiness review, so the AP stage was not executed."
+            }
+          }
+        }
+      },
+      "agentVersion": "0.2.0",
+      "agentDigest": "sha256:922fb829b67251c159975fcd36a9144cb9bb9a1378c9ac6ff48f9d1f6318f9d6"
+    }
+  ],
+  "connections": [
+    {
+      "from": {
+        "scope": "workflow_input",
+        "port": "purchase_orders"
+      },
+      "to": {
+        "nodeId": "trace_procure_to_pay_status",
+        "port": "purchase_orders"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "from": {
+        "scope": "constant",
+        "value": "p2p_evidence"
+      },
+      "to": {
+        "nodeId": "review_ap_payment_readiness",
+        "port": "query_mode"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "from": {
+        "scope": "workflow_input",
+        "port": "as_of"
+      },
+      "to": {
+        "nodeId": "review_ap_payment_readiness",
+        "port": "as_of"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "from": {
+        "scope": "node_output",
+        "nodeId": "trace_procure_to_pay_status",
+        "port": "ap_payment_scopes"
+      },
+      "to": {
+        "nodeId": "review_ap_payment_readiness",
+        "port": "ap_payment_scopes"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "name": "trace_procure_to_pay_status_po_results",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "trace_procure_to_pay_status",
+        "port": "po_results"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "trace_procure_to_pay_status_ap_payment_scopes",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "trace_procure_to_pay_status",
+        "port": "ap_payment_scopes"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "trace_procure_to_pay_status_business_status",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "trace_procure_to_pay_status",
+        "port": "business_status"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "trace_procure_to_pay_status_source_complete",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "trace_procure_to_pay_status",
+        "port": "source_complete"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "trace_procure_to_pay_status_evidence_complete",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "trace_procure_to_pay_status",
+        "port": "evidence_complete"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "trace_procure_to_pay_status_business_report",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "trace_procure_to_pay_status",
+        "port": "business_report"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "review_ap_payment_readiness_scope_results",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "review_ap_payment_readiness",
+        "port": "scope_results"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "review_ap_payment_readiness_business_status",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "review_ap_payment_readiness",
+        "port": "business_status"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "review_ap_payment_readiness_source_complete",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "review_ap_payment_readiness",
+        "port": "source_complete"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "review_ap_payment_readiness_evidence_complete",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "review_ap_payment_readiness",
+        "port": "evidence_complete"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "review_ap_payment_readiness_payment_run_evidence_complete",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "review_ap_payment_readiness",
+        "port": "payment_run_evidence_complete"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "review_ap_payment_readiness_bank_master_evidence_complete",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "review_ap_payment_readiness",
+        "port": "bank_master_evidence_complete"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "review_ap_payment_readiness_bank_settlement_evidence_complete",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "review_ap_payment_readiness",
+        "port": "bank_settlement_evidence_complete"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "review_ap_payment_readiness_bank_settlement_status",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "review_ap_payment_readiness",
+        "port": "bank_settlement_status"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    },
+    {
+      "name": "review_ap_payment_readiness_business_report",
+      "source": {
+        "scope": "node_output",
+        "nodeId": "review_ap_payment_readiness",
+        "port": "business_report"
+      },
+      "transform": {
+        "type": "identity"
+      }
+    }
+  ],
+  "policies": {
+    "onInconclusive": "continue_if_required_outputs_present"
+  },
+  "status": "Published",
+  "validation": {
+    "run_id": "run_4036049ed03048a0",
+    "workflow_hash": "sha256:f8f4f3f32a8e6e6ad2c6ccdcb5687b34b53f4c7c957b7173aa92f1ada5842bc1",
+    "status": "inconclusive",
+    "report_digest": "sha256:7299b9c9a2c45a85db4629290d84c6b758792277aea01c142eaa02723a71f5cc",
+    "evidence_gap_codes": [
+      "bank_settlement_not_proven",
+      "payment_run_and_bank_master_evidence"
+    ],
+    "acknowledgement": {
+      "validation_run_id": "run_4036049ed03048a0",
+      "validation_report_digest": "sha256:7299b9c9a2c45a85db4629290d84c6b758792277aea01c142eaa02723a71f5cc",
+      "accepted_gap_codes": [
+        "bank_settlement_not_proven",
+        "payment_run_and_bank_master_evidence"
+      ],
+      "acknowledged_at": "2026-08-30T12:31:37.087794+00:00"
+    },
+    "validated_at": "2026-08-30T12:17:44.501345+00:00"
+  }
+}

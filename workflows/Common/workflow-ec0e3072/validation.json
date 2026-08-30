@@ -1,0 +1,20 @@
+{
+  "run_id": "run_4036049ed03048a0",
+  "workflow_hash": "sha256:f8f4f3f32a8e6e6ad2c6ccdcb5687b34b53f4c7c957b7173aa92f1ada5842bc1",
+  "status": "inconclusive",
+  "report_digest": "sha256:7299b9c9a2c45a85db4629290d84c6b758792277aea01c142eaa02723a71f5cc",
+  "evidence_gap_codes": [
+    "bank_settlement_not_proven",
+    "payment_run_and_bank_master_evidence"
+  ],
+  "acknowledgement": {
+    "validation_run_id": "run_4036049ed03048a0",
+    "validation_report_digest": "sha256:7299b9c9a2c45a85db4629290d84c6b758792277aea01c142eaa02723a71f5cc",
+    "accepted_gap_codes": [
+      "bank_settlement_not_proven",
+      "payment_run_and_bank_master_evidence"
+    ],
+    "acknowledged_at": "2026-08-30T12:31:37.087794+00:00"
+  },
+  "validated_at": "2026-08-30T12:17:44.501345+00:00"
+}
