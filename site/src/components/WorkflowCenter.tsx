@@ -17,6 +17,22 @@ type Publication = {
   evidence_gap_codes: string[];
   acknowledgement_recorded: boolean;
 };
+type Lifecycle = {
+  state: "active" | "inactive";
+  current_version: string;
+  workflow_hash: string;
+  version_count: number;
+  deactivated_at?: string | null;
+  deactivation_reason?: string | null;
+  business_run_count: number;
+};
+type WorkflowManagement = {
+  can_create_version: boolean;
+  can_deactivate: boolean;
+  can_activate: boolean;
+  can_delete: boolean;
+  blockers: string[];
+};
 type CatalogItem = {
   id: string;
   version: string;
@@ -25,6 +41,16 @@ type CatalogItem = {
   read_only: boolean;
   node_count: number;
   publication: Publication;
+  lifecycle: Lifecycle;
+  management: WorkflowManagement;
+};
+type VersionSummary = {
+  version: string;
+  current: boolean;
+  workflow_hash: string;
+  validation_status: string;
+  validation_run_id?: string | null;
+  validated_at?: string | null;
 };
 type WorkflowDetail = WorkflowDefinition & {
   status?: string;
@@ -77,6 +103,37 @@ const copy = {
     arrayHint: "每行一个，也可使用逗号或分号分隔",
     emptyItem: "不能包含空白项目。",
     unsupportedInput: "当前页面暂不支持此输入类型。",
+    activeWorkflows: "使用中的工作流",
+    inactiveWorkflows: "已停用工作流",
+    inactive: "已停用",
+    inactiveHelp: "该工作流不会接受新任务，但历史运行和版本仍然保留。",
+    manage: "工作流管理",
+    createVersion: "创建新版本",
+    deactivate: "停用工作流",
+    activate: "重新启用",
+    delete: "永久删除",
+    versionHistory: "版本历史",
+    currentVersion: "当前版本",
+    archivedVersion: "历史版本",
+    viewVersion: "查看版本",
+    bumpPatch: "补丁版本",
+    bumpMinor: "次版本",
+    bumpMajor: "主版本",
+    reason: "操作原因（选填）",
+    cancel: "取消",
+    confirm: "确认",
+    deleteConfirm: "请输入完整工作流ID以确认永久删除",
+    deleteWarning: "永久删除会从当前正式目录移除全部版本，但不会改写Git历史。",
+    gitPending: "操作已完成。请提交当前Git分支上的修改：",
+    managementFailed: "工作流管理操作失败。",
+    blockers: "当前不能永久删除",
+    noInactive: "还没有已停用工作流。",
+    businessRuns: "正式业务运行次数",
+    workflowMustBeInactive: "必须先停用工作流",
+    workflowHasBusinessRuns: "已经存在正式业务运行",
+    workflowHasOpenVersionDrafts: "存在尚未完成的新版本草稿",
+    workflowIsReferenced: "被其他正式定义引用",
+    closeVersion: "关闭版本详情",
   },
   en: {
     published: "Published workflows",
@@ -123,6 +180,37 @@ const copy = {
     arrayHint: "One item per line, or separate items with commas or semicolons",
     emptyItem: "Blank items are not allowed.",
     unsupportedInput: "This input type is not supported by the current page.",
+    activeWorkflows: "Active workflows",
+    inactiveWorkflows: "Inactive workflows",
+    inactive: "Inactive",
+    inactiveHelp: "This workflow does not accept new runs, while its history and versions remain available.",
+    manage: "Workflow management",
+    createVersion: "Create new version",
+    deactivate: "Deactivate workflow",
+    activate: "Reactivate",
+    delete: "Permanently delete",
+    versionHistory: "Version history",
+    currentVersion: "Current version",
+    archivedVersion: "Historical version",
+    viewVersion: "View version",
+    bumpPatch: "Patch version",
+    bumpMinor: "Minor version",
+    bumpMajor: "Major version",
+    reason: "Reason (optional)",
+    cancel: "Cancel",
+    confirm: "Confirm",
+    deleteConfirm: "Enter the full workflow ID to confirm permanent deletion",
+    deleteWarning: "Permanent deletion removes every version from the current catalog but does not rewrite Git history.",
+    gitPending: "The operation completed. Commit the changes on this Git branch:",
+    managementFailed: "Workflow management failed.",
+    blockers: "Permanent deletion is currently blocked",
+    noInactive: "There are no inactive workflows.",
+    businessRuns: "Business run count",
+    workflowMustBeInactive: "Deactivate the workflow first",
+    workflowHasBusinessRuns: "The workflow has business runs",
+    workflowHasOpenVersionDrafts: "An unfinished version draft exists",
+    workflowIsReferenced: "Another published definition references this workflow",
+    closeVersion: "Close version details",
   },
 } as const;
 
@@ -153,6 +241,13 @@ export default function WorkflowCenter({ apiBase, locale, runPath, askPath }: Ce
     setWorkflowId(nextWorkflowId ?? null);
   }, []);
 
+  const openDraft = useCallback((draftId: string) => {
+    const query = new URLSearchParams({ view: "create", draft: draftId, step: "review" });
+    history.pushState({}, "", `${window.location.pathname}?${query.toString()}`);
+    setView("create");
+    setWorkflowId(null);
+  }, []);
+
   return (
     <div className="workflow-center">
       <nav className="workflow-center-nav" aria-label={locale === "zh" ? "工作流视图" : "Workflow views"}>
@@ -181,6 +276,7 @@ export default function WorkflowCenter({ apiBase, locale, runPath, askPath }: Ce
           selectedWorkflowId={workflowId}
           onSelectWorkflow={(id) => navigate("published", id)}
           onCreate={() => navigate("create")}
+          onEditDraft={openDraft}
         />
       )}
     </div>
@@ -194,6 +290,7 @@ function PublishedWorkflowCatalog({
   selectedWorkflowId,
   onSelectWorkflow,
   onCreate,
+  onEditDraft,
 }: {
   apiBase: string;
   locale: Locale;
@@ -201,6 +298,7 @@ function PublishedWorkflowCatalog({
   selectedWorkflowId: string | null;
   onSelectWorkflow: (workflowId: string | null) => void;
   onCreate: () => void;
+  onEditDraft: (draftId: string) => void;
 }) {
   const t = copy[locale];
   const [items, setItems] = useState<CatalogItem[]>([]);
@@ -211,12 +309,14 @@ function PublishedWorkflowCatalog({
   const [detailError, setDetailError] = useState("");
   const [search, setSearch] = useState("");
   const [focusRun, setFocusRun] = useState(false);
+  const [catalogState, setCatalogState] = useState<"active" | "inactive">("active");
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     Promise.all([
-      fetch(`${apiBase}/api/workflows/catalog`),
+      fetch(`${apiBase}/api/workflows/catalog?state=all`),
       fetch(`${apiBase}/api/agents`),
     ]).then(async ([catalogResponse, agentResponse]) => {
       if (!catalogResponse.ok) throw new Error(t.loadFailed);
@@ -230,7 +330,7 @@ function PublishedWorkflowCatalog({
     }).catch(() => { if (!cancelled) setError(t.loadFailed); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [apiBase, t.loadFailed]);
+  }, [apiBase, reloadToken, t.loadFailed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -245,7 +345,7 @@ function PublishedWorkflowCatalog({
       })
       .catch(() => { if (!cancelled) setDetailError(t.detailFailed); });
     return () => { cancelled = true; };
-  }, [apiBase, selectedWorkflowId, t.detailFailed]);
+  }, [apiBase, reloadToken, selectedWorkflowId, t.detailFailed]);
 
   useEffect(() => {
     if (!detail || !focusRun) return;
@@ -255,10 +355,11 @@ function PublishedWorkflowCatalog({
 
   const filtered = useMemo(() => {
     const query = search.trim().toLocaleLowerCase(locale === "zh" ? "zh-CN" : "en-US");
-    if (!query) return items;
-    return items.filter((item) => [item.id, item.title[locale], item.description[locale]]
+    const scoped = items.filter((item) => item.lifecycle.state === catalogState);
+    if (!query) return scoped;
+    return scoped.filter((item) => [item.id, item.title[locale], item.description[locale]]
       .some((value) => String(value ?? "").toLocaleLowerCase(locale === "zh" ? "zh-CN" : "en-US").includes(query)));
-  }, [items, locale, search]);
+  }, [catalogState, items, locale, search]);
   const selectedItem = items.find((item) => item.id === selectedWorkflowId);
   const agentMap = useMemo(() => new Map(agents.map((agent) => [agent.slug, agent])), [agents]);
 
@@ -268,7 +369,7 @@ function PublishedWorkflowCatalog({
         <button className="workflow-back-button" onClick={() => { setFocusRun(false); onSelectWorkflow(null); }}>{t.back}</button>
         {detailError && <p className="workflow-catalog-error" role="alert">{detailError}</p>}
         {!detail && !detailError && <p className="workflow-catalog-state"><span className="workflow-spinner" />{t.loading}</p>}
-        {detail && <WorkflowDetails item={selectedItem} workflow={detail} agents={agentMap} locale={locale} apiBase={apiBase} runPath={runPath} />}
+        {detail && <WorkflowDetails item={selectedItem} workflow={detail} agents={agentMap} locale={locale} apiBase={apiBase} runPath={runPath} onEditDraft={onEditDraft} onChanged={() => setReloadToken((value) => value + 1)} onDeleted={() => onSelectWorkflow(null)} />}
       </main>
     );
   }
@@ -279,18 +380,19 @@ function PublishedWorkflowCatalog({
         <div><p className="eyebrow">Published workflows</p><h1>{t.published}</h1><p>{t.lead}</p></div>
         <button className="workflow-primary-button" onClick={onCreate}>{t.create}</button>
       </header>
+      <div className="workflow-lifecycle-tabs" role="tablist"><button className={catalogState === "active" ? "is-active" : ""} onClick={() => setCatalogState("active")}>{t.activeWorkflows} ({items.filter((item) => item.lifecycle.state === "active").length})</button><button className={catalogState === "inactive" ? "is-active" : ""} onClick={() => setCatalogState("inactive")}>{t.inactiveWorkflows} ({items.filter((item) => item.lifecycle.state === "inactive").length})</button></div>
       <label className="workflow-catalog-search"><span>{t.search}</span><input type="search" value={search} placeholder={t.searchPlaceholder} onChange={(event) => setSearch(event.target.value)} /></label>
       {loading && <p className="workflow-catalog-state"><span className="workflow-spinner" />{t.loading}</p>}
       {error && <p className="workflow-catalog-error" role="alert">{error}</p>}
       {!loading && !error && items.length === 0 && <section className="workflow-catalog-empty"><p>{t.empty}</p><button onClick={onCreate}>{t.create}</button></section>}
-      {!loading && !error && items.length > 0 && filtered.length === 0 && <p className="workflow-catalog-empty">{t.noMatches}</p>}
+      {!loading && !error && items.length > 0 && filtered.length === 0 && <p className="workflow-catalog-empty">{catalogState === "inactive" && !search ? t.noInactive : t.noMatches}</p>}
       {!loading && !error && filtered.length > 0 && <section className="workflow-card-grid">{filtered.map((item) => (
         <article className="workflow-card" key={item.id}>
-          <header><span className="workflow-readonly-badge">{t.readOnly}</span><PublicationBadge publication={item.publication} locale={locale} /></header>
+          <header><span className="workflow-readonly-badge">{item.lifecycle.state === "inactive" ? t.inactive : t.readOnly}</span><PublicationBadge publication={item.publication} locale={locale} /></header>
           <div><h2>{item.title[locale]}</h2><p>{item.description[locale]}</p></div>
           <dl><div><dt>{t.version}</dt><dd>{item.version}</dd></div><div><dt>{t.nodes}</dt><dd>{item.node_count}</dd></div></dl>
           <code>{item.id}</code>
-          <footer><button onClick={() => { setFocusRun(false); onSelectWorkflow(item.id); }}>{t.view}</button><button className="workflow-primary-button" onClick={() => { setFocusRun(true); onSelectWorkflow(item.id); }}>{t.run}</button></footer>
+          <footer><button onClick={() => { setFocusRun(false); onSelectWorkflow(item.id); }}>{t.view}</button>{item.lifecycle.state === "active" && <button className="workflow-primary-button" onClick={() => { setFocusRun(true); onSelectWorkflow(item.id); }}>{t.run}</button>}</footer>
         </article>
       ))}</section>}
     </main>
@@ -312,6 +414,9 @@ function WorkflowDetails({
   locale,
   apiBase,
   runPath,
+  onEditDraft,
+  onChanged,
+  onDeleted,
 }: {
   item?: CatalogItem;
   workflow: WorkflowDetail;
@@ -319,6 +424,9 @@ function WorkflowDetails({
   locale: Locale;
   apiBase: string;
   runPath: string;
+  onEditDraft: (draftId: string) => void;
+  onChanged: () => void;
+  onDeleted: () => void;
 }) {
   const t = copy[locale];
   const publication = item?.publication ?? {
@@ -338,7 +446,10 @@ function WorkflowDetails({
         <div><p className="eyebrow">{workflow.id}</p><h1>{workflow.title[locale]}</h1><p>{workflow.description[locale]}</p></div>
         <div className="workflow-detail-badges"><span className="workflow-readonly-badge">{t.readOnly}</span><PublicationBadge publication={publication} locale={locale} /></div>
       </header>
+      {item?.lifecycle.state === "inactive" && <section className="workflow-inactive-notice"><strong>{t.inactive}</strong><p>{t.inactiveHelp}</p>{item.lifecycle.deactivation_reason && <small>{item.lifecycle.deactivation_reason}</small>}</section>}
       <section className="workflow-detail-overview"><article><span>{t.version}</span><strong>{workflow.version}</strong></article><article><span>{t.nodes}</span><strong>{workflow.nodes.length}</strong></article><article><span>{t.validatedAt}</span><strong>{validationDate}</strong></article></section>
+      {item && <WorkflowManagementPanel item={item} workflow={workflow} locale={locale} apiBase={apiBase} onEditDraft={onEditDraft} onChanged={onChanged} onDeleted={onDeleted} />}
+      <WorkflowVersionHistory workflowId={workflow.id} currentWorkflow={workflow} agents={agents} locale={locale} apiBase={apiBase} />
       <section className="workflow-detail-section"><h2>{t.purpose}</h2><p>{workflow.description[locale]}</p></section>
       <section className="workflow-detail-section"><h2>{t.sequence}</h2><ol className="workflow-detail-steps">{workflow.nodes.map((node, index) => {
         const agent = agents.get(node.agentId);
@@ -349,9 +460,124 @@ function WorkflowDetails({
         <section className="workflow-detail-section"><h2>{t.outputs}</h2><ul className="workflow-contract-list">{Object.entries(workflow.outputSchema.properties).map(([name, schema]) => <li key={name}><div><strong>{schema.title?.[locale] ?? humanize(name)}</strong><small>{name}</small></div><span>{requiredOutputs.has(name) ? t.required : t.optional}</span></li>)}</ul></section>
       </div>
       <section className="workflow-detail-section workflow-publication-summary"><h2>{t.validation}</h2><dl><div><dt>{t.validation}</dt><dd><PublicationBadge publication={publication} locale={locale} /></dd></div><div><dt>{t.validationRun}</dt><dd>{publication.validation_run_id ? <a href={`${runPath}?run=${encodeURIComponent(publication.validation_run_id)}`}>{publication.validation_run_id}</a> : "—"}</dd></div><div><dt>{t.validatedAt}</dt><dd>{validationDate}</dd></div></dl>{publication.acknowledgement_recorded && <p>{t.acknowledged}</p>}<h3>{t.gaps}</h3>{publication.evidence_gap_codes.length ? <ul>{publication.evidence_gap_codes.map((code) => <li key={code}><code>{code}</code></li>)}</ul> : <p>{t.noGaps}</p>}</section>
-      <WorkflowRunForm workflow={workflow} locale={locale} apiBase={apiBase} runPath={runPath} />
+      {item?.lifecycle.state === "active" && <WorkflowRunForm workflow={workflow} locale={locale} apiBase={apiBase} runPath={runPath} />}
     </article>
   );
+}
+
+function WorkflowManagementPanel({ item, workflow, locale, apiBase, onEditDraft, onChanged, onDeleted }: {
+  item: CatalogItem;
+  workflow: WorkflowDetail;
+  locale: Locale;
+  apiBase: string;
+  onEditDraft: (draftId: string) => void;
+  onChanged: () => void;
+  onDeleted: () => void;
+}) {
+  const t = copy[locale];
+  const [action, setAction] = useState<"version" | "deactivate" | "activate" | "delete" | null>(null);
+  const [bump, setBump] = useState<"patch" | "minor" | "major">("patch");
+  const [reason, setReason] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const blockerText = (code: string) => ({
+    workflow_must_be_inactive: t.workflowMustBeInactive,
+    workflow_has_business_runs: t.workflowHasBusinessRuns,
+    workflow_has_open_version_drafts: t.workflowHasOpenVersionDrafts,
+    workflow_is_referenced: t.workflowIsReferenced,
+  } as Record<string, string>)[code] ?? code;
+
+  const close = () => { setAction(null); setError(""); setReason(""); setConfirmation(""); };
+  const execute = async () => {
+    if (!action) return;
+    setBusy(true);
+    setError("");
+    try {
+      const common = {
+        expectedVersion: item.lifecycle.current_version,
+        expectedWorkflowHash: item.lifecycle.workflow_hash,
+      };
+      const url = action === "version"
+        ? `${apiBase}/api/workflows/${encodeURIComponent(workflow.id)}/versions/draft`
+        : action === "delete"
+          ? `${apiBase}/api/workflows/${encodeURIComponent(workflow.id)}`
+          : `${apiBase}/api/workflows/${encodeURIComponent(workflow.id)}/${action}`;
+      const body = action === "version" ? { ...common, bump }
+        : action === "delete" ? { ...common, confirmWorkflowId: confirmation }
+          : { ...common, reason: reason.trim() || null };
+      const response = await fetch(url, {
+        method: action === "delete" ? "DELETE" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(apiErrorMessage(payload, t.managementFailed));
+      if (action === "version") {
+        const draftId = String(payload?.draft?.draft_id ?? "");
+        if (!draftId) throw new Error(t.managementFailed);
+        onEditDraft(draftId);
+        return;
+      }
+      if (action === "delete") {
+        onDeleted();
+        return;
+      }
+      setSuccess(`${t.gitPending} ${String(payload.branch ?? "—")}`);
+      close();
+      onChanged();
+    } catch (reasonValue) {
+      setError(reasonValue instanceof Error ? reasonValue.message : t.managementFailed);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <section className="workflow-detail-section workflow-management-panel">
+    <div className="workflow-management-heading"><div><h2>{t.manage}</h2><p>{t.businessRuns}: {item.lifecycle.business_run_count}</p></div><div className="workflow-management-actions"><button disabled={!item.management.can_create_version} onClick={() => setAction("version")}>{t.createVersion}</button>{item.management.can_deactivate && <button onClick={() => setAction("deactivate")}>{t.deactivate}</button>}{item.management.can_activate && <button onClick={() => setAction("activate")}>{t.activate}</button>}<button className="danger-button" disabled={!item.management.can_delete} onClick={() => setAction("delete")}>{t.delete}</button></div></div>
+    {item.management.blockers.length > 0 && <div className="workflow-management-blockers"><strong>{t.blockers}</strong><ul>{item.management.blockers.map((code) => <li key={code}>{blockerText(code)}</li>)}</ul></div>}
+    {success && <p className="workflow-management-success" role="status">{success}</p>}
+    {action && <div className="workflow-modal-backdrop"><section className="workflow-modal" role="dialog" aria-modal="true"><h2>{action === "version" ? t.createVersion : action === "deactivate" ? t.deactivate : action === "activate" ? t.activate : t.delete}</h2>{action === "version" && <label><span>{t.version}</span><select value={bump} onChange={(event) => setBump(event.target.value as typeof bump)}><option value="patch">{t.bumpPatch}</option><option value="minor">{t.bumpMinor}</option><option value="major">{t.bumpMajor}</option></select></label>}{(action === "deactivate" || action === "activate") && <label><span>{t.reason}</span><textarea rows={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label>}{action === "delete" && <><p>{t.deleteWarning}</p><label><span>{t.deleteConfirm}</span><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder={workflow.id} /></label></>}{error && <p className="workflow-catalog-error" role="alert">{error}</p>}<footer><button disabled={busy} onClick={close}>{t.cancel}</button><button className={action === "delete" ? "danger-button" : "workflow-primary-button"} disabled={busy || action === "delete" && confirmation !== workflow.id} onClick={execute}>{t.confirm}</button></footer></section></div>}
+  </section>;
+}
+
+function WorkflowVersionHistory({ workflowId, currentWorkflow, agents, locale, apiBase }: {
+  workflowId: string;
+  currentWorkflow: WorkflowDetail;
+  agents: Map<string, AgentDefinition>;
+  locale: Locale;
+  apiBase: string;
+}) {
+  const t = copy[locale];
+  const [versions, setVersions] = useState<VersionSummary[]>([]);
+  const [selected, setSelected] = useState<WorkflowDetail | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiBase}/api/workflows/${encodeURIComponent(workflowId)}/versions`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(t.detailFailed);
+        const payload = await response.json() as VersionSummary[];
+        if (!cancelled) setVersions(payload);
+      })
+      .catch(() => { if (!cancelled) setError(t.detailFailed); });
+    return () => { cancelled = true; };
+  }, [apiBase, t.detailFailed, workflowId, currentWorkflow.version]);
+
+  const view = async (version: VersionSummary) => {
+    if (version.current) { setSelected(currentWorkflow); return; }
+    setError("");
+    try {
+      const response = await fetch(`${apiBase}/api/workflows/${encodeURIComponent(workflowId)}/versions/${encodeURIComponent(version.version)}`);
+      if (!response.ok) throw new Error(t.detailFailed);
+      setSelected(await response.json() as WorkflowDetail);
+    } catch {
+      setError(t.detailFailed);
+    }
+  };
+
+  return <section className="workflow-detail-section workflow-version-history"><h2>{t.versionHistory}</h2>{error && <p className="workflow-catalog-error">{error}</p>}<div className="workflow-version-table">{versions.map((version) => <article key={version.version}><div><strong>v{version.version}</strong><span>{version.current ? t.currentVersion : t.archivedVersion}</span></div><div><PublicationBadge publication={{ validation_status: version.validation_status, validation_run_id: version.validation_run_id, validated_at: version.validated_at, evidence_gap_codes: [], acknowledgement_recorded: false }} locale={locale} /></div><button onClick={() => view(version)}>{t.viewVersion}</button></article>)}</div>{selected && <div className="workflow-version-preview"><button onClick={() => setSelected(null)}>{t.closeVersion}</button><h3>{selected.title[locale]} · v{selected.version}</h3><p>{selected.description[locale]}</p><ol>{selected.nodes.map((node) => <li key={node.id}>{agents.get(node.agentId)?.title?.[locale] ?? node.agentId} · v{node.agentVersion ?? "—"}</li>)}</ol><p>{t.inputs}: {Object.keys(selected.inputSchema.properties).join(", ") || "—"}</p><p>{t.outputs}: {Object.keys(selected.outputSchema.properties).join(", ") || "—"}</p></div>}</section>;
 }
 
 function WorkflowRunForm({ workflow, locale, apiBase, runPath }: { workflow: WorkflowDetail; locale: Locale; apiBase: string; runPath: string }) {

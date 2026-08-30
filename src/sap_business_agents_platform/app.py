@@ -30,10 +30,13 @@ from .models import (
     TERMINAL_STATUSES,
     WorkflowCompositionCreate,
     WorkflowCompositionInput,
+    WorkflowDeleteRequest,
     WorkflowDraftCreate,
     WorkflowDraftUpdate,
+    WorkflowLifecycleRequest,
     WorkflowPublishRequest,
     WorkflowValidationRequest,
+    WorkflowVersionDraftRequest,
 )
 from .plugins import (
     AgentRuntimeCapability,
@@ -58,7 +61,7 @@ from .sdk_manager import SDKManager, SDKManagerError
 from .skills import SkillRegistry
 from .workbuddy_planner import WorkBuddyPlanner
 from .workflow_factory import WorkflowDraftError, WorkflowDraftService
-from .workflows import WorkflowError, WorkflowRepository
+from .workflows import WorkflowError, WorkflowManagementService, WorkflowRepository
 
 
 LOGGER = logging.getLogger(__name__)
@@ -151,7 +154,9 @@ def create_app(
     skills = SkillCapability(plugin_manager)
     agent_runtime = AgentRuntimeCapability(plugin_manager)
     business_agents = BusinessAgentCapability(plugin_manager)
-    workflows = WorkflowRepository(settings.repository_root / "workflows", business_agents)
+    workflows = WorkflowRepository(
+        settings.repository_root / "workflows", business_agents, store
+    )
     harness_broker = HarnessToolBroker(settings, store, sap_read, skills)
     harness = (
         CodexHarnessController(settings, store, harness_broker)
@@ -171,6 +176,12 @@ def create_app(
     drafts = AgentDraftService(settings, store, agent_runtime)
     workflow_drafts = WorkflowDraftService(
         settings, store, business_agents, coordinator, sap_read, agent_runtime
+    )
+    workflow_management = WorkflowManagementService(
+        repository_root=settings.repository_root,
+        repository=workflows,
+        store=store,
+        drafts=workflow_drafts,
     )
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -195,7 +206,7 @@ def create_app(
             "http://127.0.0.1:3000",
             "http://localhost:3000",
         ],
-        allow_methods=["GET", "POST", "PUT"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
     )
     app.state.settings = settings
@@ -212,6 +223,7 @@ def create_app(
     app.state.drafts = drafts
     app.state.workflows = workflows
     app.state.workflow_drafts = workflow_drafts
+    app.state.workflow_management = workflow_management
     app.state.sdk_manager = sdk_registry
 
     @app.get("/api/health")
@@ -355,11 +367,121 @@ def create_app(
             raise HTTPException(503, {"code": exc.code, "message": str(exc)}) from exc
 
     @app.get("/api/workflows/catalog")
-    def workflow_catalog() -> list[dict[str, Any]]:
+    def workflow_catalog(state: str = Query(default="active")) -> list[dict[str, Any]]:
         try:
-            return workflows.catalog()
+            return workflows.catalog(state)
         except WorkflowError as exc:
             raise HTTPException(503, {"code": exc.code, "message": str(exc)}) from exc
+
+    @app.get("/api/workflows/{workflow_id}/versions")
+    def workflow_versions(workflow_id: str) -> list[dict[str, Any]]:
+        try:
+            return workflows.versions(workflow_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow not found") from exc
+        except WorkflowError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+
+    @app.get("/api/workflows/{workflow_id}/versions/{version}")
+    def workflow_version(workflow_id: str, version: str) -> dict[str, Any]:
+        try:
+            return workflows.get_version(workflow_id, version)
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow version not found") from exc
+        except WorkflowError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+
+    @app.post("/api/workflows/{workflow_id}/versions/draft", status_code=201)
+    def create_workflow_version_draft(
+        workflow_id: str, payload: WorkflowVersionDraftRequest
+    ) -> dict[str, Any]:
+        try:
+            return workflow_management.create_version_draft(
+                workflow_id,
+                bump=payload.bump,
+                expected_version=payload.expected_version,
+                expected_workflow_hash=payload.expected_workflow_hash,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow not found") from exc
+        except (WorkflowError, WorkflowDraftError) as exc:
+            raise HTTPException(
+                409,
+                {
+                    "code": getattr(exc, "code", "workflow_management_failed"),
+                    "message": str(exc),
+                    "detail": getattr(exc, "detail", None),
+                },
+            ) from exc
+
+    @app.post("/api/workflows/{workflow_id}/deactivate")
+    def deactivate_workflow(
+        workflow_id: str, payload: WorkflowLifecycleRequest
+    ) -> dict[str, Any]:
+        try:
+            return workflow_management.deactivate(
+                workflow_id,
+                expected_version=payload.expected_version,
+                expected_workflow_hash=payload.expected_workflow_hash,
+                reason=payload.reason,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow not found") from exc
+        except (WorkflowError, subprocess.CalledProcessError) as exc:
+            raise HTTPException(
+                409,
+                {
+                    "code": getattr(exc, "code", "workflow_management_failed"),
+                    "message": str(exc),
+                    "detail": getattr(exc, "detail", None),
+                },
+            ) from exc
+
+    @app.post("/api/workflows/{workflow_id}/activate")
+    def activate_workflow(
+        workflow_id: str, payload: WorkflowLifecycleRequest
+    ) -> dict[str, Any]:
+        try:
+            return workflow_management.activate(
+                workflow_id,
+                expected_version=payload.expected_version,
+                expected_workflow_hash=payload.expected_workflow_hash,
+                reason=payload.reason,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow not found") from exc
+        except (WorkflowError, subprocess.CalledProcessError) as exc:
+            raise HTTPException(
+                409,
+                {
+                    "code": getattr(exc, "code", "workflow_management_failed"),
+                    "message": str(exc),
+                    "detail": getattr(exc, "detail", None),
+                },
+            ) from exc
+
+    @app.delete("/api/workflows/{workflow_id}")
+    def delete_workflow(
+        workflow_id: str, payload: WorkflowDeleteRequest
+    ) -> dict[str, Any]:
+        try:
+            return workflow_management.delete(
+                workflow_id,
+                expected_version=payload.expected_version,
+                expected_workflow_hash=payload.expected_workflow_hash,
+                confirm_workflow_id=payload.confirm_workflow_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow not found") from exc
+        except (WorkflowError, subprocess.CalledProcessError) as exc:
+            raise HTTPException(
+                409,
+                {
+                    "code": getattr(exc, "code", "workflow_management_failed"),
+                    "message": str(exc),
+                    "detail": getattr(exc, "detail", None),
+                },
+            ) from exc
 
     @app.get("/api/workflows/{workflow_id}")
     def get_workflow(workflow_id: str) -> dict[str, Any]:

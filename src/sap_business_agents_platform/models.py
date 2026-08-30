@@ -412,6 +412,41 @@ class WorkflowPublishRequest(BaseModel):
     accepted_gap_codes: list[str] = Field(default_factory=list, alias="acceptedGapCodes")
 
 
+class WorkflowVersionDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bump: Literal["patch", "minor", "major"] = "patch"
+    expected_version: str = Field(alias="expectedVersion", pattern=r"^\d+\.\d+\.\d+$")
+    expected_workflow_hash: str = Field(
+        alias="expectedWorkflowHash", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+
+
+class WorkflowLifecycleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: str = Field(alias="expectedVersion", pattern=r"^\d+\.\d+\.\d+$")
+    expected_workflow_hash: str = Field(
+        alias="expectedWorkflowHash", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def strip_reason(self) -> "WorkflowLifecycleRequest":
+        self.reason = self.reason.strip() if self.reason else None
+        return self
+
+
+class WorkflowDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: str = Field(alias="expectedVersion", pattern=r"^\d+\.\d+\.\d+$")
+    expected_workflow_hash: str = Field(
+        alias="expectedWorkflowHash", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    confirm_workflow_id: str = Field(alias="confirmWorkflowId", min_length=1, max_length=128)
+
+
 class WorkflowDraftRecord(BaseModel):
     draft_id: str
     status: Literal[

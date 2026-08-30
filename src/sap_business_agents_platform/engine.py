@@ -195,7 +195,7 @@ class RunCoordinator:
         if request.mode == RunMode.workflow:
             if self.workflows is None:
                 raise RunExecutionError("Workflow runtime is unavailable.", code="workflow_unavailable")
-            workflow = self.workflows.get(str(request.workflow_id))
+            workflow = self.workflows.get_runnable(str(request.workflow_id))
             try:
                 normalized_input = self.normalizer.normalize_input(
                     request.input, workflow["inputSchema"]

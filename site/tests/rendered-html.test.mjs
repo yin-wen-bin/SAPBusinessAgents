@@ -209,6 +209,12 @@ test("workflow builder is rendered and consistently localized", async () => {
   assert.match(en, /Loading published workflows/);
   assert.doesNotMatch(en, />工作流编排</);
   assert.match(centerSource, /\/api\/workflows\/catalog/);
+  assert.match(centerSource, /使用中的工作流/);
+  assert.match(centerSource, /已停用工作流/);
+  assert.match(centerSource, /创建新版本/);
+  assert.match(centerSource, /永久删除/);
+  assert.match(centerSource, /\/versions\/draft/);
+  assert.match(centerSource, /method: action === "delete" \? "DELETE" : "POST"/);
   assert.match(centerSource, /mode: "workflow", workflowId: workflow\.id/);
   assert.match(centerSource, /每行一个，也可使用逗号或分号分隔/);
   assert.match(centerSource, /发布验证记录不可用/);

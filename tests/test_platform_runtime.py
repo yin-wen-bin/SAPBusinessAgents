@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import subprocess
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -30,8 +32,10 @@ from sap_business_agents_platform.models import (
     RunPresentation,
     RunResult,
     RunStatus,
+    utc_now,
 )
 from sap_business_agents_platform.skills import SkillError, SkillRegistry
+from sap_business_agents_platform.workflows import workflow_digest
 
 
 def test_validate_input_enforces_string_length_and_pattern() -> None:
@@ -1280,8 +1284,14 @@ def test_published_workflow_catalog_exposes_safe_publication_metadata(tmp_path: 
         "description",
         "read_only",
         "node_count",
+        "lifecycle",
+        "management",
         "publication",
     }
+    assert published["lifecycle"]["state"] == "active"
+    assert published["lifecycle"]["current_version"] == "1.0.0"
+    assert published["management"]["can_deactivate"] is True
+    assert published["management"]["can_activate"] is False
 
 
 def test_shortage_agent_explicit_empty_or_null_defaulted_input_is_rejected(
@@ -2060,3 +2070,293 @@ def test_progress_tracks_delayed_sap_activity_instead_of_existing_rule_results(
         ]
         assert progress_events
         assert progress_events[-1].sequence == completed["progress"]["event_sequence"]
+
+
+def _workflow_management_repository(tmp_path: Path) -> Path:
+    source = Path(__file__).resolve().parents[1]
+    repository = tmp_path / "managed-repository"
+    repository.mkdir()
+    for name in ("agents", "config", "workflows"):
+        shutil.copytree(source / name, repository / name)
+    subprocess.run(
+        ["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.name", "Workflow Test"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "workflow@example.invalid"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"], cwd=repository, check=True, capture_output=True
+    )
+    return repository
+
+
+def _commit_management_change(repository: Path, message: str) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", message], cwd=repository, check=True, capture_output=True
+    )
+
+
+def test_workflow_management_creates_semver_draft_without_changing_current(
+    tmp_path: Path,
+) -> None:
+    repository = _workflow_management_repository(tmp_path)
+    settings = replace(_settings(tmp_path), repository_root=repository)
+    app = create_app(
+        settings, planner=FakePlanner(), embedded_provider=FakeEmbeddedProvider()
+    )
+    with TestClient(app) as client:
+        item = {
+            row["id"]: row for row in client.get("/api/workflows/catalog?state=all").json()
+        }["workflow-ec0e3072"]
+        response = client.post(
+            "/api/workflows/workflow-ec0e3072/versions/draft",
+            json={
+                "bump": "patch",
+                "expectedVersion": item["lifecycle"]["current_version"],
+                "expectedWorkflowHash": item["lifecycle"]["workflow_hash"],
+            },
+        )
+        assert response.status_code == 201, response.text
+        payload = response.json()
+        assert payload["target_version"] == "1.0.1"
+        assert payload["draft"]["workflow"]["id"] == "workflow-ec0e3072"
+        assert payload["draft"]["workflow"]["version"] == "1.0.1"
+        assert "validation" not in payload["draft"]["workflow"]
+        assert payload["draft"]["composition"]["version_origin"] == {
+            "workflow_id": "workflow-ec0e3072",
+            "source_version": "1.0.0",
+            "source_hash": item["lifecycle"]["workflow_hash"],
+            "target_version": "1.0.1",
+        }
+        duplicate = client.post(
+            "/api/workflows/workflow-ec0e3072/versions/draft",
+            json={
+                "bump": "patch",
+                "expectedVersion": item["lifecycle"]["current_version"],
+                "expectedWorkflowHash": item["lifecycle"]["workflow_hash"],
+            },
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["detail"]["code"] == "workflow_version_draft_exists"
+        managed = {
+            row["id"]: row for row in client.get("/api/workflows/catalog?state=all").json()
+        }["workflow-ec0e3072"]
+        assert managed["management"]["can_create_version"] is False
+        current = json.loads(
+            (repository / "workflows/Common/workflow-ec0e3072/workflow.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert current["version"] == "1.0.0"
+        assert client.get("/api/workflows/workflow-ec0e3072/versions").json()[0][
+            "current"
+        ] is True
+        assert subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout == ""
+
+
+def test_publishing_new_version_archives_previous_current_workflow(tmp_path: Path) -> None:
+    repository = _workflow_management_repository(tmp_path)
+    settings = replace(_settings(tmp_path), repository_root=repository)
+    app = create_app(
+        settings, planner=FakePlanner(), embedded_provider=FakeEmbeddedProvider()
+    )
+    workflow_id = "workflow-ec0e3072"
+    with TestClient(app) as client:
+        item = {
+            row["id"]: row for row in client.get("/api/workflows/catalog?state=all").json()
+        }[workflow_id]
+        created = client.post(
+            f"/api/workflows/{workflow_id}/versions/draft",
+            json={
+                "bump": "patch",
+                "expectedVersion": item["lifecycle"]["current_version"],
+                "expectedWorkflowHash": item["lifecycle"]["workflow_hash"],
+            },
+        ).json()
+        draft_id = created["draft"]["draft_id"]
+        draft = app.state.store.get_workflow_draft(draft_id)
+        digest = workflow_digest(draft.workflow)
+        report = {
+            "schema_version": 1,
+            "run_id": "run_version_validation",
+            "workflow_revision": draft.revision,
+            "workflow_hash": digest,
+            "phase": "completed",
+            "verdict": "pass",
+            "evidence_gaps": [],
+            "report_digest": "sha256:" + "a" * 64,
+            "completed_at": utc_now(),
+        }
+        draft.status = "validated"
+        draft.validation_run_id = report["run_id"]
+        draft.validation = {
+            "workflow_hash": digest,
+            "completed_at": report["completed_at"],
+            "validation_report": report,
+        }
+        app.state.store.save_workflow_draft(draft)
+
+        published = client.post(
+            f"/api/authoring/workflows/{draft_id}/publish", json={}
+        )
+        assert published.status_code == 200, published.text
+        current = json.loads(
+            (repository / f"workflows/Common/{workflow_id}/workflow.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        archived = json.loads(
+            (
+                repository
+                / f"workflows/Common/{workflow_id}/versions/1.0.0/workflow.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert current["version"] == "1.0.1"
+        assert archived["version"] == "1.0.0"
+        publication = json.loads(
+            (repository / f"workflows/Common/{workflow_id}/publication.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert publication["state"] == "active"
+        assert publication["currentVersion"] == "1.0.1"
+        versions = client.get(f"/api/workflows/{workflow_id}/versions").json()
+        assert [row["version"] for row in versions] == ["1.0.1", "1.0.0"]
+
+
+def test_workflow_deactivation_blocks_new_runs_and_can_be_reactivated(
+    tmp_path: Path,
+) -> None:
+    repository = _workflow_management_repository(tmp_path)
+    settings = replace(_settings(tmp_path), repository_root=repository)
+    app = create_app(
+        settings, planner=FakePlanner(), embedded_provider=FakeEmbeddedProvider()
+    )
+    with TestClient(app) as client:
+        item = {
+            row["id"]: row for row in client.get("/api/workflows/catalog?state=all").json()
+        }["workflow-ec0e3072"]
+        request = {
+            "expectedVersion": item["lifecycle"]["current_version"],
+            "expectedWorkflowHash": item["lifecycle"]["workflow_hash"],
+            "reason": "maintenance",
+        }
+        response = client.post(
+            "/api/workflows/workflow-ec0e3072/deactivate", json=request
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["state"] == "inactive"
+        inactive = client.get("/api/workflows/catalog?state=inactive").json()
+        assert [row["id"] for row in inactive] == ["workflow-ec0e3072"]
+        rejected = client.post(
+            "/api/runs",
+            json={
+                "mode": "workflow",
+                "workflowId": "workflow-ec0e3072",
+                "input": {"purchase_orders": ["4500000001"], "as_of": "2026-08-30"},
+            },
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"]["code"] == "workflow_inactive"
+        assert client.get("/api/runs").json() == []
+
+        _commit_management_change(repository, "Deactivate workflow")
+        refreshed = {
+            row["id"]: row for row in client.get("/api/workflows/catalog?state=all").json()
+        }["workflow-ec0e3072"]
+        activated = client.post(
+            "/api/workflows/workflow-ec0e3072/activate",
+            json={
+                "expectedVersion": refreshed["lifecycle"]["current_version"],
+                "expectedWorkflowHash": refreshed["lifecycle"]["workflow_hash"],
+            },
+        )
+        assert activated.status_code == 200, activated.text
+        assert activated.json()["state"] == "active"
+
+
+def test_strict_permanent_delete_requires_inactive_unrun_workflow(
+    tmp_path: Path,
+) -> None:
+    repository = _workflow_management_repository(tmp_path)
+    settings = replace(_settings(tmp_path), repository_root=repository)
+    app = create_app(
+        settings, planner=FakePlanner(), embedded_provider=FakeEmbeddedProvider()
+    )
+    workflow_id = "p2p-batch-payment-review"
+    with TestClient(app) as client:
+        item = {
+            row["id"]: row for row in client.get("/api/workflows/catalog?state=all").json()
+        }[workflow_id]
+        request = {
+            "expectedVersion": item["lifecycle"]["current_version"],
+            "expectedWorkflowHash": item["lifecycle"]["workflow_hash"],
+        }
+        blocked = client.request(
+            "DELETE",
+            f"/api/workflows/{workflow_id}",
+            json={**request, "confirmWorkflowId": workflow_id},
+        )
+        assert blocked.status_code == 409
+        assert "workflow_must_be_inactive" in blocked.json()["detail"]["detail"]["blockers"]
+
+        deactivated = client.post(f"/api/workflows/{workflow_id}/deactivate", json=request)
+        assert deactivated.status_code == 200, deactivated.text
+        _commit_management_change(repository, "Deactivate deletable workflow")
+        current = {
+            row["id"]: row for row in client.get("/api/workflows/catalog?state=all").json()
+        }[workflow_id]
+        mismatch = client.request(
+            "DELETE",
+            f"/api/workflows/{workflow_id}",
+            json={
+                "expectedVersion": current["lifecycle"]["current_version"],
+                "expectedWorkflowHash": current["lifecycle"]["workflow_hash"],
+                "confirmWorkflowId": "wrong-id",
+            },
+        )
+        assert mismatch.status_code == 409
+        deleted = client.request(
+            "DELETE",
+            f"/api/workflows/{workflow_id}",
+            json={
+                "expectedVersion": current["lifecycle"]["current_version"],
+                "expectedWorkflowHash": current["lifecycle"]["workflow_hash"],
+                "confirmWorkflowId": workflow_id,
+            },
+        )
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json()["deleted"] is True
+        assert not (repository / "workflows/Common" / workflow_id).exists()
+        assert client.get(f"/api/workflows/{workflow_id}").status_code == 404
+
+
+def test_validation_snapshot_is_not_counted_as_business_workflow_run(tmp_path: Path) -> None:
+    app = create_app(
+        _settings(tmp_path), planner=FakePlanner(), embedded_provider=FakeEmbeddedProvider()
+    )
+    store = app.state.store
+    validation_request = RunCreate(
+        mode=RunMode.workflow,
+        workflowId="workflow-ec0e3072",
+        input={},
+    )
+    store.create_run("run_validation_only", validation_request)
+    store.save_workflow_snapshot(
+        "run_validation_only", {"id": "workflow-ec0e3072"}, draft_id="draft_1", revision=1
+    )
+    assert store.workflow_business_run_count("workflow-ec0e3072") == 0
+    store.create_run("run_business", validation_request)
+    store.save_workflow_snapshot("run_business", {"id": "workflow-ec0e3072"})
+    assert store.workflow_business_run_count("workflow-ec0e3072") == 1

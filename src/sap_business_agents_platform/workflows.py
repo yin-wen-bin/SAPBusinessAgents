@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import subprocess
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -10,6 +13,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
 
 from .manifests import ManifestError, validate_execution, validator_schema
+from .models import utc_now
 
 
 ALLOWED_TRANSFORMS = {
@@ -33,21 +37,38 @@ class WorkflowError(ValueError):
 
 
 class WorkflowRepository:
-    def __init__(self, root: Path, agents: Any) -> None:
+    def __init__(self, root: Path, agents: Any, store: Any = None) -> None:
         self.root = root
         self.agents = agents
+        self.store = store
 
     def list(self) -> list[dict[str, Any]]:
-        return [self._load(path) for path in sorted(self.root.glob("*/*/workflow.json"))]
+        return [
+            self._load(path)
+            for path in sorted(self.root.glob("*/*/workflow.json"))
+            if self._lifecycle(path.parent)["state"] == "active"
+        ]
 
-    def catalog(self) -> list[dict[str, Any]]:
+    def catalog(self, state: str = "active") -> list[dict[str, Any]]:
+        if state not in {"active", "inactive", "all"}:
+            raise WorkflowError(
+                "Workflow catalog state must be active, inactive, or all.",
+                code="workflow_catalog_state_invalid",
+            )
         items: list[dict[str, Any]] = []
         for path in sorted(self.root.glob("*/*/workflow.json")):
             workflow = self._load(path)
+            lifecycle = self._lifecycle(path.parent, workflow)
+            if state != "all" and lifecycle["state"] != state:
+                continue
             validation = workflow.get("validation")
             if not isinstance(validation, dict):
                 validation = self._load_publication_validation(path.parent)
             acknowledgement = validation.get("acknowledgement") if validation else None
+            blockers = self.delete_blockers(str(workflow.get("id") or ""))
+            open_version_drafts = self._open_version_drafts(
+                str(workflow.get("id") or "")
+            )
             items.append(
                 {
                     "id": workflow.get("id"),
@@ -56,6 +77,24 @@ class WorkflowRepository:
                     "description": workflow.get("description"),
                     "read_only": workflow.get("readOnly") is True,
                     "node_count": len(workflow.get("nodes") or []),
+                    "lifecycle": {
+                        "state": lifecycle["state"],
+                        "current_version": str(workflow.get("version") or ""),
+                        "workflow_hash": workflow_digest(workflow),
+                        "version_count": 1 + len(self._archived_version_paths(path.parent)),
+                        "deactivated_at": lifecycle.get("deactivatedAt"),
+                        "deactivation_reason": lifecycle.get("deactivationReason"),
+                        "business_run_count": self._business_run_count(
+                            str(workflow.get("id") or "")
+                        ),
+                    },
+                    "management": {
+                        "can_create_version": not open_version_drafts,
+                        "can_deactivate": lifecycle["state"] == "active",
+                        "can_activate": lifecycle["state"] == "inactive",
+                        "can_delete": not blockers,
+                        "blockers": blockers,
+                    },
                     "publication": {
                         "validation_status": str(validation.get("status") or "unknown")
                         if validation
@@ -78,18 +117,178 @@ class WorkflowRepository:
         return items
 
     def get(self, workflow_id: str) -> dict[str, Any]:
+        path = self._current_path(workflow_id)
+        return self._load(path)
+
+    def get_runnable(self, workflow_id: str) -> dict[str, Any]:
+        path = self._current_path(workflow_id)
+        workflow = self._load(path)
+        if self._lifecycle(path.parent, workflow)["state"] != "active":
+            raise WorkflowError(
+                "The published workflow is inactive.",
+                code="workflow_inactive",
+                detail={"workflow_id": workflow_id},
+            )
+        return workflow
+
+    def versions(self, workflow_id: str) -> list[dict[str, Any]]:
+        current_path = self._current_path(workflow_id)
+        current = self._load(current_path)
+        values = [self._version_summary(current, current_path.parent, current=True)]
+        for path in self._archived_version_paths(current_path.parent):
+            values.append(
+                self._version_summary(
+                    self._load(path, require_pins=False), path.parent, current=False
+                )
+            )
+        return sorted(values, key=lambda item: _semver_tuple(item["version"]), reverse=True)
+
+    def get_version(self, workflow_id: str, version: str) -> dict[str, Any]:
+        if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+            raise KeyError(version)
+        current_path = self._current_path(workflow_id)
+        current = self._load(current_path)
+        if str(current.get("version") or "") == version:
+            return current
+        path = current_path.parent / "versions" / version / "workflow.json"
+        expected = (current_path.parent / "versions").resolve()
+        resolved = path.resolve()
+        if expected not in resolved.parents or not path.is_file():
+            raise KeyError(version)
+        payload = self._load(path, require_pins=False)
+        if str(payload.get("id") or "") != workflow_id:
+            raise WorkflowError("Archived workflow ID does not match its directory.")
+        return payload
+
+    def lifecycle(self, workflow_id: str) -> dict[str, Any]:
+        path = self._current_path(workflow_id)
+        workflow = self._load(path)
+        return self._lifecycle(path.parent, workflow)
+
+    def delete_blockers(self, workflow_id: str) -> list[str]:
+        try:
+            path = self._current_path(workflow_id)
+        except KeyError:
+            return ["workflow_not_found"]
+        blockers: list[str] = []
+        lifecycle = self._lifecycle(path.parent)
+        if lifecycle["state"] != "inactive":
+            blockers.append("workflow_must_be_inactive")
+        if self._business_run_count(workflow_id) > 0:
+            blockers.append("workflow_has_business_runs")
+        if self._open_version_drafts(workflow_id):
+            blockers.append("workflow_has_open_version_drafts")
+        if self._dependent_workflows(workflow_id):
+            blockers.append("workflow_is_referenced")
+        return blockers
+
+    def directory(self, workflow_id: str) -> Path:
+        return self._current_path(workflow_id).parent
+
+    def open_version_drafts(self, workflow_id: str) -> list[str]:
+        return self._open_version_drafts(workflow_id)
+
+    def _current_path(self, workflow_id: str) -> Path:
         for path in self.root.glob("*/*/workflow.json"):
-            payload = self._load(path)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
             if payload.get("id") == workflow_id or path.parent.name == workflow_id:
-                return payload
+                return path
         raise KeyError(workflow_id)
 
-    def _load(self, path: Path) -> dict[str, Any]:
+    def _lifecycle(
+        self, directory: Path, workflow: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        path = directory / "publication.json"
+        if path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise WorkflowError(f"Cannot load {path}: {exc}") from exc
+            if payload.get("state") not in {"active", "inactive"}:
+                raise WorkflowError(f"{path}.state must be active or inactive")
+            return payload
+        workflow = workflow or self._load(directory / "workflow.json")
+        return {
+            "schemaVersion": 1,
+            "workflowId": str(workflow.get("id") or directory.name),
+            "state": "active",
+            "currentVersion": str(workflow.get("version") or ""),
+            "currentWorkflowHash": workflow_digest(workflow),
+            "publishedAt": ((workflow.get("validation") or {}).get("validated_at")),
+            "deactivatedAt": None,
+            "deactivationReason": None,
+        }
+
+    def _version_summary(
+        self, workflow: dict[str, Any], directory: Path, *, current: bool
+    ) -> dict[str, Any]:
+        validation = workflow.get("validation")
+        if not isinstance(validation, dict):
+            validation = self._load_publication_validation(directory)
+        return {
+            "version": str(workflow.get("version") or ""),
+            "current": current,
+            "workflow_hash": workflow_digest(workflow),
+            "validation_status": str(validation.get("status") or "unknown")
+            if validation
+            else "unknown",
+            "validation_run_id": validation.get("run_id") if validation else None,
+            "validated_at": validation.get("validated_at") if validation else None,
+        }
+
+    @staticmethod
+    def _archived_version_paths(directory: Path) -> list[Path]:
+        return sorted((directory / "versions").glob("*/workflow.json"))
+
+    def _business_run_count(self, workflow_id: str) -> int:
+        if self.store is None:
+            return 0
+        return int(self.store.workflow_business_run_count(workflow_id))
+
+    def _open_version_drafts(self, workflow_id: str) -> list[str]:
+        if self.store is None:
+            return []
+        active_statuses = {
+            "planning",
+            "waiting_input",
+            "needs_agents",
+            "draft",
+            "validated",
+            "inconclusive",
+            "needs_review",
+        }
+        return [
+            draft.draft_id
+            for draft in self.store.list_workflow_drafts()
+            if draft.status in active_statuses
+            and (draft.composition.get("version_origin") or {}).get("workflow_id")
+            == workflow_id
+        ]
+
+    def _dependent_workflows(self, workflow_id: str) -> list[str]:
+        dependencies: list[str] = []
+        for path in self.root.glob("*/*/workflow.json"):
+            payload = self._load(path)
+            candidate_id = str(payload.get("id") or "")
+            if candidate_id == workflow_id:
+                continue
+            for node in payload.get("nodes") or []:
+                if not isinstance(node, dict):
+                    continue
+                if node.get("workflowId") == workflow_id or node.get("workflowRef") == workflow_id:
+                    dependencies.append(candidate_id)
+                    break
+        return dependencies
+
+    def _load(self, path: Path, *, require_pins: bool = True) -> dict[str, Any]:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise WorkflowError(f"Cannot load {path}: {exc}") from exc
-        validate_workflow(payload, self.agents, source=str(path), require_pins=True)
+        validate_workflow(payload, self.agents, source=str(path), require_pins=require_pins)
         return payload
 
     @staticmethod
@@ -103,6 +302,306 @@ class WorkflowRepository:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+
+class WorkflowManagementService:
+    def __init__(
+        self,
+        *,
+        repository_root: Path,
+        repository: WorkflowRepository,
+        store: Any,
+        drafts: Any,
+    ) -> None:
+        self.repository_root = repository_root.resolve()
+        self.repository = repository
+        self.store = store
+        self.drafts = drafts
+
+    def create_version_draft(
+        self,
+        workflow_id: str,
+        *,
+        bump: str,
+        expected_version: str,
+        expected_workflow_hash: str,
+    ) -> dict[str, Any]:
+        workflow = self._assert_expected(
+            workflow_id, expected_version, expected_workflow_hash
+        )
+        open_drafts = self.repository.open_version_drafts(workflow_id)
+        if open_drafts:
+            raise WorkflowError(
+                "An unfinished version draft already exists for this workflow.",
+                code="workflow_version_draft_exists",
+                detail={"draft_ids": open_drafts},
+            )
+        target_version = _bump_semver(expected_version, bump)
+        if any(
+            item["version"] == target_version
+            for item in self.repository.versions(workflow_id)
+        ):
+            raise WorkflowError(
+                f"Workflow version already exists: {target_version}",
+                code="workflow_version_exists",
+            )
+        clone = json.loads(json.dumps(workflow))
+        clone["version"] = target_version
+        clone.pop("status", None)
+        clone.pop("validation", None)
+        draft = self.drafts.create_version(
+            clone,
+            workflow_id=workflow_id,
+            source_version=expected_version,
+            source_hash=expected_workflow_hash,
+            target_version=target_version,
+        )
+        self._audit(
+            workflow_id=workflow_id,
+            action="version_draft_created",
+            from_version=expected_version,
+            to_version=target_version,
+            workflow_hash=expected_workflow_hash,
+            branch=None,
+            detail={"draft_id": draft.draft_id, "bump": bump},
+        )
+        return {
+            "draft": draft.model_dump(mode="json"),
+            "target_version": target_version,
+        }
+
+    def deactivate(
+        self,
+        workflow_id: str,
+        *,
+        expected_version: str,
+        expected_workflow_hash: str,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        workflow = self._assert_expected(
+            workflow_id, expected_version, expected_workflow_hash
+        )
+        directory = self.repository.directory(workflow_id)
+        lifecycle = self.repository.lifecycle(workflow_id)
+        if lifecycle["state"] != "active":
+            raise WorkflowError(
+                "The workflow is already inactive.", code="workflow_already_inactive"
+            )
+        branch = self._prepare_git_branch(workflow_id, "deactivate", expected_version)
+        payload = self._lifecycle_payload(
+            workflow,
+            state="inactive",
+            existing=lifecycle,
+            reason=reason,
+        )
+        self._write_json(directory / "publication.json", payload)
+        self._audit(
+            workflow_id=workflow_id,
+            action="deactivated",
+            from_version=expected_version,
+            to_version=expected_version,
+            workflow_hash=expected_workflow_hash,
+            branch=branch,
+            detail={"reason": reason},
+        )
+        return self._mutation_result(workflow_id, branch, payload)
+
+    def activate(
+        self,
+        workflow_id: str,
+        *,
+        expected_version: str,
+        expected_workflow_hash: str,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        workflow = self._assert_expected(
+            workflow_id, expected_version, expected_workflow_hash
+        )
+        directory = self.repository.directory(workflow_id)
+        lifecycle = self.repository.lifecycle(workflow_id)
+        if lifecycle["state"] != "inactive":
+            raise WorkflowError(
+                "The workflow is already active.", code="workflow_already_active"
+            )
+        branch = self._prepare_git_branch(workflow_id, "activate", expected_version)
+        payload = self._lifecycle_payload(
+            workflow,
+            state="active",
+            existing=lifecycle,
+            reason=reason,
+        )
+        self._write_json(directory / "publication.json", payload)
+        self._audit(
+            workflow_id=workflow_id,
+            action="activated",
+            from_version=expected_version,
+            to_version=expected_version,
+            workflow_hash=expected_workflow_hash,
+            branch=branch,
+            detail={"reason": reason},
+        )
+        return self._mutation_result(workflow_id, branch, payload)
+
+    def delete(
+        self,
+        workflow_id: str,
+        *,
+        expected_version: str,
+        expected_workflow_hash: str,
+        confirm_workflow_id: str,
+    ) -> dict[str, Any]:
+        self._assert_expected(workflow_id, expected_version, expected_workflow_hash)
+        if confirm_workflow_id != workflow_id:
+            raise WorkflowError(
+                "Workflow ID confirmation does not match.",
+                code="workflow_delete_confirmation_mismatch",
+            )
+        blockers = self.repository.delete_blockers(workflow_id)
+        if blockers:
+            raise WorkflowError(
+                "The workflow does not meet the permanent deletion requirements.",
+                code="workflow_delete_blocked",
+                detail={"blockers": blockers},
+            )
+        directory = self.repository.directory(workflow_id)
+        expected_root = self.repository.root.resolve()
+        resolved = directory.resolve()
+        if expected_root not in resolved.parents:
+            raise WorkflowError(
+                "Workflow deletion target escaped the repository root.",
+                code="workflow_delete_path_invalid",
+            )
+        branch = self._prepare_git_branch(workflow_id, "delete", expected_version)
+        trash_root = self.repository_root / ".prototype" / "management-trash"
+        trash = trash_root / f"{workflow_id}-{uuid.uuid4().hex[:12]}"
+        trash_root.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(directory), str(trash))
+            shutil.rmtree(trash)
+        except Exception:
+            if trash.exists() and not directory.exists():
+                shutil.move(str(trash), str(directory))
+            raise
+        self._audit(
+            workflow_id=workflow_id,
+            action="deleted",
+            from_version=expected_version,
+            to_version=None,
+            workflow_hash=expected_workflow_hash,
+            branch=branch,
+            detail={"git_history_recoverable": True},
+        )
+        return {
+            "workflow_id": workflow_id,
+            "deleted": True,
+            "branch": branch,
+            "commit_required": True,
+        }
+
+    def _assert_expected(
+        self, workflow_id: str, expected_version: str, expected_workflow_hash: str
+    ) -> dict[str, Any]:
+        workflow = self.repository.get(workflow_id)
+        actual_version = str(workflow.get("version") or "")
+        actual_hash = workflow_digest(workflow)
+        if actual_version != expected_version or actual_hash != expected_workflow_hash:
+            raise WorkflowError(
+                "The published workflow changed; reload before continuing.",
+                code="workflow_management_conflict",
+                detail={
+                    "expected_version": expected_version,
+                    "actual_version": actual_version,
+                    "expected_workflow_hash": expected_workflow_hash,
+                    "actual_workflow_hash": actual_hash,
+                },
+            )
+        return workflow
+
+    def _prepare_git_branch(self, workflow_id: str, action: str, version: str) -> str:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=self.repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if status.stdout.strip():
+            raise WorkflowError(
+                "Workflow management requires a clean Git worktree.",
+                code="git_worktree_dirty",
+            )
+        safe_version = re.sub(r"[^0-9A-Za-z._-]", "-", version)
+        branch = (
+            f"codex/workflow-{workflow_id}-{action}-v{safe_version}-"
+            f"{uuid.uuid4().hex[:8]}"
+        )
+        subprocess.run(
+            ["git", "switch", "-c", branch],
+            cwd=self.repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return branch
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict[str, Any]) -> None:
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        temporary.replace(path)
+
+    @staticmethod
+    def _lifecycle_payload(
+        workflow: dict[str, Any], *, state: str, existing: dict[str, Any], reason: str | None
+    ) -> dict[str, Any]:
+        now = utc_now()
+        return {
+            "schemaVersion": 1,
+            "workflowId": str(workflow.get("id") or ""),
+            "state": state,
+            "currentVersion": str(workflow.get("version") or ""),
+            "currentWorkflowHash": workflow_digest(workflow),
+            "publishedAt": existing.get("publishedAt")
+            or ((workflow.get("validation") or {}).get("validated_at")),
+            "deactivatedAt": now if state == "inactive" else None,
+            "deactivationReason": reason if state == "inactive" else None,
+            "updatedAt": now,
+        }
+
+    @staticmethod
+    def _mutation_result(
+        workflow_id: str, branch: str, lifecycle: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "workflow_id": workflow_id,
+            "state": lifecycle["state"],
+            "branch": branch,
+            "commit_required": True,
+            "lifecycle": lifecycle,
+        }
+
+    def _audit(
+        self,
+        *,
+        workflow_id: str,
+        action: str,
+        from_version: str | None,
+        to_version: str | None,
+        workflow_hash: str | None,
+        branch: str | None,
+        detail: dict[str, Any],
+    ) -> None:
+        self.store.append_workflow_management_event(
+            event_id=f"workflow_event_{uuid.uuid4().hex[:16]}",
+            workflow_id=workflow_id,
+            action=action,
+            from_version=from_version,
+            to_version=to_version,
+            workflow_hash=workflow_hash,
+            branch=branch,
+            detail=detail,
+        )
 
 def agent_digest(agent: dict[str, Any]) -> str:
     selected = {
@@ -118,6 +617,27 @@ def agent_digest(agent: dict[str, Any]) -> str:
 def workflow_digest(workflow: dict[str, Any]) -> str:
     canonical = json.dumps(workflow, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _semver_tuple(version: str) -> tuple[int, int, int]:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(version))
+    if not match:
+        raise WorkflowError(
+            f"Published workflow version is not valid SemVer: {version}",
+            code="workflow_version_invalid",
+        )
+    return tuple(int(value) for value in match.groups())
+
+
+def _bump_semver(version: str, bump: str) -> str:
+    major, minor, patch = _semver_tuple(version)
+    if bump == "major":
+        return f"{major + 1}.0.0"
+    if bump == "minor":
+        return f"{major}.{minor + 1}.0"
+    if bump == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+    raise WorkflowError("Unsupported version bump.", code="workflow_version_bump_invalid")
 
 
 def normalize_workflow(workflow: dict[str, Any], agents: Any) -> dict[str, Any]:

@@ -102,6 +102,19 @@ class RunStore:
                     validation_revision INTEGER,
                     FOREIGN KEY(run_id) REFERENCES runs(run_id)
                 );
+                CREATE TABLE IF NOT EXISTS workflow_management_events (
+                    event_id TEXT PRIMARY KEY,
+                    workflow_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    from_version TEXT,
+                    to_version TEXT,
+                    workflow_hash TEXT,
+                    branch TEXT,
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS workflow_management_events_workflow
+                    ON workflow_management_events(workflow_id, created_at);
                 CREATE TABLE IF NOT EXISTS harness_tool_calls (
                     call_id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL,
@@ -204,6 +217,19 @@ class RunStore:
                 "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 200)),)
             ).fetchall()
         return [_run_from_row(row) for row in rows]
+
+    def workflow_business_run_count(self, workflow_id: str) -> int:
+        """Count user-started workflow runs, excluding authoring validation snapshots."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) AS count
+                FROM runs
+                LEFT JOIN workflow_run_snapshots snapshots ON snapshots.run_id = runs.run_id
+                WHERE runs.mode = ? AND runs.workflow_id = ?
+                  AND snapshots.validation_draft_id IS NULL""",
+                (RunMode.workflow.value, workflow_id),
+            ).fetchone()
+        return int(row["count"] if row else 0)
 
     def list_recoverable_free_query_runs(self) -> list[RunRecord]:
         statuses = (
@@ -556,6 +582,81 @@ class RunStore:
             {
                 "revision": int(row["revision"]),
                 "diff": _load(row["diff_json"], []),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def list_workflow_drafts(self) -> list[WorkflowDraftRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM workflow_drafts ORDER BY updated_at DESC"
+            ).fetchall()
+        return [
+            WorkflowDraftRecord(
+                draft_id=row["draft_id"],
+                status=row["status"],
+                revision=int(row["revision"]),
+                workflow=_load(row["workflow_json"], {}),
+                path=row["path"],
+                thread_id=row["thread_id"],
+                validation_run_id=row["validation_run_id"],
+                composition=_load(row["composition_json"], {}),
+                validation=_load(row["validation_json"], {}),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
+    def append_workflow_management_event(
+        self,
+        *,
+        event_id: str,
+        workflow_id: str,
+        action: str,
+        from_version: str | None,
+        to_version: str | None,
+        workflow_hash: str | None,
+        branch: str | None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO workflow_management_events
+                (event_id, workflow_id, action, from_version, to_version,
+                 workflow_hash, branch, detail_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    workflow_id,
+                    action,
+                    from_version,
+                    to_version,
+                    workflow_hash,
+                    branch,
+                    _dump(detail or {}),
+                    utc_now(),
+                ),
+            )
+
+    def list_workflow_management_events(self, workflow_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM workflow_management_events
+                WHERE workflow_id = ? ORDER BY created_at DESC""",
+                (workflow_id,),
+            ).fetchall()
+        return [
+            {
+                "event_id": row["event_id"],
+                "workflow_id": row["workflow_id"],
+                "action": row["action"],
+                "from_version": row["from_version"],
+                "to_version": row["to_version"],
+                "workflow_hash": row["workflow_hash"],
+                "branch": row["branch"],
+                "detail": _load(row["detail_json"], {}),
                 "created_at": row["created_at"],
             }
             for row in rows

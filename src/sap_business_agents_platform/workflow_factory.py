@@ -111,6 +111,31 @@ class WorkflowDraftService:
         self.store.save_workflow_draft(draft, diff=[{"op": "create", "path": "/"}])
         return draft
 
+    def create_version(
+        self,
+        workflow: dict[str, Any],
+        *,
+        workflow_id: str,
+        source_version: str,
+        source_hash: str,
+        target_version: str,
+    ) -> WorkflowDraftRecord:
+        draft = self.create(
+            workflow.get("title") or {"zh": workflow_id, "en": workflow_id},
+            workflow.get("description") or {"zh": "", "en": ""},
+            workflow,
+        )
+        draft.composition["version_origin"] = {
+            "workflow_id": workflow_id,
+            "source_version": source_version,
+            "source_hash": source_hash,
+            "target_version": target_version,
+        }
+        draft.updated_at = utc_now()
+        self._write_draft(draft)
+        self.store.save_workflow_draft(draft)
+        return draft
+
     def get(self, draft_id: str) -> WorkflowDraftRecord:
         return self.store.get_workflow_draft(draft_id)
 
@@ -834,8 +859,14 @@ class WorkflowDraftService:
         )
         if status.stdout.strip():
             raise WorkflowDraftError("Publish requires a clean Git worktree.", code="git_worktree_dirty")
+        version_origin = draft.composition.get("version_origin")
+        version_origin = version_origin if isinstance(version_origin, dict) else None
         workflow = json.loads(json.dumps(draft.workflow))
-        workflow["version"] = _published_version(str(workflow.get("version") or "0.1.0"))
+        workflow["version"] = (
+            str(version_origin.get("target_version"))
+            if version_origin
+            else _published_version(str(workflow.get("version") or "0.1.0"))
+        )
         workflow["status"] = "Published"
         workflow["validation"] = {
             "run_id": draft.validation_run_id,
@@ -849,8 +880,59 @@ class WorkflowDraftService:
         branch_version = re.sub(r"[^0-9A-Za-z._-]", "-", workflow["version"])
         branch = f"codex/workflow-{workflow['id']}-v{branch_version}"
         target = self.settings.repository_root / "workflows" / "Common" / str(workflow["id"])
-        if target.exists():
+        current_workflow: dict[str, Any] | None = None
+        current_lifecycle: dict[str, Any] | None = None
+        if target.exists() and not version_origin:
             raise WorkflowDraftError(f"Workflow target already exists: {target}")
+        if version_origin:
+            if not target.is_dir():
+                raise WorkflowDraftError(
+                    "The source published workflow no longer exists.",
+                    code="workflow_version_source_missing",
+                )
+            source_path = target / "workflow.json"
+            try:
+                current_workflow = json.loads(source_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise WorkflowDraftError(
+                    f"Cannot load the current published workflow: {exc}",
+                    code="workflow_version_source_invalid",
+                ) from exc
+            actual_version = str(current_workflow.get("version") or "")
+            actual_hash = workflow_digest(current_workflow)
+            if (
+                str(version_origin.get("workflow_id") or "") != str(workflow["id"])
+                or str(version_origin.get("source_version") or "") != actual_version
+                or str(version_origin.get("source_hash") or "") != actual_hash
+            ):
+                raise WorkflowDraftError(
+                    "The published workflow changed after this version draft was created.",
+                    code="workflow_version_source_changed",
+                    detail={
+                        "actual_version": actual_version,
+                        "actual_workflow_hash": actual_hash,
+                    },
+                )
+            if workflow["version"] == actual_version:
+                raise WorkflowDraftError(
+                    "The new workflow version must differ from the current version.",
+                    code="workflow_version_not_incremented",
+                )
+            archive = target / "versions" / actual_version
+            if archive.exists():
+                raise WorkflowDraftError(
+                    f"Archived workflow version already exists: {actual_version}",
+                    code="workflow_version_archive_exists",
+                )
+            publication_path = target / "publication.json"
+            if publication_path.is_file():
+                try:
+                    current_lifecycle = json.loads(publication_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise WorkflowDraftError(
+                        f"Cannot load workflow publication metadata: {exc}",
+                        code="workflow_publication_invalid",
+                    ) from exc
         subprocess.run(
             ["git", "switch", "-c", branch],
             cwd=self.settings.repository_root,
@@ -858,15 +940,64 @@ class WorkflowDraftService:
             capture_output=True,
             text=True,
         )
-        target.mkdir(parents=True)
-        (target / "workflow.json").write_text(
-            json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-        (target / "README.md").write_text(_workflow_readme(workflow), encoding="utf-8")
-        (target / "validation.json").write_text(
-            json.dumps(workflow["validation"], ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        lifecycle_state = str((current_lifecycle or {}).get("state") or "active")
+        publication = {
+            "schemaVersion": 1,
+            "workflowId": str(workflow["id"]),
+            "state": lifecycle_state,
+            "currentVersion": str(workflow["version"]),
+            "currentWorkflowHash": workflow_digest(workflow),
+            "publishedAt": utc_now(),
+            "deactivatedAt": (current_lifecycle or {}).get("deactivatedAt")
+            if lifecycle_state == "inactive"
+            else None,
+            "deactivationReason": (current_lifecycle or {}).get("deactivationReason")
+            if lifecycle_state == "inactive"
+            else None,
+            "updatedAt": utc_now(),
+        }
+        archive: Path | None = None
+        try:
+            if current_workflow is None:
+                target.mkdir(parents=True)
+            else:
+                archive = target / "versions" / str(current_workflow["version"])
+                archive.mkdir(parents=True)
+                for name in ("workflow.json", "validation.json", "README.md"):
+                    source = target / name
+                    if source.is_file():
+                        shutil.copy2(source, archive / name)
+            _atomic_write_text(
+                target / "workflow.json",
+                json.dumps(workflow, ensure_ascii=False, indent=2) + "\n",
+            )
+            _atomic_write_text(target / "README.md", _workflow_readme(workflow))
+            _atomic_write_text(
+                target / "validation.json",
+                json.dumps(workflow["validation"], ensure_ascii=False, indent=2) + "\n",
+            )
+            _atomic_write_text(
+                target / "publication.json",
+                json.dumps(publication, ensure_ascii=False, indent=2) + "\n",
+            )
+        except Exception:
+            if archive and archive.is_dir():
+                for name in ("workflow.json", "validation.json", "README.md"):
+                    archived = archive / name
+                    if archived.is_file():
+                        shutil.copy2(archived, target / name)
+                shutil.rmtree(archive)
+                publication_path = target / "publication.json"
+                if current_lifecycle is not None:
+                    _atomic_write_text(
+                        publication_path,
+                        json.dumps(current_lifecycle, ensure_ascii=False, indent=2) + "\n",
+                    )
+                elif publication_path.exists():
+                    publication_path.unlink()
+            elif current_workflow is None and target.exists():
+                shutil.rmtree(target)
+            raise
         publish_diff = _json_diff(draft.workflow, workflow)
         published_from_revision = draft.revision
         draft.workflow = workflow
@@ -880,11 +1011,24 @@ class WorkflowDraftService:
                 "acknowledgement": acknowledgement,
                 "published_from_revision": published_from_revision,
                 "published_workflow_hash": workflow_digest(workflow),
+                "published_version": str(workflow["version"]),
+                "publication_state": lifecycle_state,
             }
         )
         draft.updated_at = utc_now()
         self._write_draft(draft)
         self.store.save_workflow_draft(draft, diff=publish_diff)
+        if version_origin:
+            self.store.append_workflow_management_event(
+                event_id=f"workflow_event_{uuid.uuid4().hex[:16]}",
+                workflow_id=str(workflow["id"]),
+                action="version_published",
+                from_version=str(version_origin.get("source_version") or ""),
+                to_version=str(workflow["version"]),
+                workflow_hash=workflow_digest(workflow),
+                branch=branch,
+                detail={"draft_id": draft.draft_id, "state": lifecycle_state},
+            )
         return draft
 
     def _finalize_validation_report(
@@ -1933,6 +2077,12 @@ def _published_version(version: str) -> str:
     if re.fullmatch(r"\d+\.\d+\.\d+", version) and not version.startswith("0."):
         return version
     return "1.0.0"
+
+
+def _atomic_write_text(path: Path, value: str) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    temporary.write_text(value, encoding="utf-8")
+    temporary.replace(path)
 
 
 def _workflow_readme(workflow: dict[str, Any]) -> str:

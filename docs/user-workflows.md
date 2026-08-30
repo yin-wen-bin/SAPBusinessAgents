@@ -23,6 +23,14 @@ flowchart LR
 
 点击顶部“我的工作流”后，默认进入“已发布工作流”目录。目录从本机API实时读取正式工作流，展示名称、版本、只读状态、业务步骤数量和最近一次发布验证结论；选择工作流后可以查看业务步骤、输入输出、完整性缺口并填写输入直接运行。没有历史发布验证文件的旧工作流明确显示“发布验证记录不可用”，不会被标记为验证通过。通过“创建工作流”进入以下四步向导；发布成功后自动返回新工作流的正式详情页。
 
+正式工作流分为“使用中”和“已停用”两个列表。详情页提供以下管理操作：
+
+- **创建新版本**：选择补丁、次版本或主版本递增，将当前定义复制为独立草稿。当前正式版本保持不变，新草稿必须重新完成预审、真机验证和发布。
+- **停用/重新启用**：停用后拒绝新运行，但正在运行的任务继续使用已经保存的工作流快照，历史运行和历史版本保持可查看。重新启用不会绕过Agent版本与Digest检查。
+- **永久删除**：只允许删除已经停用、没有正式业务运行、没有未完成版本草稿且没有其他正式定义引用的工作流。发布前真机验证不计为正式业务运行。删除不会重写Git历史。
+
+版本发布会把原正式文件保存到`versions/<version>/`，根目录只保留当前可执行版本。管理正式目录前必须保持Git工作区干净；平台创建本地`codex/workflow-*`分支并留下待提交修改，不自动提交或推送。
+
 1. **生成草稿**：打开“我的工作流”，用一句话描述要完成的业务任务。订单号、公司代码和日期等具体值只作为真机验证预填值，不会固化成正式工作流常量。生成完成后页面会持久显示“草稿已生成”、业务步骤数量和“下一步：检查工作流”；刷新、切换语言或重新打开草稿后仍能看到该引导。
 2. Codex 读取当前仓库中状态为可执行且声明了输入、输出契约的 Agent。高置信匹配才会进入草稿；关键歧义会一次只追问一个问题。
 3. 服务端重新编译建议：固定每个 Agent 的版本与执行摘要，仅对同名且类型兼容的上下游端口自动连接；遇到 `oneOf` 时必须选择唯一分支并注入显式模式常量。上游数组可能为空、下游要求非空时，编译器增加 `runIf=non_empty`，不会把空数组交给下游 Agent；终端节点同时生成类型安全的 `onSkip` 输出，并把最终业务状态、报告和完整性字段保持为必需。Runtime误请求未消费的输入回显字段时，compiler v4会移除终态投影并在`output_normalization.dismissed_requested_outputs`中留痕；真实业务输出或下游消费字段无法安全跳过时仍阻止生成。
@@ -57,6 +65,12 @@ flowchart LR
 GET  /api/workflows
 GET  /api/workflows/catalog
 GET  /api/workflows/{workflow_id}
+GET  /api/workflows/{workflow_id}/versions
+GET  /api/workflows/{workflow_id}/versions/{version}
+POST /api/workflows/{workflow_id}/versions/draft
+POST /api/workflows/{workflow_id}/deactivate
+POST /api/workflows/{workflow_id}/activate
+DELETE /api/workflows/{workflow_id}
 POST /api/authoring/workflows
 POST /api/authoring/workflows/compose
 GET  /api/authoring/workflows/{draft_id}
