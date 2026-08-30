@@ -354,6 +354,13 @@ def create_app(
         except WorkflowError as exc:
             raise HTTPException(503, {"code": exc.code, "message": str(exc)}) from exc
 
+    @app.get("/api/workflows/catalog")
+    def workflow_catalog() -> list[dict[str, Any]]:
+        try:
+            return workflows.catalog()
+        except WorkflowError as exc:
+            raise HTTPException(503, {"code": exc.code, "message": str(exc)}) from exc
+
     @app.get("/api/workflows/{workflow_id}")
     def get_workflow(workflow_id: str) -> dict[str, Any]:
         try:

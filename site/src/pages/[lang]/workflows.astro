@@ -1,6 +1,6 @@
 ---
 import SiteLayout from "../../layouts/SiteLayout.astro";
-import WorkflowBuilder from "../../components/WorkflowBuilder";
+import WorkflowCenter from "../../components/WorkflowCenter";
 import { askPath, runPath, workflowsPath } from "../../lib/urls";
 import type { Locale } from "../../lib/types";
 
@@ -14,12 +14,12 @@ const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 ---
 
 <SiteLayout
-  title={locale === "zh" ? "工作流编排 — SAP Business Agents" : "Workflow builder — SAP Business Agents"}
-  description={locale === "zh" ? "用自然语言自动组合仓库中的固定 Agent，补齐能力缺口，并发布确定性只读工作流。" : "Compose executable repository Agents from natural language, close capability gaps, and publish deterministic read-only workflows."}
+  title={locale === "zh" ? "我的工作流 — SAP Business Agents" : "My workflows — SAP Business Agents"}
+  description={locale === "zh" ? "查看、运行或创建确定性只读工作流。" : "View, run, or create deterministic read-only workflows."}
   locale={locale}
   alternateHref={workflowsPath(base, other)}
 >
   <div id="main-content">
-    <WorkflowBuilder apiBase={apiBase} locale={locale} runPath={runPath(base, locale)} askPath={askPath(base, locale)} client:load />
+    <WorkflowCenter apiBase={apiBase} locale={locale} runPath={runPath(base, locale)} askPath={askPath(base, locale)} client:load />
   </div>
 </SiteLayout>

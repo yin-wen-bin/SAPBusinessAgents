@@ -40,6 +40,43 @@ class WorkflowRepository:
     def list(self) -> list[dict[str, Any]]:
         return [self._load(path) for path in sorted(self.root.glob("*/*/workflow.json"))]
 
+    def catalog(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for path in sorted(self.root.glob("*/*/workflow.json")):
+            workflow = self._load(path)
+            validation = workflow.get("validation")
+            if not isinstance(validation, dict):
+                validation = self._load_publication_validation(path.parent)
+            acknowledgement = validation.get("acknowledgement") if validation else None
+            items.append(
+                {
+                    "id": workflow.get("id"),
+                    "version": workflow.get("version"),
+                    "title": workflow.get("title"),
+                    "description": workflow.get("description"),
+                    "read_only": workflow.get("readOnly") is True,
+                    "node_count": len(workflow.get("nodes") or []),
+                    "publication": {
+                        "validation_status": str(validation.get("status") or "unknown")
+                        if validation
+                        else "unknown",
+                        "validation_run_id": validation.get("run_id") if validation else None,
+                        "validated_at": validation.get("validated_at") if validation else None,
+                        "evidence_gap_codes": sorted(
+                            {
+                                str(code)
+                                for code in (validation.get("evidence_gap_codes") or [])
+                                if str(code)
+                            }
+                        )
+                        if validation
+                        else [],
+                        "acknowledgement_recorded": isinstance(acknowledgement, dict),
+                    },
+                }
+            )
+        return items
+
     def get(self, workflow_id: str) -> dict[str, Any]:
         for path in self.root.glob("*/*/workflow.json"):
             payload = self._load(path)
@@ -54,6 +91,17 @@ class WorkflowRepository:
             raise WorkflowError(f"Cannot load {path}: {exc}") from exc
         validate_workflow(payload, self.agents, source=str(path), require_pins=True)
         return payload
+
+    @staticmethod
+    def _load_publication_validation(directory: Path) -> dict[str, Any]:
+        path = directory / "validation.json"
+        if not path.is_file():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
 
 def agent_digest(agent: dict[str, Any]) -> str:

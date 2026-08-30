@@ -33,7 +33,7 @@ type Draft = {
   composition: WorkflowComposition;
 };
 
-type BuilderProps = { apiBase: string; locale: Locale; runPath: string; askPath: string };
+type BuilderProps = { apiBase: string; locale: Locale; runPath: string; askPath: string; onPublished?: (workflowId: string) => void };
 type AgentNodeData = { agent: AgentDefinition; locale: Locale };
 type ValidationFeedback = { kind: "progress" | "error"; text: string };
 type WizardStep = "compose" | "review" | "validate" | "publish";
@@ -355,7 +355,7 @@ function connectionId(item: WorkflowConnectionDefinition): string {
   return `${from}->${item.to.nodeId}:${item.to.port}`;
 }
 
-export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: BuilderProps) {
+export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onPublished }: BuilderProps) {
   const t = labels[locale];
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -407,6 +407,8 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: B
     setActiveStep(step);
     if (typeof window === "undefined") return;
     const query = new URLSearchParams(window.location.search);
+    query.set("view", "create");
+    query.delete("workflow");
     if (draftId) query.set("draft", draftId);
     query.set("step", step);
     history.replaceState({}, "", `${window.location.pathname}?${query.toString()}`);
@@ -748,7 +750,9 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath }: B
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail?.message ?? payload.detail ?? "Publish failed");
-      applyDraft(payload as Draft); setMessage(`${t.publish} · ${payload.validation?.branch ?? ""}`);
+      applyDraft(payload as Draft);
+      setMessage(`${t.publish} · ${payload.validation?.branch ?? ""}`);
+      onPublished?.(String(payload.workflow?.id ?? draft.workflow.id));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally { setBusy(false); }

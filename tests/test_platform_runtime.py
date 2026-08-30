@@ -1245,6 +1245,45 @@ def test_shortage_agent_api_defaults_are_persisted_and_custom_values_override(
         assert custom_filters["MaterialShortageProfileCount"] == "007"
 
 
+def test_published_workflow_catalog_exposes_safe_publication_metadata(tmp_path: Path) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/workflows/catalog")
+    assert response.status_code == 200, response.text
+    catalog = {item["id"]: item for item in response.json()}
+    assert {"p2p-batch-payment-review", "workflow-ec0e3072"} <= set(catalog)
+    legacy = catalog["p2p-batch-payment-review"]
+    assert legacy["publication"] == {
+        "validation_status": "unknown",
+        "validation_run_id": None,
+        "validated_at": None,
+        "evidence_gap_codes": [],
+        "acknowledgement_recorded": False,
+    }
+    published = catalog["workflow-ec0e3072"]
+    assert published["read_only"] is True
+    assert published["node_count"] == 2
+    assert published["publication"]["validation_status"] == "inconclusive"
+    assert published["publication"]["acknowledgement_recorded"] is True
+    assert published["publication"]["evidence_gap_codes"] == [
+        "bank_settlement_not_proven",
+        "payment_run_and_bank_master_evidence",
+    ]
+    assert set(published) == {
+        "id",
+        "version",
+        "title",
+        "description",
+        "read_only",
+        "node_count",
+        "publication",
+    }
+
+
 def test_shortage_agent_explicit_empty_or_null_defaulted_input_is_rejected(
     tmp_path: Path,
 ) -> None:
