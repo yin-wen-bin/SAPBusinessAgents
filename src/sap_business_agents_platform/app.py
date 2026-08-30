@@ -11,7 +11,7 @@ from typing import Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .codex_planner import CodexPlanner, Planner
@@ -62,6 +62,13 @@ from .skills import SkillRegistry
 from .workbuddy_planner import WorkBuddyPlanner
 from .workflow_factory import WorkflowDraftError, WorkflowDraftService
 from .workflows import WorkflowError, WorkflowManagementService, WorkflowRepository
+from .workflow_presentation import (
+    compose_workflow_presentation,
+    workflow_ap_scopes_csv,
+    workflow_markdown_report,
+    workflow_orders_csv,
+    workflow_presentation_table_page,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -113,6 +120,7 @@ def create_app(
     )
     selected_provider = "embedded"
     selected_plugin_id = "embedded-sap-odata"
+    codex_sdk_installed = importlib.util.find_spec("openai_codex") is not None
     planner_supplied = planner is not None
     sdk_registry = sdk_manager or SDKManager(
         settings.repository_root / "config" / "sdks.json",
@@ -157,6 +165,11 @@ def create_app(
     workflows = WorkflowRepository(
         settings.repository_root / "workflows", business_agents, store
     )
+    health_catalog_counts = {
+        "executable_agents": 0,
+        "published_workflows": 0,
+        "approved_skills": 0,
+    }
     harness_broker = HarnessToolBroker(settings, store, sap_read, skills)
     harness = (
         CodexHarnessController(settings, store, harness_broker)
@@ -186,6 +199,11 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await plugin_manager.start()
+        health_catalog_counts.update(
+            executable_agents=len(agents.executable()),
+            published_workflows=len(workflows.list()),
+            approved_skills=len(skill_registry.list()),
+        )
         await coordinator.start()
         try:
             yield
@@ -246,7 +264,7 @@ def create_app(
                 "status": sap_read_plugin["status"],
                 **sap_read_status,
             },
-            "codex_sdk_installed": importlib.util.find_spec("openai_codex") is not None,
+            "codex_sdk_installed": codex_sdk_installed,
             "free_query_runtime": {
                 "selected": default_runtime_id,
                 "execution_mode": (
@@ -263,9 +281,7 @@ def create_app(
                 "native_web_search": harness is not None and default_runtime_id == "codex",
                 "automatic_fallback": False,
             },
-            "executable_agents": len(agents.executable()),
-            "published_workflows": len(workflows.list()),
-            "approved_skills": len(skill_registry.list()),
+            **health_catalog_counts,
             "plugins": {
                 "total": len(plugin_manager.list()),
                 "ready": sum(
@@ -528,9 +544,78 @@ def create_app(
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
         try:
-            return store.get_run(run_id).model_dump(mode="json")
+            record = store.get_run(run_id)
         except KeyError as exc:
             raise HTTPException(404, "Run not found") from exc
+        payload = record.model_dump(mode="json")
+        if record.result and record.result.mode.value == "workflow":
+            derived = record.result.workflow_presentation or compose_workflow_presentation(
+                record.result
+            )
+            if derived:
+                payload["result"]["workflow_presentation"] = derived
+        return payload
+
+    def workflow_view_for(run_id: str) -> tuple[Any, dict[str, Any]]:
+        try:
+            record = store.get_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Run not found") from exc
+        if record.result is None:
+            raise HTTPException(409, "Run result is not available")
+        view = record.result.workflow_presentation or compose_workflow_presentation(
+            record.result
+        )
+        if not view:
+            raise HTTPException(404, "Workflow presentation is not available")
+        return record.result, view
+
+    @app.get("/api/runs/{run_id}/workflow-presentation")
+    def get_workflow_presentation(run_id: str) -> dict[str, Any]:
+        _, view = workflow_view_for(run_id)
+        return view
+
+    @app.get("/api/runs/{run_id}/workflow-presentation/tables/{table_id}/rows")
+    def get_workflow_presentation_rows(
+        run_id: str,
+        table_id: str,
+        offset: int = Query(0, ge=0),
+        limit: int = Query(200, ge=1, le=200),
+    ) -> dict[str, Any]:
+        result, _ = workflow_view_for(run_id)
+        try:
+            return workflow_presentation_table_page(
+                result, table_id, offset=offset, limit=limit
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/api/runs/{run_id}/workflow-report.md")
+    def download_workflow_report(run_id: str) -> Response:
+        _, view = workflow_view_for(run_id)
+        return Response(
+            workflow_markdown_report(view),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="workflow-report.md"'},
+        )
+
+    @app.get("/api/runs/{run_id}/workflow-orders.csv")
+    def download_workflow_orders(run_id: str) -> Response:
+        _, view = workflow_view_for(run_id)
+        return Response(
+            "\ufeff" + workflow_orders_csv(view),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="workflow-orders.csv"'},
+        )
+
+    @app.get("/api/runs/{run_id}/workflow-ap-scopes.csv")
+    def download_workflow_scopes(run_id: str) -> Response:
+        _, view = workflow_view_for(run_id)
+        return Response(
+            "\ufeff" + workflow_ap_scopes_csv(view),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="workflow-ap-scopes.csv"'},
+        )
 
     @app.get("/api/runs/{run_id}/presentation/blocks/{block_index}/rows")
     def get_presentation_table_rows(

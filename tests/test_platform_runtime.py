@@ -2360,3 +2360,132 @@ def test_validation_snapshot_is_not_counted_as_business_workflow_run(tmp_path: P
     store.create_run("run_business", validation_request)
     store.save_workflow_snapshot("run_business", {"id": "workflow-ec0e3072"})
     assert store.workflow_business_run_count("workflow-ec0e3072") == 1
+
+
+def test_historical_workflow_presentation_endpoints_are_read_only(tmp_path: Path) -> None:
+    embedded = FakeEmbeddedProvider()
+    app = create_app(
+        _settings(tmp_path), planner=FakePlanner(), embedded_provider=embedded
+    )
+    run_id = "run_historical_workflow_presentation"
+    app.state.store.create_run(
+        run_id,
+        RunCreate(
+            mode=RunMode.workflow,
+            workflowId="workflow-ec0e3072",
+            input={"purchase_orders": ["4500000031"]},
+        ),
+    )
+    result = RunResult(
+        run_id=run_id,
+        mode=RunMode.workflow,
+        workflow_id="workflow-ec0e3072",
+        node_results=[
+            {
+                "node_id": "trace_procure_to_pay_status",
+                "status": "completed",
+                "output": {
+                    "source_complete": True,
+                    "evidence_complete": True,
+                    "po_results": [
+                        {
+                            "purchase_order": "4500000031",
+                            "company_code": "1710",
+                            "supplier": "17300002",
+                            "business_status": "complete",
+                            "source_complete": True,
+                            "evidence_complete": True,
+                            "payment_document_status": "confirmed",
+                            "bank_settlement_status": "not_assessed",
+                            "business_report": {
+                                "headline": {"zh": "SAP付款流程已确认", "en": "SAP payment flow confirmed"},
+                                "records": [
+                                    {
+                                        "purchase_order": "4500000031",
+                                        "order_quantity": "4",
+                                        "net_received_quantity": "4",
+                                        "net_invoiced_quantity": "4",
+                                        "unit": "PC",
+                                    }
+                                ],
+                                "record_columns": [
+                                    {"key": "purchase_order", "label": {"zh": "采购订单", "en": "Purchase order"}}
+                                ],
+                                "evidence_tables": [
+                                    {
+                                        "id": "documents",
+                                        "title": {"zh": "凭证明细", "en": "Document details"},
+                                        "columns": [
+                                            {"key": "document", "label": {"zh": "凭证", "en": "Document"}}
+                                        ],
+                                        "rows": [{"document": "5000000025"}],
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "business_report": {},
+                },
+            },
+            {
+                "node_id": "review_payment_readiness",
+                "status": "completed",
+                "output": {
+                    "source_complete": True,
+                    "evidence_complete": True,
+                    "scope_results": [
+                        {
+                            "scope_id": "1710:17300002",
+                            "company_code": "1710",
+                            "supplier": "17300002",
+                            "purchase_orders": ["4500000031"],
+                            "business_status": "complete",
+                            "source_complete": True,
+                            "evidence_complete": True,
+                            "payment_run_evidence_complete": False,
+                            "bank_master_evidence_complete": False,
+                            "bank_settlement_evidence_complete": False,
+                            "bank_settlement_status": "not_assessed",
+                        }
+                    ],
+                    "business_report": {},
+                },
+            },
+        ],
+    )
+    app.state.store.update_run(
+        run_id,
+        status=RunStatus.inconclusive,
+        result_json=result.model_dump(mode="json"),
+        completed_at=utc_now(),
+    )
+
+    with TestClient(app) as client:
+        before = len(embedded.executed_plans)
+        run_response = client.get(f"/api/runs/{run_id}")
+        assert run_response.status_code == 200
+        presentation = run_response.json()["result"]["workflow_presentation"]
+        assert presentation["order_results"][0]["purchase_order"] == "4500000031"
+        assert presentation["source_complete"] is True
+        assert presentation["evidence_complete"] is False
+        assert client.get(f"/api/runs/{run_id}/workflow-presentation").status_code == 200
+        report = client.get(f"/api/runs/{run_id}/workflow-report.md")
+        assert report.status_code == 200
+        assert "5000000025" in report.text
+        assert "4500000031" in client.get(
+            f"/api/runs/{run_id}/workflow-orders.csv"
+        ).text
+        assert "1710:17300002" in client.get(
+            f"/api/runs/{run_id}/workflow-ap-scopes.csv"
+        ).text
+        table_id = presentation["order_results"][0]["evidence_tables"][0]["table_id"]
+        rows = client.get(
+            f"/api/runs/{run_id}/workflow-presentation/tables/{table_id}/rows"
+        )
+        assert rows.status_code == 200
+        assert rows.json()["rows"] == [{"document": "5000000025"}]
+        assert len(embedded.executed_plans) == before
+
+    persisted = app.state.store.get_run(run_id)
+    assert persisted.result is not None
+    assert persisted.result.workflow_presentation is None

@@ -60,6 +60,13 @@ from .workflows import (
     validate_workflow,
     workflow_digest,
 )
+from .workflow_presentation import (
+    compose_workflow_presentation,
+    workflow_ap_scopes_csv,
+    workflow_markdown_report,
+    workflow_orders_csv,
+    workflow_stages_csv,
+)
 
 
 class RunExecutionError(RuntimeError):
@@ -1481,6 +1488,9 @@ class RunCoordinator:
             "zh": "工作流已完成。" if not degraded else "工作流已完成，但存在未确认或范围受限的结果。",
             "en": "Workflow completed." if not degraded else "Workflow completed with inconclusive or bounded results.",
         }
+        result.workflow_presentation = compose_workflow_presentation(result)
+        if result.workflow_presentation:
+            result.summary = dict(result.workflow_presentation["title"])
         result.completed_at = utc_now()
         result.artifacts = self._write_artifacts(result)
         status = (
@@ -2372,11 +2382,40 @@ class RunCoordinator:
                 }
             )
         (artifact_root / "evidence.csv").write_text(csv_buffer.getvalue(), encoding="utf-8-sig")
+        workflow_view = result.workflow_presentation or compose_workflow_presentation(result)
         business_report = _find_business_report(result.rule_results)
-        report = _business_markdown_report(result, business_report)
+        report = (
+            workflow_markdown_report(workflow_view)
+            if workflow_view
+            else _business_markdown_report(result, business_report)
+        )
         (artifact_root / "report.md").write_text(report, encoding="utf-8")
         artifacts = [{"name": "report.md", "media_type": "text/markdown"}]
-        if business_report:
+        if workflow_view:
+            stage_csv = workflow_stages_csv(workflow_view)
+            orders_csv = workflow_orders_csv(workflow_view)
+            scopes_csv = workflow_ap_scopes_csv(workflow_view)
+            (artifact_root / "business-stages.csv").write_text(
+                stage_csv, encoding="utf-8-sig"
+            )
+            (artifact_root / "workflow-report.md").write_text(
+                report, encoding="utf-8"
+            )
+            (artifact_root / "workflow-orders.csv").write_text(
+                orders_csv, encoding="utf-8-sig"
+            )
+            (artifact_root / "workflow-ap-scopes.csv").write_text(
+                scopes_csv, encoding="utf-8-sig"
+            )
+            artifacts.extend(
+                [
+                    {"name": "business-stages.csv", "media_type": "text/csv"},
+                    {"name": "workflow-report.md", "media_type": "text/markdown"},
+                    {"name": "workflow-orders.csv", "media_type": "text/csv"},
+                    {"name": "workflow-ap-scopes.csv", "media_type": "text/csv"},
+                ]
+            )
+        elif business_report:
             stage_buffer = StringIO()
             stage_writer = csv.DictWriter(
                 stage_buffer,

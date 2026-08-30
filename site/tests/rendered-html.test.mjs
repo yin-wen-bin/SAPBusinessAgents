@@ -186,6 +186,14 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /原始 SAP 证据/);
   assert.match(run, /未执行付款准备复核：没有可复核的上游证据/);
   assert.match(run, /node_skipped_empty_input/);
+  assert.match(run, /采购订单汇总/);
+  assert.match(run, /AP付款准备度分组/);
+  assert.match(run, /workflow-presentation\/tables/);
+  assert.match(run, /workflow-report\.md/);
+  assert.match(run, /workflow-orders\.csv/);
+  assert.match(run, /workflow-ap-scopes\.csv/);
+  assert.match(run, /const pageSize = 20/);
+  assert.match(run, /payment_run_evidence_incomplete/);
   assert.match(plugins, /插件与能力/);
   assert.match(plugins, /data-plugin-manager/);
   assert.match(plugins, /禁止 SAP 写入/);

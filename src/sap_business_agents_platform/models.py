@@ -246,6 +246,7 @@ class RunResult(BaseModel):
     completeness: Completeness = Field(default_factory=Completeness)
     summary: dict[str, str] = Field(default_factory=dict)
     presentation: RunPresentation | None = None
+    workflow_presentation: dict[str, Any] | None = None
     errors: list[dict[str, Any]] = Field(default_factory=list)
     thread_id: str | None = None
     runtime: RuntimeSnapshot | None = None
