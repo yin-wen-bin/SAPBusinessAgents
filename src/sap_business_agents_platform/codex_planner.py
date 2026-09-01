@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any, Protocol
@@ -78,6 +79,24 @@ WORKFLOW_REVIEW_OUTPUT_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["verdict", "issues", "summary"],
+    "additionalProperties": False,
+}
+
+AGENT_FEEDBACK_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {
+            "type": "object",
+            "properties": {"zh": {"type": "string"}, "en": {"type": "string"}},
+            "required": ["zh", "en"],
+            "additionalProperties": False,
+        },
+        "required_changes": {"type": "array", "items": {"type": "string"}},
+        "manifest_json": {"type": "string"},
+        "readme": {"type": "string"},
+        "rules_source": {"type": "string"},
+    },
+    "required": ["summary", "required_changes", "manifest_json", "readme", "rules_source"],
     "additionalProperties": False,
 }
 
@@ -269,6 +288,8 @@ class Planner(Protocol):
     ) -> dict[str, Any]: ...
 
     async def review_workflow_feedback(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def review_agent_feedback(self, **kwargs: Any) -> dict[str, Any]: ...
 
     async def analyze_role_matching(self, **kwargs: Any) -> dict[str, Any]: ...
 
@@ -545,6 +566,80 @@ requirements; never claim a rule has been implemented or a process completed.
                 "content_zh": str(raw["content_zh"]),
                 "content_en": str(raw["content_en"]),
                 "rule_notes": [str(item) for item in raw["rule_notes"]],
+            }
+
+    async def review_agent_feedback(
+        self,
+        *,
+        feedback: str,
+        locale: str,
+        package: dict[str, Any],
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+
+        prompt = f"""
+Revise one isolated SAPBusinessAgents deterministic fixed-Agent draft from user feedback.
+
+Preferred language: {locale}
+User feedback: {feedback}
+Current immutable draft package:
+{_safe_json(package, limit=300_000)}
+
+Return the complete revised agent manifest as manifest_json, complete bilingual README, and the
+complete managed rules.py source (empty string if no managed rule is needed). Preserve the Agent
+ID. SAP access must remain GET-only; Skills must remain registered, read_only and validated. Do
+not modify platform code or other Agents. A managed rule must expose evaluate(inputs), operate only
+on supplied structured evidence, and must not access files, network, processes, environment, eval,
+exec, dynamic imports or reflection. Do not claim validation has passed: set changed behavior to
+NOT_TESTED/executable=false. Return JSON only.
+""".strip()
+        async with AsyncCodex() as codex:
+            if thread_id:
+                thread = await codex.thread_resume(
+                    thread_id,
+                    cwd=str(self.repository_root),
+                    sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all,
+                    model=self.model,
+                )
+            else:
+                thread = await codex.thread_start(
+                    cwd=str(self.repository_root),
+                    sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all,
+                    model=self.model,
+                    service_name="sap_business_agents_agent_authoring",
+                    developer_instructions=(
+                        "Revise only the supplied isolated Agent package. Never call tools, inspect "
+                        "files, run commands, contact SAP, or edit the repository."
+                    ),
+                )
+            result = await thread.run(prompt, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA)
+            raw = json.loads(result.final_response)
+            try:
+                manifest = json.loads(str(raw.get("manifest_json") or "{}"))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Agent feedback returned invalid manifest JSON: {exc}") from exc
+            if not isinstance(manifest, dict):
+                raise ValueError("Agent feedback manifest must be an object.")
+            rules_source = str(raw.get("rules_source") or "")
+            if rules_source:
+                managed = manifest.setdefault("managedRule", {})
+                managed["entrypoint"] = "evaluate"
+                from .managed_rules import source_digest
+
+                managed["sha256"] = source_digest(rules_source)
+            return {
+                "summary": raw["summary"],
+                "required_changes": [str(item) for item in raw.get("required_changes") or []],
+                "package": {
+                    "manifest": manifest,
+                    "readme": str(raw.get("readme") or ""),
+                    "rules": rules_source or None,
+                    "files": copy.deepcopy(package.get("files") or {}),
+                },
+                "thread_id": thread.id,
             }
 
     async def analyze_role_matching(

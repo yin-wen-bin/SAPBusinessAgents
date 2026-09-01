@@ -71,6 +71,21 @@ test("role matching assistant renders description and document input modes", asy
   assert.doesNotMatch(zh, /执行这个 Agent/);
 });
 
+test("fixed Agent lifecycle management is available in both languages", async () => {
+  const zh = await readPage("zh", "agent-management");
+  const en = await readPage("en", "agent-management");
+  const component = await readFile(path.join("src", "components", "AgentManagementCenter.tsx"), "utf8");
+  assert.match(zh, /Agent 管理中心/);
+  assert.match(en, /Agent management center/);
+  assert.match(component, /创建新版本/);
+  assert.match(component, /GET-only 真机验证/);
+  assert.match(component, /发布并启用/);
+  assert.match(component, /永久删除/);
+  assert.match(component, /validation-report/);
+  assert.match(component, /expectedAgentHash/);
+  assert.match(component, /validationReportDigest/);
+});
+
 test("material shortage inputs are localized, documented, and prefilled", async () => {
   const zh = await readPage("zh", "agents", "MM", "material-shortage-procurement-response");
   const en = await readPage("en", "agents", "MM", "material-shortage-procurement-response");

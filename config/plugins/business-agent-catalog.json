@@ -11,7 +11,7 @@
   "capabilities": [
     {
       "capability": "business_agent.v1",
-      "operations": ["list", "executable", "get", "validate"]
+      "operations": ["list", "executable", "get", "get_version", "package", "is_active", "validate"]
     }
   ],
   "transport": {

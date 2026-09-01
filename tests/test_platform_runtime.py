@@ -67,6 +67,38 @@ def test_validate_input_enforces_string_length_and_pattern() -> None:
             raise AssertionError(f"Expected invalid sales-order input to be rejected: {invalid}")
 
 
+def test_agent_management_catalog_excludes_platform_assistants_and_creates_blank_draft(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    with TestClient(app) as client:
+        catalog = client.get("/api/agents/catalog?state=all")
+        assert catalog.status_code == 200, catalog.text
+        assert catalog.json()
+        assert all(item["id"] != "role-agent-matching" for item in catalog.json())
+        created = client.post(
+            "/api/authoring/agents",
+            json={
+                "source": "blank",
+                "agentId": "api-created-agent",
+                "module": "Common",
+                "locale": "zh",
+            },
+        )
+        assert created.status_code == 201, created.text
+        draft = created.json()
+        assert draft["revision"] == 1
+        checked = client.post(
+            f"/api/authoring/agents/{draft['draft_id']}/validate"
+        )
+        assert checked.status_code == 200, checked.text
+        assert checked.json()["validation"]["verdict"] == "NOT_TESTED"
+
+
 def test_presentation_table_endpoint_pages_persisted_records_beyond_inline_limit(
     tmp_path: Path,
 ) -> None:

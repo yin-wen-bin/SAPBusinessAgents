@@ -214,6 +214,9 @@ class RuntimeRouter:
     async def author_draft(self, *args: Any, **kwargs: Any) -> Any:
         return await self._invoke("author_draft", *args, **kwargs)
 
+    async def review_agent_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._invoke("review_agent_feedback", *args, **kwargs)
+
     async def compose_workflow(self, *args: Any, **kwargs: Any) -> Any:
         return await self._invoke("compose_workflow", *args, **kwargs)
 

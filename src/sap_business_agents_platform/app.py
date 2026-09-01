@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, ConfigDict, Field
 
 from .codex_planner import CodexPlanner, Planner
+from .agent_lifecycle import AgentLifecycleError, AgentLifecycleService
 from .config import Settings
 from .database import RunStore
 from .engine import RunCoordinator, RunExecutionError, presentation_table_page
@@ -24,6 +25,16 @@ from .factory import AgentDraftService, DraftError
 from .harness import CodexHarnessController, HarnessToolBroker
 from .manifests import AgentRepository
 from .models import (
+    AgentActivateRequest,
+    AgentAuthoringCreate,
+    AgentDeleteRequest,
+    AgentDraftUpdate,
+    AgentFeedbackRequest,
+    AgentLifecycleRequest,
+    AgentLiveValidationRequest,
+    AgentPublishRequest,
+    AgentUndoRequest,
+    AgentVersionDraftRequest,
     DraftAuthoringCreate,
     DraftCreate,
     DraftInput,
@@ -214,6 +225,15 @@ def create_app(
         store=store,
         drafts=workflow_drafts,
     )
+    agent_lifecycle = AgentLifecycleService(
+        settings,
+        store,
+        agents,
+        workflows,
+        coordinator,
+        agent_runtime,
+        drafts,
+    )
     role_matching = RoleMatchingService(
         settings, store, business_agents, agent_runtime, workflow_drafts
     )
@@ -265,6 +285,7 @@ def create_app(
     app.state.workflows = workflows
     app.state.workflow_drafts = workflow_drafts
     app.state.workflow_management = workflow_management
+    app.state.agent_lifecycle = agent_lifecycle
     app.state.role_matching = role_matching
     app.state.sdk_manager = sdk_registry
 
@@ -409,6 +430,67 @@ def create_app(
             return business_agents.executable() if executable else business_agents.list()
         except PluginError as exc:
             raise HTTPException(503, {"code": exc.code, "message": str(exc)}) from exc
+
+    @app.get("/api/agents/catalog")
+    def managed_agent_catalog(state: str = Query("all", pattern="^(active|inactive|all)$")) -> list[dict[str, Any]]:
+        try:
+            return agent_lifecycle.catalog(state)
+        except AgentLifecycleError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
+
+    @app.get("/api/agents/{agent_id}/versions")
+    def list_agent_versions(agent_id: str) -> list[dict[str, Any]]:
+        try:
+            return agent_lifecycle.versions(agent_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Agent not found") from exc
+
+    @app.get("/api/agents/{agent_id}/versions/{version}")
+    def get_agent_version(agent_id: str, version: str) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.version(agent_id, version)
+        except KeyError as exc:
+            raise HTTPException(404, "Agent version not found") from exc
+
+    @app.post("/api/agents/{agent_id}/versions/draft", status_code=201)
+    def create_agent_version_draft(agent_id: str, payload: AgentVersionDraftRequest) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.create_version_draft(
+                agent_id,
+                bump=payload.bump,
+                expected_version=payload.expected_version,
+                expected_hash=payload.expected_agent_hash,
+            )
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/agents/{agent_id}/deactivate")
+    def deactivate_agent(agent_id: str, payload: AgentLifecycleRequest) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.deactivate(agent_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/agents/{agent_id}/activate")
+    def activate_agent(agent_id: str, payload: AgentActivateRequest) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.activate(agent_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/agents/{agent_id}/rollback")
+    def rollback_agent(agent_id: str, payload: AgentActivateRequest) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.rollback(agent_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.delete("/api/agents/{agent_id}")
+    def delete_agent(agent_id: str, payload: AgentDeleteRequest) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.delete(agent_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
 
     @app.get("/api/agents/{agent_id}")
     def get_agent(agent_id: str) -> dict[str, Any]:
@@ -1248,6 +1330,96 @@ def create_app(
         except (DraftError, subprocess.CalledProcessError) as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @app.post("/api/authoring/agents", status_code=201)
+    async def create_managed_agent_draft(payload: AgentAuthoringCreate) -> dict[str, Any]:
+        try:
+            return await agent_lifecycle.create(payload)
+        except (AgentLifecycleError, KeyError, DraftError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.get("/api/authoring/agents")
+    def list_managed_agent_drafts() -> list[dict[str, Any]]:
+        return agent_lifecycle.list_drafts()
+
+    @app.get("/api/authoring/agents/{draft_id}")
+    def get_managed_agent_draft(draft_id: str) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.get_draft(draft_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Agent draft not found") from exc
+
+    @app.put("/api/authoring/agents/{draft_id}")
+    def update_managed_agent_draft(draft_id: str, payload: AgentDraftUpdate) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.update(draft_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/feedback")
+    async def revise_managed_agent_with_runtime(
+        draft_id: str, payload: AgentFeedbackRequest
+    ) -> dict[str, Any]:
+        try:
+            draft = agent_lifecycle.get_draft(draft_id)
+            turns = draft.get("conversation") or []
+            if payload.base_turn != len(turns):
+                raise AgentLifecycleError(
+                    "Agent conversation changed.", code="agent_conversation_conflict"
+                )
+            return await agent_lifecycle.feedback(draft_id, payload)
+        except (AgentLifecycleError, KeyError, PluginError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/undo")
+    def undo_managed_agent_revision(draft_id: str, payload: AgentUndoRequest) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.undo(
+                draft_id,
+                expected_revision=payload.base_revision,
+                target_revision=payload.target_revision,
+            )
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/validate")
+    def validate_managed_agent_draft(draft_id: str) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.validate(draft_id)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/live-validate", status_code=202)
+    async def live_validate_managed_agent(
+        draft_id: str, payload: AgentLiveValidationRequest
+    ) -> dict[str, Any]:
+        try:
+            return await agent_lifecycle.live_validate(
+                draft_id,
+                input_value=payload.input,
+                auto_discover=payload.auto_discover,
+            )
+        except (AgentLifecycleError, RunExecutionError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.get("/api/authoring/agents/{draft_id}/validation-report")
+    def managed_agent_validation_report(draft_id: str) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.validation_report(draft_id)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/publish")
+    def publish_managed_agent(draft_id: str, payload: AgentPublishRequest) -> dict[str, Any]:
+        try:
+            current = agent_lifecycle.get_draft(draft_id)
+            if int(current["revision"]) != payload.expected_revision:
+                raise AgentLifecycleError(
+                    "Agent draft revision changed.", code="agent_draft_conflict"
+                )
+            return agent_lifecycle.publish(draft_id, payload)
+        except (AgentLifecycleError, KeyError, subprocess.CalledProcessError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
     @app.post("/api/authoring/workflows", status_code=201)
     def create_workflow_draft(payload: WorkflowDraftCreate) -> dict[str, Any]:
         try:
@@ -1673,6 +1845,21 @@ def create_app(
         }
 
     return app
+
+
+def _agent_lifecycle_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, KeyError):
+        return HTTPException(404, "Agent or Agent draft not found")
+    code = str(getattr(exc, "code", "agent_management_failed"))
+    status = 404 if code in {"agent_not_found", "agent_version_not_found"} else 409
+    return HTTPException(
+        status,
+        {
+            "code": code,
+            "message": str(exc),
+            "detail": getattr(exc, "detail", None),
+        },
+    )
 
 
 def _agent_draft_origin(workflow_drafts: WorkflowDraftService, payload: Any) -> dict[str, Any]:

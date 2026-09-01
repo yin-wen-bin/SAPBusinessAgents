@@ -34,6 +34,10 @@ export function workflowsPath(base: string, locale: Locale): string {
   return withBase(base, locale, "workflows");
 }
 
+export function agentManagementPath(base: string, locale: Locale): string {
+  return withBase(base, locale, "agent-management");
+}
+
 export function agentPath(base: string, locale: Locale, moduleName: SapModule, slug: string): string {
   return withBase(base, locale, "agents", moduleName, slug);
 }

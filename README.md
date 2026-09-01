@@ -16,6 +16,7 @@ SAP Business Agents 是一个按 SAP 业务模块组织的可运行 Agent 目录
 - 高风险 SAP 动作保持只读、人工确认和可审计边界。
 - 单机原型提供“固定 Agent”和“自由 SAP 查询”两种执行模式，并在同一运行详情页展示计划、证据、规则、完整性和模型解释。
 - 可视化工作流编排器可连接固定 Agent 的类型化输入输出端口，经 Codex 辅助真机验证后发布为不依赖 Codex 的确定性工作流。
+- “Agent 管理中心”支持确定性固定 Agent 的创建、多轮修改、Diff、GET-only真机验证、版本发布、启停、回滚和严格删除；发布自动创建本地Git分支及提交但不推送。
 
 在线目录：[https://yin-wen-bin.github.io/SAPBusinessAgents/](https://yin-wen-bin.github.io/SAPBusinessAgents/)
 
@@ -170,6 +171,8 @@ npm run dev
 打开站点后可浏览 31 个 Agent 详情页，其中确定性业务 Agent 可直接执行；Common 模块的“岗位匹配助理”用于只读分析用户选择的本地业务材料，不进入固定执行或工作流节点目录。也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。SAP 读取固定由 Embedded Provider 完成，不存在自动或手动 Provider 回退。
 
 “岗位匹配助理”支持带来源定位的岗位、流程、SAP日常操作、单Agent匹配、compiler v4已验证的组合工作流建议和能力缺口，并可通过补充或排除材料进行最多12轮增量/全量修订。原始正文只保存在 `.local-data/role-matching/`，不会进入SQLite、SSE或Git。详见 [岗位匹配助理](docs/role-agent-matching.md)。
+
+顶部“Agent 管理”进入固定 Agent 全生命周期向导。每次运行保存不可变 Agent 版本快照；已发布工作流继续解析固定历史版本。`platform_assistant`不进入此管理链。完整门禁与接口见 [固定 Agent 全生命周期管理](docs/agent-lifecycle-management.md)。
 
 插件页显示本机注册表、健康状态、能力、传输方式和安全权限。对应接口为 `GET /api/plugins`、`GET /api/capabilities`、`POST /api/plugins/rescan`、`POST /api/plugins/{plugin_id}/health` 和 `PUT /api/plugins/{plugin_id}/enabled`。详细契约见 [本机插件平台设计](docs/local-plugin-platform.md)。
 

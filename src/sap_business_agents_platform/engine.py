@@ -22,6 +22,7 @@ from .config import Settings
 from .database import RunStore
 from .harness import CodexHarnessController
 from .manifests import AgentRepository, ManifestError, is_agent_executable, validate_execution
+from .managed_rules import ManagedRuleError, execute_managed_rule
 from .models import (
     Completeness,
     FreeQueryFeedback,
@@ -209,6 +210,13 @@ class RunCoordinator:
                 agent = self.agents.get(str(request.agent_id))
             except (KeyError, PluginError) as exc:
                 raise RunExecutionError("Agent not found.", code="agent_not_found") from exc
+            active_check = getattr(self.agents, "is_active", None)
+            if callable(active_check) and not active_check(str(request.agent_id)):
+                raise RunExecutionError(
+                    "The fixed Agent is inactive and cannot accept new runs.",
+                    code="agent_inactive",
+                    detail={"agent_id": request.agent_id},
+                )
             if self.settings.enforce_agent_acceptance and not is_agent_executable(agent):
                 raise RunExecutionError(
                     "The fixed Agent has not passed live three-stage acceptance.",
@@ -248,6 +256,23 @@ class RunCoordinator:
             if self.workflows is None:
                 raise RunExecutionError("Workflow runtime is unavailable.", code="workflow_unavailable")
             workflow = self.workflows.get_runnable(str(request.workflow_id))
+            active_check = getattr(self.agents, "is_active", None)
+            if callable(active_check):
+                inactive_agents = sorted(
+                    {
+                        str(node.get("agentId") or "")
+                        for node in (workflow.get("nodes") or [])
+                        if isinstance(node, dict)
+                        and node.get("agentId")
+                        and not active_check(str(node.get("agentId")))
+                    }
+                )
+                if inactive_agents:
+                    raise RunExecutionError(
+                        "The workflow references an inactive fixed Agent.",
+                        code="workflow_agent_inactive",
+                        detail={"agent_ids": inactive_agents},
+                    )
             try:
                 normalized_input = self.normalizer.normalize_input(
                     request.input, workflow["inputSchema"]
@@ -277,6 +302,18 @@ class RunCoordinator:
                         code=str(getattr(exc, "code", "runtime_not_selectable")),
                     ) from exc
         self.store.create_run(run_id, request, runtime=runtime_snapshot)
+        if request.mode == RunMode.agent:
+            package_loader = getattr(self.agents, "package", None)
+            package = (
+                package_loader(str(request.agent_id))
+                if callable(package_loader)
+                else {"manifest": agent, "rules_source": None}
+            )
+            self.store.save_agent_run_snapshot(
+                run_id,
+                package["manifest"],
+                rules_source=package.get("rules_source"),
+            )
         if request.mode == RunMode.free_query:
             self.store.create_free_query_session(
                 session_id=f"fq_{uuid.uuid4().hex[:16]}",
@@ -348,6 +385,17 @@ class RunCoordinator:
         run_id = f"acceptance_{uuid.uuid4().hex[:16]}"
         self._acceptance_runs.add(run_id)
         self.store.create_run(run_id, request)
+        package_loader = getattr(self.agents, "package", None)
+        package = (
+            package_loader(str(request.agent_id))
+            if callable(package_loader)
+            else {"manifest": agent, "rules_source": None}
+        )
+        self.store.save_agent_run_snapshot(
+            run_id,
+            package["manifest"],
+            rules_source=package.get("rules_source"),
+        )
         if defaulted_fields:
             self.store.append_event(
                 run_id,
@@ -362,6 +410,73 @@ class RunCoordinator:
             run_id,
             "run_queued",
             {"mode": request.mode.value, "acceptance_campaign": True},
+        )
+        await self._schedule_run(run_id, request.mode)
+        return run_id
+
+    async def submit_agent_snapshot(
+        self,
+        agent: dict[str, Any],
+        input_value: dict[str, Any],
+        *,
+        rules_source: str | None = None,
+        draft_id: str | None = None,
+        revision: int | None = None,
+    ) -> str:
+        """Execute an immutable draft/version snapshot during an acceptance campaign."""
+
+        validate_execution(agent, f"agent-snapshot:{agent.get('slug')}")
+        try:
+            effective_input, defaulted_fields = _resolve_server_defaults(
+                input_value,
+                agent["execution"]["inputSchema"],
+            )
+            effective_input = self.normalizer.normalize_input(
+                effective_input,
+                agent["execution"]["inputSchema"],
+                field_references=discover_agent_input_references(agent),
+            )
+            _validate_input(effective_input, agent["execution"]["inputSchema"])
+        except (KeyError, ManifestError, SapInputNormalizationError, ValueError) as exc:
+            raise RunExecutionError(
+                str(exc),
+                code=str(getattr(exc, "code", "agent_input_invalid")),
+                detail=getattr(exc, "detail", None),
+            ) from exc
+        run_id = f"acceptance_{uuid.uuid4().hex[:16]}"
+        request = RunCreate(
+            mode=RunMode.agent,
+            agentId=str(agent.get("slug") or ""),
+            input=effective_input,
+        )
+        self._acceptance_runs.add(run_id)
+        self.store.create_run(run_id, request)
+        self.store.save_agent_run_snapshot(
+            run_id,
+            agent,
+            rules_source=rules_source,
+            draft_id=draft_id,
+            revision=revision,
+        )
+        if defaulted_fields:
+            self.store.append_event(
+                run_id,
+                "input_defaults_applied",
+                {
+                    "scope": "agent_snapshot",
+                    "agent_id": request.agent_id,
+                    "fields": defaulted_fields,
+                },
+            )
+        self.store.append_event(
+            run_id,
+            "run_queued",
+            {
+                "mode": request.mode.value,
+                "acceptance_campaign": True,
+                "draft_id": draft_id,
+                "revision": revision,
+            },
         )
         await self._schedule_run(run_id, request.mode)
         return run_id
@@ -1004,7 +1119,12 @@ class RunCoordinator:
         self.store.update_run(run_id, status=RunStatus.validating)
         self.store.append_event(run_id, "validation_started", {"agent_id": record.agent_id})
         try:
-            agent = self.agents.get(str(record.agent_id))
+            try:
+                snapshot = self.store.get_agent_run_snapshot(run_id)
+                agent = snapshot["manifest"]
+            except KeyError:
+                # Compatibility for immutable historical runs created before snapshots existed.
+                agent = self.agents.get(str(record.agent_id))
             validate_execution(agent, f"agent:{record.agent_id}")
             if (
                 self.settings.enforce_agent_acceptance
@@ -1386,6 +1506,26 @@ class RunCoordinator:
             )
             return await self.skills.execute(skill_id, rendered)
         if executor == "rule":
+            if str(operation) == "managed_agent_rule":
+                try:
+                    snapshot = self.store.get_agent_run_snapshot(run_id)
+                    source = snapshot.get("rules_source")
+                    managed = snapshot["manifest"].get("managedRule") or {}
+                    if not source:
+                        raise ManagedRuleError(
+                            "The managed Agent rule source is unavailable.",
+                            code="managed_rule_source_unavailable",
+                        )
+                    return await asyncio.to_thread(
+                        execute_managed_rule,
+                        source,
+                        rendered,
+                        expected_digest=str(managed.get("sha256") or ""),
+                    )
+                except ManagedRuleError as exc:
+                    raise RunExecutionError(
+                        str(exc), code=exc.code
+                    ) from exc
             return rules.evaluate(str(operation), rendered)
         raise ValueError(f"Unsupported executor: {executor}")
 
@@ -1555,7 +1695,11 @@ class RunCoordinator:
                     record.input,
                     node_outputs,
                 )
-                agent = self.agents.get(agent_id)
+                agent = self.agents.get_version(
+                    agent_id,
+                    str(node.get("agentVersion") or ""),
+                    str(node.get("agentDigest") or ""),
+                )
                 node_input, defaulted_fields = _resolve_server_defaults(
                     node_input,
                     agent["execution"]["inputSchema"],
@@ -1661,6 +1805,16 @@ class RunCoordinator:
                 parent_run_id=run_id,
                 node_id=node_id,
             )
+            package = self.agents.package(
+                agent_id,
+                str(node.get("agentVersion") or ""),
+                str(node.get("agentDigest") or ""),
+            )
+            self.store.save_agent_run_snapshot(
+                child_run_id,
+                package["manifest"],
+                rules_source=package.get("rules_source"),
+            )
             self.store.append_event(
                 child_run_id,
                 "run_queued",
@@ -1694,7 +1848,6 @@ class RunCoordinator:
                 )
             node_output = child.result.workflow_output
             try:
-                agent = self.agents.get(agent_id)
                 validate_value(
                     node_output,
                     agent["execution"]["outputSchema"],
@@ -1801,7 +1954,16 @@ class RunCoordinator:
             )
         concurrency = int(foreach.get("maxConcurrency") or 4)
         semaphore = asyncio.Semaphore(concurrency)
-        agent = self.agents.get(agent_id)
+        agent = self.agents.get_version(
+            agent_id,
+            str(node.get("agentVersion") or ""),
+            str(node.get("agentDigest") or ""),
+        )
+        agent_package = self.agents.package(
+            agent_id,
+            str(node.get("agentVersion") or ""),
+            str(node.get("agentDigest") or ""),
+        )
 
         async def run_item(index: int, iteration_item: Any) -> dict[str, Any]:
             async with semaphore:
@@ -1844,6 +2006,11 @@ class RunCoordinator:
                     RunCreate(mode=RunMode.agent, agentId=agent_id, input=node_input),
                     parent_run_id=run_id,
                     node_id=node_id,
+                )
+                self.store.save_agent_run_snapshot(
+                    child_run_id,
+                    agent_package["manifest"],
+                    rules_source=agent_package.get("rules_source"),
                 )
                 self.store.append_event(
                     child_run_id,

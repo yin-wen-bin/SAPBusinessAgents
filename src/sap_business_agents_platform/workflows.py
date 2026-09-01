@@ -691,8 +691,30 @@ def validate_workflow(
             raise WorkflowError(f"{location}.id is invalid or duplicated")
         agent_id = str(node.get("agentId") or "")
         try:
-            agent = agents.get(agent_id)
-        except (KeyError, ManifestError) as exc:
+            if require_pins and callable(getattr(agents, "get_version", None)):
+                agent = agents.get_version(
+                    agent_id,
+                    str(node.get("agentVersion") or ""),
+                    str(node.get("agentDigest") or "") or None,
+                )
+            else:
+                agent = agents.get(agent_id)
+        except ManifestError as exc:
+            raise WorkflowError(
+                "One or more Agent versions changed after workflow validation.",
+                code="agent_version_mismatch",
+                detail={"nodes": [node_id]},
+            ) from exc
+        except KeyError as exc:
+            # A missing pinned version is version drift, while an unknown Agent ID
+            # remains a catalog availability error.  Keep the established error
+            # contract so callers can distinguish remediation from bad references.
+            if require_pins and node.get("agentVersion"):
+                raise WorkflowError(
+                    "One or more Agent versions changed after workflow validation.",
+                    code="agent_version_mismatch",
+                    detail={"nodes": [node_id]},
+                ) from exc
             raise WorkflowError(f"{location}.agentId is unavailable: {agent_id}") from exc
         validate_execution(agent, f"agent:{agent_id}")
         execution = agent["execution"]

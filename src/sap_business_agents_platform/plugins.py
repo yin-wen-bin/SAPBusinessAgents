@@ -490,6 +490,15 @@ class CodexRuntimePluginProvider:
             raise PluginError("The selected Agent Runtime does not support authoring.", code="operation_unavailable")
         return await method(*args, **kwargs)
 
+    async def review_agent_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        method = getattr(self.planner, "review_agent_feedback", None)
+        if not callable(method):
+            raise PluginError(
+                "The selected Agent Runtime does not support Agent revision feedback.",
+                code="operation_unavailable",
+            )
+        return await method(*args, **kwargs)
+
     async def compose_workflow(self, *args: Any, **kwargs: Any) -> Any:
         method = getattr(self.planner, "compose_workflow", None)
         if not callable(method):
@@ -582,6 +591,17 @@ class BusinessAgentPluginProvider:
     def get(self, agent_id: str) -> dict[str, Any]:
         return self.repository.get(agent_id)
 
+    def get_version(self, agent_id: str, version: str, digest: str | None = None) -> dict[str, Any]:
+        return self.repository.get_version(agent_id, version, digest)
+
+    def package(
+        self, agent_id: str, version: str | None = None, digest: str | None = None
+    ) -> dict[str, Any]:
+        return self.repository.package(agent_id, version, digest)
+
+    def is_active(self, agent_id: str) -> bool:
+        return self.repository.is_active(agent_id)
+
     def validate(self, agent_id: str) -> dict[str, Any]:
         agent = self.repository.get(agent_id)
         validate_manifest(agent, f"agent:{agent_id}")
@@ -664,6 +684,17 @@ class BusinessAgentCapability:
     def get(self, agent_id: str) -> dict[str, Any]:
         return self.manager.invoke_sync(self.capability, "get", agent_id)
 
+    def get_version(self, agent_id: str, version: str, digest: str | None = None) -> dict[str, Any]:
+        return self.manager.invoke_sync(self.capability, "get_version", agent_id, version, digest)
+
+    def package(
+        self, agent_id: str, version: str | None = None, digest: str | None = None
+    ) -> dict[str, Any]:
+        return self.manager.invoke_sync(self.capability, "package", agent_id, version, digest)
+
+    def is_active(self, agent_id: str) -> bool:
+        return bool(self.manager.invoke_sync(self.capability, "is_active", agent_id))
+
     def validate(self, agent_id: str) -> dict[str, Any]:
         return self.manager.invoke_sync(self.capability, "validate", agent_id)
 
@@ -702,7 +733,7 @@ class AgentRuntimeCapability:
             "workflow_authoring.v1"
             if operation in {"compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"}
             else "authoring.v1"
-            if operation == "author_draft"
+            if operation in {"author_draft", "review_agent_feedback"}
             else "agent_runtime.v1"
         )
         return self.manager.resolve(capability, operation).trace(operation)
@@ -712,7 +743,7 @@ class AgentRuntimeCapability:
             "workflow_authoring.v1"
             if operation in {"compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"}
             else "authoring.v1"
-            if operation == "author_draft"
+            if operation in {"author_draft", "review_agent_feedback"}
             else "agent_runtime.v1"
         )
         try:
@@ -795,6 +826,11 @@ class AgentRuntimeCapability:
 
     async def author_draft(self, *args: Any, **kwargs: Any) -> Any:
         return await self.manager.invoke("authoring.v1", "author_draft", *args, **kwargs)
+
+    async def review_agent_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke(
+            "authoring.v1", "review_agent_feedback", *args, **kwargs
+        )
 
     async def compose_workflow(self, *args: Any, **kwargs: Any) -> Any:
         return await self.manager.invoke(
@@ -904,7 +940,10 @@ def official_plugin_manifests() -> list[PluginManifest]:
                         "review_role_matching_feedback",
                     ],
                 },
-                {"capability": "authoring.v1", "operations": ["author_draft"]},
+                {
+                    "capability": "authoring.v1",
+                    "operations": ["author_draft", "review_agent_feedback"],
+                },
                 {
                     "capability": "workflow_authoring.v1",
                     "operations": ["compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"],
@@ -920,7 +959,7 @@ def official_plugin_manifests() -> list[PluginManifest]:
             "name": {"zh": "业务 Agent 包", "en": "Business Agent Packages"},
             "publisher": "SAPBusinessAgents",
             "capabilities": [
-                {"capability": "business_agent.v1", "operations": ["list", "executable", "get", "validate"]},
+                {"capability": "business_agent.v1", "operations": ["list", "executable", "get", "get_version", "package", "is_active", "validate"]},
             ],
             "transport": {"type": "builtin", "loopback_only": True},
             "permissions": {},

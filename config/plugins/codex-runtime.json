@@ -28,7 +28,7 @@
     },
     {
       "capability": "authoring.v1",
-      "operations": ["author_draft"]
+      "operations": ["author_draft", "review_agent_feedback"]
     },
     {
       "capability": "workflow_authoring.v1",

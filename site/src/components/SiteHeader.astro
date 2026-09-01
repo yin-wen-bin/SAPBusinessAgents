@@ -1,7 +1,7 @@
 ---
-import { FolderGit2, Languages, MessageSquareText, Network, Plug, Settings } from "@lucide/astro";
+import { Bot, FolderGit2, Languages, MessageSquareText, Network, Plug, Settings } from "@lucide/astro";
 import { repositoryUrl } from "../lib/siteConfig";
-import { askPath, homePath, pluginsPath, settingsPath, workflowsPath } from "../lib/urls";
+import { agentManagementPath, askPath, homePath, pluginsPath, settingsPath, workflowsPath } from "../lib/urls";
 import type { Locale } from "../lib/types";
 
 interface Props {
@@ -25,6 +25,11 @@ const alternateLocale: Locale = locale === "zh" ? "en" : "zh";
     <a class="header-link" href={workflowsPath(base, locale)}>
       <Network size={18} stroke-width={1.8} aria-hidden="true" />
       <span>{locale === "zh" ? "我的工作流" : "My workflows"}</span>
+    </a>
+    <span class="header-divider" aria-hidden="true"></span>
+    <a class="header-link" href={agentManagementPath(base, locale)}>
+      <Bot size={18} stroke-width={1.8} aria-hidden="true" />
+      <span>{locale === "zh" ? "Agent 管理" : "Agent management"}</span>
     </a>
     <span class="header-divider" aria-hidden="true"></span>
     <a class="header-link" href={pluginsPath(base, locale)}>

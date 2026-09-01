@@ -406,7 +406,7 @@ function requireODataVersions(value, location) {
   Object.values(value).forEach((child) => requireODataVersions(child, location));
 }
 
-export function loadAgentCatalog(root = agentsRoot) {
+export function loadAgentCatalog(root = agentsRoot, { includeInactive = true } = {}) {
   if (!existsSync(root)) throw new Error(`Agent root does not exist: ${root}`);
 
   const topLevelDirectories = readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory());
@@ -432,6 +432,20 @@ export function loadAgentCatalog(root = agentsRoot) {
         throw new Error(`agents/${moduleName}/${directory.name}/agent.json: invalid JSON (${error.message})`);
       }
       validateAgent(agent, moduleName, directory.name, `agents/${moduleName}/${directory.name}/agent.json`);
+      const publicationPath = path.join(modulePath, directory.name, "publication.json");
+      if (!includeInactive && existsSync(publicationPath)) {
+        let publication;
+        try {
+          publication = JSON.parse(readFileSync(publicationPath, "utf8"));
+        } catch (error) {
+          throw new Error(`agents/${moduleName}/${directory.name}/publication.json: invalid JSON (${error.message})`);
+        }
+        const lifecycleState = publication.lifecycle_state ?? publication.state;
+        if (!["active", "inactive"].includes(lifecycleState)) {
+          throw new Error(`agents/${moduleName}/${directory.name}/publication.json: lifecycle state must be active or inactive`);
+        }
+        if (lifecycleState === "inactive") continue;
+      }
       if (slugs.has(agent.slug)) throw new Error(`Duplicate agent slug: ${agent.slug}`);
       slugs.add(agent.slug);
       records.push(agent);
@@ -441,7 +455,7 @@ export function loadAgentCatalog(root = agentsRoot) {
 }
 
 export function generateAgentCatalog(root = agentsRoot, target = outputPath) {
-  const records = loadAgentCatalog(root);
+  const records = loadAgentCatalog(root, { includeInactive: false });
   mkdirSync(path.dirname(target), { recursive: true });
   writeFileSync(
     target,

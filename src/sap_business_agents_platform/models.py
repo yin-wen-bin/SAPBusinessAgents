@@ -391,6 +391,119 @@ class DraftRecord(BaseModel):
     created_at: str
 
 
+class AgentAuthoringCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    source: Literal["blank", "clone", "free_query", "workflow_gap"] = "blank"
+    agent_id: str | None = Field(default=None, alias="agentId", pattern=r"^[a-z0-9][a-z0-9-]{2,79}$")
+    module: Literal["CO", "Common", "FI", "MM", "PP", "SD"] | None = None
+    title: dict[str, str] | None = None
+    source_agent_id: str | None = Field(
+        default=None, alias="sourceAgentId", pattern=r"^[a-z0-9][a-z0-9-]{2,79}$"
+    )
+    run_id: str | None = Field(default=None, alias="runId")
+    workflow_draft_id: str | None = Field(default=None, alias="workflowDraftId")
+    gap_id: str | None = Field(default=None, alias="gapId")
+    bump: Literal["patch", "minor", "major"] = "patch"
+    locale: Literal["zh", "en"] = "zh"
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "AgentAuthoringCreate":
+        if self.source == "blank" and (not self.agent_id or not self.module):
+            raise ValueError("blank Agent creation requires agentId and module")
+        if self.source == "clone" and not self.source_agent_id:
+            raise ValueError("clone Agent creation requires sourceAgentId")
+        if self.source in {"free_query", "workflow_gap"} and not self.run_id:
+            raise ValueError(f"{self.source} Agent creation requires runId")
+        if self.source == "workflow_gap" and (not self.workflow_draft_id or not self.gap_id):
+            raise ValueError("workflow_gap creation requires workflowDraftId and gapId")
+        return self
+
+
+class AgentDraftUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+    manifest: dict[str, Any]
+    readme: str = Field(default="", max_length=200_000)
+    rules: str = Field(default="", max_length=500_000)
+
+
+class AgentFeedbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_turn: int = Field(alias="baseTurn", ge=1)
+    base_revision: int = Field(alias="baseRevision", ge=1)
+    feedback: str = Field(min_length=1, max_length=12_000)
+    locale: Literal["zh", "en"] = "zh"
+
+    @model_validator(mode="after")
+    def strip_feedback(self) -> "AgentFeedbackRequest":
+        self.feedback = self.feedback.strip()
+        if not self.feedback:
+            raise ValueError("feedback must not be blank")
+        return self
+
+
+class AgentUndoRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_revision: int = Field(alias="baseRevision", ge=1)
+    target_revision: int = Field(alias="targetRevision", ge=1)
+
+
+class AgentLiveValidationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    input: dict[str, Any] = Field(default_factory=dict)
+    auto_discover: bool = Field(default=False, alias="autoDiscover")
+
+
+class AgentPublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+    target_version: str = Field(alias="targetVersion", pattern=r"^\d+\.\d+\.\d+$")
+    activate: bool = False
+    validation_report_digest: str | None = Field(
+        default=None, alias="validationReportDigest", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+
+
+class AgentVersionDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    bump: Literal["patch", "minor", "major"] = "patch"
+    expected_version: str = Field(alias="expectedVersion", pattern=r"^\d+\.\d+\.\d+$")
+    expected_agent_hash: str = Field(
+        alias="expectedAgentHash", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+
+
+class AgentLifecycleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    expected_version: str = Field(alias="expectedVersion", pattern=r"^\d+\.\d+\.\d+$")
+    expected_agent_hash: str = Field(
+        alias="expectedAgentHash", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class AgentActivateRequest(AgentLifecycleRequest):
+    version: str | None = Field(default=None, pattern=r"^\d+\.\d+\.\d+$")
+
+
+class AgentDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    expected_version: str = Field(alias="expectedVersion", pattern=r"^\d+\.\d+\.\d+$")
+    expected_agent_hash: str = Field(
+        alias="expectedAgentHash", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    confirm_agent_id: str = Field(alias="confirmAgentId", min_length=1, max_length=80)
+
+
 class WorkflowDraftCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

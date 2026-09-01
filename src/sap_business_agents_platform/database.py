@@ -216,6 +216,86 @@ class RunStore:
                 );
                 CREATE INDEX IF NOT EXISTS workflow_management_events_workflow
                     ON workflow_management_events(workflow_id, created_at);
+                CREATE TABLE IF NOT EXISTS agent_authoring_drafts (
+                    draft_id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    thread_id TEXT,
+                    source_version TEXT,
+                    source_hash TEXT,
+                    target_version TEXT,
+                    risk_class TEXT NOT NULL DEFAULT 'behavior_change',
+                    validation_run_id TEXT,
+                    validation_json TEXT NOT NULL DEFAULT '{}',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS agent_authoring_agent
+                    ON agent_authoring_drafts(agent_id, updated_at);
+                CREATE TABLE IF NOT EXISTS agent_authoring_revisions (
+                    draft_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    package_json TEXT NOT NULL,
+                    diff_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(draft_id, revision),
+                    FOREIGN KEY(draft_id) REFERENCES agent_authoring_drafts(draft_id)
+                );
+                CREATE TABLE IF NOT EXISTS agent_conversation_turns (
+                    draft_id TEXT NOT NULL,
+                    turn INTEGER NOT NULL,
+                    parent_turn INTEGER,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    user_message TEXT,
+                    decision_json TEXT NOT NULL DEFAULT '{}',
+                    base_revision INTEGER,
+                    result_revision INTEGER,
+                    diff_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    PRIMARY KEY(draft_id, turn),
+                    FOREIGN KEY(draft_id) REFERENCES agent_authoring_drafts(draft_id)
+                );
+                CREATE TABLE IF NOT EXISTS agent_validation_attempts (
+                    draft_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    report_json TEXT NOT NULL DEFAULT '{}',
+                    report_digest TEXT,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    PRIMARY KEY(draft_id, run_id)
+                );
+                CREATE TABLE IF NOT EXISTS agent_management_events (
+                    event_id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    from_version TEXT,
+                    to_version TEXT,
+                    agent_hash TEXT,
+                    branch TEXT,
+                    commit_sha TEXT,
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS agent_management_events_agent
+                    ON agent_management_events(agent_id, created_at);
+                CREATE TABLE IF NOT EXISTS agent_run_snapshots (
+                    run_id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    agent_version TEXT NOT NULL,
+                    agent_digest TEXT NOT NULL,
+                    manifest_json TEXT NOT NULL,
+                    rules_source TEXT,
+                    validation_draft_id TEXT,
+                    validation_revision INTEGER,
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
                 CREATE TABLE IF NOT EXISTS role_matching_sessions (
                     session_id TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
@@ -1700,6 +1780,207 @@ class RunStore:
             for row in rows
         ]
 
+    def save_agent_authoring_draft(
+        self, item: dict[str, Any], *, package: dict[str, Any] | None = None,
+        diff: list[dict[str, Any]] | None = None,
+    ) -> None:
+        now = item.get("updated_at") or utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO agent_authoring_drafts
+                (draft_id, agent_id, source_type, status, revision, path, thread_id,
+                 source_version, source_hash, target_version, risk_class,
+                 validation_run_id, validation_json, metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item["draft_id"], item["agent_id"], item["source_type"], item["status"],
+                    int(item["revision"]), item["path"], item.get("thread_id"),
+                    item.get("source_version"), item.get("source_hash"), item.get("target_version"),
+                    item.get("risk_class") or "behavior_change", item.get("validation_run_id"),
+                    _dump(item.get("validation") or {}), _dump(item.get("metadata") or {}),
+                    item.get("created_at") or now, now,
+                ),
+            )
+            if package is not None:
+                connection.execute(
+                    """INSERT OR REPLACE INTO agent_authoring_revisions
+                    (draft_id, revision, package_json, diff_json, created_at)
+                    VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        item["draft_id"], int(item["revision"]), _dump(package),
+                        _dump(diff or []), now,
+                    ),
+                )
+
+    def get_agent_authoring_draft(self, draft_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_authoring_drafts WHERE draft_id = ?", (draft_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(draft_id)
+        return _agent_authoring_draft_from_row(row)
+
+    def list_agent_authoring_drafts(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_authoring_drafts ORDER BY updated_at DESC"
+            ).fetchall()
+        return [_agent_authoring_draft_from_row(row) for row in rows]
+
+    def get_agent_authoring_revision(self, draft_id: str, revision: int) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM agent_authoring_revisions
+                WHERE draft_id = ? AND revision = ?""", (draft_id, revision)
+            ).fetchone()
+        if row is None:
+            raise KeyError((draft_id, revision))
+        return {
+            "draft_id": draft_id,
+            "revision": int(row["revision"]),
+            "package": _load(row["package_json"], {}),
+            "diff": _load(row["diff_json"], []),
+            "created_at": row["created_at"],
+        }
+
+    def list_agent_authoring_revisions(self, draft_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT revision, diff_json, created_at FROM agent_authoring_revisions
+                WHERE draft_id = ? ORDER BY revision""", (draft_id,)
+            ).fetchall()
+        return [
+            {"revision": int(row["revision"]), "diff": _load(row["diff_json"], []),
+             "created_at": row["created_at"]}
+            for row in rows
+        ]
+
+    def save_agent_conversation_turn(self, item: dict[str, Any]) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO agent_conversation_turns
+                (draft_id, turn, parent_turn, kind, status, user_message,
+                 decision_json, base_revision, result_revision, diff_json,
+                 created_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item["draft_id"], int(item["turn"]), item.get("parent_turn"),
+                    item["kind"], item["status"], item.get("user_message"),
+                    _dump(item.get("decision") or {}), item.get("base_revision"),
+                    item.get("result_revision"), _dump(item.get("diff") or []),
+                    item.get("created_at") or utc_now(), item.get("completed_at"),
+                ),
+            )
+
+    def list_agent_conversation_turns(self, draft_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM agent_conversation_turns
+                WHERE draft_id = ? ORDER BY turn""", (draft_id,)
+            ).fetchall()
+        return [
+            {
+                "draft_id": row["draft_id"], "turn": int(row["turn"]),
+                "parent_turn": row["parent_turn"], "kind": row["kind"],
+                "status": row["status"], "user_message": row["user_message"],
+                "decision": _load(row["decision_json"], {}),
+                "base_revision": row["base_revision"],
+                "result_revision": row["result_revision"],
+                "diff": _load(row["diff_json"], []),
+                "created_at": row["created_at"], "completed_at": row["completed_at"],
+            }
+            for row in rows
+        ]
+
+    def save_agent_validation_attempt(
+        self, *, draft_id: str, run_id: str, revision: int,
+        report: dict[str, Any], report_digest: str | None,
+        completed_at: str | None = None,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO agent_validation_attempts
+                (draft_id, run_id, revision, report_json, report_digest, created_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM agent_validation_attempts
+                WHERE draft_id = ? AND run_id = ?), ?), ?)""",
+                (draft_id, run_id, revision, _dump(report), report_digest,
+                 draft_id, run_id, utc_now(), completed_at),
+            )
+
+    def get_agent_validation_attempt(self, draft_id: str, run_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM agent_validation_attempts
+                WHERE draft_id = ? AND run_id = ?""", (draft_id, run_id)
+            ).fetchone()
+        if row is None:
+            raise KeyError((draft_id, run_id))
+        return {
+            "draft_id": row["draft_id"], "run_id": row["run_id"],
+            "revision": int(row["revision"]), "report": _load(row["report_json"], {}),
+            "report_digest": row["report_digest"], "created_at": row["created_at"],
+            "completed_at": row["completed_at"],
+        }
+
+    def save_agent_run_snapshot(
+        self, run_id: str, manifest: dict[str, Any], *, rules_source: str | None = None,
+        draft_id: str | None = None, revision: int | None = None,
+    ) -> None:
+        from .workflows import agent_digest
+
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO agent_run_snapshots
+                (run_id, agent_id, agent_version, agent_digest, manifest_json,
+                 rules_source, validation_draft_id, validation_revision)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id, str(manifest.get("slug") or ""), str(manifest.get("version") or ""),
+                    agent_digest(manifest), _dump(manifest), rules_source, draft_id, revision,
+                ),
+            )
+
+    def get_agent_run_snapshot(self, run_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_run_snapshots WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        return {
+            "run_id": row["run_id"], "agent_id": row["agent_id"],
+            "agent_version": row["agent_version"], "agent_digest": row["agent_digest"],
+            "manifest": _load(row["manifest_json"], {}), "rules_source": row["rules_source"],
+            "validation_draft_id": row["validation_draft_id"],
+            "validation_revision": row["validation_revision"],
+        }
+
+    def append_agent_management_event(
+        self, *, event_id: str, agent_id: str, action: str,
+        from_version: str | None = None, to_version: str | None = None,
+        agent_hash: str | None = None, branch: str | None = None,
+        commit_sha: str | None = None, detail: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO agent_management_events
+                (event_id, agent_id, action, from_version, to_version, agent_hash,
+                 branch, commit_sha, detail_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (event_id, agent_id, action, from_version, to_version, agent_hash,
+                 branch, commit_sha, _dump(detail or {}), utc_now()),
+            )
+
+    def count_open_agent_runs(self, agent_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) AS count FROM runs WHERE agent_id = ?
+                AND status NOT IN ('completed', 'inconclusive', 'failed', 'cancelled')""",
+                (agent_id,),
+            ).fetchone()
+        return int(row["count"] if row else 0)
+
     def get_draft(self, draft_id: str) -> DraftRecord:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM drafts WHERE draft_id = ?", (draft_id,)).fetchone()
@@ -1743,6 +2024,20 @@ def _free_query_session_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "pending_feedback": _load(row["pending_feedback_json"], None),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+    }
+
+
+def _agent_authoring_draft_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "draft_id": row["draft_id"], "agent_id": row["agent_id"],
+        "source_type": row["source_type"], "status": row["status"],
+        "revision": int(row["revision"]), "path": row["path"],
+        "thread_id": row["thread_id"], "source_version": row["source_version"],
+        "source_hash": row["source_hash"], "target_version": row["target_version"],
+        "risk_class": row["risk_class"], "validation_run_id": row["validation_run_id"],
+        "validation": _load(row["validation_json"], {}),
+        "metadata": _load(row["metadata_json"], {}),
+        "created_at": row["created_at"], "updated_at": row["updated_at"],
     }
 
 

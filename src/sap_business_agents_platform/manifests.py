@@ -33,6 +33,7 @@ ALLOWED_RULE_OPERATIONS = {
     "evaluate_business_agent",
     "evaluate_p2p_status",
     "evaluate_o2c_status",
+    "managed_agent_rule",
 }
 ALLOWED_FAILURE_POLICIES = {"fail_run", "record_gap"}
 
@@ -48,13 +49,94 @@ class AgentRepository:
     def list(self) -> list[dict[str, Any]]:
         manifests: list[dict[str, Any]] = []
         for path in sorted(self.agents_root.glob("*/*/agent.json")):
-            manifests.append(self._load_path(path))
+            if self.lifecycle(path.parent)["state"] == "active":
+                manifests.append(self._load_path(path))
         return manifests
+
+    def list_all(self) -> list[dict[str, Any]]:
+        return [self._load_path(path) for path in sorted(self.agents_root.glob("*/*/agent.json"))]
 
     def get(self, agent_id: str) -> dict[str, Any]:
         for path in self.agents_root.glob("*/*/agent.json"):
             if path.parent.name == agent_id:
                 return self._load_path(path)
+        raise KeyError(agent_id)
+
+    def get_version(
+        self, agent_id: str, version: str, digest: str | None = None
+    ) -> dict[str, Any]:
+        current_path = self._path(agent_id)
+        current = self._load_path(current_path)
+        candidate = current
+        if str(current.get("version") or "") != version:
+            version_path = current_path.parent / "versions" / version / "agent.json"
+            if not version_path.is_file():
+                raise KeyError((agent_id, version))
+            candidate = self._load_path(version_path)
+        if digest:
+            from .workflows import agent_digest
+
+            if agent_digest(candidate) != digest:
+                raise ManifestError(
+                    f"Agent {agent_id} version {version} digest does not match the published package"
+                )
+        return candidate
+
+    def package(
+        self, agent_id: str, version: str | None = None, digest: str | None = None
+    ) -> dict[str, Any]:
+        manifest = self.get(agent_id) if version is None else self.get_version(agent_id, version, digest)
+        current_path = self._path(agent_id)
+        directory = current_path.parent
+        if version is not None and str(manifest.get("version") or "") != str(
+            self.get(agent_id).get("version") or ""
+        ):
+            directory = directory / "versions" / version
+        rules_path = directory / "rules.py"
+        return {
+            "manifest": manifest,
+            "rules_source": rules_path.read_text(encoding="utf-8") if rules_path.is_file() else None,
+            "directory": str(directory),
+        }
+
+    def lifecycle(self, directory_or_agent: Path | str) -> dict[str, Any]:
+        directory = (
+            directory_or_agent
+            if isinstance(directory_or_agent, Path)
+            else self._path(directory_or_agent).parent
+        )
+        path = directory / "publication.json"
+        if path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ManifestError(f"Cannot load {path}: {exc}") from exc
+            state = payload.get("lifecycle_state", payload.get("state"))
+            if state not in {"active", "inactive"}:
+                raise ManifestError(f"{path}.lifecycle_state must be active or inactive")
+            payload["state"] = state
+            return payload
+        manifest_path = directory / "agent.json"
+        payload = self._load_path(manifest_path)
+        from .workflows import agent_digest
+
+        return {
+            "schemaVersion": 1,
+            "agent_id": str(payload.get("slug") or directory.name),
+            "state": "active",
+            "lifecycle_state": "active",
+            "active_version": str(payload.get("version") or ""),
+            "latest_version": str(payload.get("version") or ""),
+            "active_digest": agent_digest(payload),
+        }
+
+    def is_active(self, agent_id: str) -> bool:
+        return self.lifecycle(agent_id)["state"] == "active"
+
+    def _path(self, agent_id: str) -> Path:
+        for path in self.agents_root.glob("*/*/agent.json"):
+            if path.parent.name == agent_id:
+                return path
         raise KeyError(agent_id)
 
     def executable(self) -> list[dict[str, Any]]:
@@ -98,6 +180,20 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
         raise ManifestError(f"{source}.execution must be an object")
     if execution.get("mode") != "deterministic":
         raise ManifestError(f"{source}.execution.mode must be deterministic")
+    managed_steps = [
+        step for step in execution.get("steps") or []
+        if isinstance(step, dict) and step.get("executor") == "rule"
+        and step.get("operation") == "managed_agent_rule"
+    ]
+    if managed_steps:
+        managed = agent.get("managedRule")
+        if not isinstance(managed, dict):
+            raise ManifestError(f"{source}.managedRule is required for managed_agent_rule")
+        if managed.get("entrypoint") != "evaluate":
+            raise ManifestError(f"{source}.managedRule.entrypoint must be 'evaluate'")
+        digest = managed.get("sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ManifestError(f"{source}.managedRule.sha256 must be a SHA-256 digest")
     inputs = execution.get("inputSchema")
     if not isinstance(inputs, dict) or inputs.get("type") != "object":
         raise ManifestError(f"{source}.execution.inputSchema must be an object JSON Schema")
