@@ -8,28 +8,28 @@
     "en": "Role-to-Agent Matching Assistant"
   },
   "summary": {
-    "zh": "读取用户明确选择的本地业务材料，识别SAP岗位、流程和日常操作，并匹配现有Agent、组合工作流或能力缺口。",
-    "en": "Reads explicitly selected local business documents, identifies SAP roles, processes and daily operations, and maps them to agents, composed workflows, or capability gaps."
+    "zh": "分析用户输入的岗位描述和明确选择的本地业务材料，识别SAP岗位、流程和日常操作，并匹配现有Agent、组合工作流或能力缺口。",
+    "en": "Analyzes user-provided role descriptions and explicitly selected local business documents, identifies SAP roles, processes and daily operations, and maps them to agents, composed workflows, or capability gaps."
   },
   "status": "Beta",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "Platform Enablement",
-  "tags": ["role matching", "process discovery", "agent catalog", "documents"],
+  "tags": ["role matching", "process discovery", "agent catalog", "documents", "user description"],
   "sapModules": ["Cross-Module"],
   "transactions": [],
   "tables": [],
   "systems": ["SAP S/4HANA", "Local Windows Documents"],
   "inputs": {
-    "zh": ["本地文件或目录路径", "Runtime正文发送确认", "多轮补充材料与业务反馈"],
-    "en": ["Local file or directory paths", "Runtime content-sharing consent", "Multi-turn supplemental material and business feedback"]
+    "zh": ["岗位描述文字和/或本地文件或目录路径", "Runtime内容发送确认", "多轮补充材料与业务反馈"],
+    "en": ["Role description text and/or local file or directory paths", "Runtime content-sharing consent", "Multi-turn supplemental material and business feedback"]
   },
   "outputs": {
     "zh": ["岗位、流程与SAP操作清单", "Agent匹配清单", "工作流建议", "Agent能力缺口", "带来源引用的分析报告"],
     "en": ["Roles, processes and SAP operations", "Agent matches", "Workflow suggestions", "Agent capability gaps", "Source-cited analysis report"]
   },
   "guardrails": {
-    "zh": ["只读取用户明确选择的路径", "不执行宏、公式、外部链接或嵌入代码", "正文仅保存在本机.local-data目录", "不修改原始文档、SAP数据、Agent或工作流"],
-    "en": ["Reads only paths explicitly selected by the user", "Does not execute macros, formulas, external links, or embedded code", "Document text remains under the local .local-data directory", "Does not modify source documents, SAP data, agents, or workflows"]
+    "zh": ["只读取用户明确输入的描述和选择的路径", "用户描述与正式文档来源分开标记", "不执行宏、公式、外部链接或嵌入代码", "正文仅保存在本机.local-data目录", "不修改原始文档、SAP数据、Agent或工作流"],
+    "en": ["Reads only descriptions entered and paths selected by the user", "Keeps user descriptions distinct from formal document sources", "Does not execute macros, formulas, external links, or embedded code", "Source text remains under the local .local-data directory", "Does not modify source documents, SAP data, agents, or workflows"]
   },
   "assistant": {
     "type": "role_matching",
@@ -40,8 +40,8 @@
   "workflow": [
     {
       "id": "select-and-extract",
-      "title": {"zh": "选择并提取材料", "en": "Select and extract material"},
-      "description": {"zh": "安全扫描用户指定路径并提取带位置引用的正文。", "en": "Safely scans user-selected paths and extracts text with source locators."},
+      "title": {"zh": "输入并提取材料", "en": "Enter and extract material"},
+      "description": {"zh": "接收岗位描述和/或安全扫描用户指定路径，形成带来源类型和位置引用的正文。", "en": "Accepts a role description and/or safely scans user-selected paths, producing text with source types and locators."},
       "tools": [{"name": "local-document-reader", "kind": "platform", "purpose": {"zh": "只读解析受支持文档", "en": "Read-only parsing of supported documents"}}],
       "executionStepIds": []
     },

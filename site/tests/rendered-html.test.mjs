@@ -60,12 +60,14 @@ test("new MM detail pages render exact steps and fail-closed validation metadata
   }
 });
 
-test("role matching assistant renders a read-only document session entry", async () => {
+test("role matching assistant renders description and document input modes", async () => {
   const zh = await readPage("zh", "agents", "Common", "role-agent-matching");
   const en = await readPage("en", "agents", "Common", "role-agent-matching");
   assert.match(zh, /运行岗位匹配助理/);
-  assert.match(zh, /Runtime正文发送确认/);
+  assert.match(zh, /岗位描述文字和\/或本地文件或目录路径/);
+  assert.match(zh, /用户描述与正式文档来源分开标记/);
   assert.match(en, /Run role-matching assistant/);
+  assert.match(en, /Role description text and\/or local file or directory paths/);
   assert.doesNotMatch(zh, /执行这个 Agent/);
 });
 

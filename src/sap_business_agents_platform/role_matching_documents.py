@@ -23,6 +23,8 @@ SUPPORTED_EXTENSIONS = {
 LEGACY_EXTENSIONS = {".doc", ".xls", ".ppt"}
 IMAGE_EXTENSIONS = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff"}
 PARSER_VERSION = "role-documents.v1"
+USER_DESCRIPTION_EXTENSION = ".user-description"
+USER_DESCRIPTION_PARSER_VERSION = "role-user-description.v1"
 
 
 class RoleDocumentError(ValueError):
@@ -188,6 +190,81 @@ def load_chunks(document: dict[str, Any]) -> list[dict[str, Any]]:
     cache_path = Path(str(document["cache_path"]))
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     return list(payload.get("chunks") or [])
+
+
+def create_user_description_document(
+    text: str,
+    *,
+    cache_root: Path,
+    turn: int,
+    locale: str,
+) -> dict[str, Any]:
+    content = str(text).strip()
+    if not content:
+        raise RoleDocumentError(
+            "Role description cannot be blank.",
+            code="role_matching_description_blank",
+        )
+    content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    identity_digest = hashlib.sha256(
+        f"{turn}\n{content}".encode("utf-8")
+    ).hexdigest()
+    document_id = f"role_text_{identity_digest[:20]}"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_root / f"{document_id}.json"
+    label = (
+        f"用户提供的岗位描述 · 第{turn}轮"
+        if locale == "zh"
+        else f"User-provided role description · Turn {turn}"
+    )
+    chunks = [
+        _chunk(
+            content,
+            {"kind": "user_description", "turn": turn, "label": label},
+        )
+    ]
+    cache_path.write_text(
+        json.dumps(
+            {
+                "document_id": document_id,
+                "parser_version": USER_DESCRIPTION_PARSER_VERSION,
+                "chunks": chunks,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "document_id": document_id,
+        "sha256": content_digest,
+        "name": label,
+        "extension": USER_DESCRIPTION_EXTENSION,
+        "size_bytes": len(content.encode("utf-8")),
+        "modified_ns": "",
+        "paths": [],
+        "parser_version": USER_DESCRIPTION_PARSER_VERSION,
+        "status": "parsed",
+        "issue": None,
+        "chunk_count": len(chunks),
+        "cache_path": str(cache_path),
+        "reused": False,
+        "source_type": "user_description",
+    }
+
+
+def empty_document_scan() -> dict[str, Any]:
+    return {
+        "roots": [],
+        "documents": [],
+        "issues": [],
+        "file_count": 0,
+        "unique_document_count": 0,
+        "total_bytes": 0,
+        "scan_complete": True,
+        "extraction_complete": True,
+        "scan_status": "not_requested",
+    }
 
 
 def _resolve_roots(roots: list[str]) -> list[Path]:

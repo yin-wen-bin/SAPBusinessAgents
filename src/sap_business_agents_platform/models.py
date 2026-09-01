@@ -616,30 +616,46 @@ class WorkflowDraftRecord(BaseModel):
 class RoleMatchingSessionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    paths: list[str] = Field(min_length=1, max_length=100)
+    paths: list[str] = Field(default_factory=list, max_length=100)
+    role_description: str | None = Field(
+        default=None, alias="roleDescription", max_length=12_000
+    )
     locale: Literal["zh", "en"] = "zh"
     consent_to_runtime: bool = Field(alias="consentToRuntime")
 
     @model_validator(mode="after")
     def normalize_paths(self) -> "RoleMatchingSessionCreate":
         self.paths = [value.strip() for value in self.paths]
+        self.role_description = (
+            self.role_description.strip() if self.role_description is not None else None
+        ) or None
         if any(not value for value in self.paths):
             raise ValueError("paths must not contain blank entries")
+        if not self.paths and not self.role_description:
+            raise ValueError("paths or roleDescription must be provided")
         if not self.consent_to_runtime:
             raise ValueError("consentToRuntime must be true")
         return self
 
 
 class RoleMatchingPreflightRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    paths: list[str] = Field(min_length=1, max_length=100)
+    paths: list[str] = Field(default_factory=list, max_length=100)
+    role_description: str | None = Field(
+        default=None, alias="roleDescription", max_length=12_000
+    )
 
     @model_validator(mode="after")
     def normalize_paths(self) -> "RoleMatchingPreflightRequest":
         self.paths = [value.strip() for value in self.paths]
+        self.role_description = (
+            self.role_description.strip() if self.role_description is not None else None
+        ) or None
         if any(not value for value in self.paths):
             raise ValueError("paths must not contain blank entries")
+        if not self.paths and not self.role_description:
+            raise ValueError("paths or roleDescription must be provided")
         return self
 
 
@@ -652,6 +668,9 @@ class RoleMatchingFeedback(BaseModel):
         default="incremental", alias="rematchMode"
     )
     added_paths: list[str] = Field(default_factory=list, alias="addedPaths", max_length=100)
+    added_role_description: str | None = Field(
+        default=None, alias="addedRoleDescription", max_length=12_000
+    )
     excluded_document_ids: list[str] = Field(
         default_factory=list, alias="excludedDocumentIds", max_length=500
     )
@@ -660,6 +679,11 @@ class RoleMatchingFeedback(BaseModel):
     def normalize_values(self) -> "RoleMatchingFeedback":
         self.message = self.message.strip()
         self.added_paths = [value.strip() for value in self.added_paths]
+        self.added_role_description = (
+            self.added_role_description.strip()
+            if self.added_role_description is not None
+            else None
+        ) or None
         if not self.message or any(not value for value in self.added_paths):
             raise ValueError("feedback values must not be blank")
         return self

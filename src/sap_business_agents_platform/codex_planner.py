@@ -562,21 +562,23 @@ requirements; never claim a rule has been implemented or a process completed.
 
         prompt = f"""
 Analyze user-selected business material and match SAP daily operations to the supplied
-SAPBusinessAgents catalog. Document objects contain opaque IDs, structured source locators, and
-extracted text; they intentionally contain no local paths.
+SAPBusinessAgents catalog. Source objects contain opaque IDs, a source_type of document or
+user_description, structured source locators, and extracted text; they intentionally contain no
+local paths. A user_description is a user-provided source, not a verified SAP fact or formal policy.
 
 Locale: {locale}
 Rematch mode: {rematch_mode}
 User context (not document evidence): {user_context or 'None'}
 Previous immutable result: {_safe_json(previous_result, limit=80_000)}
 Current Agent catalog: {_safe_json(agent_catalog, limit=120_000)}
-Documents: {_safe_json(documents, limit=2_500_000)}
+Material sources: {_safe_json(documents, limit=2_500_000)}
 
 Return analysis_json as one JSON object with arrays roles, processes, operations, agent_matches,
 workflow_suggestions, agent_gaps and document_issues, plus non_sap_operation_count. Every SAP
 operation must contain operation_id, role, department, process, name, description, trigger, inputs,
 outputs, sap_system_or_module, frequency, controls and evidence_refs. Unknown values remain empty.
-Evidence refs must use supplied document_id/chunk_id/locator only.
+Evidence refs must use supplied document_id/chunk_id/locator only. Preserve source provenance and
+do not describe a user_description as document evidence, SAP evidence, or verified policy.
 
 agent_matches contain operation_id, agent_id, coverage full|partial|none, confidence
 high|medium|low, reason, uncovered_capabilities and evidence_refs. Use only supplied Agent IDs.
@@ -594,7 +596,8 @@ source_output_port; the source output port must have the same name and a compati
 target input. Inputs without a safe binding become public workflow inputs. Do not invent ports;
 use only supplied input/output schemas.
 
-Analyze only SAP-related operations. User context is a hypothesis, never document evidence. Do not
+Analyze only SAP-related operations. User context is a hypothesis and not a material source; a
+user_description source may support a conclusion but must remain labeled as user-provided. Do not
 call tools, inspect files, execute SAP, edit files, or invent Agents.
 """.strip()
         async with AsyncCodex() as codex:

@@ -13,7 +13,14 @@ from typing import Any
 from .config import Settings
 from .database import RunStore
 from .models import utc_now
-from .role_matching_documents import load_chunks, preflight_scan, scan_and_extract
+from .role_matching_documents import (
+    USER_DESCRIPTION_EXTENSION,
+    create_user_description_document,
+    empty_document_scan,
+    load_chunks,
+    preflight_scan,
+    scan_and_extract,
+)
 from .scheduler import LocalRunScheduler, WorkloadClass
 from .workflow_composer import (
     WorkflowCompositionError,
@@ -57,14 +64,62 @@ class RoleMatchingService:
     async def stop(self) -> None:
         await self.scheduler.stop()
 
-    def preflight(self, paths: list[str]) -> dict[str, Any]:
-        return preflight_scan(
-            paths, max_files=self.settings.role_matching_max_files,
-            max_file_bytes=self.settings.role_matching_max_file_bytes,
-            max_total_bytes=self.settings.role_matching_max_total_bytes,
+    def preflight(
+        self, paths: list[str], *, role_description: str | None = None
+    ) -> dict[str, Any]:
+        description = str(role_description or "").strip()
+        if not paths and not description:
+            raise RoleMatchingError(
+                "At least one document path or role description is required.",
+                code="role_matching_sources_required",
+            )
+        result = (
+            preflight_scan(
+                paths,
+                max_files=self.settings.role_matching_max_files,
+                max_file_bytes=self.settings.role_matching_max_file_bytes,
+                max_total_bytes=self.settings.role_matching_max_total_bytes,
+            )
+            if paths
+            else {
+                "roots": [], "supported_file_count": 0, "total_bytes": 0,
+                "issues": [], "blockers": [], "ready": True,
+            }
         )
+        result.update(
+            {
+                "source_mode": (
+                    "combined" if paths and description else
+                    "documents" if paths else "description"
+                ),
+                "description": {
+                    "present": bool(description),
+                    "characters": len(description),
+                },
+                "source_intake_complete": bool(paths or description) and bool(result["ready"]),
+            }
+        )
+        return result
 
-    async def create(self, *, paths: list[str], locale: str, consent: bool) -> dict[str, Any]:
+    async def create(
+        self,
+        *,
+        paths: list[str],
+        role_description: str | None = None,
+        locale: str,
+        consent: bool,
+    ) -> dict[str, Any]:
+        role_description = str(role_description or "").strip() or None
+        if not paths and not role_description:
+            raise RoleMatchingError(
+                "At least one document path or role description is required.",
+                code="role_matching_sources_required",
+            )
+        if role_description and len(role_description) > 12_000:
+            raise RoleMatchingError(
+                "Role description exceeds the 12000-character limit.",
+                code="role_matching_description_limit",
+            )
         if not consent:
             raise RoleMatchingError(
                 "Document content sharing with the selected Runtime must be confirmed.",
@@ -89,6 +144,19 @@ class RoleMatchingService:
                 "runtime": snapshot,
             }
         )
+        description_documents: list[dict[str, Any]] = []
+        if role_description:
+            description_documents.append(
+                create_user_description_document(
+                    role_description,
+                    cache_root=self.root / session_id / "documents",
+                    turn=1,
+                    locale=locale,
+                )
+            )
+            self.store.save_role_matching_documents(
+                session_id, description_documents
+            )
         self.store.save_role_matching_turn(
             {
                 "session_id": session_id,
@@ -97,6 +165,11 @@ class RoleMatchingService:
                 "status": "queued",
                 "rematch_mode": "full",
                 "added_paths": paths,
+                "decision": {
+                    "added_description_document_ids": [
+                        item["document_id"] for item in description_documents
+                    ]
+                },
             }
         )
         self._event(session_id, "session_queued", {"turn": 1})
@@ -142,8 +215,15 @@ class RoleMatchingService:
         message: str,
         mode: str,
         added_paths: list[str],
+        added_role_description: str | None = None,
         excluded_document_ids: list[str],
     ) -> dict[str, Any]:
+        added_role_description = str(added_role_description or "").strip() or None
+        if added_role_description and len(added_role_description) > 12_000:
+            raise RoleMatchingError(
+                "Role description exceeds the 12000-character limit.",
+                code="role_matching_description_limit",
+            )
         session = self.get(session_id)
         if int(session["current_revision"]) != base_revision:
             raise RoleMatchingError(
@@ -166,6 +246,22 @@ class RoleMatchingService:
                 paths.append(path)
         requested_exclusions = sorted(set(excluded_document_ids))
         turn = runtime_turns + 1
+        description_documents: list[dict[str, Any]] = []
+        if added_role_description:
+            description_documents.append(
+                create_user_description_document(
+                    added_role_description,
+                    cache_root=self.root / session_id / "documents",
+                    turn=turn,
+                    locale=str(session["locale"]),
+                )
+            )
+            existing_documents = self.store.list_role_matching_documents(session_id)
+            self.store.save_role_matching_documents(
+                session_id,
+                [*existing_documents, *description_documents],
+                excluded=set(requested_exclusions),
+            )
         self.store.save_role_matching_turn(
             {
                 "session_id": session_id,
@@ -177,6 +273,11 @@ class RoleMatchingService:
                 "rematch_mode": mode,
                 "added_paths": added_paths,
                 "excluded_document_ids": requested_exclusions,
+                "decision": {
+                    "added_description_document_ids": [
+                        item["document_id"] for item in description_documents
+                    ]
+                },
             }
         )
         self.store.update_role_matching_session(
@@ -255,8 +356,10 @@ class RoleMatchingService:
                     lines.append(f"- {name}")
                     for ref in value.get("evidence_refs") or []:
                         locator = json.dumps(ref.get("locator") or {}, ensure_ascii=False, sort_keys=True)
+                        source_name = str(ref.get("source_name") or ref.get("document_id") or "")
+                        source_type = str(ref.get("source_type") or "document")
                         lines.append(
-                            f"  - 来源：`{ref.get('document_id')}` / `{ref.get('chunk_id')}` / `{locator}`"
+                            f"  - 来源：{source_name}（{source_type}）/ `{ref.get('chunk_id')}` / `{locator}`"
                         )
             lines.append("")
         return "\n".join(lines)
@@ -265,11 +368,23 @@ class RoleMatchingService:
         item = self.revision(session_id, revision)
         values = item["result"].get(kind) or []
         keys = sorted({key for value in values if isinstance(value, dict) for key in value if not isinstance(value[key], (dict, list))})
+        source_keys = ["source_types", "source_names"] if values else []
         output = io.StringIO(newline="")
-        writer = csv.DictWriter(output, fieldnames=keys)
+        writer = csv.DictWriter(output, fieldnames=[*keys, *source_keys])
         writer.writeheader()
         for value in values:
-            writer.writerow({key: value.get(key, "") for key in keys})
+            refs = value.get("evidence_refs") or []
+            writer.writerow(
+                {
+                    **{key: value.get(key, "") for key in keys},
+                    "source_types": ";".join(
+                        sorted({str(ref.get("source_type") or "document") for ref in refs})
+                    ),
+                    "source_names": ";".join(
+                        dict.fromkeys(str(ref.get("source_name") or "") for ref in refs)
+                    ),
+                }
+            )
         return output.getvalue()
 
     async def delete(self, session_id: str) -> None:
@@ -297,16 +412,27 @@ class RoleMatchingService:
         try:
             self._phase(session_id, "scanning", "scan_started")
             cache_root = self.root / session_id / "documents"
-            scanned = scan_and_extract(
-                list(session["paths"]), cache_root=cache_root,
-                max_files=self.settings.role_matching_max_files,
-                max_file_bytes=self.settings.role_matching_max_file_bytes,
-                max_total_bytes=self.settings.role_matching_max_total_bytes,
-                reuse_by_hash=(
-                    {item["sha256"]: item for item in self.store.list_role_matching_documents(session_id)}
-                    if mode == "incremental" else None
-                ),
+            stored_documents = self.store.list_role_matching_documents(session_id)
+            description_documents = [
+                item for item in stored_documents
+                if _source_type(item) == "user_description"
+            ]
+            scanned = (
+                scan_and_extract(
+                    list(session["paths"]), cache_root=cache_root,
+                    max_files=self.settings.role_matching_max_files,
+                    max_file_bytes=self.settings.role_matching_max_file_bytes,
+                    max_total_bytes=self.settings.role_matching_max_total_bytes,
+                    reuse_by_hash=(
+                        {item["sha256"]: item for item in stored_documents}
+                        if mode == "incremental" else None
+                    ),
+                )
+                if session["paths"] else empty_document_scan()
             )
+            scanned["documents"] = [
+                *scanned["documents"], *description_documents
+            ]
             if self.get(session_id)["status"] == "cancelled":
                 return
             excluded = set(turn.get("excluded_document_ids") or [])
@@ -315,14 +441,22 @@ class RoleMatchingService:
                 session_id, "extracting", "extraction_completed",
                 {"documents": len(scanned["documents"]), "issues": len(scanned["issues"])},
             )
-            documents = [item for item in scanned["documents"] if item["status"] == "parsed" and item["document_id"] not in excluded]
+            documents = [
+                item for item in scanned["documents"]
+                if item["status"] == "parsed" and item["document_id"] not in excluded
+            ]
             runtime_documents: list[dict[str, Any]] = []
             total_chars = 0
             for document in documents:
                 chunks = load_chunks(document)
                 total_chars += sum(len(str(chunk.get("text") or "")) for chunk in chunks)
                 runtime_documents.append(
-                    {"document_id": document["document_id"], "name": document["name"], "chunks": chunks}
+                    {
+                        "document_id": document["document_id"],
+                        "name": document["name"],
+                        "source_type": _source_type(document),
+                        "chunks": chunks,
+                    }
                 )
             if total_chars > self.settings.role_matching_max_runtime_chars:
                 raise RoleMatchingError(
@@ -331,7 +465,10 @@ class RoleMatchingService:
                     detail={"characters": total_chars, "limit": self.settings.role_matching_max_runtime_chars},
                 )
             if not runtime_documents:
-                raise RoleMatchingError("No supported document text could be extracted.", code="role_matching_no_parseable_documents")
+                raise RoleMatchingError(
+                    "No active document or user-description source is available.",
+                    code="role_matching_no_active_sources",
+                )
             catalog = self._catalog()
             previous = None
             if session["current_revision"]:
@@ -355,7 +492,11 @@ class RoleMatchingService:
                 return
             self.store.update_role_matching_session(session_id, thread_id=raw.get("thread_id"))
             self._phase(session_id, "matching_agents", "matching_started")
-            result = self._validate_analysis(raw.get("analysis") or {}, catalog, scanned)
+            result = self._validate_analysis(
+                raw.get("analysis") or {},
+                catalog,
+                {**scanned, "documents": documents},
+            )
             self._phase(session_id, "compiling_workflows", "workflow_compilation_started")
             validated_suggestions, workflow_issues = self._compile_suggestions(
                 session_id, result.get("workflow_suggestions") or [], catalog, session["locale"]
@@ -365,6 +506,24 @@ class RoleMatchingService:
             result["completeness"] = {
                 "scan_complete": bool(scanned["scan_complete"]),
                 "extraction_complete": bool(scanned["extraction_complete"]),
+                "source_intake_complete": bool(scanned["scan_complete"])
+                and bool(scanned["extraction_complete"])
+                and all(item.get("status") == "parsed" for item in description_documents),
+                "document_scan_status": (
+                    "complete" if session["paths"] and scanned["scan_complete"] else
+                    "incomplete" if session["paths"] else "not_requested"
+                ),
+                "document_source_count": sum(
+                    1 for item in documents if _source_type(item) == "document"
+                ),
+                "description_source_count": sum(
+                    1 for item in documents if _source_type(item) == "user_description"
+                ),
+                "description_source_complete": all(
+                    item.get("status") == "parsed"
+                    for item in description_documents
+                    if item["document_id"] not in excluded
+                ),
                 "business_understanding_complete": True,
                 "agent_catalog_complete": True,
                 "matching_complete": True,
@@ -449,7 +608,11 @@ class RoleMatchingService:
                 result[key] = []
         agents = {str(item["agent_id"]): item for item in catalog["items"]}
         valid_refs = {
-            (document["document_id"], chunk["chunk_id"]): deepcopy(chunk.get("locator") or {})
+            (document["document_id"], chunk["chunk_id"]): {
+                "locator": deepcopy(chunk.get("locator") or {}),
+                "source_type": _source_type(document),
+                "source_name": str(document.get("name") or document["document_id"]),
+            }
             for document in scanned["documents"] for chunk in load_chunks(document)
         }
         def checked_refs(value: Any) -> list[dict[str, Any]]:
@@ -460,7 +623,16 @@ class RoleMatchingService:
                 pair = (str(ref.get("document_id") or ""), str(ref.get("chunk_id") or ""))
                 if pair not in valid_refs:
                     raise RoleMatchingError("Runtime returned an unknown document evidence reference.", code="role_matching_evidence_ref_invalid", detail=pair)
-                refs.append({"document_id": pair[0], "chunk_id": pair[1], "locator": valid_refs[pair]})
+                source = valid_refs[pair]
+                refs.append(
+                    {
+                        "document_id": pair[0],
+                        "chunk_id": pair[1],
+                        "locator": source["locator"],
+                        "source_type": source["source_type"],
+                        "source_name": source["source_name"],
+                    }
+                )
             return refs
         for collection in ("roles", "processes", "operations", "agent_matches", "workflow_suggestions", "agent_gaps"):
             for item in result[collection]:
@@ -524,7 +696,10 @@ class RoleMatchingService:
 
     @staticmethod
     def _public_document(document: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in document.items() if key not in {"cache_path"}}
+        return {
+            **{key: value for key, value in document.items() if key not in {"cache_path"}},
+            "source_type": _source_type(document),
+        }
 
     @staticmethod
     def _public_issue(issue: dict[str, Any]) -> dict[str, Any]:
@@ -534,6 +709,14 @@ class RoleMatchingService:
 def _digest(value: Any) -> str:
     canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _source_type(document: dict[str, Any]) -> str:
+    return (
+        "user_description"
+        if str(document.get("extension") or "") == USER_DESCRIPTION_EXTENSION
+        else "document"
+    )
 
 
 def _change_summary(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:

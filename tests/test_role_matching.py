@@ -144,7 +144,9 @@ async def _role_matching_session_scenario(tmp_path: Path) -> None:
     service = RoleMatchingService(settings, store, AgentRepository(repository_root / "agents"), runtime, _Drafts())
     await service.start()
     try:
-        session = await service.create(paths=[str(selected)], locale="zh", consent=True)
+        session = await service.create(
+            paths=[str(selected)], role_description=None, locale="zh", consent=True
+        )
         for _ in range(100):
             current = service.get(session["session_id"])
             if current["status"] in {"completed", "failed"}:
@@ -158,7 +160,11 @@ async def _role_matching_session_scenario(tmp_path: Path) -> None:
         assert secret_text.encode("utf-8") not in settings.database_path.read_bytes()
         assert all("path" not in json.dumps(event["data"]).lower() for event in store.role_matching_events_after(session["session_id"]))
         original_digest = revision["result_digest"]
-        await service.feedback(session["session_id"], base_revision=1, message="聚焦采购岗位", mode="incremental", added_paths=[], excluded_document_ids=[])
+        await service.feedback(
+            session["session_id"], base_revision=1, message="聚焦采购岗位",
+            mode="incremental", added_paths=[], added_role_description=None,
+            excluded_document_ids=[],
+        )
         for _ in range(100):
             current = service.get(session["session_id"])
             if current["status"] in {"completed", "failed"} and current["current_revision"] == 2:
@@ -173,6 +179,99 @@ async def _role_matching_session_scenario(tmp_path: Path) -> None:
 
 def test_role_matching_session_is_immutable_and_does_not_persist_body(tmp_path: Path) -> None:
     asyncio.run(_role_matching_session_scenario(tmp_path))
+
+
+async def _description_source_scenario(tmp_path: Path) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    description = "仓库主管在SAP中处理收货和盘点 UNIQUE_ROLE_TEXT_19384"
+    supplemental = "月末核对库存差异并跟踪未清物料凭证 UNIQUE_ROLE_TEXT_62851"
+    settings = replace(
+        Settings(), repository_root=repository_root, data_root=tmp_path / "data",
+        draft_root=tmp_path / "drafts",
+    )
+    store = RunStore(settings.database_path)
+    runtime = _FakeRuntime()
+    service = RoleMatchingService(
+        settings, store, AgentRepository(repository_root / "agents"), runtime, _Drafts()
+    )
+    await service.start()
+    try:
+        session = await service.create(
+            paths=[], role_description=description, locale="zh", consent=True
+        )
+        for _ in range(100):
+            current = service.get(session["session_id"])
+            if current["status"] in {"completed", "failed"}:
+                break
+            await asyncio.sleep(0.02)
+        assert current["status"] == "completed", current.get("error")
+        sources = service.documents(session["session_id"])
+        assert len(sources) == 1
+        assert sources[0]["source_type"] == "user_description"
+        assert sources[0]["paths"] == []
+        assert runtime.calls[0]["documents"][0]["source_type"] == "user_description"
+        result = service.revision(session["session_id"], 1)["result"]
+        assert result["completeness"]["document_scan_status"] == "not_requested"
+        assert result["completeness"]["document_source_count"] == 0
+        assert result["completeness"]["description_source_count"] == 1
+        assert result["agent_matches"][0]["evidence_refs"][0]["source_type"] == "user_description"
+        assert description.encode("utf-8") not in settings.database_path.read_bytes()
+        assert description not in service.markdown(session["session_id"], 1)
+        csv_report = service.csv(session["session_id"], 1, "agent_matches")
+        assert "source_types" in csv_report
+        assert "user_description" in csv_report
+        assert description not in csv_report
+
+        combined_file = tmp_path / "combined.txt"
+        combined_file.write_text("采购岗位在SAP中查询采购订单", encoding="utf-8")
+        combined = await service.create(
+            paths=[str(combined_file)], role_description="采购岗位还负责跟踪收货",
+            locale="zh", consent=True,
+        )
+        for _ in range(100):
+            combined_current = service.get(combined["session_id"])
+            if combined_current["status"] in {"completed", "failed"}:
+                break
+            await asyncio.sleep(0.02)
+        assert combined_current["status"] == "completed", combined_current.get("error")
+        assert {
+            item["source_type"] for item in runtime.calls[-1]["documents"]
+        } == {"document", "user_description"}
+
+        await service.feedback(
+            session["session_id"], base_revision=1, message="补充月结职责",
+            mode="incremental", added_paths=[],
+            added_role_description=supplemental, excluded_document_ids=[],
+        )
+        for _ in range(100):
+            current = service.get(session["session_id"])
+            if current["status"] in {"completed", "failed"} and current["current_revision"] == 2:
+                break
+            await asyncio.sleep(0.02)
+        assert current["status"] == "completed", current.get("error")
+        assert len(service.documents(session["session_id"])) == 2
+        assert supplemental.encode("utf-8") not in settings.database_path.read_bytes()
+
+        calls_before = len(runtime.calls)
+        source_ids = [item["document_id"] for item in service.documents(session["session_id"])]
+        await service.feedback(
+            session["session_id"], base_revision=2, message="排除全部来源",
+            mode="full", added_paths=[], added_role_description=None,
+            excluded_document_ids=source_ids,
+        )
+        for _ in range(100):
+            current = service.get(session["session_id"])
+            if current["status"] == "failed":
+                break
+            await asyncio.sleep(0.02)
+        assert current["error"]["code"] == "role_matching_no_active_sources"
+        assert len(runtime.calls) == calls_before
+    finally:
+        await service.stop()
+
+
+def test_role_description_is_a_citable_private_source(tmp_path: Path) -> None:
+    asyncio.run(_description_source_scenario(tmp_path))
 
 
 def test_role_matching_assistant_is_not_executable_or_composable() -> None:
@@ -249,6 +348,24 @@ def test_role_matching_api_preflight_and_session(tmp_path: Path) -> None:
         preflight = client.post("/api/role-matching/preflight", json={"paths": [str(source)]})
         assert preflight.status_code == 200
         assert preflight.json()["ready"] is True
+        description_preflight = client.post(
+            "/api/role-matching/preflight",
+            json={"paths": [], "roleDescription": "仓库主管负责SAP库存盘点"},
+        )
+        assert description_preflight.status_code == 200
+        assert description_preflight.json()["source_mode"] == "description"
+        assert description_preflight.json()["supported_file_count"] == 0
+        assert client.post(
+            "/api/role-matching/sessions",
+            json={"paths": [], "roleDescription": "   ", "locale": "zh", "consentToRuntime": True},
+        ).status_code == 422
+        oversized_description = "PRIVATE_DESCRIPTION_SHOULD_NOT_LEAK_" + "x" * 12_000
+        oversized_response = client.post(
+            "/api/role-matching/sessions",
+            json={"paths": [], "roleDescription": oversized_description, "locale": "zh", "consentToRuntime": True},
+        )
+        assert oversized_response.status_code == 422
+        assert "PRIVATE_DESCRIPTION_SHOULD_NOT_LEAK" not in oversized_response.text
         rejected = client.post(
             "/api/role-matching/sessions",
             json={"paths": [str(source)], "locale": "zh", "consentToRuntime": False},

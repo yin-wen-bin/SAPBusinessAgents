@@ -71,6 +71,7 @@ test("catalog discovers thirty-one deterministic agents and one platform assista
 
   const assistant = records.find((agent) => agent.slug === "role-agent-matching");
   assert.equal(assistant.kind, "platform_assistant");
+  assert.equal(assistant.version, "0.2.0");
   assert.equal(assistant.assistant.composable, false);
   assert.equal(assistant.execution, undefined);
 

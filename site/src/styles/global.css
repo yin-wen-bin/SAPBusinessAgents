@@ -1427,6 +1427,9 @@ select {
 .role-matching-assistant > header h2 { margin: 0 0 8px; }
 .role-card, .role-result { padding: 20px; border: 1px solid var(--color-border); border-radius: 12px; background: #fff; }
 .role-card label { display: grid; gap: 8px; }
+.role-input-mode { margin: 0 0 16px; padding: 14px; border: 1px solid var(--color-border); border-radius: 10px; }
+.role-input-mode > div { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 8px; }
+.role-input-mode label { display: flex; grid-template-columns: none; align-items: center; gap: 7px; }
 .role-card textarea { width: 100%; box-sizing: border-box; margin-top: 7px; padding: 11px; border: 1px solid #b8c6d8; border-radius: 8px; font: inherit; resize: vertical; }
 .role-card button, .role-grid button { padding: 10px 15px; border: 0; border-radius: 8px; color: #fff; background: #135fad; font-weight: 700; cursor: pointer; }
 .role-card button:disabled, .role-grid button:disabled { opacity: .5; cursor: not-allowed; }

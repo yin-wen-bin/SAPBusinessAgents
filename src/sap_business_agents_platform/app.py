@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .codex_planner import CodexPlanner, Planner
@@ -266,6 +268,26 @@ def create_app(
     app.state.role_matching = role_matching
     app.state.sdk_manager = sdk_registry
 
+    @app.exception_handler(RequestValidationError)
+    async def safe_role_matching_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> Response:
+        if not request.url.path.startswith("/api/role-matching/"):
+            return await request_validation_exception_handler(request, exc)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {
+                        "type": str(item.get("type") or "value_error"),
+                        "loc": list(item.get("loc") or []),
+                        "msg": str(item.get("msg") or "Invalid role-matching input."),
+                    }
+                    for item in exc.errors()
+                ]
+            },
+        )
+
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
         default_runtime_id = str(
@@ -400,7 +422,9 @@ def create_app(
     @app.post("/api/role-matching/preflight")
     def preflight_role_matching(payload: RoleMatchingPreflightRequest) -> dict[str, Any]:
         try:
-            return role_matching.preflight(payload.paths)
+            return role_matching.preflight(
+                payload.paths, role_description=payload.role_description
+            )
         except Exception as exc:
             code = str(getattr(exc, "code", "role_matching_preflight_failed"))
             raise HTTPException(409, {"code": code, "message": str(exc), "detail": getattr(exc, "detail", None)}) from exc
@@ -410,6 +434,7 @@ def create_app(
         try:
             return await role_matching.create(
                 paths=payload.paths,
+                role_description=payload.role_description,
                 locale=payload.locale,
                 consent=payload.consent_to_runtime,
             )
@@ -491,6 +516,7 @@ def create_app(
                 message=payload.message,
                 mode=payload.rematch_mode,
                 added_paths=payload.added_paths,
+                added_role_description=payload.added_role_description,
                 excluded_document_ids=payload.excluded_document_ids,
             )
         except KeyError as exc:
