@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import calendar
+from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import re
@@ -2203,71 +2205,1326 @@ def _month_end(inputs: JsonObject) -> JsonObject:
     )
 
 
-def _demand_forecast(inputs: JsonObject) -> JsonObject:
-    demand = _rows(inputs, "sales_demand")
-    planned = _rows(inputs, "planned_orders")
-    gaps = _gaps(inputs, "pir_evidence")
+def _legacy_demand_forecast_single(inputs: JsonObject) -> JsonObject:
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
-    demand_period_attributable = not demand or all(
-        _date_text(row, "RequirementDate", "RequestedDeliveryDate")
-        for row in demand
+    context = inputs.get("analysis_context")
+    context = context if isinstance(context, dict) else {}
+    material = str(run_input.get("material") or "").strip()
+    plant = str(run_input.get("plant") or "").strip()
+    date_from = _date(context.get("date_from") or run_input.get("date_from"))
+    date_to = _date(context.get("date_to") or run_input.get("date_to"))
+    threshold = _strict_decimal(context.get("deviation_threshold_percent")) or Decimal("20")
+    manual_requested = context.get("manual_demand_requested") is True
+
+    topic_names = ["pir", "sales_demand", "planned_orders"]
+    if manual_requested:
+        topic_names.extend(["current_stock", "supply_demand"])
+    source_flags = {topic: _topic_complete(inputs, topic) for topic in topic_names}
+    gaps: list[str] = [
+        f"{topic}_evidence" for topic, complete in source_flags.items() if not complete
+    ]
+
+    pir_headers = _rows(inputs, "pir_headers")
+    pir_items = _rows(inputs, "pir_items")
+    sales_items = _rows(inputs, "sales_order_items")
+    schedule_lines = _rows(inputs, "sales_schedule_lines")
+    planned_orders = _rows(inputs, "planned_orders")
+    stock_rows = _rows(inputs, "current_stock") if manual_requested else []
+    mrp_rows = (
+        _rows(inputs, "supply_demand", "supply_demand_items")
+        if manual_requested
+        else []
     )
-    attributable_demand = demand if demand_period_attributable else []
-    grouped: dict[tuple[str, str, str], JsonObject] = {}
-    for row, kind in [(row, "demand") for row in attributable_demand] + [(row, "planned") for row in planned]:
-        key = (
-            _text(row, "Material"),
-            _text(row, "Plant", "ProductionPlant"),
-            _date_text(
-                row,
-                "RequirementDate",
-                "PlannedOrderOpeningDate",
-                "PlannedOrderEndDate",
-                "PlndOrderPlannedStartDate",
-                "PlndOrderPlannedEndDate",
-            )
-            or str(run_input.get("date_from") or ""),
+
+    def exact_material_plant(row: JsonObject, material_field: str, plant_field: str) -> bool:
+        return (
+            str(row.get(material_field) or "").strip() == material
+            and str(row.get(plant_field) or "").strip() == plant
         )
-        if not all(key):
+
+    scope_fields = (
+        "Product",
+        "Plant",
+        "MRPArea",
+        "PlndIndepRqmtType",
+        "PlndIndepRqmtVersion",
+        "RequirementPlan",
+        "RequirementSegment",
+    )
+
+    def scope_key(row: JsonObject) -> tuple[str, ...]:
+        return tuple(str(row.get(field) or "").strip() for field in scope_fields)
+
+    selectors = {
+        "MRPArea": str(context.get("mrp_area") or "").strip(),
+        "PlndIndepRqmtType": str(context.get("pir_requirement_type") or "").strip(),
+        "PlndIndepRqmtVersion": str(context.get("pir_version") or "00").strip(),
+        "RequirementPlan": str(context.get("requirement_plan") or "").strip(),
+        "RequirementSegment": str(context.get("requirement_segment") or "").strip(),
+    }
+
+    def matches_selectors(row: JsonObject) -> bool:
+        if not exact_material_plant(row, "Product", "Plant"):
+            return False
+        for field, expected in selectors.items():
+            if expected and str(row.get(field) or "").strip() != expected:
+                return False
+        return True
+
+    active_headers = [
+        row
+        for row in pir_headers
+        if matches_selectors(row) and _truthy(row.get("PlndIndepRqmtIsActive"))
+    ]
+    active_scopes = {scope_key(row) for row in active_headers}
+    scoped_pir_items = [
+        row
+        for row in pir_items
+        if matches_selectors(row) and scope_key(row) in active_scopes
+    ]
+    observed_scopes = sorted({scope_key(row) for row in scoped_pir_items})
+    if len(observed_scopes) > 1:
+        gaps.append("pir_scope_ambiguous")
+    selected_scope = observed_scopes[0] if len(observed_scopes) == 1 else None
+    if selected_scope is not None:
+        scoped_pir_items = [row for row in scoped_pir_items if scope_key(row) == selected_scope]
+    elif observed_scopes:
+        scoped_pir_items = []
+
+    def pir_period(row: JsonObject) -> tuple[date, date] | None:
+        period_type = str(row.get("PeriodType") or "").strip().upper()
+        start = _date(row.get("PlndIndepRqmtPeriodStartDate") or row.get("WorkingDayDate"))
+        raw_period = str(row.get("PlndIndepRqmtPeriod") or "").strip()
+        if start is None:
+            try:
+                if period_type == "M" and re.fullmatch(r"[0-9]{6}", raw_period):
+                    start = date(int(raw_period[:4]), int(raw_period[4:]), 1)
+                elif period_type == "W" and re.fullmatch(r"[0-9]{6}", raw_period):
+                    start = date.fromisocalendar(int(raw_period[:4]), int(raw_period[4:]), 1)
+                elif period_type in {"D", "T"} and re.fullmatch(r"[0-9]{8}", raw_period):
+                    start = date.fromisoformat(
+                        f"{raw_period[:4]}-{raw_period[4:6]}-{raw_period[6:]}"
+                    )
+            except ValueError:
+                start = None
+        if start is None:
+            return None
+        if period_type == "M":
+            end = date(start.year, start.month, calendar.monthrange(start.year, start.month)[1])
+        elif period_type == "W":
+            end = date.fromordinal(start.toordinal() + 6)
+        elif period_type in {"D", "T"}:
+            end = start
+        else:
+            return None
+        return start, end
+
+    period_map: dict[tuple[str, str, str, str], JsonObject] = {}
+    for row in scoped_pir_items:
+        bounds = pir_period(row)
+        quantity = _strict_decimal(row.get("PlannedQuantity"))
+        withdrawal = _strict_decimal(row.get("WithdrawalQuantity"))
+        unit = _unit_key(row.get("UnitOfMeasure"))
+        if bounds is None or quantity is None or not unit:
+            gaps.append("pir_period_evidence")
             continue
-        record = grouped.setdefault(
+        start, end = bounds
+        if date_from and end < date_from or date_to and start > date_to:
+            continue
+        key = (
+            str(row.get("PlndIndepRqmtPeriod") or start.isoformat()),
+            str(row.get("PeriodType") or "").strip().upper(),
+            start.isoformat(),
+            end.isoformat(),
+        )
+        record = period_map.setdefault(
             key,
             {
-                "material": key[0],
-                "plant": key[1],
-                "requirement_date": key[2],
-                "demand_quantity": "0",
-                "planned_quantity": "0",
-                "unit": _text(row, "RequestedQuantityUnit", "ProductionUnit", "BaseUnit"),
+                "period": key[0],
+                "period_type": key[1],
+                "period_start": key[2],
+                "period_end": key[3],
+                "sales_demand_quantity": Decimal(0),
+                "pir_quantity": Decimal(0),
+                "pir_withdrawal_quantity": Decimal(0),
+                "planned_order_quantity": Decimal(0),
+                "units": set(),
             },
         )
-        field = "demand_quantity" if kind == "demand" else "planned_quantity"
-        record[field] = str(
-            _decimal(record[field])
-            + _decimal(
-                row.get("RequestedQuantity")
-                or row.get("OrderQuantity")
-                or row.get("TotalQuantity")
+        record["pir_quantity"] += quantity
+        record["pir_withdrawal_quantity"] += withdrawal or Decimal(0)
+        record["units"].add(unit)
+
+    item_by_key = {
+        (str(row.get("SalesOrder") or "").strip(), str(row.get("SalesOrderItem") or "").strip()): row
+        for row in sales_items
+        if exact_material_plant(row, "Material", "ProductionPlant")
+    }
+    sales_evidence_rows: list[JsonObject] = []
+    for row in schedule_lines:
+        key = (str(row.get("SalesOrder") or "").strip(), str(row.get("SalesOrderItem") or "").strip())
+        item = item_by_key.get(key)
+        if not item or str(item.get("SalesDocumentRjcnReason") or "").strip():
+            continue
+        demand_date = _date(row.get("RequestedDeliveryDate"))
+        quantity = _strict_decimal(row.get("ScheduleLineOrderQuantity"))
+        unit = _unit_key(row.get("OrderQuantityUnit") or item.get("RequestedQuantityUnit"))
+        if demand_date is None or quantity is None or not unit:
+            gaps.append("sales_demand_period_evidence")
+            continue
+        if date_from and demand_date < date_from or date_to and demand_date > date_to:
+            continue
+        matches = [
+            value
+            for value in period_map.values()
+            if date.fromisoformat(value["period_start"])
+            <= demand_date
+            <= date.fromisoformat(value["period_end"])
+        ]
+        if len(matches) > 1:
+            gaps.append("pir_period_overlap")
+            continue
+        if not matches:
+            synthetic_key = (demand_date.isoformat(), "D", demand_date.isoformat(), demand_date.isoformat())
+            matches = [
+                period_map.setdefault(
+                    synthetic_key,
+                    {
+                        "period": demand_date.isoformat(),
+                        "period_type": "D",
+                        "period_start": demand_date.isoformat(),
+                        "period_end": demand_date.isoformat(),
+                        "sales_demand_quantity": Decimal(0),
+                        "pir_quantity": Decimal(0),
+                        "pir_withdrawal_quantity": Decimal(0),
+                        "planned_order_quantity": Decimal(0),
+                        "units": set(),
+                    },
+                )
+            ]
+        matches[0]["sales_demand_quantity"] += quantity
+        matches[0]["units"].add(unit)
+        sales_evidence_rows.append(
+            {
+                "sales_order": key[0],
+                "sales_order_item": key[1],
+                "schedule_line": str(row.get("ScheduleLine") or "").strip(),
+                "requirement_date": demand_date.isoformat(),
+                "quantity": format(quantity, "f"),
+                "unit": unit,
+            }
+        )
+
+    planned_evidence_rows: list[JsonObject] = []
+    for row in planned_orders:
+        if not exact_material_plant(row, "Material", "ProductionPlant"):
+            continue
+        planned_date = _date(
+            row.get("PlndOrderPlannedEndDate")
+            or row.get("PlndOrderPlannedStartDate")
+        )
+        quantity = _strict_decimal(row.get("TotalQuantity"))
+        unit = _unit_key(row.get("BaseUnit"))
+        if planned_date is None or quantity is None or not unit:
+            gaps.append("planned_order_period_evidence")
+            continue
+        if date_from and planned_date < date_from or date_to and planned_date > date_to:
+            continue
+        matches = [
+            value
+            for value in period_map.values()
+            if date.fromisoformat(value["period_start"])
+            <= planned_date
+            <= date.fromisoformat(value["period_end"])
+        ]
+        if not matches:
+            synthetic_key = (
+                planned_date.isoformat(),
+                "D",
+                planned_date.isoformat(),
+                planned_date.isoformat(),
+            )
+            matches = [
+                period_map.setdefault(
+                    synthetic_key,
+                    {
+                        "period": planned_date.isoformat(),
+                        "period_type": "D",
+                        "period_start": planned_date.isoformat(),
+                        "period_end": planned_date.isoformat(),
+                        "sales_demand_quantity": Decimal(0),
+                        "pir_quantity": Decimal(0),
+                        "pir_withdrawal_quantity": Decimal(0),
+                        "planned_order_quantity": Decimal(0),
+                        "units": set(),
+                    },
+                )
+            ]
+        if len(matches) == 1:
+            matches[0]["planned_order_quantity"] += quantity
+            matches[0]["units"].add(unit)
+        elif len(matches) > 1:
+            gaps.append("pir_period_overlap")
+        planned_evidence_rows.append(
+            {
+                "planned_order": str(row.get("PlannedOrder") or "").strip(),
+                "planned_date": planned_date.isoformat(),
+                "quantity": format(quantity, "f"),
+                "unit": unit,
+                "is_firm": _truthy(row.get("PlannedOrderIsFirm")),
+            }
+        )
+
+    period_results: list[JsonObject] = []
+    forecast_states: list[str] = []
+    sales_total = Decimal(0)
+    pir_total = Decimal(0)
+    withdrawal_total = Decimal(0)
+    planned_total = Decimal(0)
+    for record in sorted(period_map.values(), key=lambda item: (item["period_start"], item["period"])):
+        units = sorted(record.pop("units"))
+        sales_quantity = record["sales_demand_quantity"]
+        pir_quantity = record["pir_quantity"]
+        planned_quantity = record["planned_order_quantity"]
+        withdrawal_quantity = record["pir_withdrawal_quantity"]
+        variance: Decimal | None = None
+        variance_percent: Decimal | None = None
+        if len(units) != 1:
+            status = "unknown"
+            gaps.append("demand_unit_not_comparable")
+        elif pir_quantity == 0 and sales_quantity > 0:
+            status = "pir_missing"
+            variance = sales_quantity
+        elif pir_quantity == 0 and sales_quantity == 0:
+            status = "no_activity"
+            variance = Decimal(0)
+        else:
+            variance = sales_quantity - pir_quantity
+            variance_percent = variance / pir_quantity * Decimal(100)
+            if abs(variance_percent) <= threshold:
+                status = "within_tolerance"
+            elif variance > 0:
+                status = "over_forecast"
+            else:
+                status = "under_forecast"
+        forecast_states.append(status)
+        sales_total += sales_quantity
+        pir_total += pir_quantity
+        withdrawal_total += withdrawal_quantity
+        planned_total += planned_quantity
+        period_results.append(
+            {
+                **record,
+                "material": material,
+                "plant": plant,
+                "sales_demand_quantity": format(sales_quantity, "f"),
+                "pir_quantity": format(pir_quantity, "f"),
+                "pir_withdrawal_quantity": format(withdrawal_quantity, "f"),
+                "planned_order_quantity": format(planned_quantity, "f"),
+                "unit": units[0] if len(units) == 1 else None,
+                "variance_quantity": format(variance, "f") if variance is not None else None,
+                "variance_percent": (
+                    format(variance_percent.quantize(Decimal("0.01")), "f")
+                    if variance_percent is not None
+                    else None
+                ),
+                "status": status,
+            }
+        )
+
+    if not period_results:
+        forecast_status = "no_activity"
+    elif "unknown" in forecast_states:
+        forecast_status = "unknown"
+    elif "pir_missing" in forecast_states:
+        forecast_status = "pir_missing"
+    elif all(state == "no_activity" for state in forecast_states):
+        forecast_status = "no_activity"
+    else:
+        directional = {state for state in forecast_states if state in {"over_forecast", "under_forecast"}}
+        forecast_status = (
+            "mixed"
+            if len(directional) > 1
+            else next(iter(directional))
+            if directional
+            else "within_tolerance"
+        )
+
+    manual_quantity = _strict_decimal(context.get("manual_demand_quantity"))
+    manual_date = _date(context.get("manual_demand_date"))
+    manual_unit_input = _unit_key(context.get("manual_demand_unit"))
+    current_stock: Decimal | None = None
+    projected_before: Decimal | None = None
+    projected_after: Decimal | None = None
+    existing_demand: Decimal | None = None
+    future_receipts: Decimal | None = None
+    lowest_simulated: Decimal | None = None
+    first_shortage_date: str | None = None
+    manual_status = "not_requested"
+    horizon_status = "not_requested"
+    manual_unit: str | None = None
+    normalized_supply_demand: list[JsonObject] = []
+    category_sign_fallback_used = False
+
+    if manual_requested:
+        exact_stock = [
+            row
+            for row in stock_rows
+            if exact_material_plant(row, "Material", "Plant")
+            and str(row.get("InventoryStockType") or "").strip() == "01"
+            and not str(row.get("InventorySpecialStockType") or "").strip()
+        ]
+        exact_mrp = [
+            row
+            for row in mrp_rows
+            if exact_material_plant(row, "Material", "MRPPlant")
+            and str(row.get("MRPArea") or "").strip() == str(context.get("mrp_area") or "").strip()
+            and (
+                _date(context.get("date_to")) is None
+                or _date(row.get("MRPElementAvailyOrRqmtDate")) is None
+                or _date(row.get("MRPElementAvailyOrRqmtDate")) <= _date(context.get("date_to"))
+            )
+        ]
+        mrp_units = {_unit_key(row.get("MaterialBaseUnit")) for row in exact_mrp if _unit_key(row.get("MaterialBaseUnit"))}
+        stock_units = {_unit_key(row.get("MaterialBaseUnit")) for row in exact_stock if _unit_key(row.get("MaterialBaseUnit"))}
+        comparable_units = mrp_units | stock_units
+        if len(mrp_units) != 1:
+            gaps.append("mrp_unit_not_comparable")
+        else:
+            manual_unit = next(iter(mrp_units))
+            if manual_unit_input and manual_unit_input != manual_unit:
+                gaps.append("manual_demand_unit_not_comparable")
+            if stock_units and stock_units != {manual_unit}:
+                gaps.append("stock_unit_not_comparable")
+        segments = {
+            (
+                str(row.get("MRPPlanningSegment") or "").strip(),
+                str(row.get("MRPPlanningSegmentType") or "").strip(),
+            )
+            for row in exact_mrp
+        }
+        if len(segments) > 1:
+            gaps.append("mrp_planning_segment_ambiguous")
+        if comparable_units and manual_unit and comparable_units == {manual_unit}:
+            stock_values = [_strict_decimal(row.get("MatlWrhsStkQtyInMatlBaseUnit")) for row in exact_stock]
+            if all(value is not None for value in stock_values):
+                current_stock = sum((value for value in stock_values if value is not None), Decimal(0))
+
+        dated_balances: dict[date, list[Decimal]] = {}
+        demand_sum = Decimal(0)
+        receipt_sum = Decimal(0)
+        for row in exact_mrp:
+            row_date = _date(row.get("MRPElementAvailyOrRqmtDate"))
+            open_quantity = _strict_decimal(row.get("MRPElementOpenQuantity"))
+            available_quantity = _strict_decimal(row.get("MRPAvailableQuantity"))
+            demand_group = str(row.get("DemandCategoryGroup") or "").strip()
+            receipt_group = str(row.get("ReceiptCategoryGroup") or "").strip()
+            element_category = str(row.get("MRPElementCategory") or "").strip()
+            flow_direction = "neutral"
+            classification_source = "category_group"
+            if element_category == "WB":
+                flow_direction = "stock"
+                classification_source = "mrp_element_category"
+            elif demand_group and not receipt_group:
+                flow_direction = "demand"
+            elif receipt_group and not demand_group:
+                flow_direction = "receipt"
+            elif demand_group and receipt_group:
+                flow_direction = "ambiguous"
+                gaps.append("mrp_category_ambiguous")
+            elif open_quantity is not None and open_quantity != 0:
+                # Some target systems populate DemandCategoryGroup and
+                # ReceiptCategoryGroup only when a shortage profile is supplied.
+                # The unprofiled sequence is authoritative for completeness, so
+                # retain the raw blank groups and transparently classify display
+                # rows from SAP's signed open quantity.  Never use this derived
+                # direction to recalculate MRPAvailableQuantity.
+                flow_direction = "demand" if open_quantity < 0 else "receipt"
+                classification_source = "signed_open_quantity"
+                category_sign_fallback_used = True
+            normalized_supply_demand.append(
+                {
+                    "mrp_element": str(row.get("MRPElement") or "").strip(),
+                    "mrp_element_item": str(row.get("MRPElementItem") or "").strip(),
+                    "mrp_element_schedule_line": str(row.get("MRPElementScheduleLine") or "").strip(),
+                    "element_category": element_category,
+                    "element_name": str(row.get("MRPElementCategoryName") or "").strip(),
+                    "date": row_date.isoformat() if row_date else None,
+                    "open_quantity": format(open_quantity, "f") if open_quantity is not None else None,
+                    "available_quantity": format(available_quantity, "f") if available_quantity is not None else None,
+                    "unit": _unit_key(row.get("MaterialBaseUnit")) or None,
+                    "demand_category_group": demand_group or None,
+                    "receipt_category_group": receipt_group or None,
+                    "flow_direction": flow_direction,
+                    "classification_source": classification_source,
+                    "is_firm": _truthy(row.get("MRPElementQuantityIsFirm")),
+                    "is_released": _truthy(row.get("MRPElementIsReleased")),
+                }
+            )
+            if row_date is None or available_quantity is None:
+                gaps.append("mrp_balance_evidence")
+                continue
+            dated_balances.setdefault(row_date, []).append(available_quantity)
+            if manual_date and row_date <= manual_date and open_quantity is not None:
+                if flow_direction == "demand":
+                    demand_sum += abs(open_quantity)
+                elif (
+                    flow_direction == "receipt"
+                    and row_date >= (_date(context.get("analysis_date")) or row_date)
+                ):
+                    receipt_sum += abs(open_quantity)
+
+        if manual_date is not None and manual_quantity is not None and dated_balances:
+            horizon_start = min(dated_balances)
+            horizon_end = max(dated_balances)
+            if manual_date < horizon_start or manual_date > horizon_end:
+                gaps.append("manual_demand_outside_mrp_horizon")
+            eligible_dates = [value for value in dated_balances if value <= manual_date]
+            if eligible_dates:
+                balance_date = max(eligible_dates)
+                projected_before = min(dated_balances[balance_date])
+                projected_after = projected_before - manual_quantity
+                manual_status = "covered" if projected_after >= 0 else "not_covered"
+                original_points = [(manual_date, projected_before)] + [
+                    (row_date, min(values))
+                    for row_date, values in sorted(dated_balances.items())
+                    if row_date >= manual_date
+                ]
+                original_low = min(value for _, value in original_points)
+                simulated_points = [(row_date, value - manual_quantity) for row_date, value in original_points]
+                lowest_simulated = min(value for _, value in simulated_points)
+                first_shortage_date = next(
+                    (row_date.isoformat() for row_date, value in simulated_points if value < 0),
+                    None,
+                )
+                if original_low < 0:
+                    horizon_status = "worsens_existing_shortage"
+                elif lowest_simulated < 0:
+                    horizon_status = "creates_shortage"
+                else:
+                    horizon_status = "no_new_shortage"
+                existing_demand = demand_sum
+                future_receipts = receipt_sum
+            else:
+                gaps.append("manual_demand_balance_unavailable")
+        if any(
+            code in gaps
+            for code in (
+                "current_stock_evidence",
+                "supply_demand_evidence",
+                "mrp_unit_not_comparable",
+                "manual_demand_unit_not_comparable",
+                "stock_unit_not_comparable",
+                "mrp_planning_segment_ambiguous",
+                "mrp_balance_evidence",
+                "manual_demand_outside_mrp_horizon",
+                "manual_demand_balance_unavailable",
+            )
+        ):
+            manual_status = "unknown"
+            horizon_status = "unknown"
+
+    gaps = sorted(set(_gaps(inputs, *gaps)))
+    source_complete = all(source_flags.values())
+    evidence_complete = source_complete and not gaps
+    forecast_attention = forecast_status in {"over_forecast", "under_forecast", "mixed", "pir_missing"}
+    manual_attention = manual_status == "not_covered" or horizon_status in {
+        "creates_shortage",
+        "worsens_existing_shortage",
+    }
+    business_status = (
+        "inconclusive"
+        if not evidence_complete
+        else "attention"
+        if forecast_attention or manual_attention
+        else "normal"
+    )
+
+    if business_status == "inconclusive":
+        headline_zh = "已取得部分需求计划证据，但当前结论仍有证据缺口"
+        headline_en = "Demand-planning evidence was collected, but the result remains inconclusive"
+    elif manual_attention:
+        headline_zh = "手工需求按当前MRP供需快照无法安全覆盖"
+        headline_en = "The manual demand is not safely covered by the current MRP snapshot"
+    elif forecast_attention:
+        headline_zh = "销售需求与PIR存在需要计划员复核的偏差"
+        headline_en = "Sales demand and PIR contain a variance requiring planner review"
+    else:
+        headline_zh = "当前需求计划证据未发现超出阈值的风险"
+        headline_en = "No demand-planning risk above the threshold was found"
+
+    metrics = [
+        {"id": "sales_demand_quantity", "value": format(sales_total, "f")},
+        {"id": "pir_quantity", "value": format(pir_total, "f")},
+        {"id": "pir_withdrawal_quantity", "value": format(withdrawal_total, "f")},
+        {"id": "planned_order_quantity", "value": format(planned_total, "f")},
+        {"id": "period_count", "value": len(period_results)},
+        {"id": "manual_demand_quantity", "value": context.get("manual_demand_quantity")},
+        {"id": "projected_available_before_manual", "value": format(projected_before, "f") if projected_before is not None else None},
+        {"id": "projected_available_after_manual", "value": format(projected_after, "f") if projected_after is not None else None},
+    ]
+    result = _result(
+        inputs,
+        business_status=business_status,
+        headline_zh=headline_zh,
+        headline_en=headline_en,
+        overview_zh="已按PIR原生期间比较销售需求，并在用户提供外部需求时使用SAP累计MRP可用量进行只读模拟；该模拟不是正式ATP确认。",
+        overview_en="Sales demand was compared at the native PIR period grain. When manual demand was supplied, SAP cumulative MRP availability was used for a read-only simulation; this is not a formal ATP confirmation.",
+        stages=[
+            _stage("sales_demand", "销售需求", "Sales demand", len(sales_evidence_rows)),
+            _stage("pir", "计划独立需求 PIR", "Planned independent requirements", len(scoped_pir_items)),
+            _stage("planned_orders", "计划订单", "Planned orders", len(planned_evidence_rows)),
+            _stage("current_stock", "当前非限制库存", "Current unrestricted stock", len(stock_rows), state="not_requested" if not manual_requested else None),
+            _stage("mrp_simulation", "手工需求MRP模拟", "Manual-demand MRP simulation", len(normalized_supply_demand), state="not_requested" if not manual_requested else "confirmed" if evidence_complete else "unknown"),
+            _stage("atp", "正式ATP确认", "Formal ATP confirmation", 0, state="not_requested"),
+        ],
+        findings=[
+            *([{"code": "FORECAST_VARIANCE", "severity": "medium", "status": forecast_status}] if forecast_attention else []),
+            *([{"code": "MANUAL_DEMAND_NOT_COVERED", "severity": "high", "status": manual_status}] if manual_status == "not_covered" else []),
+            *([{"code": "MANUAL_DEMAND_HORIZON_IMPACT", "severity": "high", "status": horizon_status}] if horizon_status in {"creates_shortage", "worsens_existing_shortage"} else []),
+        ],
+        metrics=metrics,
+        gaps=gaps,
+        limitations=(
+            [
+                "mrp_simulation_not_formal_atp",
+                *(
+                    ["mrp_category_groups_blank_used_signed_open_quantity_for_display"]
+                    if category_sign_fallback_used
+                    else []
+                ),
+            ]
+            if manual_requested
+            else []
+        ),
+        records=period_results,
+        allow_empty_records=True,
+        preserve_business_status_on_gap=True,
+        source_complete_override=source_complete,
+        actions_zh=(
+            ["由计划员复核PIR和供需元素；正式承诺交期前仍需在SAP中执行ATP检查。"]
+            if business_status != "normal"
+            else ["如需向客户承诺交期，仍应在SAP中执行正式ATP检查。"]
+        ),
+        actions_en=(
+            ["Have the planner review PIR and MRP elements; run formal SAP ATP before promising a delivery date."]
+            if business_status != "normal"
+            else ["Run formal SAP ATP before promising a customer delivery date."]
+        ),
+    )
+    pir_scope = (
+        {field: selected_scope[index] for index, field in enumerate(scope_fields)}
+        if selected_scope is not None
+        else None
+    )
+    total_variance = sales_total - pir_total
+    total_variance_percent = (
+        total_variance / pir_total * Decimal(100) if pir_total != 0 else None
+    )
+    extras = {
+        "analysis_date": context.get("analysis_date"),
+        "pir_scope": pir_scope,
+        "sales_demand_quantity": format(sales_total, "f"),
+        "pir_quantity": format(pir_total, "f"),
+        "planned_order_quantity": format(planned_total, "f"),
+        "variance_quantity": format(total_variance, "f"),
+        "variance_percent": (
+            format(total_variance_percent.quantize(Decimal("0.01")), "f")
+            if total_variance_percent is not None
+            else None
+        ),
+        "forecast_status": forecast_status,
+        "manual_demand_quantity": context.get("manual_demand_quantity"),
+        "manual_demand_date": context.get("manual_demand_date"),
+        "manual_demand_unit": manual_unit or manual_unit_input or None,
+        "current_unrestricted_stock": format(current_stock, "f") if current_stock is not None else None,
+        "projected_available_before_manual": format(projected_before, "f") if projected_before is not None else None,
+        "projected_available_after_manual": format(projected_after, "f") if projected_after is not None else None,
+        "existing_demand_before_manual": format(existing_demand, "f") if existing_demand is not None else None,
+        "future_receipts_before_manual": format(future_receipts, "f") if future_receipts is not None else None,
+        "manual_demand_status": manual_status,
+        "horizon_impact_status": horizon_status,
+        "first_simulated_shortage_date": first_shortage_date,
+        "lowest_simulated_available_quantity": format(lowest_simulated, "f") if lowest_simulated is not None else None,
+        "atp_status": "not_assessed",
+        "period_results": period_results,
+        "supply_demand_items": normalized_supply_demand,
+        "source_complete": source_complete,
+        "evidence_complete": evidence_complete,
+        "evidence_gaps": gaps,
+        "business_status": business_status,
+    }
+    result["rule_id"] = "demand_forecast_planning_single_v2"
+    result["status"] = "complete" if evidence_complete else "inconclusive"
+    result["business_status"] = business_status
+    result["business_complete"] = evidence_complete
+    result["source_complete"] = source_complete
+    result["business_report"]["evidence_complete"] = evidence_complete
+    result["business_report"]["evidence_tables"] = [
+        {
+            "id": "forecast_periods",
+            "title": {"zh": "销售需求与PIR偏差", "en": "Sales demand and PIR variance"},
+            "columns": ["period", "period_type", "period_start", "period_end", "sales_demand_quantity", "pir_quantity", "planned_order_quantity", "variance_quantity", "variance_percent", "unit", "status"],
+            "rows": period_results,
+        },
+        {
+            "id": "manual_demand_summary",
+            "title": {"zh": "手工需求MRP模拟", "en": "Manual-demand MRP simulation"},
+            "columns": ["manual_demand_quantity", "manual_demand_date", "manual_demand_unit", "current_unrestricted_stock", "projected_available_before_manual", "projected_available_after_manual", "existing_demand_before_manual", "future_receipts_before_manual", "manual_demand_status", "horizon_impact_status", "first_simulated_shortage_date", "atp_status"],
+            "rows": [{key: extras[key] for key in ("manual_demand_quantity", "manual_demand_date", "manual_demand_unit", "current_unrestricted_stock", "projected_available_before_manual", "projected_available_after_manual", "existing_demand_before_manual", "future_receipts_before_manual", "manual_demand_status", "horizon_impact_status", "first_simulated_shortage_date", "atp_status")}],
+        },
+        {
+            "id": "mrp_supply_demand",
+            "title": {"zh": "SAP MRP供需明细", "en": "SAP MRP supply-demand details"},
+            "columns": ["date", "mrp_element", "mrp_element_item", "element_category", "element_name", "open_quantity", "available_quantity", "unit", "demand_category_group", "receipt_category_group", "flow_direction", "classification_source", "is_firm", "is_released"],
+            "rows": normalized_supply_demand,
+        },
+    ]
+    result["workflow_output"].update(extras)
+    result["workflow_output"]["business_report"] = result["business_report"]
+    return result
+
+
+def _evidence_for_material(inputs: JsonObject, material: str) -> JsonObject:
+    """Return a material view while preserving per-chunk completeness."""
+
+    scoped = deepcopy(inputs)
+    expected = material.strip().upper()
+
+    def row_material(row: JsonObject) -> str:
+        return _text(row, "Material", "Product").upper()
+
+    def visit(value: Any) -> Any:
+        if isinstance(value, list):
+            return [visit(child) for child in value]
+        if not isinstance(value, dict):
+            return value
+        normalized: JsonObject = {}
+        for key, child in value.items():
+            if key == "results" and isinstance(child, list):
+                normalized[key] = [
+                    visit(row)
+                    for row in child
+                    if not isinstance(row, dict)
+                    or not row_material(row)
+                    or row_material(row) == expected
+                ]
+            else:
+                normalized[key] = visit(child)
+
+        chunks = normalized.get("chunk_results")
+        if isinstance(chunks, list) and any(
+            isinstance(chunk, dict) and chunk.get("filter_values") for chunk in chunks
+        ):
+            relevant = [
+                chunk
+                for chunk in chunks
+                if isinstance(chunk, dict)
+                and expected
+                in {
+                    str(item or "").strip().upper()
+                    for item in chunk.get("filter_values") or []
+                }
+            ]
+            normalized["chunk_results"] = relevant
+            normalized["failed_filter_values"] = [
+                expected
+                for chunk in relevant
+                if chunk.get("source_complete") is not True
+                or chunk.get("source_truncated") is True
+                or chunk.get("error_code")
+            ]
+            normalized["source_complete"] = bool(relevant) and all(
+                chunk.get("source_complete") is True
+                and chunk.get("source_truncated") is not True
+                and not chunk.get("error_code")
+                for chunk in relevant
+            )
+            normalized["source_truncated"] = any(
+                chunk.get("source_truncated") is True for chunk in relevant
+            )
+        elif isinstance(normalized.get("source_complete"), bool):
+            child_flags: list[bool] = []
+
+            def collect(child: Any) -> None:
+                if isinstance(child, dict):
+                    if child is not normalized and isinstance(child.get("source_complete"), bool):
+                        child_flags.append(bool(child["source_complete"]))
+                    for nested in child.values():
+                        collect(nested)
+                elif isinstance(child, list):
+                    for nested in child:
+                        collect(nested)
+
+            for child in normalized.values():
+                collect(child)
+            if child_flags:
+                normalized["source_complete"] = all(child_flags)
+        return normalized
+
+    evidence = scoped.get("evidence")
+    if isinstance(evidence, dict):
+        scoped["evidence"] = visit(evidence)
+    return scoped
+
+
+def _mrp_material_view(
+    inputs: JsonObject,
+    *,
+    material: str,
+    plant: str,
+    mrp_area: str,
+    date_from: date | None,
+    date_to: date | None,
+) -> JsonObject:
+    rows = [
+        row
+        for row in _rows(inputs, "supply_demand", "supply_demand_items")
+        if _text(row, "Material").upper() == material.upper()
+        and _text(row, "MRPPlant", "Plant").upper() == plant.upper()
+        and _text(row, "MRPArea").upper() == mrp_area.upper()
+    ]
+    master = [
+        row
+        for row in _rows(inputs, "mrp_material", "mrp_materials")
+        if _text(row, "Material").upper() == material.upper()
+        and _text(row, "MRPPlant", "Plant").upper() == plant.upper()
+        and _text(row, "MRPArea").upper() == mrp_area.upper()
+    ]
+    gaps: list[str] = []
+    if not _topic_complete(inputs, "mrp_material"):
+        gaps.append("mrp_material_evidence")
+    if not _topic_complete(inputs, "supply_demand"):
+        gaps.append("supply_demand_evidence")
+    if len(master) != 1:
+        gaps.append("mrp_material_scope_evidence")
+    units = {
+        _unit_key(row.get("MaterialBaseUnit") or row.get("BaseUnit"))
+        for row in [*master, *rows]
+        if _unit_key(row.get("MaterialBaseUnit") or row.get("BaseUnit"))
+    }
+    if len(units) != 1:
+        gaps.append("mrp_unit_not_comparable")
+    unit = next(iter(units), None)
+
+    details: list[JsonObject] = []
+    balances: list[tuple[date, Decimal]] = []
+    classification_complete = True
+    exception_numbers: set[str] = set()
+    for row in rows:
+        row_date = _date(row.get("MRPElementAvailyOrRqmtDate"))
+        if date_from and row_date and row_date < date_from:
+            continue
+        if date_to and row_date and row_date > date_to:
+            continue
+        open_quantity = _strict_decimal(row.get("MRPElementOpenQuantity"))
+        available = _strict_decimal(row.get("MRPAvailableQuantity"))
+        demand_group = _text(row, "DemandCategoryGroup")
+        receipt_group = _text(row, "ReceiptCategoryGroup")
+        category = _text(row, "MRPElementCategory")
+        if category == "WB":
+            direction, group, classification_source = (
+                "stock",
+                "current_stock",
+                "mrp_element_category",
+            )
+        elif demand_group and not receipt_group:
+            direction, group, classification_source = (
+                "demand",
+                demand_group,
+                "demand_category_group",
+            )
+        elif receipt_group and not demand_group:
+            direction, group, classification_source = (
+                "receipt",
+                receipt_group,
+                "receipt_category_group",
+            )
+        else:
+            direction = (
+                "demand"
+                if open_quantity is not None and open_quantity < 0
+                else "receipt"
+                if open_quantity is not None and open_quantity > 0
+                else "unknown"
+            )
+            group = "unclassified_element"
+            classification_source = "signed_open_quantity" if direction != "unknown" else "none"
+            classification_complete = False
+        for field in ("ExceptionMessageNumber", "ExceptionMessageNumber2"):
+            number = _text(row, field)
+            if number:
+                exception_numbers.add(number)
+        details.append(
+            {
+                "material": material,
+                "date": row_date.isoformat() if row_date else None,
+                "mrp_element": _text(row, "MRPElement") or None,
+                "mrp_element_item": _text(row, "MRPElementItem") or None,
+                "element_category": category or None,
+                "element_name": _text(row, "MRPElementCategoryName") or None,
+                "open_quantity": format(open_quantity, "f") if open_quantity is not None else None,
+                "available_quantity": format(available, "f") if available is not None else None,
+                "unit": _unit_key(row.get("MaterialBaseUnit")) or unit,
+                "flow_direction": direction,
+                "business_group": group,
+                "classification_source": classification_source,
+                "is_firm": _truthy(row.get("MRPElementQuantityIsFirm")),
+                "is_released": _truthy(row.get("MRPElementIsReleased")),
+            }
+        )
+        if row_date is None or available is None:
+            gaps.append("mrp_balance_evidence")
+        else:
+            balances.append((row_date, available))
+    balances.sort(key=lambda item: item[0])
+    if not details:
+        gaps.append("mrp_balance_unavailable")
+
+    start_balance = balances[0][1] if balances else None
+    end_balance = balances[-1][1] if balances else None
+    lowest = min((value for _, value in balances), default=None)
+    first_shortage = next((when.isoformat() for when, value in balances if value < 0), None)
+    coverage_status = "unknown" if lowest is None else "shortage" if lowest < 0 else "covered"
+    return {
+        "unit": unit,
+        "mrp_available_at_start": format(start_balance, "f") if start_balance is not None else None,
+        "mrp_available_at_end": format(end_balance, "f") if end_balance is not None else None,
+        "lowest_mrp_available_quantity": format(lowest, "f") if lowest is not None else None,
+        "first_shortage_date": first_shortage,
+        "mrp_coverage_status": coverage_status,
+        "classification_complete": classification_complete,
+        "exception_numbers": sorted(exception_numbers),
+        "supply_demand_items": details,
+        "gaps": sorted(set(gaps)),
+    }
+
+
+def _demand_forecast(inputs: JsonObject) -> JsonObject:
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    context = inputs.get("analysis_context") if isinstance(inputs.get("analysis_context"), dict) else {}
+    materials = [
+        str(item).strip().upper()
+        for item in context.get("materials") or run_input.get("materials") or []
+    ]
+    plant = _text(run_input, "plant").upper()
+    mrp_area = _text(context, "mrp_area").upper() or plant
+    date_from = _date(context.get("date_from") or run_input.get("date_from"))
+    date_to = _date(context.get("date_to") or run_input.get("date_to"))
+    material_results: list[JsonObject] = []
+
+    for material in materials:
+        scoped = _evidence_for_material(inputs, material)
+        scoped["run_input"] = {**run_input, "material": material}
+        scoped["analysis_context"] = {**context, "manual_demand_requested": False}
+        forecast = _legacy_demand_forecast_single(scoped)["workflow_output"]
+        mrp = _mrp_material_view(
+            scoped,
+            material=material,
+            plant=plant,
+            mrp_area=mrp_area,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        forecast_status = {
+            "over_forecast": "pir_under_coverage",
+            "under_forecast": "pir_over_coverage",
+        }.get(str(forecast.get("forecast_status") or "unknown"), forecast.get("forecast_status"))
+        pir_action = (
+            "increase_or_bring_forward_pir"
+            if forecast_status in {"pir_under_coverage", "pir_missing"}
+            else "reduce_or_reschedule_pir"
+            if forecast_status == "pir_over_coverage"
+            else "review_pir_scope"
+            if forecast_status in {"mixed", "unknown"}
+            else "no_pir_adjustment"
+        )
+        if pir_action != "no_pir_adjustment":
+            planned_action = "rerun_mrp_after_pir_review"
+        elif mrp["mrp_coverage_status"] == "shortage":
+            planned_action = "increase_or_bring_forward_planned_receipt"
+        elif "10" in mrp["exception_numbers"]:
+            planned_action = "bring_forward_planned_receipt"
+        elif any(code in mrp["exception_numbers"] for code in ("15", "20", "26")):
+            planned_action = "reduce_postpone_or_cancel_planned_receipt"
+        else:
+            planned_action = "no_planned_order_adjustment"
+        gaps = sorted(set([*(forecast.get("evidence_gaps") or []), *mrp["gaps"]]))
+        source_complete = bool(forecast.get("source_complete")) and not any(
+            gap in {"mrp_material_evidence", "supply_demand_evidence"} for gap in gaps
+        )
+        evidence_complete = source_complete and not gaps
+        attention = forecast_status in {
+            "pir_under_coverage",
+            "pir_over_coverage",
+            "pir_missing",
+            "mixed",
+        } or mrp["mrp_coverage_status"] == "shortage" or planned_action not in {
+            "no_planned_order_adjustment",
+            "rerun_mrp_after_pir_review",
+        }
+        business_status = (
+            "inconclusive"
+            if not evidence_complete
+            else "attention"
+            if attention
+            else "normal"
+        )
+        withdrawal_total = sum(
+            (
+                Decimal(str(row.get("pir_withdrawal_quantity") or 0))
+                for row in forecast.get("period_results") or []
+            ),
+            Decimal(0),
+        )
+        material_results.append(
+            {
+                "material": material,
+                "plant": plant,
+                "mrp_area": mrp_area,
+                "unit": mrp.get("unit"),
+                "business_status": business_status,
+                "source_complete": source_complete,
+                "evidence_complete": evidence_complete,
+                "evidence_gaps": gaps,
+                "pir_scope": forecast.get("pir_scope"),
+                "sales_demand_quantity": forecast.get("sales_demand_quantity"),
+                "pir_quantity": forecast.get("pir_quantity"),
+                "pir_withdrawal_quantity": format(withdrawal_total, "f"),
+                "planned_order_quantity": forecast.get("planned_order_quantity"),
+                "variance_quantity": forecast.get("variance_quantity"),
+                "variance_percent": forecast.get("variance_percent"),
+                "forecast_status": forecast_status,
+                "mrp_available_at_start": mrp["mrp_available_at_start"],
+                "mrp_available_at_end": mrp["mrp_available_at_end"],
+                "lowest_mrp_available_quantity": mrp["lowest_mrp_available_quantity"],
+                "first_shortage_date": mrp["first_shortage_date"],
+                "mrp_coverage_status": mrp["mrp_coverage_status"],
+                "classification_complete": mrp["classification_complete"],
+                "period_results": forecast.get("period_results") or [],
+                "supply_demand_items": mrp["supply_demand_items"],
+                "recommendations": [
+                    {"priority": 1, "subject": "pir", "action": pir_action},
+                    {"priority": 2, "subject": "planned_order", "action": planned_action},
+                ],
+                "business_report": {
+                    "headline": {
+                        "zh": f"物料 {material} 的计划覆盖结果",
+                        "en": f"Planning coverage result for material {material}",
+                    },
+                    "overview": {
+                        "zh": "先比较销售需求与PIR，再使用SAP累计MRP可用量判断净供需。",
+                        "en": "Sales demand is compared with PIR before SAP cumulative MRP availability is used for net coverage.",
+                    },
+                    "stages": [
+                        _stage("pir", "PIR覆盖", "PIR coverage", len(forecast.get("period_results") or []), state=str(forecast_status)),
+                        _stage("planned_order", "计划订单", "Planned orders", 1, state="reviewed"),
+                        _stage("mrp", "MRP净供需", "MRP net supply and demand", len(mrp["supply_demand_items"]), state=str(mrp["mrp_coverage_status"])),
+                    ],
+                    "next_actions": {
+                        "zh": ["先复核PIR，再根据复核后的MRP结果处理计划订单。"],
+                        "en": ["Review PIR first, then act on planned orders using the reviewed MRP result."],
+                    },
+                },
+            }
+        )
+
+    counts = {
+        status: sum(item["business_status"] == status for item in material_results)
+        for status in ("normal", "attention", "inconclusive")
+    }
+    source_complete = bool(material_results) and all(
+        item["source_complete"] for item in material_results
+    )
+    evidence_complete = bool(material_results) and all(
+        item["evidence_complete"] for item in material_results
+    )
+    business_status = (
+        "inconclusive"
+        if counts["inconclusive"]
+        else "attention"
+        if counts["attention"]
+        else "normal"
+    )
+    summary_rows = [
+        {
+            "material": item["material"],
+            "unit": item["unit"],
+            "sales_demand_quantity": item["sales_demand_quantity"],
+            "pir_quantity": item["pir_quantity"],
+            "planned_order_quantity": item["planned_order_quantity"],
+            "forecast_status": item["forecast_status"],
+            "mrp_coverage_status": item["mrp_coverage_status"],
+            "business_status": item["business_status"],
+            "source_complete": item["source_complete"],
+            "evidence_complete": item["evidence_complete"],
+        }
+        for item in material_results
+    ]
+    result = _result(
+        inputs,
+        business_status=business_status,
+        headline_zh=f"已完成 {len(material_results)} 个物料的计划覆盖检查",
+        headline_en=f"Planning coverage was checked for {len(material_results)} material(s)",
+        overview_zh="每个物料独立比较销售需求与PIR，并使用SAP累计MRP可用量判断净供需。建议始终先复核PIR，再处理计划订单。",
+        overview_en="Each material independently compares sales demand with PIR and uses SAP cumulative MRP availability for net coverage. Recommendations always review PIR before planned orders.",
+        stages=[
+            _stage("materials", "物料范围", "Material scope", len(material_results)),
+            _stage("pir", "PIR复核", "PIR review", len(material_results)),
+            _stage("mrp", "MRP净供需", "MRP net supply and demand", len(material_results)),
+        ],
+        findings=[
+            {"code": "MATERIAL_ATTENTION", "severity": "medium", "count": counts["attention"]},
+            {"code": "MATERIAL_INCONCLUSIVE", "severity": "high", "count": counts["inconclusive"]},
+        ],
+        metrics=[
+            {"id": "requested_material_count", "value": len(materials)},
+            {"id": "processed_material_count", "value": len(material_results)},
+            {"id": "normal_material_count", "value": counts["normal"]},
+            {"id": "attention_material_count", "value": counts["attention"]},
+            {"id": "inconclusive_material_count", "value": counts["inconclusive"]},
+        ],
+        gaps=sorted({gap for item in material_results for gap in item["evidence_gaps"]}),
+        records=summary_rows,
+        allow_empty_records=True,
+        source_complete_override=source_complete,
+        preserve_business_status_on_gap=True,
+        actions_zh=["先处理各物料的PIR建议，再根据复核后的MRP结果处理计划订单。"],
+        actions_en=["Address each material's PIR recommendation first, then act on planned orders using the reviewed MRP result."],
+    )
+    extras = {
+        "requested_material_count": len(materials),
+        "processed_material_count": len(material_results),
+        "normal_material_count": counts["normal"],
+        "attention_material_count": counts["attention"],
+        "inconclusive_material_count": counts["inconclusive"],
+        "material_results": material_results,
+        "source_complete": source_complete,
+        "evidence_complete": evidence_complete,
+        "evidence_gaps": sorted(
+            {gap for item in material_results for gap in item["evidence_gaps"]}
+        ),
+        "business_status": business_status,
+    }
+    result["rule_id"] = "planned_order_pir_coverage_deterministic_v3"
+    result["status"] = "complete" if evidence_complete else "inconclusive"
+    result["business_complete"] = evidence_complete
+    result["business_report"]["evidence_complete"] = evidence_complete
+    result["business_report"]["evidence_tables"] = [
+        {
+            "id": "material_coverage_summary",
+            "title": {"zh": "多物料覆盖结果", "en": "Multi-material coverage results"},
+            "columns": list(summary_rows[0]) if summary_rows else ["material"],
+            "rows": summary_rows,
+        }
+    ]
+    result["workflow_output"].update(extras)
+    result["workflow_output"]["business_report"] = result["business_report"]
+    return result
+
+
+def _new_sales_demand_coverage(inputs: JsonObject) -> JsonObject:
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    context = inputs.get("analysis_context") if isinstance(inputs.get("analysis_context"), dict) else {}
+    plant = _text(context, "plant").upper() or _text(run_input, "plant").upper()
+    mrp_area = _text(context, "mrp_area").upper() or plant
+    material_results: list[JsonObject] = []
+    for demand in context.get("demand_items") or []:
+        if not isinstance(demand, dict):
+            continue
+        material = _text(demand, "material").upper()
+        scoped = _evidence_for_material(inputs, material)
+        evidence = scoped.get("evidence") if isinstance(scoped.get("evidence"), dict) else {}
+        for topic in ("pir", "sales_demand", "planned_orders"):
+            evidence.setdefault(
+                topic,
+                {"ok": True, "source_complete": True, "data": {"results": []}},
+            )
+        scoped["evidence"] = evidence
+        scoped["run_input"] = {
+            "material": material,
+            "plant": plant,
+            "date_from": context.get("analysis_date"),
+            "date_to": demand.get("horizon_end_date"),
+            "manual_demand_quantity": demand.get("quantity"),
+            "manual_demand_date": demand.get("demand_date"),
+            "manual_demand_unit": demand.get("unit"),
+        }
+        scoped["analysis_context"] = {
+            "analysis_date": context.get("analysis_date"),
+            "date_from": context.get("analysis_date"),
+            "date_to": demand.get("horizon_end_date"),
+            "pir_version": "00",
+            "mrp_area": mrp_area,
+            "deviation_threshold_percent": "20",
+            "manual_demand_requested": True,
+            "manual_demand_quantity": demand.get("quantity"),
+            "manual_demand_date": demand.get("demand_date"),
+            "manual_demand_unit": demand.get("unit"),
+        }
+        single = _legacy_demand_forecast_single(scoped)["workflow_output"]
+        master_complete = _topic_complete(scoped, "mrp_material")
+        gaps = sorted(
+            set(
+                [
+                    *(single.get("evidence_gaps") or []),
+                    *([] if master_complete else ["mrp_material_evidence"]),
+                ]
             )
         )
-    return _result(
-        inputs,
-        business_status="capability_blocked",
-        headline_zh="已读取销售需求和计划订单，但不能完成 PIR 计划比较",
-        headline_en="Sales demand and planned orders were read, but PIR comparison cannot be completed",
-        overview_zh="缺少同物料、工厂和期间的 PIR 只读证据；本次不训练模型也不写回 PIR。",
-        overview_en="Read-only PIR evidence for the same material, plant, and period is missing; no model is trained and no PIR is written.",
-        stages=[_stage("demand", "销售需求", "Sales demand", len(demand)), _stage("planned", "计划订单", "Planned orders", len(planned)), _stage("pir", "独立需求 PIR", "Planned independent requirements", 0, state="unknown")],
-        metrics=[
-            {"id": "demand_rows", "value": len(demand) if demand_period_attributable else None},
-            {"id": "planned_order_rows", "value": len(planned)},
-        ],
-        gaps=gaps,
-        limitations=["sales_demand_period_evidence"],
-        records=list(grouped.values()),
-        actions_zh=["增加经过审批的 PBIM/PBED 只读 Skill 后再运行。"],
-        actions_en=["Add an approved PBIM/PBED read-only Skill and rerun."],
+        source_complete = bool(single.get("source_complete")) and master_complete
+        evidence_complete = source_complete and not gaps
+        demand_status = single.get("manual_demand_status") or "unknown"
+        horizon_status = single.get("horizon_impact_status") or "unknown"
+        attention = demand_status == "not_covered" or horizon_status in {
+            "creates_shortage",
+            "worsens_existing_shortage",
+        }
+        business_status = (
+            "inconclusive"
+            if not evidence_complete
+            else "attention"
+            if attention
+            else "normal"
+        )
+        material_results.append(
+            {
+                "material": material,
+                "plant": plant,
+                "mrp_area": mrp_area,
+                "unit": single.get("manual_demand_unit"),
+                "new_sales_demand_quantity": demand.get("quantity"),
+                "new_sales_demand_date": demand.get("demand_date"),
+                "current_unrestricted_stock": single.get("current_unrestricted_stock"),
+                "projected_available_before_demand": single.get("projected_available_before_manual"),
+                "projected_available_after_demand": single.get("projected_available_after_manual"),
+                "existing_demand_before_request": single.get("existing_demand_before_manual"),
+                "future_receipts_before_request": single.get("future_receipts_before_manual"),
+                "demand_coverage_status": demand_status,
+                "horizon_impact_status": horizon_status,
+                "first_simulated_shortage_date": single.get("first_simulated_shortage_date"),
+                "lowest_simulated_available_quantity": single.get("lowest_simulated_available_quantity"),
+                "atp_status": "not_assessed",
+                "supply_demand_items": single.get("supply_demand_items") or [],
+                "source_complete": source_complete,
+                "evidence_complete": evidence_complete,
+                "evidence_gaps": gaps,
+                "business_status": business_status,
+                "business_report": {
+                    "headline": {
+                        "zh": f"物料 {material} 的新增销售需求覆盖结果",
+                        "en": f"New sales demand coverage for material {material}",
+                    },
+                    "overview": {
+                        "zh": "使用SAP累计MRP可用量模拟新增需求；当前库存未重复计入，结果不是正式ATP确认。",
+                        "en": "The simulation uses SAP cumulative MRP availability without re-adding current stock and is not formal ATP confirmation.",
+                    },
+                    "stages": [
+                        _stage("stock", "当前库存", "Current stock", 1, state="reviewed"),
+                        _stage("demand", "新增需求覆盖", "New demand coverage", 1, state=str(demand_status)),
+                        _stage("horizon", "后续短缺影响", "Subsequent shortage impact", 1, state=str(horizon_status)),
+                        _stage("atp", "正式ATP", "Formal ATP", 0, state="not_assessed"),
+                    ],
+                    "next_actions": {
+                        "zh": ["如需向客户承诺交期，请在SAP中执行正式ATP检查。"],
+                        "en": ["Run formal SAP ATP before committing a delivery date to the customer."],
+                    },
+                },
+            }
+        )
+
+    counts = {
+        status: sum(item["business_status"] == status for item in material_results)
+        for status in ("normal", "attention", "inconclusive")
+    }
+    source_complete = bool(material_results) and all(
+        item["source_complete"] for item in material_results
     )
+    evidence_complete = bool(material_results) and all(
+        item["evidence_complete"] for item in material_results
+    )
+    business_status = (
+        "inconclusive"
+        if counts["inconclusive"]
+        else "attention"
+        if counts["attention"]
+        else "normal"
+    )
+    summary_rows = [
+        {
+            "material": item["material"],
+            "new_sales_demand_quantity": item["new_sales_demand_quantity"],
+            "new_sales_demand_date": item["new_sales_demand_date"],
+            "unit": item["unit"],
+            "projected_available_before_demand": item["projected_available_before_demand"],
+            "projected_available_after_demand": item["projected_available_after_demand"],
+            "demand_coverage_status": item["demand_coverage_status"],
+            "horizon_impact_status": item["horizon_impact_status"],
+            "business_status": item["business_status"],
+        }
+        for item in material_results
+    ]
+    result = _result(
+        inputs,
+        business_status=business_status,
+        headline_zh=f"已模拟 {len(material_results)} 个物料的新增销售需求",
+        headline_en=f"New sales demand was simulated for {len(material_results)} material(s)",
+        overview_zh="模拟直接使用SAP累计MRP可用量，不重复累加库存或收货；该结果不是正式ATP确认。",
+        overview_en="The simulation uses SAP cumulative MRP availability without re-adding stock or receipts; it is not a formal ATP confirmation.",
+        stages=[
+            _stage("stock", "当前库存", "Current stock", len(material_results)),
+            _stage("mrp", "MRP供需模拟", "MRP simulation", len(material_results)),
+            _stage("atp", "正式ATP", "Formal ATP", 0, state="not_assessed"),
+        ],
+        findings=[
+            {"code": "DEMAND_NOT_COVERED", "severity": "high", "count": counts["attention"]},
+            {"code": "MATERIAL_INCONCLUSIVE", "severity": "high", "count": counts["inconclusive"]},
+        ],
+        metrics=[
+            {"id": "requested_material_count", "value": len(context.get("materials") or [])},
+            {"id": "processed_material_count", "value": len(material_results)},
+            {"id": "normal_material_count", "value": counts["normal"]},
+            {"id": "attention_material_count", "value": counts["attention"]},
+            {"id": "inconclusive_material_count", "value": counts["inconclusive"]},
+        ],
+        gaps=sorted({gap for item in material_results for gap in item["evidence_gaps"]}),
+        limitations=["mrp_simulation_not_formal_atp"],
+        records=summary_rows,
+        allow_empty_records=True,
+        source_complete_override=source_complete,
+        preserve_business_status_on_gap=True,
+        actions_zh=["如需向客户承诺交期，请在SAP中执行正式ATP检查。"],
+        actions_en=["Run formal SAP ATP before committing a delivery date to the customer."],
+    )
+    extras = {
+        "requested_material_count": len(context.get("materials") or []),
+        "processed_material_count": len(material_results),
+        "normal_material_count": counts["normal"],
+        "attention_material_count": counts["attention"],
+        "inconclusive_material_count": counts["inconclusive"],
+        "material_results": material_results,
+        "source_complete": source_complete,
+        "evidence_complete": evidence_complete,
+        "evidence_gaps": sorted(
+            {gap for item in material_results for gap in item["evidence_gaps"]}
+        ),
+        "business_status": business_status,
+    }
+    result["rule_id"] = "new_sales_demand_coverage_deterministic_v1"
+    result["status"] = "complete" if evidence_complete else "inconclusive"
+    result["business_complete"] = evidence_complete
+    result["business_report"]["evidence_complete"] = evidence_complete
+    result["business_report"]["evidence_tables"] = [
+        {
+            "id": "new_sales_demand_summary",
+            "title": {"zh": "新增销售需求覆盖结果", "en": "New sales demand coverage results"},
+            "columns": list(summary_rows[0]) if summary_rows else ["material"],
+            "rows": summary_rows,
+        }
+    ]
+    result["workflow_output"].update(extras)
+    result["workflow_output"]["business_report"] = result["business_report"]
+    return result
 
 
 def _mrp_exception(inputs: JsonObject) -> JsonObject:
@@ -6142,6 +7399,7 @@ _EVALUATORS: dict[str, Callable[[JsonObject], JsonObject]] = {
     "returns-credit-anomaly": _returns_credit,
     "shortage-allocation-advisor": _shortage_allocation,
     "demand-forecast-planning": _demand_forecast,
+    "new-sales-demand-coverage": _new_sales_demand_coverage,
     "mrp-exception-analysis": _mrp_exception,
     "production-order-monitoring": _production_monitor,
     "production-scheduling-capacity": _production_schedule,

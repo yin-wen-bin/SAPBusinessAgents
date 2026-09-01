@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from sap_business_agents_platform.agent_rules import evaluate_business_agent
-from sap_business_agents_platform.rules import resolve_mrp_analysis_context
+from sap_business_agents_platform.rules import (
+    resolve_demand_forecast_context,
+    resolve_mrp_analysis_context,
+    resolve_new_sales_demand_context,
+)
 
 
 MRP_INPUT = {
@@ -417,41 +421,389 @@ def test_capacity_schedule_counts_only_operations_inside_requested_period() -> N
     assert result["business_status"] == "capability_blocked"
 
 
-def test_demand_forecast_suppresses_unattributable_period_totals() -> None:
+def _demand_forecast_evidence(*, include_manual: bool = False) -> dict[str, object]:
+    evidence: dict[str, object] = {
+        "pir": {
+            "ok": True,
+            "source_complete": True,
+            "data": {
+                "step_results": {
+                    "pir_headers": {
+                        "source_complete": True,
+                        "results": [
+                            {
+                                "Product": "FG-TEST",
+                                "Plant": "1710",
+                                "MRPArea": "1710",
+                                "PlndIndepRqmtType": "VSF",
+                                "PlndIndepRqmtVersion": "00",
+                                "RequirementPlan": "",
+                                "RequirementSegment": "",
+                                "PlndIndepRqmtIsActive": "X",
+                            }
+                        ],
+                    },
+                    "pir_items": {
+                        "source_complete": True,
+                        "results": [
+                            {
+                                "Product": "FG-TEST",
+                                "Plant": "1710",
+                                "MRPArea": "1710",
+                                "PlndIndepRqmtType": "VSF",
+                                "PlndIndepRqmtVersion": "00",
+                                "RequirementPlan": "",
+                                "RequirementSegment": "",
+                                "PlndIndepRqmtPeriod": "202609",
+                                "PeriodType": "M",
+                                "PlndIndepRqmtPeriodStartDate": "2026-09-01",
+                                "PlannedQuantity": "100",
+                                "WithdrawalQuantity": "0",
+                                "UnitOfMeasure": "PC",
+                            }
+                        ],
+                    },
+                }
+            },
+        },
+        "sales_demand": {
+            "ok": True,
+            "source_complete": True,
+            "data": {
+                "step_results": {
+                    "sales_order_items": {
+                        "source_complete": True,
+                        "results": [
+                            {
+                                "SalesOrder": "5814",
+                                "SalesOrderItem": "10",
+                                "Material": "FG-TEST",
+                                "ProductionPlant": "1710",
+                                "RequestedQuantityUnit": "PC",
+                                "SalesDocumentRjcnReason": "",
+                            }
+                        ],
+                    },
+                    "sales_schedule_lines": {
+                        "source_complete": True,
+                        "results": [
+                            {
+                                "SalesOrder": "5814",
+                                "SalesOrderItem": "10",
+                                "ScheduleLine": "1",
+                                "RequestedDeliveryDate": "2026-09-10",
+                                "ScheduleLineOrderQuantity": "100",
+                                "OrderQuantityUnit": "PC",
+                            }
+                        ],
+                    },
+                }
+            },
+        },
+        "planned_orders": {
+            "ok": True,
+            "source_complete": True,
+            "data": {
+                "results": [
+                    {
+                        "PlannedOrder": "1001",
+                        "Material": "FG-TEST",
+                        "ProductionPlant": "1710",
+                        "TotalQuantity": "25",
+                        "BaseUnit": "PC",
+                        "PlndOrderPlannedStartDate": "2026-09-12",
+                        "PlannedOrderIsFirm": False,
+                    }
+                ]
+            },
+        },
+        "mrp_material": {
+            "ok": True,
+            "source_complete": True,
+            "data": {
+                "results": [
+                    {
+                        "Material": "FG-TEST",
+                        "MRPPlant": "1710",
+                        "MRPArea": "1710",
+                        "MaterialBaseUnit": "PC",
+                    }
+                ]
+            },
+        },
+        "supply_demand": {
+            "ok": True,
+            "source_complete": True,
+            "data": {
+                "results": [
+                    {
+                        "Material": "FG-TEST",
+                        "MRPPlant": "1710",
+                        "MRPArea": "1710",
+                        "MRPPlanningSegment": "",
+                        "MRPPlanningSegmentType": "",
+                        "MRPElement": "REQ-1",
+                        "MRPElementItem": "10",
+                        "MRPElementScheduleLine": "1",
+                        "MRPElementAvailyOrRqmtDate": "2026-09-10",
+                        "MRPElementOpenQuantity": "-50000",
+                        "MRPAvailableQuantity": "150000",
+                        "DemandCategoryGroup": "01",
+                        "ReceiptCategoryGroup": "",
+                        "MaterialBaseUnit": "PC",
+                    },
+                    {
+                        "Material": "FG-TEST",
+                        "MRPPlant": "1710",
+                        "MRPArea": "1710",
+                        "MRPPlanningSegment": "",
+                        "MRPPlanningSegmentType": "",
+                        "MRPElement": "REC-1",
+                        "MRPElementItem": "10",
+                        "MRPElementScheduleLine": "1",
+                        "MRPElementAvailyOrRqmtDate": "2026-09-15",
+                        "MRPElementOpenQuantity": "30000",
+                        "MRPAvailableQuantity": "120000",
+                        "DemandCategoryGroup": "",
+                        "ReceiptCategoryGroup": "01",
+                        "MaterialBaseUnit": "PC",
+                    },
+                    {
+                        "Material": "FG-TEST",
+                        "MRPPlant": "1710",
+                        "MRPArea": "1710",
+                        "MRPPlanningSegment": "",
+                        "MRPPlanningSegmentType": "",
+                        "MRPElement": "REQ-2",
+                        "MRPElementItem": "10",
+                        "MRPElementScheduleLine": "1",
+                        "MRPElementAvailyOrRqmtDate": "2026-09-20",
+                        "MRPElementOpenQuantity": "-30000",
+                        "MRPAvailableQuantity": "90000",
+                        "DemandCategoryGroup": "01",
+                        "ReceiptCategoryGroup": "",
+                        "MaterialBaseUnit": "PC",
+                    },
+                ]
+            },
+        },
+    }
+    if include_manual:
+        evidence["current_stock"] = {
+            "ok": True,
+            "source_complete": True,
+            "data": {
+                "results": [
+                    {
+                        "Material": "FG-TEST",
+                        "Plant": "1710",
+                        "InventoryStockType": "01",
+                        "InventorySpecialStockType": "",
+                        "MatlWrhsStkQtyInMatlBaseUnit": "200000",
+                        "MaterialBaseUnit": "PC",
+                    }
+                ]
+            },
+        }
+    return evidence
+
+
+def test_demand_forecast_context_validates_multi_material_scope() -> None:
+    context = resolve_demand_forecast_context(
+        {
+            "run_input": {
+                "plant": "1710",
+                "materials": [" fg-test ", "sg21"],
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-30",
+            }
+        }
+    )
+    assert context["materials"] == ["FG-TEST", "SG21"]
+    assert context["mrp_area"] == "1710"
+    assert context["deviation_threshold_percent"] == "20"
+
+    with pytest.raises(ValueError, match="duplicates"):
+        resolve_demand_forecast_context(
+            {
+                "run_input": {
+                    "plant": "1710",
+                    "materials": ["tg10", " TG10 "],
+                    "date_from": "2026-09-01",
+                    "date_to": "2026-09-30",
+                }
+            }
+        )
+
+
+def test_demand_forecast_batch_uses_native_pir_period_and_prioritizes_pir() -> None:
     result = evaluate_business_agent(
         {
             "agent_id": "demand-forecast-planning",
             "run_input": {
-                "material": "MZ-TG-Y120",
+                "materials": ["FG-TEST"],
                 "plant": "1710",
-                "date_from": "2017-01-01",
-                "date_to": "2017-12-31",
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-30",
             },
-            "evidence": {
-                "sales_demand": {
-                    "ok": True,
-                    "source_complete": True,
-                    "data": {
-                        "results": [
-                            {
-                                "Material": "MZ-TG-Y120",
-                                "ProductionPlant": "1710",
-                                "RequestedQuantity": "10",
-                                "RequestedQuantityUnit": "PC",
-                            }
-                        ]
-                    },
-                },
-                "planned_orders": {
-                    "ok": True,
-                    "source_complete": True,
-                    "data": {"results": []},
-                },
+            "analysis_context": {
+                "analysis_date": "2026-09-01",
+                "materials": ["FG-TEST"],
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-30",
+                "pir_version": "00",
+                "mrp_area": "1710",
+                "deviation_threshold_percent": "20",
             },
+            "evidence": _demand_forecast_evidence(),
         }
     )
 
-    metrics = {item["id"]: item["value"] for item in result["metrics"]}
-    assert metrics == {"demand_rows": None, "planned_order_rows": 0}
-    assert result["business_report"]["records"][0]["business_status"] == "capability_blocked"
-    assert "sales_demand_period_evidence" in result["business_report"]["limitations"]
+    output = result["workflow_output"]
+    assert output["requested_material_count"] == 1
+    assert output["processed_material_count"] == 1
+    material = output["material_results"][0]
+    assert material["forecast_status"] == "within_tolerance"
+    assert material["sales_demand_quantity"] == "100"
+    assert material["pir_quantity"] == "100"
+    assert material["planned_order_quantity"] == "25"
+    assert material["period_results"][0]["material"] == "FG-TEST"
+    assert [item["subject"] for item in material["recommendations"]] == ["pir", "planned_order"]
+    assert output["source_complete"] is True
+    assert output["evidence_complete"] is True
+    assert output["business_status"] == "normal"
+
+
+def test_demand_forecast_reports_no_activity_when_sales_and_pir_are_both_zero() -> None:
+    evidence = json.loads(json.dumps(_demand_forecast_evidence()))
+    evidence["pir"]["data"]["step_results"]["pir_headers"]["results"] = []
+    evidence["pir"]["data"]["step_results"]["pir_items"]["results"] = []
+    evidence["sales_demand"]["data"]["step_results"]["sales_order_items"]["results"] = []
+    evidence["sales_demand"]["data"]["step_results"]["sales_schedule_lines"]["results"] = []
+
+    result = evaluate_business_agent(
+        {
+            "agent_id": "demand-forecast-planning",
+            "run_input": {
+                "materials": ["FG-TEST"],
+                "plant": "1710",
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-30",
+            },
+            "analysis_context": {
+                "analysis_date": "2026-09-01",
+                "materials": ["FG-TEST"],
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-30",
+                "pir_version": "00",
+                "mrp_area": "1710",
+                "deviation_threshold_percent": "20",
+            },
+            "evidence": evidence,
+        }
+    )
+
+    material = result["workflow_output"]["material_results"][0]
+    assert material["sales_demand_quantity"] == "0"
+    assert material["pir_quantity"] == "0"
+    assert material["forecast_status"] == "no_activity"
+    assert material["business_status"] == "normal"
+
+
+def test_new_sales_demand_uses_sap_cumulative_balance_without_adding_stock() -> None:
+    result = evaluate_business_agent(
+        {
+            "agent_id": "new-sales-demand-coverage",
+            "run_input": {
+                "plant": "1710",
+                "demand_items": [{"material": "FG-TEST", "quantity": 100000, "demand_date": "2026-09-15"}],
+            },
+            "analysis_context": {
+                "analysis_date": "2026-09-01",
+                "materials": ["FG-TEST"],
+                "mrp_area": "1710",
+                "demand_items": [{"material": "FG-TEST", "quantity": "100000", "demand_date": "2026-09-15", "unit": None, "horizon_end_date": "2026-09-30"}],
+            },
+            "evidence": _demand_forecast_evidence(include_manual=True),
+        }
+    )
+
+    output = result["workflow_output"]["material_results"][0]
+    assert output["current_unrestricted_stock"] == "200000"
+    assert output["projected_available_before_demand"] == "120000"
+    assert output["projected_available_after_demand"] == "20000"
+    assert output["existing_demand_before_request"] == "50000"
+    assert output["future_receipts_before_request"] == "30000"
+    assert output["demand_coverage_status"] == "covered"
+    assert output["horizon_impact_status"] == "creates_shortage"
+    assert output["lowest_simulated_available_quantity"] == "-10000"
+    assert output["first_simulated_shortage_date"] == "2026-09-20"
+    assert output["atp_status"] == "not_assessed"
+    assert output["business_status"] == "attention"
+    assert output["evidence_complete"] is True
+
+
+def test_new_sales_demand_context_and_unit_conflict() -> None:
+    context = resolve_new_sales_demand_context(
+        {
+            "run_input": {
+                "plant": "1710",
+                "horizon_days": 30,
+                "demand_items": [{"material": " fg-test ", "quantity": "100000.000", "demand_date": "2026-09-15", "unit": "pc"}],
+            }
+        }
+    )
+    assert context["materials"] == ["FG-TEST"]
+    assert context["demand_items"][0]["unit"] == "PC"
+
+    result = evaluate_business_agent(
+        {
+            "agent_id": "new-sales-demand-coverage",
+            "run_input": {
+                "plant": "1710",
+                "demand_items": [{"material": "FG-TEST", "quantity": 100000, "demand_date": "2026-09-15", "unit": "KG"}],
+            },
+            "analysis_context": {
+                "analysis_date": "2026-09-01",
+                "materials": ["FG-TEST"],
+                "mrp_area": "1710",
+                "demand_items": [{"material": "FG-TEST", "quantity": "100000", "demand_date": "2026-09-15", "unit": "KG", "horizon_end_date": "2026-09-30"}],
+            },
+            "evidence": _demand_forecast_evidence(include_manual=True),
+        }
+    )
+
+    output = result["workflow_output"]["material_results"][0]
+    assert output["demand_coverage_status"] == "unknown"
+    assert output["business_status"] == "inconclusive"
+    assert "manual_demand_unit_not_comparable" in output["evidence_gaps"]
+
+
+def test_demand_forecast_batch_preserves_complete_material_when_another_chunk_fails() -> None:
+    evidence = _demand_forecast_evidence()
+    for topic in evidence.values():
+        assert isinstance(topic, dict)
+        topic["chunk_results"] = [
+            {"filter_values": ["FG-TEST"], "source_complete": True, "source_truncated": False, "error_code": None},
+            {"filter_values": ["SG21"], "source_complete": False, "source_truncated": False, "error_code": "sap_http_error"},
+        ]
+        topic["failed_filter_values"] = ["SG21"]
+        topic["source_complete"] = False
+
+    result = evaluate_business_agent(
+        {
+            "agent_id": "demand-forecast-planning",
+            "run_input": {"plant": "1710", "materials": ["FG-TEST", "SG21"], "date_from": "2026-09-01", "date_to": "2026-09-30"},
+            "analysis_context": {"analysis_date": "2026-09-01", "materials": ["FG-TEST", "SG21"], "date_from": "2026-09-01", "date_to": "2026-09-30", "pir_version": "00", "mrp_area": "1710", "deviation_threshold_percent": "20"},
+            "evidence": evidence,
+        }
+    )
+
+    output = result["workflow_output"]
+    by_material = {item["material"]: item for item in output["material_results"]}
+    assert by_material["FG-TEST"]["source_complete"] is True
+    assert by_material["SG21"]["source_complete"] is False
+    assert by_material["SG21"]["business_status"] == "inconclusive"
+    assert output["processed_material_count"] == 2
+    assert output["inconclusive_material_count"] == 1
+    assert output["business_status"] == "inconclusive"

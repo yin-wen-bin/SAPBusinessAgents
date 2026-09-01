@@ -74,6 +74,7 @@ class EmbeddedODataProvider:
         timeout_seconds: float = 60,
         max_results: int = 5000,
         page_size: int = 1000,
+        max_concurrent_requests: int = 2,
         relationship_catalog_path: Path | None = None,
         service_registry_path: Path | None = None,
         catalog_seed_path: Path | None = None,
@@ -90,6 +91,7 @@ class EmbeddedODataProvider:
         self.timeout_seconds = timeout_seconds
         self.max_results = max(1, max_results)
         self.page_size = max(1, min(page_size, self.max_results))
+        self._request_semaphore = asyncio.Semaphore(max(1, max_concurrent_requests))
         self.relationship_catalog_path = relationship_catalog_path
         self.service_registry_path = service_registry_path
         self.catalog_seed_path = catalog_seed_path
@@ -690,6 +692,19 @@ class EmbeddedODataProvider:
         source_truncated = any(
             item.get("source_truncated") is True for item in step_results.values()
         )
+        chunk_results = [
+            {"step_id": step_id, **chunk}
+            for step_id, item in step_results.items()
+            for chunk in item.get("chunk_results") or []
+            if isinstance(chunk, dict)
+        ]
+        failed_filter_values = list(
+            dict.fromkeys(
+                value
+                for item in step_results.values()
+                for value in item.get("failed_filter_values") or []
+            )
+        )
         response = {
             "ok": True,
             "status": "completed" if source_complete else "inconclusive",
@@ -710,6 +725,8 @@ class EmbeddedODataProvider:
             },
             "source_complete": source_complete,
             "source_truncated": source_truncated,
+            "chunk_results": chunk_results,
+            "failed_filter_values": failed_filter_values,
             "validation_issues": [
                 {"step_id": step_id, **issue}
                 for step_id, item in step_results.items()
@@ -797,8 +814,8 @@ class EmbeddedODataProvider:
         else:
             binding_chunks = [[]]
         chunks = [
-            (literal_group, binding_chunk)
-            for literal_group in literal_filter_groups
+            (literal_group, binding_chunk, filter_values)
+            for literal_group, filter_values in literal_filter_groups
             for binding_chunk in binding_chunks
         ]
         if len(chunks) > 100:
@@ -820,12 +837,21 @@ class EmbeddedODataProvider:
         truncated = False
         partition_count = 0
         max_concurrent_chunks = int(step.get("max_concurrent_chunks") or 1)
+        chunk_error_policy = str(step.get("chunk_error_policy") or "fail").strip().lower()
+        if chunk_error_policy not in {"fail", "record_gap"}:
+            raise SapReadError(
+                "chunk_error_policy must be fail or record_gap.",
+                code="invalid_chunk_error_policy",
+            )
+        chunk_results: list[dict[str, Any]] = []
+        failed_filter_values: list[Any] = []
 
         async def execute_chunk(
             chunk_index: int,
             literal_group: list[str],
             binding_chunk: list[str],
-        ) -> tuple[int, dict[str, Any]]:
+            filter_values: list[Any],
+        ) -> tuple[int, list[Any], dict[str, Any]]:
             pieces = list(literal_group)
             if binding_chunk:
                 pieces.append("(" + " or ".join(binding_chunk) + ")")
@@ -850,24 +876,70 @@ class EmbeddedODataProvider:
                     base_filter,
                     remaining=step_limit,
                 )
-            return chunk_index, result
+            return chunk_index, filter_values, result
 
         limit_reached = False
         for batch_start in range(0, len(chunks), max_concurrent_chunks):
             batch = chunks[batch_start : batch_start + max_concurrent_chunks]
             completed = await asyncio.gather(
                 *(
-                    execute_chunk(batch_start + offset, literal_group, binding_chunk)
-                    for offset, (literal_group, binding_chunk) in enumerate(batch)
-                )
+                    execute_chunk(
+                        batch_start + offset,
+                        literal_group,
+                        binding_chunk,
+                        filter_values,
+                    )
+                    for offset, (literal_group, binding_chunk, filter_values) in enumerate(batch)
+                ),
+                return_exceptions=chunk_error_policy == "record_gap",
             )
-            for chunk_index, result in completed:
+            for offset, completed_item in enumerate(completed):
+                chunk_index = batch_start + offset
+                filter_values = list(batch[offset][2])
+                if isinstance(completed_item, BaseException):
+                    if chunk_error_policy != "record_gap":
+                        raise completed_item
+                    error_code = (
+                        completed_item.code
+                        if isinstance(completed_item, SapReadError)
+                        else "sap_read_chunk_failed"
+                    )
+                    complete = False
+                    failed_filter_values.extend(filter_values)
+                    validation_issues.append(
+                        {
+                            "code": "sap_read_chunk_failed",
+                            "chunk_index": chunk_index,
+                            "error_code": error_code,
+                            "filter_values": filter_values,
+                        }
+                    )
+                    chunk_results.append(
+                        {
+                            "chunk_index": chunk_index,
+                            "filter_values": filter_values,
+                            "source_complete": False,
+                            "source_truncated": False,
+                            "error_code": error_code,
+                        }
+                    )
+                    continue
+                chunk_index, filter_values, result = completed_item
                 all_rows.extend(result["results"])
                 requests.extend(result["requests"])
                 complete = complete and result["source_complete"]
                 truncated = truncated or result["source_truncated"]
                 validation_issues.extend(result.get("validation_issues") or [])
                 partition_count += int(result.get("partition_count") or 0)
+                chunk_results.append(
+                    {
+                        "chunk_index": chunk_index,
+                        "filter_values": filter_values,
+                        "source_complete": result["source_complete"],
+                        "source_truncated": result["source_truncated"],
+                        "error_code": None,
+                    }
+                )
                 more_chunks = chunk_index < len(chunks) - 1
                 if len(all_rows) > step_limit or (len(all_rows) >= step_limit and more_chunks):
                     truncated = True
@@ -913,6 +985,8 @@ class EmbeddedODataProvider:
             "requests": requests,
             "validation_issues": validation_issues,
             "partition_count": partition_count,
+            "chunk_results": chunk_results,
+            "failed_filter_values": list(dict.fromkeys(failed_filter_values)),
         }
 
     async def _fetch_adaptive_date_partitions(
@@ -1271,26 +1345,27 @@ class EmbeddedODataProvider:
                 request_target = parsed_target.copy_with(query=None)
             request_params["sap-client"] = self.client
         auth = httpx.BasicAuth(self.username, self.password)
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            auth=auth,
-            headers={"Accept": accept},
-            timeout=self.timeout_seconds,
-            verify=self.verify_ssl,
-            trust_env=False,
-            follow_redirects=False,
-            transport=self.transport,
-        ) as client:
-            try:
-                response = await client.get(request_target, params=request_params)
-            except httpx.TimeoutException as exc:
-                raise SapReadError("SAP GET timed out.", code="sap_read_timeout") from exc
-            except httpx.HTTPError as exc:
-                raise SapReadError(
-                    "SAP GET failed before a response was received.",
-                    code="sap_read_unavailable",
-                    detail={"message": str(exc)},
-                ) from exc
+        async with self._request_semaphore:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                auth=auth,
+                headers={"Accept": accept},
+                timeout=self.timeout_seconds,
+                verify=self.verify_ssl,
+                trust_env=False,
+                follow_redirects=False,
+                transport=self.transport,
+            ) as client:
+                try:
+                    response = await client.get(request_target, params=request_params)
+                except httpx.TimeoutException as exc:
+                    raise SapReadError("SAP GET timed out.", code="sap_read_timeout") from exc
+                except httpx.HTTPError as exc:
+                    raise SapReadError(
+                        "SAP GET failed before a response was received.",
+                        code="sap_read_unavailable",
+                        detail={"message": str(exc)},
+                    ) from exc
         if response.status_code >= 400:
             raise SapReadError(
                 f"SAP returned HTTP {response.status_code} for a GET request.",
@@ -1586,14 +1661,14 @@ class EmbeddedODataProvider:
 
     def _literal_filter_groups(
         self, filters: list[dict[str, Any]], odata_version: str
-    ) -> list[list[str]]:
+    ) -> list[tuple[list[str], list[Any]]]:
         chunked = [
             item
             for item in filters
             if item.get("chunk_size") is not None
         ]
         if not chunked:
-            return [self._literal_filters(filters, odata_version)]
+            return [(self._literal_filters(filters, odata_version), [])]
         if len(chunked) != 1:
             raise SapReadError(
                 "Only one chunked literal filter is allowed per step.",
@@ -1622,12 +1697,17 @@ class EmbeddedODataProvider:
                 code="invalid_chunked_filter",
             )
         static_filters = [item for item in filters if item is not target]
-        groups: list[list[str]] = []
+        groups: list[tuple[list[str], list[Any]]] = []
         for offset in range(0, len(values), chunk_size):
             child = dict(target)
             child.pop("chunk_size", None)
             child["value"] = values[offset : offset + chunk_size]
-            groups.append(self._literal_filters([*static_filters, child], odata_version))
+            groups.append(
+                (
+                    self._literal_filters([*static_filters, child], odata_version),
+                    list(child["value"]),
+                )
+            )
         return groups
 
     @staticmethod

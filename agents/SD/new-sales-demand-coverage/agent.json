@@ -1,0 +1,397 @@
+{
+  "schemaVersion": 2,
+  "slug": "new-sales-demand-coverage",
+  "module": "SD",
+  "title": {
+    "zh": "新增销售需求覆盖度检查助手",
+    "en": "New Sales Demand Coverage Check Assistant"
+  },
+  "summary": {
+    "zh": "在外部销售需求录入SAP前，批量模拟需求日期的MRP可用量及后续短缺影响，不修改SAP且不替代正式ATP。",
+    "en": "Batch-simulates MRP availability and subsequent shortage impact before external sales demand is entered in SAP, without changing SAP or replacing formal ATP."
+  },
+  "status": "Three-stage live acceptance passed",
+  "version": "0.1.0",
+  "owner": "SD Sales Planning / PP MRP",
+  "tags": ["Sales Demand", "MRP", "Coverage", "Read-only"],
+  "sapModules": ["SD-SLS", "PP-MRP"],
+  "transactions": [],
+  "tables": [],
+  "systems": ["SAP S/4HANA"],
+  "inputs": {
+    "zh": ["工厂", "MRP范围", "后续检查天数", "逐物料新增需求"],
+    "en": ["Plant", "MRP area", "Subsequent horizon days", "Per-material new demand"]
+  },
+  "outputs": {
+    "zh": [
+      "请求物料数",
+      "已处理物料数",
+      "正常物料数",
+      "需关注物料数",
+      "无法确认物料数",
+      "逐物料结果",
+      "查询源完整性",
+      "业务证据完整性",
+      "证据缺口",
+      "业务状态",
+      "结构化业务报告"
+    ],
+    "en": [
+      "Requested material count",
+      "Processed material count",
+      "Normal material count",
+      "Attention material count",
+      "Inconclusive material count",
+      "Per-material results",
+      "Query-source completeness",
+      "Business-evidence completeness",
+      "Evidence gaps",
+      "Business status",
+      "Structured business report"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "严格只读且GET-only，不向SAP写入新增需求",
+      "SAP累计MRP可用量是模拟权威余额，当前库存不得重复相加",
+      "不同单位不换算也不合计",
+      "模拟结果不等同于SAP正式ATP确认",
+      "任一物料证据不足时整批状态不得高于无法确认"
+    ],
+    "en": [
+      "Strictly GET-only; never write the new demand to SAP",
+      "SAP cumulative MRP availability is authoritative and current stock is never added again",
+      "Different units are neither converted nor aggregated",
+      "The simulation is not formal SAP ATP confirmation",
+      "If any material lacks evidence, the batch remains inconclusive"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "execute-resolve_analysis_context",
+      "title": {"zh": "校验逐物料需求", "en": "Validate per-material demand"},
+      "description": {"zh": "校验1至50个不重复物料的数量、日期、单位和公共MRP范围。", "en": "Validate quantity, date, unit, and shared MRP scope for 1 to 50 unique materials."},
+      "operations": {"zh": ["rule.resolve_new_sales_demand_context"], "en": ["rule.resolve_new_sales_demand_context"]},
+      "tools": [{"name": "resolve_new_sales_demand_context", "kind": "Local deterministic rule", "purpose": {"zh": "规范化和校验需求行", "en": "Normalize and validate demand rows"}}],
+      "executionStepIds": ["resolve_analysis_context"]
+    },
+    {
+      "id": "execute-read_mrp_material",
+      "title": {"zh": "读取MRP物料主数据", "en": "Read MRP material master"},
+      "description": {"zh": "核对每个物料的MRP范围和基本单位。", "en": "Verify each material's MRP scope and base unit."},
+      "operations": {"zh": ["GET API_MRP_MATERIALS_SRV_01@2.0/A_MRPMaterial"], "en": ["GET API_MRP_MATERIALS_SRV_01@2.0/A_MRPMaterial"]},
+      "tools": [{"name": "Embedded SAP OData Provider", "kind": "GET-only SAP Provider", "purpose": {"zh": "读取物料MRP主数据", "en": "Read material MRP master data"}}],
+      "executionStepIds": ["read_mrp_material"]
+    },
+    {
+      "id": "execute-read_current_stock",
+      "title": {"zh": "读取当前非限制库存", "en": "Read current unrestricted stock"},
+      "description": {"zh": "读取当前非限制、无特殊库存快照，仅供展示和交叉核对。", "en": "Read unrestricted non-special stock for display and cross-checking only."},
+      "operations": {"zh": ["GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"], "en": ["GET API_MATERIAL_STOCK_SRV@2.0/A_MatlStkInAcctMod"]},
+      "tools": [{"name": "Embedded SAP OData Provider", "kind": "GET-only SAP Provider", "purpose": {"zh": "读取库存快照", "en": "Read stock snapshot"}}],
+      "executionStepIds": ["read_current_stock"]
+    },
+    {
+      "id": "execute-read_supply_demand",
+      "title": {"zh": "读取MRP供需序列", "en": "Read MRP supply-demand sequence"},
+      "description": {"zh": "读取不带短缺参数过滤的供需序列和SAP累计可用量。", "en": "Read the unprofiled supply-demand sequence and SAP cumulative availability."},
+      "operations": {"zh": ["GET API_MRP_MATERIALS_SRV_01@2.0/SupplyDemandItems"], "en": ["GET API_MRP_MATERIALS_SRV_01@2.0/SupplyDemandItems"]},
+      "tools": [{"name": "Embedded SAP OData Provider", "kind": "GET-only SAP Provider", "purpose": {"zh": "读取MRP累计余额", "en": "Read cumulative MRP balances"}}],
+      "executionStepIds": ["read_supply_demand"]
+    },
+    {
+      "id": "execute-evaluate_business_result",
+      "title": {"zh": "执行逐物料模拟", "en": "Run per-material simulation"},
+      "description": {"zh": "使用已取得的SAP累计余额执行确定性需求覆盖模拟。", "en": "Run deterministic demand-coverage simulation using collected SAP cumulative balances."},
+      "operations": {"zh": ["rule.evaluate_business_agent"], "en": ["rule.evaluate_business_agent"]},
+      "tools": [{"name": "evaluate_business_agent", "kind": "Local deterministic rule", "purpose": {"zh": "计算需求前后余额和后续短缺", "en": "Calculate pre/post-demand balances and subsequent shortages"}}],
+      "executionStepIds": ["evaluate_business_result"]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 600,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "plant": {
+          "type": "string",
+          "title": {"zh": "工厂", "en": "Plant"},
+          "description": {"zh": "所有需求行共用的供货工厂。", "en": "Supplying plant shared by all demand rows."},
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "x-sapba-input-normalization": "uppercase"
+        },
+        "mrp_area": {
+          "type": "string",
+          "title": {"zh": "MRP范围", "en": "MRP area"},
+          "description": {"zh": "留空时使用工厂。", "en": "Leave blank to use the plant."},
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]*$",
+          "x-sapba-input-normalization": "uppercase"
+        },
+        "horizon_days": {
+          "type": "integer",
+          "title": {"zh": "后续检查天数", "en": "Subsequent horizon days"},
+          "description": {"zh": "每个需求日期之后继续检查的天数，默认90天。", "en": "Days to inspect after each demand date; defaults to 90."},
+          "default": 90,
+          "minimum": 1,
+          "maximum": 366,
+          "x-sapba-server-default": true
+        },
+        "demand_items": {
+          "type": "array",
+          "title": {"zh": "逐物料新增需求", "en": "Per-material new demand"},
+          "description": {"zh": "为每个物料填写数量、日期和可选单位。", "en": "Enter quantity, date, and optional unit for each material."},
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "properties": {
+              "material": {
+                "type": "string",
+                "title": {"zh": "物料", "en": "Material"},
+                "minLength": 1,
+                "maxLength": 40,
+                "pattern": "^[0-9A-Za-z_-]+$",
+                "x-sapba-input-normalization": "uppercase"
+              },
+              "quantity": {
+                "type": "number",
+                "title": {"zh": "新增需求数量", "en": "New demand quantity"},
+                "exclusiveMinimum": 0
+              },
+              "demand_date": {
+                "type": "string",
+                "format": "date",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "title": {"zh": "需求日期", "en": "Demand date"}
+              },
+              "unit": {
+                "type": "string",
+                "title": {"zh": "单位（可选）", "en": "Unit (optional)"},
+                "maxLength": 3,
+                "pattern": "^[0-9A-Za-z]*$",
+                "x-sapba-input-normalization": "uppercase"
+              }
+            },
+            "required": ["material", "quantity", "demand_date"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["plant", "demand_items"],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "resolve_analysis_context",
+        "executor": "rule",
+        "operation": "resolve_new_sales_demand_context",
+        "inputMapping": {"run_input": "{{input}}"}
+      },
+      {
+        "id": "read_mrp_material",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
+            "entity_set": "A_MRPMaterial",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": ["Material", "MRPPlant", "MRPArea", "BaseUnit", "MRPType", "MRPController", "MaterialProcurementCategory"],
+            "order_by": ["Material", "MRPPlant", "MRPArea"],
+            "filters": [
+              {"field": "Material", "operator": "in", "value": "{{steps.resolve_analysis_context.output.materials}}", "value_type": "string", "chunk_size": 10},
+              {"field": "MRPPlant", "operator": "eq", "value": "{{input.plant}}", "value_type": "string"},
+              {"field": "MRPArea", "operator": "eq", "value": "{{steps.resolve_analysis_context.output.mrp_area}}", "value_type": "string"}
+            ],
+            "max_concurrent_chunks": 2,
+            "chunk_error_policy": "record_gap",
+            "rationale": "Read exact MRP material scopes and base units for all requested materials."
+          }
+        }
+      },
+      {
+        "id": "read_current_stock",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_MATERIAL_STOCK_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_MatlStkInAcctMod",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": ["Material", "Plant", "StorageLocation", "Batch", "InventoryStockType", "InventorySpecialStockType", "MatlWrhsStkQtyInMatlBaseUnit", "MaterialBaseUnit"],
+            "order_by": ["Material", "Plant", "StorageLocation", "Batch", "InventoryStockType", "InventorySpecialStockType"],
+            "filters": [
+              {"field": "Material", "operator": "in", "value": "{{steps.resolve_analysis_context.output.materials}}", "value_type": "string", "chunk_size": 10},
+              {"field": "Plant", "operator": "eq", "value": "{{input.plant}}", "value_type": "string"},
+              {"field": "InventoryStockType", "operator": "eq", "value": "01", "value_type": "string"},
+              {"field": "InventorySpecialStockType", "operator": "eq", "value": "", "value_type": "string"}
+            ],
+            "max_concurrent_chunks": 2,
+            "chunk_error_policy": "record_gap",
+            "rationale": "Read unrestricted non-special stock for display and cross-checking only."
+          }
+        }
+      },
+      {
+        "id": "read_supply_demand",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
+            "entity_set": "SupplyDemandItems",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "Material", "MRPPlant", "MRPArea", "MRPPlanningSegment", "MRPPlanningSegmentType",
+              "MRPElement", "MRPElementItem", "MRPElementScheduleLine", "MRPElementCategory",
+              "MRPElementCategoryName", "MRPElementAvailyOrRqmtDate", "MRPElementOpenQuantity",
+              "MRPAvailableQuantity", "DemandCategoryGroup", "ReceiptCategoryGroup",
+              "MRPElementQuantityIsFirm", "MRPElementIsReleased", "MaterialBaseUnit"
+            ],
+            "filters": [
+              {"field": "Material", "operator": "in", "value": "{{steps.resolve_analysis_context.output.materials}}", "value_type": "string", "chunk_size": 1},
+              {"field": "MRPPlant", "operator": "eq", "value": "{{input.plant}}", "value_type": "string"},
+              {"field": "MRPArea", "operator": "eq", "value": "{{steps.resolve_analysis_context.output.mrp_area}}", "value_type": "string"}
+            ],
+            "max_concurrent_chunks": 2,
+            "chunk_error_policy": "record_gap",
+            "rationale": "Read each material's complete unprofiled SAP MRP supply-demand sequence separately because this entity does not support server-side ordering; preserve the SAP-returned sequence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "new-sales-demand-coverage",
+          "run_input": "{{input}}",
+          "analysis_context": "{{steps.resolve_analysis_context.output}}",
+          "evidence": {
+            "mrp_material": "{{steps.read_mrp_material.output}}",
+            "current_stock": "{{steps.read_current_stock.output}}",
+            "supply_demand": "{{steps.read_supply_demand.output}}"
+          }
+        }
+      }
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "requested_material_count": {"type": "integer", "minimum": 1, "maximum": 50, "title": {"zh": "请求物料数", "en": "Requested material count"}},
+        "processed_material_count": {"type": "integer", "minimum": 0, "maximum": 50, "title": {"zh": "已处理物料数", "en": "Processed material count"}},
+        "normal_material_count": {"type": "integer", "minimum": 0, "maximum": 50, "title": {"zh": "正常物料数", "en": "Normal material count"}},
+        "attention_material_count": {"type": "integer", "minimum": 0, "maximum": 50, "title": {"zh": "需关注物料数", "en": "Attention material count"}},
+        "inconclusive_material_count": {"type": "integer", "minimum": 0, "maximum": 50, "title": {"zh": "无法确认物料数", "en": "Inconclusive material count"}},
+        "material_results": {"type": "array", "maxItems": 50, "items": {"type": "object"}, "title": {"zh": "逐物料结果", "en": "Per-material results"}},
+        "source_complete": {"type": "boolean", "title": {"zh": "查询源完整性", "en": "Query-source completeness"}},
+        "evidence_complete": {"type": "boolean", "title": {"zh": "业务证据完整性", "en": "Business-evidence completeness"}},
+        "evidence_gaps": {"type": "array", "items": {"type": "string"}, "title": {"zh": "证据缺口", "en": "Evidence gaps"}},
+        "business_status": {
+          "type": "string",
+          "enum": ["normal", "attention", "inconclusive"],
+          "title": {"zh": "业务状态", "en": "Business status"},
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "normal": {"zh": "预计可覆盖", "en": "Expected to be covered"},
+              "attention": {"zh": "存在覆盖风险", "en": "Coverage risk found"},
+              "inconclusive": {"zh": "部分物料无法确认", "en": "Some materials are inconclusive"}
+            }
+          }
+        },
+        "business_report": {"type": "object", "title": {"zh": "结构化业务报告", "en": "Structured business report"}}
+      },
+      "required": ["requested_material_count", "processed_material_count", "normal_material_count", "attention_material_count", "inconclusive_material_count", "material_results", "source_complete", "evidence_complete", "evidence_gaps", "business_status", "business_report"],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "requested_material_count": "{{steps.evaluate_business_result.output.workflow_output.requested_material_count}}",
+      "processed_material_count": "{{steps.evaluate_business_result.output.workflow_output.processed_material_count}}",
+      "normal_material_count": "{{steps.evaluate_business_result.output.workflow_output.normal_material_count}}",
+      "attention_material_count": "{{steps.evaluate_business_result.output.workflow_output.attention_material_count}}",
+      "inconclusive_material_count": "{{steps.evaluate_business_result.output.workflow_output.inconclusive_material_count}}",
+      "material_results": "{{steps.evaluate_business_result.output.workflow_output.material_results}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.evidence_complete}}",
+      "evidence_gaps": "{{steps.evaluate_business_result.output.workflow_output.evidence_gaps}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": ["material", "plant", "mrp_area"],
+      "facts": ["business_status", "demand_coverage_status", "horizon_impact_status", "atp_status"],
+      "metrics": ["new_sales_demand_quantity", "projected_available_before_demand", "projected_available_after_demand", "lowest_simulated_available_quantity"],
+      "decimalFields": ["new_sales_demand_quantity", "projected_available_before_demand", "projected_available_after_demand", "lowest_simulated_available_quantity"],
+      "decimalMetricIds": [],
+      "currencyFields": [],
+      "unitFields": ["unit"],
+      "dateFields": ["new_sales_demand_date", "first_simulated_shortage_date"],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": ["source_complete", "evidence_complete"],
+      "inputDefaults": {"plant": "plant"},
+      "constantDefaults": {"atp_status": "not_assessed"},
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": ["source incomplete", "paging incomplete", "范围限制", "分页未完成"],
+        "capability_gap": ["capability gap", "inconclusive", "能力缺口", "无法确认"],
+        "test_data_gap": ["test data gap", "测试数据缺口"]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": ["mrp_simulation_not_formal_atp"],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "material_results",
+      "metricDefinitions": {
+        "projected_available_before_demand": "Authoritative SAP MRPAvailableQuantity at or immediately before the requested demand date.",
+        "projected_available_after_demand": "Authoritative cumulative MRP balance less the user-entered demand quantity; current stock is not added again."
+      },
+      "businessStatusDefinition": "The batch is inconclusive when any requested material is incomplete, attention when all are complete and any demand is not covered or worsens shortage, and normal otherwise.",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-09-01T14:24:20+08:00",
+    "evidenceScope": "complete",
+    "providers": ["embedded-sap-odata"],
+    "summary": {
+      "zh": "0.1.0已通过直接SAP、Codex自由查询、逐物料固定查询和批量固定查询验收；三个需求模拟结果一致，全部请求均为GET。",
+      "en": "Version 0.1.0 passed direct SAP, Codex free-query, individual fixed-Agent, and batch fixed-Agent acceptance; all three demand simulations matched and every request was GET-only."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": []
+  }
+}

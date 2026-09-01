@@ -44,6 +44,7 @@ const labels = locale === "zh" ? {
   send: "继续查询",
   cancel: "取消查询",
   draft: "保存为 Agent 草稿",
+  continueCorrection: "继续修正此结果",
   returnWorkflow: "返回工作流查看缺口",
   reconnect: "重新连接",
   downloads: "下载业务报告与明细",
@@ -56,6 +57,7 @@ const labels = locale === "zh" ? {
     queued: "等待执行", planning: "正在理解查询需求", waiting_input: "等待补充信息",
     validating: "正在检查查询范围", running: "正在读取 SAP 数据", completed: "查询完成",
     inconclusive: "查询完成，但证据不足", failed: "查询失败", cancelled: "查询已取消",
+    reviewing: "等待用户确认", reviewing_feedback: "正在分析反馈", satisfied: "用户已确认", draft_created: "已生成Agent草稿",
   },
   events: {
     run_queued: "查询已进入队列", run_started: "开始处理查询", progress_changed: "当前处理阶段已更新",
@@ -87,6 +89,11 @@ const labels = locale === "zh" ? {
     tool_requested: "Codex 请求调用工具", tool_failed: "工具调用失败",
     evidence_gap_assessed: "已评估 API 证据缺口", codex_turn_completed: "Codex 分析轮次完成",
     codex_turn_failed: "Codex 分析轮次失败", harness_completed: "Codex Harness 查询完成", harness_interrupted: "Codex Harness 已中断",
+    feedback_reinterpretation_started: "正在复用已验证证据调整展示",
+    harness_time_extended: "查询取得有效进展，已延长只读查询时间",
+    harness_finalization_started: "查询阶段已结束，正在基于现有证据整理报告",
+    agent_runtime_tool_started: "Agent Runtime 已发出工具请求",
+    agent_runtime_tool_completed: "Agent Runtime 工具生命周期已结束",
   },
   table: { stage: "业务阶段", state: "状态", detail: "说明", metric: "指标", value: "结果", object: "查询对象", purpose: "用途", result: "结果", count: "记录数" },
   presentation: { showing: "显示", of: "共", previous: "上一页", next: "下一页", displayed: "已加载", loading: "正在加载更多结果…", loadError: "无法加载下一页，请重试或下载 result.json。", unlimited: "不限", calls: "工具调用", budgeted: "预算型", turns: "轮次", runtime: "运行时间", seconds: "秒" },
@@ -109,6 +116,16 @@ const labels = locale === "zh" ? {
       ap_payment_scope_unavailable: "没有可供AP付款准备度复核的证据分组",
     },
   },
+  materialView: {
+    summary: "物料覆盖汇总", search: "搜索物料", searchPlaceholder: "输入物料号", filter: "状态筛选", all: "全部状态",
+    material: "物料", status: "业务状态", forecast: "PIR覆盖", mrp: "MRP净供需", demand: "新增需求覆盖",
+    salesDemand: "销售需求", pir: "计划独立需求", plannedOrder: "计划订单", availableAfter: "模拟后可用量",
+    requestedDemand: "用户输入需求", demandDate: "需求日期", availableBefore: "需求前可用量", existingDemand: "此前已有需求", futureReceipts: "此前未来入库",
+    sourceComplete: "查询完整性", evidenceComplete: "证据完整性", details: "查看明细", noResults: "没有符合当前筛选条件的物料。",
+    overview: "业务指标", recommendations: "建议动作", periodDetails: "期间需求明细", supplyDemand: "MRP供需明细",
+    queryComplete: "查询完整", queryIncomplete: "查询不完整", evidenceCompleteLabel: "证据完整", evidenceIncomplete: "证据有缺口",
+    priority: "优先级", first: "先复核PIR", second: "再处理计划订单", page: "第 {current}/{total} 页", previous: "上一页", next: "下一页",
+  },
   evidenceState: { found: "已找到", not_found: "未找到", limited: "范围受限", failed: "读取失败" },
   reportState: { success: "流程已确认", warning: "需要继续处理", info: "现有证据不足", error: "查询失败", running: "查询中" },
   complete: "当前查询范围已完整返回",
@@ -124,6 +141,24 @@ const labels = locale === "zh" ? {
   pendingOverview: "系统正在读取 SAP 数据并核验证据，请留在本页等待结果。",
   runtimeLabel: "Agent Runtime",
   mode: { agent: "固定 Agent", free_query: "自由 SAP 查询", workflow: "组合工作流", guided: "Agent 引导查询" },
+  freeQuerySession: {
+    title: "多轮查询与修正", original: "原始问题", iteration: "第 {n} 轮", latest: "当前结果",
+    requery: "已根据反馈重新读取 SAP", reinterpret: "复用已验证证据调整展示", initial: "首次查询",
+    feedback: "用户反馈", understood: "系统理解", changes: "与上一轮的变化", noChanges: "首轮结果",
+    expectations: "用户期望与SAP证据核对", expectationStatus: { confirmed: "证据支持", mismatch: "与SAP证据不一致", not_verifiable: "当前证据无法核验" },
+    correct: "结果需要修正", satisfied: "结果符合预期", newQuestion: "这是另一个问题",
+    feedbackPrompt: "请说明哪些结果不正确，以及你期望系统如何核对。用户期望会与SAP证据比较，不会直接覆盖事实。",
+    feedbackPlaceholder: "例如：当前只返回订单抬头，我还需要发票、清账和付款凭证证据",
+    submitFeedback: "提交反馈并继续", accepting: "正在确认…", accepted: "已确认当前结果",
+    reopen: "继续修正", createDraft: "生成固定 Agent 草稿", draftCreated: "Agent草稿已生成",
+    waiting: "请补充反馈信息", startNew: "该反馈属于另一个问题，请开始新的自由查询。",
+    chips: { scope_or_filter: "查询范围不对", relationship: "业务关联不对", missing_evidence: "缺少证据", business_rule: "业务判断不对", presentation: "展示方式不对" },
+    planChanged: "查询计划已变化", resultChanged: "业务结果已变化", summaryChanged: "业务说明已调整",
+    evidenceGapAdded: "新增证据缺口", evidenceGapResolved: "已解决证据缺口", noSap: "本轮没有新增SAP查询",
+    feedbackProgress: "反馈处理进度", feedbackSteps: ["反馈已提交", "Agent Runtime正在理解反馈", "正在判断是否重新读取SAP", "正在准备下一轮结果"],
+    cancelFeedback: "取消反馈处理", feedbackCancelled: "反馈处理已取消", evidenceReuse: "将复用已验证证据，本轮不会新增SAP读取",
+    elapsed: "已运行 {elapsed} 秒 / 最多 {hard} 秒", finalizing: "正在强制整理结果", extended: "已自适应延长 {count} 次",
+  },
   artifact: { "report.md": "业务报告", "business-stages.csv": "阶段结果表", "workflow-report.md": "组合业务报告", "workflow-orders.csv": "采购订单汇总", "workflow-ap-scopes.csv": "AP分组汇总", "pr-actions.csv": "采购申请待办", "po-expedite-actions.csv": "采购订单催交待办", "source-candidates.csv": "有效货源候选", "gr-ir-follow-up.csv": "GR/IR待处理清单", "gr-ir-needs-confirmation.csv": "GR/IR证据缺口", "gr-ir-all-records.csv": "全部GR/IR核对记录", "evidence.csv": "证据明细", "result.json": "技术 JSON" },
 } : {
   title: "SAP business query",
@@ -161,6 +196,7 @@ const labels = locale === "zh" ? {
   send: "Continue query",
   cancel: "Cancel query",
   draft: "Save as Agent draft",
+  continueCorrection: "Continue correcting this result",
   returnWorkflow: "Return to workflow gap",
   reconnect: "Reconnect",
   downloads: "Download report and details",
@@ -173,6 +209,7 @@ const labels = locale === "zh" ? {
     queued: "Waiting to run", planning: "Understanding the request", waiting_input: "Waiting for more information",
     validating: "Checking query scope", running: "Reading SAP data", completed: "Query completed",
     inconclusive: "Completed with insufficient evidence", failed: "Query failed", cancelled: "Query cancelled",
+    reviewing: "Waiting for user review", reviewing_feedback: "Reviewing feedback", satisfied: "Accepted by user", draft_created: "Agent draft generated",
   },
   events: {
     run_queued: "Query queued", run_started: "Query processing started", progress_changed: "Current processing phase updated",
@@ -204,6 +241,11 @@ const labels = locale === "zh" ? {
     tool_requested: "Codex requested a tool", tool_failed: "Tool call failed",
     evidence_gap_assessed: "API evidence gap assessed", codex_turn_completed: "Codex analysis turn completed",
     codex_turn_failed: "Codex analysis turn failed", harness_completed: "Codex Harness completed", harness_interrupted: "Codex Harness interrupted",
+    feedback_reinterpretation_started: "Revising the presentation from validated evidence",
+    harness_time_extended: "Validated progress found; the read-only query window was extended",
+    harness_finalization_started: "The query phase ended; preparing a report from existing evidence",
+    agent_runtime_tool_started: "Agent Runtime requested a tool",
+    agent_runtime_tool_completed: "Agent Runtime tool lifecycle ended",
   },
   table: { stage: "Business stage", state: "Status", detail: "Explanation", metric: "Metric", value: "Result", object: "Query object", purpose: "Purpose", result: "Result", count: "Rows" },
   presentation: { showing: "Showing", of: "of", previous: "Previous", next: "Next", displayed: "Loaded", loading: "Loading more results…", loadError: "Unable to load the next page. Retry or download result.json.", unlimited: "unlimited", calls: "Tool calls", budgeted: "budgeted", turns: "Turns", runtime: "Runtime", seconds: "s" },
@@ -226,6 +268,16 @@ const labels = locale === "zh" ? {
       ap_payment_scope_unavailable: "No AP evidence scope is available for payment-readiness review",
     },
   },
+  materialView: {
+    summary: "Material coverage summary", search: "Search materials", searchPlaceholder: "Enter a material", filter: "Status filter", all: "All statuses",
+    material: "Material", status: "Business status", forecast: "PIR coverage", mrp: "MRP net coverage", demand: "New-demand coverage",
+    salesDemand: "Sales demand", pir: "Planned independent demand", plannedOrder: "Planned orders", availableAfter: "Available after simulation",
+    requestedDemand: "User-entered demand", demandDate: "Demand date", availableBefore: "Availability before demand", existingDemand: "Existing demand before date", futureReceipts: "Future receipts before date",
+    sourceComplete: "Query completeness", evidenceComplete: "Evidence completeness", details: "View details", noResults: "No material matches the current filters.",
+    overview: "Business metrics", recommendations: "Recommended actions", periodDetails: "Period demand details", supplyDemand: "MRP supply-demand details",
+    queryComplete: "Query complete", queryIncomplete: "Query incomplete", evidenceCompleteLabel: "Evidence complete", evidenceIncomplete: "Evidence gaps remain",
+    priority: "Priority", first: "Review PIR first", second: "Then adjust planned orders", page: "Page {current}/{total}", previous: "Previous", next: "Next",
+  },
   evidenceState: { found: "Found", not_found: "Not found", limited: "Limited scope", failed: "Read failed" },
   reportState: { success: "Process confirmed", warning: "Follow-up required", info: "Evidence is incomplete", error: "Query failed", running: "Query in progress" },
   complete: "The current query scope was returned in full",
@@ -241,6 +293,24 @@ const labels = locale === "zh" ? {
   pendingOverview: "The system is reading SAP data and validating evidence. Keep this page open for the result.",
   runtimeLabel: "Agent Runtime",
   mode: { agent: "Fixed Agent", free_query: "Free SAP query", workflow: "Composite workflow", guided: "Agent-guided query" },
+  freeQuerySession: {
+    title: "Multi-turn query and correction", original: "Original question", iteration: "Iteration {n}", latest: "Current result",
+    requery: "SAP was read again for this correction", reinterpret: "Validated evidence was reused to revise the presentation", initial: "Initial query",
+    feedback: "User feedback", understood: "System interpretation", changes: "Changes from the previous iteration", noChanges: "Initial result",
+    expectations: "User expectations checked against SAP evidence", expectationStatus: { confirmed: "Supported by evidence", mismatch: "Does not match SAP evidence", not_verifiable: "Not verifiable from current evidence" },
+    correct: "Result needs correction", satisfied: "Result meets expectations", newQuestion: "This is a different question",
+    feedbackPrompt: "Describe what is incorrect and how it should be checked. Expectations are compared with SAP evidence and never overwrite facts.",
+    feedbackPlaceholder: "Example: the result only shows the order header; include invoice, clearing, and payment-document evidence",
+    submitFeedback: "Submit feedback and continue", accepting: "Accepting…", accepted: "Current result accepted",
+    reopen: "Continue correcting", createDraft: "Generate fixed Agent draft", draftCreated: "Agent draft generated",
+    waiting: "Provide clarification for the feedback", startNew: "This feedback is a different question. Start a new free query.",
+    chips: { scope_or_filter: "Wrong query scope", relationship: "Wrong business relationship", missing_evidence: "Missing evidence", business_rule: "Wrong business judgment", presentation: "Wrong presentation" },
+    planChanged: "Query plan changed", resultChanged: "Business result changed", summaryChanged: "Business explanation changed",
+    evidenceGapAdded: "New evidence gap", evidenceGapResolved: "Evidence gap resolved", noSap: "No new SAP query in this iteration",
+    feedbackProgress: "Feedback progress", feedbackSteps: ["Feedback submitted", "Agent Runtime is understanding the feedback", "Deciding whether SAP must be read again", "Preparing the next result iteration"],
+    cancelFeedback: "Cancel feedback review", feedbackCancelled: "Feedback review cancelled", evidenceReuse: "Validated evidence will be reused with zero new SAP reads",
+    elapsed: "Elapsed {elapsed}s / up to {hard}s", finalizing: "Finalizing from existing evidence", extended: "Adaptively extended {count} time(s)",
+  },
   artifact: { "report.md": "Business report", "business-stages.csv": "Stage results", "workflow-report.md": "Composite business report", "workflow-orders.csv": "Purchase-order summary", "workflow-ap-scopes.csv": "AP scope summary", "pr-actions.csv": "Purchase requisition actions", "po-expedite-actions.csv": "PO expediting actions", "source-candidates.csv": "Valid source candidates", "gr-ir-follow-up.csv": "GR/IR follow-up", "gr-ir-needs-confirmation.csv": "GR/IR evidence gaps", "gr-ir-all-records.csv": "All GR/IR reconciliation records", "evidence.csv": "Evidence details", "result.json": "Technical JSON" },
 };
 ---
@@ -260,10 +330,47 @@ const labels = locale === "zh" ? {
   <div class="run-actions">
     <button type="button" class="secondary-button" data-cancel><Ban size={16} aria-hidden="true" />{labels.cancel}</button>
     <button type="button" class="secondary-button" data-reconnect><RefreshCw size={16} aria-hidden="true" />{labels.reconnect}</button>
+    <button type="button" class="secondary-button" data-start-session hidden>{labels.continueCorrection}</button>
     <button type="button" data-draft hidden><FilePlus size={16} aria-hidden="true" />{labels.draft}</button>
     <a class="secondary-button" data-gap-return hidden>{labels.returnWorkflow}</a>
     <span class="run-downloads" data-downloads hidden><Download size={16} aria-hidden="true" /><span>{labels.downloads}</span></span>
   </div>
+
+  <section class="free-query-session-card" data-free-query-session hidden>
+    <header>
+      <div><p class="runtime-eyebrow">{labels.freeQuerySession.title}</p><h2 data-session-original></h2></div>
+      <span class="run-status" data-session-status></span>
+    </header>
+    <div class="free-query-iteration-list" data-session-iterations></div>
+    <section class="free-query-feedback-progress" data-feedback-progress aria-live="polite" hidden>
+      <div class="free-query-feedback-progress-heading">
+        <strong>{labels.freeQuerySession.feedbackProgress}</strong>
+        <button type="button" class="secondary-button" data-feedback-cancel>{labels.freeQuerySession.cancelFeedback}</button>
+      </div>
+      <ol>
+        {labels.freeQuerySession.feedbackSteps.map((step, index) => <li data-feedback-step={index}><span>{index + 1}</span><b>{step}</b></li>)}
+      </ol>
+      <p data-feedback-progress-detail></p>
+    </section>
+    <div class="free-query-session-actions" data-session-actions hidden>
+      <button type="button" data-session-correct>{labels.freeQuerySession.correct}</button>
+      <button type="button" class="secondary-button" data-session-accept>{labels.freeQuerySession.satisfied}</button>
+      <button type="button" class="secondary-button" data-session-new>{labels.freeQuerySession.newQuestion}</button>
+      <button type="button" class="secondary-button" data-session-reopen hidden>{labels.freeQuerySession.reopen}</button>
+      <button type="button" data-session-draft hidden>{labels.freeQuerySession.createDraft}</button>
+    </div>
+    <form class="free-query-feedback-form" data-session-feedback hidden>
+      <p data-session-feedback-question>{labels.freeQuerySession.feedbackPrompt}</p>
+      <div class="free-query-feedback-chips" data-session-chips>
+        {Object.entries(labels.freeQuerySession.chips).map(([value, text]) => <button type="button" data-feedback-type={value}>{text}</button>)}
+      </div>
+      <textarea name="feedback" rows="4" required placeholder={labels.freeQuerySession.feedbackPlaceholder}></textarea>
+      <p class="run-input-feedback" data-session-feedback-status aria-live="polite" hidden></p>
+      <div class="runtime-form-actions">
+        <button type="submit"><Send size={16} aria-hidden="true" />{labels.freeQuerySession.submitFeedback}</button>
+      </div>
+    </form>
+  </section>
 
   <details class="run-input-disclosure" data-input-disclosure hidden>
     <summary data-input-summary>{labels.steerTitle}</summary>
@@ -375,14 +482,19 @@ const labels = locale === "zh" ? {
 <script is:inline define:vars={{ labels, locale }}>
   const root = document.querySelector("[data-run-console]");
   const queryParams = new URLSearchParams(window.location.search);
-  const runId = queryParams.get("run");
+  let runId = queryParams.get("run");
+  let sessionId = queryParams.get("session");
   const workflowDraft = queryParams.get("workflowDraft");
   const gap = queryParams.get("gap");
   const apiBase = root?.dataset.apiBase;
   const terminal = new Set(["completed", "inconclusive", "failed", "cancelled"]);
   const seenEvents = new Set();
   let source;
+  let feedbackSource;
+  let activeFeedbackRequestId = "";
   let currentRun;
+  let currentSession;
+  let selectedFeedbackType = "";
   let inputDisplayMode = "";
 
   const showAlert = (message) => {
@@ -481,8 +593,8 @@ const labels = locale === "zh" ? {
     return purposes[id] || localized(step.purpose || step.rationale || step.description) || labels.empty;
   };
   const stateLabel = (state) => {
-    const values = locale === "zh" ? { complete: "已完成", blocked: "已阻塞", in_progress: "处理中", confirmed: "已确认", partial: "部分确认", not_confirmed: "未确认", unknown: "无法确认", not_assessed: "未单独核验", not_requested: "未启用", candidate: "风险候选", not_candidate: "未发现风险", snapshot_only: "仅库存快照", no_stock: "无当前库存", inconclusive: "无法确认", normal: "正常", attention: "需要关注", found: "已找到", not_found: "未找到" }
-      : { complete: "Complete", blocked: "Blocked", in_progress: "In progress", confirmed: "Confirmed", partial: "Partially confirmed", not_confirmed: "Not confirmed", unknown: "Unknown", not_assessed: "Not independently verified", not_requested: "Not enabled", candidate: "Risk candidate", not_candidate: "No risk found", snapshot_only: "Stock snapshot only", no_stock: "No current stock", inconclusive: "Inconclusive", normal: "Normal", attention: "Attention required", found: "Found", not_found: "Not found" };
+    const values = locale === "zh" ? { complete: "已完成", blocked: "已阻塞", in_progress: "处理中", confirmed: "已确认", partial: "部分确认", not_confirmed: "未确认", unknown: "无法确认", not_assessed: "未单独核验", not_requested: "未启用", candidate: "风险候选", not_candidate: "未发现风险", snapshot_only: "仅库存快照", no_stock: "无当前库存", inconclusive: "无法确认", normal: "正常", attention: "需要关注", found: "已找到", not_found: "未找到", within_tolerance: "偏差在阈值内", pir_under_coverage: "PIR覆盖不足", pir_over_coverage: "PIR覆盖过度", pir_missing: "缺少PIR", no_activity: "无需求活动", shortage: "存在短缺", covered: "预计可覆盖", not_covered: "预计无法覆盖", no_new_shortage: "未新增短缺", creates_shortage: "将产生短缺", worsens_existing_shortage: "将加重已有短缺", demand: "需求", receipt: "入库", stock: "库存", unknown_direction: "方向未确认" }
+      : { complete: "Complete", blocked: "Blocked", in_progress: "In progress", confirmed: "Confirmed", partial: "Partially confirmed", not_confirmed: "Not confirmed", unknown: "Unknown", not_assessed: "Not independently verified", not_requested: "Not enabled", candidate: "Risk candidate", not_candidate: "No risk found", snapshot_only: "Stock snapshot only", no_stock: "No current stock", inconclusive: "Inconclusive", normal: "Normal", attention: "Attention required", found: "Found", not_found: "Not found", within_tolerance: "Within tolerance", pir_under_coverage: "PIR under-coverage", pir_over_coverage: "PIR over-coverage", pir_missing: "PIR missing", no_activity: "No demand activity", shortage: "Shortage", covered: "Expected to be covered", not_covered: "Expected not to be covered", no_new_shortage: "No new shortage", creates_shortage: "Creates shortage", worsens_existing_shortage: "Worsens existing shortage", demand: "Demand", receipt: "Receipt", stock: "Stock", unknown_direction: "Direction unknown" };
     return values[state] || titleCase(state);
   };
   const firstRule = (run) => (run.result?.rule_results || []).find((item) => item?.business_report || item?.stages);
@@ -879,9 +991,90 @@ const labels = locale === "zh" ? {
     const card = root.querySelector("[data-business-result]"); card.dataset.tone = view.tone || "warning"; const state = root.querySelector("[data-business-state]"); state.textContent = labels.reportState[card.dataset.tone] || labels.reportState.info;
   };
 
+  const materialOutputFor = (run) => {
+    const output = firstRule(run)?.workflow_output;
+    return output && Array.isArray(output.material_results) ? output : null;
+  };
+
+  const materialActionLabel = (value) => {
+    const actions = locale === "zh" ? {
+      increase_or_bring_forward_pir: "提高或提前PIR", reduce_or_reschedule_pir: "降低或调整PIR期间", review_pir_scope: "复核PIR范围与版本",
+      no_pir_adjustment: "PIR暂不需要调整", rerun_mrp_after_pir_review: "确认PIR后重新运行MRP", increase_or_bring_forward_planned_receipt: "增加或提前计划入库",
+      bring_forward_planned_receipt: "提前计划入库", reduce_postpone_or_cancel_planned_receipt: "减少、推迟或取消计划入库", no_planned_order_adjustment: "计划订单暂不需要调整",
+    } : {
+      increase_or_bring_forward_pir: "Increase or bring forward PIR", reduce_or_reschedule_pir: "Reduce or reschedule PIR", review_pir_scope: "Review PIR scope and version",
+      no_pir_adjustment: "No PIR adjustment needed", rerun_mrp_after_pir_review: "Rerun MRP after PIR review", increase_or_bring_forward_planned_receipt: "Increase or bring forward planned receipts",
+      bring_forward_planned_receipt: "Bring planned receipts forward", reduce_postpone_or_cancel_planned_receipt: "Reduce, postpone, or cancel planned receipts", no_planned_order_adjustment: "No planned-order adjustment needed",
+    };
+    return actions[value] || friendlyId(value);
+  };
+
+  const appendMaterialTable = (parent, title, rows, columns) => {
+    if (!Array.isArray(rows) || !rows.length) return;
+    const heading = document.createElement("h4"); heading.textContent = title; parent.append(heading);
+    const wrap = document.createElement("div"); wrap.className = "run-table-wrap";
+    const table = document.createElement("table"); table.className = "run-business-table material-detail-table";
+    const head = document.createElement("thead"); const headRow = document.createElement("tr");
+    columns.forEach((column) => { const cell = document.createElement("th"); cell.textContent = column.label; headRow.append(cell); }); head.append(headRow);
+    const body = document.createElement("tbody");
+    rows.forEach((item) => { const row = document.createElement("tr"); columns.forEach((column, index) => { const cell = document.createElement(index === 0 ? "th" : "td"); if (index === 0) cell.scope = "row"; const value = item?.[column.key]; cell.textContent = column.status ? stateLabel(value) : workflowValue(value); row.append(cell); }); body.append(row); });
+    table.append(head, body); wrap.append(table); parent.append(wrap);
+  };
+
+  const createMaterialDetail = (item, isDemandSimulation, open = false) => {
+    const details = document.createElement("details"); details.className = "material-result-detail"; details.dataset.material = item.material; details.open = open;
+    const summary = document.createElement("summary"); const name = document.createElement("strong"); name.textContent = item.material; const status = document.createElement("span"); status.className = `business-state business-state-${item.business_status}`; status.textContent = stateLabel(item.business_status); summary.append(name, status); details.append(summary);
+    const body = document.createElement("div"); body.className = "material-result-body";
+    const completeness = document.createElement("div"); completeness.className = "workflow-completeness-pills";
+    [[item.source_complete, labels.materialView.queryComplete, labels.materialView.queryIncomplete], [item.evidence_complete, labels.materialView.evidenceCompleteLabel, labels.materialView.evidenceIncomplete]].forEach(([complete, yes, no]) => { const pill = document.createElement("span"); pill.dataset.complete = String(Boolean(complete)); pill.textContent = complete ? yes : no; completeness.append(pill); }); body.append(completeness);
+    const metrics = document.createElement("dl"); metrics.className = "presentation-key-values material-result-values";
+    const definitions = isDemandSimulation
+      ? [[labels.materialView.requestedDemand, `${workflowValue(item.new_sales_demand_quantity)} ${workflowValue(item.unit)}`.trim(), false], [labels.materialView.demandDate, item.new_sales_demand_date, false], [labels.materialView.demand, item.demand_coverage_status, true], [labels.materialView.availableBefore, item.projected_available_before_demand, false], [labels.materialView.availableAfter, item.projected_available_after_demand, false], [labels.materialView.existingDemand, item.existing_demand_before_request, false], [labels.materialView.futureReceipts, item.future_receipts_before_request, false], [locale === "zh" ? "后续影响" : "Horizon impact", item.horizon_impact_status, true], [locale === "zh" ? "当前非限制库存" : "Current unrestricted stock", item.current_unrestricted_stock, false], [locale === "zh" ? "正式ATP" : "Formal ATP", item.atp_status, true]]
+      : [[labels.materialView.forecast, item.forecast_status, true], [labels.materialView.salesDemand, item.sales_demand_quantity, false], [labels.materialView.pir, item.pir_quantity, false], [labels.materialView.plannedOrder, item.planned_order_quantity, false], [labels.materialView.mrp, item.mrp_coverage_status, true], [locale === "zh" ? "最低MRP可用量" : "Lowest MRP availability", item.lowest_mrp_available_quantity, false]];
+    definitions.forEach(([label, value, statusValue]) => { const term = document.createElement("dt"); term.textContent = label; const description = document.createElement("dd"); description.textContent = statusValue ? stateLabel(value) : workflowValue(value); metrics.append(term, description); }); body.append(metrics);
+    if (Array.isArray(item.recommendations) && item.recommendations.length) {
+      const heading = document.createElement("h4"); heading.textContent = labels.materialView.recommendations; const list = document.createElement("ol");
+      [...item.recommendations].sort((left, right) => Number(left.priority) - Number(right.priority)).forEach((recommendation) => { const entry = document.createElement("li"); entry.textContent = `${recommendation.priority === 1 ? labels.materialView.first : labels.materialView.second}：${materialActionLabel(recommendation.action)}`; list.append(entry); }); body.append(heading, list);
+    }
+    appendMaterialTable(body, labels.materialView.periodDetails, item.period_results, [
+      { key: "period_start", label: locale === "zh" ? "期间开始" : "Period start" }, { key: "period_end", label: locale === "zh" ? "期间结束" : "Period end" },
+      { key: "sales_demand_quantity", label: labels.materialView.salesDemand }, { key: "pir_quantity", label: labels.materialView.pir }, { key: "status", label: labels.materialView.status, status: true },
+    ]);
+    appendMaterialTable(body, labels.materialView.supplyDemand, item.supply_demand_items, [
+      { key: "date", label: locale === "zh" ? "日期" : "Date" }, { key: "element_name", label: locale === "zh" ? "MRP项目" : "MRP element" },
+      { key: "flow_direction", label: locale === "zh" ? "供需方向" : "Direction", status: true }, { key: "open_quantity", label: locale === "zh" ? "未结数量" : "Open quantity" }, { key: "available_quantity", label: locale === "zh" ? "累计可用量" : "Cumulative availability" },
+    ]);
+    if (Array.isArray(item.evidence_gaps) && item.evidence_gaps.length) appendLocalizedList(body, labels.missingEvidence, item.evidence_gaps, false, workflowGapLabel);
+    details.append(body); return details;
+  };
+
+  const renderMaterialResults = (run, output) => {
+    const container = root.querySelector("[data-presentation-blocks]"); container.replaceChildren(); container.className = "presentation-blocks material-results-presentation";
+    const items = output.material_results || []; const isDemandSimulation = run.agent_id === "new-sales-demand-coverage";
+    const metrics = document.createElement("div"); metrics.className = "presentation-metrics";
+    [[output.processed_material_count, locale === "zh" ? "已处理" : "Processed"], [output.normal_material_count, locale === "zh" ? "正常" : "Normal"], [output.attention_material_count, locale === "zh" ? "需关注" : "Attention"], [output.inconclusive_material_count, locale === "zh" ? "无法确认" : "Inconclusive"]].forEach(([value, label]) => { const card = document.createElement("div"); card.className = "presentation-metric"; const text = document.createElement("span"); text.textContent = label; const number = document.createElement("strong"); number.textContent = String(value ?? 0); card.append(text, number); metrics.append(card); }); container.append(metrics);
+    if (items.length === 1) container.append(createMaterialDetail(items[0], isDemandSimulation, true));
+    else {
+      const controls = document.createElement("div"); controls.className = "material-result-controls"; const search = document.createElement("input"); search.type = "search"; search.placeholder = labels.materialView.searchPlaceholder; search.setAttribute("aria-label", labels.materialView.search); const filter = document.createElement("select"); filter.setAttribute("aria-label", labels.materialView.filter); const all = document.createElement("option"); all.value = ""; all.textContent = labels.materialView.all; filter.append(all); [...new Set(items.map((item) => item.business_status))].forEach((value) => { const option = document.createElement("option"); option.value = value; option.textContent = stateLabel(value); filter.append(option); }); controls.append(search, filter); container.append(controls);
+      const results = document.createElement("div"); container.append(results); let page = 0; const pageSize = 20;
+      const draw = () => { results.replaceChildren(); const needle = search.value.trim().toUpperCase(); const filtered = items.filter((item) => (!filter.value || item.business_status === filter.value) && (!needle || String(item.material).toUpperCase().includes(needle))); const pages = Math.max(1, Math.ceil(filtered.length / pageSize)); page = Math.min(page, pages - 1); const visible = filtered.slice(page * pageSize, page * pageSize + pageSize); if (!visible.length) { const empty = document.createElement("p"); empty.textContent = labels.materialView.noResults; results.append(empty); return; } const firstRisk = visible.find((item) => item.business_status !== "normal")?.material; visible.forEach((item) => results.append(createMaterialDetail(item, isDemandSimulation, item.material === firstRisk))); if (pages > 1) { const pager = document.createElement("div"); pager.className = "presentation-pagination"; const previous = document.createElement("button"); previous.type = "button"; previous.textContent = labels.materialView.previous; previous.disabled = page === 0; previous.addEventListener("click", () => { page -= 1; draw(); }); const status = document.createElement("span"); status.textContent = labels.materialView.page.replace("{current}", String(page + 1)).replace("{total}", String(pages)); const next = document.createElement("button"); next.type = "button"; next.textContent = labels.materialView.next; next.disabled = page >= pages - 1; next.addEventListener("click", () => { page += 1; draw(); }); pager.append(previous, status, next); results.append(pager); } };
+      search.addEventListener("input", () => { page = 0; draw(); }); filter.addEventListener("change", () => { page = 0; draw(); }); draw();
+    }
+    container.hidden = false; legacyBusinessSections().forEach((node) => { node.hidden = true; });
+    const card = root.querySelector("[data-business-result]"); card.dataset.tone = output.business_status === "normal" ? "success" : "warning"; root.querySelector("[data-business-state]").textContent = output.business_status === "normal" ? labels.reportState.success : labels.reportState.warning;
+    root.querySelector("[data-business-headline]").textContent = isDemandSimulation ? (locale === "zh" ? "逐物料新增销售需求覆盖结果" : "Per-material new sales demand coverage") : (locale === "zh" ? "逐物料计划覆盖结果" : "Per-material planning coverage");
+    root.querySelector("[data-business-overview]").textContent = isDemandSimulation ? (locale === "zh" ? "结果按物料独立计算，MRP模拟不等于正式ATP确认。" : "Results are calculated independently by material; the MRP simulation is not formal ATP.") : (locale === "zh" ? "建议先复核PIR，再根据复核后的MRP结果处理计划订单。" : "Review PIR first, then act on planned orders using the reviewed MRP result.");
+  };
+
   const renderBusinessReport = (run) => {
     if (run.mode === "workflow" && run.result?.workflow_presentation) {
       renderWorkflowPresentation(run, run.result.workflow_presentation);
+      root.querySelector("[data-business-result]").hidden = false;
+      return;
+    }
+    const materialOutput = materialOutputFor(run);
+    if (materialOutput && ["demand-forecast-planning", "new-sales-demand-coverage"].includes(run.agent_id)) {
+      renderMaterialResults(run, materialOutput);
       root.querySelector("[data-business-result]").hidden = false;
       return;
     }
@@ -1091,7 +1284,15 @@ const labels = locale === "zh" ? {
     const activityId = progress.current_step_id || progress.current_node_id || "";
     const activity = activityId ? friendlyId(activityId) : "";
     const phaseText = labels.phaseLabels[index] || labels.phaseLabels[0];
-    root.querySelector("[data-progress-message]").textContent = [labels.progressState[state] || phaseText, activity, unitText].filter(Boolean).join(" · ");
+    const elapsedText = run.mode === "free_query" && Number(progress.hard_limit_seconds) > 0
+      ? labels.freeQuerySession.elapsed.replace("{elapsed}", String(progress.elapsed_seconds || 0)).replace("{hard}", String(progress.hard_limit_seconds))
+      : "";
+    const deadlineText = progress.deadline_phase === "finalizing"
+      ? labels.freeQuerySession.finalizing
+      : Number(progress.extension_count || 0) > 0
+        ? labels.freeQuerySession.extended.replace("{count}", String(progress.extension_count))
+        : "";
+    root.querySelector("[data-progress-message]").textContent = [labels.progressState[state] || phaseText, activity, unitText, elapsedText, deadlineText].filter(Boolean).join(" · ");
     const indicator = root.querySelector("[data-progress-indicator]");
     indicator.className = `run-progress-indicator ${finished ? "is-complete" : failed ? "is-stopped" : waiting ? "is-paused" : "is-active"}`;
     let percent;
@@ -1122,11 +1323,191 @@ const labels = locale === "zh" ? {
     node.textContent = parts.join(" · "); node.hidden = false;
   };
 
+  const feedbackStepIndex = (request) => {
+    const phase = String(request?.phase || "received");
+    if (phase === "runtime_review") return 1;
+    if (phase === "deciding") return 2;
+    if (phase === "preparing_iteration") return 3;
+    if (phase === "completed") return 4;
+    return 0;
+  };
+
+  const renderFeedbackProgress = (request) => {
+    const panel = root.querySelector("[data-feedback-progress]");
+    if (!request) { panel.hidden = true; return; }
+    panel.hidden = false;
+    activeFeedbackRequestId = String(request.feedback_request_id || "");
+    const current = feedbackStepIndex(request);
+    const failed = ["failed", "cancelled"].includes(String(request.status));
+    panel.querySelectorAll("[data-feedback-step]").forEach((step, index) => {
+      step.classList.toggle("is-complete", !failed && index < current);
+      step.classList.toggle("is-active", !failed && index === Math.min(current, 3));
+      step.classList.toggle("is-stopped", failed && index === Math.min(current, 3));
+    });
+    const detail = panel.querySelector("[data-feedback-progress-detail]");
+    if (request.status === "waiting_input") detail.textContent = request.decision?.clarification_question || labels.freeQuerySession.waiting;
+    else if (request.status === "new_session_required") detail.textContent = labels.freeQuerySession.startNew;
+    else if (request.status === "cancelled") detail.textContent = labels.freeQuerySession.feedbackCancelled;
+    else if (request.status === "failed") detail.textContent = String(request.error?.message || request.error?.code || labels.inputFailed);
+    else if (request.decision?.action === "reinterpret") detail.textContent = labels.freeQuerySession.evidenceReuse;
+    else detail.textContent = labels.freeQuerySession.feedbackSteps[Math.min(current, 3)];
+    panel.querySelector("[data-feedback-cancel]").hidden = !["queued", "reviewing", "waiting_input"].includes(String(request.status));
+  };
+
+  const renderFreeQuerySession = (session) => {
+    currentSession = session;
+    const card = root.querySelector("[data-free-query-session]");
+    card.hidden = false;
+    root.querySelector("[data-session-original]").textContent = `${labels.freeQuerySession.original}: ${session.original_query}`;
+    root.querySelector("[data-session-status]").textContent = labels.status[session.status] || session.status;
+    renderFeedbackProgress(session.active_feedback_request || null);
+    const list = root.querySelector("[data-session-iterations]");
+    list.replaceChildren();
+    (session.iterations || []).forEach((item) => {
+      const details = document.createElement("details");
+      details.className = "free-query-iteration";
+      details.open = Number(item.iteration) === Number(session.current_iteration);
+      const summary = document.createElement("summary");
+      const iterationLabel = labels.freeQuerySession.iteration.replace("{n}", String(item.iteration));
+      const actionLabel = item.execution_action === "requery" ? labels.freeQuerySession.requery
+        : item.execution_action === "reinterpret" ? labels.freeQuerySession.reinterpret
+        : labels.freeQuerySession.initial;
+      summary.textContent = `${iterationLabel} · ${labels.status[item.status] || item.status} · ${actionLabel}`;
+      details.append(summary);
+      const body = document.createElement("div");
+      body.className = "free-query-iteration-body";
+      if (item.feedback) {
+        const feedback = document.createElement("p");
+        feedback.textContent = `${labels.freeQuerySession.feedback}: ${item.feedback}`;
+        body.append(feedback);
+      }
+      const reason = String(item.decision?.reason || item.decision?.revised_intent || "").trim();
+      if (reason) {
+        const understood = document.createElement("p");
+        understood.textContent = `${labels.freeQuerySession.understood}: ${reason}`;
+        body.append(understood);
+      }
+      const expectations = Array.isArray(item.decision?.candidate_expectations)
+        ? item.decision.candidate_expectations : [];
+      if (expectations.length) {
+        const heading = document.createElement("strong");
+        heading.textContent = labels.freeQuerySession.expectations;
+        const expectationList = document.createElement("ul");
+        expectationList.className = "free-query-expectations";
+        expectations.forEach((expectation) => {
+          const row = document.createElement("li");
+          const status = labels.freeQuerySession.expectationStatus[expectation.status]
+            || expectation.status;
+          row.textContent = `${expectation.statement} — ${status}`;
+          row.dataset.status = expectation.status || "not_verifiable";
+          expectationList.append(row);
+        });
+        body.append(heading, expectationList);
+      }
+      const changes = [];
+      if (item.change_summary?.plan_changed) changes.push(labels.freeQuerySession.planChanged);
+      if (item.change_summary?.result_changed) changes.push(labels.freeQuerySession.resultChanged);
+      if (item.change_summary?.summary_changed) changes.push(labels.freeQuerySession.summaryChanged);
+      if (item.execution_action === "reinterpret") changes.push(labels.freeQuerySession.noSap);
+      (item.change_summary?.resolved_evidence_gaps || []).forEach((gap) => changes.push(`${labels.freeQuerySession.evidenceGapResolved}: ${gap}`));
+      (item.change_summary?.added_evidence_gaps || []).forEach((gap) => changes.push(`${labels.freeQuerySession.evidenceGapAdded}: ${gap}`));
+      const changeText = document.createElement("p");
+      changeText.textContent = `${labels.freeQuerySession.changes}: ${changes.join(" · ") || labels.freeQuerySession.noChanges}`;
+      body.append(changeText);
+      const link = document.createElement("a");
+      const params = new URLSearchParams({ session: session.session_id, run: item.run_id });
+      link.href = `${window.location.pathname}?${params.toString()}`;
+      link.className = "secondary-button";
+      link.textContent = item.iteration === session.current_iteration ? labels.freeQuerySession.latest : `${labels.freeQuerySession.iteration.replace("{n}", String(item.iteration))}`;
+      body.append(link);
+      details.append(body);
+      list.append(details);
+    });
+    const latest = (session.iterations || []).find((item) => Number(item.iteration) === Number(session.current_iteration));
+    const latestTerminal = latest && terminal.has(latest.status);
+    const latestReviewable = latest && ["completed", "inconclusive"].includes(latest.status) && Boolean(latest.result_digest);
+    const actions = root.querySelector("[data-session-actions]");
+    actions.hidden = !latestTerminal || session.status === "reviewing_feedback";
+    root.querySelector("[data-session-correct]").hidden = session.status !== "reviewing" || !latestReviewable;
+    root.querySelector("[data-session-accept]").hidden = session.status !== "reviewing" || !latestReviewable;
+    root.querySelector("[data-session-new]").hidden = !["reviewing", "satisfied"].includes(session.status);
+    root.querySelector("[data-session-reopen]").hidden = session.status !== "satisfied";
+    root.querySelector("[data-session-draft]").hidden = session.status !== "satisfied";
+    const feedbackForm = root.querySelector("[data-session-feedback]");
+    if (session.status === "waiting_input" && session.pending_feedback) {
+      feedbackForm.hidden = false;
+      feedbackForm.dataset.mode = "clarification";
+      root.querySelector("[data-session-feedback-question]").textContent = session.pending_feedback?.decision?.clarification_question || labels.freeQuerySession.waiting;
+    } else if (feedbackForm.dataset.mode === "clarification") {
+      feedbackForm.hidden = true;
+      feedbackForm.dataset.mode = "";
+    }
+  };
+
+  const loadSession = async () => {
+    if (!sessionId || !apiBase) return;
+    const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}`);
+    if (!response.ok) throw new Error(await response.text());
+    const session = await response.json();
+    renderFreeQuerySession(session);
+    if (session.active_feedback_request?.feedback_request_id) {
+      connectFeedback(String(session.active_feedback_request.feedback_request_id));
+    } else if (feedbackSource) {
+      feedbackSource.close(); feedbackSource = undefined; activeFeedbackRequestId = "";
+    }
+    return session;
+  };
+
+  const loadFeedbackRequest = async (requestId) => {
+    if (!sessionId || !requestId) return null;
+    const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/feedback-requests/${encodeURIComponent(requestId)}`);
+    if (!response.ok) throw new Error(await response.text());
+    const request = await response.json();
+    renderFeedbackProgress(request);
+    if (request.run_id && request.status === "iteration_created") {
+      runId = String(request.run_id);
+      const params = new URLSearchParams(window.location.search);
+      params.set("session", String(sessionId)); params.set("run", runId);
+      history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+      await loadSession(); await loadRun(); connect();
+    } else if (["new_session_required", "failed", "cancelled"].includes(String(request.status))) {
+      await loadSession();
+    }
+    return request;
+  };
+
+  const connectFeedback = (requestId) => {
+    if (!sessionId || !requestId || !window.EventSource) return;
+    if (feedbackSource && activeFeedbackRequestId === requestId && feedbackSource.readyState !== EventSource.CLOSED) return;
+    if (feedbackSource) feedbackSource.close();
+    activeFeedbackRequestId = requestId;
+    feedbackSource = new EventSource(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/feedback-requests/${encodeURIComponent(requestId)}/events`);
+    const names = ["feedback_received", "feedback_review_started", "feedback_decision_created", "feedback_waiting_input", "feedback_iteration_queued", "feedback_review_failed", "feedback_cancelled"];
+    names.forEach((name) => feedbackSource.addEventListener(name, async () => {
+      try {
+        const request = await loadFeedbackRequest(requestId);
+        if (request && ["iteration_created", "new_session_required", "failed", "cancelled"].includes(String(request.status))) {
+          feedbackSource?.close(); feedbackSource = undefined;
+        }
+      } catch (error) { showAlert(String(error?.message || error)); }
+    }));
+    feedbackSource.onerror = () => {
+      if (feedbackSource?.readyState === EventSource.CLOSED) feedbackSource = undefined;
+    };
+  };
+
   const renderRun = (run) => {
     const incomingSequence = Number(run.progress?.event_sequence || 0);
     const currentSequence = Number(currentRun?.progress?.event_sequence || 0);
     if (currentRun && incomingSequence < currentSequence) run.progress = currentRun.progress;
     currentRun = run;
+    if (run.free_query_session?.session_id && !sessionId) {
+      sessionId = String(run.free_query_session.session_id);
+      const params = new URLSearchParams(window.location.search);
+      params.set("session", sessionId);
+      history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+      loadSession().catch(() => {});
+    }
     const modeLabel = run.mode === "free_query" && run.agent_id ? labels.mode.guided : (labels.mode[run.mode] || run.mode);
     const subject = run.agent_id || run.workflow_id;
     const runtimeIdentity = run.mode === "free_query" && run.runtime?.provider_id
@@ -1158,7 +1539,8 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-input-help]").textContent = waitingForInput ? labels.inputHelp : labels.steerHelp;
     root.querySelector("[data-input-submit]").textContent = waitingForInput ? labels.clarificationSend : labels.steerSend;
     inputForm.querySelector("textarea").placeholder = waitingForInput ? labels.clarificationPlaceholder : (steerable ? labels.steerPlaceholder : labels.inputPlaceholder);
-    root.querySelector("[data-draft]").hidden = run.mode !== "free_query" || !terminal.has(run.status) || !run.plan;
+    root.querySelector("[data-draft]").hidden = Boolean(sessionId) || run.mode !== "free_query" || !terminal.has(run.status) || !run.plan;
+    root.querySelector("[data-start-session]").hidden = Boolean(sessionId) || run.mode !== "free_query" || !["completed", "inconclusive"].includes(run.status);
     const downloads = root.querySelector("[data-downloads]");
     downloads.querySelectorAll("a").forEach((node) => node.remove());
     if (run.mode === "workflow" && run.result?.workflow_presentation) {
@@ -1179,6 +1561,11 @@ const labels = locale === "zh" ? {
   };
 
   const loadRun = async () => {
+    if (!runId && sessionId) {
+      const session = await loadSession();
+      const latest = (session?.iterations || []).find((item) => Number(item.iteration) === Number(session.current_iteration));
+      if (latest) runId = String(latest.run_id);
+    }
     if (!runId || !apiBase) return;
     const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}`);
     if (!response.ok) throw new Error(await response.text());
@@ -1194,7 +1581,9 @@ const labels = locale === "zh" ? {
     "harness_started", "harness_resumed", "codex_turn_started", "codex_turn_failed", "assistant_message", "web_search_started", "web_search_completed",
     "tool_discovery_started", "tool_discovery_completed", "tool_admission_passed", "tool_admission_rejected",
     "external_tool_started", "external_tool_completed", "external_tool_failed", "tool_requested", "tool_failed",
+    "agent_runtime_tool_started", "agent_runtime_tool_completed", "harness_time_extended", "harness_finalization_started",
     "evidence_gap_assessed", "codex_turn_completed", "harness_completed", "harness_interrupted",
+    "feedback_reinterpretation_started",
   ];
   const connect = () => {
     source?.close();
@@ -1205,6 +1594,7 @@ const labels = locale === "zh" ? {
         try { appendEvent(name, JSON.parse(event.data)); } catch { appendEvent(name, {}); }
       }
       loadRun().catch(() => showAlert(labels.unavailable));
+      if (sessionId) loadSession().catch(() => {});
       if (["run_completed", "run_inconclusive", "run_failed", "run_cancelled"].includes(name)) source.close();
     }));
     source.onerror = () => loadRun().catch(() => showAlert(labels.unavailable));
@@ -1244,6 +1634,106 @@ const labels = locale === "zh" ? {
       returnLink.hidden = false;
     } else if (!response.ok) button.disabled = false;
   });
+  root?.querySelector("[data-start-session]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget; button.disabled = true;
+    try {
+      const response = await fetch(`${apiBase}/api/free-query-sessions`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRunId: runId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(String(payload.detail?.message || payload.detail || "Session creation failed"));
+      sessionId = String(payload.session_id);
+      const params = new URLSearchParams(window.location.search);
+      params.set("session", sessionId); params.set("run", runId);
+      history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+      renderFreeQuerySession(payload); renderRun(currentRun);
+    } catch (error) { showAlert(String(error?.message || error)); button.disabled = false; }
+  });
 
-  if (runId) loadRun().then(connect).catch(() => showAlert(labels.unavailable)); else showAlert(labels.noRun);
+  root?.querySelector("[data-session-correct]")?.addEventListener("click", () => {
+    const form = root.querySelector("[data-session-feedback]");
+    form.hidden = false; form.dataset.mode = "feedback";
+    root.querySelector("[data-session-feedback-question]").textContent = labels.freeQuerySession.feedbackPrompt;
+    form.querySelector("textarea")?.focus();
+  });
+  root?.querySelectorAll("[data-feedback-type]").forEach((button) => button.addEventListener("click", () => {
+    selectedFeedbackType = String(button.dataset.feedbackType || "");
+    root.querySelectorAll("[data-feedback-type]").forEach((item) => item.classList.toggle("is-selected", item === button));
+  }));
+  root?.querySelector("[data-session-feedback]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const feedback = String(new FormData(form).get("feedback") || "").trim();
+    const status = root.querySelector("[data-session-feedback-status]");
+    const button = form.querySelector("button[type=submit]");
+    if (!feedback || !currentSession) return;
+    if (button) button.disabled = true;
+    status.hidden = true;
+    try {
+      const clarification = form.dataset.mode === "clarification";
+      const endpoint = clarification ? "feedback-input" : "feedback";
+      const body = clarification
+        ? { baseIteration: currentSession.current_iteration, input: feedback }
+        : { baseIteration: currentSession.current_iteration, feedback, locale, feedbackTypeHint: selectedFeedbackType || null };
+      const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/${endpoint}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(String(payload.detail?.message || payload.detail || "Feedback failed"));
+      status.textContent = labels.freeQuerySession.feedbackSteps[0]; status.dataset.state = "success"; status.hidden = false;
+      form.reset(); selectedFeedbackType = ""; form.hidden = true;
+      root.querySelectorAll("[data-feedback-type]").forEach((item) => item.classList.remove("is-selected"));
+      renderFeedbackProgress(payload);
+      connectFeedback(String(payload.feedback_request_id || ""));
+      await loadSession();
+    } catch (error) {
+      status.textContent = String(error?.message || error); status.dataset.state = "error"; status.hidden = false;
+    } finally { if (button) button.disabled = false; }
+  });
+  root?.querySelector("[data-feedback-cancel]")?.addEventListener("click", async (event) => {
+    if (!sessionId || !activeFeedbackRequestId) return;
+    const button = event.currentTarget; button.disabled = true;
+    try {
+      const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/feedback-requests/${encodeURIComponent(activeFeedbackRequestId)}/cancel`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "user_cancelled" }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      renderFeedbackProgress(await response.json());
+      feedbackSource?.close(); feedbackSource = undefined;
+      await loadSession();
+    } catch (error) { showAlert(String(error?.message || error)); }
+    finally { button.disabled = false; }
+  });
+  root?.querySelector("[data-session-accept]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget; button.disabled = true;
+    try {
+      const latest = (currentSession?.iterations || []).find((item) => Number(item.iteration) === Number(currentSession.current_iteration));
+      const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/accept`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ iteration: currentSession.current_iteration, expectedResultDigest: latest?.result_digest }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      renderFreeQuerySession(await response.json());
+    } catch (error) { showAlert(String(error?.message || error)); }
+    finally { button.disabled = false; }
+  });
+  root?.querySelector("[data-session-reopen]")?.addEventListener("click", async () => {
+    const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/reopen`, { method: "POST" });
+    if (response.ok) renderFreeQuerySession(await response.json()); else showAlert(await response.text());
+  });
+  root?.querySelector("[data-session-draft]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget; button.disabled = true;
+    const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/agent-draft`, { method: "POST" });
+    const payload = await response.json();
+    button.textContent = response.ok ? `${labels.freeQuerySession.draftCreated} · ${payload.draft_id}` : String(payload.detail || "Draft failed");
+    if (response.ok) await loadSession(); else button.disabled = false;
+  });
+  root?.querySelector("[data-session-new]")?.addEventListener("click", () => {
+    window.location.href = window.location.pathname.replace(/\/run\/?$/, "/ask/");
+  });
+
+  if (runId || sessionId) {
+    Promise.all([loadRun(), sessionId ? loadSession() : Promise.resolve()]).then(connect).catch(() => showAlert(labels.unavailable));
+  } else showAlert(labels.noRun);
 </script>

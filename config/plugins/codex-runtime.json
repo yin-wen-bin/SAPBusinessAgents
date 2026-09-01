@@ -15,7 +15,16 @@
     },
     {
       "capability": "agent_runtime.v1",
-      "operations": ["plan", "ground_plan", "summarize"]
+      "operations": [
+        "plan",
+        "ground_plan",
+        "summarize",
+        "review_free_query_feedback",
+        "resume_free_query_session",
+        "revise_free_query_presentation",
+        "analyze_role_matching",
+        "review_role_matching_feedback"
+      ]
     },
     {
       "capability": "authoring.v1",
@@ -23,7 +32,7 @@
     },
     {
       "capability": "workflow_authoring.v1",
-      "operations": ["compose_workflow", "review_workflow", "repair_workflow"]
+      "operations": ["compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"]
     }
   ],
   "transport": {

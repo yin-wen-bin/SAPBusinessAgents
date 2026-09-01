@@ -43,12 +43,14 @@ export interface ExecutionInputProperty {
   default?: string | number | boolean | null | unknown[] | Record<string, unknown>;
   "x-sapba-server-default"?: boolean;
   "x-sapba-sap-identifier"?: boolean;
+  "x-sapba-input-normalization"?: "uppercase" | "preserve";
   minLength?: number;
   maxLength?: number;
   minItems?: number;
   maxItems?: number;
   uniqueItems?: boolean;
   minimum?: number;
+  exclusiveMinimum?: number;
   maximum?: number;
   pattern?: string;
   format?: string;
@@ -303,6 +305,15 @@ export interface WorkflowComposition {
   clarification_history?: Array<{ question: string; answer: string }>;
   reconciling?: boolean;
   proposal_snapshot?: Record<string, unknown>;
+  conversation?: {
+    current_turn?: number;
+    status?: string;
+    requires_design_acceptance?: boolean;
+    accepted_design?: Record<string, unknown> | null;
+    accepted_validation?: Record<string, unknown> | null;
+    runtime_snapshot?: Record<string, unknown>;
+    pending_feedback?: Record<string, unknown> | null;
+  };
   output_normalization?: {
     dismissed_requested_outputs?: Array<{
       stage_id: string;
@@ -320,6 +331,13 @@ export interface WorkflowComposition {
 
 export interface AgentDefinition {
   schemaVersion: number;
+  kind?: "platform_assistant";
+  assistant?: {
+    type: "role_matching";
+    runtimeCapability: "role_matching";
+    composable: false;
+    localFileAccess: "read_only_user_selected";
+  };
   slug: string;
   module: SapModule;
   title: LocalizedText;

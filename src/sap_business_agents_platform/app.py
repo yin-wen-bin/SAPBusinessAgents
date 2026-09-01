@@ -25,18 +25,32 @@ from .models import (
     DraftAuthoringCreate,
     DraftCreate,
     DraftInput,
+    FreeQueryAccept,
+    FreeQueryFeedback,
+    FreeQueryFeedbackCancel,
+    FreeQueryFeedbackInput,
+    FreeQuerySessionCreate,
+    RoleMatchingFeedback,
+    RoleMatchingPreflightRequest,
+    RoleMatchingSessionCreate,
+    RoleMatchingWorkflowDraftRequest,
     RunCreate,
     RunInput,
     TERMINAL_STATUSES,
     WorkflowCompositionCreate,
     WorkflowCompositionInput,
     WorkflowDeleteRequest,
+    WorkflowDesignAccept,
     WorkflowDraftCreate,
     WorkflowDraftUpdate,
+    WorkflowFeedbackInput,
+    WorkflowFeedbackRequest,
     WorkflowLifecycleRequest,
     WorkflowPublishRequest,
     WorkflowValidationRequest,
+    WorkflowValidationAccept,
     WorkflowVersionDraftRequest,
+    WorkflowUndoRequest,
 )
 from .plugins import (
     AgentRuntimeCapability,
@@ -57,6 +71,7 @@ from .runtime import (
     StaticRuntimeRouter,
     WorkBuddyRuntimeProbe,
 )
+from .role_matching import RoleMatchingError, RoleMatchingService
 from .sdk_manager import SDKManager, SDKManagerError
 from .skills import SkillRegistry
 from .workbuddy_planner import WorkBuddyPlanner
@@ -112,6 +127,7 @@ def create_app(
         timeout_seconds=settings.sap_odata_timeout_seconds,
         max_results=settings.sap_max_results,
         page_size=settings.sap_page_size,
+        max_concurrent_requests=settings.max_concurrent_sap_gets,
         relationship_catalog_path=settings.repository_root / "config" / "business-relationships.json",
         service_registry_path=settings.odata_service_registry_path,
         catalog_seed_path=settings.catalog_seed_path,
@@ -196,6 +212,9 @@ def create_app(
         store=store,
         drafts=workflow_drafts,
     )
+    role_matching = RoleMatchingService(
+        settings, store, business_agents, agent_runtime, workflow_drafts
+    )
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await plugin_manager.start()
@@ -205,9 +224,11 @@ def create_app(
             approved_skills=len(skill_registry.list()),
         )
         await coordinator.start()
+        await role_matching.start()
         try:
             yield
         finally:
+            await role_matching.stop()
             await coordinator.stop()
             await plugin_manager.stop()
 
@@ -242,6 +263,7 @@ def create_app(
     app.state.workflows = workflows
     app.state.workflow_drafts = workflow_drafts
     app.state.workflow_management = workflow_management
+    app.state.role_matching = role_matching
     app.state.sdk_manager = sdk_registry
 
     @app.get("/api/health")
@@ -374,6 +396,172 @@ def create_app(
             raise HTTPException(404, "Agent not found") from exc
         except PluginError as exc:
             raise HTTPException(503, {"code": exc.code, "message": str(exc)}) from exc
+
+    @app.post("/api/role-matching/preflight")
+    def preflight_role_matching(payload: RoleMatchingPreflightRequest) -> dict[str, Any]:
+        try:
+            return role_matching.preflight(payload.paths)
+        except Exception as exc:
+            code = str(getattr(exc, "code", "role_matching_preflight_failed"))
+            raise HTTPException(409, {"code": code, "message": str(exc), "detail": getattr(exc, "detail", None)}) from exc
+
+    @app.post("/api/role-matching/sessions", status_code=202)
+    async def create_role_matching_session(payload: RoleMatchingSessionCreate) -> dict[str, Any]:
+        try:
+            return await role_matching.create(
+                paths=payload.paths,
+                locale=payload.locale,
+                consent=payload.consent_to_runtime,
+            )
+        except RoleMatchingError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
+
+    @app.get("/api/role-matching/sessions/{session_id}")
+    def get_role_matching_session(session_id: str) -> dict[str, Any]:
+        try:
+            return role_matching.get(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching session not found") from exc
+
+    @app.get("/api/role-matching/sessions/{session_id}/documents")
+    def get_role_matching_documents(session_id: str) -> list[dict[str, Any]]:
+        try:
+            return role_matching.documents(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching session not found") from exc
+
+    @app.get("/api/role-matching/sessions/{session_id}/revisions")
+    def get_role_matching_revisions(session_id: str) -> list[dict[str, Any]]:
+        try:
+            return role_matching.revisions(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching session not found") from exc
+
+    @app.get("/api/role-matching/sessions/{session_id}/revisions/{revision}")
+    def get_role_matching_revision(session_id: str, revision: int) -> dict[str, Any]:
+        try:
+            return role_matching.revision(session_id, revision)
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching revision not found") from exc
+
+    @app.get("/api/role-matching/sessions/{session_id}/events")
+    async def role_matching_events(
+        request: Request, session_id: str, after: int = Query(0, ge=0)
+    ) -> StreamingResponse:
+        try:
+            role_matching.get(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching session not found") from exc
+
+        async def stream() -> AsyncIterator[str]:
+            last_event_id = request.headers.get("last-event-id", "")
+            try:
+                resumed = int(last_event_id) if last_event_id else 0
+            except ValueError:
+                resumed = 0
+            sequence = max(after, resumed)
+            while True:
+                if await request.is_disconnected():
+                    return
+                events = store.role_matching_events_after(session_id, sequence)
+                for event in events:
+                    sequence = int(event["sequence"])
+                    data = json.dumps(event, ensure_ascii=False)
+                    yield f"id: {sequence}\nevent: {event['type']}\ndata: {data}\n\n"
+                session = role_matching.get(session_id)
+                if session["status"] in {"completed", "failed", "cancelled"} and not events:
+                    return
+                if not events:
+                    yield ": heartbeat\n\n"
+                await asyncio.sleep(0.35)
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/role-matching/sessions/{session_id}/feedback", status_code=202)
+    async def submit_role_matching_feedback(
+        session_id: str, payload: RoleMatchingFeedback
+    ) -> dict[str, Any]:
+        try:
+            return await role_matching.feedback(
+                session_id,
+                base_revision=payload.base_revision,
+                message=payload.message,
+                mode=payload.rematch_mode,
+                added_paths=payload.added_paths,
+                excluded_document_ids=payload.excluded_document_ids,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching session not found") from exc
+        except RoleMatchingError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
+
+    @app.post("/api/role-matching/sessions/{session_id}/cancel", status_code=202)
+    async def cancel_role_matching_session(session_id: str) -> dict[str, Any]:
+        try:
+            return await role_matching.cancel(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching session not found") from exc
+
+    @app.post(
+        "/api/role-matching/sessions/{session_id}/workflow-suggestions/{suggestion_id}/draft",
+        status_code=201,
+    )
+    def create_role_matching_workflow_draft(
+        session_id: str, suggestion_id: str, payload: RoleMatchingWorkflowDraftRequest
+    ) -> dict[str, Any]:
+        try:
+            draft = role_matching.create_workflow_draft(
+                session_id, suggestion_id, revision=payload.revision,
+                catalog_digest=payload.expected_catalog_digest,
+            )
+            return draft.model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching session or revision not found") from exc
+        except RoleMatchingError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
+
+    @app.get("/api/role-matching/sessions/{session_id}/revisions/{revision}/report.md")
+    def download_role_matching_report(session_id: str, revision: int) -> Response:
+        try:
+            content = role_matching.markdown(session_id, revision)
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching revision not found") from exc
+        return Response(content, media_type="text/markdown; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="role-matching-report.md"'})
+
+    @app.get("/api/role-matching/sessions/{session_id}/revisions/{revision}/report.json")
+    def download_role_matching_json(session_id: str, revision: int) -> Response:
+        try:
+            payload = role_matching.revision(session_id, revision)
+        except RoleMatchingError as exc:
+            raise HTTPException(status_code=404, detail={"code": exc.code, "message": str(exc)}) from exc
+        return Response(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="role-matching-report.json"'},
+        )
+
+    @app.get("/api/role-matching/sessions/{session_id}/revisions/{revision}/{kind}.csv")
+    def download_role_matching_csv(session_id: str, revision: int, kind: str) -> Response:
+        if kind not in {"operations", "agent_matches", "workflow_suggestions", "agent_gaps"}:
+            raise HTTPException(404, "Role-matching table not found")
+        try:
+            content = role_matching.csv(session_id, revision, kind)
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching revision not found") from exc
+        return Response("\ufeff" + content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{kind}.csv"'})
+
+    @app.delete("/api/role-matching/sessions/{session_id}", status_code=204)
+    async def delete_role_matching_session(session_id: str) -> Response:
+        try:
+            await role_matching.delete(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Role-matching session not found") from exc
+        except RoleMatchingError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
+        return Response(status_code=204)
 
     @app.get("/api/workflows")
     def list_workflows() -> list[dict[str, Any]]:
@@ -509,10 +697,20 @@ def create_app(
             raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
 
     @app.post("/api/runs", status_code=202)
-    async def create_run(payload: RunCreate) -> dict[str, str]:
+    async def create_run(payload: RunCreate) -> dict[str, Any]:
         try:
             run_id = await coordinator.submit(payload)
-            return {"run_id": run_id, "status": "queued"}
+            response: dict[str, Any] = {"run_id": run_id, "status": "queued"}
+            if payload.mode.value == "free_query":
+                session = store.get_free_query_session_by_run(run_id)
+                if session is not None:
+                    response.update(
+                        {
+                            "session_id": session["session_id"],
+                            "iteration": session["current_iteration"],
+                        }
+                    )
+            return response
         except KeyError as exc:
             raise HTTPException(404, "Agent or workflow not found") from exc
         except (RunExecutionError, WorkflowError) as exc:
@@ -541,6 +739,191 @@ def create_app(
     def list_runs(limit: int = Query(50, ge=1, le=200)) -> list[dict[str, Any]]:
         return [item.model_dump(mode="json") for item in store.list_runs(limit)]
 
+    @app.post("/api/free-query-sessions", status_code=201)
+    def create_free_query_session(payload: FreeQuerySessionCreate) -> dict[str, Any]:
+        try:
+            return coordinator.create_free_query_session_from_run(payload.source_run_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Run not found") from exc
+        except RunExecutionError as exc:
+            raise HTTPException(
+                409,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.get("/api/free-query-sessions/{session_id}")
+    def get_free_query_session(session_id: str) -> dict[str, Any]:
+        try:
+            return coordinator.free_query_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query session not found") from exc
+
+    @app.get("/api/free-query-sessions/{session_id}/iterations/{iteration}")
+    def get_free_query_iteration(session_id: str, iteration: int) -> dict[str, Any]:
+        try:
+            session = coordinator.free_query_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query session not found") from exc
+        match = next(
+            (item for item in session["iterations"] if item["iteration"] == iteration),
+            None,
+        )
+        if match is None:
+            raise HTTPException(404, "Free-query iteration not found")
+        return match
+
+    @app.post("/api/free-query-sessions/{session_id}/feedback", status_code=202)
+    async def submit_free_query_feedback(
+        session_id: str, payload: FreeQueryFeedback
+    ) -> dict[str, Any]:
+        try:
+            return await coordinator.submit_free_query_feedback(session_id, payload)
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query session not found") from exc
+        except RunExecutionError as exc:
+            raise HTTPException(
+                409,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.post("/api/free-query-sessions/{session_id}/feedback-input", status_code=202)
+    async def submit_free_query_feedback_input(
+        session_id: str, payload: FreeQueryFeedbackInput
+    ) -> dict[str, Any]:
+        try:
+            return await coordinator.provide_free_query_feedback_input(
+                session_id, payload.base_iteration, payload.input
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query session not found") from exc
+        except RunExecutionError as exc:
+            raise HTTPException(
+                409,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.get(
+        "/api/free-query-sessions/{session_id}/feedback-requests/{feedback_request_id}"
+    )
+    def get_free_query_feedback_request(
+        session_id: str, feedback_request_id: str
+    ) -> dict[str, Any]:
+        try:
+            return coordinator.free_query_feedback_request(
+                session_id, feedback_request_id
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query feedback request not found") from exc
+
+    @app.get(
+        "/api/free-query-sessions/{session_id}/feedback-requests/{feedback_request_id}/events"
+    )
+    async def free_query_feedback_events(
+        request: Request,
+        session_id: str,
+        feedback_request_id: str,
+        after: int = Query(0, ge=0),
+    ) -> StreamingResponse:
+        try:
+            coordinator.free_query_feedback_request(session_id, feedback_request_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query feedback request not found") from exc
+
+        async def stream() -> AsyncIterator[str]:
+            last_event_id = request.headers.get("last-event-id", "")
+            try:
+                resumed_after = int(last_event_id) if last_event_id else 0
+            except ValueError:
+                resumed_after = 0
+            sequence = max(after, resumed_after)
+            while True:
+                if await request.is_disconnected():
+                    return
+                events = coordinator.free_query_feedback_events(
+                    session_id, feedback_request_id, sequence
+                )
+                for event in events:
+                    sequence = int(event["sequence"])
+                    data = json.dumps(event, ensure_ascii=False)
+                    yield (
+                        f"id: {sequence}\nevent: {event['type']}\ndata: {data}\n\n"
+                    )
+                latest = coordinator.free_query_feedback_request(
+                    session_id, feedback_request_id
+                )
+                if latest["status"] in {
+                    "iteration_created",
+                    "new_session_required",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                } and not events:
+                    return
+                if not events:
+                    yield ": heartbeat\n\n"
+                await asyncio.sleep(0.35)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post(
+        "/api/free-query-sessions/{session_id}/feedback-requests/{feedback_request_id}/cancel"
+    )
+    async def cancel_free_query_feedback(
+        session_id: str,
+        feedback_request_id: str,
+        _payload: FreeQueryFeedbackCancel,
+    ) -> dict[str, Any]:
+        try:
+            return await coordinator.cancel_free_query_feedback(
+                session_id, feedback_request_id
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query feedback request not found") from exc
+
+    @app.post("/api/free-query-sessions/{session_id}/accept")
+    def accept_free_query_result(
+        session_id: str, payload: FreeQueryAccept
+    ) -> dict[str, Any]:
+        try:
+            return coordinator.accept_free_query_result(
+                session_id, payload.iteration, payload.expected_result_digest
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query session not found") from exc
+        except RunExecutionError as exc:
+            raise HTTPException(
+                409,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.post("/api/free-query-sessions/{session_id}/reopen")
+    def reopen_free_query_session(session_id: str) -> dict[str, Any]:
+        try:
+            return coordinator.reopen_free_query_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query session not found") from exc
+        except RunExecutionError as exc:
+            raise HTTPException(
+                409,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.post("/api/free-query-sessions/{session_id}/agent-draft", status_code=201)
+    async def create_free_query_session_agent_draft(
+        session_id: str,
+    ) -> dict[str, Any]:
+        try:
+            draft = await drafts.create_from_session(session_id)
+            return draft.model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Free-query session not found") from exc
+        except DraftError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
         try:
@@ -548,6 +931,16 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(404, "Run not found") from exc
         payload = record.model_dump(mode="json")
+        free_query_session = store.get_free_query_session_by_run(run_id)
+        if free_query_session is not None:
+            iteration = store.get_free_query_iteration_by_run(run_id)
+            payload["free_query_session"] = {
+                "session_id": free_query_session["session_id"],
+                "status": free_query_session["status"],
+                "current_iteration": free_query_session["current_iteration"],
+                "accepted_iteration": free_query_session["accepted_iteration"],
+                "iteration": iteration["iteration"] if iteration else None,
+            }
         if record.result and record.result.mode.value == "workflow":
             derived = record.result.workflow_presentation or compose_workflow_presentation(
                 record.result
@@ -889,6 +1282,110 @@ def create_app(
             return {"items": workflow_drafts.revisions(draft_id)}
         except KeyError as exc:
             raise HTTPException(404, "Workflow draft not found") from exc
+
+    @app.get("/api/authoring/workflows/{draft_id}/conversation")
+    def workflow_conversation(draft_id: str) -> dict[str, Any]:
+        try:
+            return workflow_drafts.conversation(draft_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+
+    @app.post("/api/authoring/workflows/{draft_id}/feedback", status_code=202)
+    async def workflow_feedback(
+        draft_id: str, payload: WorkflowFeedbackRequest
+    ) -> dict[str, Any]:
+        try:
+            return workflow_drafts.submit_feedback(
+                draft_id,
+                base_turn=payload.base_turn,
+                base_revision=payload.base_revision,
+                feedback=payload.feedback,
+                feedback_type_hint=payload.feedback_type_hint,
+                locale=payload.locale,
+                validation_run_id=payload.validation_run_id,
+            ).model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+        except (WorkflowDraftError, PluginError) as exc:
+            raise HTTPException(
+                409,
+                {"code": getattr(exc, "code", "workflow_feedback_failed"), "message": str(exc), "detail": getattr(exc, "detail", None)},
+            ) from exc
+
+    @app.post("/api/authoring/workflows/{draft_id}/feedback-input", status_code=202)
+    async def workflow_feedback_input(
+        draft_id: str, payload: WorkflowFeedbackInput
+    ) -> dict[str, Any]:
+        try:
+            return workflow_drafts.provide_feedback_input(
+                draft_id, base_turn=payload.base_turn, value=payload.input
+            ).model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+        except WorkflowDraftError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
+
+    @app.post("/api/authoring/workflows/{draft_id}/accept-design")
+    def accept_workflow_design(
+        draft_id: str, payload: WorkflowDesignAccept
+    ) -> dict[str, Any]:
+        try:
+            return workflow_drafts.accept_design(
+                draft_id,
+                base_turn=payload.base_turn,
+                revision=payload.revision,
+                workflow_hash=payload.workflow_hash,
+            ).model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+        except WorkflowDraftError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
+
+    @app.post("/api/authoring/workflows/{draft_id}/accept-validation")
+    def accept_workflow_validation(
+        draft_id: str, payload: WorkflowValidationAccept
+    ) -> dict[str, Any]:
+        try:
+            return workflow_drafts.accept_validation(
+                draft_id,
+                validation_run_id=payload.validation_run_id,
+                validation_report_digest=payload.validation_report_digest,
+                accepted_gap_codes=payload.accepted_gap_codes,
+            ).model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft or validation run not found") from exc
+        except WorkflowDraftError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
+
+    @app.post("/api/authoring/workflows/{draft_id}/undo")
+    def undo_workflow_revision(
+        draft_id: str, payload: WorkflowUndoRequest
+    ) -> dict[str, Any]:
+        try:
+            return workflow_drafts.undo(
+                draft_id,
+                base_turn=payload.base_turn,
+                base_revision=payload.base_revision,
+                target_revision=payload.target_revision,
+            ).model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft or revision not found") from exc
+        except (WorkflowDraftError, WorkflowError) as exc:
+            raise HTTPException(409, {"code": getattr(exc, "code", "workflow_undo_failed"), "message": str(exc), "detail": getattr(exc, "detail", None)}) from exc
+
+    @app.get("/api/authoring/workflows/{draft_id}/validation-attempts")
+    def workflow_validation_attempts(draft_id: str) -> dict[str, Any]:
+        try:
+            return {"items": workflow_drafts.validation_attempts(draft_id)}
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+
+    @app.get("/api/authoring/workflows/{draft_id}/validation-attempts/{run_id}/report")
+    def workflow_validation_attempt_report(draft_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            return workflow_drafts.validation_attempt_report(draft_id, run_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow validation report not found") from exc
 
     @app.post("/api/authoring/workflows/{draft_id}/composition-input", status_code=202)
     async def continue_workflow_composition(

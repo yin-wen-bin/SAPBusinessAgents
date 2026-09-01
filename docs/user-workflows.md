@@ -11,11 +11,15 @@ flowchart LR
     GAP --> FREE["一键进入自由查询并携带缺口契约"]
     FREE --> AGENT["待审核 Agent 草稿"]
     AGENT -->|审核、真机验证并进入可执行目录| CODEX
-    DRAFT --> ADVANCED["可选：React 高级编辑"]
+    DRAFT --> FEEDBACK["多轮反馈：步骤、Agent、映射、输出与完整性"]
+    FEEDBACK --> CODEX
+    DRAFT --> ADVANCED["可选：React 高级编辑；记录为对话修订"]
     ADVANCED --> LIVE["真实 SAP GET-only 验证"]
     DRAFT --> LIVE
     LIVE --> REVIEW["用户查看节点结果、证据与完整性"]
-    REVIEW --> PUBLISH["发布到新的本地 Git 分支"]
+    REVIEW --> VALIDATION_FEEDBACK["验证反馈：改设计或自动重新验证"]
+    VALIDATION_FEEDBACK --> CODEX
+    REVIEW --> PUBLISH["确认验证报告后发布到新的本地 Git 分支"]
     PUBLISH --> FIXED["正式确定性工作流；运行时不调用 Codex"]
 ```
 
@@ -34,21 +38,24 @@ flowchart LR
 1. **生成草稿**：打开“我的工作流”，用一句话描述要完成的业务任务。订单号、公司代码和日期等具体值只作为真机验证预填值，不会固化成正式工作流常量。生成完成后页面会持久显示“草稿已生成”、业务步骤数量和“下一步：检查工作流”；刷新、切换语言或重新打开草稿后仍能看到该引导。
 2. Codex 读取当前仓库中状态为可执行且声明了输入、输出契约的 Agent。高置信匹配才会进入草稿；关键歧义会一次只追问一个问题。
 3. 服务端重新编译建议：固定每个 Agent 的版本与执行摘要，仅对同名且类型兼容的上下游端口自动连接；遇到 `oneOf` 时必须选择唯一分支并注入显式模式常量。上游数组可能为空、下游要求非空时，编译器增加 `runIf=non_empty`，不会把空数组交给下游 Agent；终端节点同时生成类型安全的 `onSkip` 输出，并把最终业务状态、报告和完整性字段保持为必需。Runtime误请求未消费的输入回显字段时，compiler v4会移除终态投影并在`output_normalization.dismissed_requested_outputs`中留痕；真实业务输出或下游消费字段无法安全跳过时仍阻止生成。
-4. **检查工作流**：如果能力齐全，检查自动编排结果。需要精细控制时打开“高级编辑”，在画布上调整节点、端口映射或常量并保存版本。
+4. **检查工作流**：如果能力齐全，检查自动编排结果。用户可以连续反馈业务目标、Agent/步骤、映射、条件分支、最终输出和完整性问题；每轮Runtime反馈都由compiler v4重新编译成新修订，旧轮次与旧修订不可变。需要精细控制时打开“高级编辑”，画布修改也作为`manual_edit`轮次进入同一时间线。只有用户明确确认当前设计后才能进入真机验证。
 5. 如果存在缺口，页面列出缺口 Agent 的功能、输入、输出、只读护栏和验收要求。缺口未解决前，真机验证和发布均被服务端阻断。
 6. 点击“用自由查询创建此 Agent”。系统把缺口契约预填到自由查询；查询完成后点击“保存为 Agent 草稿”。该草稿保留来源工作流和缺口编号，默认进入 `needs_review`，不是可执行目录条目。
 7. 缺口 Agent 完成业务复核、契约复核和真实 SAP GET-only 验证并进入可执行目录后，返回原工作流页面。页面会根据新的目录摘要自动重新匹配；目录未变化时不会反复调用 Codex。
 8. **真机验证**：检查或填写样本，也可以增加可选的终端输出预期。平台先完成结构与 Schema 校验，再把服务端生成的版本化 `review_contract` 交给 Agent Runtime；只有设计预审通过，才允许执行有界 GET-only 自动样本发现、创建验证运行和读取 SAP。`review_contract` 只要求工作流必需终态输出和下游实际消费的条件节点输出，不把 Agent Schema 中未暴露、未消费的字段扩张为 `onSkip` 义务。采购订单、销售订单及对应数组输入留空时，预审请求只标记为 `auto_discover`，预审通过后平台才查询一个现有单据；查询基准日留空时使用运行当天。Agent Runtime 的 `pass/block` 只标记“设计预审”，不代表真机验证结论。
-9. 真机运行结束后，平台根据节点、只读调用、必需输出、完整性传播和用户预期生成确定性验证报告。`pass`、`inconclusive`、`fail`和`blocked`分别显示；业务状态为`attention`不自动等于验证失败。
-10. **发布工作流**：`pass`可直接发布；`inconclusive`必须逐项查看并确认当前报告中的证据缺口。确认绑定当前运行编号、报告Digest和完整缺口代码，不能把结果改为`pass`。`fail`或`blocked`不能发布。发布仍要求 Git 工作区干净，创建新的本地分支，不自动提交、推送或创建PR。
+9. 真机运行结束后，平台根据节点、只读调用、必需输出、完整性传播和用户预期生成确定性验证报告。用户可继续反馈：仅修改验证输入或终端断言时保持已确认设计并自动启动下一次GET-only验证；修改工作流逻辑时生成新修订、清除旧确认并返回检查步骤。每次验证报告按run编号独立保存。
+10. **发布工作流**：用户必须再次明确确认当前验证报告。`pass`可确认；`inconclusive`必须逐项接受当前报告中的精确缺口代码，但不会变成`pass`。`fail`或`blocked`不能确认或发布。发布仍要求 Git 工作区干净，创建新的本地分支，不自动提交、推送或创建PR。
 
 ## 运行与安全边界
 
+- Runtime交互轮次默认最多12轮，可通过`SAPBA_MAX_WORKFLOW_CONVERSATION_TURNS`调整；真机验证系统事件不占用该额度。
 - 正式工作流通过 `POST /api/runs` 使用 `mode=workflow` 和 `workflowId` 执行。
 - 发布和每次执行都会重新核对 Agent 版本与摘要；发生漂移时失败关闭并要求重新验证。
 - Codex 的 Agent 选择和映射建议不能直接执行；服务端只接受当前可执行目录中的精确 Agent ID，并重新验证类型、必填端口、DAG、版本摘要与 GET-only 边界。
 - Runtime 预审结论会同时保存原始结论、有效结论、阻塞问题和被平台契约证明不适用的问题。只有 `review_contract` 确实要求且工作流确实缺少的条件输出才能阻塞；被驳回的模型误报仍保留在 `dismissed_issues` 中供审计。
 - Runtime组合建议在编译前保存为本地`proposal_snapshot`。可恢复的旧compiler失败草稿可以通过原草稿的“重新生成草稿”操作升级，不要求用户重新输入业务目标。
+- 草稿ID同时是工作流对话会话ID。初始需求、澄清、Runtime反馈、手工修改、目录重编译、真机验证和撤销操作都记录在不可变时间线中；Runtime和SDK快照在会话创建时固定，全局Runtime切换只影响新会话。
+- 用户期望只会形成候选验证断言，不能覆盖SAP证据、完整性标志或固定Agent的确定性规则。不存在匹配能力时形成显式Agent缺口，不会用语义不同的Agent替代。
 - Runtime 阻塞、超时或返回无效结构时，平台不会自动发现样本、不会读取 SAP、也不会创建验证运行；页面直接显示双语问题代码、节点和端口。
 - 中置信或低置信匹配不会被“猜成”现有 Agent，而是转为显式缺口。任何未解决缺口都会阻断验证和发布。
 - 自由查询只生成隔离的 Agent 草稿。缺口契约不满足、确定性规则未复核或真机证据未达标时，草稿不能进入可执行目录。
@@ -76,11 +83,19 @@ POST /api/authoring/workflows/compose
 GET  /api/authoring/workflows/{draft_id}
 PUT  /api/authoring/workflows/{draft_id}
 GET  /api/authoring/workflows/{draft_id}/revisions
+GET  /api/authoring/workflows/{draft_id}/conversation
 POST /api/authoring/workflows/{draft_id}/composition-input
+POST /api/authoring/workflows/{draft_id}/feedback
+POST /api/authoring/workflows/{draft_id}/feedback-input
+POST /api/authoring/workflows/{draft_id}/accept-design
+POST /api/authoring/workflows/{draft_id}/accept-validation
+POST /api/authoring/workflows/{draft_id}/undo
 POST /api/authoring/workflows/{draft_id}/reconcile
 GET  /api/authoring/workflows/{draft_id}/gaps/{gap_id}
 POST /api/authoring/workflows/{draft_id}/validate
 GET  /api/authoring/workflows/{draft_id}/validation-report
+GET  /api/authoring/workflows/{draft_id}/validation-attempts
+GET  /api/authoring/workflows/{draft_id}/validation-attempts/{run_id}/report
 GET  /api/authoring/workflows/{draft_id}/validation-artifacts/{name}
 POST /api/authoring/workflows/{draft_id}/publish
 POST /api/runs/{run_id}/create-agent-draft

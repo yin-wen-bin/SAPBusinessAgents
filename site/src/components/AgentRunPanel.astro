@@ -44,6 +44,9 @@ const labels = locale === "zh" ? {
   invalidNumber: "{field}必须是有效数字。",
   minItems: "{field}至少需要 {limit} 项。",
   maxItems: "{field}最多允许 {limit} 项。",
+  addRow: "添加物料需求",
+  copyRow: "复制",
+  removeRow: "删除",
   normalizationConflict: "该输入映射到相互冲突的 SAP 格式规则，请联系平台管理员。",
   validationRequired: "该 Agent 尚未通过真机三级验收，当前不可执行。",
 } : {
@@ -72,6 +75,9 @@ const labels = locale === "zh" ? {
   invalidNumber: "{field} must be a valid number.",
   minItems: "{field} must contain at least {limit} item(s).",
   maxItems: "{field} must contain no more than {limit} item(s).",
+  addRow: "Add material demand",
+  copyRow: "Copy",
+  removeRow: "Remove",
   normalizationConflict: "This input maps to conflicting SAP formatting rules. Contact the platform administrator.",
   validationRequired: "This Agent has not passed three-stage live acceptance and cannot run yet.",
 };
@@ -91,6 +97,9 @@ const runtimeMessages = {
   invalidNumber: labels.invalidNumber,
   minItems: labels.minItems,
   maxItems: labels.maxItems,
+  addRow: labels.addRow,
+  copyRow: labels.copyRow,
+  removeRow: labels.removeRow,
   normalizationConflict: labels.normalizationConflict,
   validationRequired: labels.validationRequired,
 };
@@ -121,7 +130,49 @@ const runtimeMessages = {
             <label>
               <span>{property.title?.[locale] || name}</span>
               {property.description && <small class="runtime-field-help">{property.description[locale]}</small>}
-              {property.type === "array" ? (
+              {property.type === "array" && property.items?.type === "object" ? (
+                <fieldset
+                  class="runtime-object-array"
+                  data-object-array
+                  data-object-array-name={name}
+                  data-min-items={property.minItems}
+                  data-max-items={property.maxItems}
+                >
+                  <legend>{property.title?.[locale] || name}</legend>
+                  {property.description && <small class="runtime-field-help">{property.description[locale]}</small>}
+                  <div class="runtime-object-array-rows" data-object-array-rows></div>
+                  <template data-object-array-template>
+                    <div class="runtime-object-array-row" data-object-array-row>
+                      <div class="runtime-object-array-fields">
+                        {Object.entries(property.items.properties || {}).map(([childName, child]) => (
+                          <label>
+                            <span>{child.title?.[locale] || childName}</span>
+                            <input
+                              type={child.format === "date" ? "date" : child.type === "integer" || child.type === "number" ? "number" : "text"}
+                              data-child-name={childName}
+                              data-value-type={child.type}
+                              data-exclusive-minimum={child.exclusiveMinimum}
+                              min={child.minimum}
+                              max={child.maximum}
+                              step={child.type === "integer" ? 1 : child.type === "number" ? "any" : undefined}
+                              minlength={child.minLength}
+                              maxlength={child.maxLength}
+                              pattern={child.pattern}
+                              required={property.items?.required?.includes(childName)}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                      <div class="runtime-object-array-actions">
+                        <button type="button" data-copy-object-row>{labels.copyRow}</button>
+                        <button type="button" data-remove-object-row>{labels.removeRow}</button>
+                      </div>
+                    </div>
+                  </template>
+                  <button type="button" class="runtime-add-object-row" data-add-object-row>{labels.addRow}</button>
+                  <small class="runtime-field-error" data-field-error={name} role="alert" hidden></small>
+                </fieldset>
+              ) : property.type === "array" ? (
                 <textarea
                   name={name}
                   rows={5}
@@ -150,7 +201,9 @@ const runtimeMessages = {
                   required={execution.inputSchema.required?.includes(name)}
                 />
               )}
-              <small class="runtime-field-error" data-field-error={name} role="alert" hidden></small>
+              {!(property.type === "array" && property.items?.type === "object") && (
+                <small class="runtime-field-error" data-field-error={name} role="alert" hidden></small>
+              )}
             </label>
           ))}
         </div>
@@ -204,7 +257,10 @@ const runtimeMessages = {
 
   const fieldLabel = (form: HTMLFormElement, name: string) => {
     const field = form.querySelector<HTMLInputElement>(`input[name="${CSS.escape(name)}"]`);
-    return field?.closest("label")?.querySelector<HTMLElement>(":scope > span")?.textContent?.trim() || name;
+    const objectArray = form.querySelector<HTMLElement>(`[data-object-array-name="${CSS.escape(name)}"]`);
+    return field?.closest("label")?.querySelector<HTMLElement>(":scope > span")?.textContent?.trim()
+      || objectArray?.querySelector<HTMLElement>(":scope > legend")?.textContent?.trim()
+      || name;
   };
 
   const clearErrors = (form: HTMLFormElement, summary: HTMLElement | null) => {
@@ -303,6 +359,64 @@ const runtimeMessages = {
     value.split(/[\n,;，；]+/u).map((item) => item.trim()).filter(Boolean),
   ));
 
+  const objectArrayRows = (field: HTMLElement) =>
+    Array.from(field.querySelectorAll<HTMLElement>("[data-object-array-row]"));
+
+  const objectArrayValue = (field: HTMLElement): Array<Record<string, unknown>> => objectArrayRows(field).map((row) => {
+    const value: Record<string, unknown> = {};
+    row.querySelectorAll<HTMLInputElement>("[data-child-name]").forEach((input) => {
+      const text = input.value.trim();
+      if (!text) return;
+      value[input.dataset.childName || ""] = input.dataset.valueType === "integer" || input.dataset.valueType === "number"
+        ? Number(text)
+        : text;
+    });
+    return value;
+  });
+
+  const validateObjectArrays = (form: HTMLFormElement, messages: LocalizedMessages) => {
+    let valid = true;
+    form.querySelectorAll<HTMLElement>("[data-object-array]").forEach((field) => {
+      const name = field.dataset.objectArrayName || "";
+      const label = fieldLabel(form, name);
+      const rows = objectArrayRows(field);
+      const minimum = Number(field.dataset.minItems || 0);
+      const maximum = Number(field.dataset.maxItems || 0);
+      let message = "";
+      if (rows.length < minimum) message = formatMessage(messages.minItems, { field: label, limit: minimum });
+      else if (maximum > 0 && rows.length > maximum) message = formatMessage(messages.maxItems, { field: label, limit: maximum });
+      rows.forEach((row) => {
+        row.querySelectorAll<HTMLInputElement>("[data-child-name]").forEach((input) => {
+          const text = input.value.trim();
+          const childLabel = input.closest("label")?.querySelector<HTMLElement>(":scope > span")?.textContent?.trim() || input.dataset.childName || label;
+          let childMessage = "";
+          if (input.required && !text) childMessage = formatMessage(messages.required, { field: childLabel });
+          else if (text && input.validity.patternMismatch) childMessage = formatMessage(messages.invalidFormat, { field: childLabel });
+          else if (text && input.type === "date" && Number.isNaN(Date.parse(`${text}T00:00:00Z`))) childMessage = formatMessage(messages.invalidDate, { field: childLabel });
+          else if (text && input.type === "number" && !Number.isFinite(input.valueAsNumber)) childMessage = formatMessage(messages.invalidNumber, { field: childLabel });
+          else if (text && input.validity.rangeUnderflow) childMessage = formatMessage(messages.minimum, { field: childLabel, limit: input.min || "" });
+          else if (text && input.validity.rangeOverflow) childMessage = formatMessage(messages.maximum, { field: childLabel, limit: input.max || "" });
+          else if (text && input.dataset.exclusiveMinimum !== undefined && input.dataset.exclusiveMinimum !== "" && Number(text) <= Number(input.dataset.exclusiveMinimum)) {
+            childMessage = formatMessage(messages.minimum, { field: childLabel, limit: `>${input.dataset.exclusiveMinimum}` });
+          }
+          if (childMessage) {
+            input.setAttribute("aria-invalid", "true");
+            message ||= childMessage;
+          }
+        });
+      });
+      const materialValues = rows
+        .map((row) => row.querySelector<HTMLInputElement>('[data-child-name="material"]')?.value.trim().toUpperCase())
+        .filter(Boolean);
+      if (!message && new Set(materialValues).size !== materialValues.length) message = formatMessage(messages.invalidFormat, { field: label });
+      if (message) {
+        valid = false;
+        showFieldError(form, name, message);
+      }
+    });
+    return valid;
+  };
+
   const constraintMessage = (
     form: HTMLFormElement,
     messages: LocalizedMessages,
@@ -369,12 +483,43 @@ const runtimeMessages = {
     const error = panel.querySelector<HTMLElement>(".runtime-form-error");
     const messages = JSON.parse(panel.dataset.messages || "{}") as LocalizedMessages;
     const dateRangePairs = JSON.parse(panel.dataset.dateRangePairs || "[]") as Array<{ from?: string; to?: string; maxDays?: number }>;
+    const addObjectRow = (field: HTMLElement, source?: HTMLElement) => {
+      const rows = field.querySelector<HTMLElement>("[data-object-array-rows]");
+      const template = field.querySelector<HTMLTemplateElement>("[data-object-array-template]");
+      if (!rows || !template) return;
+      const maximum = Number(field.dataset.maxItems || 0);
+      if (maximum > 0 && objectArrayRows(field).length >= maximum) return;
+      const fragment = template.content.cloneNode(true) as DocumentFragment;
+      const added = fragment.querySelector<HTMLElement>("[data-object-array-row]");
+      if (source && added) {
+        source.querySelectorAll<HTMLInputElement>("[data-child-name]").forEach((input) => {
+          const target = added.querySelector<HTMLInputElement>(`[data-child-name="${CSS.escape(input.dataset.childName || "")}"]`);
+          if (target) target.value = input.value;
+        });
+      }
+      rows.append(fragment);
+    };
+    form?.querySelectorAll<HTMLElement>("[data-object-array]").forEach((field) => {
+      const minimum = Math.max(1, Number(field.dataset.minItems || 0));
+      for (let index = 0; index < minimum; index += 1) addObjectRow(field);
+      field.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.closest("[data-add-object-row]")) addObjectRow(field);
+        const row = target.closest<HTMLElement>("[data-object-array-row]");
+        if (row && target.closest("[data-copy-object-row]")) addObjectRow(field, row);
+        if (row && target.closest("[data-remove-object-row]")) {
+          row.remove();
+          if (objectArrayRows(field).length === 0 && Number(field.dataset.minItems || 0) > 0) addObjectRow(field);
+        }
+      });
+    });
     form?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
       if (button) button.disabled = true;
       clearErrors(form, error);
-      if (!validateClientInput(form, messages, dateRangePairs)) {
+      if (!validateClientInput(form, messages, dateRangePairs) || !validateObjectArrays(form, messages)) {
         showSummary(error, messages.invalidInput);
         if (button) button.disabled = false;
         form.querySelector<HTMLInputElement | HTMLTextAreaElement>('[aria-invalid="true"]')?.focus();
@@ -394,6 +539,10 @@ const runtimeMessages = {
             : field.dataset.valueType === "number"
               ? Number(value)
               : value;
+        });
+        form.querySelectorAll<HTMLElement>("[data-object-array]").forEach((field) => {
+          const name = field.dataset.objectArrayName;
+          if (name) input[name] = objectArrayValue(field);
         });
       }
       const body = mode === "agent"

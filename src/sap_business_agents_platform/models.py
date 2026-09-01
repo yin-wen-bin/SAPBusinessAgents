@@ -45,6 +45,11 @@ class RunProgress(BaseModel):
     total_units: int | None = Field(default=None, ge=0)
     determinate: bool = False
     event_sequence: int = Field(default=0, ge=0)
+    elapsed_seconds: int = Field(default=0, ge=0)
+    hard_limit_seconds: int | None = Field(default=None, ge=1)
+    deadline_phase: Literal["querying", "finalizing", "completed"] | None = None
+    next_deadline_at: str | None = None
+    extension_count: int = Field(default=0, ge=0)
     updated_at: str = Field(default_factory=utc_now)
 
 
@@ -88,6 +93,66 @@ class RunInput(BaseModel):
         if not self.input:
             raise ValueError("input must not be blank")
         return self
+
+
+class FreeQueryFeedback(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_iteration: int = Field(alias="baseIteration", ge=1)
+    feedback: str = Field(min_length=1, max_length=12_000)
+    locale: Literal["zh", "en"] = "zh"
+    feedback_type_hint: Literal[
+        "scope_or_filter",
+        "relationship",
+        "missing_evidence",
+        "business_rule",
+        "presentation",
+    ] | None = Field(default=None, alias="feedbackTypeHint")
+
+    @model_validator(mode="after")
+    def strip_feedback(self) -> "FreeQueryFeedback":
+        self.feedback = self.feedback.strip()
+        if not self.feedback:
+            raise ValueError("feedback must not be blank")
+        return self
+
+
+class FreeQueryFeedbackInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_iteration: int = Field(alias="baseIteration", ge=1)
+    input: str = Field(min_length=1, max_length=12_000)
+
+    @model_validator(mode="after")
+    def strip_input(self) -> "FreeQueryFeedbackInput":
+        self.input = self.input.strip()
+        if not self.input:
+            raise ValueError("input must not be blank")
+        return self
+
+
+class FreeQueryFeedbackCancel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def strip_reason(self) -> "FreeQueryFeedbackCancel":
+        self.reason = self.reason.strip()
+        return self
+
+
+class FreeQueryAccept(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    iteration: int = Field(ge=1)
+    expected_result_digest: str = Field(alias="expectedResultDigest", min_length=8)
+
+
+class FreeQuerySessionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    source_run_id: str = Field(alias="sourceRunId", min_length=1)
 
 
 class Completeness(BaseModel):
@@ -196,6 +261,13 @@ class HarnessLimits(BaseModel):
     turns: HarnessLimitUsage = Field(default_factory=HarnessLimitUsage)
     runtime_seconds: HarnessLimitUsage = Field(default_factory=HarnessLimitUsage)
     reached_kind: Literal["tool_calls", "turns", "runtime_seconds"] | None = None
+    hard_limit_seconds: int | None = Field(default=None, ge=1)
+    query_seconds_granted: int = Field(default=0, ge=0)
+    finalization_seconds_reserved: int = Field(default=0, ge=0)
+    extension_count: int = Field(default=0, ge=0)
+    extension_reasons: list[str] = Field(default_factory=list)
+    deadline_phase: Literal["querying", "finalizing", "completed"] | None = None
+    elapsed_seconds: int = Field(default=0, ge=0)
 
 
 class RuntimeSnapshot(BaseModel):
@@ -356,6 +428,75 @@ class WorkflowCompositionInput(BaseModel):
         return self
 
 
+class WorkflowFeedbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_turn: int = Field(alias="baseTurn", ge=1)
+    base_revision: int = Field(alias="baseRevision", ge=1)
+    feedback: str = Field(min_length=1, max_length=12_000)
+    feedback_type_hint: Literal[
+        "goal_scope",
+        "stage_or_agent",
+        "mapping",
+        "condition",
+        "output_or_completeness",
+        "validation_input",
+        "validation_expectation",
+        "agent_capability",
+        "presentation",
+        "new_intent",
+    ] | None = Field(default=None, alias="feedbackTypeHint")
+    locale: Literal["zh", "en"] = "zh"
+    validation_run_id: str | None = Field(default=None, alias="validationRunId")
+
+    @model_validator(mode="after")
+    def strip_feedback(self) -> "WorkflowFeedbackRequest":
+        self.feedback = self.feedback.strip()
+        if not self.feedback:
+            raise ValueError("feedback must not be blank")
+        return self
+
+
+class WorkflowFeedbackInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_turn: int = Field(alias="baseTurn", ge=1)
+    input: str = Field(min_length=1, max_length=4_000)
+
+    @model_validator(mode="after")
+    def strip_input(self) -> "WorkflowFeedbackInput":
+        self.input = self.input.strip()
+        if not self.input:
+            raise ValueError("input must not be blank")
+        return self
+
+
+class WorkflowDesignAccept(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_turn: int = Field(alias="baseTurn", ge=1)
+    revision: int = Field(ge=1)
+    workflow_hash: str = Field(alias="workflowHash", pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class WorkflowValidationAccept(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    validation_run_id: str = Field(alias="validationRunId", min_length=1)
+    validation_report_digest: str = Field(
+        alias="validationReportDigest", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    accepted_gap_codes: list[str] = Field(default_factory=list, alias="acceptedGapCodes")
+
+
+class WorkflowUndoRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_turn: int = Field(alias="baseTurn", ge=1)
+    base_revision: int = Field(alias="baseRevision", ge=1)
+    target_revision: int = Field(alias="targetRevision", ge=1)
+
+
 class WorkflowDraftUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -470,3 +611,62 @@ class WorkflowDraftRecord(BaseModel):
     validation: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
+
+
+class RoleMatchingSessionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    paths: list[str] = Field(min_length=1, max_length=100)
+    locale: Literal["zh", "en"] = "zh"
+    consent_to_runtime: bool = Field(alias="consentToRuntime")
+
+    @model_validator(mode="after")
+    def normalize_paths(self) -> "RoleMatchingSessionCreate":
+        self.paths = [value.strip() for value in self.paths]
+        if any(not value for value in self.paths):
+            raise ValueError("paths must not contain blank entries")
+        if not self.consent_to_runtime:
+            raise ValueError("consentToRuntime must be true")
+        return self
+
+
+class RoleMatchingPreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    paths: list[str] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def normalize_paths(self) -> "RoleMatchingPreflightRequest":
+        self.paths = [value.strip() for value in self.paths]
+        if any(not value for value in self.paths):
+            raise ValueError("paths must not contain blank entries")
+        return self
+
+
+class RoleMatchingFeedback(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_revision: int = Field(alias="baseRevision", ge=1)
+    message: str = Field(min_length=1, max_length=12_000)
+    rematch_mode: Literal["incremental", "full"] = Field(
+        default="incremental", alias="rematchMode"
+    )
+    added_paths: list[str] = Field(default_factory=list, alias="addedPaths", max_length=100)
+    excluded_document_ids: list[str] = Field(
+        default_factory=list, alias="excludedDocumentIds", max_length=500
+    )
+
+    @model_validator(mode="after")
+    def normalize_values(self) -> "RoleMatchingFeedback":
+        self.message = self.message.strip()
+        self.added_paths = [value.strip() for value in self.added_paths]
+        if not self.message or any(not value for value in self.added_paths):
+            raise ValueError("feedback values must not be blank")
+        return self
+
+
+class RoleMatchingWorkflowDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    revision: int = Field(ge=1)
+    expected_catalog_digest: str = Field(alias="expectedCatalogDigest", min_length=1)

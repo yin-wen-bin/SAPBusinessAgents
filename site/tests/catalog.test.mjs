@@ -9,12 +9,13 @@ test("Astro React development runtime stays on supported Vite 7", () => {
   assert.match(packageJson.overrides?.vite ?? "", /^\^?7\./);
 });
 
-test("catalog discovers thirty valid agents with step-level tools", () => {
+test("catalog discovers thirty-one deterministic agents and one platform assistant", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
-  assert.equal(records.length, 30);
+  assert.equal(records.length, 32);
   assert.deepEqual(
     records.map((agent) => `${agent.module}/${agent.slug}`),
     [
+      "Common/role-agent-matching",
       "FI/ap-payment",
       "FI/ar-collection",
       "FI/gr-ir-clearing",
@@ -31,6 +32,7 @@ test("catalog discovers thirty valid agents with step-level tools", () => {
       "SD/delivered-not-billed",
       "SD/delivery-delay-prediction",
       "SD/due-delivery-prioritization",
+      "SD/new-sales-demand-coverage",
       "SD/order-to-cash-anomaly-monitor",
       "SD/order-to-cash-status",
       "SD/returns-credit-anomaly",
@@ -67,11 +69,16 @@ test("catalog discovers thirty valid agents with step-level tools", () => {
     }
   }
 
+  const assistant = records.find((agent) => agent.slug === "role-agent-matching");
+  assert.equal(assistant.kind, "platform_assistant");
+  assert.equal(assistant.assistant.composable, false);
+  assert.equal(assistant.execution, undefined);
+
   const sdAgents = records.filter((agent) => agent.module === "SD");
-  assert.equal(sdAgents.length, 11);
+  assert.equal(sdAgents.length, 12);
   assert.ok(sdAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(sdAgents.every((agent) => agent.guardrails.zh.some((item) => item.includes("只读"))));
-  for (const agent of records) {
+  for (const agent of records.filter((agent) => agent.kind !== "platform_assistant")) {
     const executionIds = new Set(agent.execution.steps.map((step) => step.id));
     const mappedIds = agent.workflow.flatMap((step) => step.executionStepIds);
     assert.deepEqual(new Set(mappedIds), executionIds);
@@ -118,7 +125,7 @@ test("catalog discovers thirty valid agents with step-level tools", () => {
   assert.equal(ppAgents.length, 5);
   const ppVerdicts = Object.fromEntries(ppAgents.map((agent) => [agent.slug, agent.validation?.verdict]));
   assert.deepEqual(ppVerdicts, {
-    "demand-forecast-planning": "BLOCKED",
+    "demand-forecast-planning": "PASS",
     "mrp-exception-analysis": "PASS",
     "production-order-monitoring": "PASS",
     "production-scheduling-capacity": "BLOCKED",

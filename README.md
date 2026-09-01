@@ -94,7 +94,7 @@ agents/<模块>/<agent-slug>/
 
 ### 单机双模式原型
 
-原型的 FastAPI 服务只监听 `127.0.0.1`。固定 Agent 由确定性工作流引擎运行；“直接询问 SAP”默认创建持久 Codex App Server thread，并通过 Native Web Search、仓库内 SAP Tool Broker MCP 和动态工具准入 Gateway 执行观察—修订循环。所有 SAP 请求仍需通过实时元数据、业务关系和 GET-only 校验。默认限制为 12 turn、40 次平台工具调用和 600 秒；超限保持 `INCONCLUSIVE`，不自动回退旧 Planner。运行状态、SSE 事件和证据引用保存在 `.local-data/`，Agent 草稿只写入 `.prototype/authoring/`。完整契约见 [Codex Harness 自由查询原型](docs/codex-harness.md)。
+原型的 FastAPI 服务只监听 `127.0.0.1`。固定 Agent 由确定性工作流引擎运行；“直接询问 SAP”默认创建持久 Codex App Server thread，并通过 Native Web Search、仓库内 SAP Tool Broker MCP 和动态工具准入 Gateway 执行观察—修订循环。自由查询支持最多12轮不可变纠错迭代：反馈提交会立即返回可恢复的请求编号，业务范围或证据变化会重新执行GET-only查询，纯展示反馈只复用已验证证据。固定任务、自由查询和反馈预审使用独立本机调度通道，SAP GET全局并发默认不超过2。自由查询采用30分钟绝对预算：15分钟基础查询、最多10分钟基于有效进展的延长、最后5分钟强制整理结果；固定Agent和工作流仍默认10分钟。所有 SAP 请求仍需通过实时元数据、业务关系和 GET-only 校验。超限保持 `INCONCLUSIVE`，不自动回退旧 Planner。运行状态、SSE 事件和证据引用保存在 `.local-data/`，用户确认满意后只能生成隔离且待复核的 Agent 草稿，写入 `.prototype/authoring/`。完整契约见 [Codex Harness 自由查询原型](docs/codex-harness.md)。
 
 本机运行时采用不依赖 Cordis 的 Python/FastAPI 微内核。核心只负责运行状态、SSE、确定性工作流、证据完整性和只读策略；能力通过 `config/plugins/` 中的版本化清单注册。SAP 数据通道固定为进程内的 Embedded OData Provider，另有 SAPSkillhub、可切换 Agent Runtime 和业务 Agent 包。运行记录会保存实际 Runtime Provider、SDK版本、配置摘要、`plugin_id`、能力、调用编号和耗时。
 
@@ -167,11 +167,13 @@ npm ci
 npm run dev
 ```
 
-打开站点后可从 30 个 Agent 详情页执行 Schema v2 确定性工作流，也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。SAP 读取固定由 Embedded Provider 完成，不存在自动或手动 Provider 回退。
+打开站点后可浏览 31 个 Agent 详情页，其中确定性业务 Agent 可直接执行；Common 模块的“岗位匹配助理”用于只读分析用户选择的本地业务材料，不进入固定执行或工作流节点目录。也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。SAP 读取固定由 Embedded Provider 完成，不存在自动或手动 Provider 回退。
+
+“岗位匹配助理”支持带来源定位的岗位、流程、SAP日常操作、单Agent匹配、compiler v4已验证的组合工作流建议和能力缺口，并可通过补充或排除材料进行最多12轮增量/全量修订。原始正文只保存在 `.local-data/role-matching/`，不会进入SQLite、SSE或Git。详见 [岗位匹配助理](docs/role-agent-matching.md)。
 
 插件页显示本机注册表、健康状态、能力、传输方式和安全权限。对应接口为 `GET /api/plugins`、`GET /api/capabilities`、`POST /api/plugins/rescan`、`POST /api/plugins/{plugin_id}/health` 和 `PUT /api/plugins/{plugin_id}/enabled`。详细契约见 [本机插件平台设计](docs/local-plugin-platform.md)。
 
-“我的工作流”现在以自然语言为默认入口：Codex 自动匹配当前仓库中的可执行 Agent，服务端固定版本与摘要并编译类型化 DAG；不确定能力会形成阻断验证/发布的缺口清单，并可一键带着缺口契约进入自由查询创建待审核 Agent 草稿。原可视化画布保留为高级编辑。首批真机验证链路为 P2P→AP 与 O2C→AR；正式工作流执行时不调用 Codex。完整边界与接口见 [用户自定义工作流](docs/user-workflows.md)。
+“我的工作流”现在以自然语言多轮对话为默认入口：Codex 自动匹配当前仓库中的可执行 Agent，用户可持续反馈步骤、映射、条件、输出或验证结果；服务端对每一轮建议固定版本与摘要、重新编译类型化 DAG，并保留不可变修订和验证报告。设计确认与验证报告确认是两个独立门禁，原可视化画布保留为高级编辑并记入同一时间线。正式工作流执行时不调用 Codex。完整边界与接口见 [用户自定义工作流](docs/user-workflows.md)。
 
 Skill 自动执行默认关闭。只有在 `config/skills.json` 中显式登记、同时声明 `read_only=true`、`validated=true` 并支持标准 JSON 输入输出入口的 Skill，才会进入工具目录。仅包含 `SKILL.md` 的 Skill 不能由运行时自动执行。
 

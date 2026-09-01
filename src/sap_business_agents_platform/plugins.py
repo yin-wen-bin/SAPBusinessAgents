@@ -11,7 +11,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .codex_planner import Planner
-from .manifests import AgentRepository, validate_execution
+from .manifests import AgentRepository, validate_manifest
 from .skills import SkillRegistry
 
 
@@ -511,6 +511,57 @@ class CodexRuntimePluginProvider:
             raise PluginError("The selected Agent Runtime does not support workflow repair.", code="operation_unavailable")
         return await method(*args, **kwargs)
 
+    async def review_workflow_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        method = getattr(self.planner, "review_workflow_feedback", None)
+        if not callable(method):
+            raise PluginError(
+                "The selected Agent Runtime does not support workflow feedback.",
+                code="operation_unavailable",
+            )
+        return await method(*args, **kwargs)
+
+    async def resume_workflow_composition(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.review_workflow_feedback(*args, **kwargs)
+
+    async def review_free_query_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        method = getattr(self.planner, "review_free_query_feedback", None)
+        if not callable(method):
+            raise PluginError(
+                "The selected Agent Runtime does not support free-query feedback review.",
+                code="operation_unavailable",
+            )
+        return await method(*args, **kwargs)
+
+    async def resume_free_query_session(self, *args: Any, **kwargs: Any) -> Any:
+        method = getattr(self.planner, "resume_free_query_session", None)
+        if not callable(method):
+            raise PluginError(
+                "The selected Agent Runtime does not support free-query session resume.",
+                code="operation_unavailable",
+            )
+        return await method(*args, **kwargs)
+
+    async def revise_free_query_presentation(self, *args: Any, **kwargs: Any) -> Any:
+        method = getattr(self.planner, "revise_free_query_presentation", None)
+        if not callable(method):
+            raise PluginError(
+                "The selected Agent Runtime does not support evidence-backed presentation revision.",
+                code="operation_unavailable",
+            )
+        return await method(*args, **kwargs)
+
+    async def analyze_role_matching(self, *args: Any, **kwargs: Any) -> Any:
+        method = getattr(self.planner, "analyze_role_matching", None)
+        if not callable(method):
+            raise PluginError("The selected Agent Runtime does not support role matching.", code="operation_unavailable")
+        return await method(*args, **kwargs)
+
+    async def review_role_matching_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        method = getattr(self.planner, "review_role_matching_feedback", None)
+        if not callable(method):
+            raise PluginError("The selected Agent Runtime does not support role-matching feedback.", code="operation_unavailable")
+        return await method(*args, **kwargs)
+
 
 class BusinessAgentPluginProvider:
     def __init__(self, repository: AgentRepository) -> None:
@@ -533,7 +584,7 @@ class BusinessAgentPluginProvider:
 
     def validate(self, agent_id: str) -> dict[str, Any]:
         agent = self.repository.get(agent_id)
-        validate_execution(agent, f"agent:{agent_id}")
+        validate_manifest(agent, f"agent:{agent_id}")
         return {"ok": True, "agent_id": agent_id}
 
 
@@ -649,7 +700,7 @@ class AgentRuntimeCapability:
     def plugin_metadata(self, operation: str) -> dict[str, Any]:
         capability = (
             "workflow_authoring.v1"
-            if operation in {"compose_workflow", "review_workflow", "repair_workflow"}
+            if operation in {"compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"}
             else "authoring.v1"
             if operation == "author_draft"
             else "agent_runtime.v1"
@@ -659,7 +710,7 @@ class AgentRuntimeCapability:
     def supports(self, operation: str) -> bool:
         capability = (
             "workflow_authoring.v1"
-            if operation in {"compose_workflow", "review_workflow", "repair_workflow"}
+            if operation in {"compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"}
             else "authoring.v1"
             if operation == "author_draft"
             else "agent_runtime.v1"
@@ -717,6 +768,31 @@ class AgentRuntimeCapability:
     async def summarize(self, *args: Any, **kwargs: Any) -> Any:
         return await self.manager.invoke("agent_runtime.v1", "summarize", *args, **kwargs)
 
+    async def review_free_query_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke(
+            "agent_runtime.v1", "review_free_query_feedback", *args, **kwargs
+        )
+
+    async def resume_free_query_session(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke(
+            "agent_runtime.v1", "resume_free_query_session", *args, **kwargs
+        )
+
+    async def revise_free_query_presentation(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke(
+            "agent_runtime.v1", "revise_free_query_presentation", *args, **kwargs
+        )
+
+    async def analyze_role_matching(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke(
+            "agent_runtime.v1", "analyze_role_matching", *args, **kwargs
+        )
+
+    async def review_role_matching_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke(
+            "agent_runtime.v1", "review_role_matching_feedback", *args, **kwargs
+        )
+
     async def author_draft(self, *args: Any, **kwargs: Any) -> Any:
         return await self.manager.invoke("authoring.v1", "author_draft", *args, **kwargs)
 
@@ -733,6 +809,16 @@ class AgentRuntimeCapability:
     async def repair_workflow(self, *args: Any, **kwargs: Any) -> Any:
         return await self.manager.invoke(
             "workflow_authoring.v1", "repair_workflow", *args, **kwargs
+        )
+
+    async def review_workflow_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke(
+            "workflow_authoring.v1", "review_workflow_feedback", *args, **kwargs
+        )
+
+    async def resume_workflow_composition(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke(
+            "workflow_authoring.v1", "resume_workflow_composition", *args, **kwargs
         )
 
     def _planner(self) -> Any:
@@ -805,11 +891,23 @@ def official_plugin_manifests() -> list[PluginManifest]:
                         "tool_call",
                     ],
                 },
-                {"capability": "agent_runtime.v1", "operations": ["plan", "ground_plan", "summarize"]},
+                {
+                    "capability": "agent_runtime.v1",
+                    "operations": [
+                        "plan",
+                        "ground_plan",
+                        "summarize",
+                        "review_free_query_feedback",
+                        "resume_free_query_session",
+                        "revise_free_query_presentation",
+                        "analyze_role_matching",
+                        "review_role_matching_feedback",
+                    ],
+                },
                 {"capability": "authoring.v1", "operations": ["author_draft"]},
                 {
                     "capability": "workflow_authoring.v1",
-                    "operations": ["compose_workflow", "review_workflow", "repair_workflow"],
+                    "operations": ["compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"],
                 },
             ],
             "transport": {"type": "builtin", "loopback_only": True},

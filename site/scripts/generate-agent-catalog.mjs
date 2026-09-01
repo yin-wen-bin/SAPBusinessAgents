@@ -80,6 +80,32 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
     requireList(agent[field]?.zh, `${source}.${field}.zh`);
     requireList(agent[field]?.en, `${source}.${field}.en`);
   }
+  if (agent.kind === "platform_assistant") {
+    if (expectedModule !== "Common") throw new Error(`${source}: platform assistants must be in Common`);
+    const assistant = agent.assistant;
+    if (!assistant || typeof assistant !== "object" || Array.isArray(assistant)) {
+      throw new Error(`${source}.assistant must be an object`);
+    }
+    const expected = {
+      type: "role_matching",
+      runtimeCapability: "role_matching",
+      composable: false,
+      localFileAccess: "read_only_user_selected",
+    };
+    for (const [field, value] of Object.entries(expected)) {
+      if (assistant[field] !== value) throw new Error(`${source}.assistant.${field} is invalid`);
+    }
+    if (agent.execution !== undefined) throw new Error(`${source}: platform assistants cannot declare execution`);
+    requireList(agent.workflow, `${source}.workflow`);
+    for (const [index, step] of agent.workflow.entries()) {
+      requireString(step.id, `${source}.workflow[${index}].id`);
+      requireLocalized(step.title, `${source}.workflow[${index}].title`);
+      requireLocalized(step.description, `${source}.workflow[${index}].description`);
+      requireList(step.tools, `${source}.workflow[${index}].tools`);
+      requireArray(step.executionStepIds, `${source}.workflow[${index}].executionStepIds`);
+    }
+    return;
+  }
   requireList(agent.workflow, `${source}.workflow`);
   const stepIds = new Set();
   const scopedSapValues = {

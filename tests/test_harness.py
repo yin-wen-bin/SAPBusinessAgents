@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -324,6 +325,71 @@ def _settings(tmp_path: Path, root: Path | None = None) -> Settings:
 def test_broker_enforces_capability_idempotency_evidence_and_gap_gate(tmp_path: Path) -> None:
     async def scenario() -> None:
         await _broker_scenario(tmp_path)
+
+    asyncio.run(scenario())
+
+
+def test_free_query_budget_extends_only_for_validated_progress_then_finalizes(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        settings = replace(
+            _settings(tmp_path),
+            max_free_query_seconds=1800,
+            free_query_initial_seconds=900,
+            free_query_extension_seconds=300,
+            free_query_finalization_seconds=300,
+        )
+        store = RunStore(settings.database_path)
+        run_id = "run_adaptive_budget"
+        store.create_run(
+            run_id,
+            RunCreate(mode=RunMode.free_query, query="Query SAP evidence"),
+        )
+        broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+        token = broker.open_session(run_id)
+        call_id = "call_valid_plan"
+        store.begin_harness_tool_call(
+            call_id=call_id,
+            run_id=run_id,
+            tool_name="sap_query_validate",
+            request_hash="validated-plan",
+            safe_input={"plan": {"service_name": "API_TEST"}},
+        )
+        store.complete_harness_tool_call(
+            call_id,
+            status="completed",
+            output={"ok": True},
+            evidence_ref=None,
+        )
+        store.update_run(
+            run_id,
+            started_at=(datetime.now(timezone.utc) - timedelta(seconds=901)).isoformat(),
+        )
+        first = broker.review_deadline(run_id)
+        assert first["query_seconds_granted"] == 1200
+        assert first["extension_count"] == 1
+        assert first["deadline_phase"] == "querying"
+
+        store.update_run(
+            run_id,
+            started_at=(datetime.now(timezone.utc) - timedelta(seconds=1201)).isoformat(),
+        )
+        second = broker.review_deadline(run_id)
+        assert second["deadline_phase"] == "finalizing"
+        before_calls = len(store.list_harness_tool_calls(run_id))
+        blocked = await broker.handle(
+            run_id, token, "sap_catalog_search", {"query": "another source"}
+        )
+        assert blocked["code"] == "harness_finalization_only"
+        assert len(store.list_harness_tool_calls(run_id)) == before_calls
+
+        store.update_run(
+            run_id,
+            started_at=(datetime.now(timezone.utc) - timedelta(seconds=1801)).isoformat(),
+        )
+        hard = broker.review_deadline(run_id)
+        assert hard["deadline_phase"] == "deadline_exceeded"
 
     asyncio.run(scenario())
 

@@ -31,6 +31,7 @@ class AgentDraftService:
         correction: str = "",
         *,
         origin: dict[str, Any] | None = None,
+        execution_plan: dict[str, Any] | None = None,
     ) -> DraftRecord:
         run = self.store.get_run(run_id)
         if run.mode != RunMode.free_query:
@@ -43,13 +44,19 @@ class AgentDraftService:
         if self.settings.draft_root.resolve() not in draft_dir.parents:
             raise DraftError("Draft path escaped the configured draft root.")
         query = str(run.query or "SAP free query")
-        manifest = _manifest_from_run(slug, query, run.plan, correction)
+        draft_plan = json.loads(json.dumps(execution_plan or run.plan))
+        manifest = _manifest_from_run(slug, query, draft_plan, correction)
         origin = json.loads(json.dumps(origin or {}))
         if origin:
-            manifest.setdefault("authoring", {})["workflowGap"] = {
-                "workflowDraftId": origin.get("workflow_draft_id"),
-                "gapId": origin.get("gap_id"),
-            }
+            if origin.get("workflow_draft_id") or origin.get("gap_id"):
+                manifest.setdefault("authoring", {})["workflowGap"] = {
+                    "workflowDraftId": origin.get("workflow_draft_id"),
+                    "gapId": origin.get("gap_id"),
+                }
+            if isinstance(origin.get("free_query_session"), dict):
+                manifest.setdefault("authoring", {})["freeQuerySession"] = json.loads(
+                    json.dumps(origin["free_query_session"])
+                )
         authored = {
             "content_zh": "只读 Agent 草稿。发布前必须复核业务语义、规则与证据完整性。",
             "content_en": "Read-only Agent draft. Review semantics, rules, and evidence completeness before publishing.",
@@ -67,7 +74,7 @@ class AgentDraftService:
                     authored = await author_draft(
                         thread_id=run.thread_id,
                         query=query,
-                        plan=run.plan,
+                        plan=draft_plan,
                         evidence=run.result.evidence,
                         completeness=run.result.completeness.model_dump(mode="json"),
                         correction=correction,
@@ -99,7 +106,7 @@ class AgentDraftService:
                 {
                     "source_run_id": run_id,
                     "query": run.query,
-                    "plan": run.plan,
+                    "plan": draft_plan,
                     "completeness": run.result.completeness.model_dump(),
                 },
                 ensure_ascii=False,
@@ -164,6 +171,160 @@ class AgentDraftService:
         self.store.save_draft(draft)
         return self.validate(draft_id)
 
+    async def create_from_session(self, session_id: str) -> DraftRecord:
+        session = self.store.get_free_query_session(session_id)
+        if session.get("status") != "satisfied" or not session.get("accepted_iteration"):
+            raise DraftError("The latest free-query result must be accepted before drafting an Agent.")
+        iteration = self.store.get_free_query_iteration(
+            session_id, int(session["accepted_iteration"])
+        )
+        if iteration.get("result_digest") != session.get("accepted_result_digest"):
+            raise DraftError("The accepted free-query result digest no longer matches.")
+        run = self.store.get_run(iteration["run_id"])
+        if run.result is None:
+            raise DraftError("The accepted free-query result is unavailable.")
+        execution_run = self._resolve_session_execution_run(session_id, iteration)
+        execution_plan = self._replay_plan(execution_run)
+        feedback_history = [
+            {
+                "iteration": item["iteration"],
+                "feedback_type": item.get("feedback_type"),
+                "execution_action": item.get("execution_action"),
+                "feedback": item.get("feedback"),
+                "decision": item.get("decision"),
+            }
+            for item in self.store.list_free_query_iterations(session_id)
+            if item.get("feedback")
+        ]
+        origin = {
+            "free_query_session": {
+                "source_session_id": session_id,
+                "accepted_iteration": session["accepted_iteration"],
+                "result_digest": session["accepted_result_digest"],
+                "feedback_digest": _content_digest(feedback_history),
+                "feedback_trace": [
+                    {
+                        "iteration": item["iteration"],
+                        "feedback_type": item.get("feedback_type"),
+                        "execution_action": item.get("execution_action"),
+                    }
+                    for item in feedback_history
+                ],
+                "plan_digest": _content_digest(execution_plan),
+                "accepted_iteration_plan_digest": iteration.get("plan_digest"),
+                "execution_source_run_id": execution_run.run_id,
+                "runtime": session.get("runtime"),
+                "thread_id": session.get("thread_id"),
+                "expectation_statuses": [
+                    expectation.get("status")
+                    for item in feedback_history
+                    for expectation in (item.get("decision") or {}).get("candidate_expectations", [])
+                ],
+                "evidence_gaps": run.result.completeness.missing_evidence,
+                "source_complete": run.result.completeness.source_complete,
+                "business_complete": run.result.completeness.business_complete,
+                "requires_parameterization_review": True,
+            }
+        }
+        correction = "\n".join(
+            f"Iteration {item['iteration']}: {item['feedback']}"
+            for item in feedback_history
+        )
+        draft = await self.create_from_run(
+            iteration["run_id"],
+            correction,
+            origin=origin,
+            execution_plan=execution_plan,
+        )
+        _parameterize_session_draft(Path(draft.path), execution_plan)
+        draft = self.validate(draft.draft_id)
+        self.store.update_free_query_session(
+            session_id, status="draft_created", draft_id=draft.draft_id
+        )
+        return draft
+
+    def _resolve_session_execution_run(
+        self, session_id: str, iteration: dict[str, Any]
+    ) -> Any:
+        """Follow presentation-only lineage to the latest real query run."""
+
+        current = iteration
+        visited: set[str] = set()
+        while str(current.get("execution_action") or "") == "reinterpret":
+            source_run_id = str(current.get("source_run_id") or "")
+            if not source_run_id or source_run_id in visited:
+                raise DraftError("The accepted result has invalid evidence-reuse lineage.")
+            visited.add(source_run_id)
+            source_iteration = self.store.get_free_query_iteration_by_run(source_run_id)
+            if source_iteration is None or source_iteration.get("session_id") != session_id:
+                raise DraftError("The accepted result references evidence outside its session.")
+            current = source_iteration
+        source_run = self.store.get_run(str(current.get("run_id") or ""))
+        if (
+            source_run.status not in {RunStatus.completed, RunStatus.inconclusive}
+            or source_run.result is None
+            or source_run.plan is None
+        ):
+            raise DraftError("The final SAP query plan is unavailable for Agent generation.")
+        return source_run
+
+    def _replay_plan(self, run: Any) -> dict[str, Any]:
+        """Restore full validated requests from run-scoped harness call records."""
+
+        plan = json.loads(json.dumps(run.plan or {}))
+        if plan.get("kind") != "sap_business_agents_harness":
+            return plan
+        evidence_refs = {
+            str(item.get("evidence_ref") or "")
+            for item in (run.result.evidence if run.result else [])
+            if isinstance(item, dict) and item.get("evidence_ref")
+        }
+        steps: list[dict[str, Any]] = []
+        for call in self.store.list_harness_tool_calls(run.run_id):
+            if call.get("status") != "completed":
+                continue
+            evidence_ref = str(call.get("evidence_ref") or "")
+            if evidence_refs and evidence_ref not in evidence_refs:
+                continue
+            safe_input = call.get("safe_input")
+            if not isinstance(safe_input, dict):
+                continue
+            if call.get("tool_name") == "sap_query_execute":
+                query_plan = safe_input.get("plan")
+                if not isinstance(query_plan, dict) or _contains_write_operation(query_plan):
+                    continue
+                steps.append(
+                    {
+                        "id": f"sap_query_{len(steps) + 1}",
+                        "tool": "sap_read",
+                        "plan": json.loads(json.dumps(query_plan)),
+                        "source_evidence_ref": evidence_ref,
+                    }
+                )
+            elif call.get("tool_name") == "sap_skill_execute":
+                skill_id = str(safe_input.get("skill_id") or "")
+                skill_input = safe_input.get("input")
+                if skill_id and isinstance(skill_input, dict):
+                    steps.append(
+                        {
+                            "id": f"skill_{len(steps) + 1}",
+                            "tool": "skill",
+                            "skill_id": skill_id,
+                            "input": json.loads(json.dumps(skill_input)),
+                            "source_evidence_ref": evidence_ref,
+                        }
+                    )
+        if not steps:
+            raise DraftError(
+                "The accepted harness result has no replayable GET-only SAP or Skill plan."
+            )
+        return {
+            "kind": "sap_business_agents_harness",
+            "runtime": "deterministic_replay",
+            "source_run_id": run.run_id,
+            "steps": steps,
+        }
+
     def validate(self, draft_id: str) -> DraftRecord:
         draft = self.store.get_draft(draft_id)
         path = Path(draft.path)
@@ -177,6 +338,14 @@ class AgentDraftService:
             review_issues.extend(
                 _gap_contract_issues(manifest, (draft.origin or {}).get("gap_contract"))
             )
+            session_origin = (draft.origin or {}).get("free_query_session")
+            if isinstance(session_origin, dict):
+                if session_origin.get("requires_parameterization_review"):
+                    review_issues.append(
+                        "Free-query sample identifiers must be reviewed and mapped to Agent inputs."
+                    )
+                for gap in session_origin.get("evidence_gaps") or []:
+                    review_issues.append(f"Accepted free-query evidence gap: {gap}.")
         except (OSError, json.JSONDecodeError, ManifestError) as exc:
             issues.append(str(exc))
         draft.status = "invalid" if issues else "needs_review" if review_issues else "validated"
@@ -399,6 +568,237 @@ def _execution_steps_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:
     return execution_steps
 
 
+def _parameterize_session_draft(path: Path, source_plan: dict[str, Any]) -> None:
+    """Remove discoverable sample keys from executable requests in a session draft.
+
+    This is deliberately conservative. Literals whose business meaning cannot be
+    identified remain visible to the reviewer and the draft stays needs_review.
+    """
+
+    manifest_path = path / "agent.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    execution = manifest.get("execution") or {}
+    specs: dict[str, dict[str, Any]] = {}
+    source_keys: dict[tuple[str, str], str] = {}
+    sample_literals: dict[str, str] = {}
+    for step in execution.get("steps") or []:
+        request = step.get("request")
+        if isinstance(request, dict):
+            _parameterize_plan_filters(request, specs, source_keys, sample_literals)
+    for step in execution.get("steps") or []:
+        if isinstance(step.get("request"), dict):
+            step["request"] = _redact_parameter_samples(
+                step["request"], sample_literals
+            )
+    if specs:
+        properties = {
+            name: {
+                key: value
+                for key, value in spec.items()
+                if key not in {"sample_hash", "source_field"}
+            }
+            for name, spec in specs.items()
+        }
+        execution["inputSchema"] = {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        }
+        acceptance = execution.get("acceptance")
+        if isinstance(acceptance, dict):
+            acceptance["businessKeys"] = list(properties)
+        manifest["inputs"] = {
+            "zh": [str(spec["title"]["zh"]) for spec in specs.values()],
+            "en": [str(spec["title"]["en"]) for spec in specs.values()],
+        }
+    authoring = manifest.setdefault("authoring", {})
+    authoring["parameterization"] = {
+        "status": "needs_review",
+        "input_fields": list(specs),
+        "source_plan_digest": _content_digest(source_plan),
+        "sample_value_hashes": {
+            name: spec["sample_hash"] for name, spec in specs.items()
+        },
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+    fixture_path = path / "fixtures" / "validated-run.json"
+    if fixture_path.is_file():
+        fixture_path.write_text(
+            json.dumps(
+                {
+                    "source": "accepted_free_query_iteration",
+                    "parameterized_plan_digest": _content_digest(
+                        [step.get("request") for step in execution.get("steps") or []]
+                    ),
+                    "sample_inputs": {
+                        name: _fixture_placeholder(spec) for name, spec in specs.items()
+                    },
+                    "sample_value_hashes": {
+                        name: spec["sample_hash"] for name, spec in specs.items()
+                    },
+                    "completeness_policy": (
+                        "Missing evidence remains missing; fixture values are redacted."
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    contract_path = path / "docs" / "data-contract.json"
+    if contract_path.is_file():
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract["input_schema"] = execution.get("inputSchema")
+        contract["sample_values_redacted"] = True
+        contract_path.write_text(
+            json.dumps(contract, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+
+def _parameterize_plan_filters(
+    value: Any,
+    specs: dict[str, dict[str, Any]],
+    source_keys: dict[tuple[str, str], str],
+    sample_literals: dict[str, str],
+) -> None:
+    if isinstance(value, dict):
+        filters = value.get("filters")
+        if isinstance(filters, list):
+            for condition in filters:
+                if not isinstance(condition, dict):
+                    continue
+                field = str(condition.get("field") or "").strip()
+                if not _is_parameterizable_sap_field(field):
+                    continue
+                value_key = "value" if "value" in condition else "values" if "values" in condition else ""
+                if not value_key:
+                    continue
+                sample = condition.get(value_key)
+                if _is_template_value(sample) or sample is None:
+                    continue
+                name = _parameter_name(
+                    field,
+                    str(condition.get("operator") or "eq"),
+                    sample,
+                    specs,
+                    source_keys,
+                )
+                condition[value_key] = f"{{{{input.{name}}}}}"
+                samples = sample if isinstance(sample, list) else [sample]
+                for literal in samples:
+                    if isinstance(literal, str) and literal:
+                        sample_literals[literal] = f"<input:{name}>"
+        for child in value.values():
+            _parameterize_plan_filters(child, specs, source_keys, sample_literals)
+    elif isinstance(value, list):
+        for child in value:
+            _parameterize_plan_filters(child, specs, source_keys, sample_literals)
+
+
+def _redact_parameter_samples(value: Any, samples: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _redact_parameter_samples(child, samples)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_parameter_samples(child, samples) for child in value]
+    if isinstance(value, str) and "{{" not in value:
+        for sample, replacement in sorted(
+            samples.items(), key=lambda item: len(item[0]), reverse=True
+        ):
+            value = value.replace(sample, replacement)
+    return value
+
+
+def _parameter_name(
+    field: str,
+    operator: str,
+    sample: Any,
+    specs: dict[str, dict[str, Any]],
+    source_keys: dict[tuple[str, str], str],
+) -> str:
+    sample_digest = _content_digest(sample)
+    key = (field, sample_digest)
+    if key in source_keys:
+        return source_keys[key]
+    base = re.sub(r"(?<!^)(?=[A-Z])", "_", field).lower()
+    base = re.sub(r"[^a-z0-9_]+", "_", base).strip("_") or "sap_value"
+    normalized_operator = operator.lower()
+    if normalized_operator in {"ge", "gt"}:
+        base += "_from"
+    elif normalized_operator in {"le", "lt"}:
+        base += "_to"
+    name = base
+    suffix = 2
+    while name in specs:
+        name = f"{base}_{suffix}"
+        suffix += 1
+    schema = _schema_for_sample(sample)
+    schema["title"] = {"zh": field, "en": field}
+    schema["source_field"] = field
+    schema["sample_hash"] = sample_digest
+    specs[name] = schema
+    source_keys[key] = name
+    return name
+
+
+def _schema_for_sample(sample: Any) -> dict[str, Any]:
+    if isinstance(sample, list):
+        item = next((value for value in sample if value is not None), "")
+        return {"type": "array", "minItems": 1, "items": _schema_for_sample(item)}
+    if isinstance(sample, bool):
+        return {"type": "boolean"}
+    if isinstance(sample, int):
+        return {"type": "integer"}
+    if isinstance(sample, float):
+        return {"type": "number"}
+    schema: dict[str, Any] = {"type": "string", "minLength": 1}
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(sample)):
+        schema["format"] = "date"
+    return schema
+
+
+def _fixture_placeholder(spec: dict[str, Any]) -> Any:
+    value_type = spec.get("type")
+    if value_type == "array":
+        return ["<redacted>"]
+    if value_type == "integer":
+        return 1
+    if value_type == "number":
+        return 0
+    if value_type == "boolean":
+        return False
+    return "<redacted>"
+
+
+def _is_template_value(value: Any) -> bool:
+    return isinstance(value, str) and "{{" in value and "}}" in value
+
+
+def _is_parameterizable_sap_field(field: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", field.lower())
+    if not normalized or any(
+        token in normalized
+        for token in ("status", "type", "category", "indicator", "flag")
+    ):
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "order", "document", "material", "supplier", "customer", "companycode",
+            "plant", "mrp", "date", "year", "period", "batch", "storagelocation",
+            "invoice", "delivery", "organization", "costcenter", "workcenter", "wbs",
+        )
+    )
+
+
 def _gap_contract_issues(manifest: dict[str, Any], gap_contract: Any) -> list[str]:
     if not isinstance(gap_contract, dict):
         return []
@@ -440,3 +840,12 @@ def _contains_write_operation(value: Any) -> bool:
 
 def _readme(slug: str, query: str, correction: str) -> str:
     return f"""# {slug}\n\nGenerated from a validated free SAP query.\n\n- Query: {query}\n- User correction: {correction or 'None'}\n- Boundary: selected SAP Provider GET-only execution\n\nReview the business semantics, input schema, output contract, completeness requirements, and deterministic rules before publishing.\n"""
+
+
+def _content_digest(value: Any) -> str:
+    import hashlib
+
+    payload = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()

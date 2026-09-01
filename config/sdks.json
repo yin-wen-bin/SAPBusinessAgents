@@ -27,7 +27,8 @@
         "structured_output",
         "cancel",
         "authoring",
-        "workflow_authoring"
+        "workflow_authoring",
+        "role_matching"
       ],
       "authentication": "existing_login",
       "providerImplemented": true,

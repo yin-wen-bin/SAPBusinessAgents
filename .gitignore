@@ -17,6 +17,7 @@ out/
 .artifacts/
 
 # Site
+.npm-cache/
 site/node_modules/
 site/dist/
 site/.astro/

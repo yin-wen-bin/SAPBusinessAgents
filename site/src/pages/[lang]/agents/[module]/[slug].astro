@@ -3,6 +3,7 @@ import { Database, ExternalLink, FolderGit2, ListChecks, ShieldCheck, Wrench } f
 import SiteLayout from "../../../../layouts/SiteLayout.astro";
 import Sidebar from "../../../../components/Sidebar.astro";
 import AgentRunPanel from "../../../../components/AgentRunPanel.astro";
+import RoleMatchingAssistant from "../../../../components/RoleMatchingAssistant";
 import { getAgents, moduleCounts } from "../../../../lib/catalog";
 import { statusLabel } from "../../../../lib/display";
 import type { AgentDefinition, Locale } from "../../../../lib/types";
@@ -19,6 +20,7 @@ interface Props { locale: Locale; agent: AgentDefinition }
 const { locale, agent } = Astro.props as Props;
 const counts = moduleCounts();
 const base = import.meta.env.BASE_URL;
+const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const alternateLocale: Locale = locale === "zh" ? "en" : "zh";
 const alternateHref = agentPath(base, alternateLocale, agent.module, agent.slug);
 const githubUrl = sourceUrl(agent.module, agent.slug);
@@ -142,7 +144,9 @@ const labels = locale === "zh" ? {
           </a>
 
           <div class="markdown-body agent-document-body">
-            <AgentRunPanel locale={locale} agent={agent} />
+            {agent.kind === "platform_assistant" && agent.assistant?.type === "role_matching"
+              ? <RoleMatchingAssistant apiBase={apiBase} locale={locale} workflowsPath={`${base}${locale}/workflows/`} client:load />
+              : <AgentRunPanel locale={locale} agent={agent} />}
             <section id="agent-profile">
               <h2>{labels.profile}</h2>
               <dl class="profile-grid">
@@ -177,7 +181,7 @@ const labels = locale === "zh" ? {
               <div class="io-grid">
                 <div class="document-panel">
                   <h3>{labels.inputs}</h3>
-                  <ul>{inputProperties.map(([name, property]) => (
+                  <ul>{agent.kind === "platform_assistant" ? agent.inputs[locale].map((item) => <li><strong>{item}</strong></li>) : inputProperties.map(([name, property]) => (
                     <li>
                       <strong>{property.title?.[locale] || name}</strong>
                       {property.description?.[locale] && <span> — {property.description[locale]}</span>}
@@ -187,7 +191,7 @@ const labels = locale === "zh" ? {
                 </div>
                 <div class="document-panel">
                   <h3>{labels.outputs}</h3>
-                  <ul>{outputProperties.map(([name, property]) => (
+                  <ul>{agent.kind === "platform_assistant" ? agent.outputs[locale].map((item) => <li><strong>{item}</strong></li>) : outputProperties.map(([name, property]) => (
                     <li><strong>{property.title?.[locale] || name}</strong></li>
                   ))}</ul>
                 </div>

@@ -223,8 +223,29 @@ class RuntimeRouter:
     async def repair_workflow(self, *args: Any, **kwargs: Any) -> Any:
         return await self._invoke("repair_workflow", *args, **kwargs)
 
+    async def review_workflow_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._invoke("review_workflow_feedback", *args, **kwargs)
+
+    async def resume_workflow_composition(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._invoke("review_workflow_feedback", *args, **kwargs)
+
     async def request_additional_input(self, *args: Any, **kwargs: Any) -> Any:
         return await self._invoke("plan", *args, **kwargs)
+
+    async def review_free_query_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._invoke("review_free_query_feedback", *args, **kwargs)
+
+    async def resume_free_query_session(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._invoke("plan", *args, **kwargs)
+
+    async def revise_free_query_presentation(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._invoke("revise_free_query_presentation", *args, **kwargs)
+
+    async def analyze_role_matching(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._invoke("analyze_role_matching", *args, **kwargs)
+
+    async def review_role_matching_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._invoke("review_role_matching_feedback", *args, **kwargs)
 
     async def cancel(self, thread_id: str | None = None) -> None:
         provider = self._provider(self.current_provider_id)

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "workflowId": "p2p-batch-payment-review",
+  "state": "inactive",
+  "currentVersion": "1.2.0",
+  "currentWorkflowHash": "sha256:e92fe2acadd3b8946233a46d8ac3417107619ae14aca7d1a554f255cad92d024",
+  "publishedAt": null,
+  "deactivatedAt": "2026-08-30T23:49:18.973306+00:00",
+  "deactivationReason": "工作流误发布",
+  "updatedAt": "2026-08-30T23:49:18.973306+00:00"
+}

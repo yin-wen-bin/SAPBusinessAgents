@@ -26,6 +26,8 @@ ALLOWED_RULE_OPERATIONS = {
     "evidence_summary",
     "extract_bounded_values",
     "resolve_mrp_analysis_context",
+    "resolve_demand_forecast_context",
+    "resolve_new_sales_demand_context",
     "resolve_production_cost_scope",
     "resolve_inventory_health_window",
     "evaluate_business_agent",
@@ -64,8 +66,30 @@ class AgentRepository:
         except (OSError, json.JSONDecodeError) as exc:
             raise ManifestError(f"Cannot load {path}: {exc}") from exc
         if payload.get("schemaVersion") == 2:
-            validate_execution(payload, str(path))
+            validate_manifest(payload, str(path))
         return payload
+
+
+def validate_manifest(agent: dict[str, Any], source: str = "agent.json") -> None:
+    if agent.get("kind") == "platform_assistant":
+        assistant = agent.get("assistant")
+        if not isinstance(assistant, dict):
+            raise ManifestError(f"{source}.assistant must be an object")
+        expected = {
+            "type": "role_matching",
+            "runtimeCapability": "role_matching",
+            "composable": False,
+            "localFileAccess": "read_only_user_selected",
+        }
+        for field, value in expected.items():
+            if assistant.get(field) != value:
+                raise ManifestError(f"{source}.assistant.{field} must be {value!r}")
+        if agent.get("module") != "Common":
+            raise ManifestError(f"{source}: platform assistants must be in Common")
+        if "execution" in agent:
+            raise ManifestError(f"{source}: platform assistants cannot declare execution")
+        return
+    validate_execution(agent, source)
 
 
 def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> None:
@@ -158,6 +182,8 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
 
 
 def is_agent_executable(agent: dict[str, Any]) -> bool:
+    if agent.get("kind") == "platform_assistant":
+        return False
     validation = agent.get("validation")
     deterministic_runtime = bool(
         isinstance(validation, dict)

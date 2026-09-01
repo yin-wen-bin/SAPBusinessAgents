@@ -6,7 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from sap_business_agents_platform.codex_planner import _planner_prompt, _run_plan_turn
+from sap_business_agents_platform.codex_planner import (
+    FREE_QUERY_PRESENTATION_REVISION_SCHEMA,
+    _planner_prompt,
+    _run_plan_turn,
+)
 from sap_business_agents_platform.engine import (
     RunExecutionError,
     _canonicalize_plan_order_by,
@@ -23,6 +27,17 @@ class FakeThread:
         assert output_schema["type"] == "object"
         self.prompts.append(prompt)
         return SimpleNamespace(final_response=json.dumps(self.responses.pop(0)))
+
+
+def test_presentation_revision_schema_keeps_definitions_at_response_root() -> None:
+    schema = FREE_QUERY_PRESENTATION_REVISION_SCHEMA
+    presentation = schema["properties"]["presentation"]
+    localized = schema["$defs"]["LocalizedText"]
+
+    assert "$defs" not in presentation
+    assert presentation["properties"]["title"]["$ref"] == "#/$defs/LocalizedText"
+    assert localized["required"] == ["zh", "en"]
+    assert set(presentation["required"]) == set(presentation["properties"])
 
 
 def test_plan_turn_repairs_malformed_plan_json_exactly_once() -> None:

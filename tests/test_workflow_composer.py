@@ -146,6 +146,28 @@ class EchoOutputCompositionPlanner(CompositionPlanner):
         }
 
 
+class WorkflowFeedbackPlanner(CompositionPlanner):
+    async def review_workflow_feedback(self, **kwargs: Any) -> dict[str, Any]:
+        proposal = _proposal()
+        proposal["title"] = {
+            "zh": "采购付款复核（已修订）",
+            "en": "Procurement payment review (revised)",
+        }
+        return {
+            "feedback_type": kwargs.get("feedback_type_hint") or "goal_scope",
+            "action": "revise_workflow",
+            "revised_requirement": "复核采购订单付款并明确传播完整性",
+            "required_changes": ["Clarify completeness propagation"],
+            "preserved_behavior": ["Strictly read-only"],
+            "validation_input_patch": {},
+            "candidate_expectations": [],
+            "clarification_question": "",
+            "reason": "The user requested a workflow contract revision.",
+            "proposal": proposal,
+            "thread_id": "workflow-feedback-thread",
+        }
+
+
 def _wait_draft(client: TestClient, draft_id: str) -> dict[str, Any]:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
@@ -154,6 +176,116 @@ def _wait_draft(client: TestClient, draft_id: str) -> dict[str, Any]:
             return value
         time.sleep(0.03)
     raise AssertionError("Workflow composition did not settle")
+
+
+def test_workflow_feedback_creates_immutable_turn_and_revision(tmp_path: Path) -> None:
+    app = create_app(_settings(tmp_path), planner=WorkflowFeedbackPlanner())
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/authoring/workflows/compose",
+            json={"requirement": "复核采购订单付款", "locale": "zh"},
+        )
+        draft = _wait_draft(client, created.json()["draft_id"])
+        conversation = client.get(
+            f"/api/authoring/workflows/{draft['draft_id']}/conversation"
+        ).json()
+        original_revision = draft["revision"]
+
+        response = client.post(
+            f"/api/authoring/workflows/{draft['draft_id']}/feedback",
+            json={
+                "baseTurn": conversation["current_turn"],
+                "baseRevision": original_revision,
+                "feedback": "请明确传播所有完整性结果",
+                "feedbackTypeHint": "output_or_completeness",
+                "locale": "zh",
+            },
+        )
+        assert response.status_code == 202, response.text
+        revised = _wait_draft(client, draft["draft_id"])
+        assert revised["revision"] == original_revision + 1
+        assert revised["workflow"]["title"]["zh"].endswith("（已修订）")
+
+        history = client.get(
+            f"/api/authoring/workflows/{draft['draft_id']}/conversation"
+        ).json()
+        assert history["current_turn"] == 2
+        assert [item["kind"] for item in history["turns"]] == ["initial", "feedback"]
+        assert history["turns"][1]["base_revision"] == original_revision
+        assert history["turns"][1]["result_revision"] == revised["revision"]
+        assert history["turns"][1]["diff"]
+        revisions = client.get(
+            f"/api/authoring/workflows/{draft['draft_id']}/revisions"
+        ).json()["items"]
+        assert [item["revision"] for item in revisions] == [1, original_revision, revised["revision"]]
+
+        conflict = client.post(
+            f"/api/authoring/workflows/{draft['draft_id']}/feedback",
+            json={
+                "baseTurn": 1,
+                "baseRevision": original_revision,
+                "feedback": "stale",
+                "locale": "zh",
+            },
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "workflow_conversation_conflict"
+
+
+def test_workflow_design_confirmation_is_revision_bound(tmp_path: Path) -> None:
+    app = create_app(_settings(tmp_path), planner=WorkflowFeedbackPlanner())
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/authoring/workflows/compose",
+            json={"requirement": "复核采购订单付款", "locale": "zh"},
+        )
+        draft = _wait_draft(client, created.json()["draft_id"])
+        conversation = client.get(
+            f"/api/authoring/workflows/{draft['draft_id']}/conversation"
+        ).json()
+        accepted = client.post(
+            f"/api/authoring/workflows/{draft['draft_id']}/accept-design",
+            json={
+                "baseTurn": conversation["current_turn"],
+                "revision": draft["revision"],
+                "workflowHash": conversation["current_workflow_hash"],
+            },
+        )
+        assert accepted.status_code == 200, accepted.text
+        current = client.get(
+            f"/api/authoring/workflows/{draft['draft_id']}/conversation"
+        ).json()
+        assert current["status"] == "design_accepted"
+        assert current["accepted_design"]["revision"] == draft["revision"]
+
+        changed = deepcopy(draft["workflow"])
+        changed["description"]["zh"] = "手工修订"
+        saved = client.put(
+            f"/api/authoring/workflows/{draft['draft_id']}",
+            json={"expectedRevision": draft["revision"], "workflow": changed},
+        )
+        assert saved.status_code == 200, saved.text
+        current = client.get(
+            f"/api/authoring/workflows/{draft['draft_id']}/conversation"
+        ).json()
+        assert current["accepted_design"] is None
+        assert current["turns"][-1]["kind"] == "manual_edit"
+
+
+def test_live_validation_requires_current_design_confirmation(tmp_path: Path) -> None:
+    app = create_app(_settings(tmp_path), planner=WorkflowFeedbackPlanner())
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/authoring/workflows/compose",
+            json={"requirement": "复核采购订单付款", "locale": "zh"},
+        )
+        draft = _wait_draft(client, created.json()["draft_id"])
+        response = client.post(
+            f"/api/authoring/workflows/{draft['draft_id']}/validate",
+            json={"autoDiscover": False, "input": {}},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "workflow_design_confirmation_required"
 
 
 def test_compiler_pins_agents_and_connects_only_declared_same_name_ports() -> None:

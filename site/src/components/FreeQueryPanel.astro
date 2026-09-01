@@ -80,6 +80,7 @@ const copy = locale === "zh" ? {
         if (!response.ok) throw new Error(await response.text());
         const payload = await response.json();
         const destinationParams = new URLSearchParams({ run: String(payload.run_id) });
+        if (payload.session_id) destinationParams.set("session", String(payload.session_id));
         if (workflowDraft && gap) {
           destinationParams.set("workflowDraft", workflowDraft);
           destinationParams.set("gap", gap);

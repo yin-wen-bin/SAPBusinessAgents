@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import re
 from typing import Any
@@ -30,6 +30,10 @@ API_CAPABILITY_GAP_CODES = frozenset(
 def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if operation == "resolve_mrp_analysis_context":
         return resolve_mrp_analysis_context(inputs)
+    if operation == "resolve_demand_forecast_context":
+        return resolve_demand_forecast_context(inputs)
+    if operation == "resolve_new_sales_demand_context":
+        return resolve_new_sales_demand_context(inputs)
     if operation == "resolve_production_cost_scope":
         return resolve_production_cost_scope(inputs)
     if operation == "resolve_inventory_health_window":
@@ -91,6 +95,138 @@ def resolve_mrp_analysis_context(inputs: dict[str, Any]) -> dict[str, Any]:
         "rule_id": "mrp_analysis_context_v1",
         "status": "complete",
         "analysis_date": date.today().isoformat(),
+    }
+
+
+def resolve_demand_forecast_context(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the shared horizon for a bounded multi-material planning review."""
+
+    run_input = inputs.get("run_input")
+    if not isinstance(run_input, dict):
+        raise ValueError("resolve_demand_forecast_context requires run_input")
+
+    def required_date(name: str) -> date:
+        value = str(run_input.get(name) or "").strip()
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must use YYYY-MM-DD") from exc
+
+    date_from = required_date("date_from")
+    date_to = required_date("date_to")
+    if date_from > date_to:
+        raise ValueError("date_from must not be after date_to")
+    if (date_to - date_from).days > 366:
+        raise ValueError("the analysis date range must not exceed 366 days")
+
+    threshold_value = run_input.get("deviation_threshold_percent", 20)
+    try:
+        threshold = Decimal(str(20 if threshold_value in {None, ""} else threshold_value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("deviation_threshold_percent must be a number") from exc
+    if not threshold.is_finite() or threshold < 0 or threshold > 100:
+        raise ValueError("deviation_threshold_percent must be between 0 and 100")
+
+    materials = run_input.get("materials")
+    if not isinstance(materials, list) or not 1 <= len(materials) <= 50:
+        raise ValueError("materials must contain between 1 and 50 items")
+    normalized_materials = [str(item or "").strip().upper() for item in materials]
+    if any(not material for material in normalized_materials):
+        raise ValueError("materials must not contain empty items")
+    if len(normalized_materials) != len(set(normalized_materials)):
+        raise ValueError("materials must not contain duplicates")
+
+    mrp_area = str(run_input.get("mrp_area") or run_input.get("plant") or "").strip()
+    pir_version = str(run_input.get("pir_version") or "00").strip()
+    if not re.fullmatch(r"[0-9A-Za-z]{1,2}", pir_version):
+        raise ValueError("pir_version must contain one or two letters or digits")
+
+    return {
+        "rule_id": "demand_forecast_context_v3",
+        "status": "complete",
+        "analysis_date": date.today().isoformat(),
+        "materials": normalized_materials,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        # Monthly and weekly PIR periods can begin before an arbitrary analysis
+        # start date.  The deterministic rule clips them back to the user range.
+        "pir_query_from": (date_from - timedelta(days=31)).isoformat(),
+        "pir_version": pir_version,
+        "pir_requirement_type": str(run_input.get("pir_requirement_type") or "").strip(),
+        "mrp_area": mrp_area,
+        "requirement_plan": str(run_input.get("requirement_plan") or "").strip(),
+        "requirement_segment": str(run_input.get("requirement_segment") or "").strip(),
+        "deviation_threshold_percent": format(threshold, "f"),
+    }
+
+
+def resolve_new_sales_demand_context(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Validate one bounded external-demand simulation row per material."""
+
+    run_input = inputs.get("run_input")
+    if not isinstance(run_input, dict):
+        raise ValueError("resolve_new_sales_demand_context requires run_input")
+    raw_items = run_input.get("demand_items")
+    if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= 50:
+        raise ValueError("demand_items must contain between 1 and 50 items")
+    horizon_value = run_input.get("horizon_days", 90)
+    if isinstance(horizon_value, bool):
+        raise ValueError("horizon_days must be an integer")
+    try:
+        horizon_days = int(str(horizon_value))
+    except ValueError as exc:
+        raise ValueError("horizon_days must be an integer") from exc
+    if not 1 <= horizon_days <= 366:
+        raise ValueError("horizon_days must be between 1 and 366")
+
+    analysis_date = date.today()
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            raise ValueError(f"demand_items[{index}] must be an object")
+        material = str(raw.get("material") or "").strip().upper()
+        if not material:
+            raise ValueError(f"demand_items[{index}].material is required")
+        if material in seen:
+            raise ValueError("demand_items must not contain duplicate materials")
+        seen.add(material)
+        try:
+            quantity = Decimal(str(raw.get("quantity")))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"demand_items[{index}].quantity must be a number") from exc
+        if not quantity.is_finite() or quantity <= 0:
+            raise ValueError(f"demand_items[{index}].quantity must be greater than zero")
+        try:
+            demand_date = date.fromisoformat(str(raw.get("demand_date") or "").strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"demand_items[{index}].demand_date must use YYYY-MM-DD"
+            ) from exc
+        if demand_date < analysis_date:
+            raise ValueError(f"demand_items[{index}].demand_date must not be in the past")
+        normalized.append(
+            {
+                "material": material,
+                "quantity": format(quantity, "f"),
+                "demand_date": demand_date.isoformat(),
+                "unit": str(raw.get("unit") or "").strip().upper() or None,
+                "horizon_end_date": (demand_date + timedelta(days=horizon_days)).isoformat(),
+            }
+        )
+
+    plant = str(run_input.get("plant") or "").strip().upper()
+    mrp_area = str(run_input.get("mrp_area") or plant).strip().upper()
+    return {
+        "rule_id": "new_sales_demand_context_v1",
+        "status": "complete",
+        "analysis_date": analysis_date.isoformat(),
+        "plant": plant,
+        "mrp_area": mrp_area,
+        "horizon_days": horizon_days,
+        "materials": [item["material"] for item in normalized],
+        "demand_items": normalized,
+        "horizon_end_date": max(item["horizon_end_date"] for item in normalized),
     }
 
 

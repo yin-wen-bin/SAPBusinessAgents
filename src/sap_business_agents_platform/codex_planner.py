@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
-from .models import PlannerDecision
+from .models import PlannerDecision, RunPresentation
 
 
 PLANNER_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -81,6 +81,96 @@ WORKFLOW_REVIEW_OUTPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+FREE_QUERY_FEEDBACK_REVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "feedback_type", "action", "revised_intent", "revised_query",
+        "required_changes", "preserved_scope", "candidate_expectations",
+        "clarification_question", "reason",
+    ],
+    "properties": {
+        "feedback_type": {
+            "type": "string",
+            "enum": [
+                "scope_or_filter", "relationship", "missing_evidence",
+                "business_rule", "presentation", "new_intent", "unclear",
+            ],
+        },
+        "action": {
+            "type": "string",
+            "enum": ["requery", "reinterpret", "clarify", "start_new_session"],
+        },
+        "revised_intent": {"type": "string"},
+        "revised_query": {"type": "string"},
+        "required_changes": {"type": "array", "items": {"type": "string"}},
+        "preserved_scope": {"type": "array", "items": {"type": "string"}},
+        "candidate_expectations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["statement", "status", "evidence_refs"],
+                "properties": {
+                    "statement": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["confirmed", "mismatch", "not_verifiable"],
+                    },
+                    "evidence_refs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+            },
+        },
+        "clarification_question": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+}
+
+def _strict_response_schema(value: Any) -> Any:
+    """Make a Pydantic schema acceptable to strict Runtime structured output."""
+    if isinstance(value, dict):
+        normalized = {key: _strict_response_schema(item) for key, item in value.items()}
+        properties = normalized.get("properties")
+        if isinstance(properties, dict):
+            normalized["required"] = list(properties)
+            normalized.setdefault("additionalProperties", False)
+        return normalized
+    if isinstance(value, list):
+        return [_strict_response_schema(item) for item in value]
+    return value
+
+
+_RUN_PRESENTATION_SCHEMA = _strict_response_schema(
+    RunPresentation.model_json_schema()
+)
+
+FREE_QUERY_PRESENTATION_REVISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["summary", "presentation"],
+    # Pydantic emits local references such as ``#/$defs/LocalizedText``.  The
+    # presentation schema is embedded below another object, so its definitions
+    # must live at the response schema root or the Runtime rejects the response
+    # format before a turn starts.
+    "$defs": _RUN_PRESENTATION_SCHEMA.get("$defs", {}),
+    "properties": {
+        "summary": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["zh", "en"],
+            "properties": {"zh": {"type": "string"}, "en": {"type": "string"}},
+        },
+        "presentation": {
+            key: value
+            for key, value in _RUN_PRESENTATION_SCHEMA.items()
+            if key != "$defs"
+        },
+    },
+}
+
 WORKFLOW_REPAIR_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -99,6 +189,49 @@ WORKFLOW_COMPOSITION_OUTPUT_SCHEMA: dict[str, Any] = {
         "proposal_json": {"type": "string"},
     },
     "required": ["needs_clarification", "clarification_question", "proposal_json"],
+    "additionalProperties": False,
+}
+
+WORKFLOW_FEEDBACK_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "feedback_type": {
+            "type": "string",
+            "enum": [
+                "goal_scope", "stage_or_agent", "mapping", "condition",
+                "output_or_completeness", "validation_input", "validation_expectation",
+                "agent_capability", "presentation", "new_intent", "unclear",
+            ],
+        },
+        "action": {
+            "type": "string",
+            "enum": ["revise_workflow", "rerun_validation", "clarify", "start_new_workflow"],
+        },
+        "revised_requirement": {"type": "string"},
+        "required_changes": {"type": "array", "items": {"type": "string"}},
+        "preserved_behavior": {"type": "array", "items": {"type": "string"}},
+        "validation_input_patch_json": {"type": "string"},
+        "candidate_expectations_json": {"type": "string"},
+        "clarification_question": {"type": "string"},
+        "reason": {"type": "string"},
+        "proposal_json": {"type": "string"},
+    },
+    "required": [
+        "feedback_type", "action", "revised_requirement", "required_changes",
+        "preserved_behavior", "validation_input_patch_json",
+        "candidate_expectations_json", "clarification_question", "reason", "proposal_json",
+    ],
+    "additionalProperties": False,
+}
+
+ROLE_MATCHING_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "analysis_json": {"type": "string"},
+        "summary_zh": {"type": "string"},
+        "summary_en": {"type": "string"},
+    },
+    "required": ["analysis_json", "summary_zh", "summary_en"],
     "additionalProperties": False,
 }
 
@@ -134,6 +267,10 @@ class Planner(Protocol):
         clarification_input: str | None = None,
         previous: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
+
+    async def review_workflow_feedback(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def analyze_role_matching(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
 class CodexPlanner:
@@ -263,6 +400,111 @@ Rules:
             raw = json.loads(result.final_response)
             return {"zh": str(raw["zh"]), "en": str(raw["en"])}
 
+    async def review_free_query_feedback(
+        self,
+        *,
+        thread_id: str,
+        original_query: str,
+        previous_query: str,
+        previous_plan: dict[str, Any] | None,
+        previous_summary: dict[str, str],
+        previous_presentation: dict[str, Any] | None,
+        deterministic_rule_results: list[dict[str, Any]],
+        available_evidence_refs: list[str],
+        completeness: dict[str, Any],
+        feedback: str,
+        feedback_type_hint: str | None = None,
+        supplemental_input: str | None = None,
+    ) -> dict[str, Any]:
+        from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+
+        prompt = f"""
+Classify a user's correction to a completed read-only SAP query. Do not call tools.
+
+Original question: {original_query}
+Previous effective question: {previous_query}
+Previous validated plan shape: {_safe_json(previous_plan, limit=20_000)}
+Previous bilingual summary: {_safe_json(previous_summary, limit=5_000)}
+Previous validated presentation: {_safe_json(previous_presentation, limit=40_000)}
+Deterministic rule results: {_safe_json(deterministic_rule_results, limit=20_000)}
+Available evidence references: {_safe_json(available_evidence_refs, limit=20_000)}
+Previous completeness: {_safe_json(completeness, limit=5_000)}
+User feedback: {feedback}
+UI feedback hint: {feedback_type_hint or 'None'}
+Supplemental clarification: {supplemental_input or 'None'}
+
+Rules:
+1. User expectations are hypotheses, never SAP facts. Mark each expectation confirmed or
+   mismatch only when the supplied validated presentation or deterministic rules directly prove
+   it, and include the supporting evidence_refs. Otherwise use not_verifiable with no references.
+2. Choose requery when filters, scope, dates, fields, entities, relationships, business keys,
+   evidence requirements, or a fact-affecting business rule may change.
+3. Choose reinterpret only for wording, language, ordering, or layout changes that require no
+   new facts and no plan change.
+4. Choose clarify only when one concise answer is required before either action is safe.
+5. Choose start_new_session when the feedback is a materially different business question.
+Return only the required structured object.
+""".strip()
+        async with AsyncCodex() as codex:
+            thread = await codex.thread_resume(
+                thread_id,
+                cwd=str(self.repository_root),
+                sandbox=Sandbox.read_only,
+                approval_mode=ApprovalMode.deny_all,
+                model=self.model,
+            )
+            result = await thread.run(prompt, output_schema=FREE_QUERY_FEEDBACK_REVIEW_SCHEMA)
+            return json.loads(result.final_response)
+
+    async def revise_free_query_presentation(
+        self,
+        *,
+        thread_id: str,
+        query: str,
+        feedback: str,
+        previous_presentation: dict[str, Any],
+        allowed_evidence_refs: list[str],
+        completeness: dict[str, Any],
+        rule_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+
+        prompt = f"""
+Revise only the presentation of an already validated read-only SAP result.
+
+Question: {query}
+User presentation feedback: {feedback}
+Previous presentation with current-run evidence aliases:
+{_safe_json(previous_presentation, limit=80_000)}
+Allowed evidence aliases: {_safe_json(allowed_evidence_refs, limit=20_000)}
+Completeness (must not change): {_safe_json(completeness, limit=5_000)}
+Deterministic rule results (must not change or contradict):
+{_safe_json(rule_results, limit=20_000)}
+
+Do not call tools, add facts, change completeness, or cite any evidence reference outside the
+allowed list. Change only wording, language, ordering, or table layout. Return JSON only.
+""".strip()
+        async with AsyncCodex() as codex:
+            thread = await codex.thread_resume(
+                thread_id,
+                cwd=str(self.repository_root),
+                sandbox=Sandbox.read_only,
+                approval_mode=ApprovalMode.deny_all,
+                model=self.model,
+            )
+            result = await thread.run(
+                prompt, output_schema=FREE_QUERY_PRESENTATION_REVISION_SCHEMA
+            )
+            raw = json.loads(result.final_response)
+            presentation = RunPresentation.model_validate(raw["presentation"])
+            return {
+                "summary": {
+                    "zh": str(raw["summary"]["zh"]),
+                    "en": str(raw["summary"]["en"]),
+                },
+                "presentation": presentation.model_dump(mode="json"),
+            }
+
     async def author_draft(
         self,
         *,
@@ -304,6 +546,86 @@ requirements; never claim a rule has been implemented or a process completed.
                 "content_en": str(raw["content_en"]),
                 "rule_notes": [str(item) for item in raw["rule_notes"]],
             }
+
+    async def analyze_role_matching(
+        self,
+        *,
+        documents: list[dict[str, Any]],
+        agent_catalog: dict[str, Any],
+        previous_result: dict[str, Any] | None,
+        user_context: str,
+        rematch_mode: str,
+        locale: str,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+
+        prompt = f"""
+Analyze user-selected business material and match SAP daily operations to the supplied
+SAPBusinessAgents catalog. Document objects contain opaque IDs, structured source locators, and
+extracted text; they intentionally contain no local paths.
+
+Locale: {locale}
+Rematch mode: {rematch_mode}
+User context (not document evidence): {user_context or 'None'}
+Previous immutable result: {_safe_json(previous_result, limit=80_000)}
+Current Agent catalog: {_safe_json(agent_catalog, limit=120_000)}
+Documents: {_safe_json(documents, limit=2_500_000)}
+
+Return analysis_json as one JSON object with arrays roles, processes, operations, agent_matches,
+workflow_suggestions, agent_gaps and document_issues, plus non_sap_operation_count. Every SAP
+operation must contain operation_id, role, department, process, name, description, trigger, inputs,
+outputs, sap_system_or_module, frequency, controls and evidence_refs. Unknown values remain empty.
+Evidence refs must use supplied document_id/chunk_id/locator only.
+
+agent_matches contain operation_id, agent_id, coverage full|partial|none, confidence
+high|medium|low, reason, uncovered_capabilities and evidence_refs. Use only supplied Agent IDs.
+Blocked Agents may be matches but cannot enter workflow suggestions. workflow_suggestions contain
+suggestion_id, title, description, operation_ids, ordered stages, candidate bindings, coverage,
+remaining_gaps and evidence_refs; each stage uses an executable Agent ID. agent_gaps contain gap_id,
+operation_ids, required_capability, required_inputs, required_outputs, safety_boundary,
+business_impact, partial_agent_ids, reason and evidence_refs.
+
+For deterministic compiler dry-run, every workflow suggestion must itself be a complete compiler
+proposal: title/description/intent are bilingual objects and stages is an ordered array. Each stage
+has id, bilingual capability, executable agent_id, confidence="high", bilingual reason, bindings,
+and requested_outputs. A cross-stage binding has input_port, source_stage_id and
+source_output_port; the source output port must have the same name and a compatible type as the
+target input. Inputs without a safe binding become public workflow inputs. Do not invent ports;
+use only supplied input/output schemas.
+
+Analyze only SAP-related operations. User context is a hypothesis, never document evidence. Do not
+call tools, inspect files, execute SAP, edit files, or invent Agents.
+""".strip()
+        async with AsyncCodex() as codex:
+            if thread_id:
+                thread = await codex.thread_resume(
+                    thread_id, cwd=str(self.repository_root), sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all, model=self.model,
+                )
+            else:
+                thread = await codex.thread_start(
+                    cwd=str(self.repository_root), sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all, model=self.model,
+                    service_name="sap_business_agents_role_matching",
+                    developer_instructions=(
+                        "Analyze only supplied document text and Agent catalog. Never call tools, "
+                        "read local paths, execute SAP, or modify files."
+                    ),
+                )
+            result = await thread.run(prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA)
+            raw = json.loads(result.final_response)
+            analysis = json.loads(str(raw.get("analysis_json") or "{}"))
+            if not isinstance(analysis, dict):
+                raise ValueError("Role matching analysis_json must decode to an object.")
+            analysis["summary"] = {
+                "zh": str(raw.get("summary_zh") or ""),
+                "en": str(raw.get("summary_en") or ""),
+            }
+            return {"analysis": analysis, "thread_id": thread.id}
+
+    async def review_role_matching_feedback(self, **kwargs: Any) -> dict[str, Any]:
+        return await self.analyze_role_matching(**kwargs)
 
     async def review_workflow(
         self,
@@ -477,6 +799,145 @@ Rules:
                 "proposal": proposal,
                 "thread_id": thread.id,
             }
+
+    async def review_workflow_feedback(
+        self,
+        *,
+        requirement: str,
+        feedback: str,
+        feedback_type_hint: str | None,
+        locale: str,
+        workflow: dict[str, Any],
+        previous_proposal: dict[str, Any],
+        catalog: dict[str, Any],
+        validation_report: dict[str, Any] | None,
+        thread_id: str | None,
+        clarification_input: str | None = None,
+    ) -> dict[str, Any]:
+        from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+
+        prompt = _workflow_feedback_prompt(
+            requirement=requirement,
+            feedback=feedback,
+            feedback_type_hint=feedback_type_hint,
+            locale=locale,
+            workflow=workflow,
+            previous_proposal=previous_proposal,
+            catalog=catalog,
+            validation_report=validation_report,
+            clarification_input=clarification_input,
+        )
+        async with AsyncCodex() as codex:
+            if thread_id:
+                thread = await codex.thread_resume(
+                    thread_id,
+                    cwd=str(self.repository_root),
+                    sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all,
+                    model=self.model,
+                )
+            else:
+                thread = await codex.thread_start(
+                    cwd=str(self.repository_root),
+                    sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all,
+                    model=self.model,
+                    service_name="sap_business_agents_workflow_feedback",
+                    developer_instructions=(
+                        "Review workflow feedback only from the supplied workflow and executable Agent "
+                        "catalog. Never call tools, inspect files, execute SAP, edit files, invent Agents, "
+                        "or weaken deterministic safety and completeness contracts."
+                    ),
+                )
+            result = await thread.run(prompt, output_schema=WORKFLOW_FEEDBACK_OUTPUT_SCHEMA)
+            raw = json.loads(result.final_response)
+            try:
+                proposal = json.loads(str(raw.get("proposal_json") or "null"))
+                validation_input_patch = json.loads(
+                    str(raw.get("validation_input_patch_json") or "{}")
+                )
+                candidate_expectations = json.loads(
+                    str(raw.get("candidate_expectations_json") or "[]")
+                )
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Workflow feedback returned invalid embedded JSON: {exc}") from exc
+            if proposal is not None and not isinstance(proposal, dict):
+                raise ValueError("Workflow feedback proposal_json must be an object or null.")
+            if not isinstance(validation_input_patch, dict) or not isinstance(
+                candidate_expectations, list
+            ):
+                raise ValueError("Workflow feedback validation patches have an invalid shape.")
+            return {
+                "feedback_type": str(raw.get("feedback_type") or ""),
+                "action": str(raw.get("action") or ""),
+                "revised_requirement": str(raw.get("revised_requirement") or ""),
+                "required_changes": list(raw.get("required_changes") or []),
+                "preserved_behavior": list(raw.get("preserved_behavior") or []),
+                "validation_input_patch": validation_input_patch,
+                "candidate_expectations": candidate_expectations,
+                "clarification_question": str(raw.get("clarification_question") or ""),
+                "reason": str(raw.get("reason") or ""),
+                "proposal": proposal,
+                "thread_id": thread.id,
+            }
+
+
+def _workflow_feedback_prompt(
+    *,
+    requirement: str,
+    feedback: str,
+    feedback_type_hint: str | None,
+    locale: str,
+    workflow: dict[str, Any],
+    previous_proposal: dict[str, Any],
+    catalog: dict[str, Any],
+    validation_report: dict[str, Any] | None,
+    clarification_input: str | None,
+) -> str:
+    return f"""
+Review one user's feedback about an SAPBusinessAgents workflow conversation.
+
+Original or latest requirement: {requirement}
+User feedback: {feedback}
+Feedback category hint: {feedback_type_hint or 'none'}
+Clarification answer: {clarification_input or 'none'}
+Preferred UI language: {locale}
+
+Current deterministic workflow:
+{_safe_json(workflow, limit=80_000)}
+
+Previous full stage proposal:
+{_safe_json(previous_proposal, limit=60_000)}
+
+Latest validation summary, when feedback follows validation:
+{_safe_json(validation_report or {}, limit=50_000)}
+
+Executable Agent catalog, which is the only allowed Agent source:
+{_safe_json(catalog, limit=140_000)}
+
+Decide exactly one action:
+- revise_workflow: the goal, stages, Agent selection, bindings, conditions, terminal outputs,
+  completeness propagation, or published presentation contract must change. Return a complete
+  proposal_json using the same conceptual shape as the previous proposal, not a patch.
+- rerun_validation: only validation input or a terminal-output expectation changes. Do not change
+  the workflow. Return validation_input_patch_json and candidate_expectations_json.
+- clarify: the feedback is materially ambiguous. Ask exactly one concrete question and do no work.
+- start_new_workflow: the user is asking for a different business intent.
+
+Safety rules:
+1. Never treat the user's expected business value as SAP evidence or modify a fixed Agent rule.
+2. Never invent an Agent, port, tool, SAP field, or write operation.
+3. Preserve unrelated verified behavior and list it in preserved_behavior.
+4. A revise_workflow proposal must be complete and use exact catalog Agent IDs and exact declared ports.
+5. Keep source completeness, evidence completeness, and business completion independent.
+6. Keep oneOf selection explicit, array cardinalities compatible, and conditional skip outputs honest.
+7. If a required capability is absent, classify agent_capability and return a complete proposal with
+   an uncovered stage; do not substitute a semantically different Agent.
+8. proposal_json must be JSON `null` for every action except revise_workflow.
+9. validation_input_patch_json must be `{{}}` unless rerun_validation.
+10. candidate_expectations_json must be `[]` unless rerun_validation. Each expectation must follow
+    the platform contract: output, operator, and optional expected/tolerance.
+""".strip()
 
 
 def _workflow_composition_prompt(

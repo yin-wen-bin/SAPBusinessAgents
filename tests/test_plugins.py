@@ -502,6 +502,46 @@ def test_embedded_provider_bounds_parallel_binding_chunks(tmp_path: Path) -> Non
     assert provider.max_active_chunks == 4
 
 
+def test_embedded_provider_limits_global_sap_get_concurrency(tmp_path: Path) -> None:
+    active_requests = 0
+    max_active_requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active_requests, max_active_requests
+        assert request.method == "GET"
+        active_requests += 1
+        max_active_requests = max(max_active_requests, active_requests)
+        try:
+            await asyncio.sleep(0.02)
+            return httpx.Response(200, json={"d": {"results": []}})
+        finally:
+            active_requests -= 1
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        max_concurrent_requests=2,
+        transport=httpx.MockTransport(handler),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
+    )
+
+    async def execute_requests() -> None:
+        await asyncio.gather(
+            *(
+                provider._request(
+                    f"/sap/opu/odata/sap/API_TEST_SRV/A_Order('{index}')",
+                    params=None,
+                )
+                for index in range(6)
+            )
+        )
+
+    asyncio.run(execute_requests())
+
+    assert max_active_requests == 2
+
+
 def test_embedded_provider_splits_fifty_literal_in_values_into_five_stable_chunks(
     tmp_path: Path,
 ) -> None:
@@ -588,3 +628,55 @@ def test_embedded_provider_rejects_multiple_literal_chunk_filters(tmp_path: Path
         issue["code"] == "multiple_chunked_filters_not_supported"
         for issue in validation["validation_issues"]
     )
+
+
+def test_embedded_provider_record_gap_preserves_successful_literal_chunks(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/$metadata"):
+            return httpx.Response(200, text=_METADATA)
+        expression = request.url.params["$filter"]
+        values = re.findall(r"OrderID eq '([^']+)'", expression)
+        if "3" in values:
+            return httpx.Response(503, text="temporary fixture failure")
+        return httpx.Response(
+            200,
+            json={"d": {"results": [{"OrderID": value, "Amount": value} for value in values]}},
+        )
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        transport=httpx.MockTransport(handler),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
+    )
+    result = asyncio.run(
+        provider.execute_plan(
+            {
+                "service_name": "API_TEST_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_Order",
+                "http_method": "GET",
+                "select_fields": ["OrderID", "Amount"],
+                "filters": [
+                    {
+                        "field": "OrderID",
+                        "operator": "in",
+                        "value": ["1", "2", "3", "4"],
+                        "value_type": "string",
+                        "chunk_size": 2,
+                    }
+                ],
+                "chunk_error_policy": "record_gap",
+                "max_concurrent_chunks": 2,
+                "order_by": ["OrderID"],
+            }
+        )
+    )
+
+    assert result["source_complete"] is False
+    assert result["failed_filter_values"] == ["3", "4"]
+    assert [row["OrderID"] for row in result["data"]["results"]] == ["1", "2"]
+    assert [chunk["source_complete"] for chunk in result["chunk_results"]] == [True, False]

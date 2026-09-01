@@ -30,10 +30,30 @@ class Settings:
     free_query_runtime: str = "harness"
     internal_api_url: str = "http://127.0.0.1:8765"
     max_harness_turns: int = 12
+    max_free_query_iterations: int = 12
+    max_workflow_conversation_turns: int = 12
+    max_role_matching_turns: int = 12
+    role_matching_max_files: int = 500
+    role_matching_max_file_bytes: int = 50 * 1024 * 1024
+    role_matching_max_total_bytes: int = 1024 * 1024 * 1024
+    role_matching_max_runtime_chars: int = 1_500_000
+    local_role_matching_workers: int = 1
     # ``None`` means that run-scoped tool calls are bounded only by the turn and
     # elapsed-time limits.  Environment value ``0`` selects this mode.
     max_tool_calls: int | None = 40
+    # Backward-compatible shared limit used by tests and older deployments.
+    # New deployments set mode-specific limits below.
     max_run_seconds: int = 600
+    max_deterministic_run_seconds: int | None = None
+    max_free_query_seconds: int | None = None
+    free_query_initial_seconds: int | None = None
+    free_query_extension_seconds: int | None = None
+    free_query_finalization_seconds: int | None = None
+    local_deterministic_workers: int = 1
+    local_free_query_workers: int = 1
+    local_feedback_workers: int = 1
+    max_concurrent_sap_gets: int = 2
+    scheduler_lease_seconds: int = 60
     # Always true for the local product runtime. Tests and the in-process live
     # acceptance campaign may construct Settings with this disabled explicitly.
     enforce_agent_acceptance: bool = True
@@ -41,6 +61,38 @@ class Settings:
     @property
     def database_path(self) -> Path:
         return self.data_root / "platform.sqlite3"
+
+    @property
+    def deterministic_run_seconds(self) -> int:
+        return max(1, int(self.max_deterministic_run_seconds or self.max_run_seconds))
+
+    @property
+    def free_query_run_seconds(self) -> int:
+        return max(1, int(self.max_free_query_seconds or self.max_run_seconds))
+
+    @property
+    def free_query_finalization_budget_seconds(self) -> int:
+        hard = self.free_query_run_seconds
+        configured = self.free_query_finalization_seconds
+        return min(max(1, int(configured if configured is not None else max(1, hard // 6))), max(1, hard - 1))
+
+    @property
+    def free_query_initial_budget_seconds(self) -> int:
+        hard = self.free_query_run_seconds
+        finalization = self.free_query_finalization_budget_seconds
+        configured = self.free_query_initial_seconds
+        default = max(1, hard - finalization)
+        return min(max(1, int(configured if configured is not None else default)), max(1, hard - finalization))
+
+    @property
+    def free_query_extension_budget_seconds(self) -> int:
+        hard = self.free_query_run_seconds
+        initial = self.free_query_initial_budget_seconds
+        finalization = self.free_query_finalization_budget_seconds
+        available = max(0, hard - initial - finalization)
+        configured = self.free_query_extension_seconds
+        default = max(1, available // 2) if available else 1
+        return max(1, min(int(configured if configured is not None else default), max(1, available)))
 
     @property
     def plugin_manifest_root(self) -> Path:
@@ -103,8 +155,69 @@ class Settings:
                 "SAPBA_INTERNAL_API_URL", "http://127.0.0.1:8765"
             ).rstrip("/"),
             max_harness_turns=max(1, int(os.getenv("SAPBA_MAX_HARNESS_TURNS", "12"))),
+            max_free_query_iterations=max(
+                1, int(os.getenv("SAPBA_MAX_FREE_QUERY_ITERATIONS", "12"))
+            ),
+            max_workflow_conversation_turns=max(
+                1, int(os.getenv("SAPBA_MAX_WORKFLOW_CONVERSATION_TURNS", "12"))
+            ),
+            max_role_matching_turns=max(
+                1, int(os.getenv("SAPBA_MAX_ROLE_MATCHING_TURNS", "12"))
+            ),
+            role_matching_max_files=max(
+                1, int(os.getenv("SAPBA_ROLE_MATCHING_MAX_FILES", "500"))
+            ),
+            role_matching_max_file_bytes=max(
+                1, int(os.getenv("SAPBA_ROLE_MATCHING_MAX_FILE_MB", "50"))
+            ) * 1024 * 1024,
+            role_matching_max_total_bytes=max(
+                1, int(os.getenv("SAPBA_ROLE_MATCHING_MAX_TOTAL_MB", "1024"))
+            ) * 1024 * 1024,
+            role_matching_max_runtime_chars=max(
+                10_000,
+                int(os.getenv("SAPBA_ROLE_MATCHING_MAX_RUNTIME_CHARS", "1500000")),
+            ),
             max_tool_calls=_env_optional_limit("SAPBA_MAX_TOOL_CALLS", 40),
             max_run_seconds=max(10, int(os.getenv("SAPBA_MAX_RUN_SECONDS", "600"))),
+            max_deterministic_run_seconds=max(
+                10,
+                int(
+                    os.getenv(
+                        "SAPBA_MAX_DETERMINISTIC_RUN_SECONDS",
+                        os.getenv("SAPBA_MAX_RUN_SECONDS", "600"),
+                    )
+                ),
+            ),
+            max_free_query_seconds=max(
+                60, int(os.getenv("SAPBA_MAX_FREE_QUERY_SECONDS", "1800"))
+            ),
+            free_query_initial_seconds=max(
+                10, int(os.getenv("SAPBA_FREE_QUERY_INITIAL_SECONDS", "900"))
+            ),
+            free_query_extension_seconds=max(
+                1, int(os.getenv("SAPBA_FREE_QUERY_EXTENSION_SECONDS", "300"))
+            ),
+            free_query_finalization_seconds=max(
+                10, int(os.getenv("SAPBA_FREE_QUERY_FINALIZATION_SECONDS", "300"))
+            ),
+            local_deterministic_workers=max(
+                1, int(os.getenv("SAPBA_LOCAL_DETERMINISTIC_WORKERS", "1"))
+            ),
+            local_free_query_workers=max(
+                1, int(os.getenv("SAPBA_LOCAL_FREE_QUERY_WORKERS", "1"))
+            ),
+            local_feedback_workers=max(
+                1, int(os.getenv("SAPBA_LOCAL_FEEDBACK_WORKERS", "1"))
+            ),
+            local_role_matching_workers=max(
+                1, int(os.getenv("SAPBA_LOCAL_ROLE_MATCHING_WORKERS", "1"))
+            ),
+            max_concurrent_sap_gets=max(
+                1, int(os.getenv("SAPBA_MAX_CONCURRENT_SAP_GETS", "2"))
+            ),
+            scheduler_lease_seconds=max(
+                15, int(os.getenv("SAPBA_SCHEDULER_LEASE_SECONDS", "60"))
+            ),
         )
 
 

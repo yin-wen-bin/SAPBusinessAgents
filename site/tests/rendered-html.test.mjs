@@ -7,15 +7,16 @@ const readPage = (...segments) => readFile(path.join("dist", ...segments, "index
 const readManifest = async (module, slug) =>
   JSON.parse(await readFile(path.join("..", "agents", module, slug, "agent.json"), "utf8"));
 
-test("static catalog contains all thirty agents and the GitHub Pages base path", async () => {
+test("static catalog contains all agents and the GitHub Pages base path", async () => {
   const html = await readPage("zh");
   for (const slug of ["ap-payment", "ar-collection", "gr-ir-clearing", "month-end-closing", "procure-to-pay-status"]) {
     assert.match(html, new RegExp(`/SAPBusinessAgents/zh/agents/(?:FI|MM)/${slug}/`));
   }
   assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 4);
+  assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 1);
   assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
-  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 11);
+  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 12);
   assert.match(html, /class="odata-version-tag">V2</);
   assert.doesNotMatch(html, /href="\/zh\//);
 });
@@ -57,6 +58,15 @@ test("new MM detail pages render exact steps and fail-closed validation metadata
     assert.match(zh, /three-stage-live-acceptance\.md/);
     assert.match(zh, /class="odata-version-badge">V2</);
   }
+});
+
+test("role matching assistant renders a read-only document session entry", async () => {
+  const zh = await readPage("zh", "agents", "Common", "role-agent-matching");
+  const en = await readPage("en", "agents", "Common", "role-agent-matching");
+  assert.match(zh, /运行岗位匹配助理/);
+  assert.match(zh, /Runtime正文发送确认/);
+  assert.match(en, /Run role-matching assistant/);
+  assert.doesNotMatch(zh, /执行这个 Agent/);
 });
 
 test("material shortage inputs are localized, documented, and prefilled", async () => {
@@ -194,6 +204,21 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /workflow-ap-scopes\.csv/);
   assert.match(run, /const pageSize = 20/);
   assert.match(run, /payment_run_evidence_incomplete/);
+  assert.match(run, /多轮查询与修正/);
+  assert.match(run, /结果需要修正/);
+  assert.match(run, /继续修正此结果/);
+  assert.match(run, /结果符合预期/);
+  assert.match(run, /用户期望与SAP证据核对/);
+  assert.match(run, /free-query-sessions/);
+  assert.match(run, /feedback-input/);
+  assert.match(run, /agent-draft/);
+  assert.match(run, /本轮没有新增SAP查询/);
+  assert.match(run, /反馈处理进度/);
+  assert.match(run, /Agent Runtime正在理解反馈/);
+  assert.match(run, /feedback-requests/);
+  assert.match(run, /harness_finalization_started/);
+  assert.match(run, /已自适应延长/);
+  assert.doesNotMatch(run, /\.innerHTML\s*=/);
   assert.match(plugins, /插件与能力/);
   assert.match(plugins, /data-plugin-manager/);
   assert.match(plugins, /禁止 SAP 写入/);
@@ -259,6 +284,13 @@ test("workflow builder is rendered and consistently localized", async () => {
   assert.doesNotMatch(builderSource, /我确认并接受本次验证中的完整性缺口/);
   assert.match(builderSource, /条件终态/);
   assert.match(builderSource, /node\.onSkip\?\.reasonCode/);
+  assert.match(builderSource, /工作流对话记录/);
+  assert.match(builderSource, /设计符合预期/);
+  assert.match(builderSource, /验证结果需要修正/);
+  assert.match(builderSource, /accept-design/);
+  assert.match(builderSource, /accept-validation/);
+  assert.match(builderSource, /\/feedback/);
+  assert.match(builderSource, /\/undo/);
 });
 
 test("detail pages render workflow and step-level tools", async () => {

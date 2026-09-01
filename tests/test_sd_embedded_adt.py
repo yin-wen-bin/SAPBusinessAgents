@@ -26,9 +26,9 @@ def _steps(manifest: dict[str, object]) -> list[dict[str, object]]:
     return [step for step in steps if isinstance(step, dict)]
 
 
-def test_all_eleven_sd_agents_use_schema_v2_embedded_reads() -> None:
+def test_all_twelve_sd_agents_use_schema_v2_embedded_reads() -> None:
     manifests = _manifests()
-    assert len(manifests) == 11
+    assert len(manifests) == 12
     for manifest in manifests:
         assert manifest["schemaVersion"] == 2
         assert {step.get("executor") for step in _steps(manifest)} <= {

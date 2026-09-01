@@ -131,6 +131,15 @@ class WorkflowDraftService:
             "source_hash": source_hash,
             "target_version": target_version,
         }
+        self._initialize_conversation(
+            draft,
+            kind="initial",
+            status="completed",
+            user_message=(
+                f"Create {target_version} from published version {source_version}."
+            ),
+            requires_design_acceptance=True,
+        )
         draft.updated_at = utc_now()
         self._write_draft(draft)
         self.store.save_workflow_draft(draft)
@@ -142,6 +151,173 @@ class WorkflowDraftService:
     def revisions(self, draft_id: str) -> list[dict[str, Any]]:
         self.store.get_workflow_draft(draft_id)
         return self.store.list_workflow_revisions(draft_id)
+
+    def conversation(self, draft_id: str) -> dict[str, Any]:
+        draft = self.store.get_workflow_draft(draft_id)
+        turns = self.store.list_workflow_conversation_turns(draft_id)
+        if not turns:
+            state = self._initialize_conversation(draft, kind="initial", status="completed")
+            turns = self.store.list_workflow_conversation_turns(draft_id)
+        else:
+            state = self._conversation_state(draft)
+        return {
+            "draft_id": draft_id,
+            "current_turn": int(state.get("current_turn") or turns[-1]["turn"]),
+            "current_workflow_hash": workflow_digest(draft.workflow),
+            "status": str(state.get("status") or "reviewing"),
+            "accepted_design": deepcopy_json(state.get("accepted_design")),
+            "accepted_validation": deepcopy_json(state.get("accepted_validation")),
+            "runtime_snapshot": deepcopy_json(state.get("runtime_snapshot") or {}),
+            "turn_limit": int(self.settings.max_workflow_conversation_turns),
+            "turns": turns,
+        }
+
+    def _conversation_state(self, draft: WorkflowDraftRecord) -> dict[str, Any]:
+        value = draft.composition.get("conversation")
+        return value if isinstance(value, dict) else {}
+
+    def _initialize_conversation(
+        self,
+        draft: WorkflowDraftRecord,
+        *,
+        kind: str,
+        status: str,
+        user_message: str | None = None,
+        requires_design_acceptance: bool = True,
+    ) -> dict[str, Any]:
+        snapshot: dict[str, Any] = {}
+        snapshot_method = getattr(self.author, "snapshot", None)
+        provider_id = str(
+            draft.composition.get("runtime_provider_id")
+            or getattr(self.author, "current_provider_id", "codex")
+        )
+        if callable(snapshot_method):
+            try:
+                snapshot = deepcopy_json(snapshot_method(provider_id))
+            except Exception:
+                snapshot = {"provider_id": provider_id}
+        state = {
+            "current_turn": 1,
+            "status": "composing" if status == "planning" else "reviewing",
+            "requires_design_acceptance": requires_design_acceptance,
+            "accepted_design": None,
+            "accepted_validation": None,
+            "runtime_snapshot": snapshot,
+            "pending_feedback": None,
+        }
+        draft.composition["conversation"] = state
+        self.store.save_workflow_conversation_turn(
+            {
+                "draft_id": draft.draft_id,
+                "turn": 1,
+                "parent_turn": None,
+                "kind": kind,
+                "status": status,
+                "user_message": user_message,
+                "action": "compose" if status == "planning" else "baseline",
+                "base_revision": draft.revision,
+                "result_revision": draft.revision if status == "completed" else None,
+                "workflow_hash": workflow_digest(draft.workflow),
+                "created_at": draft.created_at,
+                "completed_at": utc_now() if status == "completed" else None,
+            }
+        )
+        draft.updated_at = utc_now()
+        self.store.save_workflow_draft(draft)
+        return state
+
+    def _next_turn(
+        self,
+        draft: WorkflowDraftRecord,
+        *,
+        kind: str,
+        status: str = "planning",
+        user_message: str | None = None,
+        feedback_type: str | None = None,
+        action: str | None = None,
+        base_revision: int | None = None,
+    ) -> int:
+        state = self._conversation_state(draft)
+        if not state:
+            state = self._initialize_conversation(
+                draft, kind="initial", status="completed", requires_design_acceptance=True
+            )
+        turns = self.store.list_workflow_conversation_turns(draft.draft_id)
+        runtime_turns = sum(
+            1 for item in turns
+            if item["kind"] in {"initial", "clarification", "feedback", "validation_feedback"}
+        )
+        if kind in {"clarification", "feedback", "validation_feedback"} and runtime_turns >= int(
+            self.settings.max_workflow_conversation_turns
+        ):
+            raise WorkflowDraftError(
+                "The workflow conversation turn limit has been reached.",
+                code="workflow_conversation_turn_limit",
+            )
+        turn = int(state.get("current_turn") or 0) + 1
+        state["current_turn"] = turn
+        state["status"] = "composing" if status == "planning" else "reviewing"
+        draft.composition["conversation"] = state
+        self.store.save_workflow_conversation_turn(
+            {
+                "draft_id": draft.draft_id,
+                "turn": turn,
+                "parent_turn": turn - 1 if turn > 1 else None,
+                "kind": kind,
+                "status": status,
+                "user_message": user_message,
+                "feedback_type": feedback_type,
+                "action": action,
+                "base_revision": draft.revision if base_revision is None else base_revision,
+                "created_at": utc_now(),
+            }
+        )
+        return turn
+
+    def _complete_turn(
+        self,
+        draft: WorkflowDraftRecord,
+        turn: int,
+        *,
+        status: str = "completed",
+        action: str | None = None,
+        decision: dict[str, Any] | None = None,
+        diff: list[dict[str, Any]] | None = None,
+        validation_run_id: str | None = None,
+        validation_report_digest: str | None = None,
+    ) -> None:
+        existing = next(
+            item
+            for item in self.store.list_workflow_conversation_turns(draft.draft_id)
+            if int(item["turn"]) == turn
+        )
+        existing.update(
+            {
+                "status": status,
+                "action": action or existing.get("action"),
+                "decision": deepcopy_json(decision or existing.get("decision") or {}),
+                "result_revision": draft.revision,
+                "proposal_digest": _digest_json(
+                    (decision or {}).get("proposal") if isinstance(decision, dict) else None
+                ),
+                "workflow_hash": workflow_digest(draft.workflow),
+                "diff": deepcopy_json(diff or []),
+                "validation_run_id": validation_run_id,
+                "validation_report_digest": validation_report_digest,
+                "completed_at": utc_now() if status in {"completed", "blocked", "failed"} else None,
+            }
+        )
+        self.store.save_workflow_conversation_turn(existing)
+
+    def _invalidate_acceptance(self, draft: WorkflowDraftRecord, *, design: bool) -> None:
+        state = self._conversation_state(draft)
+        if not state:
+            return
+        if design:
+            state["accepted_design"] = None
+        state["accepted_validation"] = None
+        state["status"] = "reviewing"
+        draft.composition["conversation"] = state
 
     def start_composition(self, requirement: str, locale: str) -> WorkflowDraftRecord:
         draft = self.create(
@@ -165,6 +341,13 @@ class WorkflowDraftService:
             "error": None,
             "compiler_version": WORKFLOW_COMPILER_VERSION,
         }
+        self._initialize_conversation(
+            draft,
+            kind="initial",
+            status="planning",
+            user_message=requirement,
+            requires_design_acceptance=True,
+        )
         draft.updated_at = utc_now()
         self.store.save_workflow_draft(draft)
         self._schedule_composition(draft.draft_id)
@@ -188,11 +371,425 @@ class WorkflowDraftService:
         )
         draft.composition["clarification_history"] = history
         draft.composition["clarification_question"] = ""
+        turn = self._next_turn(
+            draft,
+            kind="clarification",
+            user_message=clarification_input,
+            action="resume_composition",
+        )
+        draft.composition["active_conversation_turn"] = turn
         draft.status = "planning"
         draft.updated_at = utc_now()
         self.store.save_workflow_draft(draft)
         self._schedule_composition(draft_id, clarification_input=clarification_input)
         return draft
+
+    def submit_feedback(
+        self,
+        draft_id: str,
+        *,
+        base_turn: int,
+        base_revision: int,
+        feedback: str,
+        feedback_type_hint: str | None,
+        locale: str,
+        validation_run_id: str | None,
+    ) -> WorkflowDraftRecord:
+        draft = self.store.get_workflow_draft(draft_id)
+        if draft.status == "published":
+            raise WorkflowDraftError(
+                "A published draft is immutable; create a new version first.",
+                code="workflow_draft_published",
+            )
+        state = self._conversation_state(draft)
+        if not state:
+            state = self._initialize_conversation(
+                draft, kind="initial", status="completed", requires_design_acceptance=True
+            )
+        if int(state.get("current_turn") or 0) != base_turn or draft.revision != base_revision:
+            raise WorkflowDraftError(
+                "Workflow conversation changed; reload before sending feedback.",
+                code="workflow_conversation_conflict",
+                detail={
+                    "current_turn": int(state.get("current_turn") or 0),
+                    "current_revision": draft.revision,
+                },
+            )
+        if str(state.get("status") or "") in {"composing", "validating", "waiting_input"}:
+            raise WorkflowDraftError(
+                "A workflow conversation turn is already active.",
+                code="workflow_conversation_turn_active",
+            )
+        if validation_run_id and validation_run_id != draft.validation_run_id:
+            raise WorkflowDraftError(
+                "The validation result changed; reload before sending feedback.",
+                code="workflow_validation_conflict",
+            )
+        kind = "validation_feedback" if validation_run_id else "feedback"
+        turn = self._next_turn(
+            draft,
+            kind=kind,
+            user_message=feedback,
+            feedback_type=feedback_type_hint,
+            action="review_feedback",
+        )
+        state = self._conversation_state(draft)
+        state["pending_feedback"] = {
+            "turn": turn,
+            "feedback": feedback,
+            "feedback_type_hint": feedback_type_hint,
+            "locale": locale,
+            "validation_run_id": validation_run_id,
+        }
+        state["status"] = "composing"
+        draft.composition["conversation"] = state
+        draft.status = "planning"
+        draft.updated_at = utc_now()
+        self.store.save_workflow_draft(draft)
+        task = asyncio.create_task(
+            self._process_feedback(draft_id, turn),
+            name=f"workflow-feedback-{draft_id}-{turn}",
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return draft
+
+    def provide_feedback_input(
+        self, draft_id: str, *, base_turn: int, value: str
+    ) -> WorkflowDraftRecord:
+        draft = self.store.get_workflow_draft(draft_id)
+        state = self._conversation_state(draft)
+        pending = state.get("pending_feedback") if isinstance(state, dict) else None
+        if (
+            draft.status != "waiting_input"
+            or not isinstance(pending, dict)
+            or int(state.get("current_turn") or 0) != base_turn
+        ):
+            raise WorkflowDraftError(
+                "This workflow conversation is not waiting for feedback input.",
+                code="workflow_feedback_not_waiting",
+            )
+        turn = self._next_turn(
+            draft,
+            kind="clarification",
+            user_message=value,
+            action="resume_workflow_composition",
+        )
+        pending = deepcopy_json(pending)
+        pending["clarification_input"] = value
+        pending["turn"] = turn
+        state = self._conversation_state(draft)
+        state["pending_feedback"] = pending
+        state["status"] = "composing"
+        draft.composition["conversation"] = state
+        draft.status = "planning"
+        draft.updated_at = utc_now()
+        self.store.save_workflow_draft(draft)
+        task = asyncio.create_task(
+            self._process_feedback(draft_id, turn),
+            name=f"workflow-feedback-{draft_id}-{turn}",
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return draft
+
+    async def _process_feedback(self, draft_id: str, turn: int) -> None:
+        draft = self.store.get_workflow_draft(draft_id)
+        state = self._conversation_state(draft)
+        pending = deepcopy_json(state.get("pending_feedback") or {})
+        try:
+            review = getattr(self.author, "review_workflow_feedback", None)
+            supports = getattr(self.author, "supports", None)
+            if not callable(review) or (callable(supports) and not supports("review_workflow_feedback")):
+                raise WorkflowDraftError(
+                    "The selected Agent Runtime does not support workflow feedback.",
+                    code="workflow_feedback_unavailable",
+                )
+            provider_id = str(draft.composition.get("runtime_provider_id") or "codex")
+            pin = getattr(self.author, "pin", None)
+            context = pin(provider_id) if callable(pin) else nullcontext()
+            validation_report = None
+            if pending.get("validation_run_id"):
+                try:
+                    validation_report = self.validation_report(draft_id)
+                except WorkflowDraftError:
+                    validation_report = None
+            with context:
+                raw = await asyncio.wait_for(
+                    review(
+                        requirement=str(draft.composition.get("requirement") or ""),
+                        feedback=str(pending.get("feedback") or ""),
+                        feedback_type_hint=pending.get("feedback_type_hint"),
+                        locale=str(pending.get("locale") or "zh"),
+                        workflow=draft.workflow,
+                        previous_proposal=deepcopy_json(
+                            draft.composition.get("proposal_snapshot") or {}
+                        ),
+                        catalog=compact_agent_catalog(self.agents),
+                        validation_report=validation_report,
+                        thread_id=draft.thread_id,
+                        clarification_input=pending.get("clarification_input"),
+                    ),
+                    timeout=min(180.0, max(1.0, float(self.settings.max_run_seconds))),
+                )
+            decision = _validated_workflow_feedback(raw)
+            draft = self.store.get_workflow_draft(draft_id)
+            draft.thread_id = str(raw.get("thread_id") or draft.thread_id or "") or None
+            action = str(decision["action"])
+            if action == "clarify":
+                question = str(decision.get("clarification_question") or "").strip()
+                if not question:
+                    raise WorkflowDraftError(
+                        "Runtime clarification did not include a question.",
+                        code="workflow_feedback_contract_invalid",
+                    )
+                state = self._conversation_state(draft)
+                state["status"] = "waiting_input"
+                state["pending_feedback"] = pending
+                draft.composition["conversation"] = state
+                draft.composition["clarification_question"] = question
+                draft.status = "waiting_input"
+                self._complete_turn(
+                    draft, turn, status="waiting_input", action=action, decision=decision
+                )
+                draft.updated_at = utc_now()
+                self.store.save_workflow_draft(draft)
+                return
+            if action == "start_new_workflow":
+                state = self._conversation_state(draft)
+                state["status"] = "reviewing"
+                state["pending_feedback"] = None
+                draft.composition["conversation"] = state
+                draft.status = "needs_agents" if draft.composition.get("gaps") else "draft"
+                self._complete_turn(draft, turn, action=action, decision=decision)
+                draft.updated_at = utc_now()
+                self.store.save_workflow_draft(draft)
+                return
+            if action == "rerun_validation":
+                report = validation_report or self.validation_report(draft_id)
+                validation_input = dict(report.get("normalized_input") or {})
+                validation_input.update(dict(decision.get("validation_input_patch") or {}))
+                expectations = list(
+                    decision.get("candidate_expectations")
+                    or draft.validation.get("expectations")
+                    or []
+                )
+                state = self._conversation_state(draft)
+                state["pending_feedback"] = None
+                state["status"] = "validating"
+                draft.composition["conversation"] = state
+                draft.status = "validated" if report.get("verdict") == "pass" else "inconclusive"
+                self._complete_turn(draft, turn, action=action, decision=decision)
+                self.store.save_workflow_draft(draft)
+                await self.validate_live(
+                    draft_id,
+                    validation_input,
+                    auto_discover=False,
+                    expectations=expectations,
+                    conversation_kind="validation",
+                )
+                return
+            if action != "revise_workflow":
+                raise WorkflowDraftError(
+                    f"Unsupported workflow feedback action: {action}",
+                    code="workflow_feedback_contract_invalid",
+                )
+            proposal = decision.get("proposal")
+            if not isinstance(proposal, dict):
+                raise WorkflowDraftError(
+                    "Workflow revision feedback did not include a complete proposal.",
+                    code="workflow_feedback_contract_invalid",
+                )
+            before = deepcopy_json(draft.workflow)
+            revised_requirement = str(decision.get("revised_requirement") or "").strip()
+            if revised_requirement:
+                draft.composition["requirement"] = revised_requirement
+            draft = self._apply_compiled_proposal(
+                draft,
+                proposal=proposal,
+                catalog=compact_agent_catalog(self.agents),
+                provider_id=str(draft.composition.get("runtime_provider_id") or "codex"),
+            )
+            state = self._conversation_state(draft)
+            state["pending_feedback"] = None
+            state["status"] = "reviewing"
+            draft.composition["conversation"] = state
+            diff = _json_diff(before, draft.workflow)
+            self._complete_turn(
+                draft, turn, action=action, decision=decision, diff=diff
+            )
+            draft.updated_at = utc_now()
+            self.store.save_workflow_draft(draft)
+        except Exception as exc:
+            draft = self.store.get_workflow_draft(draft_id)
+            state = self._conversation_state(draft)
+            state["status"] = "reviewing"
+            state["pending_feedback"] = None
+            draft.composition["conversation"] = state
+            draft.composition["error"] = {
+                "code": getattr(exc, "code", "workflow_feedback_failed"),
+                "message": str(exc),
+                "type": type(exc).__name__,
+                "detail": deepcopy_json(getattr(exc, "detail", None)),
+            }
+            draft.status = "needs_review"
+            self._complete_turn(
+                draft,
+                turn,
+                status="failed",
+                action="review_feedback",
+                decision={"error": deepcopy_json(draft.composition["error"])},
+            )
+            draft.updated_at = utc_now()
+            self.store.save_workflow_draft(draft)
+
+    def accept_design(
+        self, draft_id: str, *, base_turn: int, revision: int, workflow_hash: str
+    ) -> WorkflowDraftRecord:
+        draft = self.store.get_workflow_draft(draft_id)
+        state = self._conversation_state(draft)
+        if (
+            int(state.get("current_turn") or 0) != base_turn
+            or draft.revision != revision
+            or workflow_digest(draft.workflow) != workflow_hash
+        ):
+            raise WorkflowDraftError(
+                "The workflow changed before design confirmation.",
+                code="workflow_design_confirmation_conflict",
+            )
+        if draft.status in {"planning", "waiting_input", "needs_agents", "invalid"}:
+            raise WorkflowDraftError(
+                "The current workflow design cannot be confirmed.",
+                code="workflow_design_not_ready",
+            )
+        state["accepted_design"] = {
+            "turn": base_turn,
+            "revision": revision,
+            "workflow_hash": workflow_hash,
+            "accepted_at": utc_now(),
+        }
+        state["accepted_validation"] = None
+        state["status"] = "design_accepted"
+        draft.composition["conversation"] = state
+        draft.updated_at = utc_now()
+        self.store.save_workflow_draft(draft)
+        return draft
+
+    def accept_validation(
+        self,
+        draft_id: str,
+        *,
+        validation_run_id: str,
+        validation_report_digest: str,
+        accepted_gap_codes: list[str],
+    ) -> WorkflowDraftRecord:
+        draft = self.store.get_workflow_draft(draft_id)
+        state = self._conversation_state(draft)
+        accepted_design = state.get("accepted_design") if isinstance(state, dict) else None
+        if not isinstance(accepted_design, dict) or (
+            int(accepted_design.get("revision") or 0) != draft.revision
+            or accepted_design.get("workflow_hash") != workflow_digest(draft.workflow)
+        ):
+            raise WorkflowDraftError(
+                "Confirm the current workflow design before accepting validation.",
+                code="workflow_design_confirmation_required",
+            )
+        report = self.validation_report(draft_id)
+        if report.get("verdict") not in {"pass", "inconclusive"}:
+            raise WorkflowDraftError(
+                "Only passed or inconclusive validation can be accepted.",
+                code="workflow_validation_acceptance_not_allowed",
+            )
+        required_gaps = sorted(
+            str(item.get("code") or "")
+            for item in report.get("evidence_gaps") or []
+            if isinstance(item, dict) and item.get("code")
+        )
+        supplied_gaps = sorted(set(str(item) for item in accepted_gap_codes if str(item)))
+        if (
+            validation_run_id != report.get("run_id")
+            or validation_report_digest != report.get("report_digest")
+            or supplied_gaps != required_gaps
+        ):
+            raise WorkflowDraftError(
+                "Validation acceptance does not match the current report.",
+                code="workflow_validation_acceptance_conflict",
+                detail={"required_gap_codes": required_gaps},
+            )
+        state["accepted_validation"] = {
+            "validation_run_id": validation_run_id,
+            "validation_report_digest": validation_report_digest,
+            "accepted_gap_codes": required_gaps,
+            "accepted_at": utc_now(),
+        }
+        state["status"] = "validation_accepted"
+        draft.composition["conversation"] = state
+        draft.updated_at = utc_now()
+        self.store.save_workflow_draft(draft)
+        return draft
+
+    def undo(
+        self, draft_id: str, *, base_turn: int, base_revision: int, target_revision: int
+    ) -> WorkflowDraftRecord:
+        draft = self.store.get_workflow_draft(draft_id)
+        state = self._conversation_state(draft)
+        if int(state.get("current_turn") or 0) != base_turn or draft.revision != base_revision:
+            raise WorkflowDraftError(
+                "Workflow changed; reload before undoing a revision.",
+                code="workflow_conversation_conflict",
+            )
+        snapshot = self.store.get_workflow_revision(draft_id, target_revision)
+        restored = normalize_workflow(snapshot["workflow"], self.agents)
+        diff = _json_diff(draft.workflow, restored)
+        if not diff:
+            return draft
+        draft.workflow = restored
+        draft.revision += 1
+        draft.status = "needs_agents" if draft.composition.get("gaps") else "draft"
+        draft.validation_run_id = None
+        draft.validation = {
+            "valid": False,
+            "issues": ["A previous workflow revision was restored and must be validated."],
+            "phase": "not_started",
+            "verdict": "pending",
+        }
+        self._invalidate_acceptance(draft, design=True)
+        turn = self._next_turn(
+            draft,
+            kind="undo",
+            status="completed",
+            user_message=f"Restore workflow revision {target_revision}",
+            action="undo",
+            base_revision=base_revision,
+        )
+        draft.updated_at = utc_now()
+        self._write_draft(draft)
+        self.store.save_workflow_draft(draft, diff=diff)
+        self._complete_turn(
+            draft,
+            turn,
+            action="undo",
+            decision={"target_revision": target_revision},
+            diff=diff,
+        )
+        return draft
+
+    def validation_attempts(self, draft_id: str) -> list[dict[str, Any]]:
+        self.store.get_workflow_draft(draft_id)
+        return [
+            item
+            for item in self.store.list_workflow_conversation_turns(draft_id)
+            if item.get("validation_run_id")
+        ]
+
+    def validation_attempt_report(self, draft_id: str, run_id: str) -> dict[str, Any]:
+        draft = self.store.get_workflow_draft(draft_id)
+        root = (Path(draft.path) / "validation" / run_id).resolve()
+        expected = (Path(draft.path) / "validation").resolve()
+        path = (root / "workflow-validation-report.json").resolve()
+        if expected not in path.parents or not path.is_file():
+            raise KeyError(run_id)
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def reconcile(self, draft_id: str) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
@@ -228,6 +825,12 @@ class WorkflowDraftService:
             draft.status = "planning"
             draft.composition["error"] = None
             draft.composition["reconciling"] = True
+            draft.composition["active_conversation_turn"] = self._next_turn(
+                draft,
+                kind="catalog_reconcile",
+                user_message="Retry workflow compilation with the current compiler",
+                action="reconcile",
+            )
             draft.updated_at = utc_now()
             self.store.save_workflow_draft(draft)
             self._schedule_composition(draft_id)
@@ -239,6 +842,12 @@ class WorkflowDraftService:
             return draft
         draft.status = "planning"
         draft.composition["reconciling"] = True
+        draft.composition["active_conversation_turn"] = self._next_turn(
+            draft,
+            kind="catalog_reconcile",
+            user_message="Reconcile workflow with the executable Agent catalog",
+            action="reconcile",
+        )
         draft.updated_at = utc_now()
         self.store.save_workflow_draft(draft)
         self._schedule_composition(draft_id)
@@ -296,6 +905,8 @@ class WorkflowDraftService:
             )
         normalized = normalize_workflow(workflow, self.agents)
         diff = _json_diff(current.workflow, normalized)
+        if not diff:
+            return current
         current.workflow = normalized
         current.revision += 1
         current.status = "needs_agents" if current.composition.get("gaps") else "draft"
@@ -306,9 +917,30 @@ class WorkflowDraftService:
             "phase": "not_started",
             "verdict": "pending",
         }
+        self._invalidate_acceptance(current, design=True)
+        turn = self._next_turn(
+            current,
+            kind="manual_edit",
+            status="completed",
+            user_message="Manual workflow canvas edit",
+            action="revise_workflow",
+            base_revision=expected_revision,
+        )
         current.updated_at = utc_now()
         self._write_draft(current)
         self.store.save_workflow_draft(current, diff=diff)
+        self._complete_turn(
+            current,
+            turn,
+            action="revise_workflow",
+            decision={
+                "summary": {
+                    "zh": "已保存手工工作流修改。",
+                    "en": "The manual workflow edit was saved.",
+                }
+            },
+            diff=diff,
+        )
         return current
 
     def validate_structure(self, draft_id: str) -> WorkflowDraftRecord:
@@ -349,6 +981,7 @@ class WorkflowDraftService:
         *,
         auto_discover: bool,
         expectations: list[dict[str, Any]] | None = None,
+        conversation_kind: str = "validation",
     ) -> WorkflowDraftRecord:
         current = self._ensure_current_compiler(self.store.get_workflow_draft(draft_id))
         gaps = list(current.composition.get("gaps") or [])
@@ -358,6 +991,17 @@ class WorkflowDraftService:
                 code="workflow_gaps_unresolved",
                 detail={"gaps": [str(item.get("gap_id") or "") for item in gaps]},
             )
+        state = self._conversation_state(current)
+        if state.get("requires_design_acceptance"):
+            accepted = state.get("accepted_design")
+            if not isinstance(accepted, dict) or (
+                int(accepted.get("revision") or 0) != current.revision
+                or accepted.get("workflow_hash") != workflow_digest(current.workflow)
+            ):
+                raise WorkflowDraftError(
+                    "Confirm the current workflow design before live validation.",
+                    code="workflow_design_confirmation_required",
+                )
         draft = self.validate_structure(draft_id)
         if draft.validation.get("valid") is not True:
             raise WorkflowDraftError(
@@ -368,6 +1012,25 @@ class WorkflowDraftService:
         validated_expectations = _validate_expectation_contracts(
             draft.workflow, expectations or []
         )
+        turn: int | None = None
+        state = self._conversation_state(draft)
+        if state:
+            turn = self._next_turn(
+                draft,
+                kind=conversation_kind,
+                user_message=(
+                    "Revalidate with revised input or expectations"
+                    if conversation_kind == "validation_feedback"
+                    else "Start live validation"
+                ),
+                action="validate",
+            )
+            state = self._conversation_state(draft)
+            state["status"] = "validating"
+            state["accepted_validation"] = None
+            state["active_validation_turn"] = turn
+            draft.composition["conversation"] = state
+            self.store.save_workflow_draft(draft)
         required_inputs = [
             str(item) for item in draft.workflow.get("inputSchema", {}).get("required") or []
         ]
@@ -438,6 +1101,18 @@ class WorkflowDraftService:
                 }
             )
             draft.updated_at = utc_now()
+            if turn is not None:
+                self._complete_turn(
+                    draft,
+                    turn,
+                    status="blocked",
+                    action="validate",
+                    decision={"preflight_review": review},
+                )
+                state = self._conversation_state(draft)
+                state["status"] = "reviewing"
+                state.pop("active_validation_turn", None)
+                draft.composition["conversation"] = state
             self._write_draft(draft)
             self.store.save_workflow_draft(draft)
             raise WorkflowDraftError(
@@ -449,14 +1124,59 @@ class WorkflowDraftService:
         discovery_used = auto_discover and any(
             _validation_input_is_missing(validation_input.get(name)) for name in required_inputs
         )
-        if auto_discover:
-            validation_input = await self._discover_missing_inputs(draft, validation_input)
-        run_id = await self.coordinator.submit_workflow_snapshot(
-            draft.workflow,
-            validation_input,
-            draft_id=draft_id,
-            revision=draft.revision,
-        )
+        try:
+            if auto_discover:
+                validation_input = await self._discover_missing_inputs(draft, validation_input)
+            run_id = await self.coordinator.submit_workflow_snapshot(
+                draft.workflow,
+                validation_input,
+                draft_id=draft_id,
+                revision=draft.revision,
+            )
+        except Exception as exc:
+            draft.status = "needs_review"
+            draft.validation_run_id = None
+            draft.validation.update(
+                {
+                    "valid": True,
+                    "live_status": "failed",
+                    "phase": "completed",
+                    "verdict": "fail",
+                    "issues": [
+                        {
+                            "code": "workflow_validation_start_failed",
+                            "severity": "error",
+                            "node_id": None,
+                            "port": None,
+                            "message": {
+                                "zh": "测试样本发现或验证任务启动失败，未创建真机验证运行。",
+                                "en": "Test-sample discovery or validation startup failed; no live validation run was created.",
+                            },
+                            "error_type": type(exc).__name__,
+                        }
+                    ],
+                    "workflow_hash": workflow_digest(draft.workflow),
+                }
+            )
+            if turn is not None:
+                self._complete_turn(
+                    draft,
+                    turn,
+                    status="failed",
+                    action="validate",
+                    decision={
+                        "code": "workflow_validation_start_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                state = self._conversation_state(draft)
+                state["status"] = "reviewing"
+                state.pop("active_validation_turn", None)
+                draft.composition["conversation"] = state
+            draft.updated_at = utc_now()
+            self._write_draft(draft)
+            self.store.save_workflow_draft(draft)
+            raise
         self.store.append_event(
             run_id,
             "candidate_discovery_completed",
@@ -478,6 +1198,24 @@ class WorkflowDraftService:
                 "repair_attempts": 0,
             }
         )
+        if turn is not None:
+            existing_turn = next(
+                item
+                for item in self.store.list_workflow_conversation_turns(draft_id)
+                if int(item["turn"]) == turn
+            )
+            existing_turn.update(
+                {
+                    "action": "validate",
+                    "decision": {
+                        "sample_source": "auto_discovered" if discovery_used else "user",
+                        "normalized_input": deepcopy_json(validation_input),
+                        "expectations": deepcopy_json(validated_expectations),
+                    },
+                    "validation_run_id": run_id,
+                }
+            )
+            self.store.save_workflow_conversation_turn(existing_turn)
         draft.updated_at = utc_now()
         self.store.save_workflow_draft(draft)
         task = asyncio.create_task(
@@ -534,6 +1272,19 @@ class WorkflowDraftService:
             draft.validation["runtime_review"]
         )
         draft.validation["review_policy_version"] = WORKFLOW_REVIEW_POLICY_VERSION
+        state = self._conversation_state(draft)
+        active_turn = state.get("active_validation_turn") if state else None
+        if active_turn:
+            self._complete_turn(
+                draft,
+                int(active_turn),
+                status="blocked",
+                action="validate",
+                decision={"preflight_review": draft.validation["runtime_review"]},
+            )
+            state["status"] = "reviewing"
+            state.pop("active_validation_turn", None)
+            draft.composition["conversation"] = state
         draft.updated_at = utc_now()
         self._write_draft(draft)
         self.store.save_workflow_draft(draft)
@@ -553,6 +1304,14 @@ class WorkflowDraftService:
         self, draft_id: str, *, clarification_input: str | None = None
     ) -> None:
         draft = self.store.get_workflow_draft(draft_id)
+        if not self._conversation_state(draft):
+            self._initialize_conversation(
+                draft,
+                kind="initial",
+                status="planning",
+                user_message=str(draft.composition.get("requirement") or ""),
+                requires_design_acceptance=True,
+            )
         requirement = str(draft.composition.get("requirement") or "").strip()
         locale = str(draft.composition.get("locale") or "zh")
         try:
@@ -596,6 +1355,21 @@ class WorkflowDraftService:
                         "error": None,
                     }
                 )
+                state = self._conversation_state(draft)
+                state["status"] = "waiting_input"
+                draft.composition["conversation"] = state
+                turn = int(
+                    draft.composition.pop("active_conversation_turn", None)
+                    or state.get("current_turn")
+                    or 1
+                )
+                self._complete_turn(
+                    draft,
+                    turn,
+                    status="waiting_input",
+                    action="clarify",
+                    decision={"clarification_question": question},
+                )
                 draft.updated_at = utc_now()
                 self.store.save_workflow_draft(draft)
                 return
@@ -603,12 +1377,29 @@ class WorkflowDraftService:
             draft.composition["proposal_snapshot"] = proposal_snapshot
             draft.updated_at = utc_now()
             self.store.save_workflow_draft(draft)
-            self._apply_compiled_proposal(
+            turn = int(
+                draft.composition.pop("active_conversation_turn", None)
+                or self._conversation_state(draft).get("current_turn")
+                or 1
+            )
+            before = deepcopy_json(draft.workflow)
+            draft = self._apply_compiled_proposal(
                 draft,
                 proposal=proposal_snapshot,
                 catalog=catalog,
                 provider_id=provider_id,
             )
+            state = self._conversation_state(draft)
+            state["status"] = "reviewing"
+            draft.composition["conversation"] = state
+            self._complete_turn(
+                draft,
+                turn,
+                action="revise_workflow" if turn > 1 else "compose",
+                decision={"proposal": proposal_snapshot},
+                diff=_json_diff(before, draft.workflow),
+            )
+            self.store.save_workflow_draft(draft)
         except Exception as exc:
             draft = self.store.get_workflow_draft(draft_id)
             draft.status = "needs_review"
@@ -619,6 +1410,17 @@ class WorkflowDraftService:
                 "detail": deepcopy_json(getattr(exc, "detail", None)),
             }
             draft.composition["reconciling"] = False
+            state = self._conversation_state(draft)
+            if state:
+                state["status"] = "reviewing"
+                draft.composition["conversation"] = state
+                self._complete_turn(
+                    draft,
+                    int(state.get("current_turn") or 1),
+                    status="failed",
+                    action="compose",
+                    decision={"error": deepcopy_json(draft.composition["error"])},
+                )
             draft.updated_at = utc_now()
             self._write_draft(draft)
             self.store.save_workflow_draft(draft)
@@ -631,6 +1433,11 @@ class WorkflowDraftService:
         catalog: dict[str, Any],
         provider_id: str,
     ) -> WorkflowDraftRecord:
+        preserved = {
+            key: deepcopy_json(draft.composition.get(key))
+            for key in ("conversation", "version_origin", "runtime_snapshot")
+            if draft.composition.get(key) is not None
+        }
         workflow, composition = compile_workflow_proposal(
             workflow_id=str(draft.workflow["id"]),
             requirement=str(draft.composition.get("requirement") or "").strip(),
@@ -653,6 +1460,8 @@ class WorkflowDraftService:
         )
         composition["runtime_provider_id"] = provider_id
         composition["reconciling"] = False
+        composition["proposal_snapshot"] = deepcopy_json(proposal)
+        composition.update(preserved)
         diff = _json_diff(draft.workflow, workflow)
         draft.workflow = workflow
         if diff:
@@ -667,7 +1476,10 @@ class WorkflowDraftService:
                 if composition.get("gaps")
                 else ["Generated workflow has not been validated."]
             ),
+            "phase": "not_started",
+            "verdict": "pending",
         }
+        self._invalidate_acceptance(draft, design=True)
         draft.updated_at = utc_now()
         self._write_draft(draft)
         self.store.save_workflow_draft(draft, diff=diff if diff else None)
@@ -696,6 +1508,11 @@ class WorkflowDraftService:
             "stages": deepcopy_json(stages),
         }
         try:
+            preserved = {
+                key: deepcopy_json(draft.composition.get(key))
+                for key in ("conversation", "version_origin", "runtime_snapshot")
+                if draft.composition.get(key) is not None
+            }
             workflow, composition = compile_workflow_proposal(
                 workflow_id=str(draft.workflow["id"]),
                 requirement=requirement,
@@ -727,6 +1544,8 @@ class WorkflowDraftService:
             draft.composition.get("runtime_provider_id") or "codex"
         )
         composition["reconciling"] = False
+        composition["proposal_snapshot"] = deepcopy_json(proposal)
+        composition.update(preserved)
         diff = _json_diff(draft.workflow, workflow)
         draft.workflow = workflow
         draft.composition = composition
@@ -739,7 +1558,10 @@ class WorkflowDraftService:
             "issues": [
                 f"Workflow was recompiled with compiler version {WORKFLOW_COMPILER_VERSION} and must be validated."
             ],
+            "phase": "not_started",
+            "verdict": "pending",
         }
+        self._invalidate_acceptance(draft, design=True)
         draft.updated_at = utc_now()
         self._write_draft(draft)
         self.store.save_workflow_draft(draft, diff=diff if diff else None)
@@ -818,6 +1640,17 @@ class WorkflowDraftService:
                 "Only a passed or explicitly acknowledged inconclusive validation can be published.",
                 code="workflow_validation_not_publishable",
             )
+        state = self._conversation_state(draft)
+        if state.get("requires_design_acceptance"):
+            accepted = state.get("accepted_validation")
+            if not isinstance(accepted, dict) or (
+                accepted.get("validation_run_id") != report.get("run_id")
+                or accepted.get("validation_report_digest") != report.get("report_digest")
+            ):
+                raise WorkflowDraftError(
+                    "Confirm the current validation report before publishing.",
+                    code="workflow_validation_confirmation_required",
+                )
         gap_codes = sorted(
             {
                 str(item.get("code") or "")
@@ -1003,6 +1836,9 @@ class WorkflowDraftService:
         draft.workflow = workflow
         draft.revision += 1
         draft.status = "published"
+        if state:
+            state["status"] = "published"
+            draft.composition["conversation"] = state
         draft.validation.update(
             {
                 "branch": branch,
@@ -1065,6 +1901,24 @@ class WorkflowDraftService:
                 "completed_at": record.completed_at,
             }
         )
+        state = self._conversation_state(draft)
+        active_turn = state.get("active_validation_turn") if state else None
+        if active_turn:
+            self._complete_turn(
+                draft,
+                int(active_turn),
+                status="completed" if verdict in {"pass", "inconclusive"} else "blocked",
+                action="validate",
+                decision={
+                    "verdict": verdict,
+                    "evidence_gaps": deepcopy_json(report.get("evidence_gaps") or []),
+                },
+                validation_run_id=str(report.get("run_id") or "") or None,
+                validation_report_digest=str(report.get("report_digest") or "") or None,
+            )
+            state["status"] = "validation_review"
+            state.pop("active_validation_turn", None)
+            draft.composition["conversation"] = state
         draft.updated_at = utc_now()
         self._write_draft(draft)
         self.store.save_workflow_draft(draft)
@@ -1926,6 +2780,79 @@ def _validation_report_markdown(report: dict[str, Any]) -> str:
 
 def deepcopy_json(value: Any) -> Any:
     return json.loads(json.dumps(value))
+
+
+def _digest_json(value: Any) -> str | None:
+    if value is None:
+        return None
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _validated_workflow_feedback(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise WorkflowDraftError(
+            "Agent Runtime workflow feedback was not an object.",
+            code="workflow_feedback_contract_invalid",
+        )
+    feedback_types = {
+        "goal_scope", "stage_or_agent", "mapping", "condition",
+        "output_or_completeness", "validation_input", "validation_expectation",
+        "agent_capability", "presentation", "new_intent", "unclear",
+    }
+    actions = {"revise_workflow", "rerun_validation", "clarify", "start_new_workflow"}
+    feedback_type = str(value.get("feedback_type") or "")
+    action = str(value.get("action") or "")
+    if feedback_type not in feedback_types or action not in actions:
+        raise WorkflowDraftError(
+            "Agent Runtime workflow feedback returned an unsupported type or action.",
+            code="workflow_feedback_contract_invalid",
+        )
+    required_changes = value.get("required_changes")
+    preserved_behavior = value.get("preserved_behavior")
+    validation_input_patch = value.get("validation_input_patch")
+    candidate_expectations = value.get("candidate_expectations")
+    if not isinstance(required_changes, list) or not all(
+        isinstance(item, str) for item in required_changes
+    ):
+        raise WorkflowDraftError(
+            "Workflow feedback required_changes must be a string array.",
+            code="workflow_feedback_contract_invalid",
+        )
+    if not isinstance(preserved_behavior, list) or not all(
+        isinstance(item, str) for item in preserved_behavior
+    ):
+        raise WorkflowDraftError(
+            "Workflow feedback preserved_behavior must be a string array.",
+            code="workflow_feedback_contract_invalid",
+        )
+    if not isinstance(validation_input_patch, dict) or not isinstance(
+        candidate_expectations, list
+    ):
+        raise WorkflowDraftError(
+            "Workflow feedback validation patches have an invalid shape.",
+            code="workflow_feedback_contract_invalid",
+        )
+    proposal = value.get("proposal")
+    if action == "revise_workflow" and not isinstance(proposal, dict):
+        raise WorkflowDraftError(
+            "Workflow revision feedback requires a full proposal.",
+            code="workflow_feedback_contract_invalid",
+        )
+    return {
+        "feedback_type": feedback_type,
+        "action": action,
+        "revised_requirement": str(value.get("revised_requirement") or ""),
+        "required_changes": list(required_changes),
+        "preserved_behavior": list(preserved_behavior),
+        "validation_input_patch": deepcopy_json(validation_input_patch),
+        "candidate_expectations": deepcopy_json(candidate_expectations),
+        "clarification_question": str(value.get("clarification_question") or ""),
+        "reason": str(value.get("reason") or ""),
+        "proposal": deepcopy_json(proposal) if isinstance(proposal, dict) else None,
+    }
 
 
 def _validated_runtime_review(value: Any) -> dict[str, Any]:

@@ -13,9 +13,11 @@ from fastapi.testclient import TestClient
 
 from sap_business_agents_platform.app import create_app
 from sap_business_agents_platform.config import Settings
+from sap_business_agents_platform.database import RunStore
 from sap_business_agents_platform.engine import (
     _completeness_evidence_scope,
     _count_free_query_top_bounds,
+    _result_evidence_refs,
     _resolve_server_defaults,
     _validate_input,
 )
@@ -35,6 +37,7 @@ from sap_business_agents_platform.models import (
     utc_now,
 )
 from sap_business_agents_platform.skills import SkillError, SkillRegistry
+from sap_business_agents_platform.scheduler import LocalRunScheduler, WorkloadClass
 from sap_business_agents_platform.workflows import workflow_digest
 
 
@@ -550,6 +553,68 @@ class FakePlanner:
         )
 
 
+class FeedbackPlanner(FakePlanner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.feedback_reviews: list[dict[str, Any]] = []
+        self.presentation_revisions: list[dict[str, Any]] = []
+
+    async def review_free_query_feedback(self, **payload: Any) -> dict[str, Any]:
+        self.feedback_reviews.append(payload)
+        feedback = str(payload.get("feedback") or "")
+        hint = payload.get("feedback_type_hint")
+        if "澄清" in feedback and not payload.get("supplemental_input"):
+            return {
+                "feedback_type": "unclear",
+                "action": "clarify",
+                "revised_intent": "",
+                "revised_query": "",
+                "required_changes": [],
+                "preserved_scope": [],
+                "candidate_expectations": [],
+                "clarification_question": "请说明需要修改查询范围还是展示方式？",
+                "reason": "The requested correction is ambiguous.",
+            }
+        if hint == "presentation":
+            return {
+                "feedback_type": "presentation",
+                "action": "reinterpret",
+                "revised_intent": "Present the same validated evidence differently",
+                "revised_query": payload.get("previous_query"),
+                "required_changes": ["presentation"],
+                "preserved_scope": ["sap_evidence"],
+                "candidate_expectations": [],
+                "clarification_question": "",
+                "reason": "Only presentation changes are required.",
+            }
+        return {
+            "feedback_type": hint or "missing_evidence",
+            "action": "requery",
+            "revised_intent": "Collect the requested additional SAP evidence",
+            "revised_query": f"{payload.get('previous_query')}\nCorrection: {feedback}",
+            "required_changes": ["sap_evidence"],
+            "preserved_scope": [],
+            "candidate_expectations": [],
+            "clarification_question": "",
+            "reason": "The requested evidence requires another GET-only SAP query.",
+        }
+
+    async def revise_free_query_presentation(self, **payload: Any) -> dict[str, Any]:
+        self.presentation_revisions.append(payload)
+        presentation = json.loads(json.dumps(payload["previous_presentation"]))
+        presentation["title"] = {
+            "zh": "按用户反馈调整后的结果",
+            "en": "Result revised from user feedback",
+        }
+        return {
+            "summary": {
+                "zh": "已基于上一轮已验证证据调整展示，未重新查询 SAP。",
+                "en": "The presentation was revised from validated evidence without another SAP query.",
+            },
+            "presentation": presentation,
+        }
+
+
 class SlowSummaryPlanner(FakePlanner):
     async def summarize(self, **_kwargs: Any) -> dict[str, str]:
         await asyncio.sleep(5)
@@ -844,6 +909,75 @@ def _wait(client: TestClient, run_id: str, statuses: set[str] | None = None) -> 
     raise AssertionError(f"Run {run_id} did not reach {target}")
 
 
+def _wait_feedback(
+    client: TestClient,
+    session_id: str,
+    feedback_request_id: str,
+    statuses: set[str] | None = None,
+) -> dict[str, Any]:
+    target = statuses or {
+        "iteration_created",
+        "waiting_input",
+        "new_session_required",
+        "failed",
+        "cancelled",
+    }
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        response = client.get(
+            f"/api/free-query-sessions/{session_id}/feedback-requests/{feedback_request_id}"
+        )
+        assert response.status_code == 200, response.text
+        request = response.json()
+        if request["status"] in target:
+            return request
+        time.sleep(0.02)
+    raise AssertionError(
+        f"Feedback {feedback_request_id} did not reach {target}"
+    )
+
+
+def test_local_scheduler_runs_deterministic_and_free_query_lanes_in_parallel(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = RunStore(tmp_path / "scheduler.sqlite3")
+        free_started = asyncio.Event()
+        free_release = asyncio.Event()
+        deterministic_finished = asyncio.Event()
+
+        async def free_handler(_subject_id: str) -> None:
+            free_started.set()
+            await free_release.wait()
+
+        async def deterministic_handler(_subject_id: str) -> None:
+            deterministic_finished.set()
+
+        async def feedback_handler(_subject_id: str) -> None:
+            return None
+
+        scheduler = LocalRunScheduler(
+            store,
+            {
+                WorkloadClass.deterministic: deterministic_handler,
+                WorkloadClass.free_query: free_handler,
+                WorkloadClass.feedback_review: feedback_handler,
+            },
+            worker_counts={workload: 1 for workload in WorkloadClass},
+        )
+        await scheduler.start()
+        try:
+            await scheduler.enqueue(WorkloadClass.free_query, "free-run")
+            await asyncio.wait_for(free_started.wait(), timeout=1)
+            await scheduler.enqueue(WorkloadClass.deterministic, "fixed-run")
+            await asyncio.wait_for(deterministic_finished.wait(), timeout=1)
+        finally:
+            free_release.set()
+            await scheduler.stop()
+
+    asyncio.run(scenario())
+
+
 def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
     root = Path(__file__).resolve().parents[1]
     repository = AgentRepository(root / "agents")
@@ -859,6 +993,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "material-shortage-procurement-response",
         "procure-to-pay-status",
         "supplier-performance-risk",
+        "demand-forecast-planning",
         "mrp-exception-analysis",
         "production-order-monitoring",
         "production-variance-analysis",
@@ -867,6 +1002,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "delivered-not-billed",
         "delivery-delay-prediction",
         "due-delivery-prioritization",
+        "new-sales-demand-coverage",
         "order-to-cash-status",
     ]
     assert {record["slug"] for record in records} == {
@@ -890,6 +1026,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "material-shortage-procurement-response",
         "month-end-closing",
         "mrp-exception-analysis",
+        "new-sales-demand-coverage",
         "order-to-cash-anomaly-monitor",
         "procure-to-pay-status",
         "order-to-cash-status",
@@ -898,11 +1035,16 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "production-variance-analysis",
         "product-cost-variance",
         "returns-credit-anomaly",
+        "role-agent-matching",
         "shortage-allocation-advisor",
         "supplier-performance-risk",
     }
     for record in records:
         assert record["schemaVersion"] == 2
+        if record.get("kind") == "platform_assistant":
+            assert record["assistant"]["composable"] is False
+            assert "execution" not in record
+            continue
         assert record["execution"]["mode"] == "deterministic"
         assert all(
             step.get("readOnly") is True
@@ -1256,7 +1398,7 @@ def test_published_workflow_catalog_exposes_safe_publication_metadata(tmp_path: 
         embedded_provider=FakeEmbeddedProvider(),
     )
     with TestClient(app) as client:
-        response = client.get("/api/workflows/catalog")
+        response = client.get("/api/workflows/catalog?state=all")
     assert response.status_code == 200, response.text
     catalog = {item["id"]: item for item in response.json()}
     assert {"p2p-batch-payment-review", "workflow-ec0e3072"} <= set(catalog)
@@ -1820,6 +1962,332 @@ def test_free_query_can_pause_for_clarification_and_resume_thread(tmp_path: Path
         assert planner.calls == 2
 
 
+def test_free_query_creates_immutable_session_iterations_and_requeries_for_new_evidence(
+    tmp_path: Path,
+) -> None:
+    planner = FeedbackPlanner()
+    embedded = FakeEmbeddedProvider()
+    app = create_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/runs",
+            json={"mode": "free_query", "query": "查询采购订单 4500000001"},
+        )
+        assert created.status_code == 202
+        session_id = created.json()["session_id"]
+        first_run_id = created.json()["run_id"]
+        first = _wait(client, first_run_id)
+        assert first["status"] == "completed"
+        assert len(embedded.executed_plans) == 1
+        assert app.state.coordinator.planner.supports("review_free_query_feedback")
+
+        feedback = client.post(
+            f"/api/free-query-sessions/{session_id}/feedback",
+            json={
+                "baseIteration": 1,
+                "feedback": "需要补充完整的发票和清账证据。",
+                "feedbackTypeHint": "missing_evidence",
+                "locale": "zh",
+            },
+        )
+        assert feedback.status_code == 202, feedback.json()
+        assert feedback.json()["status"] == "queued"
+        reviewed = _wait_feedback(
+            client, session_id, feedback.json()["feedback_request_id"]
+        )
+        assert reviewed["decision"]["action"] == "requery"
+        second = _wait(client, reviewed["run_id"])
+        assert second["status"] == "completed"
+        assert second["thread_id"] == first["thread_id"]
+        assert len(embedded.executed_plans) == 2
+
+        session = client.get(f"/api/free-query-sessions/{session_id}").json()
+        assert session["current_iteration"] == 2
+        assert session["status"] == "reviewing"
+        assert [item["iteration"] for item in session["iterations"]] == [1, 2]
+        assert session["iterations"][0]["run_id"] == first_run_id
+        assert session["iterations"][0]["result_digest"]
+        assert session["iterations"][1]["parent_iteration"] == 1
+        assert session["iterations"][1]["execution_action"] == "requery"
+        stale = client.post(
+            f"/api/free-query-sessions/{session_id}/feedback",
+            json={
+                "baseIteration": 1,
+                "feedback": "基于已过期页面再次提交。",
+                "locale": "zh",
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "free_query_iteration_conflict"
+        # The first result remains addressable and unchanged after the correction.
+        assert client.get(f"/api/runs/{first_run_id}").json()["result"] == first["result"]
+
+
+def test_free_query_feedback_returns_before_runtime_review_finishes(
+    tmp_path: Path,
+) -> None:
+    class SlowFeedbackPlanner(FeedbackPlanner):
+        async def review_free_query_feedback(self, **payload: Any) -> dict[str, Any]:
+            await asyncio.sleep(0.35)
+            return await super().review_free_query_feedback(**payload)
+
+    app = create_app(
+        _settings(tmp_path),
+        planner=SlowFeedbackPlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/runs",
+            json={"mode": "free_query", "query": "查询采购订单 4500000001"},
+        ).json()
+        _wait(client, created["run_id"])
+        started = time.monotonic()
+        response = client.post(
+            f"/api/free-query-sessions/{created['session_id']}/feedback",
+            json={
+                "baseIteration": 1,
+                "feedback": "需要补充发票证据。",
+                "feedbackTypeHint": "missing_evidence",
+                "locale": "zh",
+            },
+        )
+        elapsed = time.monotonic() - started
+        assert response.status_code == 202
+        assert elapsed < 0.2
+        assert response.json()["status"] == "queued"
+        request_id = response.json()["feedback_request_id"]
+        events = client.get(
+            f"/api/free-query-sessions/{created['session_id']}/feedback-requests/{request_id}/events",
+            headers={"Accept": "text/event-stream"},
+        )
+        assert events.status_code == 200
+        assert "feedback_received" in events.text
+
+
+def test_free_query_presentation_feedback_reuses_validated_evidence_without_sap_get(
+    tmp_path: Path,
+) -> None:
+    planner = FeedbackPlanner()
+    embedded = FakeEmbeddedProvider()
+    app = create_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/runs",
+            json={"mode": "free_query", "query": "查询采购订单 4500000001"},
+        ).json()
+        first = _wait(client, created["run_id"])
+        assert first["result"]["evidence"]
+        initial_get_count = len(embedded.executed_plans)
+
+        feedback = client.post(
+            f"/api/free-query-sessions/{created['session_id']}/feedback",
+            json={
+                "baseIteration": 1,
+                "feedback": "请改成更容易阅读的业务表格。",
+                "feedbackTypeHint": "presentation",
+                "locale": "zh",
+            },
+        )
+        assert feedback.status_code == 202
+        reviewed = _wait_feedback(
+            client,
+            created["session_id"],
+            feedback.json()["feedback_request_id"],
+        )
+        assert reviewed["decision"]["action"] == "reinterpret"
+        revised = _wait(client, reviewed["run_id"])
+        assert revised["status"] == first["status"], revised.get("error")
+        assert len(embedded.executed_plans) == initial_get_count
+        assert revised["result"]["tool_calls"] == []
+        assert revised["result"]["plan"]["kind"] == "free_query_evidence_reinterpretation"
+        assert revised["result"]["presentation"]["title"]["zh"] == "按用户反馈调整后的结果"
+        assert revised["result"]["completeness"] == first["result"]["completeness"]
+        assert all(
+            item["source"] == "free_query_session_evidence"
+            for item in revised["result"]["evidence"]
+        )
+        events = app.state.store.events_after(revised["run_id"])
+        completed = next(item for item in events if item.type == "run_completed")
+        assert completed.data["sap_get_count"] == 0
+
+        session = client.get(
+            f"/api/free-query-sessions/{created['session_id']}"
+        ).json()
+        digest = session["iterations"][-1]["result_digest"]
+        accepted = client.post(
+            f"/api/free-query-sessions/{created['session_id']}/accept",
+            json={"iteration": 2, "expectedResultDigest": digest},
+        )
+        assert accepted.status_code == 200
+        drafted = client.post(
+            f"/api/free-query-sessions/{created['session_id']}/agent-draft"
+        )
+        assert drafted.status_code == 201, drafted.json()
+        origin = drafted.json()["origin"]["free_query_session"]
+        assert origin["execution_source_run_id"] == created["run_id"]
+        assert origin["accepted_iteration_plan_digest"]
+        manifest = json.loads(
+            (Path(drafted.json()["path"]) / "agent.json").read_text(encoding="utf-8")
+        )
+        encoded_steps = json.dumps(manifest["execution"]["steps"])
+        assert "free_query_evidence_reinterpretation" not in encoded_steps
+        assert "{{input.purchase_order}}" in encoded_steps
+
+
+def test_free_query_feedback_clarification_does_not_start_sap_or_new_run(
+    tmp_path: Path,
+) -> None:
+    planner = FeedbackPlanner()
+    embedded = FakeEmbeddedProvider()
+    app = create_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/runs",
+            json={"mode": "free_query", "query": "查询采购订单 4500000001"},
+        ).json()
+        _wait(client, created["run_id"])
+        initial_get_count = len(embedded.executed_plans)
+        initial_run_count = len(client.get("/api/runs").json())
+
+        feedback = client.post(
+            f"/api/free-query-sessions/{created['session_id']}/feedback",
+            json={
+                "baseIteration": 1,
+                "feedback": "这个结果需要澄清后再修正。",
+                "locale": "zh",
+            },
+        )
+        assert feedback.status_code == 202
+        reviewed = _wait_feedback(
+            client,
+            created["session_id"],
+            feedback.json()["feedback_request_id"],
+        )
+        assert reviewed["status"] == "waiting_input"
+        assert "查询范围还是展示方式" in reviewed["decision"]["clarification_question"]
+        assert len(embedded.executed_plans) == initial_get_count
+        assert len(client.get("/api/runs").json()) == initial_run_count
+
+        resumed = client.post(
+            f"/api/free-query-sessions/{created['session_id']}/feedback-input",
+            json={"baseIteration": 1, "input": "查询范围，需要发票证据。"},
+        )
+        assert resumed.status_code == 202
+        resumed_review = _wait_feedback(
+            client,
+            created["session_id"],
+            resumed.json()["feedback_request_id"],
+        )
+        assert resumed_review["decision"]["action"] == "requery"
+        _wait(client, resumed_review["run_id"])
+        assert len(embedded.executed_plans) == initial_get_count + 1
+
+
+def test_presentation_feedback_canonicalizes_known_source_refs_to_iteration_aliases(
+    tmp_path: Path,
+) -> None:
+    planner = FeedbackPlanner()
+    app = create_app(
+        _settings(tmp_path), planner=planner, embedded_provider=FakeEmbeddedProvider()
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/runs",
+            json={"mode": "free_query", "query": "查询采购订单 4500000001"},
+        ).json()
+        first = _wait(client, created["run_id"])
+        stored_result = app.state.store.get_run(created["run_id"]).result
+        assert stored_result is not None
+        source_ref = next(iter(_result_evidence_refs(stored_result)))
+
+        async def copy_stale_source_ref(**payload: Any) -> dict[str, Any]:
+            presentation = json.loads(json.dumps(payload["previous_presentation"]))
+            presentation["blocks"][0]["evidence_refs"] = [source_ref]
+            return {
+                "summary": {"zh": "调整展示", "en": "Revised presentation"},
+                "presentation": presentation,
+            }
+
+        planner.revise_free_query_presentation = copy_stale_source_ref  # type: ignore[method-assign]
+        feedback = client.post(
+            f"/api/free-query-sessions/{created['session_id']}/feedback",
+            json={
+                "baseIteration": 1,
+                "feedback": "只调整展示。",
+                "feedbackTypeHint": "presentation",
+                "locale": "zh",
+            },
+        )
+        reviewed = _wait_feedback(
+            client,
+            created["session_id"],
+            feedback.json()["feedback_request_id"],
+        )
+        revised = _wait(client, reviewed["run_id"])
+        assert revised["status"] == "completed", revised.get("error")
+        encoded = json.dumps(revised["result"]["presentation"])
+        assert source_ref not in encoded
+        alias_ref = revised["result"]["evidence"][0]["evidence_ref"]
+        assert alias_ref in encoded
+
+
+def test_accepted_free_query_session_generates_traceable_needs_review_agent_draft(
+    tmp_path: Path,
+) -> None:
+    planner = FeedbackPlanner()
+    app = create_app(
+        _settings(tmp_path), planner=planner, embedded_provider=FakeEmbeddedProvider()
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/runs",
+            json={"mode": "free_query", "query": "查询采购订单 4500000001"},
+        ).json()
+        _wait(client, created["run_id"])
+        session = client.get(
+            f"/api/free-query-sessions/{created['session_id']}"
+        ).json()
+        digest = session["iterations"][-1]["result_digest"]
+        accepted = client.post(
+            f"/api/free-query-sessions/{created['session_id']}/accept",
+            json={"iteration": 1, "expectedResultDigest": digest},
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "satisfied"
+
+        drafted = client.post(
+            f"/api/free-query-sessions/{created['session_id']}/agent-draft"
+        )
+        assert drafted.status_code == 201
+        assert drafted.json()["status"] == "needs_review", drafted.json()["validation"]
+        origin = drafted.json()["origin"]["free_query_session"]
+        assert origin["source_session_id"] == created["session_id"]
+        assert origin["accepted_iteration"] == 1
+        assert origin["result_digest"] == digest
+        assert origin["requires_parameterization_review"] is True
+        manifest = json.loads(
+            (Path(drafted.json()["path"]) / "agent.json").read_text(encoding="utf-8")
+        )
+        assert list(manifest["execution"]["inputSchema"]["properties"]) == [
+            "purchase_order"
+        ]
+        encoded_steps = json.dumps(manifest["execution"]["steps"])
+        assert "4500000001" not in encoded_steps
+        assert "{{input.purchase_order}}" in encoded_steps
+        fixture = json.loads(
+            (Path(drafted.json()["path"]) / "fixtures" / "validated-run.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert fixture["sample_inputs"]["purchase_order"] == "<redacted>"
+        locked = client.get(
+            f"/api/free-query-sessions/{created['session_id']}"
+        ).json()
+        assert locked["status"] == "draft_created"
+        assert locked["draft_id"] == drafted.json()["draft_id"]
+
+
 def test_non_deterministic_agent_can_start_a_guided_read_only_query(tmp_path: Path) -> None:
     planner = FakePlanner()
     app = create_app(_settings(tmp_path), planner=planner, embedded_provider=FakeEmbeddedProvider())
@@ -2078,6 +2546,11 @@ def _workflow_management_repository(tmp_path: Path) -> Path:
     repository.mkdir()
     for name in ("agents", "config", "workflows"):
         shutil.copytree(source / name, repository / name)
+    # Management tests need a deterministic legacy baseline. Local, uncommitted
+    # lifecycle metadata from the developer worktree must not change whether the
+    # copied workflow starts active or inactive.
+    for publication in (repository / "workflows").rglob("publication.json"):
+        publication.unlink()
     subprocess.run(
         ["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True
     )
@@ -2187,6 +2660,13 @@ def test_publishing_new_version_archives_previous_current_workflow(tmp_path: Pat
         draft_id = created["draft"]["draft_id"]
         draft = app.state.store.get_workflow_draft(draft_id)
         digest = workflow_digest(draft.workflow)
+        conversation = app.state.workflow_drafts.conversation(draft_id)
+        draft = app.state.workflow_drafts.accept_design(
+            draft_id,
+            base_turn=conversation["current_turn"],
+            revision=draft.revision,
+            workflow_hash=digest,
+        )
         report = {
             "schema_version": 1,
             "run_id": "run_version_validation",
@@ -2206,6 +2686,12 @@ def test_publishing_new_version_archives_previous_current_workflow(tmp_path: Pat
             "validation_report": report,
         }
         app.state.store.save_workflow_draft(draft)
+        app.state.workflow_drafts.accept_validation(
+            draft_id,
+            validation_run_id=report["run_id"],
+            validation_report_digest=report["report_digest"],
+            accepted_gap_codes=[],
+        )
 
         published = client.post(
             f"/api/authoring/workflows/{draft_id}/publish", json={}
@@ -2258,7 +2744,7 @@ def test_workflow_deactivation_blocks_new_runs_and_can_be_reactivated(
         assert response.status_code == 200, response.text
         assert response.json()["state"] == "inactive"
         inactive = client.get("/api/workflows/catalog?state=inactive").json()
-        assert [row["id"] for row in inactive] == ["workflow-ec0e3072"]
+        assert "workflow-ec0e3072" in {row["id"] for row in inactive}
         rejected = client.post(
             "/api/runs",
             json={
