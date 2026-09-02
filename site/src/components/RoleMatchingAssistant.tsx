@@ -14,6 +14,7 @@ type Session = {
 type Revision = {
   revision: number;
   catalog_digest: string;
+  catalog_current?: boolean;
   result: Record<string, any>;
 };
 type DocumentItem = { document_id: string; name: string; source_type?: "document" | "user_description"; status: string; issue?: string | null; paths?: string[]; excluded?: boolean };
@@ -31,6 +32,7 @@ const text = {
     progress: "分析进度", phases: { queued: "等待分析", scanning: "扫描材料", extracting: "提取正文", understanding: "理解岗位和流程", matching_agents: "匹配Agent", compiling_workflows: "编译工作流建议", reviewing: "生成分析报告", failed: "分析失败", cancelled: "已取消" },
     operations: "SAP日常操作", matches: "Agent匹配", workflows: "工作流建议", gaps: "Agent能力缺口", documents: "分析材料",
     roles: "岗位", processes: "业务流程", noData: "本轮没有识别到相关内容。", source: "来源", coverage: "覆盖", confidence: "置信度", validation: "验收", createDraft: "创建工作流草稿",
+    catalogChecked: "Agent目录检查", catalogComplete: "目录检查完整", catalogIncomplete: "目录检查不完整，当前结果仅供参考；能力缺口和工作流建议已关闭。", rejected: "已排除候选", rejectedHint: "这些Agent不能覆盖对应操作，不计入匹配数量。", fullRematchAction: "使用当前完整目录重新匹配", rematching: "正在重新匹配…",
     feedback: "补充材料或修正理解", feedbackHint: "反馈说明只作为修正上下文；需要作为可引用来源的岗位信息，请填写“补充岗位描述”。",
     addedDescription: "补充岗位描述（可选，作为用户来源）", addedDescriptionHint: "这段文字会形成新的不可变来源，并与正式文档分开标记。",
     addedPaths: "新增路径（可选，每行一个）", incremental: "增量匹配", full: "全量重新匹配", submitFeedback: "提交反馈并继续", cancel: "取消分析",
@@ -49,6 +51,7 @@ const text = {
     progress: "Analysis progress", phases: { queued: "Waiting", scanning: "Scanning material", extracting: "Extracting text", understanding: "Understanding roles and processes", matching_agents: "Matching agents", compiling_workflows: "Compiling workflow suggestions", reviewing: "Preparing report", failed: "Analysis failed", cancelled: "Cancelled" },
     operations: "SAP daily operations", matches: "Agent matches", workflows: "Workflow suggestions", gaps: "Agent capability gaps", documents: "Analysis material",
     roles: "Roles", processes: "Processes", noData: "No relevant content was identified in this revision.", source: "Source", coverage: "Coverage", confidence: "Confidence", validation: "Acceptance", createDraft: "Create workflow draft",
+    catalogChecked: "Agent catalog check", catalogComplete: "Catalog evaluation complete", catalogIncomplete: "Catalog evaluation is incomplete. Results are provisional; capability gaps and workflow suggestions are disabled.", rejected: "Rejected candidates", rejectedHint: "These Agents do not cover the operation and are not counted as matches.", fullRematchAction: "Rematch using the complete current catalog", rematching: "Rematching…",
     feedback: "Add material or correct the analysis", feedbackHint: "Feedback is correction context only. Put role information that should be citable in Supplemental role description.",
     addedDescription: "Supplemental role description (optional, user-provided source)", addedDescriptionHint: "This text becomes a new immutable source and remains distinct from formal documents.",
     addedPaths: "Additional paths (optional, one per line)", incremental: "Incremental rematch", full: "Full rematch", submitFeedback: "Submit feedback and continue", cancel: "Cancel analysis",
@@ -149,6 +152,17 @@ export default function RoleMatchingAssistant({ apiBase, locale, workflowsPath }
     } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
 
+  const fullRematch = async () => {
+    if (!session || !revision) return;
+    setBusy(true); setError("");
+    try {
+      const message = locale === "zh" ? "使用当前完整Agent目录重新进行全量匹配。" : "Run a full rematch with the complete current Agent catalog.";
+      const response = await fetch(`${apiBase}/api/role-matching/sessions/${session.session_id}/feedback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseRevision: revision.revision, message, rematchMode: "full", addedPaths: [], excludedDocumentIds: excluded }) });
+      if (!response.ok) throw new Error(await response.text());
+      setSession(await response.json());
+    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
+  };
+
   const createDraft = async (suggestionId: string) => {
     if (!session || !revision) return;
     setBusy(true); setError("");
@@ -161,6 +175,8 @@ export default function RoleMatchingAssistant({ apiBase, locale, workflowsPath }
   };
 
   const result = revision?.result || {};
+  const catalogEvaluation = result.catalog_evaluation || {};
+  const catalogComplete = Boolean(catalogEvaluation.agent_catalog_complete && catalogEvaluation.matching_complete && revision?.catalog_current !== false);
   const active = session && !["completed", "failed", "cancelled"].includes(session.status);
   const metrics = useMemo(() => ({ roles: result.roles?.length || 0, processes: result.processes?.length || 0, operations: result.operations?.length || 0, matches: result.agent_matches?.length || 0 }), [result]);
   const descriptionSelected = inputMode !== "documents";
@@ -193,8 +209,10 @@ export default function RoleMatchingAssistant({ apiBase, locale, workflowsPath }
         <div className="role-metrics"><div><strong>{metrics.roles}</strong><span>{copy.roles}</span></div><div><strong>{metrics.processes}</strong><span>{copy.processes}</span></div><div><strong>{metrics.operations}</strong><span>{copy.operations}</span></div><div><strong>{metrics.matches}</strong><span>{copy.matches}</span></div></div>
         <section className="role-result"><h3>{copy.roles} / {copy.processes}</h3><div className="role-grid">{[...(result.roles || []), ...(result.processes || [])].map((item: any, index: number) => <article key={item.role_id || item.process_id || index}><h4>{label(item.name || item.title, locale)}</h4><p>{label(item.description, locale)}</p><SourceRefs refs={item.evidence_refs} copy={copy} /></article>)}</div></section>
         <section className="role-result"><h3>{copy.operations}</h3>{(result.operations || []).length === 0 ? <p>{copy.noData}</p> : <div className="role-grid">{result.operations.map((item: any) => <article key={item.operation_id}><span className="role-kicker">{item.role || item.department || "SAP"}</span><h4>{label(item.name, locale)}</h4><p>{label(item.description, locale)}</p><small>{item.process || item.sap_system_or_module || ""}</small><SourceRefs refs={item.evidence_refs} copy={copy} /></article>)}</div>}</section>
+        <section className={catalogComplete ? "role-result" : "role-error"}><h3>{copy.catalogChecked}</h3><p><strong>{catalogEvaluation.evaluated_agent_count || 0} / {catalogEvaluation.total_agent_count || 0}</strong> · {catalogComplete ? copy.catalogComplete : copy.catalogIncomplete}</p><button type="button" className="secondary" onClick={fullRematch} disabled={busy || Boolean(active)}>{busy ? copy.rematching : copy.fullRematchAction}</button></section>
         <section className="role-result"><h3>{copy.matches}</h3><div className="role-table"><table><thead><tr><th>Agent</th><th>{copy.coverage}</th><th>{copy.confidence}</th><th>{copy.validation}</th><th>{locale === "zh" ? "原因" : "Reason"}</th><th>{copy.source}</th></tr></thead><tbody>{(result.agent_matches || []).map((item: any, index: number) => <tr key={`${item.agent_id}-${index}`}><td><code>{item.agent_id}</code></td><td>{item.coverage}</td><td>{item.confidence}</td><td>{item.validation_verdict}{item.executable ? " · executable" : ""}</td><td>{label(item.reason, locale)}</td><td><SourceRefs refs={item.evidence_refs} copy={copy} /></td></tr>)}</tbody></table></div></section>
-        <section className="role-result"><h3>{copy.workflows}</h3>{(result.workflow_suggestions || []).length === 0 ? <p>{copy.noData}</p> : <div className="role-grid">{result.workflow_suggestions.map((item: any) => <article key={item.suggestion_id}><h4>{label(item.title, locale)}</h4><p>{label(item.description, locale)}</p><p>{(item.stages || []).map((stage: any) => stage.agent_id).filter(Boolean).join(" → ")}</p><SourceRefs refs={item.evidence_refs} copy={copy} /><button type="button" onClick={() => createDraft(item.suggestion_id)} disabled={busy}>{copy.createDraft}</button></article>)}</div>}</section>
+        {(result.rejected_candidates || []).length > 0 && <details className="role-result"><summary><strong>{copy.rejected}</strong> · {(result.rejected_candidates || []).length}</summary><p>{copy.rejectedHint}</p><div className="role-table"><table><thead><tr><th>Agent</th><th>{copy.coverage}</th><th>{copy.confidence}</th><th>{locale === "zh" ? "原因" : "Reason"}</th></tr></thead><tbody>{(result.rejected_candidates || []).map((item: any, index: number) => <tr key={`${item.operation_id}-${item.agent_id}-${index}`}><td><code>{item.agent_id}</code></td><td>{item.coverage}</td><td>{item.confidence}</td><td>{label(item.reason, locale)}</td></tr>)}</tbody></table></div></details>}
+        <section className="role-result"><h3>{copy.workflows}</h3>{(result.workflow_suggestions || []).length === 0 ? <p>{copy.noData}</p> : <div className="role-grid">{result.workflow_suggestions.map((item: any) => <article key={item.suggestion_id}><h4>{label(item.title, locale)}</h4><p>{label(item.description, locale)}</p><p>{(item.stages || []).map((stage: any) => stage.agent_id).filter(Boolean).join(" → ")}</p><SourceRefs refs={item.evidence_refs} copy={copy} /><button type="button" onClick={() => createDraft(item.suggestion_id)} disabled={busy || !catalogComplete}>{copy.createDraft}</button></article>)}</div>}</section>
         <section className="role-result"><h3>{copy.gaps}</h3>{(result.agent_gaps || []).length === 0 ? <p>{copy.noData}</p> : <div className="role-grid">{result.agent_gaps.map((item: any) => <article key={item.gap_id}><h4>{label(item.required_capability, locale)}</h4><p>{label(item.business_impact, locale)}</p><p>{label(item.reason, locale)}</p><SourceRefs refs={item.evidence_refs} copy={copy} /></article>)}</div>}</section>
         <section className="role-result"><h3>{copy.incomplete}</h3><dl className="role-completeness">{Object.entries(result.completeness || {}).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value ? "✓" : "—"}</dd></div>)}</dl><p>{copy.skipped}: {result.non_sap_operation_count || 0} · {copy.unsupported}: {(result.document_issues || []).length}</p><p><a href={`${apiBase}/api/role-matching/sessions/${session.session_id}/revisions/${revision.revision}/report.md`}>{copy.report}</a> · <a href={`${apiBase}/api/role-matching/sessions/${session.session_id}/revisions/${revision.revision}/operations.csv`}>CSV</a> · <a href={`${apiBase}/api/role-matching/sessions/${session.session_id}/revisions/${revision.revision}/report.json`}>JSON</a></p></section>
         <section className="role-result"><h3>{copy.documents}</h3>{documents.length === 0 ? <p>{copy.noDocuments}</p> : <ul className="role-document-list">{documents.map((item) => <li key={item.document_id}><label><input type="checkbox" checked={excluded.includes(item.document_id)} onChange={(event) => setExcluded((current) => event.target.checked ? [...new Set([...current, item.document_id])] : current.filter((value) => value !== item.document_id))} /> <span><strong>{item.name}</strong> · {item.source_type === "user_description" ? copy.userSource : copy.documentSource} · {item.status}{item.issue ? ` · ${item.issue}` : ""}{item.source_type !== "user_description" && <small>{item.paths?.join(" · ")}</small>}</span></label></li>)}</ul>}</section>
