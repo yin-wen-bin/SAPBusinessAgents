@@ -126,6 +126,13 @@ const labels = locale === "zh" ? {
     queryComplete: "查询完整", queryIncomplete: "查询不完整", evidenceCompleteLabel: "证据完整", evidenceIncomplete: "证据有缺口",
     priority: "优先级", first: "先复核PIR", second: "再处理计划订单", page: "第 {current}/{total} 页", previous: "上一页", next: "下一页",
   },
+  monthEndView: {
+    scope: "月结范围", checks: "12 项月结检查", actions: "责任待办", provider: "数据来源", confirmed: "已确认异常", candidates: "人工确认候选", gaps: "证据与配置缺口", technical: "技术证据（默认折叠）",
+    source: "查询源完整性", checklist: "检查清单完整性", evidence: "业务证据完整性",
+    complete: "完整", incomplete: "不完整", check: "检查", module: "模块", state: "状态", result: "结果", threshold: "阈值", finding: "分类", owner: "责任部门", evidenceSource: "证据源", detail: "说明",
+    company: "公司代码", period: "年度 / 期间", periodBoundary: "期间边界", asOf: "基准日", ledger: "分类账", profile: "配置版本",
+    embedded: "Embedded OData / sap_read.v2（GET-only，无自动 Provider 回退）", noActions: "当前没有责任待办。", none: "无",
+  },
   evidenceState: { found: "已找到", not_found: "未找到", limited: "范围受限", failed: "读取失败" },
   reportState: { success: "流程已确认", warning: "需要继续处理", info: "现有证据不足", error: "查询失败", running: "查询中" },
   complete: "当前查询范围已完整返回",
@@ -159,7 +166,7 @@ const labels = locale === "zh" ? {
     cancelFeedback: "取消反馈处理", feedbackCancelled: "反馈处理已取消", evidenceReuse: "将复用已验证证据，本轮不会新增SAP读取",
     elapsed: "已运行 {elapsed} 秒 / 最多 {hard} 秒", finalizing: "正在强制整理结果", extended: "已自适应延长 {count} 次",
   },
-  artifact: { "report.md": "业务报告", "business-stages.csv": "阶段结果表", "workflow-report.md": "组合业务报告", "workflow-orders.csv": "采购订单汇总", "workflow-ap-scopes.csv": "AP分组汇总", "pr-actions.csv": "采购申请待办", "po-expedite-actions.csv": "采购订单催交待办", "source-candidates.csv": "有效货源候选", "gr-ir-follow-up.csv": "GR/IR待处理清单", "gr-ir-needs-confirmation.csv": "GR/IR证据缺口", "gr-ir-all-records.csv": "全部GR/IR核对记录", "evidence.csv": "证据明细", "result.json": "技术 JSON" },
+  artifact: { "report.md": "业务报告", "business-stages.csv": "阶段结果表", "workflow-report.md": "组合业务报告", "workflow-orders.csv": "采购订单汇总", "workflow-ap-scopes.csv": "AP分组汇总", "pr-actions.csv": "采购申请待办", "po-expedite-actions.csv": "采购订单催交待办", "source-candidates.csv": "有效货源候选", "gr-ir-follow-up.csv": "GR/IR待处理清单", "gr-ir-needs-confirmation.csv": "GR/IR证据缺口", "gr-ir-all-records.csv": "全部GR/IR核对记录", "month-end-checks.csv": "12项月结检查", "findings.csv": "月结异常", "todos.csv": "责任待办", "follow-up-scopes.json": "专项复核范围", "evidence.csv": "证据明细", "result.json": "技术 JSON" },
 } : {
   title: "SAP business query",
   noRun: "The link has no run ID. Start a query from an Agent or the free-query page.",
@@ -278,6 +285,13 @@ const labels = locale === "zh" ? {
     queryComplete: "Query complete", queryIncomplete: "Query incomplete", evidenceCompleteLabel: "Evidence complete", evidenceIncomplete: "Evidence gaps remain",
     priority: "Priority", first: "Review PIR first", second: "Then adjust planned orders", page: "Page {current}/{total}", previous: "Previous", next: "Next",
   },
+  monthEndView: {
+    scope: "Closing scope", checks: "Twelve month-end checks", actions: "Owner actions", provider: "Data source", confirmed: "Confirmed findings", candidates: "Human-confirmation candidates", gaps: "Evidence and configuration gaps", technical: "Technical evidence (collapsed by default)",
+    source: "Query-source completeness", checklist: "Checklist completeness", evidence: "Business-evidence completeness",
+    complete: "Complete", incomplete: "Incomplete", check: "Check", module: "Module", state: "Status", result: "Result", threshold: "Threshold", finding: "Class", owner: "Owner", evidenceSource: "Evidence source", detail: "Explanation",
+    company: "Company code", period: "Year / period", periodBoundary: "Period boundary", asOf: "As-of date", ledger: "Ledger", profile: "Profile version",
+    embedded: "Embedded OData / sap_read.v2 (GET-only, no automatic provider fallback)", noActions: "No owner action is currently listed.", none: "None",
+  },
   evidenceState: { found: "Found", not_found: "Not found", limited: "Limited scope", failed: "Read failed" },
   reportState: { success: "Process confirmed", warning: "Follow-up required", info: "Evidence is incomplete", error: "Query failed", running: "Query in progress" },
   complete: "The current query scope was returned in full",
@@ -311,7 +325,7 @@ const labels = locale === "zh" ? {
     cancelFeedback: "Cancel feedback review", feedbackCancelled: "Feedback review cancelled", evidenceReuse: "Validated evidence will be reused with zero new SAP reads",
     elapsed: "Elapsed {elapsed}s / up to {hard}s", finalizing: "Finalizing from existing evidence", extended: "Adaptively extended {count} time(s)",
   },
-  artifact: { "report.md": "Business report", "business-stages.csv": "Stage results", "workflow-report.md": "Composite business report", "workflow-orders.csv": "Purchase-order summary", "workflow-ap-scopes.csv": "AP scope summary", "pr-actions.csv": "Purchase requisition actions", "po-expedite-actions.csv": "PO expediting actions", "source-candidates.csv": "Valid source candidates", "gr-ir-follow-up.csv": "GR/IR follow-up", "gr-ir-needs-confirmation.csv": "GR/IR evidence gaps", "gr-ir-all-records.csv": "All GR/IR reconciliation records", "evidence.csv": "Evidence details", "result.json": "Technical JSON" },
+  artifact: { "report.md": "Business report", "business-stages.csv": "Stage results", "workflow-report.md": "Composite business report", "workflow-orders.csv": "Purchase-order summary", "workflow-ap-scopes.csv": "AP scope summary", "pr-actions.csv": "Purchase requisition actions", "po-expedite-actions.csv": "PO expediting actions", "source-candidates.csv": "Valid source candidates", "gr-ir-follow-up.csv": "GR/IR follow-up", "gr-ir-needs-confirmation.csv": "GR/IR evidence gaps", "gr-ir-all-records.csv": "All GR/IR reconciliation records", "month-end-checks.csv": "Twelve month-end checks", "findings.csv": "Month-end findings", "todos.csv": "Owner actions", "follow-up-scopes.json": "Follow-up scopes", "evidence.csv": "Evidence details", "result.json": "Technical JSON" },
 };
 ---
 
@@ -1066,6 +1080,62 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-business-overview]").textContent = isDemandSimulation ? (locale === "zh" ? "结果按物料独立计算，MRP模拟不等于正式ATP确认。" : "Results are calculated independently by material; the MRP simulation is not formal ATP.") : (locale === "zh" ? "建议先复核PIR，再根据复核后的MRP结果处理计划订单。" : "Review PIR first, then act on planned orders using the reviewed MRP result.");
   };
 
+  const monthEndOutputFor = (run) => {
+    if (run.agent_id !== "month-end-closing") return null;
+    const rule = firstRule(run);
+    return rule?.workflow_output && Array.isArray(rule.workflow_output.check_results) ? rule.workflow_output : null;
+  };
+
+  const renderMonthEndResults = (output) => {
+    const view = labels.monthEndView;
+    const report = output.business_report || {};
+    const container = root.querySelector("[data-presentation-blocks]");
+    container.replaceChildren(); container.className = "presentation-blocks month-end-presentation";
+
+    const metrics = document.createElement("div"); metrics.className = "presentation-metrics";
+    [[output.source_complete, view.source], [output.checklist_complete, view.checklist], [output.evidence_complete, view.evidence]].forEach(([complete, label]) => {
+      const card = document.createElement("div"); card.className = "presentation-metric month-end-completeness"; card.dataset.complete = String(complete === true);
+      const name = document.createElement("span"); name.textContent = label;
+      const value = document.createElement("strong"); value.textContent = complete === true ? view.complete : view.incomplete;
+      card.append(name, value); metrics.append(card);
+    });
+    container.append(metrics);
+
+    const section = (title) => { const node = document.createElement("section"); node.className = "month-end-section"; const heading = document.createElement("h3"); heading.textContent = title; node.append(heading); return node; };
+    const scopeSection = section(view.scope); const scope = output.scope || {};
+    const scopeGrid = document.createElement("dl"); scopeGrid.className = "month-end-scope";
+    [[view.company, scope.company_code], [view.period, `${scope.fiscal_year || "—"} / ${scope.period ?? "—"}`], [view.periodBoundary, scope.period_start && scope.period_end ? `${scope.period_start} — ${scope.period_end}` : "—"], [view.asOf, scope.as_of], [view.ledger, scope.ledger], [view.profile, scope.profile_version ? `${scope.profile_id || "—"} · ${scope.profile_version}` : "—"], [view.provider, view.embedded]].forEach(([term, raw]) => { const dt = document.createElement("dt"); dt.textContent = term; const dd = document.createElement("dd"); dd.textContent = String(raw || "—"); scopeGrid.append(dt, dd); });
+    scopeSection.append(scopeGrid); container.append(scopeSection);
+
+    const checksSection = section(view.checks); const tableWrap = document.createElement("div"); tableWrap.className = "month-end-table-wrap"; const table = document.createElement("table"); table.className = "month-end-table";
+    const head = document.createElement("thead"); const headRow = document.createElement("tr"); [view.check, view.module, view.state, view.result, view.threshold, view.finding, view.owner, view.evidenceSource, view.detail].forEach((label) => { const th = document.createElement("th"); th.scope = "col"; th.textContent = label; headRow.append(th); }); head.append(headRow); table.append(head);
+    const body = document.createElement("tbody");
+    output.check_results.forEach((check) => { const row = document.createElement("tr"); const name = document.createElement("th"); name.scope = "row"; name.textContent = localized(check.name) || friendlyId(check.check_id); row.append(name); const module = document.createElement("td"); module.textContent = check.module || "—"; row.append(module); const status = document.createElement("td"); const pill = document.createElement("span"); pill.className = `business-state business-state-${check.status || "unknown"}`; pill.textContent = stateLabel(check.status); status.append(pill); row.append(status); const actual = document.createElement("td"); actual.textContent = check.actual_value === null || check.actual_value === undefined ? "—" : String(check.actual_value); row.append(actual); const threshold = document.createElement("td"); threshold.textContent = check.threshold || "—"; row.append(threshold); const kind = document.createElement("td"); kind.textContent = check.finding_kind ? stateLabel(check.finding_kind) : "—"; row.append(kind); const owner = document.createElement("td"); owner.textContent = check.owner_department || "—"; row.append(owner); const evidence = document.createElement("td"); evidence.textContent = Array.isArray(check.evidence_sources) && check.evidence_sources.length ? check.evidence_sources.join(", ") : "—"; row.append(evidence); const detail = document.createElement("td"); detail.textContent = localized(check.detail) || "—"; row.append(detail); body.append(row); });
+    table.append(body); tableWrap.append(table); checksSection.append(tableWrap); container.append(checksSection);
+
+    const renderFindingSection = (title, findings) => { const node = section(title); const list = document.createElement("ul"); if (!findings.length) { const item = document.createElement("li"); item.textContent = view.none; list.append(item); } findings.forEach((finding) => { const item = document.createElement("li"); item.textContent = `${localized(finding.title) || friendlyId(finding.check_id)} · ${localized(finding.detail) || "—"}`; list.append(item); }); node.append(list); container.append(node); };
+    const findings = Array.isArray(output.findings) ? output.findings : [];
+    renderFindingSection(view.confirmed, findings.filter((item) => item.finding_kind === "confirmed"));
+    renderFindingSection(view.candidates, findings.filter((item) => item.finding_kind === "candidate"));
+
+    const gapSection = section(view.gaps); const gaps = document.createElement("ul"); const missing = Array.isArray(output.missing_evidence) ? output.missing_evidence : [];
+    if (!missing.length) { const item = document.createElement("li"); item.textContent = view.none; gaps.append(item); }
+    missing.forEach((gap) => { const item = document.createElement("li"); item.textContent = friendlyId(gap); gaps.append(item); }); gapSection.append(gaps); container.append(gapSection);
+
+    const technical = document.createElement("details"); technical.className = "month-end-technical"; const technicalSummary = document.createElement("summary"); technicalSummary.textContent = view.technical; const technicalContent = document.createElement("pre"); technicalContent.textContent = JSON.stringify(output.check_results.map((check) => ({ check_id: check.check_id, evidence_sources: check.evidence_sources || [], evidence_refs: check.evidence_refs || [], evidence_gaps: check.evidence_gaps || [], tcode: check.tcode, tables: check.tables || [] })), null, 2); technical.append(technicalSummary, technicalContent); container.append(technical);
+
+    const actionsSection = section(view.actions); const actions = document.createElement("ul"); const todos = Array.isArray(output.todos) ? output.todos : [];
+    if (!todos.length) { const item = document.createElement("li"); item.textContent = view.noActions; actions.append(item); }
+    todos.forEach((todo) => { const item = document.createElement("li"); item.textContent = `${todo.owner_department || "—"} · ${todo.owner || "—"}: ${todo.recommended_action || "—"}`; actions.append(item); });
+    actionsSection.append(actions); container.append(actionsSection);
+
+    container.hidden = false; legacyBusinessSections().forEach((node) => { node.hidden = true; });
+    const card = root.querySelector("[data-business-result]"); card.dataset.tone = report.tone || "info";
+    root.querySelector("[data-business-state]").textContent = labels.reportState[report.tone] || labels.reportState.info;
+    root.querySelector("[data-business-headline]").textContent = localized(report.headline) || labels.fallbackSummary;
+    root.querySelector("[data-business-overview]").textContent = localized(report.overview);
+  };
+
   const renderBusinessReport = (run) => {
     if (run.mode === "workflow" && run.result?.workflow_presentation) {
       renderWorkflowPresentation(run, run.result.workflow_presentation);
@@ -1075,6 +1145,12 @@ const labels = locale === "zh" ? {
     const materialOutput = materialOutputFor(run);
     if (materialOutput && ["demand-forecast-planning", "new-sales-demand-coverage"].includes(run.agent_id)) {
       renderMaterialResults(run, materialOutput);
+      root.querySelector("[data-business-result]").hidden = false;
+      return;
+    }
+    const monthEndOutput = monthEndOutputFor(run);
+    if (monthEndOutput) {
+      renderMonthEndResults(monthEndOutput);
       root.querySelector("[data-business-result]").hidden = false;
       return;
     }

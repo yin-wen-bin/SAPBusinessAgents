@@ -2411,6 +2411,102 @@ button:disabled {
   font-size: 20px;
 }
 
+.month-end-completeness[data-complete="true"] {
+  border-color: #91c7a4;
+  background: #effaf3;
+}
+
+.month-end-completeness[data-complete="false"] {
+  border-color: #e1bd75;
+  background: #fff7e5;
+}
+
+.month-end-section {
+  min-width: 0;
+  border-top: 1px solid var(--color-border);
+  padding-top: 14px;
+}
+
+.month-end-section h3 {
+  margin: 0 0 10px;
+}
+
+.month-end-scope {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
+  margin: 0;
+}
+
+.month-end-scope dt,
+.month-end-scope dd {
+  margin: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: 8px 10px;
+}
+
+.month-end-scope dt {
+  color: var(--color-text-muted);
+  font-weight: 700;
+}
+
+.month-end-table-wrap {
+  overflow-x: auto;
+}
+
+.month-end-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.month-end-table th,
+.month-end-table td {
+  border-bottom: 1px solid var(--color-border);
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.month-end-technical {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.month-end-technical summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.month-end-technical pre {
+  margin: 10px 0 0;
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.business-state-passed,
+.business-state-ready_for_review {
+  border-color: #91c7a4;
+  background: #effaf3;
+  color: #176936;
+}
+
+.business-state-not_assessed,
+.business-state-inconclusive,
+.business-state-in_progress {
+  border-color: #b9cff7;
+  background: #f2f6ff;
+  color: #315d9f;
+}
+
+.business-state-attention,
+.business-state-action_required {
+  border-color: #d6a755;
+  background: #fff4d7;
+  color: #755019;
+}
+
 .presentation-table thead th {
   position: sticky;
   top: 0;

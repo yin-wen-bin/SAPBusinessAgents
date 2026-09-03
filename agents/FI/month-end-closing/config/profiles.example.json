@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "example-1010",
+      "version": "1.0.0",
+      "system_alias": "default",
+      "sap_client": "100",
+      "company_code": "1010",
+      "effective_from": "2026-01-01",
+      "accounts": {
+        "gr_ir": ["19110000"],
+        "open_item_gl": ["19990000"],
+        "auto_clearing": ["19990000"],
+        "bank": ["11000000"]
+      },
+      "document_types": {
+        "incoming_payments": ["DZ"],
+        "outgoing_payments": ["KZ", "ZP"],
+        "depreciation": ["AF"],
+        "fx_valuation": ["SA"]
+      },
+      "thresholds": {
+        "grir_age_days": 90,
+        "grir_high_severity_days": 180,
+        "grir_quantity_tolerance": "0.001",
+        "grir_amount_tolerance": "0.01",
+        "auto_clearing_tolerance": "0.01"
+      },
+      "co": {
+        "controlling_area": "A000",
+        "cost_centers": ["10101101"],
+        "internal_orders": []
+      },
+      "status_mappings": {
+        "billing_transfer_errors": ["B", "C"],
+        "billing_posting_errors": ["B", "C"]
+      },
+      "approved_evidence_sources": [
+        "embedded_gl_line_items",
+        "embedded_operational_due_items",
+        "embedded_grir_chain",
+        "embedded_billing_documents",
+        "adt_asset_depreciation_status",
+        "adt_fi_period_control",
+        "adt_mm_period_status"
+      ],
+      "owners": {}
+    }
+  ]
+}

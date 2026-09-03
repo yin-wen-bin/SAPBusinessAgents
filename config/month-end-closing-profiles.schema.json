@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sapbusinessagents.local/schemas/month-end-closing-profiles.schema.json",
+  "title": "Month-end closing company profiles",
+  "type": "object",
+  "required": ["schema_version", "profiles"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "profiles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/profile" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "stringList": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "owner": {
+      "type": "object",
+      "properties": {
+        "department": { "type": "string", "minLength": 1 },
+        "owner": { "type": "string", "minLength": 1 },
+        "remediation": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "periodBoundary": {
+      "type": "object",
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "type": "string", "format": "date" },
+        "end": { "type": "string", "format": "date" }
+      },
+      "additionalProperties": false
+    },
+    "profile": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "version",
+        "system_alias",
+        "company_code",
+        "effective_from",
+        "accounts",
+        "document_types",
+        "thresholds",
+        "co",
+        "status_mappings",
+        "approved_evidence_sources",
+        "owners"
+      ],
+      "properties": {
+        "profile_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$" },
+        "system_alias": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sap_client": { "type": "string", "pattern": "^[0-9]{3}$" },
+        "company_code": { "type": "string", "pattern": "^[A-Za-z0-9]{1,4}$" },
+        "effective_from": { "type": "string", "format": "date" },
+        "effective_to": { "type": "string", "format": "date" },
+        "ledger": { "type": "string", "minLength": 1, "maxLength": 2 },
+        "period_boundaries": {
+          "type": "object",
+          "patternProperties": {
+            "^[0-9]{4}-(0[1-9]|1[0-6])$": { "$ref": "#/$defs/periodBoundary" }
+          },
+          "additionalProperties": false
+        },
+        "accounts": {
+          "type": "object",
+          "required": ["gr_ir", "open_item_gl", "auto_clearing", "bank"],
+          "properties": {
+            "gr_ir": { "$ref": "#/$defs/stringList" },
+            "open_item_gl": { "$ref": "#/$defs/stringList" },
+            "auto_clearing": { "$ref": "#/$defs/stringList" },
+            "bank": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        "document_types": {
+          "type": "object",
+          "required": ["incoming_payments", "outgoing_payments", "depreciation", "fx_valuation"],
+          "properties": {
+            "incoming_payments": { "$ref": "#/$defs/stringList" },
+            "outgoing_payments": { "$ref": "#/$defs/stringList" },
+            "depreciation": { "$ref": "#/$defs/stringList" },
+            "fx_valuation": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        "thresholds": {
+          "type": "object",
+          "required": [
+            "grir_age_days",
+            "grir_high_severity_days",
+            "grir_quantity_tolerance",
+            "grir_amount_tolerance",
+            "auto_clearing_tolerance"
+          ],
+          "properties": {
+            "grir_age_days": { "type": "integer", "minimum": 0, "maximum": 3650 },
+            "grir_high_severity_days": { "type": "integer", "minimum": 0, "maximum": 3650 },
+            "grir_quantity_tolerance": { "type": ["number", "string"], "pattern": "^[0-9]+(?:\\.[0-9]+)?$" },
+            "grir_amount_tolerance": { "type": ["number", "string"], "pattern": "^[0-9]+(?:\\.[0-9]+)?$" },
+            "auto_clearing_tolerance": { "type": ["number", "string"], "pattern": "^[0-9]+(?:\\.[0-9]+)?$" }
+          },
+          "additionalProperties": false
+        },
+        "co": {
+          "type": "object",
+          "required": ["controlling_area", "cost_centers", "internal_orders"],
+          "properties": {
+            "controlling_area": { "type": "string" },
+            "cost_centers": { "$ref": "#/$defs/stringList" },
+            "internal_orders": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        "status_mappings": {
+          "type": "object",
+          "required": ["billing_transfer_errors", "billing_posting_errors"],
+          "properties": {
+            "billing_transfer_errors": { "$ref": "#/$defs/stringList" },
+            "billing_posting_errors": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        "approved_evidence_sources": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "embedded_gl_line_items",
+              "embedded_operational_due_items",
+              "embedded_grir_chain",
+              "embedded_billing_documents",
+              "adt_asset_depreciation_status",
+              "adt_fi_period_control",
+              "adt_mm_period_status"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "owners": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/owner" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

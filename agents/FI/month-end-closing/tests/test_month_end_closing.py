@@ -4,6 +4,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sys
+from types import ModuleType
 
 from sap_business_agents.month_end_closing import (
     ClosingConclusion,
@@ -70,6 +72,32 @@ def test_clean_data_is_ready_but_never_executes_closing() -> None:
     assert not report.findings
     assert not report.todos
     assert report.to_dict()["safety"]["closing_action_requires_human_confirmation"] is True
+
+
+def test_platform_evidence_mode_uses_shared_production_rule(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    evidence = {
+        "run_input": {},
+        "scope": {},
+        "evidence": {},
+        "fallbacks": {},
+    }
+    path = tmp_path / "evidence.json"
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    module = ModuleType("sap_business_agents_platform.month_end")
+    module.evaluate_month_end_closing = lambda payload: {  # type: ignore[attr-defined]
+        "business_status": "inconclusive",
+        "received_shared_bundle": payload == evidence,
+    }
+    monkeypatch.setitem(sys.modules, "sap_business_agents_platform.month_end", module)
+
+    assert main(["--platform-evidence", str(path)]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "business_status": "inconclusive",
+        "received_shared_bundle": True,
+    }
 
 
 def test_pre_close_snapshot_is_not_reported_as_final_ready() -> None:

@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 2,
+  "id": "month-end-exception-follow-up",
+  "version": "0.1.0",
+  "title": {
+    "zh": "月结异常专项复核",
+    "en": "Month-end Exception Follow-up"
+  },
+  "description": {
+    "zh": "先执行月结只读准备度检查，再对范围完整的 GR/IR 与 AP 异常并发执行专项只读复核；专项失败不改变月结主结论。",
+    "en": "Run the read-only month-end readiness assessment, then concurrently review complete GR/IR and AP exception scopes. Specialist failures do not replace the primary month-end verdict."
+  },
+  "mode": "deterministic",
+  "readOnly": true,
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "company_code": { "type": "string", "minLength": 1, "maxLength": 4 },
+      "fiscal_year": { "type": "string", "pattern": "^[0-9]{4}$" },
+      "period": { "type": "integer", "minimum": 1, "maximum": 16 },
+      "as_of": { "type": "string", "format": "date" }
+    },
+    "required": ["company_code", "fiscal_year", "period", "as_of"],
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "month_end_status": { "type": "string", "enum": ["inconclusive", "action_required", "in_progress", "ready_for_review"] },
+      "month_end_source_complete": { "type": "boolean" },
+      "month_end_checklist_complete": { "type": "boolean" },
+      "month_end_evidence_complete": { "type": "boolean" },
+      "month_end_report": { "type": "object" },
+      "follow_up_scope_complete": { "type": "boolean" },
+      "gr_ir_results": { "type": "array", "items": { "type": "object" } },
+      "ap_results": { "type": "array", "items": { "type": "object" } }
+    },
+    "required": ["month_end_status", "month_end_source_complete", "month_end_checklist_complete", "month_end_evidence_complete", "month_end_report", "follow_up_scope_complete", "gr_ir_results", "ap_results"],
+    "additionalProperties": false
+  },
+  "nodes": [
+    {
+      "id": "month_end",
+      "agentId": "month-end-closing",
+      "agentVersion": "0.2.0",
+      "agentDigest": "sha256:720cc27cd0171a6f5aa7848cdd08845de209f400b1a3121d626923e9a3b649d1",
+      "position": { "x": 80, "y": 140 }
+    },
+    {
+      "id": "gr_ir_follow_up",
+      "agentId": "gr-ir-clearing",
+      "agentVersion": "0.2.0",
+      "agentDigest": "sha256:eb833a56923889e7cb8b02ebb1637e23648f0ee410902ad4ed30e21df5d1edcf",
+      "position": { "x": 520, "y": 60 },
+      "forEach": {
+        "source": { "scope": "node_output", "nodeId": "month_end", "port": "gr_ir_follow_up_scopes" },
+        "maxItems": 50,
+        "maxConcurrency": 4,
+        "onItemError": "collect_inconclusive"
+      }
+    },
+    {
+      "id": "ap_follow_up",
+      "agentId": "ap-payment",
+      "agentVersion": "0.2.0",
+      "agentDigest": "sha256:922fb829b67251c159975fcd36a9144cb9bb9a1378c9ac6ff48f9d1f6318f9d6",
+      "position": { "x": 520, "y": 240 },
+      "forEach": {
+        "source": { "scope": "node_output", "nodeId": "month_end", "port": "ap_follow_up_scopes" },
+        "maxItems": 50,
+        "maxConcurrency": 4,
+        "onItemError": "collect_inconclusive"
+      }
+    }
+  ],
+  "connections": [
+    { "from": { "scope": "workflow_input", "port": "company_code" }, "to": { "nodeId": "month_end", "port": "company_code" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "workflow_input", "port": "fiscal_year" }, "to": { "nodeId": "month_end", "port": "fiscal_year" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "workflow_input", "port": "period" }, "to": { "nodeId": "month_end", "port": "period" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "workflow_input", "port": "as_of" }, "to": { "nodeId": "month_end", "port": "as_of" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "iteration_item", "pointer": "/company_code" }, "to": { "nodeId": "gr_ir_follow_up", "port": "company_code" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "iteration_item", "pointer": "/gl_account" }, "to": { "nodeId": "gr_ir_follow_up", "port": "gl_account" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "iteration_item", "pointer": "/date_from" }, "to": { "nodeId": "gr_ir_follow_up", "port": "date_from" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "iteration_item", "pointer": "/date_to" }, "to": { "nodeId": "gr_ir_follow_up", "port": "date_to" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "constant", "value": "direct" }, "to": { "nodeId": "ap_follow_up", "port": "query_mode" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "iteration_item", "pointer": "/company_code" }, "to": { "nodeId": "ap_follow_up", "port": "company_code" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "iteration_item", "pointer": "/supplier" }, "to": { "nodeId": "ap_follow_up", "port": "supplier" }, "transform": { "type": "identity" } },
+    { "from": { "scope": "iteration_item", "pointer": "/as_of" }, "to": { "nodeId": "ap_follow_up", "port": "as_of" }, "transform": { "type": "identity" } }
+  ],
+  "outputs": [
+    { "name": "month_end_status", "source": { "scope": "node_output", "nodeId": "month_end", "port": "business_status" }, "transform": { "type": "identity" } },
+    { "name": "month_end_source_complete", "source": { "scope": "node_output", "nodeId": "month_end", "port": "source_complete" }, "transform": { "type": "identity" } },
+    { "name": "month_end_checklist_complete", "source": { "scope": "node_output", "nodeId": "month_end", "port": "checklist_complete" }, "transform": { "type": "identity" } },
+    { "name": "month_end_evidence_complete", "source": { "scope": "node_output", "nodeId": "month_end", "port": "evidence_complete" }, "transform": { "type": "identity" } },
+    { "name": "month_end_report", "source": { "scope": "node_output", "nodeId": "month_end", "port": "business_report" }, "transform": { "type": "identity" } },
+    { "name": "follow_up_scope_complete", "source": { "scope": "node_output", "nodeId": "month_end", "port": "follow_up_scope_complete" }, "transform": { "type": "identity" } },
+    { "name": "gr_ir_results", "source": { "scope": "node_output", "nodeId": "gr_ir_follow_up", "port": "business_report" }, "transform": { "type": "identity" } },
+    { "name": "ap_results", "source": { "scope": "node_output", "nodeId": "ap_follow_up", "port": "business_report" }, "transform": { "type": "identity" } }
+  ],
+  "policies": {
+    "onInconclusive": "continue_if_required_outputs_present"
+  }
+}

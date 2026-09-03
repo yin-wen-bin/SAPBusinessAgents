@@ -333,7 +333,14 @@ test("detail pages render workflow and step-level tools", async () => {
   assert.match(closing, /SAP S\/4HANA/);
   assert.doesNotMatch(closing, /SAP ECC/);
   assert.doesNotMatch(closing, /class="step-sap-scope"/);
-  assert.match(closing, /evaluate_business_agent/);
+  assert.match(closing, /evaluate_month_end_closing/);
+  assert.match(closing, /Embedded OData/);
+  assert.match(closing, /API_COMPANYCODE_SRV/);
+  assert.match(closing, /API_LEDGER_SRV/);
+  assert.match(closing, /API_GLACCOUNTLINEITEM/);
+  assert.match(closing, /API_BILLING_DOCUMENT_SRV/);
+  assert.match(closing, /sap-adt-table-export/);
+  assert.doesNotMatch(closing, /sapclaw_runtime|Thin Runtime|Thin SAPClaw/);
   assert.match(grir, /class="detail-module-badge">FI</);
 });
 

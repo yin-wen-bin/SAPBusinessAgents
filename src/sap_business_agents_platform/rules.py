@@ -6,6 +6,11 @@ import re
 from typing import Any
 
 from .agent_rules import evaluate_business_agent
+from .month_end import (
+    evaluate_month_end_closing,
+    prepare_month_end_scope,
+    resolve_month_end_skill_requirements,
+)
 
 
 P2P_PAYMENT_DOCUMENT_TYPES = frozenset({"KZ", "ZP"})
@@ -28,6 +33,12 @@ API_CAPABILITY_GAP_CODES = frozenset(
 
 
 def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    if operation == "prepare_month_end_scope":
+        return prepare_month_end_scope(inputs)
+    if operation == "evaluate_month_end_closing":
+        return evaluate_month_end_closing(inputs)
+    if operation == "resolve_month_end_skill_requirements":
+        return resolve_month_end_skill_requirements(inputs)
     if operation == "resolve_mrp_analysis_context":
         return resolve_mrp_analysis_context(inputs)
     if operation == "resolve_demand_forecast_context":

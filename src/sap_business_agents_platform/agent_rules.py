@@ -8,6 +8,7 @@ import re
 from typing import Any, Callable
 
 from .grir import evaluate_odata_grir
+from .month_end import evaluate_month_end_closing
 
 
 JsonObject = dict[str, Any]
@@ -2188,21 +2189,7 @@ def _grir(inputs: JsonObject) -> JsonObject:
 
 
 def _month_end(inputs: JsonObject) -> JsonObject:
-    fi = _rows(inputs, "fi_period_items")
-    gaps = _gaps(inputs, "period_control_asset_depreciation_and_specialized_closing_checks")
-    return _result(
-        inputs,
-        business_status="capability_blocked",
-        headline_zh="已取得部分月结证据，但不能确认可以关账",
-        headline_en="Partial month-end evidence was collected, but closing readiness cannot be confirmed",
-        overview_zh="当前只覆盖已发布的 FI 行项目；期间控制、固定资产折旧和专项关账检查缺失。",
-        overview_en="Only published FI line items are covered; period control, asset depreciation, and specialized closing checks are missing.",
-        stages=[_stage("fi", "FI 期间凭证", "FI period documents", len(fi)), _stage("closing_checks", "完整关账检查清单", "Complete closing checklist", 0, state="unknown")],
-        metrics=[{"id": "fi_rows", "value": len(fi)}],
-        gaps=gaps,
-        actions_zh=["补充公司代码和期间绑定的只读关账检查接口后再判断。"],
-        actions_en=["Add company-code and period-bound read-only closing checks before assessing readiness."],
-    )
+    return evaluate_month_end_closing(inputs)
 
 
 def _legacy_demand_forecast_single(inputs: JsonObject) -> JsonObject:

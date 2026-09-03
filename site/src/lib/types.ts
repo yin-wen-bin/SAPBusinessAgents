@@ -114,10 +114,10 @@ export interface AgentValidation {
   executable?: boolean;
   acceptanceMode?: "three_stage" | "deterministic_runtime";
   caseId?: string;
-  baselineRuntime?: "codex_app_direct_sap" | "sapclaw_runtime";
+  baselineRuntime?: "codex_app_direct_sap" | "embedded-odata";
   runtimeCaseIds?: string[];
   workflowRunIds?: string[];
-  usedSapBusinessAgentsForBaseline?: false;
+  usedSapBusinessAgentsForBaseline?: boolean;
   codexDirectBaselineHash?: string;
   freeQueryHash?: string;
   adjudicatedResultHash?: string;

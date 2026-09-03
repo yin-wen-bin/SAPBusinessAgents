@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "workflowId": "month-end-exception-follow-up",
+  "state": "inactive",
+  "currentVersion": "0.1.0",
+  "currentWorkflowHash": null,
+  "publishedAt": null,
+  "deactivatedAt": null,
+  "deactivationReason": "month-end-closing and ap-payment require Embedded OData live re-acceptance",
+  "updatedAt": "2026-09-03T00:00:00+08:00"
+}

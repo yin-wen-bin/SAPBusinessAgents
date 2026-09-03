@@ -925,7 +925,7 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
         expected_limitations = {
             "ar-collection": ["historical_dunning_evidence"],
             "month-end-closing": [
-                "period_control_asset_depreciation_and_specialized_closing_checks"
+                "fx_valuation_run_status_source_unavailable"
             ],
             "billing-output-monitor": ["billing_output_status_evidence"],
             "billing-dispute-classification": ["billing_dispute_case_evidence"],

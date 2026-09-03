@@ -4,7 +4,7 @@
 
 1. Embedded SAP OData Provider：读取 Released API 和实时 metadata，所有业务请求只允许 GET。
 2. SAPSkillhub：API 缺少必要实体、字段或关联时，条件调用受信任的只读 Skill。
-3. 人工 SE16N：只有自动证据仍不足且需要诊断时，使用 scope-bound、经复核并带 SHA-256 的 manifest。
+3. 人工 SE16N：仅作为固定 Agent 之外的诊断和离线复核手段，使用 scope-bound、经复核并带 SHA-256 的 manifest；其结果不能替代 v0.2.0 Embedded Provider 验收。
 4. 证据仍不完整：输出 `DATA_GAP` / `INCONCLUSIVE`，不得把缺失、超时、截断或空分支解释为零异常。
 
 ## Embedded Provider 验证
@@ -21,7 +21,7 @@
 - 只有 `read_only=true`、`validated=true`、分页完整且 manifest 校验通过的结果才可关闭证据缺口。
 - `partial`、`failed` 或达到上限只能作为有限证据。
 
-## 人工 SE16N manifest
+## 人工 SE16N manifest（非固定 Agent Provider）
 
 操作人员必须先确认 SAP GUI 会话的系统、client 和只读范围，再执行导出。manifest 至少记录：
 

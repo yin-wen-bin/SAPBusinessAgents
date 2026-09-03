@@ -1,5 +1,7 @@
 # Three-stage live SAP acceptance: month-end-closing
 
+> Historical v0.1.0 record. This acceptance used the retired direct-baseline architecture and does not validate the v0.2.0 Embedded OData implementation. Do not use its `PASS` verdict to enable the current Agent; current acceptance status is recorded in `embedded-odata-live-acceptance.md`.
+
 ## Verdict
 
 `PASS` / `executable=true`

@@ -13,6 +13,9 @@ from jsonschema.exceptions import SchemaError, ValidationError
 ALLOWED_EXECUTORS = {"sap_read", "skill", "rule"}
 ALLOWED_SAP_READ_OPERATIONS = {"execute_plan", "execute_get"}
 ALLOWED_RULE_OPERATIONS = {
+    "prepare_month_end_scope",
+    "evaluate_month_end_closing",
+    "resolve_month_end_skill_requirements",
     "assess_inventory_batch_expiry",
     "assess_api_evidence",
     "assess_adt_preflight",

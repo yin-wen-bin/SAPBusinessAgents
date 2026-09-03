@@ -646,20 +646,19 @@
     "testedAt": "2026-08-29T07:00:00+00:00",
     "evidenceScope": "complete",
     "providers": [
-      "sapclaw_runtime",
       "embedded-sap-odata"
     ],
     "summary": {
-      "zh": "AP 0.2.0 已消费真实 P2P 类型化证据，并通过批量与 foreach 两条工作流路径复核到期、现金折扣和证据缺口；付款运行、银行主数据和银行扣款完整性保持独立。",
-      "en": "AP 0.2.0 consumed live typed P2P evidence through both batch and foreach workflows, reviewing due dates, cash discounts, and evidence gaps while keeping payment-run, bank-master, and bank-debit completeness independent."
+      "zh": "既有业务语义验收继续有效；活跃查询路径已迁移为 Embedded OData，历史报告不声明重新执行了架构验收。",
+      "en": "The existing business-semantic acceptance remains valid; the active query path is Embedded OData, while the historical report does not claim a rerun of architecture acceptance."
     },
     "reportPath": "docs/p2p-evidence-workflow-live-acceptance.md",
     "executable": true,
     "acceptanceMode": "deterministic_runtime",
     "freeQueryComparison": "NOT_TESTED",
     "fixedAgentComparison": "MATCH",
-    "baselineRuntime": "sapclaw_runtime",
-    "usedSapBusinessAgentsForBaseline": false,
+    "baselineRuntime": "embedded-odata",
+    "usedSapBusinessAgentsForBaseline": true,
     "runtimeCaseIds": ["899033a9-4183-45e0-8923-7133aece8f01"],
     "workflowRunIds": ["run_676139ae75814a04", "run_2e167ea3921448ae"]
   }

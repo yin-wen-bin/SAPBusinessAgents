@@ -3396,6 +3396,11 @@ class RunCoordinator:
                     if isinstance(column, dict) and str(column.get("key") or "").strip()
                 ]
                 rows = [row for row in table.get("rows") or [] if isinstance(row, dict)]
+                if not columns and rows:
+                    columns = [
+                        {"key": key, "label": {"zh": key, "en": key}}
+                        for key in rows[0]
+                    ]
                 action_buffer = StringIO()
                 action_writer = csv.writer(action_buffer, lineterminator="\n")
                 action_writer.writerow(
@@ -3412,6 +3417,17 @@ class RunCoordinator:
                     action_buffer.getvalue(), encoding="utf-8-sig"
                 )
                 artifacts.append({"name": artifact_name, "media_type": "text/csv"})
+            for artifact in business_report.get("json_artifacts") or []:
+                if not isinstance(artifact, dict):
+                    continue
+                artifact_name = str(artifact.get("artifact_name") or "").strip()
+                if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}\.json", artifact_name):
+                    raise RunExecutionError("Business-report JSON artifact name is invalid.")
+                (artifact_root / artifact_name).write_text(
+                    json.dumps(artifact.get("payload"), ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                artifacts.append({"name": artifact_name, "media_type": "application/json"})
         artifacts.extend(
             [
                 {"name": "evidence.csv", "media_type": "text/csv"},
