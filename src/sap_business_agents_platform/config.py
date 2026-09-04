@@ -54,6 +54,11 @@ class Settings:
     local_feedback_workers: int = 1
     max_concurrent_sap_gets: int = 2
     scheduler_lease_seconds: int = 60
+    restricted_artifact_retention_days: int = 30
+    local_ui_origins: tuple[str, ...] = (
+        "http://127.0.0.1:4321",
+        "http://localhost:4321",
+    )
     # Always true for the local product runtime. Tests and the in-process live
     # acceptance campaign may construct Settings with this disabled explicitly.
     enforce_agent_acceptance: bool = True
@@ -217,6 +222,17 @@ class Settings:
             ),
             scheduler_lease_seconds=max(
                 15, int(os.getenv("SAPBA_SCHEDULER_LEASE_SECONDS", "60"))
+            ),
+            restricted_artifact_retention_days=max(
+                1, int(os.getenv("SAPBA_RESTRICTED_ARTIFACT_RETENTION_DAYS", "30"))
+            ),
+            local_ui_origins=tuple(
+                item.strip().rstrip("/")
+                for item in os.getenv(
+                    "SAPBA_LOCAL_UI_ORIGINS",
+                    "http://127.0.0.1:4321,http://localhost:4321",
+                ).split(",")
+                if item.strip()
             ),
         )
 

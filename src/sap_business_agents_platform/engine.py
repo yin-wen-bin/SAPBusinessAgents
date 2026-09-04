@@ -54,6 +54,8 @@ from .relationships import RelationshipCatalog
 from .scheduler import LocalRunScheduler, WorkloadClass
 from .sap_read import SapReadError
 from .skills import SkillError, SkillRegistry
+from .security import LocalSecretProtector, SensitiveDataError, secret_domain, sensitive_input_properties
+from .restricted_artifacts import RestrictedArtifactStore
 from .workflows import (
     WorkflowError,
     WorkflowRepository,
@@ -131,6 +133,12 @@ class RunCoordinator:
         self.normalizer = SapValueNormalizer(
             settings.repository_root / "config" / "sap-value-normalization.json"
         )
+        self.secret_protector = LocalSecretProtector(settings.data_root)
+        self.restricted_artifacts = RestrictedArtifactStore(
+            settings.data_root,
+            store,
+            retention_days=settings.restricted_artifact_retention_days,
+        )
         self._acceptance_runs: set[str] = set()
         self._free_query_session_locks: dict[str, asyncio.Lock] = {}
         self.scheduler = LocalRunScheduler(
@@ -205,6 +213,32 @@ class RunCoordinator:
     async def submit(self, request: RunCreate) -> str:
         defaulted_fields: list[str] = []
         workflow: dict[str, Any] | None = None
+        pending_secrets: list[tuple[str, str, str]] = []
+        if request.mode == RunMode.free_query and request.sensitive_inputs:
+            unknown_sensitive = sorted(
+                set(request.sensitive_inputs).difference({"receipt_reference"})
+            )
+            if unknown_sensitive:
+                raise RunExecutionError(
+                    "Unknown sensitive input fields: " + ", ".join(unknown_sensitive),
+                    code="free_query_sensitive_input_invalid",
+                )
+            pending_secrets.append(
+                (
+                    "receipt_reference",
+                    "bank-receipt-reference",
+                    request.sensitive_inputs["receipt_reference"],
+                )
+            )
+            request = request.model_copy(
+                update={
+                    "input": {
+                        **request.input,
+                        "receipt_reference": {"provided": True},
+                    },
+                    "sensitive_inputs": {},
+                }
+            )
         if request.mode == RunMode.agent:
             try:
                 agent = self.agents.get(str(request.agent_id))
@@ -227,8 +261,27 @@ class RunCoordinator:
                     },
                 )
             try:
+                sensitive = sensitive_input_properties(agent["execution"]["inputSchema"])
+                misplaced = sorted(set(request.input).intersection(sensitive))
+                unknown_sensitive = sorted(set(request.sensitive_inputs).difference(sensitive))
+                if misplaced:
+                    raise InputValidationError(
+                        "Sensitive inputs must be supplied through sensitiveInputs.",
+                        code="sensitive_input_channel_required",
+                        fields=misplaced,
+                        constraint="sensitive_channel",
+                    )
+                if unknown_sensitive:
+                    raise InputValidationError(
+                        "Unknown sensitive input fields: " + ", ".join(unknown_sensitive),
+                        code="agent_input_invalid",
+                        fields=unknown_sensitive,
+                        constraint="additional_properties",
+                    )
+                combined_input = dict(request.input)
+                combined_input.update(request.sensitive_inputs)
                 effective_input, defaulted_fields = _resolve_server_defaults(
-                    request.input,
+                    combined_input,
                     agent["execution"]["inputSchema"],
                 )
                 effective_input = self.normalizer.normalize_input(
@@ -251,7 +304,16 @@ class RunCoordinator:
                     code=error_code,
                     detail=getattr(exc, "detail", None),
                 ) from exc
-            request = request.model_copy(update={"input": effective_input})
+            public_input = dict(effective_input)
+            for field, definition in sensitive.items():
+                if field not in effective_input:
+                    continue
+                value = str(effective_input[field])
+                public_input[field] = {"provided": True}
+                pending_secrets.append((field, secret_domain(definition, field), value))
+            request = request.model_copy(
+                update={"input": public_input, "sensitive_inputs": {}}
+            )
         if request.mode == RunMode.workflow:
             if self.workflows is None:
                 raise RunExecutionError("Workflow runtime is unavailable.", code="workflow_unavailable")
@@ -290,6 +352,23 @@ class RunCoordinator:
                 ) from exc
             request = request.model_copy(update={"input": normalized_input})
         run_id = f"run_{uuid.uuid4().hex[:16]}"
+        protected_secrets: list[tuple[str, str, bytes, dict[str, str]]] = []
+        for field, domain, value in pending_secrets:
+            try:
+                secret_ref, protected, descriptor = self.secret_protector.create_secret_ref(
+                    run_id=run_id,
+                    field=field,
+                    value=value,
+                    domain=domain,
+                )
+            except SensitiveDataError as exc:
+                raise RunExecutionError(str(exc), code=exc.code) from exc
+            request.input[field] = {
+                "provided": True,
+                "secret_ref": secret_ref,
+                "hmac": descriptor,
+            }
+            protected_secrets.append((field, secret_ref, protected, descriptor))
         runtime_snapshot: dict[str, Any] | None = None
         if request.mode == RunMode.free_query:
             snapshot = getattr(self.planner, "snapshot", None)
@@ -302,6 +381,14 @@ class RunCoordinator:
                         code=str(getattr(exc, "code", "runtime_not_selectable")),
                     ) from exc
         self.store.create_run(run_id, request, runtime=runtime_snapshot)
+        for field, secret_ref, protected, descriptor in protected_secrets:
+            self.store.save_run_secret(
+                secret_ref=secret_ref,
+                run_id=run_id,
+                field_name=field,
+                protected_value=protected,
+                hmac_descriptor=descriptor,
+            )
         if request.mode == RunMode.agent:
             package_loader = getattr(self.agents, "package", None)
             package = (
@@ -521,13 +608,60 @@ class RunCoordinator:
         await self._schedule_run(run_id, request.mode)
         return run_id
 
-    async def provide_input(self, run_id: str, value: str) -> str:
-        value = self.normalizer.strip_text(value)
-        if not value:
+    async def provide_input(
+        self,
+        run_id: str,
+        value: str | None,
+        sensitive_inputs: dict[str, str] | None = None,
+    ) -> str:
+        value = self.normalizer.strip_text(value or "")
+        sensitive_inputs = dict(sensitive_inputs or {})
+        if not value and not sensitive_inputs:
             raise RunExecutionError(
                 "Supplemental input must not be blank.", code="input_blank"
             )
         record = self.store.get_run(run_id)
+        if sensitive_inputs:
+            if record.mode != RunMode.free_query or set(sensitive_inputs) != {
+                "receipt_reference"
+            }:
+                raise RunExecutionError(
+                    "Only receipt_reference is accepted as secure free-query input.",
+                    code="free_query_sensitive_input_invalid",
+                )
+            if record.status != RunStatus.waiting_input:
+                raise RunExecutionError(
+                    "This run is not waiting for secure input.",
+                    code="run_not_waiting_input",
+                )
+            field = "receipt_reference"
+            raw_value = self.normalizer.strip_text(sensitive_inputs[field])
+            secret_ref, protected, descriptor = self.secret_protector.create_secret_ref(
+                run_id=run_id,
+                field=field,
+                value=raw_value,
+                domain="bank-receipt-reference",
+            )
+            self.store.save_run_secret(
+                secret_ref=secret_ref,
+                run_id=run_id,
+                field_name=field,
+                protected_value=protected,
+                hmac_descriptor=descriptor,
+            )
+            public_input = dict(record.input)
+            public_input[field] = {
+                "provided": True,
+                "secret_ref": secret_ref,
+                "hmac": descriptor,
+            }
+            self.store.update_run(run_id, input_json=public_input)
+            self.store.append_event(
+                run_id,
+                "secure_input_received",
+                {"field": field, "provided": True},
+            )
+            value = value or "A secure business reference was provided through the protected input channel."
         if (
             record.mode == RunMode.free_query
             and (record.runtime is None or record.runtime.provider_id == "codex")
@@ -540,9 +674,12 @@ class RunCoordinator:
             raise RunExecutionError("This run is not waiting for input.", code="run_not_waiting_input")
         query = f"{record.query or ''}\nAdditional user information / 用户补充：{value}".strip()
         self.store.update_run(run_id, query=query, status=RunStatus.queued, error_json=None)
-        self.store.append_event(
-            run_id, "input_received", {"input": value, "mode": "clarification"}
-        )
+        event_payload = {"mode": "clarification"}
+        if sensitive_inputs:
+            event_payload["secure_fields"] = sorted(sensitive_inputs)
+        else:
+            event_payload["input"] = value
+        self.store.append_event(run_id, "input_received", event_payload)
         session = self.store.get_free_query_session_by_run(run_id)
         if session is not None:
             self.store.update_free_query_session(session["session_id"], status="running")
@@ -1097,6 +1234,8 @@ class RunCoordinator:
                 self._finish_error(run_id, exc, RunStatus.failed)
         finally:
             self._acceptance_runs.discard(run_id)
+            if self.store.get_run(run_id).status in TERMINAL_STATUSES:
+                self.store.delete_run_secrets(run_id)
 
     async def _execute(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
@@ -1139,7 +1278,10 @@ class RunCoordinator:
                         "verdict": (agent.get("validation") or {}).get("verdict", "NOT_TESTED"),
                     },
                 )
-            _validate_input(record.input, agent["execution"]["inputSchema"])
+            execution_input = self._hydrate_sensitive_inputs(
+                run_id, record.input, agent["execution"]["inputSchema"]
+            )
+            _validate_input(execution_input, agent["execution"]["inputSchema"])
         except (KeyError, ManifestError, PluginError, ValueError) as exc:
             raise RunExecutionError(
                 str(exc),
@@ -1157,7 +1299,15 @@ class RunCoordinator:
             total_units=total_steps,
             determinate=True,
         )
-        context: dict[str, Any] = {"input": record.input, "steps": {}}
+        context: dict[str, Any] = {"input": execution_input, "steps": {}}
+        agent_started_monotonic = time.perf_counter()
+        deterministic_budget = float(self.settings.deterministic_run_seconds)
+        finalization_reserve = min(
+            60.0, max(1.0, deterministic_budget - 1.0)
+        )
+        evidence_budget = max(
+            1.0, deterministic_budget - finalization_reserve
+        )
         result = RunResult(
             run_id=run_id,
             mode=RunMode.agent,
@@ -1174,14 +1324,23 @@ class RunCoordinator:
             step_id = step["id"]
             if not _when_matches(step.get("when"), context):
                 timestamp = utc_now()
-                skipped = {
+                on_skip = step.get("onSkip") if isinstance(step.get("onSkip"), dict) else {}
+                candidate = on_skip.get("output") if isinstance(on_skip.get("output"), dict) else on_skip
+                skipped = copy.deepcopy(candidate) if candidate else {
                     "ok": True,
                     "status": "skipped",
                     "reason": "condition_false",
                     "source_complete": True,
-                    "required": False,
+                    "evidence_complete": True,
                 }
-                context["steps"][step_id] = {"output": skipped}
+                execution_envelope = _step_execution_envelope(
+                    step, skipped, execution_status="skipped"
+                )
+                context["steps"][step_id] = {
+                    "output": skipped,
+                    "execution": execution_envelope,
+                    "private_refs": [],
+                }
                 result.steps.append(
                     {
                         "step_id": step_id,
@@ -1191,6 +1350,7 @@ class RunCoordinator:
                         "reason": "condition_false",
                         "started_at": timestamp,
                         "completed_at": timestamp,
+                        "execution": execution_envelope,
                     }
                 )
                 self.store.append_event(
@@ -1243,9 +1403,56 @@ class RunCoordinator:
             )
             rendered = _render_template(step.get("request") or step.get("inputMapping") or {}, context)
             try:
-                output = await self._execute_step(
-                    run_id, step, rendered, record.query or "", call_id=call_id
-                )
+                if executor in {"sap_read", "skill"}:
+                    remaining_evidence = evidence_budget - (
+                        time.perf_counter() - agent_started_monotonic
+                    )
+                    if remaining_evidence <= 0:
+                        raise RunExecutionError(
+                            "The evidence-reading phase reached its time limit.",
+                            code="evidence_stage_timeout",
+                        )
+                    try:
+                        output = await asyncio.wait_for(
+                            self._execute_step(
+                                run_id,
+                                step,
+                                rendered,
+                                record.query or "",
+                                call_id=call_id,
+                            ),
+                            timeout=remaining_evidence,
+                        )
+                    except TimeoutError as exc:
+                        raise RunExecutionError(
+                            "The evidence-reading phase reached its time limit.",
+                            code="evidence_stage_timeout",
+                        ) from exc
+                else:
+                    remaining_total = deterministic_budget - (
+                        time.perf_counter() - agent_started_monotonic
+                    )
+                    if remaining_total <= 0:
+                        raise RunExecutionError(
+                            "The deterministic rule and report stage reached its time limit.",
+                            code="finalization_stage_timeout",
+                        )
+                    try:
+                        output = await asyncio.wait_for(
+                            self._execute_step(
+                                run_id,
+                                step,
+                                rendered,
+                                record.query or "",
+                                call_id=call_id,
+                            ),
+                            timeout=remaining_total,
+                        )
+                    except TimeoutError as exc:
+                        raise RunExecutionError(
+                            "The deterministic rule and report stage reached its time limit.",
+                            code="finalization_stage_timeout",
+                        ) from exc
             except (
                 SapReadError,
                 SkillError,
@@ -1264,7 +1471,10 @@ class RunCoordinator:
                         "error": _error_payload(exc),
                     }
                 )
-                if step.get("failurePolicy", "fail_run") != "record_gap":
+                if (
+                    step.get("failurePolicy", "fail_run") != "record_gap"
+                    or not _is_recoverable_evidence_error(exc)
+                ):
                     self.store.update_run(run_id, result_json=result)
                     raise
                 gap = {
@@ -1276,7 +1486,14 @@ class RunCoordinator:
                     "error": _error_payload(exc),
                 }
                 output = _redact_sensitive(gap)
-                context["steps"][step_id] = {"output": output}
+                execution_envelope = _step_execution_envelope(
+                    step, output, execution_status="failed"
+                )
+                context["steps"][step_id] = {
+                    "output": output,
+                    "execution": execution_envelope,
+                    "private_refs": [],
+                }
                 result.errors.append(gap["error"])
                 result.evidence.append(
                     {
@@ -1330,8 +1547,25 @@ class RunCoordinator:
                 self.store.update_run(run_id, result_json=result)
                 continue
             output = _redact_sensitive(output)
-            context["steps"][step_id] = {"output": output}
+            private_refs: list[dict[str, Any]] = []
             public_output = _public_step_output(step, output)
+            if step.get("executor") == "skill" and isinstance(output, dict):
+                public_output, private_refs = self.restricted_artifacts.materialize_skill_output(
+                    run_id=run_id,
+                    skill_id=str(step.get("skillId") or ""),
+                    output=output,
+                )
+            execution_envelope = _step_execution_envelope(
+                step, public_output, execution_status="completed"
+            )
+            context["steps"][step_id] = {
+                # Preserve the validated business payload for deterministic downstream rules.
+                # Only the safe projection is copied into persisted evidence and events.
+                "output": output,
+                "execution": execution_envelope,
+                # Deliberately never copied into RunResult, SQLite, SSE, or Runtime input.
+                "private_refs": [item.get("artifact_id") for item in private_refs],
+            }
             step_record = {
                 "step_id": step_id,
                 "executor": step["executor"],
@@ -1340,6 +1574,7 @@ class RunCoordinator:
                 "started_at": started_at,
                 "completed_at": utc_now(),
                 "output_reference": f"steps.{step_id}.output",
+                "execution": execution_envelope,
             }
             result.steps.append(step_record)
             if step["executor"] in {"sap_read", "skill"}:
@@ -1429,6 +1664,37 @@ class RunCoordinator:
         self._complete_result(run_id, result, output_schema=output_schema)
         self._acceptance_runs.discard(run_id)
 
+    def _hydrate_sensitive_inputs(
+        self, run_id: str, public_input: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        hydrated = copy.deepcopy(public_input)
+        for field in sensitive_input_properties(schema):
+            descriptor = public_input.get(field)
+            if descriptor is None:
+                continue
+            if not isinstance(descriptor, dict) or descriptor.get("provided") is not True:
+                raise RunExecutionError(
+                    "A sensitive input was not stored through the secure input channel.",
+                    code="secret_resolution_failed",
+                    detail={"field": field},
+                )
+            try:
+                binding = self.store.get_run_secret(run_id, field)
+                if binding["secret_ref"] != descriptor.get("secret_ref"):
+                    raise KeyError(field)
+                hydrated[field] = self.secret_protector.reveal_run_secret(
+                    run_id=run_id,
+                    field=field,
+                    protected_value=binding["protected_value"],
+                )
+            except (KeyError, SensitiveDataError) as exc:
+                raise RunExecutionError(
+                    "A sensitive input could not be resolved.",
+                    code="secret_resolution_failed",
+                    detail={"field": field},
+                ) from exc
+        return hydrated
+
     async def _execute_step(
         self,
         run_id: str,
@@ -1485,6 +1751,9 @@ class RunCoordinator:
                 return await self.sap_read.execute_get(rendered)
         if executor == "skill":
             skill_id = str(step.get("skillId") or "")
+            rendered = {
+                key: value for key, value in rendered.items() if value is not None
+            }
             try:
                 skill = self.skills.get(skill_id)
             except KeyError:
@@ -1526,7 +1795,15 @@ class RunCoordinator:
                     raise RunExecutionError(
                         str(exc), code=exc.code
                     ) from exc
-            return rules.evaluate(str(operation), rendered)
+            # Central rules are trusted platform code, but they must not block the
+            # event loop: the caller enforces the deterministic finalization
+            # budget with ``asyncio.wait_for``. Managed rules remain isolated in
+            # their dedicated subprocess and resource sandbox above.
+            return await asyncio.to_thread(
+                rules.evaluate,
+                str(operation),
+                rendered,
+            )
         raise ValueError(f"Unsupported executor: {executor}")
 
     async def _execute_workflow(self, run_id: str) -> None:
@@ -2461,16 +2738,31 @@ class RunCoordinator:
         self.store.update_run(run_id, thread_id=outcome.thread_id)
         if outcome.status == "waiting_input":
             question = outcome.clarification_question or "请补充完成查询所必需的信息。"
+            input_detail = (
+                {"input_kind": outcome.input_kind, "field": outcome.input_field}
+                if outcome.input_kind and outcome.input_field
+                else None
+            )
             self.store.update_run(
                 run_id,
                 status=RunStatus.waiting_input,
-                error_json={"code": "clarification_required", "message": question},
+                error_json={
+                    "code": "clarification_required",
+                    "message": question,
+                    "detail": input_detail,
+                },
             )
             self._set_progress(
                 run_id, phase="preparing", state="waiting_input", determinate=False
             )
             self.store.append_event(
-                run_id, "waiting_input", {"question": question, "runtime": "codex_app_server"}
+                run_id,
+                "waiting_input",
+                {
+                    "question": question,
+                    "runtime": "codex_app_server",
+                    **(input_detail or {}),
+                },
             )
             session = self.store.get_free_query_session_by_run(run_id)
             if session is not None:
@@ -2631,7 +2923,7 @@ class RunCoordinator:
             planner_query,
             catalog,
             guidance,
-            self.skills.list(),
+            self.skills.list_all_approved_skills(),
             thread_id=record.thread_id,
         )
         self.store.update_run(run_id, thread_id=decision.thread_id)
@@ -3727,7 +4019,12 @@ def _resolve_server_defaults(
     for name, property_schema in properties.items():
         if name in resolved or not isinstance(property_schema, dict):
             continue
-        if property_schema.get("x-sapba-server-default") is not True:
+        marker = property_schema.get("x-sapba-server-default")
+        if marker == "business_date":
+            resolved[name] = date.today().isoformat()
+            applied.append(str(name))
+            continue
+        if marker is not True:
             continue
         if "default" not in property_schema:
             continue
@@ -3926,7 +4223,7 @@ def _validate_input(
             )
         if property_schema.get("format") == "date":
             try:
-                date.fromisoformat(item)
+                parsed_date = date.fromisoformat(item)
             except ValueError as exc:
                 raise InputValidationError(
                     f"Input {name} must be an ISO date (YYYY-MM-DD).",
@@ -3934,6 +4231,17 @@ def _validate_input(
                     field=str(name),
                     constraint="date",
                 ) from exc
+            if (
+                property_schema.get("x-sapba-not-after-business-date") is True
+                and parsed_date > date.today()
+            ):
+                raise InputValidationError(
+                    f"Input {name} must not be later than the business date.",
+                    code=error_code,
+                    field=str(name),
+                    constraint="business_date",
+                    detail={"maximum": date.today().isoformat()},
+                )
     for pair in schema.get("dateRangePairs") or []:
         if not isinstance(pair, dict):
             continue
@@ -3997,7 +4305,10 @@ def _render_template(value: Any, context: dict[str, Any]) -> Any:
         return value
     exact = _TEMPLATE.fullmatch(value)
     if exact:
-        return _lookup(context, exact.group(1))
+        path = exact.group(1)
+        if path.endswith("?"):
+            return _lookup_optional(context, path[:-1])
+        return _lookup(context, path)
     return _TEMPLATE.sub(lambda match: str(_lookup(context, match.group(1))), value)
 
 
@@ -4006,6 +4317,15 @@ def _lookup(context: dict[str, Any], path: str) -> Any:
     for part in path.split("."):
         if not isinstance(current, dict) or part not in current:
             raise ValueError(f"Template path is unavailable: {path}")
+        current = current[part]
+    return current
+
+
+def _lookup_optional(context: dict[str, Any], path: str) -> Any:
+    current: Any = context
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
         current = current[part]
     return current
 
@@ -5491,6 +5811,124 @@ def _redact_sensitive(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_sensitive(child) for child in value]
     return value
+
+
+def _step_execution_envelope(
+    step: dict[str, Any], output: Any, *, execution_status: str
+) -> dict[str, Any]:
+    payload = output if isinstance(output, dict) else {}
+    completeness = payload.get("completeness")
+    completeness = completeness if isinstance(completeness, dict) else {}
+    source_complete = payload.get("source_complete")
+    if source_complete is None:
+        source_complete = completeness.get("source_complete")
+    evidence_complete = payload.get("evidence_complete")
+    if evidence_complete is None:
+        evidence_complete = completeness.get("evidence_complete", source_complete)
+    raw_status = str(payload.get("evidence_status") or payload.get("status") or "")
+    status_map = {
+        "complete": "available",
+        "completed": "available",
+        "available": "available",
+        "not_found": "not_found",
+        "partial": "partial",
+        "source_unavailable": "unavailable",
+        "capability_blocked": "unavailable",
+        "failed": "unavailable",
+        "skipped": "not_requested",
+        "not_requested": "not_requested",
+        "not_applicable": "not_applicable",
+    }
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        rows = payload.get("receipts") if isinstance(payload.get("receipts"), list) else []
+    nested_rows: list[dict[str, Any]] = []
+    nested_failures: list[Any] = []
+    nested_issues: list[dict[str, Any]] = []
+
+    def inspect(value: Any) -> None:
+        if isinstance(value, dict):
+            results = value.get("results")
+            if isinstance(results, list):
+                nested_rows.extend(item for item in results if isinstance(item, dict))
+            nested_failures.extend(value.get("failed_filter_values") or [])
+            nested_issues.extend(
+                item for item in value.get("validation_issues") or [] if isinstance(item, dict)
+            )
+            for child in value.values():
+                inspect(child)
+        elif isinstance(value, list):
+            for child in value:
+                inspect(child)
+
+    inspect(payload)
+    if not rows:
+        rows = nested_rows
+    evidence_status = status_map.get(
+        raw_status, "available" if execution_status == "completed" else "unavailable"
+    )
+    if execution_status == "completed" and source_complete is True and not rows:
+        evidence_status = "not_found"
+    count = payload.get("row_count")
+    if not isinstance(count, int):
+        count = payload.get("returned_row_count")
+    if not isinstance(count, int):
+        count = len(rows)
+    artifact_refs = []
+    restricted_ref = payload.get("restricted_artifact_ref")
+    if isinstance(restricted_ref, dict):
+        artifact_refs.append(restricted_ref)
+    issues = payload.get("validation_issues")
+    return {
+        "execution_status": execution_status,
+        "evidence_status": evidence_status,
+        "required": step.get("required", True) is not False,
+        "source_complete": bool(source_complete),
+        "evidence_complete": bool(evidence_complete),
+        "record_count": max(0, count),
+        "preview_rows": rows[:20],
+        "artifact_refs": artifact_refs,
+        "failed_filter_values": [
+            *(payload.get("failed_filter_values") or []),
+            *nested_failures,
+        ],
+        "validation_issues": [
+            *(list(issues) if isinstance(issues, list) else []),
+            *nested_issues,
+        ],
+    }
+
+
+def _is_recoverable_evidence_error(exc: Exception) -> bool:
+    code = str(getattr(exc, "code", ""))
+    if code in {
+        "sap_read_plan_rejected",
+        "agent_relationship_rejected",
+        "skill_contract_incompatible",
+        "skill_input_connection_forbidden",
+        "skill_package_digest_mismatch",
+        "skill_manifest_mismatch",
+        "skill_profile_drift",
+        "skill_metadata_drift",
+        "secret_resolution_failed",
+        "sap_input_normalization_conflict",
+    }:
+        return False
+    if code.startswith(("skill_input", "skill_output", "workflow_", "agent_input")):
+        return False
+    detail = getattr(exc, "detail", None)
+    status = detail.get("http_status") if isinstance(detail, dict) else None
+    if status == 400:
+        return False
+    return code in {
+        "sap_read_timeout",
+        "sap_read_transport_error",
+        "sap_read_permission_denied",
+        "capability_unavailable",
+        "selected_provider_unavailable",
+        "source_unavailable",
+        "run_timeout",
+    } or isinstance(exc, TimeoutError)
 
 
 def _public_step_output(step: dict[str, Any], output: Any) -> Any:

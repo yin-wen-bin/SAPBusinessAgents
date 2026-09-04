@@ -1,0 +1,1013 @@
+{
+  "schemaVersion": 2,
+  "slug": "ar-cash-application",
+  "module": "FI",
+  "title": {
+    "zh": "银行来款与应收核销核对助手",
+    "en": "AR Cash Application Reconciliation Assistant"
+  },
+  "summary": {
+    "zh": "核对银行来款、客户子分类账、清账凭证和发票关系；只提供确认、候选和待处理状态，不执行清账或过账。",
+    "en": "Reconciles bank receipts, customer subledger entries, clearing documents, and invoices; it reports confirmed, candidate, and pending states without clearing or posting."
+  },
+  "status": "Three-stage live acceptance not_tested",
+  "version": "0.1.0",
+  "owner": "FI-AR",
+  "tags": [
+    "Accounts Receivable",
+    "Cash Application",
+    "Bank Receipts",
+    "Clearing"
+  ],
+  "sapModules": [
+    "FI-AR",
+    "Bank Accounting"
+  ],
+  "transactions": [],
+  "tables": [],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "公司代码",
+      "价值日起始日",
+      "价值日截止日",
+      "银行来款参考号（可选）"
+    ],
+    "en": [
+      "Company code",
+      "Value date from",
+      "Value date to",
+      "Bank receipt reference (optional)"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "来源来款数",
+      "已核对来款数",
+      "未解决来款数",
+      "已确认关联来款数",
+      "需处理来款数",
+      "无法确认来款数",
+      "来款检索状态",
+      "来款核销状态",
+      "逐笔来款核对结果",
+      "受限银行明细",
+      "查询源完整性",
+      "业务证据完整性",
+      "业务状态",
+      "结构化业务报告"
+    ],
+    "en": [
+      "Source receipt count",
+      "Materialized receipt count",
+      "Unresolved receipt count",
+      "Confirmed receipts",
+      "Receipts requiring attention",
+      "Inconclusive receipts",
+      "Receipt search status",
+      "Cash application status",
+      "Receipt results",
+      "Restricted bank details",
+      "Query-source completeness",
+      "Evidence completeness",
+      "Business status",
+      "Structured business report"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "不执行清账、过账或自动销账",
+      "FI清账不替代银行到账证据",
+      "敏感银行字段只进入加密受限制品"
+    ],
+    "en": [
+      "Never clears, posts, or applies cash automatically",
+      "FI clearing never substitutes for independent bank-receipt evidence",
+      "Sensitive bank fields are stored only in encrypted restricted artifacts"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "ledger",
+      "title": {
+        "zh": "解析FI台账",
+        "en": "Resolve FI ledger"
+      },
+      "description": {
+        "zh": "执行解析FI台账；不执行任何SAP写操作。",
+        "en": "Execute Resolve FI ledger; no SAP write operation is allowed."
+      },
+      "operations": {
+        "zh": [
+          "GET API_LEDGER_SRV/A_Ledger",
+          "rule.prepare_fi_ledger_scope"
+        ],
+        "en": [
+          "GET API_LEDGER_SRV/A_Ledger",
+          "rule.prepare_fi_ledger_scope"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "读取唯一主导台账并交由本地规则校验",
+            "en": "Read the unique leading ledger for local deterministic validation"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_leading_ledger",
+        "resolve_fi_ledger"
+      ]
+    },
+    {
+      "id": "bank",
+      "title": {
+        "zh": "读取银行来款",
+        "en": "Read bank receipts"
+      },
+      "description": {
+        "zh": "执行读取银行来款；不执行任何SAP写操作。",
+        "en": "Execute Read bank receipts; no SAP write operation is allowed."
+      },
+      "operations": {
+        "zh": [
+          "skill.sap-bank-receipt-evidence"
+        ],
+        "en": [
+          "skill.sap-bank-receipt-evidence"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-bank-receipt-evidence",
+          "kind": "Approved read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "读取银行来款、过账、冲销及FI凭证引用",
+            "en": "Read bank receipt, posting, reversal, and FI-document evidence"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_bank_receipts"
+      ]
+    },
+    {
+      "id": "fi",
+      "title": {
+        "zh": "展开客户子分类账和清账",
+        "en": "Expand subledger and clearing"
+      },
+      "description": {
+        "zh": "执行展开客户子分类账和清账；不执行任何SAP写操作。",
+        "en": "Execute Expand subledger and clearing; no SAP write operation is allowed."
+      },
+      "operations": {
+        "zh": [
+          "rule.prepare_ar_cash_application_scope",
+          "GET API_OPLACCTGDOCITEMCUBE_SRV/A_OperationalAcctgDocItemCube"
+        ],
+        "en": [
+          "rule.prepare_ar_cash_application_scope",
+          "GET API_OPLACCTGDOCITEMCUBE_SRV/A_OperationalAcctgDocItemCube"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "按完整FI组合键展开客户子分类账、清账凭证和发票",
+            "en": "Expand customer subledger, clearing, and invoice evidence by exact FI tuples"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "prepare_cash_scope",
+        "read_cash_application_fi"
+      ]
+    },
+    {
+      "id": "result",
+      "title": {
+        "zh": "核对来款与发票",
+        "en": "Reconcile receipts and invoices"
+      },
+      "description": {
+        "zh": "执行核对来款与发票；不执行任何SAP写操作。",
+        "en": "Execute Reconcile receipts and invoices; no SAP write operation is allowed."
+      },
+      "operations": {
+        "zh": [
+          "rule.evaluate_business_agent"
+        ],
+        "en": [
+          "rule.evaluate_business_agent"
+        ]
+      },
+      "tools": [
+        {
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "在不修改SAP的情况下核对来款与发票关系",
+            "en": "Reconcile receipt-to-invoice relationships without changing SAP"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 600,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "title": {
+            "zh": "公司代码",
+            "en": "Company code"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "x-sapba-sap-identifier": true
+        },
+        "date_from": {
+          "type": "string",
+          "title": {
+            "zh": "价值日起始日",
+            "en": "Value date from"
+          },
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "date_to": {
+          "type": "string",
+          "title": {
+            "zh": "价值日截止日",
+            "en": "Value date to"
+          },
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "x-sapba-not-after-business-date": true
+        },
+        "business_date": {
+          "type": "string",
+          "title": {
+            "zh": "业务日期（系统）",
+            "en": "Business date (system)"
+          },
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "x-sapba-server-default": "business_date",
+          "x-sapba-internal": true
+        },
+        "receipt_reference": {
+          "type": "string",
+          "title": {
+            "zh": "银行来款参考号（可选）",
+            "en": "Bank receipt reference (optional)"
+          },
+          "minLength": 1,
+          "maxLength": 35,
+          "pattern": "^[^*?%\\u0000-\\u001F\\u007F]+$",
+          "x-sapba-sensitive": true,
+          "x-sapba-secret-kind": "business_reference"
+        }
+      },
+      "required": [
+        "company_code",
+        "date_from",
+        "date_to",
+        "business_date"
+      ],
+      "additionalProperties": false,
+      "dateRangePairs": [
+        {
+          "from": "date_from",
+          "to": "date_to",
+          "maxDays": 30
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "read_leading_ledger",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_LEDGER_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_Ledger",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "step_id": "leading_ledger",
+            "select_fields": [
+              "Ledger",
+              "IsLeadingLedger",
+              "LedgerApplication",
+              "LedgerSubApplication"
+            ],
+            "filters": [
+              {
+                "field": "IsLeadingLedger",
+                "operator": "eq",
+                "value": true,
+                "value_type": "boolean"
+              }
+            ],
+            "order_by": [
+              "Ledger"
+            ],
+            "rationale": "Resolve the unique leading ledger from complete live metadata."
+          }
+        }
+      },
+      {
+        "id": "resolve_fi_ledger",
+        "executor": "rule",
+        "operation": "prepare_fi_ledger_scope",
+        "inputMapping": {
+          "ledger_evidence": "{{steps.read_leading_ledger.output}}"
+        }
+      },
+      {
+        "id": "read_bank_receipts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-bank-receipt-evidence",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "schema_version": 1,
+          "company_code": "{{input.company_code}}",
+          "date_from": "{{input.date_from}}",
+          "date_to": "{{input.date_to}}",
+          "receipt_reference": "{{input.receipt_reference?}}"
+        }
+      },
+      {
+        "id": "prepare_cash_scope",
+        "executor": "rule",
+        "operation": "prepare_ar_cash_application_scope",
+        "inputMapping": {
+          "run_input": {
+            "company_code": "{{input.company_code}}"
+          },
+          "ledger_scope": "{{steps.resolve_fi_ledger.output}}",
+          "bank_evidence": "{{steps.read_bank_receipts.output}}"
+        }
+      },
+      {
+        "id": "read_cash_application_fi",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.prepare_cash_scope.output.has_fi_documents}}",
+          "equals": true
+        },
+        "onSkip": {
+          "output": {
+            "ok": true,
+            "status": "skipped",
+            "reason": "no_fi_documents",
+            "evidence_status": "not_applicable",
+            "source_complete": true,
+            "evidence_complete": true,
+            "step_results": {}
+          }
+        },
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "subledger_payment_documents",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "Ledger",
+                  "FiscalYear",
+                  "FiscalPeriod",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "Customer",
+                  "FinancialAccountType",
+                  "GLAccount",
+                  "PostingDate",
+                  "NetDueDate",
+                  "ClearingDate",
+                  "ClearingIsReversed",
+                  "IsOpenItemManaged",
+                  "DebitCreditCode",
+                  "IsCleared",
+                  "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "AccountingDocumentType",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
+                  "SpecialGLCode",
+                  "AssignmentReference",
+                  "Reference1IDByBusinessPartner",
+                  "DocumentReferenceID"
+                ],
+                "order_by": [
+                  "CompanyCode",
+                  "Ledger",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
+                ],
+                "rationale": "Read exact subledger_payment_documents FI tuples.",
+                "tuple_filters": [
+                  {
+                    "fields": [
+                      "CompanyCode",
+                      "Ledger",
+                      "FiscalYear",
+                      "AccountingDocument"
+                    ],
+                    "values": "{{steps.prepare_cash_scope.output.fi_document_tuples}}",
+                    "chunk_size": 20
+                  }
+                ]
+              },
+              {
+                "step_id": "directly_cleared_invoices",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "Ledger",
+                  "FiscalYear",
+                  "FiscalPeriod",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "Customer",
+                  "FinancialAccountType",
+                  "GLAccount",
+                  "PostingDate",
+                  "NetDueDate",
+                  "ClearingDate",
+                  "ClearingIsReversed",
+                  "IsOpenItemManaged",
+                  "DebitCreditCode",
+                  "IsCleared",
+                  "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "AccountingDocumentType",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
+                  "SpecialGLCode",
+                  "AssignmentReference",
+                  "Reference1IDByBusinessPartner",
+                  "DocumentReferenceID"
+                ],
+                "order_by": [
+                  "CompanyCode",
+                  "Ledger",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
+                ],
+                "rationale": "Read exact directly_cleared_invoices FI tuples.",
+                "filter_from_previous": [
+                  {
+                    "field": "CompanyCode",
+                    "source_step_id": "subledger_payment_documents",
+                    "source_field": "CompanyCode"
+                  },
+                  {
+                    "field": "Ledger",
+                    "source_step_id": "subledger_payment_documents",
+                    "source_field": "Ledger"
+                  },
+                  {
+                    "field": "ClearingDocFiscalYear",
+                    "source_step_id": "subledger_payment_documents",
+                    "source_field": "FiscalYear"
+                  },
+                  {
+                    "field": "ClearingAccountingDocument",
+                    "source_step_id": "subledger_payment_documents",
+                    "source_field": "AccountingDocument"
+                  }
+                ]
+              },
+              {
+                "step_id": "subsequent_clearing_documents",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "Ledger",
+                  "FiscalYear",
+                  "FiscalPeriod",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "Customer",
+                  "FinancialAccountType",
+                  "GLAccount",
+                  "PostingDate",
+                  "NetDueDate",
+                  "ClearingDate",
+                  "ClearingIsReversed",
+                  "IsOpenItemManaged",
+                  "DebitCreditCode",
+                  "IsCleared",
+                  "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "AccountingDocumentType",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
+                  "SpecialGLCode",
+                  "AssignmentReference",
+                  "Reference1IDByBusinessPartner",
+                  "DocumentReferenceID"
+                ],
+                "order_by": [
+                  "CompanyCode",
+                  "Ledger",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
+                ],
+                "rationale": "Read exact subsequent_clearing_documents FI tuples.",
+                "filter_from_previous": [
+                  {
+                    "field": "CompanyCode",
+                    "source_step_id": "subledger_payment_documents",
+                    "source_field": "CompanyCode"
+                  },
+                  {
+                    "field": "Ledger",
+                    "source_step_id": "subledger_payment_documents",
+                    "source_field": "Ledger"
+                  },
+                  {
+                    "field": "FiscalYear",
+                    "source_step_id": "subledger_payment_documents",
+                    "source_field": "ClearingDocFiscalYear"
+                  },
+                  {
+                    "field": "AccountingDocument",
+                    "source_step_id": "subledger_payment_documents",
+                    "source_field": "ClearingAccountingDocument"
+                  }
+                ]
+              },
+              {
+                "step_id": "subsequently_cleared_invoices",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "Ledger",
+                  "FiscalYear",
+                  "FiscalPeriod",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "Customer",
+                  "FinancialAccountType",
+                  "GLAccount",
+                  "PostingDate",
+                  "NetDueDate",
+                  "ClearingDate",
+                  "ClearingIsReversed",
+                  "IsOpenItemManaged",
+                  "DebitCreditCode",
+                  "IsCleared",
+                  "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "AccountingDocumentType",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
+                  "SpecialGLCode",
+                  "AssignmentReference",
+                  "Reference1IDByBusinessPartner",
+                  "DocumentReferenceID"
+                ],
+                "order_by": [
+                  "CompanyCode",
+                  "Ledger",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
+                ],
+                "rationale": "Read exact subsequently_cleared_invoices FI tuples.",
+                "filter_from_previous": [
+                  {
+                    "field": "CompanyCode",
+                    "source_step_id": "subsequent_clearing_documents",
+                    "source_field": "CompanyCode"
+                  },
+                  {
+                    "field": "Ledger",
+                    "source_step_id": "subsequent_clearing_documents",
+                    "source_field": "Ledger"
+                  },
+                  {
+                    "field": "ClearingDocFiscalYear",
+                    "source_step_id": "subsequent_clearing_documents",
+                    "source_field": "FiscalYear"
+                  },
+                  {
+                    "field": "ClearingAccountingDocument",
+                    "source_step_id": "subsequent_clearing_documents",
+                    "source_field": "AccountingDocument"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Expand customer subledger payment, clearing, and invoice evidence through exact composite FI keys."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "ar-cash-application",
+          "run_input": {
+            "company_code": "{{input.company_code}}",
+            "date_from": "{{input.date_from}}",
+            "date_to": "{{input.date_to}}",
+            "business_date": "{{input.business_date}}"
+          },
+          "evidence": {
+            "leading_ledger": "{{steps.read_leading_ledger.output}}",
+            "ledger_scope": "{{steps.resolve_fi_ledger.output}}",
+            "bank_receipts": "{{steps.read_bank_receipts.output}}",
+            "cash_scope": "{{steps.prepare_cash_scope.output}}",
+            "cash_application_fi": "{{steps.read_cash_application_fi.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "source_receipt_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "来源来款数",
+            "en": "Source receipt count"
+          }
+        },
+        "materialized_receipt_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "已核对来款数",
+            "en": "Materialized receipt count"
+          }
+        },
+        "unresolved_receipt_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "未解决来款数",
+            "en": "Unresolved receipt count"
+          }
+        },
+        "confirmed_receipt_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "已确认关联来款数",
+            "en": "Confirmed receipts"
+          }
+        },
+        "attention_receipt_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "需处理来款数",
+            "en": "Receipts requiring attention"
+          }
+        },
+        "inconclusive_receipt_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "title": {
+            "zh": "无法确认来款数",
+            "en": "Inconclusive receipts"
+          }
+        },
+        "receipt_search_status": {
+          "type": "string",
+          "title": {
+            "zh": "来款检索状态",
+            "en": "Receipt search status"
+          },
+          "enum": [
+            "found",
+            "not_found",
+            "partial",
+            "unavailable"
+          ],
+          "x-sapba-display": {
+            "format": "enum",
+            "labels": {
+              "found": {
+                "zh": "已找到",
+                "en": "Found"
+              },
+              "not_found": {
+                "zh": "未找到",
+                "en": "Not found"
+              },
+              "partial": {
+                "zh": "结果不完整",
+                "en": "Partial"
+              },
+              "unavailable": {
+                "zh": "数据源不可用",
+                "en": "Unavailable"
+              }
+            }
+          }
+        },
+        "cash_application_status": {
+          "type": "string",
+          "title": {
+            "zh": "来款核销状态",
+            "en": "Cash application status"
+          },
+          "enum": [
+            "confirmed",
+            "pending",
+            "candidate",
+            "ambiguous",
+            "not_found",
+            "not_assessed",
+            "unknown"
+          ],
+          "x-sapba-display": {
+            "format": "enum",
+            "labels": {
+              "confirmed": {
+                "zh": "已由SAP关系确认",
+                "en": "Confirmed"
+              },
+              "pending": {
+                "zh": "待处理",
+                "en": "Pending"
+              },
+              "candidate": {
+                "zh": "候选匹配",
+                "en": "Candidate"
+              },
+              "ambiguous": {
+                "zh": "关系不明确",
+                "en": "Ambiguous"
+              },
+              "not_found": {
+                "zh": "未找到关联",
+                "en": "Not found"
+              },
+              "not_assessed": {
+                "zh": "未评估",
+                "en": "Not assessed"
+              },
+              "unknown": {
+                "zh": "无法确认",
+                "en": "Unknown"
+              }
+            }
+          }
+        },
+        "receipt_results": {
+          "type": "array",
+          "title": {
+            "zh": "逐笔来款核对结果",
+            "en": "Receipt results"
+          },
+          "items": {
+            "type": "object"
+          }
+        },
+        "restricted_detail_artifact": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "title": {
+            "zh": "受限银行明细",
+            "en": "Restricted bank details"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务证据完整性",
+            "en": "Evidence completeness"
+          }
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          },
+          "enum": [
+            "normal",
+            "attention",
+            "inconclusive"
+          ],
+          "x-sapba-display": {
+            "format": "enum",
+            "labels": {
+              "normal": {
+                "zh": "正常",
+                "en": "Normal"
+              },
+              "attention": {
+                "zh": "需处理",
+                "en": "Attention"
+              },
+              "inconclusive": {
+                "zh": "无法确认",
+                "en": "Inconclusive"
+              }
+            }
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "source_receipt_count",
+        "materialized_receipt_count",
+        "unresolved_receipt_count",
+        "confirmed_receipt_count",
+        "attention_receipt_count",
+        "inconclusive_receipt_count",
+        "receipt_search_status",
+        "cash_application_status",
+        "receipt_results",
+        "restricted_detail_artifact",
+        "source_complete",
+        "evidence_complete",
+        "business_status",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "source_receipt_count": "{{steps.evaluate_business_result.output.workflow_output.source_receipt_count}}",
+      "materialized_receipt_count": "{{steps.evaluate_business_result.output.workflow_output.materialized_receipt_count}}",
+      "unresolved_receipt_count": "{{steps.evaluate_business_result.output.workflow_output.unresolved_receipt_count}}",
+      "confirmed_receipt_count": "{{steps.evaluate_business_result.output.workflow_output.confirmed_receipt_count}}",
+      "attention_receipt_count": "{{steps.evaluate_business_result.output.workflow_output.attention_receipt_count}}",
+      "inconclusive_receipt_count": "{{steps.evaluate_business_result.output.workflow_output.inconclusive_receipt_count}}",
+      "receipt_search_status": "{{steps.evaluate_business_result.output.workflow_output.receipt_search_status}}",
+      "cash_application_status": "{{steps.evaluate_business_result.output.workflow_output.cash_application_status}}",
+      "receipt_results": "{{steps.evaluate_business_result.output.workflow_output.receipt_results}}",
+      "restricted_detail_artifact": "{{steps.evaluate_business_result.output.workflow_output.restricted_detail_artifact}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.evidence_complete}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "company_code",
+        "statement_id",
+        "statement_item"
+      ],
+      "facts": [
+        "value_date",
+        "amount",
+        "currency",
+        "posting_status",
+        "reversal_status",
+        "subledger_document",
+        "fiscal_year",
+        "customer",
+        "cash_application_status",
+        "business_status"
+      ],
+      "metrics": [
+        "source_receipt_count",
+        "materialized_receipt_count",
+        "confirmed_receipt_count",
+        "attention_receipt_count",
+        "inconclusive_receipt_count"
+      ],
+      "requiredLimitations": [
+        "fi_clearing_is_not_bank_settlement"
+      ],
+      "decimalFields": ["amount"],
+      "decimalMetricIds": [],
+      "currencyFields": ["currency"],
+      "unitFields": [],
+      "dateFields": ["value_date"],
+      "inputDefaults": {},
+      "constantDefaults": {},
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {"amount": "currency"},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "fi_clearing_is_not_bank_settlement": [
+          "FI clearing is not independent bank settlement evidence",
+          "FI清账不是独立银行到账证据"
+        ]
+      },
+      "summaryRecord": false,
+      "zeroFactWhenMetricZero": {},
+      "blockingLimitations": [],
+      "ignoredNoticeKeywords": [],
+      "recordScope": "receipt_results",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "Business status is evaluated per bank receipt and then aggregated conservatively.",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "NOT_TESTED",
+    "testedAt": "2026-09-04T00:00:00+08:00",
+    "evidenceScope": "bounded",
+    "providers": [
+      "embedded-sap-odata",
+      "sapskillhub"
+    ],
+    "summary": {
+      "zh": "Agent契约和自动化测试已建立；银行来款、FI关系及受限制品页面仍需完成三级真机验收。",
+      "en": "The Agent contract and automated tests are in place; bank receipt, FI relationship, and restricted-artifact UI paths still require three-stage live acceptance."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": false,
+    "acceptanceMode": "three_stage",
+    "freeQueryComparison": "NOT_TESTED",
+    "fixedAgentComparison": "NOT_TESTED",
+    "blockingLimitations": [
+      "three_stage_live_acceptance_pending",
+      "restricted_artifact_ui_validation_pending"
+    ]
+  }
+}

@@ -2330,6 +2330,20 @@ button:disabled {
 }
 
 .business-result-card .run-table-wrap,
+.restricted-artifact-panel {
+  margin-top: 1.25rem;
+}
+
+.restricted-artifact-panel {
+  padding: 1rem;
+  border: 1px solid #d9b86c;
+  border-radius: 0.75rem;
+  background: #fffaf0;
+}
+
+.restricted-artifact-panel > p {
+  color: var(--color-text-muted);
+}
 .business-next-actions {
   margin-top: 20px;
 }

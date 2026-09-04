@@ -70,6 +70,29 @@ def _rows(inputs: JsonObject, *step_ids: str) -> list[JsonObject]:
     return found
 
 
+def _failed_filter_values(inputs: JsonObject, *step_ids: str) -> set[str]:
+    wanted = set(step_ids)
+    failed: set[str] = set()
+
+    def visit(value: Any, current_step: str = "") -> None:
+        if isinstance(value, dict):
+            step = str(value.get("step_id") or current_step)
+            if not wanted or step in wanted:
+                for item in value.get("failed_filter_values") or []:
+                    if isinstance(item, list):
+                        failed.update(str(child).strip() for child in item if str(child).strip())
+                    elif str(item).strip():
+                        failed.add(str(item).strip())
+            for key, child in value.items():
+                visit(child, str(key) if str(key) in wanted else step)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, current_step)
+
+    visit(inputs.get("evidence"))
+    return failed
+
+
 def _optional_rows(inputs: JsonObject, *step_ids: str) -> list[JsonObject]:
     """Read advisory context without adding it to required evidence completeness."""
 
@@ -225,6 +248,15 @@ def _strict_decimal(value: Any) -> Decimal | None:
     except (InvalidOperation, ValueError):
         return None
     return parsed if parsed.is_finite() else None
+
+
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _unit_key(value: Any) -> str:
@@ -1934,7 +1966,9 @@ def _ap_scope_results(
     return results
 
 
-def _ar_collection(inputs: JsonObject) -> JsonObject:
+def _ar_collection_legacy(inputs: JsonObject) -> JsonObject:
+    """Keep the still-active 0.1.0 package executable until 1.0.0 is accepted."""
+
     items = [
         row
         for row in _rows(inputs, "customer_items", "clearing_documents")
@@ -1943,7 +1977,7 @@ def _ar_collection(inputs: JsonObject) -> JsonObject:
     ]
     cutoff = _date((inputs.get("run_input") or {}).get("as_of"))
     dunning_master = _rows(inputs, "customer_dunning")
-    open_items = []
+    open_items: list[JsonObject] = []
     records: list[JsonObject] = []
     dunned_items = 0
     historical_dunning_unknown = 0
@@ -1952,65 +1986,63 @@ def _ar_collection(inputs: JsonObject) -> JsonObject:
         clearing_date = _date(row.get("ClearingDate"))
         if cutoff is not None and posting_date is not None and posting_date > cutoff:
             continue
-        if cutoff is None or clearing_date is None or clearing_date > cutoff:
-            open_items.append(row)
-            dunning_level = _text(row, "DunningLevel") or "0"
-            last_dunning_date = _date(row.get("LastDunningDate"))
-            if (
-                dunning_level not in {"", "0"}
-                and last_dunning_date is not None
-                and cutoff is not None
-                and last_dunning_date <= cutoff
-            ):
-                dunning_status = "confirmed_before_cutoff"
-                dunned_items += 1
-            elif last_dunning_date is not None and cutoff is not None and last_dunning_date > cutoff:
-                dunning_status = "historical_status_unknown"
-                historical_dunning_unknown += 1
-            else:
-                # The current line-item snapshot cannot prove that a blank
-                # last-dunning date also was blank at the historical cutoff.
-                # Without complete dunning-run history, fail closed.
-                dunning_status = "historical_status_unknown"
-                historical_dunning_unknown += 1
-            records.append(
-                {
-                    "company_code": _text(row, "CompanyCode"),
-                    "fiscal_year": _text(row, "FiscalYear"),
-                    "accounting_document": _text(row, "AccountingDocument"),
-                    "accounting_document_item": _text(row, "AccountingDocumentItem"),
-                    "ledger": _text(row, "Ledger"),
-                    "customer": _text(row, "Customer"),
-                    "posting_date": posting_date.isoformat() if posting_date else "",
-                    "due_date": _date_text(row, "NetDueDate", "DueCalculationBaseDate"),
-                    "amount": _text(row, "AmountInTransactionCurrency"),
-                    "currency": _text(row, "TransactionCurrency"),
-                    "as_of_status": "open_subsequently_cleared" if clearing_date else "open",
-                    "clearing_date": clearing_date.isoformat() if clearing_date else "",
-                    "clearing_document": _text(row, "ClearingAccountingDocument"),
-                    "dunning_level": dunning_level,
-                    "last_dunning_date": last_dunning_date.isoformat() if last_dunning_date else "",
-                    "dunning_blocking_reason": _text(row, "DunningBlockingReason"),
-                    "dunning_as_of_status": dunning_status,
-                }
-            )
-    current_master_has_only_later_state = any(
+        if cutoff is not None and clearing_date is not None and clearing_date <= cutoff:
+            continue
+        open_items.append(row)
+        dunning_level = _text(row, "DunningLevel") or "0"
+        last_dunning_date = _date(row.get("LastDunningDate"))
+        if (
+            dunning_level not in {"", "0"}
+            and last_dunning_date is not None
+            and cutoff is not None
+            and last_dunning_date <= cutoff
+        ):
+            dunning_status = "confirmed_before_cutoff"
+            dunned_items += 1
+        else:
+            dunning_status = "historical_status_unknown"
+            historical_dunning_unknown += 1
+        records.append(
+            {
+                "company_code": _text(row, "CompanyCode"),
+                "fiscal_year": _text(row, "FiscalYear"),
+                "accounting_document": _text(row, "AccountingDocument"),
+                "accounting_document_item": _text(row, "AccountingDocumentItem"),
+                "ledger": _text(row, "Ledger"),
+                "customer": _text(row, "Customer"),
+                "posting_date": posting_date.isoformat() if posting_date else "",
+                "due_date": _date_text(row, "NetDueDate", "DueCalculationBaseDate"),
+                "amount": _text(row, "AmountInTransactionCurrency"),
+                "currency": _text(row, "TransactionCurrency"),
+                "as_of_status": "open_subsequently_cleared" if clearing_date else "open",
+                "clearing_date": clearing_date.isoformat() if clearing_date else "",
+                "clearing_document": _text(row, "ClearingAccountingDocument"),
+                "dunning_level": dunning_level,
+                "last_dunning_date": last_dunning_date.isoformat() if last_dunning_date else "",
+                "dunning_blocking_reason": _text(row, "DunningBlockingReason"),
+                "dunning_as_of_status": dunning_status,
+            }
+        )
+    current_master_is_later = any(
         cutoff is not None
         and (last_dunned := _date(row.get("LastDunnedOn"))) is not None
         and last_dunned > cutoff
         for row in dunning_master
     )
     gaps = _gaps(inputs)
-    if current_master_has_only_later_state or historical_dunning_unknown:
+    if current_master_is_later or historical_dunning_unknown:
         gaps = sorted({*gaps, "historical_dunning_evidence"})
     return _result(
         inputs,
-        business_status="inconclusive" if gaps else ("attention" if open_items else "complete"),
+        business_status="inconclusive" if gaps else "attention" if open_items else "complete",
         headline_zh=f"发现 {len(open_items)} 条客户未清应收",
         headline_en=f"Found {len(open_items)} customer open receivable item(s)",
-        overview_zh="已按清账日期重建截止日未清状态，并区分逐项催款日期证据与当前客户催款主数据；当前主数据不能替代历史快照。",
-        overview_en="As-of open status was reconstructed from clearing dates, with item-level dunning dates separated from the current customer dunning master; current master data is not a historical snapshot.",
-        stages=[_stage("receivables", "客户应收", "Customer receivables", len(items)), _stage("customer_dunning", "客户催款主数据", "Customer dunning master", len(dunning_master))],
+        overview_zh="已按清账日期重建截止日未清状态，并区分逐项催款日期证据与当前客户催款主数据。",
+        overview_en="As-of open status was reconstructed from clearing dates; item-level dunning dates remain separate from the current customer dunning master.",
+        stages=[
+            _stage("receivables", "客户应收", "Customer receivables", len(items)),
+            _stage("customer_dunning", "客户催款主数据", "Customer dunning master", len(dunning_master)),
+        ],
         metrics=[
             {"id": "open_items", "value": len(open_items)},
             {"id": "dunned_items", "value": dunned_items},
@@ -2018,9 +2050,555 @@ def _ar_collection(inputs: JsonObject) -> JsonObject:
         ],
         records=records,
         gaps=gaps,
-        actions_zh=["按到期日和金额安排催收；对缺少截止日历史催款快照的项目复核催款日志。"],
-        actions_en=["Prioritize collection by due date and amount; review the dunning log where an as-of historical snapshot is unavailable."],
+        actions_zh=["按到期日和金额安排催收；缺少历史催款快照时复核催款日志。"],
+        actions_en=["Prioritize collection by due date and amount; review dunning logs when historical snapshots are unavailable."],
     )
+
+
+def _ar_collection_v1(inputs: JsonObject) -> JsonObject:
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    requested_customers = run_input.get("customers")
+    if not isinstance(requested_customers, list):
+        requested_customers = [run_input.get("customer")] if run_input.get("customer") else []
+    customers = [str(item).strip() for item in requested_customers]
+    cutoff = _date(run_input.get("as_of"))
+    business_date = _date(run_input.get("business_date"))
+    dunning_area = str(run_input.get("dunning_area") or "").strip()
+    raw_items = [
+        row for row in _rows(inputs, "customer_items")
+        if _text(row, "FinancialAccountType") == "D" and _truthy(row.get("IsOpenItemManaged"))
+    ]
+    clearing_documents = _rows(inputs, "clearing_document_evidence")
+    clearing_reversals = _rows(inputs, "clearing_reversal_documents")
+    dunning_master = _rows(inputs, "customer_dunning")
+    source_complete = _source_complete(inputs)
+    conflicts: set[tuple[str, str, str, str, str]] = set()
+    canonical: dict[tuple[str, str, str, str, str], JsonObject] = {}
+    for row in raw_items:
+        key = tuple(_text(row, field) for field in (
+            "CompanyCode", "Ledger", "FiscalYear", "AccountingDocument", "AccountingDocumentItem"
+        ))
+        if not all(key):
+            conflicts.add(key)
+            continue
+        existing = canonical.get(key)
+        if existing is not None and existing != row:
+            conflicts.add(key)
+        else:
+            canonical[key] = row
+
+    worklist: list[JsonObject] = []
+    customer_results: list[JsonObject] = []
+    global_gaps = set(_gaps(inputs))
+    ledger_scope = (inputs.get("evidence") or {}).get("ledger_scope") if isinstance(inputs.get("evidence"), dict) else None
+    if isinstance(ledger_scope, dict):
+        global_gaps.update(str(item) for item in ledger_scope.get("evidence_gaps") or [])
+    if conflicts:
+        global_gaps.add("fi_business_key_conflict")
+    failed_customers = _failed_filter_values(inputs, "customer_items", "customer_dunning")
+
+    def document_rows(
+        rows: list[JsonObject],
+        *,
+        company_code: str,
+        ledger: str,
+        fiscal_year: str,
+        accounting_document: str,
+    ) -> list[JsonObject]:
+        return [
+            row
+            for row in rows
+            if _text(row, "CompanyCode") == company_code
+            and _text(row, "Ledger") == ledger
+            and _text(row, "FiscalYear") == fiscal_year
+            and _text(row, "AccountingDocument") == accounting_document
+        ]
+
+    for customer in customers:
+        scoped = [row for row in canonical.values() if _text(row, "Customer") == customer]
+        master = [
+            row for row in dunning_master
+            if _text(row, "Customer") == customer
+            and (not dunning_area or _text(row, "DunningArea") == dunning_area)
+        ]
+        open_rows: list[JsonObject] = []
+        customer_gaps = set(global_gaps)
+        if customer in failed_customers:
+            customer_gaps.add("customer_query_chunk_failed")
+        currency_totals: dict[str, Decimal] = {}
+        ordinary_overdue: dict[str, Decimal] = {}
+        credit_balances: dict[str, Decimal] = {}
+        special_gl: list[JsonObject] = []
+        for row in scoped:
+            posting = _date(row.get("PostingDate"))
+            if cutoff is None or posting is None:
+                customer_gaps.add("posting_or_cutoff_date_missing")
+                continue
+            if posting > cutoff:
+                continue
+            clearing = _date(row.get("ClearingDate"))
+            clearing_year = _text(row, "ClearingDocFiscalYear")
+            clearing_document = _text(row, "ClearingAccountingDocument")
+            clearing_rows = document_rows(
+                clearing_documents,
+                company_code=_text(row, "CompanyCode"),
+                ledger=_text(row, "Ledger"),
+                fiscal_year=clearing_year,
+                accounting_document=clearing_document,
+            ) if clearing_year and clearing_document else []
+            reversal_refs = {
+                (_text(item, "ReverseDocumentFiscalYear"), _text(item, "ReverseDocument"))
+                for item in clearing_rows
+                if _text(item, "ReverseDocumentFiscalYear")
+                and _text(item, "ReverseDocument")
+            }
+            clearing_reversed = (
+                _truthy(row.get("ClearingIsReversed"))
+                or any(_truthy(item.get("IsReversed")) for item in clearing_rows)
+                or bool(reversal_refs)
+            )
+            reversal_date: date | None = None
+            historical_open_status = "open"
+            if clearing is not None and clearing <= cutoff:
+                if not clearing_reversed:
+                    continue
+                if len(reversal_refs) != 1:
+                    customer_gaps.add("historical_clearing_reversal_date_missing")
+                    continue
+                reversal_year, reversal_document = next(iter(reversal_refs))
+                reversal_rows = document_rows(
+                    clearing_reversals,
+                    company_code=_text(row, "CompanyCode"),
+                    ledger=_text(row, "Ledger"),
+                    fiscal_year=reversal_year,
+                    accounting_document=reversal_document,
+                )
+                reversal_dates = {
+                    parsed
+                    for item in reversal_rows
+                    if (parsed := _date(item.get("PostingDate"))) is not None
+                }
+                if len(reversal_dates) != 1:
+                    customer_gaps.add("historical_clearing_reversal_date_missing")
+                    continue
+                reversal_date = next(iter(reversal_dates))
+                if reversal_date > cutoff:
+                    # Cleared at the requested cutoff; it reopened later.
+                    continue
+                historical_open_status = "reopened_by_reversal"
+            amount = _strict_decimal(row.get("AmountInTransactionCurrency"))
+            currency = _text(row, "TransactionCurrency")
+            if amount is None or not currency:
+                customer_gaps.add("amount_or_currency_missing")
+                continue
+            due = _date(row.get("NetDueDate") or row.get("DueCalculationBaseDate"))
+            overdue_days = max(0, (cutoff - due).days) if due else None
+            if due is None:
+                aging_bucket = "unknown"
+                customer_gaps.add("due_date_missing")
+            elif overdue_days == 0:
+                aging_bucket = "not_due"
+            elif overdue_days <= 30:
+                aging_bucket = "1_30"
+            elif overdue_days <= 60:
+                aging_bucket = "31_60"
+            elif overdue_days <= 90:
+                aging_bucket = "61_90"
+            else:
+                aging_bucket = "over_90"
+            debit_credit = _text(row, "DebitCreditCode").upper()
+            special_code = _text(row, "SpecialGLCode")
+            dunning_level = _text(row, "DunningLevel") or "0"
+            last_dunning = _date(row.get("LastDunningDate"))
+            historical = bool(business_date and cutoff < business_date)
+            if historical and (last_dunning is None or last_dunning > cutoff):
+                dunning_status = "historical_status_unknown"
+                customer_gaps.add("historical_dunning_evidence")
+            elif dunning_level not in {"", "0"} and last_dunning and last_dunning <= cutoff:
+                dunning_status = "confirmed_before_cutoff"
+            else:
+                dunning_status = "not_dunned"
+            record = {
+                "company_code": _text(row, "CompanyCode"),
+                "ledger": _text(row, "Ledger"),
+                "fiscal_year": _text(row, "FiscalYear"),
+                "accounting_document": _text(row, "AccountingDocument"),
+                "accounting_document_item": _text(row, "AccountingDocumentItem"),
+                "customer": customer,
+                "customer_result_status": "found" if scoped or master else "not_found",
+                "posting_date": posting.isoformat(),
+                "due_date": due.isoformat() if due else None,
+                "overdue_days": overdue_days,
+                "aging_bucket": aging_bucket,
+                "amount": format(amount, "f"),
+                "currency": currency,
+                "debit_credit_indicator": debit_credit,
+                "special_gl_code": special_code or None,
+                "clearing_date": clearing.isoformat() if clearing else None,
+                "clearing_document": clearing_document or None,
+                "clearing_reversal_date": reversal_date.isoformat() if reversal_date else None,
+                "historical_open_status": historical_open_status,
+                "dunning_level": dunning_level,
+                "last_dunning_date": last_dunning.isoformat() if last_dunning else None,
+                "dunning_blocking_reason": _text(row, "DunningBlockingReason") or None,
+                "dunning_as_of_status": dunning_status,
+            }
+            open_rows.append(record)
+            worklist.append(record)
+            currency_totals[currency] = currency_totals.get(currency, Decimal(0)) + amount
+            if special_code:
+                special_gl.append(record)
+            elif debit_credit in {"H", "C", "CREDIT"} or amount < 0:
+                credit_balances[currency] = credit_balances.get(currency, Decimal(0)) + amount
+            elif overdue_days and overdue_days > 0:
+                ordinary_overdue[currency] = ordinary_overdue.get(currency, Decimal(0)) + amount
+        # Blank is a real dunning-area key in SAP, not a wildcard.  Retain it
+        # while checking cardinality so a blank and a non-blank area cannot be
+        # silently collapsed into one customer relationship.
+        master_areas = {_text(row, "DunningArea") for row in master}
+        if not dunning_area and len(master_areas) > 1:
+            customer_gaps.add("dunning_area_ambiguous")
+        blocked = any(_text(row, "DunningBlock") for row in master) or any(
+            record.get("dunning_blocking_reason") for record in open_rows
+        )
+        attention = bool(ordinary_overdue or special_gl or blocked)
+        status = "inconclusive" if customer_gaps or not source_complete else "attention" if attention else "normal"
+        customer_results.append(
+            {
+                "customer": customer,
+                "customer_result_status": (
+                    "found" if scoped or master else "no_open_items_or_master_data"
+                ),
+                "business_status": status,
+                "open_item_count": len(open_rows),
+                "ordinary_overdue_amounts": {key: format(value, "f") for key, value in sorted(ordinary_overdue.items())},
+                "credit_balance_amounts": {key: format(value, "f") for key, value in sorted(credit_balances.items())},
+                "special_gl_item_count": len(special_gl),
+                "dunning_blocked": blocked,
+                "dunning_areas": sorted(master_areas),
+                "source_complete": source_complete,
+                "evidence_complete": source_complete and not customer_gaps,
+                "evidence_gaps": sorted(customer_gaps),
+                "items": open_rows,
+            }
+        )
+    order = {"inconclusive": 0, "attention": 1, "normal": 2}
+    worklist.sort(
+        key=lambda row: (
+            0 if row.get("dunning_blocking_reason") else 1,
+            -int(row.get("overdue_days") or 0),
+            -(_safe_int(row.get("dunning_level")) or 0),
+            str(row.get("currency") or ""),
+            -abs(_strict_decimal(row.get("amount")) or Decimal(0)),
+            str(row.get("fiscal_year") or ""),
+            str(row.get("accounting_document") or ""),
+            str(row.get("accounting_document_item") or ""),
+        )
+    )
+    customer_results.sort(key=lambda item: (order[item["business_status"]], item["customer"]))
+    counts = {status: sum(item["business_status"] == status for item in customer_results) for status in order}
+    evidence_complete = source_complete and not global_gaps and all(item["evidence_complete"] for item in customer_results)
+    business_status = "inconclusive" if counts["inconclusive"] else "attention" if counts["attention"] else "normal"
+    result = _result(
+        inputs,
+        business_status=business_status,
+        headline_zh=f"已检查 {len(customer_results)} 个客户，其中 {counts['attention']} 个需要催收处理",
+        headline_en=f"Reviewed {len(customer_results)} customer(s); {counts['attention']} require collection follow-up",
+        overview_zh="按截止日重建普通应收、贷方余额和特殊总账项目；当前催收主数据不冒充历史快照。",
+        overview_en="Reconstructed ordinary receivables, credit balances, and special G/L items as of the cutoff; current dunning master data is not treated as a historical snapshot.",
+        stages=[
+            _stage("receivables", "客户应收", "Customer receivables", len(raw_items), state="confirmed" if source_complete else "unknown"),
+            _stage("dunning", "催收状态", "Dunning status", len(dunning_master), state="confirmed" if source_complete else "unknown"),
+            _stage("worklist", "催收工作清单", "Collection worklist", len(worklist), state="confirmed" if evidence_complete else "unknown"),
+        ],
+        metrics=[
+            {"id": "requested_customer_count", "value": len(customers)},
+            {"id": "normal_customer_count", "value": counts["normal"]},
+            {"id": "attention_customer_count", "value": counts["attention"]},
+            {"id": "inconclusive_customer_count", "value": counts["inconclusive"]},
+        ],
+        records=worklist,
+        allow_empty_records=True,
+        gaps=sorted(global_gaps),
+        actions_zh=["优先处理冻结、超期天数最长和已确认催收级别最高的项目；特殊总账项目单独人工复核。"],
+        actions_en=["Prioritize blocked items, the longest overdue items, and the highest confirmed dunning levels; review special G/L items separately."],
+        source_complete_override=source_complete,
+        preserve_business_status_on_gap=True,
+    )
+    extras = {
+        "requested_customer_count": len(customers),
+        "result_customer_count": len(customer_results),
+        "normal_customer_count": counts["normal"],
+        "attention_customer_count": counts["attention"],
+        "inconclusive_customer_count": counts["inconclusive"],
+        "customer_results": customer_results,
+        "worklist_artifact": {"name": "ar-collection-worklist.csv", "row_count": len(worklist)},
+        "evidence_complete": evidence_complete,
+    }
+    result.update(extras)
+    result["rule_id"] = "ar_collection_deterministic_v2"
+    result["business_complete"] = evidence_complete
+    result["business_report"]["customer_results"] = customer_results
+    result["business_report"]["worklist"] = worklist
+    result["business_report"]["action_tables"] = [
+        {
+            "id": "ar_collection_worklist",
+            "title": {"zh": "催收工作清单", "en": "Collection worklist"},
+            "artifact_name": "ar-collection-worklist.csv",
+            "columns": [
+                {"key": "customer", "label": {"zh": "客户", "en": "Customer"}},
+                {"key": "accounting_document", "label": {"zh": "财务凭证", "en": "Accounting document"}},
+                {"key": "accounting_document_item", "label": {"zh": "行项目", "en": "Item"}},
+                {"key": "due_date", "label": {"zh": "到期日", "en": "Due date"}},
+                {"key": "overdue_days", "label": {"zh": "逾期天数", "en": "Overdue days"}},
+                {"key": "amount", "label": {"zh": "金额", "en": "Amount"}},
+                {"key": "currency", "label": {"zh": "币种", "en": "Currency"}},
+                {"key": "dunning_level", "label": {"zh": "催收级别", "en": "Dunning level"}},
+                {"key": "dunning_blocking_reason", "label": {"zh": "催收冻结", "en": "Dunning block"}},
+                {"key": "special_gl_code", "label": {"zh": "特殊总账标识", "en": "Special G/L indicator"}},
+            ],
+            "rows": worklist,
+        }
+    ]
+    result["workflow_output"].update(extras)
+    result["workflow_output"]["business_report"] = result["business_report"]
+    for field in run_input:
+        result["workflow_output"].pop(str(field), None)
+    return result
+
+
+def _ar_collection(inputs: JsonObject) -> JsonObject:
+    run_input = inputs.get("run_input")
+    if isinstance(run_input, dict) and isinstance(run_input.get("customers"), list):
+        return _ar_collection_v1(inputs)
+    return _ar_collection_legacy(inputs)
+
+
+def _ar_cash_application(inputs: JsonObject) -> JsonObject:
+    evidence = inputs.get("evidence") if isinstance(inputs.get("evidence"), dict) else {}
+    bank_payloads = [
+        payload for name, payload in evidence.items()
+        if name.startswith("bank_receipts") and isinstance(payload, dict) and payload.get("status") != "skipped"
+    ]
+    bank = bank_payloads[0] if bank_payloads else {}
+    receipts = [dict(item) for item in bank.get("receipts") or [] if isinstance(item, dict)]
+    payment_rows = _rows(inputs, "subledger_payment_documents")
+    direct_invoice_rows = _rows(inputs, "directly_cleared_invoices")
+    subsequent_clearing_rows = _rows(inputs, "subsequent_clearing_documents")
+    subsequent_invoice_rows = _rows(inputs, "subsequently_cleared_invoices")
+    fi_rows = [*payment_rows, *direct_invoice_rows, *subsequent_clearing_rows, *subsequent_invoice_rows]
+    source_complete = bool(
+        bank.get("status") == "complete"
+        and isinstance(bank.get("completeness"), dict)
+        and bank["completeness"].get("source_complete") is True
+        and _source_complete(inputs)
+    )
+    gaps = set(_gaps(inputs))
+    cash_scope = evidence.get("cash_scope") if isinstance(evidence, dict) else None
+    if isinstance(cash_scope, dict):
+        gaps.update(str(item) for item in cash_scope.get("evidence_gaps") or [])
+    if bank.get("status") == "partial":
+        gaps.add("bank_receipt_source_partial")
+        receipts = []
+    key_map: dict[tuple[str, str, str, str, str], JsonObject] = {}
+    for row in fi_rows:
+        key = tuple(_text(row, field) for field in (
+            "CompanyCode", "Ledger", "FiscalYear", "AccountingDocument", "AccountingDocumentItem"
+        ))
+        existing = key_map.get(key)
+        if not all(key) or (existing is not None and existing != row):
+            gaps.add("fi_business_key_conflict")
+        else:
+            key_map[key] = row
+    results: list[JsonObject] = []
+    for receipt in receipts:
+        related = receipt.get("related_accounting_document") if isinstance(receipt.get("related_accounting_document"), dict) else {}
+        document = str(related.get("subledger_document") or "")
+        year = str(related.get("fiscal_year") or "")
+        active = receipt.get("posting_status") == "completed" and receipt.get("reversal_status") == "not_reversed"
+        company_code = str((inputs.get("run_input") or {}).get("company_code") or "")
+        ledger = str(cash_scope.get("ledger") or "") if isinstance(cash_scope, dict) else ""
+        matching = [row for row in payment_rows if _text(row, "CompanyCode") == company_code and _text(row, "Ledger") == ledger and _text(row, "AccountingDocument") == document and _text(row, "FiscalYear") == year]
+        customer_lines = [row for row in matching if _text(row, "FinancialAccountType") == "D" and _text(row, "Customer")]
+        customers = {_text(row, "Customer") for row in customer_lines}
+        special = [row for row in customer_lines if _text(row, "SpecialGLCode")]
+        ordinary = [row for row in customer_lines if not _text(row, "SpecialGLCode")]
+        direct_invoices = [
+            row for row in direct_invoice_rows
+            if _text(row, "ClearingAccountingDocument") == document
+            and _text(row, "ClearingDocFiscalYear") == year
+            and _text(row, "FinancialAccountType") == "D"
+            and not _text(row, "SpecialGLCode")
+        ]
+        later_refs = {
+            (_text(row, "ClearingDocFiscalYear"), _text(row, "ClearingAccountingDocument"))
+            for row in matching
+            if _text(row, "ClearingAccountingDocument")
+        }
+        relationship_ambiguous = any(not clearing_year for clearing_year, _clearing_doc in later_refs)
+        later_refs = {(clearing_year, clearing_doc) for clearing_year, clearing_doc in later_refs if clearing_year}
+        if (year, document) in later_refs:
+            relationship_ambiguous = True
+        later_documents = {
+            (_text(row, "FiscalYear"), _text(row, "AccountingDocument"))
+            for row in subsequent_clearing_rows
+            if _text(row, "CompanyCode") == company_code and _text(row, "Ledger") == ledger
+        }
+        if later_refs and not later_refs.issubset(later_documents):
+            relationship_ambiguous = True
+        multihop_invoices = [
+            row for row in subsequent_invoice_rows
+            if (_text(row, "ClearingDocFiscalYear"), _text(row, "ClearingAccountingDocument")) in later_refs
+            and _text(row, "FinancialAccountType") == "D"
+            and not _text(row, "SpecialGLCode")
+        ]
+        confirmed_invoices = [*direct_invoices, *multihop_invoices]
+        if customers and any(_text(row, "Customer") not in customers for row in confirmed_invoices):
+            relationship_ambiguous = True
+        if not active:
+            cash_status = "not_assessed"
+            business = "attention"
+            reversal_status = str(receipt.get("reversal_status") or "unknown")
+            posting_status = str(receipt.get("posting_status") or "unknown")
+            reason = (
+                reversal_status
+                if reversal_status != "not_reversed"
+                else posting_status
+                if posting_status != "completed"
+                else "not_completed"
+            )
+        elif not document or not year or not matching:
+            cash_status = "pending"
+            business = "attention" if source_complete else "inconclusive"
+            reason = "customer_subledger_document_missing"
+        elif len(customers) > 1 or relationship_ambiguous:
+            cash_status = "ambiguous"
+            business = "attention"
+            reason = "multiple_customers_in_payment_document" if len(customers) > 1 else "clearing_relationship_ambiguous"
+        elif not ordinary and special:
+            cash_status = "pending"
+            business = "attention"
+            reason = "special_gl_only"
+        elif confirmed_invoices:
+            cash_status = "confirmed"
+            business = "normal"
+            reason = "sap_clearing_relationship_confirmed"
+        else:
+            receipt_amount = abs(_strict_decimal(receipt.get("amount")) or Decimal(0))
+            currency = str(receipt.get("currency") or "")
+            candidate_rows = [
+                row for row in fi_rows
+                if _text(row, "FinancialAccountType") == "D"
+                and not _text(row, "SpecialGLCode")
+                and _text(row, "Customer") in customers
+                and not (
+                    _text(row, "AccountingDocument") == document
+                    and _text(row, "FiscalYear") == year
+                )
+                and _text(row, "TransactionCurrency") == currency
+                and abs(_strict_decimal(row.get("AmountInTransactionCurrency")) or Decimal(0)) == receipt_amount
+                and (_date(row.get("PostingDate")) or date.max) <= (_date(receipt.get("value_date")) or date.min)
+            ]
+            cash_status = "candidate" if len(candidate_rows) == 1 else "ambiguous" if len(candidate_rows) > 1 else "not_found"
+            business = "attention"
+            reason = "unique_amount_candidate" if len(candidate_rows) == 1 else "multiple_candidates" if candidate_rows else "no_relationship_or_candidate"
+        results.append(
+            {
+                "company_code": company_code,
+                "statement_id": receipt.get("statement_id"),
+                "statement_item": receipt.get("statement_item"),
+                "value_date": receipt.get("value_date"),
+                "amount": receipt.get("amount"),
+                "currency": receipt.get("currency"),
+                "posting_status": receipt.get("posting_status"),
+                "reversal_status": receipt.get("reversal_status"),
+                "subledger_document": document or None,
+                "fiscal_year": year or None,
+                "customer": next(iter(customers), None) if len(customers) == 1 else None,
+                "cash_application_status": cash_status,
+                "business_status": business,
+                "reason_code": reason,
+                "confirmed_invoice_count": len(confirmed_invoices),
+                "special_gl_item_count": len(special),
+            }
+        )
+    requested_scope = bank.get("requested_scope") if isinstance(bank.get("requested_scope"), dict) else {}
+    specified_reference = requested_scope.get("receipt_reference_supplied") is True
+    if not receipts and bank.get("status") == "complete":
+        receipt_search_status = "not_found"
+        business_status = "attention" if specified_reference else "normal"
+    elif bank.get("status") == "partial":
+        receipt_search_status = "partial"
+        business_status = "inconclusive"
+    elif not bank:
+        receipt_search_status = "unavailable"
+        business_status = "inconclusive"
+    else:
+        receipt_search_status = "found"
+        business_status = "inconclusive" if gaps or any(item["business_status"] == "inconclusive" for item in results) else "attention" if any(item["business_status"] == "attention" for item in results) else "normal"
+    statuses = {str(item["cash_application_status"]) for item in results}
+    # The aggregate status is an actionable precedence, not an assertion that
+    # heterogeneous receipt states make the FI relationship ambiguous.
+    # ``ambiguous`` is reserved for a receipt with conflicting customers,
+    # business keys, or more than one candidate relationship.
+    cash_status = next(
+        (
+            status
+            for status in (
+                "unknown",
+                "ambiguous",
+                "pending",
+                "candidate",
+                "not_found",
+                "not_assessed",
+                "confirmed",
+            )
+            if status in statuses
+        ),
+        "unknown" if business_status == "inconclusive" else "not_assessed",
+    )
+    evidence_complete = source_complete and not gaps
+    result = _result(
+        inputs,
+        business_status=business_status,
+        headline_zh=f"找到 {len(results)} 笔银行来款，其中 {sum(item['cash_application_status'] == 'confirmed' for item in results)} 笔已由SAP清账关系确认",
+        headline_en=f"Found {len(results)} bank receipt(s); {sum(item['cash_application_status'] == 'confirmed' for item in results)} are confirmed by SAP clearing relationships",
+        overview_zh="银行到账事实、客户子分类账和发票清账关系分开核验；候选匹配不会显示为已清账。",
+        overview_en="Bank-receipt facts, customer subledger evidence, and invoice clearing relationships are assessed separately; candidates are never shown as cleared.",
+        stages=[
+            _stage("bank", "银行来款", "Bank receipts", len(results), state="confirmed" if receipt_search_status in {"found", "not_found"} else "unknown"),
+            _stage("subledger", "客户子分类账", "Customer subledger", len(fi_rows), state="confirmed" if source_complete else "unknown"),
+            _stage("application", "来款与发票关系", "Receipt-to-invoice relationship", len(results), state="confirmed" if evidence_complete else "unknown"),
+        ],
+        records=results,
+        allow_empty_records=True,
+        gaps=sorted(gaps),
+        actions_zh=["对待处理、候选或关系不明确的来款，由应收岗位复核后在SAP中执行后续处理。"],
+        actions_en=["Have AR staff review pending, candidate, or ambiguous receipts before any subsequent SAP processing."],
+        source_complete_override=source_complete,
+        preserve_business_status_on_gap=True,
+    )
+    extras = {
+        "source_receipt_count": bank.get("completeness", {}).get("total_rows") if isinstance(bank.get("completeness"), dict) else None,
+        "materialized_receipt_count": len(results) if bank.get("status") == "complete" else None,
+        "unresolved_receipt_count": sum(item["cash_application_status"] not in {"confirmed"} for item in results) if bank.get("status") == "complete" else None,
+        "confirmed_receipt_count": sum(item["cash_application_status"] == "confirmed" for item in results) if bank.get("status") == "complete" else None,
+        "attention_receipt_count": sum(item["business_status"] == "attention" for item in results) if bank.get("status") == "complete" else None,
+        "inconclusive_receipt_count": sum(item["business_status"] == "inconclusive" for item in results) if bank.get("status") == "complete" else None,
+        "receipt_search_status": receipt_search_status,
+        "cash_application_status": cash_status,
+        "receipt_results": results,
+        "restricted_detail_artifact": bank.get("restricted_artifact_ref"),
+        "evidence_complete": evidence_complete,
+    }
+    result.update(extras)
+    result["rule_id"] = "ar_cash_application_deterministic_v1"
+    result["business_complete"] = evidence_complete
+    result["workflow_output"].update(extras)
+    result["workflow_output"]["business_report"] = result["business_report"]
+    for field in (inputs.get("run_input") or {}):
+        result["workflow_output"].pop(str(field), None)
+    return result
 
 
 def _grir(inputs: JsonObject) -> JsonObject:
@@ -7373,6 +7951,7 @@ def _internal_order_project_control(inputs: JsonObject) -> JsonObject:
 _EVALUATORS: dict[str, Callable[[JsonObject], JsonObject]] = {
     "ap-payment": _ap_payment,
     "ar-collection": _ar_collection,
+    "ar-cash-application": _ar_cash_application,
     "gr-ir-clearing": _grir,
     "month-end-closing": _month_end,
     "billing-block-diagnosis": _billing_block,

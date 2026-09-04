@@ -9,14 +9,15 @@ test("Astro React development runtime stays on supported Vite 7", () => {
   assert.match(packageJson.overrides?.vite ?? "", /^\^?7\./);
 });
 
-test("catalog discovers thirty-one deterministic agents and one platform assistant", () => {
+test("catalog discovers thirty-two deterministic agents and one platform assistant", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
-  assert.equal(records.length, 32);
+  assert.equal(records.length, 33);
   assert.deepEqual(
     records.map((agent) => `${agent.module}/${agent.slug}`),
     [
       "Common/role-agent-matching",
       "FI/ap-payment",
+      "FI/ar-cash-application",
       "FI/ar-collection",
       "FI/gr-ir-clearing",
       "FI/month-end-closing",

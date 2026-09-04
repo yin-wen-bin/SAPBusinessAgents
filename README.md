@@ -25,7 +25,8 @@ SAP Business Agents 是一个按 SAP 业务模块组织的可运行 Agent 目录
 | 模块 | Agent | 业务场景 |
 |---|---|---|
 | FI | [AP Payment Assistant](agents/FI/ap-payment/) | 供应商付款状态、未清项目与付款风险 |
-| FI | [AR Collection Assistant](agents/FI/ar-collection/) | 应收账龄、收款匹配与催收建议 |
+| FI | [AR Collection Assistant](agents/FI/ar-collection/) | 批量应收账龄、催收状态与催收工作清单 |
+| FI | [AR Cash Application Reconciliation Assistant](agents/FI/ar-cash-application/) | 银行来款、客户子分类账、清账凭证与发票关系核对（验收中） |
 | FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/) | GR/IR 未清原因、证据与清理建议 |
 | FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD 月结异常检查与关账待办 |
 | MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | PO → GR → IV → FI → Payment 全链路状态 |
@@ -168,7 +169,7 @@ npm ci
 npm run dev
 ```
 
-打开站点后可浏览 31 个 Agent 详情页，其中确定性业务 Agent 可直接执行；Common 模块的“岗位匹配助理”用于只读分析用户选择的本地业务材料，不进入固定执行或工作流节点目录。也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。SAP 读取固定由 Embedded Provider 完成，不存在自动或手动 Provider 回退。
+打开站点后可浏览 32 个 Agent 详情页，其中通过验收并启用的确定性业务 Agent 可直接执行；Common 模块的“岗位匹配助理”用于只读分析用户选择的本地业务材料，不进入固定执行或工作流节点目录。也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。SAP 读取固定由 Embedded Provider 完成，不存在自动或手动 Provider 回退。
 
 “岗位匹配助理”支持带来源定位的岗位、流程、SAP日常操作、单Agent匹配、compiler v4已验证的组合工作流建议和能力缺口，并可通过补充或排除材料进行最多12轮增量/全量修订。原始正文只保存在 `.local-data/role-matching/`，不会进入SQLite、SSE或Git。详见 [岗位匹配助理](docs/role-agent-matching.md)。
 
@@ -255,7 +256,8 @@ Live catalog: [https://yin-wen-bin.github.io/SAPBusinessAgents/](https://yin-wen
 | Module | Agent | Business scenario |
 |---|---|---|
 | FI | [AP Payment Assistant](agents/FI/ap-payment/) | Vendor payment status, open items, and payment risk |
-| FI | [AR Collection Assistant](agents/FI/ar-collection/) | AR aging, receipt matching, and collection advice |
+| FI | [AR Collection Assistant](agents/FI/ar-collection/) | Batch AR aging, dunning status, and collection worklist |
+| FI | [AR Cash Application Reconciliation Assistant](agents/FI/ar-cash-application/) | Bank receipt, customer subledger, clearing-document, and invoice reconciliation (pending acceptance) |
 | FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/) | GR/IR open-item causes, evidence, and clearing advice |
 | FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD close checks and traceable follow-up work |
 | MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | End-to-end PO → GR → IV → FI → Payment status |

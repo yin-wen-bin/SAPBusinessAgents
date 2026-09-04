@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import unquote, urlsplit
 
 import httpx
@@ -698,12 +698,10 @@ class EmbeddedODataProvider:
             for chunk in item.get("chunk_results") or []
             if isinstance(chunk, dict)
         ]
-        failed_filter_values = list(
-            dict.fromkeys(
-                value
-                for item in step_results.values()
-                for value in item.get("failed_filter_values") or []
-            )
+        failed_filter_values = self._stable_unique_values(
+            value
+            for item in step_results.values()
+            for value in item.get("failed_filter_values") or []
         )
         response = {
             "ok": True,
@@ -799,6 +797,15 @@ class EmbeddedODataProvider:
                 item["value_type"] = field_type
             typed_filters.append(item)
         literal_filter_groups = self._literal_filter_groups(typed_filters, version)
+        tuple_filter_groups = self._tuple_filter_groups(
+            step.get("tuple_filters") or [], version, field_types
+        )
+        if tuple_filter_groups:
+            literal_filter_groups = [
+                ([*literal_group, tuple_expression], [*filter_values, *tuple_values])
+                for literal_group, filter_values in literal_filter_groups
+                for tuple_expression, tuple_values in tuple_filter_groups
+            ]
         binding_groups = self._binding_filter_groups(
             step.get("filter_from_previous") or [], prior, service, version, entity,
             metadata_rules,
@@ -845,6 +852,46 @@ class EmbeddedODataProvider:
             )
         chunk_results: list[dict[str, Any]] = []
         failed_filter_values: list[Any] = []
+        retry_individually = step.get("retry_failed_chunks_individually") is True
+        chunked_literal_filters = [
+            item for item in typed_filters if item.get("chunk_size") is not None
+        ]
+        retry_supported = bool(
+            retry_individually
+            and len(chunked_literal_filters) == 1
+            and not step.get("tuple_filters")
+            and not binding_groups
+        )
+        retry_candidates: list[dict[str, Any]] = []
+
+        def fail_closed_chunk_error(error: BaseException) -> bool:
+            if not isinstance(error, SapReadError):
+                return False
+            detail = error.detail if isinstance(error.detail, dict) else {}
+            if detail.get("http_status") == 400:
+                return True
+            return error.code in {
+                "invalid_chunk_error_policy",
+                "invalid_chunked_filter",
+                "invalid_tuple_filter",
+                "invalid_tuple_filters",
+                "multiple_chunked_filters_not_supported",
+                "filter_chunk_limit_exceeded",
+                "sap_read_plan_rejected",
+                "schema_drift_entity_unavailable",
+                "schema_drift_field_unavailable",
+                "schema_drift_relationship_unavailable",
+            }
+
+        def transient_chunk_error(error: BaseException) -> bool:
+            if isinstance(error, SapReadError):
+                detail = error.detail if isinstance(error.detail, dict) else {}
+                status = detail.get("http_status")
+                return error.code in {
+                    "sap_read_timeout",
+                    "sap_read_transport_error",
+                } or isinstance(status, int) and status >= 500
+            return isinstance(error, TimeoutError)
 
         async def execute_chunk(
             chunk_index: int,
@@ -899,11 +946,37 @@ class EmbeddedODataProvider:
                 if isinstance(completed_item, BaseException):
                     if chunk_error_policy != "record_gap":
                         raise completed_item
+                    if not isinstance(completed_item, Exception):
+                        raise completed_item
+                    if fail_closed_chunk_error(completed_item):
+                        raise completed_item
                     error_code = (
                         completed_item.code
                         if isinstance(completed_item, SapReadError)
                         else "sap_read_chunk_failed"
                     )
+                    if (
+                        retry_supported
+                        and len(filter_values) > 1
+                        and transient_chunk_error(completed_item)
+                    ):
+                        retry_entry = {
+                            "chunk_index": chunk_index,
+                            "filter_values": filter_values,
+                            "source_complete": False,
+                            "source_truncated": False,
+                            "error_code": error_code,
+                            "retry_individually": True,
+                        }
+                        chunk_results.append(retry_entry)
+                        retry_candidates.append(
+                            {
+                                "chunk_index": chunk_index,
+                                "filter_values": filter_values,
+                                "chunk_result": retry_entry,
+                            }
+                        )
+                        continue
                     complete = False
                     failed_filter_values.extend(filter_values)
                     validation_issues.append(
@@ -925,6 +998,32 @@ class EmbeddedODataProvider:
                     )
                     continue
                 chunk_index, filter_values, result = completed_item
+                if (
+                    retry_supported
+                    and len(filter_values) > 1
+                    and (
+                        result.get("source_complete") is not True
+                        or result.get("source_truncated") is True
+                    )
+                ):
+                    requests.extend(result["requests"])
+                    retry_entry = {
+                        "chunk_index": chunk_index,
+                        "filter_values": filter_values,
+                        "source_complete": False,
+                        "source_truncated": bool(result.get("source_truncated")),
+                        "error_code": "chunk_source_incomplete",
+                        "retry_individually": True,
+                    }
+                    chunk_results.append(retry_entry)
+                    retry_candidates.append(
+                        {
+                            "chunk_index": chunk_index,
+                            "filter_values": filter_values,
+                            "chunk_result": retry_entry,
+                        }
+                    )
+                    continue
                 all_rows.extend(result["results"])
                 requests.extend(result["requests"])
                 complete = complete and result["source_complete"]
@@ -949,6 +1048,91 @@ class EmbeddedODataProvider:
                     break
             if limit_reached:
                 break
+
+        if retry_candidates:
+            target_filter = chunked_literal_filters[0]
+            static_filters = [item for item in typed_filters if item is not target_filter]
+            retry_sequence = len(chunk_results)
+            for candidate in retry_candidates:
+                recovered = True
+                for value in candidate["filter_values"]:
+                    child_filter = dict(target_filter)
+                    child_filter.pop("chunk_size", None)
+                    child_filter["value"] = [value]
+                    literal_group = self._literal_filters(
+                        [*static_filters, child_filter], version
+                    )
+                    try:
+                        _retry_index, _values, retry_result = await execute_chunk(
+                            retry_sequence,
+                            literal_group,
+                            [],
+                            [value],
+                        )
+                    except Exception as exc:
+                        if fail_closed_chunk_error(exc):
+                            raise
+                        error_code = (
+                            exc.code if isinstance(exc, SapReadError) else "sap_read_chunk_failed"
+                        )
+                        recovered = False
+                        complete = False
+                        failed_filter_values.append(value)
+                        validation_issues.append(
+                            {
+                                "code": "sap_read_chunk_failed",
+                                "chunk_index": retry_sequence,
+                                "error_code": error_code,
+                                "filter_values": [value],
+                                "retry_of_chunk_index": candidate["chunk_index"],
+                            }
+                        )
+                        chunk_results.append(
+                            {
+                                "chunk_index": retry_sequence,
+                                "filter_values": [value],
+                                "source_complete": False,
+                                "source_truncated": False,
+                                "error_code": error_code,
+                                "retry_of_chunk_index": candidate["chunk_index"],
+                            }
+                        )
+                        retry_sequence += 1
+                        continue
+                    all_rows.extend(retry_result["results"])
+                    requests.extend(retry_result["requests"])
+                    retry_complete = retry_result.get("source_complete") is True
+                    retry_truncated = retry_result.get("source_truncated") is True
+                    if not retry_complete or retry_truncated:
+                        recovered = False
+                        complete = False
+                        truncated = truncated or retry_truncated
+                        failed_filter_values.append(value)
+                        validation_issues.extend(retry_result.get("validation_issues") or [])
+                    partition_count += int(retry_result.get("partition_count") or 0)
+                    chunk_results.append(
+                        {
+                            "chunk_index": retry_sequence,
+                            "filter_values": [value],
+                            "source_complete": retry_complete and not retry_truncated,
+                            "source_truncated": retry_truncated,
+                            "error_code": None if retry_complete and not retry_truncated else "chunk_source_incomplete",
+                            "retry_of_chunk_index": candidate["chunk_index"],
+                        }
+                    )
+                    retry_sequence += 1
+                candidate["chunk_result"].update(
+                    {
+                        "source_complete": recovered,
+                        "source_truncated": False,
+                        "error_code": None if recovered else candidate["chunk_result"]["error_code"],
+                        "recovered_by_individual_retry": recovered,
+                    }
+                )
+        if len(all_rows) > step_limit:
+            all_rows = all_rows[:step_limit]
+            complete = False
+            truncated = True
         aggregate_order = [str(item) for item in step.get("order_by") or []]
         if not aggregate_order and step.get("top") is None:
             sortable_fields = {
@@ -986,8 +1170,20 @@ class EmbeddedODataProvider:
             "validation_issues": validation_issues,
             "partition_count": partition_count,
             "chunk_results": chunk_results,
-            "failed_filter_values": list(dict.fromkeys(failed_filter_values)),
+            "failed_filter_values": self._stable_unique_values(failed_filter_values),
         }
+
+    @staticmethod
+    def _stable_unique_values(values: Iterable[Any]) -> list[Any]:
+        result: list[Any] = []
+        seen: set[str] = set()
+        for value in values:
+            marker = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(value)
+        return result
 
     async def _fetch_adaptive_date_partitions(
         self,
@@ -1545,6 +1741,30 @@ class EmbeddedODataProvider:
                 issues.append(
                     {"code": "multiple_chunked_filters_not_supported", "step_id": step_id}
                 )
+            tuple_filters = step.get("tuple_filters") or []
+            if not isinstance(tuple_filters, list) or len(tuple_filters) > 1:
+                issues.append({"code": "invalid_tuple_filters", "step_id": step_id})
+            for tuple_filter in tuple_filters if isinstance(tuple_filters, list) else []:
+                if not isinstance(tuple_filter, dict):
+                    issues.append({"code": "invalid_tuple_filter", "step_id": step_id})
+                    continue
+                fields = tuple_filter.get("fields")
+                values = tuple_filter.get("values")
+                chunk_size = tuple_filter.get("chunk_size", 20)
+                if (
+                    not isinstance(fields, list)
+                    or not 2 <= len(fields) <= 6
+                    or len(set(str(item) for item in fields)) != len(fields)
+                    or any(not _IDENTIFIER.fullmatch(str(item)) for item in fields)
+                    or not isinstance(values, list)
+                    or not values
+                    or len(values) > 5000
+                    or any(not isinstance(row, list) or len(row) != len(fields) for row in values)
+                    or not isinstance(chunk_size, int)
+                    or isinstance(chunk_size, bool)
+                    or not 1 <= chunk_size <= 20
+                ):
+                    issues.append({"code": "invalid_tuple_filter", "step_id": step_id})
         return issues
 
     def _plan_steps(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1573,6 +1793,10 @@ class EmbeddedODataProvider:
         for item in step.get("filter_from_previous") or []:
             if isinstance(item, dict):
                 uses.append((str(item.get("field") or ""), "filter"))
+        for item in step.get("tuple_filters") or []:
+            if isinstance(item, dict):
+                for field in item.get("fields") or []:
+                    uses.append((str(field), "filter"))
         partition = step.get("partition")
         if isinstance(partition, dict):
             uses.append((str(partition.get("field") or ""), "filter"))
@@ -1708,6 +1932,58 @@ class EmbeddedODataProvider:
                     list(child["value"]),
                 )
             )
+        return groups
+
+    def _tuple_filter_groups(
+        self,
+        tuple_filters: list[dict[str, Any]],
+        odata_version: str,
+        field_types: dict[str, str],
+    ) -> list[tuple[str, list[Any]]] | None:
+        if not tuple_filters:
+            return None
+        if len(tuple_filters) != 1:
+            raise SapReadError(
+                "Only one composite tuple filter is allowed per step.",
+                code="invalid_tuple_filters",
+            )
+        contract = tuple_filters[0]
+        fields = [self._validate_identifier(str(item), "tuple filter field") for item in contract.get("fields") or []]
+        values = contract.get("values")
+        chunk_size = contract.get("chunk_size", 20)
+        if (
+            not 2 <= len(fields) <= 6
+            or not isinstance(values, list)
+            or not values
+            or any(not isinstance(row, list) or len(row) != len(fields) for row in values)
+            or not isinstance(chunk_size, int)
+            or isinstance(chunk_size, bool)
+            or not 1 <= chunk_size <= 20
+        ):
+            raise SapReadError("Composite tuple filter is invalid.", code="invalid_tuple_filter")
+        unique_rows: list[list[Any]] = []
+        seen: set[str] = set()
+        for row in values:
+            if any(value in {None, ""} for value in row):
+                raise SapReadError(
+                    "Composite tuple filters cannot contain blank key values.",
+                    code="invalid_tuple_filter",
+                )
+            marker = json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+            if marker not in seen:
+                seen.add(marker)
+                unique_rows.append(row)
+        groups: list[tuple[str, list[Any]]] = []
+        for offset in range(0, len(unique_rows), chunk_size):
+            chunk = unique_rows[offset : offset + chunk_size]
+            expressions = []
+            for row in chunk:
+                parts = [
+                    f"{field} eq {self._odata_literal(value, field_types.get(field), odata_version)}"
+                    for field, value in zip(fields, row, strict=True)
+                ]
+                expressions.append("(" + " and ".join(parts) + ")")
+            groups.append(("(" + " or ".join(expressions) + ")", list(chunk)))
         return groups
 
     @staticmethod

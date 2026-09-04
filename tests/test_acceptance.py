@@ -915,7 +915,7 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
         if path.parent.name not in {"ap-payment", "role-agent-matching"}
     ]
 
-    assert len(manifests) == 30
+    assert len(manifests) == 31
     for manifest in manifests:
         acceptance = manifest["execution"]["acceptance"]
         assert acceptance["schemaVersion"] == "2.0"
@@ -924,6 +924,7 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
         assert "business_status" in acceptance["facts"]
         expected_limitations = {
             "ar-collection": ["historical_dunning_evidence"],
+            "ar-cash-application": ["fi_clearing_is_not_bank_settlement"],
             "month-end-closing": [
                 "fx_valuation_run_status_source_unavailable"
             ],
@@ -980,7 +981,7 @@ def test_agent_status_matches_terminal_three_stage_verdict() -> None:
     ]
 
     deterministic = [item for item in manifests if item.get("kind") != "platform_assistant"]
-    assert len(deterministic) == 31
+    assert len(deterministic) == 32
     for manifest in deterministic:
         verdict = manifest["validation"]["verdict"]
         expected = "passed" if verdict == "PASS" else verdict.lower()

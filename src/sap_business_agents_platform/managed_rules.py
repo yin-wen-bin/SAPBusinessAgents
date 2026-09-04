@@ -21,7 +21,7 @@ ALLOWED_IMPORTS = {"calendar", "datetime", "decimal", "math", "re", "statistics"
 FORBIDDEN_CALLS = {
     "breakpoint", "compile", "delattr", "dir", "eval", "exec", "getattr", "globals",
     "hasattr", "help", "input", "locals", "open", "setattr", "super", "type",
-    "__import__", "vars",
+    "__import__", "print", "vars",
 }
 FORBIDDEN_NODES = (
     ast.AsyncFunctionDef,
@@ -99,14 +99,106 @@ sys.stdout.write(encoded)
 """
 
 
+class _WindowsRuleJob:
+    """Bound a managed-rule process and all descendants to one Windows Job."""
+
+    def __init__(self, process: subprocess.Popen[str], memory_bytes: int) -> None:
+        self._handle: int | None = None
+        if os.name != "nt":
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise OSError(ctypes.get_last_error(), "Could not create managed-rule Job Object")
+        limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limits.BasicLimitInformation.LimitFlags = 0x00000100 | 0x00002000
+        limits.ProcessMemoryLimit = memory_bytes
+        try:
+            if not kernel32.SetInformationJobObject(
+                handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+            ):
+                raise OSError(
+                    ctypes.get_last_error(), "Could not configure managed-rule Job Object"
+                )
+            if not kernel32.AssignProcessToJobObject(handle, process._handle):
+                raise OSError(
+                    ctypes.get_last_error(), "Could not isolate managed-rule process"
+                )
+        except Exception:
+            kernel32.CloseHandle(handle)
+            raise
+        self._handle = int(handle)
+        self._close_handle = kernel32.CloseHandle
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._close_handle(self._handle)
+            self._handle = None
+
+
 def execute_managed_rule(
     source: str,
     inputs: dict[str, Any],
     *,
     expected_digest: str,
-    timeout_seconds: float = 10.0,
+    timeout_seconds: float = 30.0,
 ) -> dict[str, Any]:
     validate_managed_rule(source, expected_digest=expected_digest)
+    encoded_input = json.dumps(inputs, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded_input.encode("utf-8")) > 50 * 1024 * 1024:
+        raise ManagedRuleError(
+            "Managed rule input exceeds 50 MB.", code="managed_rule_input_too_large"
+        )
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -121,24 +213,50 @@ def execute_managed_rule(
             "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
             "WINDIR": os.environ.get("WINDIR", ""),
         }
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [sys.executable, "-I", "-c", _RUNNER, str(temporary_path)],
-            input=json.dumps(inputs, ensure_ascii=False, separators=(",", ":")),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            capture_output=True,
-            timeout=max(0.1, timeout_seconds),
             env=environment,
-            check=False,
         )
-        if completed.returncode != 0:
-            message = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "unknown error"
+        try:
+            job = _WindowsRuleJob(process, 512 * 1024 * 1024)
+        except Exception as exc:
+            process.kill()
+            process.wait()
+            raise ManagedRuleError(
+                "Managed rule resource isolation could not be established.",
+                code="managed_rule_isolation_failed",
+            ) from exc
+        try:
+            stdout, stderr = process.communicate(
+                input=encoded_input, timeout=max(0.1, timeout_seconds)
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Closing a kill-on-close Job terminates the full child process tree.
+            job.close()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise ManagedRuleError(
+                "Managed rule exceeded its 30 second time limit.",
+                code="managed_rule_timeout",
+            ) from exc
+        finally:
+            job.close()
+        if process.returncode != 0:
+            message = stderr.strip().splitlines()[-1] if stderr.strip() else "unknown error"
             raise ManagedRuleError(
                 f"Managed rule execution failed: {message}", code="managed_rule_execution_failed"
             )
         try:
-            output = json.loads(completed.stdout)
+            output = json.loads(stdout)
         except json.JSONDecodeError as exc:
             raise ManagedRuleError(
                 "Managed rule returned invalid JSON.", code="managed_rule_output_invalid"
@@ -148,10 +266,6 @@ def execute_managed_rule(
                 "Managed rule output must be an object.", code="managed_rule_output_invalid"
             )
         return output
-    except subprocess.TimeoutExpired as exc:
-        raise ManagedRuleError(
-            "Managed rule exceeded its 10 second time limit.", code="managed_rule_timeout"
-        ) from exc
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)

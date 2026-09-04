@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -28,13 +29,18 @@ class SkillError(RuntimeError):
 
 
 class SkillRegistry:
-    """Allowlisted machine-callable SAPSkillhub contracts."""
+    """Unified broker for every approved machine-callable SAPSkillhub contract."""
 
     def __init__(self, skillhub_root: Path, allowlist_path: Path) -> None:
         self.skillhub_root = skillhub_root
         self.allowlist_path = allowlist_path
 
     def list(self) -> list[dict[str, Any]]:
+        return self.list_all_approved_skills()
+
+    def list_all_approved_skills(self) -> list[dict[str, Any]]:
+        """Return the single approved Skill catalog used by every execution mode."""
+
         if not self.allowlist_path.exists():
             return []
         payload = json.loads(self.allowlist_path.read_text(encoding="utf-8"))
@@ -45,6 +51,7 @@ class SkillRegistry:
             within_root = self.skillhub_root == entrypoint or self.skillhub_root in entrypoint.parents
             record["available"] = bool(within_root and entrypoint.is_file())
             record["entrypoint"] = str(entrypoint)
+            issues: list[dict[str, str]] = []
             try:
                 for schema_name in ("input_schema", "output_schema"):
                     schema_path_name = f"{schema_name}_path"
@@ -52,8 +59,11 @@ class SkillRegistry:
                         record[schema_name] = _load_trusted_schema(
                             self.skillhub_root, str(record[schema_path_name]), schema_name
                         )
-            except SkillError:
+                _validate_skill_supply_chain(self.skillhub_root, record)
+            except SkillError as exc:
                 record["available"] = False
+                issues.append({"code": exc.code, "message": str(exc)})
+            record["validation_issues"] = issues
             has_contract = all(
                 isinstance(record.get(name), dict) and record[name].get("type") == "object"
                 for name in ("input_schema", "output_schema")
@@ -61,6 +71,8 @@ class SkillRegistry:
             if (
                 record.get("read_only") is True
                 and record.get("validated") is True
+                and record.get("available") is True
+                and record.get("output_policy") in {"public", "restricted_artifact"}
                 and has_contract
             ):
                 records.append(record)
@@ -88,8 +100,20 @@ class SkillRegistry:
         if skill.get("read_only") is not True or skill.get("validated") is not True:
             raise SkillError(f"Skill {skill_id} is not approved for read-only automation.")
         self.validate_input(skill_id, input_payload)
-        timeout = max(1, int(skill.get("timeout") or 300))
-        with tempfile.TemporaryDirectory(prefix="sapba-skill-") as temporary:
+        timeout = max(
+            1,
+            int(skill.get("platform_timeout_seconds") or skill.get("timeout") or 300),
+        )
+        broker_temp_root = (self.skillhub_root / ".codex-tmp").resolve()
+        if self.skillhub_root != broker_temp_root and self.skillhub_root not in broker_temp_root.parents:
+            raise SkillError(
+                "Skill temporary directory escapes the SAPSkillhub root.",
+                code="skill_temporary_path_invalid",
+            )
+        broker_temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="sapba-skill-", dir=broker_temp_root
+        ) as temporary:
             temporary_root = Path(temporary)
             input_path = temporary_root / "input.json"
             output_path = temporary_root / "output.json"
@@ -144,6 +168,132 @@ class SkillRegistry:
                     "Its stderr was intentionally not persisted because it may contain sensitive data."
                 )
         return result
+
+
+def _validate_skill_supply_chain(root: Path, record: dict[str, Any]) -> None:
+    output_policy = record.get("output_policy")
+    if output_policy not in {"public", "restricted_artifact"}:
+        raise SkillError(
+            "Skill output_policy is not declared.", code="skill_contract_incompatible"
+        )
+    manifest_name = record.get("manifest_path")
+    if not manifest_name:
+        return
+    manifest_path = (root / str(manifest_name)).resolve()
+    if root not in manifest_path.parents or not manifest_path.is_file():
+        raise SkillError("Skill manifest is unavailable.", code="skill_manifest_mismatch")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SkillError("Skill manifest is invalid.", code="skill_manifest_mismatch") from exc
+    expected = {
+        "skill_id": record.get("skill_id"),
+        "read_only": True,
+        "validated": True,
+    }
+    for field, value in expected.items():
+        if manifest.get(field) != value:
+            raise SkillError(
+                f"Skill manifest {field} does not match the approved contract.",
+                code="skill_manifest_mismatch",
+            )
+    if sorted(manifest.get("allowed_http_methods") or []) != sorted(
+        record.get("allowed_http_methods") or []
+    ) or sorted(manifest.get("allowed_endpoints") or []) != sorted(
+        record.get("allowed_endpoints") or []
+    ):
+        raise SkillError(
+            "Skill HTTP allowlist drifted from the approved contract.",
+            code="skill_manifest_mismatch",
+        )
+    profile_name = record.get("source_profile_path")
+    if profile_name:
+        profile_path = (root / str(profile_name)).resolve()
+        if root not in profile_path.parents or not profile_path.is_file():
+            raise SkillError("Skill source profile is unavailable.", code="skill_profile_drift")
+        try:
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SkillError("Skill source profile is invalid.", code="skill_profile_drift") from exc
+        if (
+            profile.get("profile_status") != "validated"
+            or profile.get("profile_version") != record.get("expected_profile_version")
+        ):
+            raise SkillError(
+                "Skill source profile drifted from the validated version.",
+                code="skill_profile_drift",
+            )
+        active = (profile.get("profiles") or {}).get(profile.get("active_profile_id"), {})
+        if active.get("metadata_sha256") != record.get("expected_metadata_sha256"):
+            raise SkillError(
+                "Skill source metadata fingerprint drifted from the validated target.",
+                code="skill_metadata_drift",
+            )
+    expected_digest = str(record.get("expected_package_sha256") or "")
+    if expected_digest:
+        package_root = manifest_path.parent
+        actual_digest = _skill_package_digest(package_root)
+        if not hmac_compare_digest(actual_digest, expected_digest):
+            raise SkillError(
+                "Skill package digest does not match the approved package.",
+                code="skill_package_digest_mismatch",
+            )
+        record["package_sha256"] = actual_digest
+    expected_commit = str(record.get("expected_git_commit") or "").strip()
+    if expected_commit:
+        try:
+            subprocess.run(
+                ["git", "cat-file", "-e", f"{expected_commit}^{{commit}}"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            ancestor = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", expected_commit, "HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SkillError(
+                "Skill repository commit could not be verified.",
+                code="skill_git_commit_mismatch",
+            ) from exc
+        if ancestor.returncode != 0:
+            raise SkillError(
+                "Skill repository no longer contains the approved commit in its current history.",
+                code="skill_git_commit_mismatch",
+            )
+    record["git_commit"] = expected_commit
+    record["manifest"] = manifest
+
+
+def _skill_package_digest(package_root: Path) -> str:
+    digest = hashlib.sha256()
+    files = sorted(
+        path
+        for path in package_root.rglob("*")
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        and path.name != ".env"
+        and path.suffix.lower() not in {".pyc", ".pyo"}
+        and not path.name.startswith(".")
+    )
+    for path in files:
+        relative = path.relative_to(package_root).as_posix().encode("utf-8") + b"\n"
+        digest.update(relative)
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def hmac_compare_digest(left: str, right: str) -> bool:
+    # A local helper avoids importing secret values while keeping timing-safe digest checks.
+    import hmac
+
+    return hmac.compare_digest(left, right)
 
 
 def _load_trusted_schema(root: Path, relative_path: str, label: str) -> dict[str, Any]:

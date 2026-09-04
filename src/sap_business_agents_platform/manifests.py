@@ -22,6 +22,8 @@ ALLOWED_RULE_OPERATIONS = {
     "assess_billing_block_incompletion",
     "prepare_billing_block_code_text_lookups",
     "prepare_ap_input",
+    "prepare_fi_ledger_scope",
+    "prepare_ar_cash_application_scope",
     "assess_o2c_document_flow",
     "classify_control_object",
     "prepare_control_object_lookup",
@@ -39,6 +41,7 @@ ALLOWED_RULE_OPERATIONS = {
     "managed_agent_rule",
 }
 ALLOWED_FAILURE_POLICIES = {"fail_run", "record_gap"}
+_TEMPLATE_EXPRESSION = re.compile(r"\{\{\s*[^{}]+?\s*\}\}")
 
 
 class ManifestError(ValueError):
@@ -230,6 +233,11 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
     steps = execution.get("steps")
     if not isinstance(steps, list) or not steps:
         raise ManifestError(f"{source}.execution.steps must be non-empty")
+    _validate_template_syntax(steps, f"{source}.execution.steps")
+    if output_mapping is not None:
+        _validate_template_syntax(
+            output_mapping, f"{source}.execution.outputMapping"
+        )
     seen: set[str] = set()
     for index, step in enumerate(steps):
         location = f"{source}.execution.steps[{index}]"
@@ -244,6 +252,17 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
         when = step.get("when")
         if when is not None:
             _validate_when(when, seen - {step_id}, location)
+        on_skip = step.get("onSkip")
+        if on_skip is not None:
+            if when is None:
+                raise ManifestError(f"{location}.onSkip requires a conditional when clause")
+            if not isinstance(on_skip, dict):
+                raise ManifestError(f"{location}.onSkip must be an object")
+            candidate = on_skip.get("output", on_skip)
+            if not isinstance(candidate, dict):
+                raise ManifestError(f"{location}.onSkip.output must be an object")
+            if "private_refs" in candidate:
+                raise ManifestError(f"{location}.onSkip cannot declare private_refs")
         executor = step.get("executor")
         if executor not in ALLOWED_EXECUTORS:
             raise ManifestError(f"{location}.executor is not allowed")
@@ -299,6 +318,22 @@ def is_agent_executable(agent: dict[str, Any]) -> bool:
     )
 
 
+def _validate_template_syntax(value: Any, source: str) -> None:
+    if isinstance(value, dict):
+        for name, child in value.items():
+            _validate_template_syntax(child, f"{source}.{name}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_template_syntax(child, f"{source}[{index}]")
+        return
+    if not isinstance(value, str) or ("{{" not in value and "}}" not in value):
+        return
+    remainder = _TEMPLATE_EXPRESSION.sub("", value)
+    if "{{" in remainder or "}}" in remainder:
+        raise ManifestError(f"{source} contains a malformed template expression")
+
+
 def _localized_titles(
     properties: Any, source: str, *, exclude_workflow_only: bool = False
 ) -> dict[str, list[str]]:
@@ -308,7 +343,10 @@ def _localized_titles(
     for name, schema in properties.items():
         if not isinstance(schema, dict):
             raise ManifestError(f"{source}.properties.{name} must be an object")
-        if exclude_workflow_only and schema.get("x-sapba-workflow-only") is True:
+        if exclude_workflow_only and (
+            schema.get("x-sapba-workflow-only") is True
+            or schema.get("x-sapba-internal") is True
+        ):
             continue
         title = schema.get("title")
         if not isinstance(title, dict) or not all(str(title.get(locale) or "").strip() for locale in values):
@@ -330,9 +368,44 @@ def _validate_input_server_defaults(properties: dict[str, Any], source: str) -> 
             raise ManifestError(
                 f"{location}.x-sapba-sap-identifier=true requires type=string"
             )
+        internal_marker = schema.get("x-sapba-internal")
+        if internal_marker is not None and not isinstance(internal_marker, bool):
+            raise ManifestError(f"{location}.x-sapba-internal must be boolean")
         marker = schema.get("x-sapba-server-default")
-        if marker is not None and not isinstance(marker, bool):
-            raise ManifestError(f"{location}.x-sapba-server-default must be boolean")
+        if marker not in {None, False, True, "business_date"}:
+            raise ManifestError(
+                f"{location}.x-sapba-server-default must be boolean or business_date"
+            )
+        if marker == "business_date":
+            if schema.get("type") != "string" or schema.get("format") != "date":
+                raise ManifestError(
+                    f"{location}.x-sapba-server-default=business_date requires a date string"
+                )
+        sensitive = schema.get("x-sapba-sensitive")
+        if sensitive is not None and not isinstance(sensitive, bool):
+            raise ManifestError(f"{location}.x-sapba-sensitive must be boolean")
+        if sensitive is True:
+            if schema.get("type") != "string":
+                raise ManifestError(f"{location}.x-sapba-sensitive requires type=string")
+            if not str(schema.get("x-sapba-secret-kind") or ""):
+                raise ManifestError(
+                    f"{location}.x-sapba-secret-kind is required for a sensitive input"
+                )
+        not_after_business_date = schema.get("x-sapba-not-after-business-date")
+        if not_after_business_date is not None and not isinstance(
+            not_after_business_date, bool
+        ):
+            raise ManifestError(
+                f"{location}.x-sapba-not-after-business-date must be boolean"
+            )
+        if not_after_business_date is True and (
+            schema.get("type") != "string" or schema.get("format") != "date"
+        ):
+            raise ManifestError(
+                f"{location}.x-sapba-not-after-business-date requires a date string"
+            )
+        if marker == "business_date":
+            continue
         if marker is not True:
             continue
         if "default" not in schema:

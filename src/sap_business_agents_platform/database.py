@@ -65,6 +65,48 @@ class RunStore:
                     FOREIGN KEY(run_id) REFERENCES runs(run_id)
                 );
                 CREATE INDEX IF NOT EXISTS events_run_sequence ON events(run_id, sequence);
+                CREATE TABLE IF NOT EXISTS run_secret_bindings (
+                    secret_ref TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    field_name TEXT NOT NULL,
+                    protected_value BLOB NOT NULL,
+                    hmac_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    deleted_at TEXT,
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS run_secret_field
+                    ON run_secret_bindings(run_id, field_name);
+                CREATE TABLE IF NOT EXISTS structured_artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    format TEXT NOT NULL,
+                    row_count INTEGER NOT NULL,
+                    byte_count INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    classification TEXT NOT NULL,
+                    hashed_indexes_json TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    protected_key BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    deleted_at TEXT,
+                    deletion_reason TEXT,
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
+                CREATE INDEX IF NOT EXISTS structured_artifacts_run
+                    ON structured_artifacts(run_id, created_at);
+                CREATE TABLE IF NOT EXISTS artifact_reveal_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    artifact_sha256 TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(artifact_id) REFERENCES structured_artifacts(artifact_id)
+                );
                 CREATE TABLE IF NOT EXISTS free_query_sessions (
                     session_id TEXT PRIMARY KEY,
                     original_query TEXT NOT NULL,
@@ -508,6 +550,186 @@ class RunStore:
                 ),
             )
         return self.get_run(run_id)
+
+    def save_run_secret(
+        self,
+        *,
+        secret_ref: str,
+        run_id: str,
+        field_name: str,
+        protected_value: bytes,
+        hmac_descriptor: dict[str, Any],
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO run_secret_bindings
+                (secret_ref, run_id, field_name, protected_value, hmac_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    secret_ref,
+                    run_id,
+                    field_name,
+                    protected_value,
+                    _dump(hmac_descriptor),
+                    utc_now(),
+                ),
+            )
+
+    def get_run_secret(self, run_id: str, field_name: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM run_secret_bindings
+                WHERE run_id = ? AND field_name = ? AND deleted_at IS NULL""",
+                (run_id, field_name),
+            ).fetchone()
+        if row is None:
+            raise KeyError(field_name)
+        return {
+            "secret_ref": str(row["secret_ref"]),
+            "run_id": str(row["run_id"]),
+            "field_name": str(row["field_name"]),
+            "protected_value": bytes(row["protected_value"]),
+            "hmac": _load(row["hmac_json"], {}),
+            "created_at": str(row["created_at"]),
+        }
+
+    def delete_run_secrets(self, run_id: str) -> None:
+        """Crypto-shred terminal run secrets while retaining a value-free tombstone."""
+
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """UPDATE run_secret_bindings
+                SET protected_value = X'', deleted_at = ?
+                WHERE run_id = ? AND deleted_at IS NULL""",
+                (utc_now(), run_id),
+            )
+
+    def create_structured_artifact(
+        self,
+        *,
+        artifact_id: str,
+        run_id: str,
+        format: str,
+        row_count: int,
+        byte_count: int,
+        sha256: str,
+        classification: str,
+        hashed_indexes: list[dict[str, Any]],
+        path: str,
+        protected_key: bytes,
+        created_at: str,
+        expires_at: str,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO structured_artifacts
+                (artifact_id, run_id, format, row_count, byte_count, sha256,
+                 classification, hashed_indexes_json, path, protected_key,
+                 created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    artifact_id,
+                    run_id,
+                    format,
+                    row_count,
+                    byte_count,
+                    sha256,
+                    classification,
+                    _dump(hashed_indexes),
+                    path,
+                    protected_key,
+                    created_at,
+                    expires_at,
+                ),
+            )
+
+    def get_structured_artifact(self, run_id: str, artifact_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM structured_artifacts
+                WHERE run_id = ? AND artifact_id = ?""",
+                (run_id, artifact_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(artifact_id)
+        return _structured_artifact_from_row(row)
+
+    def list_structured_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM structured_artifacts
+                WHERE run_id = ? ORDER BY created_at""",
+                (run_id,),
+            ).fetchall()
+        return [_structured_artifact_from_row(row) for row in rows]
+
+    def delete_structured_artifact(
+        self, run_id: str, artifact_id: str, *, reason: str
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE structured_artifacts
+                SET protected_key = X'', path = '', deleted_at = ?, deletion_reason = ?
+                WHERE run_id = ? AND artifact_id = ? AND deleted_at IS NULL""",
+                (utc_now(), reason, run_id, artifact_id),
+            )
+        if cursor.rowcount != 1:
+            self.get_structured_artifact(run_id, artifact_id)
+
+    def save_artifact_reveal_token(
+        self,
+        *,
+        token_hash: str,
+        run_id: str,
+        artifact_id: str,
+        operation: str,
+        artifact_sha256: str,
+        expires_at: str,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO artifact_reveal_tokens
+                (token_hash, run_id, artifact_id, operation, artifact_sha256,
+                 expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    token_hash,
+                    run_id,
+                    artifact_id,
+                    operation,
+                    artifact_sha256,
+                    expires_at,
+                    utc_now(),
+                ),
+            )
+
+    def consume_artifact_reveal_token(
+        self,
+        *,
+        token_hash: str,
+        run_id: str,
+        artifact_id: str,
+        operation: str,
+        artifact_sha256: str,
+        now: str,
+    ) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE artifact_reveal_tokens SET consumed_at = ?
+                WHERE token_hash = ? AND run_id = ? AND artifact_id = ?
+                  AND operation = ? AND artifact_sha256 = ?
+                  AND consumed_at IS NULL AND expires_at > ?""",
+                (
+                    now,
+                    token_hash,
+                    run_id,
+                    artifact_id,
+                    operation,
+                    artifact_sha256,
+                    now,
+                ),
+            )
+        return cursor.rowcount == 1
 
     def get_run(self, run_id: str) -> RunRecord:
         with self._connect() as connection:
@@ -2144,6 +2366,25 @@ def _role_matching_turn_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "excluded_document_ids": _load(row["excluded_document_ids_json"], []),
         "decision": _load(row["decision_json"], {}), "created_at": row["created_at"],
         "completed_at": row["completed_at"],
+    }
+
+
+def _structured_artifact_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "artifact_id": row["artifact_id"],
+        "run_id": row["run_id"],
+        "format": row["format"],
+        "row_count": int(row["row_count"]),
+        "byte_count": int(row["byte_count"]),
+        "sha256": row["sha256"],
+        "classification": row["classification"],
+        "hashed_indexes": _load(row["hashed_indexes_json"], []),
+        "path": row["path"],
+        "protected_key": bytes(row["protected_key"]),
+        "created_at": row["created_at"],
+        "expires_at": row["expires_at"],
+        "deleted_at": row["deleted_at"],
+        "deletion_reason": row["deletion_reason"],
     }
 
 

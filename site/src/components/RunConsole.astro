@@ -40,6 +40,7 @@ const labels = locale === "zh" ? {
   inputFailed: "发送失败，请保留当前输入并稍后重试。",
   inputPlaceholder: "请输入系统要求的业务编号、日期范围或其他条件",
   clarificationPlaceholder: "例如：这是销售订单，订单号是5814",
+  secureReferencePlaceholder: "请输入银行来款参考号",
   steerPlaceholder: "可在执行中补充方向，例如：优先核对清账凭证",
   send: "继续查询",
   cancel: "取消查询",
@@ -167,6 +168,7 @@ const labels = locale === "zh" ? {
     elapsed: "已运行 {elapsed} 秒 / 最多 {hard} 秒", finalizing: "正在强制整理结果", extended: "已自适应延长 {count} 次",
   },
   artifact: { "report.md": "业务报告", "business-stages.csv": "阶段结果表", "workflow-report.md": "组合业务报告", "workflow-orders.csv": "采购订单汇总", "workflow-ap-scopes.csv": "AP分组汇总", "pr-actions.csv": "采购申请待办", "po-expedite-actions.csv": "采购订单催交待办", "source-candidates.csv": "有效货源候选", "gr-ir-follow-up.csv": "GR/IR待处理清单", "gr-ir-needs-confirmation.csv": "GR/IR证据缺口", "gr-ir-all-records.csv": "全部GR/IR核对记录", "month-end-checks.csv": "12项月结检查", "findings.csv": "月结异常", "todos.csv": "责任待办", "follow-up-scopes.json": "专项复核范围", "evidence.csv": "证据明细", "result.json": "技术 JSON" },
+  restricted: { title: "受限银行明细", help: "付款人名称和原始参考号已加密保存。只有主动授权后才能短时查看或下载；操作会被审计。", reveal: "授权并查看", download: "授权并下载CSV", delete: "永久删除受限明细", empty: "没有可显示的受限明细。", error: "无法读取受限明细。", deleted: "受限明细已永久删除。" },
 } : {
   title: "SAP business query",
   noRun: "The link has no run ID. Start a query from an Agent or the free-query page.",
@@ -199,6 +201,7 @@ const labels = locale === "zh" ? {
   inputFailed: "The input could not be sent. Your text has been preserved; try again.",
   inputPlaceholder: "Enter the requested business ID, date range, or other condition",
   clarificationPlaceholder: "Example: This is sales order 5814",
+  secureReferencePlaceholder: "Enter the bank receipt reference",
   steerPlaceholder: "Add guidance while the query runs, for example: prioritize clearing documents",
   send: "Continue query",
   cancel: "Cancel query",
@@ -326,6 +329,7 @@ const labels = locale === "zh" ? {
     elapsed: "Elapsed {elapsed}s / up to {hard}s", finalizing: "Finalizing from existing evidence", extended: "Adaptively extended {count} time(s)",
   },
   artifact: { "report.md": "Business report", "business-stages.csv": "Stage results", "workflow-report.md": "Composite business report", "workflow-orders.csv": "Purchase-order summary", "workflow-ap-scopes.csv": "AP scope summary", "pr-actions.csv": "Purchase requisition actions", "po-expedite-actions.csv": "PO expediting actions", "source-candidates.csv": "Valid source candidates", "gr-ir-follow-up.csv": "GR/IR follow-up", "gr-ir-needs-confirmation.csv": "GR/IR evidence gaps", "gr-ir-all-records.csv": "All GR/IR reconciliation records", "month-end-checks.csv": "Twelve month-end checks", "findings.csv": "Month-end findings", "todos.csv": "Owner actions", "follow-up-scopes.json": "Follow-up scopes", "evidence.csv": "Evidence details", "result.json": "Technical JSON" },
+  restricted: { title: "Restricted bank details", help: "Payer names and raw references are encrypted. They can be viewed or downloaded only after an explicit, short-lived authorization; access is audited.", reveal: "Authorize and view", download: "Authorize and download CSV", delete: "Permanently delete restricted details", empty: "No restricted details are available.", error: "Restricted details could not be read.", deleted: "Restricted details were permanently deleted." },
 };
 ---
 
@@ -393,6 +397,7 @@ const labels = locale === "zh" ? {
         <span class="run-input-question" data-input-question aria-live="polite">{labels.input}</span>
         <small data-input-help>{labels.inputHelp}</small>
         <textarea name="input" required rows="3" placeholder={labels.inputPlaceholder}></textarea>
+        <input name="receipt_reference" type="password" autocomplete="off" hidden placeholder={labels.secureReferencePlaceholder} />
       </label>
       <p class="run-input-feedback" data-input-feedback aria-live="polite" hidden></p>
       <button type="submit"><Send size={16} aria-hidden="true" /><span data-input-submit>{labels.send}</span></button>
@@ -425,6 +430,17 @@ const labels = locale === "zh" ? {
     </div>
     <p class="business-result-overview" data-business-overview></p>
     <div class="presentation-blocks" data-presentation-blocks hidden></div>
+    <section class="restricted-artifact-panel" data-restricted-artifact hidden>
+      <h3>{labels.restricted.title}</h3>
+      <p>{labels.restricted.help}</p>
+      <div class="runtime-form-actions">
+        <button type="button" data-restricted-reveal>{labels.restricted.reveal}</button>
+        <button type="button" data-restricted-download>{labels.restricted.download}</button>
+        <button type="button" class="danger-button" data-restricted-delete>{labels.restricted.delete}</button>
+      </div>
+      <p data-restricted-status aria-live="polite"></p>
+      <div class="run-table-wrap" data-restricted-table hidden></div>
+    </section>
     <div class="run-table-wrap" data-business-stages-wrap hidden>
       <h3>{labels.stages}</h3>
       <table class="run-business-table">
@@ -612,6 +628,35 @@ const labels = locale === "zh" ? {
     return values[state] || titleCase(state);
   };
   const firstRule = (run) => (run.result?.rule_results || []).find((item) => item?.business_report || item?.stages);
+  const restrictedArtifactFor = (run) => {
+    const rule = firstRule(run) || {};
+    const ref = rule.restricted_detail_artifact || rule.workflow_output?.restricted_detail_artifact;
+    return ref && typeof ref === "object" && ref.artifact_id ? ref : null;
+  };
+  const renderRestrictedArtifact = (run) => {
+    const panel = root.querySelector("[data-restricted-artifact]");
+    const ref = restrictedArtifactFor(run);
+    panel.hidden = !ref;
+    panel.dataset.artifactId = ref?.artifact_id || "";
+    panel.querySelector("[data-restricted-status]").textContent = ref?.deleted_at ? labels.restricted.deleted : "";
+    panel.querySelector("[data-restricted-table]").hidden = true;
+    panel.querySelectorAll("button").forEach((button) => { button.disabled = Boolean(ref?.deleted_at); });
+  };
+  const csrfToken = async () => {
+    const response = await fetch(`${apiBase}/api/security/csrf`);
+    if (!response.ok) throw new Error(await response.text());
+    return String((await response.json()).csrf_token || "");
+  };
+  const revealToken = async (operation) => {
+    const panel = root.querySelector("[data-restricted-artifact]");
+    const artifactId = panel.dataset.artifactId;
+    const csrf = await csrfToken();
+    const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/structured-artifacts/${encodeURIComponent(artifactId)}/reveal`, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-SAPBA-CSRF": csrf }, body: JSON.stringify({ operation }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return String((await response.json()).token || "");
+  };
   const conditionalSkipBusinessReport = (run) => {
     const skipped = (run.result?.node_results || []).find((item) => item?.status === "skipped" && item?.output?.business_report);
     if (!skipped) return null;
@@ -1596,10 +1641,11 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-rules]").textContent = format(run.result?.rule_results);
     root.querySelector("[data-tool-calls]").textContent = format(run.result?.tool_calls);
     root.querySelector("[data-evidence]").textContent = format(run.result?.evidence);
-    renderProgress(run); renderLimits(run); renderBusinessReport(run); renderPlanTable(run); renderEvidenceTable(run); renderCompleteness(run);
+    renderProgress(run); renderLimits(run); renderBusinessReport(run); renderRestrictedArtifact(run); renderPlanTable(run); renderEvidenceTable(run); renderCompleteness(run);
     const inputForm = root.querySelector("[data-input-form]");
     const disclosure = root.querySelector("[data-input-disclosure]");
     const waitingForInput = run.status === "waiting_input";
+    const secureReference = waitingForInput && run.error?.detail?.input_kind === "secure_business_reference" && run.error?.detail?.field === "receipt_reference";
     const steerable = run.mode === "free_query" && Boolean(run.thread_id) && ["planning", "validating", "running"].includes(run.status);
     const displayMode = waitingForInput ? "clarification" : (steerable ? "steer" : "");
     disclosure.hidden = !displayMode;
@@ -1614,7 +1660,11 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-input-question]").textContent = waitingForInput ? clarificationQuestion : labels.steerTitle;
     root.querySelector("[data-input-help]").textContent = waitingForInput ? labels.inputHelp : labels.steerHelp;
     root.querySelector("[data-input-submit]").textContent = waitingForInput ? labels.clarificationSend : labels.steerSend;
-    inputForm.querySelector("textarea").placeholder = waitingForInput ? labels.clarificationPlaceholder : (steerable ? labels.steerPlaceholder : labels.inputPlaceholder);
+    const ordinaryInput = inputForm.querySelector("textarea");
+    const secureInput = inputForm.querySelector('input[name="receipt_reference"]');
+    ordinaryInput.hidden = secureReference; ordinaryInput.required = !secureReference;
+    secureInput.hidden = !secureReference; secureInput.required = secureReference;
+    ordinaryInput.placeholder = waitingForInput ? labels.clarificationPlaceholder : (steerable ? labels.steerPlaceholder : labels.inputPlaceholder);
     root.querySelector("[data-draft]").hidden = Boolean(sessionId) || run.mode !== "free_query" || !terminal.has(run.status) || !run.plan;
     root.querySelector("[data-start-session]").hidden = Boolean(sessionId) || run.mode !== "free_query" || !["completed", "inconclusive"].includes(run.status);
     const downloads = root.querySelector("[data-downloads]");
@@ -1677,15 +1727,55 @@ const labels = locale === "zh" ? {
   };
 
   root?.querySelector("[data-reconnect]")?.addEventListener("click", connect);
+  root?.querySelector("[data-restricted-reveal]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget; const panel = root.querySelector("[data-restricted-artifact]"); const status = panel.querySelector("[data-restricted-status]");
+    button.disabled = true; status.textContent = "";
+    try {
+      const token = await revealToken("rows");
+      const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/structured-artifacts/${encodeURIComponent(panel.dataset.artifactId)}/rows?offset=0&limit=200`, { headers: { "X-SAPBA-Reveal-Token": token } });
+      if (!response.ok) throw new Error(await response.text());
+      const payload = await response.json(); const rows = Array.isArray(payload.rows) ? payload.rows : []; const wrap = panel.querySelector("[data-restricted-table]"); wrap.replaceChildren();
+      if (!rows.length) { const empty = document.createElement("p"); empty.textContent = labels.restricted.empty; wrap.append(empty); }
+      else {
+        const columns = [...new Set(rows.flatMap((row) => Object.keys(row || {})))]; const table = document.createElement("table"); table.className = "run-business-table";
+        const head = document.createElement("thead"); const header = document.createElement("tr"); columns.forEach((name) => { const cell = document.createElement("th"); cell.textContent = friendlyId(name); header.append(cell); }); head.append(header);
+        const body = document.createElement("tbody"); rows.forEach((row) => { const tr = document.createElement("tr"); columns.forEach((name) => { const td = document.createElement("td"); td.textContent = row?.[name] == null ? labels.empty : String(row[name]); tr.append(td); }); body.append(tr); }); table.append(head, body); wrap.append(table);
+      }
+      wrap.hidden = false;
+    } catch (_) { status.textContent = labels.restricted.error; }
+    finally { button.disabled = false; }
+  });
+  root?.querySelector("[data-restricted-download]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget; const panel = root.querySelector("[data-restricted-artifact]"); const status = panel.querySelector("[data-restricted-status]"); button.disabled = true; status.textContent = "";
+    try {
+      const token = await revealToken("download");
+      const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/structured-artifacts/${encodeURIComponent(panel.dataset.artifactId)}/download`, { headers: { "X-SAPBA-Reveal-Token": token } });
+      if (!response.ok) throw new Error(await response.text());
+      const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${panel.dataset.artifactId}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (_) { status.textContent = labels.restricted.error; }
+    finally { button.disabled = false; }
+  });
+  root?.querySelector("[data-restricted-delete]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget; const panel = root.querySelector("[data-restricted-artifact]"); const status = panel.querySelector("[data-restricted-status]");
+    if (!window.confirm(labels.restricted.delete)) return;
+    button.disabled = true;
+    try {
+      const csrf = await csrfToken();
+      const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/structured-artifacts/${encodeURIComponent(panel.dataset.artifactId)}`, { method: "DELETE", headers: { "Content-Type": "application/json", "X-SAPBA-CSRF": csrf }, body: JSON.stringify({ reason: "user_deleted" }) });
+      if (!response.ok) throw new Error(await response.text());
+      status.textContent = labels.restricted.deleted; panel.querySelector("[data-restricted-table]").hidden = true; panel.querySelectorAll("button").forEach((item) => { item.disabled = true; });
+    } catch (_) { status.textContent = labels.restricted.error; button.disabled = false; }
+  });
   root?.querySelector("[data-cancel]")?.addEventListener("click", async () => {
     await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }); await loadRun();
   });
   root?.querySelector("[data-input-form]")?.addEventListener("submit", async (event) => {
-    event.preventDefault(); const form = event.currentTarget; const input = String(new FormData(form).get("input") || "").trim();
+    event.preventDefault(); const form = event.currentTarget; const formData = new FormData(form); const input = String(formData.get("input") || "").trim(); const receiptReference = String(formData.get("receipt_reference") || "").trim();
     const button = form.querySelector("button[type=submit]"); if (button) button.disabled = true;
     const feedback = root.querySelector("[data-input-feedback]"); feedback.hidden = true;
     try {
-      const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/input`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input }) });
+      const body = receiptReference ? { sensitiveInputs: { receipt_reference: receiptReference } } : { input };
+      const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/input`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!response.ok) throw new Error(await response.text());
       const payload = await response.json();
       form.reset(); feedback.textContent = payload.mode === "steer" ? labels.steerReceived : labels.clarificationReceived;

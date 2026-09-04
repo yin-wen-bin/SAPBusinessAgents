@@ -712,6 +712,9 @@ class SkillCapability:
     def list(self) -> list[dict[str, Any]]:
         return self.manager.invoke_sync("skill_catalog.v1", "list")
 
+    def list_all_approved_skills(self) -> list[dict[str, Any]]:
+        return self.list()
+
     def get(self, skill_id: str) -> dict[str, Any]:
         return self.manager.invoke_sync("skill_catalog.v1", "get", skill_id)
 

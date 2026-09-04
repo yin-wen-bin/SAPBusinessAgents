@@ -1,0 +1,762 @@
+{
+  "schemaVersion": 2,
+  "slug": "ar-collection",
+  "module": "FI",
+  "title": {
+    "zh": "应收账款催收助手",
+    "en": "AR Collection Assistant"
+  },
+  "summary": {
+    "zh": "计算客户应收账龄，匹配未认领银行到账，形成催收优先级和需要人工审核的沟通草稿。",
+    "en": "Calculates receivables aging, suggests bank-receipt matches and prepares prioritized, reviewable collection drafts."
+  },
+  "status": "Three-stage live acceptance passed",
+  "version": "0.1.0",
+  "owner": "FI-AR",
+  "tags": [
+    "Accounts Receivable",
+    "Collections",
+    "Cash Application",
+    "Aging"
+  ],
+  "sapModules": [
+    "FI-AR",
+    "SD-Billing",
+    "Bank Accounting"
+  ],
+  "transactions": [],
+  "tables": [],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "公司代码",
+      "客户编号",
+      "查询基准日"
+    ],
+    "en": [
+      "Company code",
+      "Customer",
+      "As-of date"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "公司代码",
+      "客户编号",
+      "查询基准日",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
+    ],
+    "en": [
+      "Company code",
+      "Customer",
+      "As-of date",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "不自动清账或记账",
+      "不自动发送催款信息",
+      "争议或冻结客户进入人工复核"
+    ],
+    "en": [
+      "Never clears or posts automatically",
+      "Never sends collection messages automatically",
+      "Disputed or blocked accounts route to review"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "execute-collect_ar_evidence",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `collect_ar_evidence`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_ar_evidence` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube",
+          "GET API_BUSINESS_PARTNER@2.0/A_CustomerDunning"
+        ],
+        "en": [
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube",
+          "GET API_BUSINESS_PARTNER@2.0/A_CustomerDunning"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `collect_ar_evidence` / `execute_plan`",
+            "en": "Execute `collect_ar_evidence` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "collect_ar_evidence"
+      ]
+    },
+    {
+      "id": "execute-evaluate_business_result",
+      "title": {
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
+      },
+      "description": {
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.evaluate_business_agent"
+        ],
+        "en": [
+          "rule.evaluate_business_agent"
+        ]
+      },
+      "tools": [
+        {
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "title": {
+            "zh": "公司代码",
+            "en": "Company code"
+          },
+          "description": {
+            "zh": "请输入公司代码。",
+            "en": "Enter the company code."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "customer": {
+          "type": "string",
+          "title": {
+            "zh": "客户编号",
+            "en": "Customer"
+          },
+          "description": {
+            "zh": "请输入客户编号。",
+            "en": "Enter the customer."
+          },
+          "placeholder": {
+            "zh": "例如：17100001",
+            "en": "Example: 17100001"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "as_of": {
+          "type": "string",
+          "title": {
+            "zh": "查询基准日",
+            "en": "As-of date"
+          },
+          "description": {
+            "zh": "请输入查询基准日。",
+            "en": "Enter the as-of date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "required": [
+        "company_code",
+        "customer",
+        "as_of"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_ar_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "customer_items",
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "http_method": "GET",
+                "select_fields": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "FiscalPeriod",
+                  "Ledger",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "Supplier",
+                  "Customer",
+                  "FinancialAccountType",
+                  "GLAccount",
+                  "OperationalGLAccount",
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "PostingDate",
+                  "NetDueDate",
+                  "ClearingDate",
+                  "ClearingIsReversed",
+                  "IsOpenItemManaged",
+                  "DebitCreditCode",
+                  "IsCleared",
+                  "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "PaymentMethod",
+                  "PaymentBlockingReason",
+                  "HouseBank",
+                  "HouseBankAccount",
+                  "AccountingDocumentType",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency",
+                  "AmountInCompanyCodeCurrency",
+                  "CompanyCodeCurrency",
+                  "OrderID",
+                  "DunningArea",
+                  "DunningKey",
+                  "DunningLevel",
+                  "DunningBlockingReason",
+                  "LastDunningDate",
+                  "PaymentTerms"
+                ],
+                "rationale": "Load customer line-item and item-level dunning evidence through the cutoff.",
+                "filters": [
+                  {
+                    "field": "CompanyCode",
+                    "operator": "eq",
+                    "value": "{{input.company_code}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "Customer",
+                    "operator": "eq",
+                    "value": "{{input.customer}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "FinancialAccountType",
+                    "operator": "eq",
+                    "value": "D",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "PostingDate",
+                    "operator": "le",
+                    "value": "{{input.as_of}}",
+                    "value_type": "date_end"
+                  }
+                ],
+                "order_by": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
+                ]
+              },
+              {
+                "step_id": "customer_dunning",
+                "service_name": "API_BUSINESS_PARTNER",
+                "odata_version": "2.0",
+                "entity_set": "A_CustomerDunning",
+                "http_method": "GET",
+                "select_fields": [
+                  "Customer",
+                  "CompanyCode",
+                  "DunningArea",
+                  "DunningProcedure",
+                  "DunningLevel",
+                  "DunningBlock",
+                  "DunningRecipient",
+                  "LastDunnedOn",
+                  "LegDunningProcedureOn",
+                  "DunningClerk"
+                ],
+                "rationale": "Load the current customer dunning master as a separate, explicitly non-historical source.",
+                "filters": [
+                  {
+                    "field": "CompanyCode",
+                    "operator": "eq",
+                    "value": "{{input.company_code}}",
+                    "value_type": "string"
+                  },
+                  {
+                    "field": "Customer",
+                    "operator": "eq",
+                    "value": "{{input.customer}}",
+                    "value_type": "string"
+                  }
+                ],
+                "order_by": [
+                  "Customer",
+                  "CompanyCode",
+                  "DunningArea"
+                ]
+              }
+            ],
+            "rationale": "Collect customer receivable and dunning evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "ar-collection",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_ar_evidence": "{{steps.collect_ar_evidence.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "title": {
+            "zh": "公司代码",
+            "en": "Company code"
+          },
+          "description": {
+            "zh": "请输入公司代码。",
+            "en": "Enter the company code."
+          },
+          "placeholder": {
+            "zh": "例如：1010",
+            "en": "Example: 1010"
+          },
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "customer": {
+          "type": "string",
+          "title": {
+            "zh": "客户编号",
+            "en": "Customer"
+          },
+          "description": {
+            "zh": "请输入客户编号。",
+            "en": "Enter the customer."
+          },
+          "placeholder": {
+            "zh": "例如：17100001",
+            "en": "Example: 17100001"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]+$"
+        },
+        "as_of": {
+          "type": "string",
+          "title": {
+            "zh": "查询基准日",
+            "en": "As-of date"
+          },
+          "description": {
+            "zh": "请输入查询基准日。",
+            "en": "Enter the as-of date."
+          },
+          "placeholder": {
+            "zh": "YYYY-MM-DD",
+            "en": "YYYY-MM-DD"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "company_code",
+        "customer",
+        "as_of",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "company_code": "{{steps.evaluate_business_result.output.workflow_output.company_code}}",
+      "customer": "{{steps.evaluate_business_result.output.workflow_output.customer}}",
+      "as_of": "{{steps.evaluate_business_result.output.workflow_output.as_of}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "company_code",
+        "fiscal_year",
+        "accounting_document",
+        "accounting_document_item"
+      ],
+      "facts": [
+        "customer",
+        "posting_date",
+        "due_date",
+        "as_of_status",
+        "clearing_date",
+        "clearing_document",
+        "dunning_level",
+        "last_dunning_date",
+        "dunning_blocking_reason",
+        "dunning_as_of_status",
+        "business_status"
+      ],
+      "metrics": [
+        "open_items",
+        "dunned_items",
+        "historical_dunning_unknown"
+      ],
+      "decimalFields": [
+        "amount"
+      ],
+      "decimalMetricIds": [
+        "open_items",
+        "dunned_items",
+        "historical_dunning_unknown"
+      ],
+      "currencyFields": [
+        "currency"
+      ],
+      "unitFields": [],
+      "dateFields": [
+        "posting_date",
+        "due_date",
+        "clearing_date",
+        "last_dunning_date"
+      ],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {
+        "customer": "customer"
+      },
+      "constantDefaults": {
+        "business_status": "capability_blocked",
+        "dunning_blocking_reason": ""
+      },
+      "fieldAliases": {
+        "company_code": [
+          "Company Code",
+          "公司代码"
+        ],
+        "fiscal_year": [
+          "Fiscal Year",
+          "会计年度"
+        ],
+        "accounting_document": [
+          "Accounting Document",
+          "会计凭证"
+        ],
+        "accounting_document_item": [
+          "Accounting Document Item",
+          "Item",
+          "行项目"
+        ],
+        "customer": [
+          "Customer",
+          "客户"
+        ],
+        "posting_date": [
+          "Posting Date",
+          "过账日期"
+        ],
+        "due_date": [
+          "Due Date",
+          "Net Due Date",
+          "net_due_date",
+          "到期日"
+        ],
+        "amount": [
+          "Amount",
+          "Transaction Amount",
+          "transaction_amount",
+          "Company-Code Amount",
+          "company_code_amount",
+          "金额"
+        ],
+        "currency": [
+          "Currency",
+          "Transaction Currency",
+          "transaction_currency",
+          "Company-Code Currency",
+          "company_code_currency",
+          "币种"
+        ],
+        "as_of_status": [
+          "As-of Status",
+          "截止日状态"
+        ],
+        "clearing_date": [
+          "Clearing Date",
+          "Later Clearing Date",
+          "later_clearing_date",
+          "清账日期",
+          "后续清账日"
+        ],
+        "clearing_document": [
+          "Clearing Document",
+          "清账凭证"
+        ],
+        "dunning_level": [
+          "Dunning Level",
+          "催款级别",
+          "催收级别"
+        ],
+        "last_dunning_date": [
+          "Last Dunning Date",
+          "最后催款日期",
+          "最后催收日期"
+        ],
+        "dunning_blocking_reason": [
+          "Dunning Blocking Reason",
+          "催款冻结原因",
+          "催收冻结原因"
+        ],
+        "dunning_as_of_status": [
+          "Dunning As-of Status",
+          "截止日催收状态",
+          "截止日催款状态"
+        ],
+        "open_items": [
+          "Open Items",
+          "Open Count",
+          "open_count",
+          "未清项目数"
+        ],
+        "dunned_items": [
+          "Dunned Items",
+          "Dunned Count",
+          "dunned_count",
+          "Dunned By Cutoff",
+          "dunned_by_cutoff",
+          "截止日前催收项目数"
+        ],
+        "historical_dunning_unknown": [
+          "Historical Dunning Unknown",
+          "Unknown Dunning Count",
+          "unknown_dunning_count",
+          "historical_dunning_unknown",
+          "历史催收未知项目数"
+        ]
+      },
+      "fieldExtractors": {
+        "as_of_status": {
+          "source": [
+            "later_clearing",
+            "later_clearing_date",
+            "subsequent_clearing",
+            "clearing_date"
+          ],
+          "contains": {
+            "none": "open",
+            "no subsequent": "open",
+            "still uncleared": "open"
+          },
+          "default": "open_subsequently_cleared"
+        },
+        "clearing_date": {
+          "source": [
+            "later_clearing",
+            "later_clearing_date",
+            "subsequent_clearing"
+          ],
+          "pattern": "(\\d{4}-\\d{2}-\\d{2})",
+          "default": ""
+        },
+        "clearing_document": {
+          "source": [
+            "later_clearing",
+            "subsequent_clearing"
+          ],
+          "pattern": "(?:doc|document)\\s*(\\d+)",
+          "default": ""
+        },
+        "dunning_level": {
+          "source": [
+            "cutoff_dunning",
+            "dunning_status"
+          ],
+          "pattern": "level\\s*(\\d+)",
+          "default": "0"
+        },
+        "last_dunning_date": {
+          "source": [
+            "cutoff_dunning",
+            "dunning_status"
+          ],
+          "pattern": "(\\d{4}-\\d{2}-\\d{2})",
+          "default": ""
+        },
+        "dunning_as_of_status": {
+          "source": [
+            "cutoff_dunning",
+            "cutoff_dunning_status",
+            "dunning_status"
+          ],
+          "contains": {
+            "historically unknown": "historical_status_unknown",
+            "history unknown": "historical_status_unknown",
+            "dunned by cutoff": "confirmed_before_cutoff",
+            "no dunning recorded": "no_item_dunning_evidence",
+            "no pre-cutoff dunning found": "no_item_dunning_evidence"
+          },
+          "default": "historical_status_unknown"
+        }
+      },
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "historical_dunning_evidence": [
+          "historical dunning",
+          "dunning history",
+          "last-dunning",
+          "mhnd",
+          "historical collection",
+          "cutoff dunning",
+          "历史催收",
+          "截止日催收",
+          "历史催款"
+        ],
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [
+        "historical_dunning_evidence"
+      ],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {},
+      "businessStatusDefinition": "",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-08-20T05:18:55.847532+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
+      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "codexDirectBaselineHash": "sha256:b3206f0bbafb8431b0af10a3ed7c15d583e781657172d5821332a181e6efc458",
+    "freeQueryHash": "sha256:dd2690c1171a66ca223e0b23cc8ebe03eccbdd0fe01b74e13120fd92f614ea40",
+    "adjudicatedResultHash": "sha256:b3206f0bbafb8431b0af10a3ed7c15d583e781657172d5821332a181e6efc458",
+    "fixedAgentHash": "sha256:380611b1fdfd624f7b9d7c2d3c7475bbaad571d0ee2de5d80ecb88c959822433",
+    "comparisonHash": "sha256:89ec4505dae5c4d8f46c89861f3e9d37ad1c4fec44ada38a5446eb316588dd45"
+  }
+}

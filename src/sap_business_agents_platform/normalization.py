@@ -157,6 +157,35 @@ class SapValueNormalizer:
                 item["value"] = self.normalize_structured_value(
                     item.get("value"), rule=rule, label=f"{service}/{entity}.{field}"
                 )
+            for item in step.get("tuple_filters") or []:
+                if not isinstance(item, dict):
+                    continue
+                fields = [str(value) for value in item.get("fields") or []]
+                values = item.get("values")
+                if not isinstance(values, list):
+                    continue
+                normalized_rows: list[Any] = []
+                for row in values:
+                    if not isinstance(row, list) or len(row) != len(fields):
+                        normalized_rows.append(row)
+                        continue
+                    normalized_rows.append(
+                        [
+                            self.normalize_structured_value(
+                                value,
+                                rule=self.field_rule(
+                                    service,
+                                    version,
+                                    entity,
+                                    field,
+                                    metadata=metadata,
+                                ),
+                                label=f"{service}/{entity}.{field}",
+                            )
+                            for field, value in zip(fields, row, strict=True)
+                        ]
+                    )
+                item["values"] = normalized_rows
         return normalized
 
     def field_rule(

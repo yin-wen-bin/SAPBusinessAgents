@@ -99,6 +99,94 @@ def test_agent_management_catalog_excludes_platform_assistants_and_creates_blank
         assert checked.json()["validation"]["verdict"] == "NOT_TESTED"
 
 
+def test_restricted_artifact_access_is_local_one_time_audited_and_csv_safe(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        _settings(tmp_path),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    run_id = "run_restricted_artifact"
+    app.state.store.create_run(
+        run_id,
+        RunCreate(mode=RunMode.free_query, query="fixture", input={}),
+    )
+    public, refs = app.state.restricted_artifacts.materialize_skill_output(
+        run_id=run_id,
+        skill_id="sap-bank-receipt-evidence",
+        output={
+            "status": "complete",
+            "receipts": [
+                {
+                    "statement_id": "STATEMENT-FIXTURE",
+                    "statement_item": "1",
+                    "payer_name": "=DANGEROUS-FORMULA",
+                    "bank_reference": "+PRIVATE-REFERENCE",
+                }
+            ],
+        },
+    )
+    assert public["restricted_artifact_ref"]["artifact_id"] == refs[0]["artifact_id"]
+    artifact_id = refs[0]["artifact_id"]
+    local = {"Origin": "http://127.0.0.1:4321"}
+
+    with TestClient(app) as client:
+        assert client.get("/api/security/csrf").status_code == 403
+        csrf_response = client.get("/api/security/csrf", headers=local)
+        assert csrf_response.status_code == 200
+        csrf = csrf_response.json()["csrf_token"]
+        reveal = client.post(
+            f"/api/runs/{run_id}/structured-artifacts/{artifact_id}/reveal",
+            json={"operation": "rows"},
+            headers={**local, "X-SAPBA-CSRF": csrf},
+        )
+        assert reveal.status_code == 200, reveal.text
+        token = reveal.json()["token"]
+        rows = client.get(
+            f"/api/runs/{run_id}/structured-artifacts/{artifact_id}/rows",
+            headers={**local, "X-SAPBA-Reveal-Token": token},
+        )
+        assert rows.status_code == 200, rows.text
+        assert rows.json()["rows"][0]["payer_name"] == "=DANGEROUS-FORMULA"
+        replay = client.get(
+            f"/api/runs/{run_id}/structured-artifacts/{artifact_id}/rows",
+            headers={**local, "X-SAPBA-Reveal-Token": token},
+        )
+        assert replay.status_code == 401
+
+        download_reveal = client.post(
+            f"/api/runs/{run_id}/structured-artifacts/{artifact_id}/reveal",
+            json={"operation": "download"},
+            headers={**local, "X-SAPBA-CSRF": csrf},
+        )
+        csv_response = client.get(
+            f"/api/runs/{run_id}/structured-artifacts/{artifact_id}/download",
+            headers={
+                **local,
+                "X-SAPBA-Reveal-Token": download_reveal.json()["token"],
+            },
+        )
+        assert csv_response.status_code == 200
+        assert csv_response.content.startswith(b"\xef\xbb\xbf")
+        assert "'=DANGEROUS-FORMULA" in csv_response.text
+        assert "'+PRIVATE-REFERENCE" in csv_response.text
+
+        deleted = client.request(
+            "DELETE",
+            f"/api/runs/{run_id}/structured-artifacts/{artifact_id}",
+            json={"reason": "user_requested"},
+            headers={**local, "X-SAPBA-CSRF": csrf},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted_at"]
+
+    event_types = [item.type for item in app.state.store.events_after(run_id)]
+    assert event_types.count("restricted_artifact_reveal_authorized") == 2
+    assert event_types.count("restricted_artifact_revealed") == 2
+    assert event_types[-1] == "restricted_artifact_deleted"
+
+
 def test_presentation_table_endpoint_pages_persisted_records_beyond_inline_limit(
     tmp_path: Path,
 ) -> None:
@@ -1161,6 +1249,23 @@ def test_manifest_validates_opted_in_server_defaults() -> None:
         raise AssertionError("An invalid server default passed manifest validation")
 
 
+def test_manifest_rejects_malformed_output_mapping_template() -> None:
+    root = Path(__file__).resolve().parents[1]
+    manifest = AgentRepository(root / "agents").get("ar-cash-application")
+    validate_execution(manifest)
+    malformed = json.loads(json.dumps(manifest))
+    malformed["execution"]["outputMapping"]["source_receipt_count"] = (
+        "{{steps.evaluate_business_result.output.workflow_output.source_receipt_count}"
+    )
+
+    try:
+        validate_execution(malformed)
+    except ManifestError as exc:
+        assert "malformed template expression" in str(exc)
+    else:
+        raise AssertionError("A malformed output mapping template passed validation")
+
+
 def test_manifest_validates_sap_identifier_extension() -> None:
     root = Path(__file__).resolve().parents[1]
     manifest = AgentRepository(root / "agents").get("supplier-performance-risk")
@@ -1502,7 +1607,7 @@ def test_shortage_agent_explicit_empty_or_null_defaulted_input_is_rejected(
             }
 
 
-def test_old_adt_contract_gap_is_recorded_and_mm_result_remains_inconclusive(
+def test_skill_contract_gap_fails_closed_instead_of_being_recorded(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
@@ -1565,18 +1670,10 @@ def test_old_adt_contract_gap_is_recorded_and_mm_result_remains_inconclusive(
         )
         run = _wait(client, response.json()["run_id"])
 
-    assert run["status"] == "inconclusive"
+    assert run["status"] == "failed"
+    assert run["error"]["code"] == "skill_contract_incompatible"
     assert calls
     assert all("connection_profile" not in payload for payload in calls)
-    assert any(
-        error["code"] == "skill_contract_incompatible"
-        for error in run["result"]["errors"]
-    )
-    assert any(
-        step.get("status") == "capability_blocked"
-        and step.get("error", {}).get("code") == "skill_contract_incompatible"
-        for step in run["result"]["tool_calls"]
-    )
 
 
 def test_skillhub_local_configuration_endpoint_is_not_writable(tmp_path: Path) -> None:
@@ -2482,9 +2579,10 @@ def test_standard_skill_contract_and_free_query_harness(tmp_path: Path) -> None:
                     "required": ["ok", "source_complete", "received"],
                     "additionalProperties": False,
                 },
-                "read_only": True,
-                "validated": True,
-                "timeout": 5,
+                    "read_only": True,
+                    "validated": True,
+                    "timeout": 5,
+                    "output_policy": "public",
             }
         ],
     }

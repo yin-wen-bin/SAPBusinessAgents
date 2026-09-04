@@ -1,0 +1,11 @@
+{
+  "verdict": "NOT_TESTED",
+  "executable": false,
+  "acceptanceMode": "three_stage",
+  "freeQueryComparison": "NOT_TESTED",
+  "fixedAgentComparison": "NOT_TESTED",
+  "blockingLimitations": [
+    "three_stage_live_acceptance_pending",
+    "restricted_artifact_ui_validation_pending"
+  ]
+}

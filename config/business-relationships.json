@@ -178,6 +178,20 @@
       "semantic": "fiscal_year"
     },
     {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "ReverseDocument",
+      "semantic": "accounting_document_id"
+    },
+    {
+      "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_OperationalAcctgDocItemCube",
+      "field": "ReverseDocumentFiscalYear",
+      "semantic": "fiscal_year"
+    },
+    {
       "service_name": "API_GLACCOUNTLINEITEM",
       "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
@@ -1857,6 +1871,114 @@
         "odata_version": "2.0",
         "entity_set": "A_BillingDocumentItem",
         "field": "SalesDocument"
+      }
+    },
+    {
+      "id": "fi-operational-document-clearing-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "AccountingDocument"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "ClearingAccountingDocument"
+      }
+    },
+    {
+      "id": "fi-operational-year-clearing-year",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "FiscalYear"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "ClearingDocFiscalYear"
+      }
+    },
+    {
+      "id": "fi-operational-clearing-document-to-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "ClearingAccountingDocument"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "AccountingDocument"
+      }
+    },
+    {
+      "id": "fi-operational-clearing-year-to-year",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "ClearingDocFiscalYear"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "FiscalYear"
+      }
+    },
+    {
+      "id": "fi-operational-reverse-document-to-document",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "ReverseDocument"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "AccountingDocument"
+      }
+    },
+    {
+      "id": "fi-operational-reverse-year-to-year",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "ReverseDocumentFiscalYear"
+      },
+      "target": {
+        "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OperationalAcctgDocItemCube",
+        "field": "FiscalYear"
       }
     }
   ]

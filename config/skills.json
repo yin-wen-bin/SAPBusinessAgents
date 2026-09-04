@@ -2,6 +2,31 @@
   "schema_version": "1.0",
   "skills": [
     {
+      "skill_id": "sap-bank-receipt-evidence",
+      "description": {
+        "zh": "按公司代码和值日期读取银行来款、过账、冲销及财务凭证引用，并将敏感银行字段交由平台受限制品存储。",
+        "en": "Reads bank receipt, posting, reversal, and FI-document evidence by company code and value date while routing sensitive bank fields to restricted platform storage."
+      },
+      "entrypoint": "skills/FI/sap-bank-receipt-evidence/run.py",
+      "manifest_path": "skills/FI/sap-bank-receipt-evidence/manifest.json",
+      "source_profile_path": "skills/FI/sap-bank-receipt-evidence/references/source-profiles.json",
+      "input_schema_path": "skills/FI/sap-bank-receipt-evidence/references/input.schema.json",
+      "output_schema_path": "skills/FI/sap-bank-receipt-evidence/references/output.schema.json",
+      "read_only": true,
+      "validated": true,
+      "platform_timeout_seconds": 300,
+      "output_policy": "restricted_artifact",
+      "expected_package_sha256": "4dce7a07a7e2dd101142f34bb3397505fcd53c55a476a3eeca2692cd8b829f4e",
+      "expected_git_commit": "24de13c8d073dcbad911598162b16eec16e548a1",
+      "expected_profile_version": "2026-09-03.2",
+      "expected_metadata_sha256": "03232d2f8a5ba02f3647a36002d85ad20d4045a38c03307ba4aabbe8c51c6e46",
+      "allowed_http_methods": ["GET", "POST"],
+      "allowed_endpoints": [
+        "/sap/bc/adt/datapreview/freestyle",
+        "/sap/bc/adt/ddic/ddl/sources/{ddic_object}/source/main"
+      ]
+    },
+    {
       "skill_id": "sap-adt-table-export",
       "description": {
         "zh": "通过 SAPSkillhub 自主管理的只读连接和 ADT Data Preview 导出有界的表或 CDS 证据。",
@@ -12,7 +37,8 @@
       "output_schema_path": "skills/Common/sap-adt-table-export/references/output.schema.json",
       "read_only": true,
       "validated": true,
-      "timeout": 300
+      "timeout": 300,
+      "output_policy": "restricted_artifact"
     },
     {
       "skill_id": "sap-production-order-cost-analysis",
@@ -25,7 +51,8 @@
       "output_schema_path": "skills/CO/sap-production-order-cost-analysis/references/output.schema.json",
       "read_only": true,
       "validated": true,
-      "timeout": 600
+      "timeout": 600,
+      "output_policy": "public"
     },
     {
       "skill_id": "sap-wbs-object-resolver",
@@ -38,7 +65,8 @@
       "output_schema_path": "skills/CO/sap-wbs-object-resolver/references/output.schema.json",
       "read_only": true,
       "validated": true,
-      "timeout": 120
+      "timeout": 120,
+      "output_policy": "public"
     },
     {
       "skill_id": "sap-control-object-commitment-evidence",
@@ -51,7 +79,8 @@
       "output_schema_path": "skills/CO/sap-control-object-commitment-evidence/references/output.schema.json",
       "read_only": true,
       "validated": false,
-      "timeout": 180
+      "timeout": 180,
+      "output_policy": "public"
     }
   ]
 }

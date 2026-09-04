@@ -17,6 +17,8 @@ const copy = locale === "zh" ? {
   safety: "仅允许 SAP Provider GET 和已批准的只读 Skill",
   error: "无法连接本地运行服务，请先启动 127.0.0.1:8765。",
   gapContext: "正在为工作流补齐缺口 Agent。完成查询后，请点击“保存为 Agent 草稿”。",
+  secureLabel: "银行来款参考号（可选安全参数）",
+  secureHelp: "请勿把银行参考号写入问题正文；需要时在这里填写，平台会加密并在运行结束后销毁原值。",
 } : {
   eyebrow: "Free SAP query",
   title: "No matching Agent? Ask SAP directly",
@@ -26,6 +28,8 @@ const copy = locale === "zh" ? {
   safety: "Only SAP Provider GET and approved read-only Skills are allowed",
   error: "Cannot reach the local runtime. Start 127.0.0.1:8765 first.",
   gapContext: "This query is closing a workflow Agent gap. When it finishes, select Save as Agent draft.",
+  secureLabel: "Bank receipt reference (optional secure parameter)",
+  secureHelp: "Do not put a bank reference in the question text. Enter it here when needed; the platform encrypts it and destroys the original value after the run.",
 };
 ---
 
@@ -39,6 +43,11 @@ const copy = locale === "zh" ? {
   </div>
   <form class="free-query-form">
     <textarea name="query" required rows="4" placeholder={copy.placeholder}></textarea>
+    <label>
+      <span>{copy.secureLabel}</span>
+      <small>{copy.secureHelp}</small>
+      <input name="receipt_reference" type="password" autocomplete="off" maxlength="35" />
+    </label>
     <div class="runtime-form-actions">
       <span class="runtime-form-error" role="alert" hidden>{copy.error}</span>
       <button type="submit">{copy.submit}<ArrowRight size={17} aria-hidden="true" /></button>
@@ -71,11 +80,16 @@ const copy = locale === "zh" ? {
       if (submit) submit.disabled = true;
       if (error) error.hidden = true;
       const query = String(new FormData(form).get("query") || "").trim();
+      const receiptReference = String(new FormData(form).get("receipt_reference") || "").trim();
       try {
         const response = await fetch(`${panel.dataset.apiBase}/api/runs`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode: "free_query", query }),
+          body: JSON.stringify({
+            mode: "free_query",
+            query,
+            ...(receiptReference ? { sensitiveInputs: { receipt_reference: receiptReference } } : {}),
+          }),
         });
         if (!response.ok) throw new Error(await response.text());
         const payload = await response.json();

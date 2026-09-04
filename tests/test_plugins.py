@@ -17,7 +17,7 @@ from sap_business_agents_platform.plugins import (
     PluginStatus,
     official_plugin_manifests,
 )
-from sap_business_agents_platform.sap_read import EmbeddedODataProvider
+from sap_business_agents_platform.sap_read import EmbeddedODataProvider, SapReadError
 
 
 class HealthyProvider:
@@ -680,3 +680,146 @@ def test_embedded_provider_record_gap_preserves_successful_literal_chunks(
     assert result["failed_filter_values"] == ["3", "4"]
     assert [row["OrderID"] for row in result["data"]["results"]] == ["1", "2"]
     assert [chunk["source_complete"] for chunk in result["chunk_results"]] == [True, False]
+
+
+def test_embedded_provider_retries_transient_failed_batch_per_filter_value(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/$metadata"):
+            return httpx.Response(200, text=_METADATA)
+        expression = request.url.params["$filter"]
+        values = re.findall(r"OrderID eq '([^']+)'", expression)
+        if values == ["3", "4"]:
+            return httpx.Response(503, text="temporary batch failure")
+        return httpx.Response(
+            200,
+            json={"d": {"results": [{"OrderID": value, "Amount": value} for value in values]}},
+        )
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        transport=httpx.MockTransport(handler),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
+    )
+    result = asyncio.run(
+        provider.execute_plan(
+            {
+                "service_name": "API_TEST_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_Order",
+                "http_method": "GET",
+                "select_fields": ["OrderID", "Amount"],
+                "filters": [
+                    {
+                        "field": "OrderID",
+                        "operator": "in",
+                        "value": ["1", "2", "3", "4"],
+                        "value_type": "string",
+                        "chunk_size": 2,
+                    }
+                ],
+                "chunk_error_policy": "record_gap",
+                "retry_failed_chunks_individually": True,
+                "max_concurrent_chunks": 2,
+                "order_by": ["OrderID"],
+            }
+        )
+    )
+
+    assert result["source_complete"] is True
+    assert result["failed_filter_values"] == []
+    assert [row["OrderID"] for row in result["data"]["results"]] == ["1", "2", "3", "4"]
+    recovered = [
+        item for item in result["chunk_results"] if item.get("retry_individually")
+    ]
+    assert recovered[0]["recovered_by_individual_retry"] is True
+
+
+def test_embedded_provider_record_gap_does_not_swallow_http_400(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/$metadata"):
+            return httpx.Response(200, text=_METADATA)
+        return httpx.Response(400, text="invalid query fixture")
+
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        transport=httpx.MockTransport(handler),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
+    )
+
+    with pytest.raises(SapReadError) as exc_info:
+        asyncio.run(
+            provider.execute_plan(
+                {
+                    "service_name": "API_TEST_SRV",
+                    "odata_version": "2.0",
+                    "entity_set": "A_Order",
+                    "http_method": "GET",
+                    "select_fields": ["OrderID", "Amount"],
+                    "filters": [
+                        {
+                            "field": "OrderID",
+                            "operator": "in",
+                            "value": ["1", "2"],
+                            "value_type": "string",
+                            "chunk_size": 2,
+                        }
+                    ],
+                    "chunk_error_policy": "record_gap",
+                    "retry_failed_chunks_individually": True,
+                    "order_by": ["OrderID"],
+                }
+            )
+        )
+
+    assert exc_info.value.detail["http_status"] == 400
+
+
+def test_embedded_provider_composite_fi_filter_preserves_exact_tuples(
+    tmp_path: Path,
+) -> None:
+    provider = EmbeddedODataProvider(
+        base_url="https://sap.example.test",
+        username="fixture-user",
+        password="fixture-password",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+        service_registry_path=_odata_registry(tmp_path, ("API_TEST_SRV", "2.0")),
+    )
+
+    groups = provider._tuple_filter_groups(
+        [
+            {
+                "fields": [
+                    "CompanyCode",
+                    "Ledger",
+                    "FiscalYear",
+                    "AccountingDocument",
+                ],
+                "values": [
+                    ["1710", "0L", "2025", "DOC-A"],
+                    ["1710", "0L", "2026", "DOC-B"],
+                ],
+                "chunk_size": 20,
+            }
+        ],
+        "2.0",
+        {},
+    )
+
+    assert groups is not None and len(groups) == 1
+    expression, values = groups[0]
+    assert values == [
+        ["1710", "0L", "2025", "DOC-A"],
+        ["1710", "0L", "2026", "DOC-B"],
+    ]
+    assert "FiscalYear eq '2025' and AccountingDocument eq 'DOC-A'" in expression
+    assert "FiscalYear eq '2026' and AccountingDocument eq 'DOC-B'" in expression
+    assert "FiscalYear eq '2025' and AccountingDocument eq 'DOC-B'" not in expression
+    assert "FiscalYear eq '2026' and AccountingDocument eq 'DOC-A'" not in expression

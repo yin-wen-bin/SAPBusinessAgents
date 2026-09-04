@@ -41,9 +41,12 @@ export interface ExecutionInputProperty {
   description?: LocalizedText;
   placeholder?: LocalizedText;
   default?: string | number | boolean | null | unknown[] | Record<string, unknown>;
-  "x-sapba-server-default"?: boolean;
+  "x-sapba-server-default"?: boolean | "business_date";
   "x-sapba-sap-identifier"?: boolean;
   "x-sapba-input-normalization"?: "uppercase" | "preserve";
+  "x-sapba-internal"?: boolean;
+  "x-sapba-sensitive"?: boolean;
+  "x-sapba-secret-kind"?: "business_reference";
   minLength?: number;
   maxLength?: number;
   minItems?: number;

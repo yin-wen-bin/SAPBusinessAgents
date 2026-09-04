@@ -194,3 +194,78 @@ def test_p2p_fixed_agent_expands_full_accounting_documents_with_coherent_keys() 
         for item in steps["clearing_documents"]["filter_from_previous"]
     } == {"full_accounting_documents"}
     assert _catalog().validate_plans([("p2p", plan)]) == []
+
+
+def test_relationship_catalog_accepts_fi_document_to_clearing_document_chain() -> None:
+    entity = "A_OperationalAcctgDocItemCube"
+    service = "API_OPLACCTGDOCITEMCUBE_SRV"
+    plans = [
+        (
+            "cash_application",
+            {
+                "service_name": service,
+                "odata_version": "2.0",
+                "entity_set": entity,
+                "plan_kind": "multi_step",
+                "steps": [
+                    {
+                        "step_id": "payment",
+                        "service_name": service,
+                        "odata_version": "2.0",
+                        "entity_set": entity,
+                    },
+                    {
+                        "step_id": "invoices",
+                        "service_name": service,
+                        "odata_version": "2.0",
+                        "entity_set": entity,
+                        "filter_from_previous": [
+                            {
+                                "field": "CompanyCode",
+                                "source_step_id": "payment",
+                                "source_field": "CompanyCode",
+                            },
+                            {
+                                "field": "Ledger",
+                                "source_step_id": "payment",
+                                "source_field": "Ledger",
+                            },
+                            {
+                                "field": "ClearingDocFiscalYear",
+                                "source_step_id": "payment",
+                                "source_field": "FiscalYear",
+                            },
+                            {
+                                "field": "ClearingAccountingDocument",
+                                "source_step_id": "payment",
+                                "source_field": "AccountingDocument",
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
+    ]
+
+    assert _catalog().validate_plans(plans) == []
+
+
+def test_ar_collection_v1_historical_clearing_chain_is_approved() -> None:
+    manifest = json.loads(
+        (
+            ROOT
+            / "agents"
+            / "FI"
+            / "ar-collection"
+            / "versions"
+            / "1.0.0"
+            / "agent.json"
+        ).read_text(encoding="utf-8")
+    )
+    plan = next(
+        step["request"]["plan"]
+        for step in manifest["execution"]["steps"]
+        if step["id"] == "collect_ar_evidence"
+    )
+
+    assert _catalog().validate_plans([("ar_collection", plan)]) == []

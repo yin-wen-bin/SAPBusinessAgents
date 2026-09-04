@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import csv
+import hashlib
+import hmac
 import importlib.util
+import io
 import json
 import logging
+import secrets
 import subprocess
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -35,6 +42,8 @@ from .models import (
     AgentPublishRequest,
     AgentUndoRequest,
     AgentVersionDraftRequest,
+    ArtifactDeleteRequest,
+    ArtifactRevealRequest,
     DraftAuthoringCreate,
     DraftCreate,
     DraftInput,
@@ -87,6 +96,7 @@ from .runtime import (
 from .role_matching import RoleMatchingError, RoleMatchingService
 from .sdk_manager import SDKManager, SDKManagerError
 from .skills import SkillRegistry
+from .restricted_artifacts import RestrictedArtifactError, RestrictedArtifactStore
 from .workbuddy_planner import WorkBuddyPlanner
 from .workflow_factory import WorkflowDraftError, WorkflowDraftService
 from .workflows import WorkflowError, WorkflowManagementService, WorkflowRepository
@@ -100,6 +110,18 @@ from .workflow_presentation import (
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _safe_csv_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    else:
+        text = str(value)
+    if text.startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
 
 
 class LocalConfigUpdate(BaseModel):
@@ -237,6 +259,12 @@ def create_app(
     role_matching = RoleMatchingService(
         settings, store, business_agents, agent_runtime, workflow_drafts
     )
+    restricted_artifacts = RestrictedArtifactStore(
+        settings.data_root,
+        store,
+        retention_days=settings.restricted_artifact_retention_days,
+    )
+    artifact_csrf_token = secrets.token_urlsafe(32)
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await plugin_manager.start()
@@ -287,6 +315,7 @@ def create_app(
     app.state.workflow_management = workflow_management
     app.state.agent_lifecycle = agent_lifecycle
     app.state.role_matching = role_matching
+    app.state.restricted_artifacts = restricted_artifacts
     app.state.sdk_manager = sdk_registry
 
     @app.exception_handler(RequestValidationError)
@@ -1169,6 +1198,239 @@ def create_app(
             raise HTTPException(404, "Artifact not found")
         return FileResponse(path, media_type=allowed[name], filename=name)
 
+    restricted_headers = {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": "sandbox",
+        "X-Content-Type-Options": "nosniff",
+    }
+
+    def _require_local_artifact_request(request: Request, csrf: str | None = None) -> None:
+        origin = str(request.headers.get("origin") or "")
+        allowed_origins = set(settings.local_ui_origins)
+        if origin not in allowed_origins:
+            raise HTTPException(403, "Restricted evidence is available only to the local UI.")
+        if csrf is not None and not hmac.compare_digest(csrf, artifact_csrf_token):
+            raise HTTPException(403, "Restricted evidence CSRF validation failed.")
+
+    def _consume_reveal_token(
+        run_id: str,
+        artifact_id: str,
+        operation: str,
+        token: str | None,
+    ) -> dict[str, Any]:
+        if not token:
+            raise HTTPException(401, "A reveal token is required.")
+        try:
+            artifact = store.get_structured_artifact(run_id, artifact_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Restricted evidence not found") from exc
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+        if not store.consume_artifact_reveal_token(
+            token_hash=token_hash,
+            run_id=run_id,
+            artifact_id=artifact_id,
+            operation=operation,
+            artifact_sha256=str(artifact["sha256"]),
+            now=now,
+        ):
+            raise HTTPException(401, "Reveal token is invalid, expired, or already used.")
+        return artifact
+
+    def _artifact_cursor(
+        *, run_id: str, artifact_id: str, artifact_sha256: str, offset: int
+    ) -> str:
+        payload = json.dumps(
+            {
+                "run_id": run_id,
+                "artifact_id": artifact_id,
+                "sha256": artifact_sha256,
+                "offset": offset,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        signature = hmac.new(
+            artifact_csrf_token.encode("utf-8"), payload, hashlib.sha256
+        ).digest()
+        return base64.urlsafe_b64encode(payload + signature).decode("ascii").rstrip("=")
+
+    def _artifact_cursor_offset(
+        cursor: str,
+        *,
+        run_id: str,
+        artifact_id: str,
+        artifact_sha256: str,
+    ) -> int:
+        try:
+            encoded = cursor + "=" * (-len(cursor) % 4)
+            decoded = base64.urlsafe_b64decode(encoded.encode("ascii"))
+            payload, signature = decoded[:-32], decoded[-32:]
+            expected = hmac.new(
+                artifact_csrf_token.encode("utf-8"), payload, hashlib.sha256
+            ).digest()
+            value = json.loads(payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(400, "Restricted evidence cursor is invalid.") from exc
+        if not hmac.compare_digest(signature, expected) or (
+            value.get("run_id") != run_id
+            or value.get("artifact_id") != artifact_id
+            or value.get("sha256") != artifact_sha256
+        ):
+            raise HTTPException(400, "Restricted evidence cursor is invalid.")
+        offset = value.get("offset")
+        if not isinstance(offset, int) or offset < 0:
+            raise HTTPException(400, "Restricted evidence cursor is invalid.")
+        return offset
+
+    @app.get("/api/security/csrf")
+    def artifact_csrf(request: Request) -> JSONResponse:
+        _require_local_artifact_request(request)
+        return JSONResponse({"csrf_token": artifact_csrf_token}, headers=restricted_headers)
+
+    @app.post("/api/runs/{run_id}/structured-artifacts/{artifact_id}/reveal")
+    def reveal_structured_artifact(
+        request: Request,
+        run_id: str,
+        artifact_id: str,
+        payload: ArtifactRevealRequest,
+        x_sapba_csrf: str = Header(alias="X-SAPBA-CSRF"),
+    ) -> JSONResponse:
+        _require_local_artifact_request(request, x_sapba_csrf)
+        try:
+            artifact = store.get_structured_artifact(run_id, artifact_id)
+            RestrictedArtifactStore._require_available(artifact)
+        except KeyError as exc:
+            raise HTTPException(404, "Restricted evidence not found") from exc
+        except RestrictedArtifactError as exc:
+            raise HTTPException(410, {"code": exc.code, "message": str(exc)}) from exc
+        token = secrets.token_urlsafe(32)
+        expires = datetime.now(timezone.utc) + timedelta(minutes=2)
+        store.save_artifact_reveal_token(
+            token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            run_id=run_id,
+            artifact_id=artifact_id,
+            operation=payload.operation,
+            artifact_sha256=str(artifact["sha256"]),
+            expires_at=expires.isoformat(),
+        )
+        store.append_event(
+            run_id,
+            "restricted_artifact_reveal_authorized",
+            {"artifact_id": artifact_id, "operation": payload.operation},
+        )
+        return JSONResponse(
+            {"token": token, "operation": payload.operation, "expires_at": expires.isoformat()},
+            headers=restricted_headers,
+        )
+
+    @app.get("/api/runs/{run_id}/structured-artifacts/{artifact_id}/rows")
+    def structured_artifact_rows(
+        request: Request,
+        run_id: str,
+        artifact_id: str,
+        offset: int = Query(0, ge=0),
+        cursor: str | None = Query(default=None),
+        limit: int = Query(20, ge=1, le=200),
+        x_sapba_reveal_token: str | None = Header(default=None, alias="X-SAPBA-Reveal-Token"),
+    ) -> JSONResponse:
+        _require_local_artifact_request(request)
+        artifact = _consume_reveal_token(
+            run_id, artifact_id, "rows", x_sapba_reveal_token
+        )
+        if cursor:
+            offset = _artifact_cursor_offset(
+                cursor,
+                run_id=run_id,
+                artifact_id=artifact_id,
+                artifact_sha256=str(artifact["sha256"]),
+            )
+        try:
+            rows = restricted_artifacts.rows(run_id, artifact_id)
+        except RestrictedArtifactError as exc:
+            raise HTTPException(410, {"code": exc.code, "message": str(exc)}) from exc
+        store.append_event(
+            run_id,
+            "restricted_artifact_revealed",
+            {"artifact_id": artifact_id, "operation": "rows"},
+        )
+        next_offset = offset + limit
+        return JSONResponse(
+            {
+                "offset": offset,
+                "limit": limit,
+                "total_rows": len(rows),
+                "rows": rows[offset : next_offset],
+                "next_cursor": (
+                    _artifact_cursor(
+                        run_id=run_id,
+                        artifact_id=artifact_id,
+                        artifact_sha256=str(artifact["sha256"]),
+                        offset=next_offset,
+                    )
+                    if next_offset < len(rows)
+                    else None
+                ),
+            },
+            headers=restricted_headers,
+        )
+
+    @app.get("/api/runs/{run_id}/structured-artifacts/{artifact_id}/download")
+    def structured_artifact_download(
+        request: Request,
+        run_id: str,
+        artifact_id: str,
+        x_sapba_reveal_token: str | None = Header(default=None, alias="X-SAPBA-Reveal-Token"),
+    ) -> Response:
+        _require_local_artifact_request(request)
+        _consume_reveal_token(run_id, artifact_id, "download", x_sapba_reveal_token)
+        try:
+            rows = restricted_artifacts.rows(run_id, artifact_id)
+        except RestrictedArtifactError as exc:
+            raise HTTPException(410, {"code": exc.code, "message": str(exc)}) from exc
+        store.append_event(
+            run_id,
+            "restricted_artifact_revealed",
+            {"artifact_id": artifact_id, "operation": "download"},
+        )
+        columns = sorted({str(key) for row in rows for key in row})
+        buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(buffer, fieldnames=columns)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: _safe_csv_cell(row.get(key)) for key in columns})
+        headers = {
+            **restricted_headers,
+            "Content-Disposition": f'attachment; filename="{artifact_id}.csv"',
+        }
+        return Response(
+            content="\ufeff" + buffer.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers=headers,
+        )
+
+    @app.delete("/api/runs/{run_id}/structured-artifacts/{artifact_id}")
+    def delete_structured_artifact(
+        request: Request,
+        run_id: str,
+        artifact_id: str,
+        payload: ArtifactDeleteRequest,
+        x_sapba_csrf: str = Header(alias="X-SAPBA-CSRF"),
+    ) -> JSONResponse:
+        _require_local_artifact_request(request, x_sapba_csrf)
+        try:
+            artifact = restricted_artifacts.delete(run_id, artifact_id, reason=payload.reason)
+        except KeyError as exc:
+            raise HTTPException(404, "Restricted evidence not found") from exc
+        store.append_event(
+            run_id,
+            "restricted_artifact_deleted",
+            {"artifact_id": artifact_id, "reason": payload.reason},
+        )
+        return JSONResponse(
+            RestrictedArtifactStore.public_ref(artifact), headers=restricted_headers
+        )
+
     @app.get("/api/runs/{run_id}/events")
     async def run_events(
         request: Request,
@@ -1211,7 +1473,9 @@ def create_app(
     @app.post("/api/runs/{run_id}/input", status_code=202)
     async def provide_input(run_id: str, payload: RunInput) -> dict[str, str]:
         try:
-            mode = await coordinator.provide_input(run_id, payload.input)
+            mode = await coordinator.provide_input(
+                run_id, payload.input, payload.sensitive_inputs
+            )
         except KeyError as exc:
             raise HTTPException(404, "Run not found") from exc
         except RunExecutionError as exc:
@@ -1256,7 +1520,7 @@ def create_app(
     @app.get("/api/tools/skills")
     def skill_tools() -> list[dict[str, Any]]:
         try:
-            return skills.list()
+            return skills.list_all_approved_skills()
         except PluginError as exc:
             raise HTTPException(503, {"code": exc.code, "message": str(exc)}) from exc
 

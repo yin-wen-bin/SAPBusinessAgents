@@ -22,6 +22,7 @@ from .agent_rules import evaluate_business_agent
 from .database import RunStore
 from .models import RunPresentation, RunStatus, TERMINAL_STATUSES
 from .normalization import SapInputNormalizationError, SapValueNormalizer
+from .restricted_artifacts import RestrictedArtifactStore
 from .tool_gateway import ToolAdmissionError, ToolAdmissionGateway
 
 
@@ -165,6 +166,14 @@ _HARNESS_OUTPUT_SCHEMA: dict[str, Any] = {
         "status": {"type": "string", "enum": ["completed", "inconclusive", "waiting_input"]},
         "intent": {"type": "string"},
         "clarification_question": {"type": "string"},
+        "input_kind": {
+            "type": ["string", "null"],
+            "enum": ["secure_business_reference", None],
+        },
+        "input_field": {
+            "type": ["string", "null"],
+            "enum": ["receipt_reference", None],
+        },
         "summary": {
             "type": "object",
             "additionalProperties": False,
@@ -214,6 +223,8 @@ class HarnessOutcome:
     evidence_refs: list[str] = field(default_factory=list)
     executed_plans: list[dict[str, Any]] = field(default_factory=list)
     clarification_question: str = ""
+    input_kind: str | None = None
+    input_field: str | None = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
     web_search_count: int = 0
@@ -244,6 +255,11 @@ class HarnessToolBroker:
             settings.repository_root / "config" / "sap-value-normalization.json"
         )
         self.tool_gateway = ToolAdmissionGateway()
+        self.restricted_artifacts = RestrictedArtifactStore(
+            settings.data_root,
+            store,
+            retention_days=settings.restricted_artifact_retention_days,
+        )
         self._tokens: dict[str, str] = {}
         self._gap_tokens: dict[str, dict[str, Any]] = {}
 
@@ -1410,28 +1426,47 @@ class HarnessToolBroker:
                 "The Skill input does not match the input authorized by the gap token.",
                 code="gap_token_input_mismatch",
             )
+        execution_payload = dict(payload)
+        if skill_id == "sap-bank-receipt-evidence":
+            try:
+                binding = self.store.get_run_secret(run_id, "receipt_reference")
+            except KeyError:
+                binding = None
+            if binding is not None:
+                execution_payload["receipt_reference"] = (
+                    self.restricted_artifacts.protector.reveal_run_secret(
+                        run_id=run_id,
+                        field="receipt_reference",
+                        protected_value=binding["protected_value"],
+                    )
+                )
         # Contract errors happen before SAP is contacted and therefore do not
         # consume the single-use execution capability. Once validation passes,
         # the token is burned before starting the Skill subprocess.
         try:
-            self.skills.validate_input(skill_id, payload)
+            self.skills.validate_input(skill_id, execution_payload)
         except Exception as exc:
             raise ToolAdmissionError(
                 "The requested Skill input does not match its approved contract.",
                 code="skill_input_invalid",
             ) from exc
         gap["used"] = True
-        output = await self.skills.execute(skill_id, payload)
-        evidence_ref = self._save_evidence(run_id, "sap_skill", output)
+        output = await self.skills.execute(skill_id, execution_payload)
+        public_output, _private_refs = self.restricted_artifacts.materialize_skill_output(
+            run_id=run_id,
+            skill_id=skill_id,
+            output=output,
+        )
+        evidence_ref = self._save_evidence(run_id, "sap_skill", public_output)
         return {
-            "ok": output.get("ok", output.get("status") == "complete"),
+            "ok": public_output.get("ok", public_output.get("status") == "complete"),
             "source_type": "sap_skill",
             "claim_scope": "customer_business_fact",
             "evidence_ref": evidence_ref,
-            "source_complete": _source_complete(output),
-            "row_count": _row_count(output),
-            "preview": _bounded_preview(output),
-            "status": output.get("status"),
+            "source_complete": _source_complete(public_output),
+            "row_count": _row_count(public_output),
+            "preview": _bounded_preview(public_output),
+            "status": public_output.get("status"),
         }
 
     def _validate_report(self, run_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -2094,6 +2129,8 @@ class CodexHarnessController:
             evidence_refs=evidence_refs,
             executed_plans=executed_plans,
             clarification_question=str(payload.get("clarification_question") or ""),
+            input_kind=str(payload.get("input_kind") or "") or None,
+            input_field=str(payload.get("input_field") or "") or None,
             tool_calls=calls,
             evidence=evidence,
             web_search_count=web_search_count,
@@ -2387,7 +2424,9 @@ User question:
 
 Use live SAP evidence for business facts. Search and inspect tool results as needed. A bounded or
 truncated source is incomplete. If one essential business identifier is missing, return
-status=waiting_input and one concise clarification_question. Otherwise continue until the evidence
+status=waiting_input and one concise clarification_question. If the missing value is a bank receipt
+reference, also set input_kind=secure_business_reference and input_field=receipt_reference; never ask
+the user to place that value in ordinary conversation text. Otherwise set both fields to null. Continue until the evidence
 supports a result or a specific gap remains. executed_plans must contain only SAP plans that were
 actually executed, and evidence_refs must contain only references returned by platform tools.
 Prefer a refined server-side SAP query over paging through an obsolete broad evidence set. Once a
@@ -3159,6 +3198,8 @@ def _safe_tool_input(value: Any, *, depth: int = 0) -> Any:
             name = str(key)
             if name.casefold().endswith("_token") and isinstance(child, str):
                 result[name] = _capability_fingerprint(child)
+            elif name.casefold() in {"receipt_reference", "payer_name", "bank_reference"}:
+                result[name] = "[REDACTED]"
             else:
                 result[name] = _safe_tool_input(child, depth=depth + 1)
         return _safe_public(result)

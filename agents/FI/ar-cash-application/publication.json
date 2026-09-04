@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "ar-cash-application",
+  "lifecycle_state": "inactive",
+  "state": "inactive",
+  "active_version": null,
+  "latest_version": "0.1.0",
+  "active_digest": null,
+  "published_at": null,
+  "git_branch": "main",
+  "git_commit": null
+}

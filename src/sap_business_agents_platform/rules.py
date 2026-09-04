@@ -61,6 +61,10 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
         return prepare_billing_block_code_text_lookups(inputs)
     if operation == "prepare_ap_input":
         return prepare_ap_input(inputs)
+    if operation == "prepare_fi_ledger_scope":
+        return prepare_fi_ledger_scope(inputs)
+    if operation == "prepare_ar_cash_application_scope":
+        return prepare_ar_cash_application_scope(inputs)
     if operation == "classify_control_object":
         return classify_control_object(inputs)
     if operation == "prepare_control_object_lookup":
@@ -93,6 +97,82 @@ def prepare_ap_input(inputs: dict[str, Any]) -> dict[str, Any]:
         "status": "complete",
         "query_mode": mode,
         "query_direct": mode == "direct",
+    }
+
+
+def prepare_fi_ledger_scope(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Resolve exactly one leading ledger from complete live metadata."""
+
+    rows = _rows_from_nested_payload(inputs.get("ledger_evidence"))
+    ledgers = sorted(
+        {
+            str(row.get("Ledger") or "").strip()
+            for row in rows
+            if row.get("IsLeadingLedger") is True
+            or str(row.get("IsLeadingLedger") or "").strip().lower()
+            in {"true", "x", "1"}
+        }
+        - {""}
+    )
+    payload = inputs.get("ledger_evidence")
+    source_complete = bool(
+        isinstance(payload, dict)
+        and payload.get("source_complete") is True
+        and payload.get("source_truncated") is not True
+    )
+    gaps: list[str] = []
+    if not source_complete:
+        gaps.append("fi_ledger_source_incomplete")
+    if not ledgers:
+        gaps.append("fi_leading_ledger_missing")
+    elif len(ledgers) > 1:
+        gaps.append("fi_leading_ledger_ambiguous")
+    unique = source_complete and len(ledgers) == 1
+    return {
+        "rule_id": "fi_ledger_scope_v1",
+        "status": "complete" if unique else "inconclusive",
+        "has_unique_ledger": unique,
+        "ledger": ledgers[0] if unique else None,
+        "source_complete": source_complete,
+        "evidence_complete": unique,
+        "evidence_gaps": gaps,
+    }
+
+
+def prepare_ar_cash_application_scope(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Create exact FI document tuples from validated bank-receipt evidence."""
+
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    bank = inputs.get("bank_evidence") if isinstance(inputs.get("bank_evidence"), dict) else {}
+    receipts = bank.get("receipts") if isinstance(bank.get("receipts"), list) else []
+    ledger_scope = inputs.get("ledger_scope") if isinstance(inputs.get("ledger_scope"), dict) else {}
+    ledger = str(ledger_scope.get("ledger") or "").strip()
+    evidence_gaps = [str(item) for item in ledger_scope.get("evidence_gaps") or []]
+    company_code = str(run_input.get("company_code") or "").strip()
+    tuples: list[list[str]] = []
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            continue
+        if receipt.get("posting_status") != "completed" or receipt.get("reversal_status") != "not_reversed":
+            continue
+        related = receipt.get("related_accounting_document")
+        if not isinstance(related, dict):
+            continue
+        document = str(related.get("subledger_document") or "").strip()
+        fiscal_year = str(related.get("fiscal_year") or "").strip()
+        if ledger and document and fiscal_year:
+            item = [company_code, ledger, fiscal_year, document]
+            if item not in tuples:
+                tuples.append(item)
+    return {
+        "rule_id": "ar_cash_application_scope_v1",
+        "status": "complete",
+        "has_fi_documents": bool(tuples),
+        "fi_document_tuples": tuples,
+        "ledger": ledger or None,
+        "source_complete": ledger_scope.get("source_complete") is True and bank.get("status") == "complete",
+        "evidence_complete": ledger_scope.get("evidence_complete") is True and bank.get("status") == "complete",
+        "evidence_gaps": evidence_gaps,
     }
 
 
@@ -2802,7 +2882,19 @@ def _step_rows(steps: dict[str, dict[str, Any]], step_id: str) -> list[dict[str,
 def _rows_from_nested_payload(value: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if isinstance(value, dict):
-        rows.extend(dict(row) for row in value.get("rows") or [] if isinstance(row, dict))
+        # Skill payloads conventionally expose ``rows`` while sap_read v2
+        # exposes entity rows as ``data.results`` and
+        # ``step_results.<step>.results``.  Scope rules consume either
+        # executor through the same input mapping, so both standard row
+        # containers must be understood.  The caller de-duplicates business
+        # keys where that is required; this helper deliberately preserves the
+        # evidence as returned.
+        for field in ("rows", "results"):
+            rows.extend(
+                dict(row)
+                for row in value.get(field) or []
+                if isinstance(row, dict)
+            )
         for child in value.values():
             if isinstance(child, (dict, list)):
                 rows.extend(_rows_from_nested_payload(child))

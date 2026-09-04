@@ -49,6 +49,7 @@ const labels = locale === "zh" ? {
   removeRow: "删除",
   normalizationConflict: "该输入映射到相互冲突的 SAP 格式规则，请联系平台管理员。",
   validationRequired: "该 Agent 尚未通过真机三级验收，当前不可执行。",
+  sensitiveHelp: "敏感业务参考号将通过安全参数通道提交，不会写入普通运行输入、日志或对话。",
 } : {
   title: "Run this Agent",
   deterministicLead: "The deterministic engine follows the declared steps exactly. The Agent Runtime does not choose or replace APIs or Skills.",
@@ -80,6 +81,7 @@ const labels = locale === "zh" ? {
   removeRow: "Remove",
   normalizationConflict: "This input maps to conflicting SAP formatting rules. Contact the platform administrator.",
   validationRequired: "This Agent has not passed three-stage live acceptance and cannot run yet.",
+  sensitiveHelp: "This sensitive business reference is submitted through the secure parameter channel and is not stored in ordinary run input, logs, or chat.",
 };
 const runtimeMessages = {
   networkError: labels.networkError,
@@ -102,6 +104,7 @@ const runtimeMessages = {
   removeRow: labels.removeRow,
   normalizationConflict: labels.normalizationConflict,
   validationRequired: labels.validationRequired,
+  sensitiveHelp: labels.sensitiveHelp,
 };
 ---
 
@@ -126,7 +129,7 @@ const runtimeMessages = {
     <form class="agent-run-form" novalidate>
       {execution ? (
         <div class="runtime-field-grid">
-          {Object.entries(execution.inputSchema.properties).filter(([, property]) => property["x-sapba-workflow-only"] !== true).map(([name, property]) => (
+          {Object.entries(execution.inputSchema.properties).filter(([, property]) => property["x-sapba-workflow-only"] !== true && property["x-sapba-internal"] !== true).map(([name, property]) => (
             <label>
               <span>{property.title?.[locale] || name}</span>
               {property.description && <small class="runtime-field-help">{property.description[locale]}</small>}
@@ -186,7 +189,7 @@ const runtimeMessages = {
               ) : (
                 <input
                   name={name}
-                  type={property.format === "date" ? "date" : property.type === "integer" || property.type === "number" ? "number" : "text"}
+                  type={property["x-sapba-sensitive"] === true ? "password" : property.format === "date" ? "date" : property.type === "integer" || property.type === "number" ? "number" : "text"}
                   value={property.default === undefined ? "" : String(property.default)}
                   placeholder={property.placeholder?.[locale]}
                   minlength={property.minLength}
@@ -199,8 +202,11 @@ const runtimeMessages = {
                   inputmode={property.pattern === "^[0-9]+$" ? "numeric" : undefined}
                   title={property.description?.[locale]}
                   required={execution.inputSchema.required?.includes(name)}
+                  data-sensitive={property["x-sapba-sensitive"] === true ? "true" : undefined}
+                  autocomplete={property["x-sapba-sensitive"] === true ? "off" : undefined}
                 />
               )}
+              {property["x-sapba-sensitive"] === true && <small class="runtime-field-help">{labels.sensitiveHelp}</small>}
               {!(property.type === "array" && property.items?.type === "object") && (
                 <small class="runtime-field-error" data-field-error={name} role="alert" hidden></small>
               )}
@@ -528,10 +534,15 @@ const runtimeMessages = {
       const mode = panel.dataset.runMode === "agent" ? "agent" : "free_query";
       const formData = new FormData(form);
       const input: Record<string, unknown> = {};
+      const sensitiveInputs: Record<string, string> = {};
       if (mode === "agent") {
         form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[name], textarea[name]").forEach((field) => {
           const value = field.value.trim();
           if (!value) return;
+          if (field.dataset.sensitive === "true") {
+            sensitiveInputs[field.name] = value;
+            return;
+          }
           input[field.name] = field.dataset.valueType === "array"
             ? parseArrayInput(value)
             : field.dataset.valueType === "integer"
@@ -546,7 +557,7 @@ const runtimeMessages = {
         });
       }
       const body = mode === "agent"
-        ? { mode, agentId: panel.dataset.agentId, input }
+        ? { mode, agentId: panel.dataset.agentId, input, sensitiveInputs }
         : { mode, agentId: panel.dataset.agentId, query: String(formData.get("query") || "").trim() };
       try {
         const response = await fetch(`${panel.dataset.apiBase}/api/runs`, {

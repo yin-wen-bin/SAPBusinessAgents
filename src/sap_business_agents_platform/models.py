@@ -62,13 +62,16 @@ TERMINAL_STATUSES = {
 
 
 class RunCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     mode: RunMode
     agent_id: str | None = Field(default=None, alias="agentId")
     workflow_id: str | None = Field(default=None, alias="workflowId")
     query: str | None = None
     input: dict[str, Any] = Field(default_factory=dict)
+    sensitive_inputs: dict[str, str] = Field(
+        default_factory=dict, alias="sensitiveInputs"
+    )
 
     @model_validator(mode="after")
     def validate_mode_payload(self) -> "RunCreate":
@@ -80,18 +83,38 @@ class RunCreate(BaseModel):
             raise ValueError("query is required for free_query mode")
         if self.mode == RunMode.workflow and not self.workflow_id:
             raise ValueError("workflowId is required for workflow mode")
+        normalized_sensitive: dict[str, str] = {}
+        for name, value in self.sensitive_inputs.items():
+            if not isinstance(value, str):
+                raise ValueError(f"sensitiveInputs.{name} must be a string")
+            trimmed = value.strip()
+            if not trimmed:
+                raise ValueError(f"sensitiveInputs.{name} must not be blank")
+            normalized_sensitive[str(name)] = trimmed
+        self.sensitive_inputs = normalized_sensitive
         return self
 
 
 class RunInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    input: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    input: str | None = Field(default=None, min_length=1)
+    sensitive_inputs: dict[str, str] = Field(
+        default_factory=dict, alias="sensitiveInputs"
+    )
 
     @model_validator(mode="after")
     def strip_input(self) -> "RunInput":
-        self.input = self.input.strip()
-        if not self.input:
-            raise ValueError("input must not be blank")
+        if self.input is not None:
+            self.input = self.input.strip()
+            if not self.input:
+                self.input = None
+        self.sensitive_inputs = {
+            str(name): value.strip()
+            for name, value in self.sensitive_inputs.items()
+            if isinstance(value, str) and value.strip()
+        }
+        if self.input is None and not self.sensitive_inputs:
+            raise ValueError("input or sensitiveInputs is required")
         return self
 
 
@@ -122,13 +145,35 @@ class FreeQueryFeedbackInput(BaseModel):
 
     base_iteration: int = Field(alias="baseIteration", ge=1)
     input: str = Field(min_length=1, max_length=12_000)
+    sensitive_inputs: dict[str, str] = Field(
+        default_factory=dict, alias="sensitiveInputs"
+    )
 
     @model_validator(mode="after")
     def strip_input(self) -> "FreeQueryFeedbackInput":
         self.input = self.input.strip()
         if not self.input:
             raise ValueError("input must not be blank")
+        self.sensitive_inputs = {
+            str(name): value.strip()
+            for name, value in self.sensitive_inputs.items()
+            if isinstance(value, str) and value.strip()
+        }
         return self
+
+
+class ArtifactRevealRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["rows", "download"] = "rows"
+
+
+class ArtifactDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Keep the tombstone reason platform-defined. Free text here could itself
+    # contain a bank reference or another business identifier.
+    reason: Literal["user_requested"] = "user_requested"
 
 
 class FreeQueryFeedbackCancel(BaseModel):

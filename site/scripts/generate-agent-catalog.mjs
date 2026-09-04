@@ -184,10 +184,13 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
   }
   if (agent.schemaVersion === 2) validateExecution(agent.execution, source);
   if (agent.systems.includes("SAP ECC")) throw new Error(`${source}.systems must not advertise SAP ECC`);
-  const localizedSchemaTitles = (schema, location, excludeWorkflowOnly = false) => {
+  const localizedSchemaTitles = (schema, location, excludeInternalInputs = false) => {
     const result = { zh: [], en: [] };
     for (const [name, property] of Object.entries(schema?.properties ?? {})) {
-      if (excludeWorkflowOnly && property["x-sapba-workflow-only"] === true) continue;
+      if (
+        excludeInternalInputs &&
+        (property["x-sapba-workflow-only"] === true || property["x-sapba-internal"] === true)
+      ) continue;
       requireLocalized(property.title, `${location}.properties.${name}.title`);
       result.zh.push(property.title.zh);
       result.en.push(property.title.en);
@@ -257,11 +260,13 @@ function validateExecution(execution, source) {
   if (!execution.inputSchema.properties || typeof execution.inputSchema.properties !== "object") {
     throw new Error(`${source}.execution.inputSchema.properties must be an object`);
   }
+  rejectMalformedTemplates(execution.steps, `${source}.execution.steps`);
+  rejectMalformedTemplates(execution.outputMapping, `${source}.execution.outputMapping`);
   for (const [name, property] of Object.entries(execution.inputSchema.properties)) {
     if (!property || typeof property !== "object" || Array.isArray(property)) continue;
     const marker = property["x-sapba-server-default"];
-    if (marker !== undefined && typeof marker !== "boolean") {
-      throw new Error(`${source}.execution.inputSchema.properties.${name}.x-sapba-server-default must be boolean`);
+    if (marker !== undefined && typeof marker !== "boolean" && marker !== "business_date") {
+      throw new Error(`${source}.execution.inputSchema.properties.${name}.x-sapba-server-default must be boolean or business_date`);
     }
     if (marker === true && !Object.hasOwn(property, "default")) {
       throw new Error(`${source}.execution.inputSchema.properties.${name}.x-sapba-server-default=true requires a default value`);
@@ -272,6 +277,9 @@ function validateExecution(execution, source) {
         property,
         `${source}.execution.inputSchema.properties.${name}`,
       );
+    }
+    if (marker === "business_date" && property.type !== "string") {
+      throw new Error(`${source}.execution.inputSchema.properties.${name}.x-sapba-server-default=business_date requires a string date field`);
     }
   }
   requireList(execution.steps, `${source}.execution.steps`);
@@ -326,6 +334,24 @@ function validateExecution(execution, source) {
       rejectWriteMethods(step.request, location);
       requireODataVersions(step.request, location);
     }
+  }
+}
+
+function rejectMalformedTemplates(value, location) {
+  if (Array.isArray(value)) {
+    value.forEach((child, index) => rejectMalformedTemplates(child, `${location}[${index}]`));
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      rejectMalformedTemplates(child, `${location}.${key}`);
+    }
+    return;
+  }
+  if (typeof value !== "string" || (!value.includes("{{") && !value.includes("}}"))) return;
+  const remainder = value.replace(/\{\{\s*[^{}]+?\s*\}\}/g, "");
+  if (remainder.includes("{{") || remainder.includes("}}")) {
+    throw new Error(`${location} contains a malformed template expression`);
   }
 }
 
