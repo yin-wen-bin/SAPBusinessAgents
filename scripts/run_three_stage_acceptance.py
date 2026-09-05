@@ -491,8 +491,14 @@ def _normalize_record(
         if record.get(canonical) in {None, ""}:
             record[canonical] = constant
     null_values = {"—", "-", "–", "none", "null", "n/a"}
+    preserve_literal_values = {
+        str(field) for field in contract.get("preserve_literal_values") or []
+    }
     for field, current in tuple(record.items()):
-        if str(current or "").strip().casefold() in null_values:
+        if (
+            field not in preserve_literal_values
+            and str(current or "").strip().casefold() in null_values
+        ):
             record[field] = ""
     for field in contract.get("date_fields") or []:
         text = str(record.get(field) or "").strip()
@@ -1073,6 +1079,7 @@ async def _main(args: argparse.Namespace) -> int:
         "business_status_from_metric": contract_value.get("businessStatusFromMetric") or {},
         "limitations_from_metrics": contract_value.get("limitationsFromMetrics") or {},
         "blank_value_keywords": contract_value.get("blankValueKeywords") or {},
+        "preserve_literal_values": contract_value.get("preserveLiteralValues") or [],
         "blocking_limitations": contract_value.get("blockingLimitations") or [],
         "ignored_notice_keywords": contract_value.get("ignoredNoticeKeywords") or [],
         "metric_value_mappings": contract_value.get("metricValueMappings") or {},

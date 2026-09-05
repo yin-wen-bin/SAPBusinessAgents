@@ -3759,7 +3759,10 @@ class RunCoordinator:
                 for row in rows:
                     action_writer.writerow(
                         [
-                            _localized_text(row.get(str(column.get("key"))), "zh")
+                            _safe_business_csv_cell(
+                                row.get(str(column.get("key"))),
+                                str(column.get("format") or "text"),
+                            )
                             for column in columns
                         ]
                     )
@@ -5613,6 +5616,14 @@ def _localized_text(value: Any, locale: str = "zh") -> str:
     if isinstance(value, dict):
         return str(value.get(locale) or value.get("zh") or value.get("en") or "")
     return "" if value is None else str(value)
+
+
+def _safe_business_csv_cell(value: Any, column_format: str = "text") -> str:
+    """Render localized business text without allowing spreadsheet formulas."""
+    text = _localized_text(value, "zh")
+    if column_format not in {"decimal", "integer"} and text.startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
 
 
 def _markdown_cell(value: Any) -> str:

@@ -20,6 +20,7 @@ from sap_business_agents_platform.engine import (
     _presentation_tone,
     _result_evidence_refs,
     _resolve_server_defaults,
+    _safe_business_csv_cell,
     _validate_input,
 )
 from sap_business_agents_platform.manifests import AgentRepository, ManifestError, validate_execution
@@ -46,6 +47,12 @@ def test_business_report_positive_tone_maps_to_presentation_success() -> None:
     assert _presentation_tone("positive") == "success"
     assert _presentation_tone("warning") == "warning"
     assert _presentation_tone("unsupported") == "neutral"
+
+
+def test_business_csv_cell_blocks_formula_injection_but_preserves_decimal() -> None:
+    assert _safe_business_csv_cell("=HYPERLINK('x')") == "'=HYPERLINK('x')"
+    assert _safe_business_csv_cell({"zh": "+危险", "en": "+risk"}) == "'+危险"
+    assert _safe_business_csv_cell("-100.00", "decimal") == "-100.00"
 
 
 def test_cors_uses_the_same_configured_local_origins_as_security_checks(

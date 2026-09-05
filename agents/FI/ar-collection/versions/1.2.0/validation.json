@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "agentId": "ar-collection",
+  "agentVersion": "1.2.0",
+  "verdict": "PASS",
+  "executable": true,
+  "acceptanceMode": "deterministic_runtime",
+  "freeQueryComparison": "NOT_TESTED",
+  "fixedAgentComparison": "MATCH",
+  "frontendValidation": "PASS",
+  "artifactValidation": "PASS",
+  "blockingLimitations": [],
+  "candidateLifecycleState": "validated_pending_activation",
+  "testedAt": "2026-09-06T02:17:45.011633+08:00",
+  "agentExecutionDigest": "sha256:a7936e0fe98e2fb1922f289bd070f6f1ccfc300337bc14a3e08c7c8ba5d8d86c",
+  "acceptanceContractDigest": "sha256:5e23abbe3206a3a7ac88686d813d7b686a6e9cc6e26cd77436a76bee69b34a52",
+  "cases": [
+    {
+      "caseId": "ar-collection-actions-uscu-l09-20260906",
+      "sampleSource": "live_sap",
+      "runId": "acceptance_a72266d057f74661",
+      "businessDate": "2026-09-06",
+      "baselineHash": "sha256:d718b23956d4f934d3bee6cda951aa99a9d4c32fba7208caa0e91b7f8809bac6",
+      "fixedAgentHash": "sha256:213b80088d03f5809fa801cc338b819ab7ba9a9159031bdcb8c2fa8efcf38abd",
+      "comparisonHash": "sha256:3fdb09c1411c416d00509d4291dcba151a18a640bbf4c2ae0d2cb232ccd9aa3b",
+      "comparison": "MATCH",
+      "sourceComplete": true,
+      "evidenceComplete": true,
+      "businessStatus": "attention",
+      "metrics": {
+        "openItemCount": 61,
+        "actionRequiredItemCount": 60,
+        "monitorItemCount": 1,
+        "ordinaryOverdueAmountUSD": "1189917.00"
+      },
+      "frontend": "PASS",
+      "markdown": "PASS",
+      "csv": "PASS"
+    },
+    {
+      "caseId": "ar-collection-no-open-items-20260906",
+      "sampleSource": "live_sap",
+      "runId": "acceptance_9236e4452f094479",
+      "businessDate": "2026-09-06",
+      "baselineHash": "sha256:10bb0405d09cb75c133a567f25202b721be54238d3fb31565c9180fb8365dbec",
+      "fixedAgentHash": "sha256:10bb0405d09cb75c133a567f25202b721be54238d3fb31565c9180fb8365dbec",
+      "comparisonHash": "sha256:2707e6953b915460881a86ff474403c30d4fdad1ab293d2d39443c62d4044451",
+      "comparison": "MATCH",
+      "sourceComplete": true,
+      "evidenceComplete": true,
+      "businessStatus": "normal",
+      "metrics": {
+        "openItemCount": 0,
+        "actionRequiredItemCount": 0,
+        "monitorItemCount": 0
+      },
+      "emptyWorklist": "PASS"
+    }
+  ],
+  "readonlyAudit": {
+    "verdict": "PASS",
+    "allowedMethods": [
+      "GET"
+    ],
+    "sapWriteOperations": 0
+  }
+}

@@ -83,6 +83,50 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "x", "yes"}
 
 
+def _processing_priority(overdue_days: int | None) -> str:
+    if overdue_days is None:
+        return "unknown"
+    if overdue_days > 90:
+        return "high"
+    if overdue_days > 30:
+        return "medium"
+    if overdue_days > 0:
+        return "low"
+    return "none"
+
+
+def _processing_action(
+    *,
+    evidence_gap: bool,
+    blocked: bool,
+    special_gl: bool,
+    credit_balance: bool,
+    overdue_days: int | None,
+    dunning_level: str,
+    dunning_status: str,
+) -> tuple[bool, str, str]:
+    """Independent baseline implementation of the versioned action contract."""
+    if evidence_gap:
+        return True, "resolve_evidence_gap", "high"
+    if blocked:
+        return True, "resolve_dunning_block", "high"
+    if special_gl:
+        return True, "review_special_gl", "medium"
+    if credit_balance:
+        return True, "review_credit_balance", "medium"
+    if overdue_days is not None and overdue_days > 0:
+        level = int(dunning_level) if dunning_level.isdigit() else 0
+        already_dunned = level > 0 or dunning_status in {
+            "confirmed_current", "confirmed_before_cutoff", "confirmed_historical"
+        }
+        return (
+            True,
+            "continue_dunning_follow_up" if already_dunned else "initiate_first_dunning",
+            _processing_priority(overdue_days),
+        )
+    return False, "monitor_until_due", "none"
+
+
 def _source(
     profile: JsonObject,
     request: JsonObject,
@@ -461,6 +505,22 @@ def build(
         )
         sources.append(master_source)
 
+    canonical_master: dict[tuple[str, str, str], JsonObject] = {}
+    master_conflict_customers: set[str] = set()
+    conflicting_master_keys: set[tuple[str, str, str]] = set()
+    for row in master_rows:
+        key = (_text(row, "CompanyCode"), _text(row, "Customer"), _text(row, "DunningArea"))
+        customer = key[1]
+        if not key[0] or not customer or key in conflicting_master_keys:
+            master_conflict_customers.add(customer)
+        elif key in canonical_master and canonical_master[key] != row:
+            canonical_master.pop(key, None)
+            conflicting_master_keys.add(key)
+            master_conflict_customers.add(customer)
+        else:
+            canonical_master[key] = row
+    master_rows = list(canonical_master.values())
+
     records: list[JsonObject] = []
     customer_statuses: dict[str, str] = {}
     gaps: set[str] = set()
@@ -489,11 +549,15 @@ def build(
         customer_records: list[JsonObject] = []
         customer_gaps: set[str] = set()
         customer_master = [row for row in master_rows if _text(row, "Customer") == customer]
+        if customer in master_conflict_customers:
+            customer_gaps.add("dunning_master_business_key_conflict")
         if not dunning_area and len({_text(row, "DunningArea") for row in customer_master}) > 1:
             customer_gaps.add("dunning_area_ambiguous")
+        master_blocked = any(_text(row, "DunningBlock") for row in customer_master)
         for row in seen_keys.values():
             if _text(row, "Customer") != customer:
                 continue
+            item_evidence_gap = False
             posting = _date(row.get("PostingDate"))
             amount = _decimal(row.get("AmountInTransactionCurrency"))
             currency = _text(row, "TransactionCurrency")
@@ -503,6 +567,7 @@ def build(
             is_open, open_gap = _open_at_cutoff(row, cutoff, clearing_rows, reversal_rows)
             if open_gap:
                 customer_gaps.add(open_gap)
+                item_evidence_gap = True
             if not is_open:
                 continue
             due = _date(row.get("NetDueDate") or row.get("DueCalculationBaseDate"))
@@ -510,6 +575,7 @@ def build(
                 aging = "unknown"
                 overdue_days = None
                 customer_gaps.add("due_date_missing")
+                item_evidence_gap = True
             else:
                 overdue_days = max(0, (cutoff - due).days)
                 aging = (
@@ -533,22 +599,38 @@ def build(
                 )
                 latest = [event for event in related if _date(event.get("effective_dunning_date")) == latest_date]
                 if len(latest) > 1 or any(event["sequence_status"] == "ambiguous" for event in latest):
-                    level, last_dunning, dunning_status = "0", None, "unknown"
+                    level, last_dunning, dunning_status, dunning_block = "0", None, "unknown", ""
                     customer_gaps.add("historical_dunning_sequence_ambiguous")
+                    item_evidence_gap = True
                 elif latest:
                     level = latest[0]["dunning_level"] or "0"
                     last_dunning = _date(latest[0]["effective_dunning_date"])
                     dunning_status = "confirmed_before_cutoff"
+                    dunning_block = str(latest[0].get("dunning_blocking_reason") or "").strip()
                 else:
-                    level, last_dunning, dunning_status = "0", None, "not_dunned"
+                    level, last_dunning, dunning_status, dunning_block = "0", None, "not_dunned", ""
             else:
                 level = _text(row, "DunningLevel") or "0"
                 last_dunning = _date(row.get("LastDunningDate"))
+                dunning_block = _text(row, "DunningBlockingReason")
                 dunning_status = (
                     "confirmed_current"
                     if level not in {"", "0"} and last_dunning is not None
                     else "not_dunned"
                 )
+            amount_is_credit = (
+                _text(row, "DebitCreditCode").upper() in {"H", "C", "CREDIT"}
+                or amount < 0
+            )
+            action_required, action_code, action_priority = _processing_action(
+                evidence_gap=item_evidence_gap,
+                blocked=bool(dunning_block) or master_blocked,
+                special_gl=bool(_text(row, "SpecialGLCode")),
+                credit_balance=amount_is_credit,
+                overdue_days=overdue_days,
+                dunning_level=level,
+                dunning_status=dunning_status,
+            )
             customer_records.append(
                 {
                     "company_code": company,
@@ -568,16 +650,12 @@ def build(
                     "dunning_as_of_status": dunning_status,
                     "amount": format(amount, "f"),
                     "currency": currency,
-                    "_attention": bool(
-                        (overdue_days or 0) > 0
-                        or _text(row, "SpecialGLCode")
-                        or _text(row, "DunningBlockingReason")
-                    ),
+                    "action_required": action_required,
+                    "action_code": action_code,
+                    "action_priority": action_priority,
+                    "_attention": action_required and action_code != "resolve_evidence_gap",
                 }
             )
-        if any(_text(row, "DunningBlock") for row in customer_master):
-            for record in customer_records:
-                record["_attention"] = True
         status = (
             "inconclusive" if customer_gaps else "attention"
             if any(bool(item["_attention"]) for item in customer_records) else "normal"
@@ -593,6 +671,8 @@ def build(
         status: sum(value == status for value in customer_statuses.values())
         for status in ("normal", "attention", "inconclusive")
     }
+    action_required_item_count = sum(item.get("action_required") is True for item in records)
+    monitor_item_count = sum(item.get("action_required") is False for item in records)
     source_complete = all(bool(source["source_complete"]) for source in sources)
     evidence_complete = source_complete and not gaps
     business_status = (
@@ -616,6 +696,8 @@ def build(
             "normal_customer_count": counts["normal"],
             "attention_customer_count": counts["attention"],
             "inconclusive_customer_count": counts["inconclusive"],
+            "action_required_item_count": action_required_item_count,
+            "monitor_item_count": monitor_item_count,
         },
         "business_status": business_status,
         "source_complete": source_complete,
