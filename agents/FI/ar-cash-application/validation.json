@@ -1,17 +1,14 @@
 {
-  "verdict": "BLOCKED",
-  "executable": false,
+  "verdict": "PASS",
+  "executable": true,
   "acceptanceMode": "three_stage",
   "freeQueryComparison": "MATCH",
   "fixedAgentComparison": "MATCH",
-  "blockingLimitations": [
-    "secure_reference_live_test_data_gap"
-  ],
-  "testedAt": "2026-09-05T14:49:38.340322+08:00",
-  "campaignHash": "sha256:70450d08bc00c9c857bf3802bc74bbe84ac9654237135f58f1804a4e8379b4d4",
-  "campaignCertificationDigest": "sha256:f773e0f6cc2488d3e71edd26cfda32c7f4bf344a9bcb169d7dd2ba2997829fae",
-  "agentCertificationDigest": "sha256:4d2d1626d675dec8aee40a4bb1c67f37abe9de10559bf4bdfc0907f2f3110a58",
-  "missingCoverageTags": [
-    "secure_reference"
-  ]
+  "blockingLimitations": [],
+  "testedAt": "2026-09-05T17:00:15.636012+08:00",
+  "campaignHash": "sha256:61593099a409ef16f65cc7a3e98b87a49963e2b946e11e16e29e977405408abe",
+  "campaignCertificationDigest": "sha256:551dbf78e488ef29f4a36672461789763c8e4d7f8dda37bfbfa9fcfa1272f2a5",
+  "agentCertificationDigest": "sha256:74285a4edb64930c41d298392f50993ae821167ea0665a67bb8e0eeacf87c43e",
+  "missingCoverageTags": [],
+  "candidateLifecycleState": "validated_pending_activation"
 }

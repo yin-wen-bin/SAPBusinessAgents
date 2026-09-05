@@ -22,6 +22,22 @@ from sap_business_agents_platform.security import LocalSecretProtector
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_cash_application_v010_exposes_date_range_only() -> None:
+    manifest = json.loads(
+        (ROOT / "agents" / "FI" / "ar-cash-application" / "agent.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    input_schema = manifest["execution"]["inputSchema"]
+    assert "receipt_reference" not in input_schema["properties"]
+    bank_step = next(
+        step
+        for step in manifest["execution"]["steps"]
+        if step["id"] == "read_bank_receipts"
+    )
+    assert "receipt_reference" not in bank_step["request"]
+
+
 def _complete(**values: object) -> dict[str, object]:
     return {"source_complete": True, "source_truncated": False, **values}
 
