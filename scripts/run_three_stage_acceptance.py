@@ -22,6 +22,7 @@ from sap_business_agents_platform.acceptance import (
     canonical_hash,
     compare_semantic_results,
     validate_direct_baseline,
+    runtime_acceptance_identity,
 )
 from sap_business_agents_platform.app import create_app
 from sap_business_agents_platform.config import Settings
@@ -1319,7 +1320,9 @@ async def _main(args: argparse.Namespace) -> int:
             artifact.setdefault("validation_issues", []).append(
                 {"code": "sap_source_changed_during_acceptance", "classification": "environment"}
             )
-    observed_runtime_hash = canonical_hash(artifact["free_query"].get("runtime"))
+    observed_runtime_hash = canonical_hash(
+        runtime_acceptance_identity(artifact["free_query"].get("runtime"))
+    )
     if (
         args.runtime_snapshot_hash
         and not args.skip_free_query

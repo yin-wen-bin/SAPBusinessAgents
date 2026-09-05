@@ -13,6 +13,7 @@ from typing import Any
 from sap_business_agents_platform.acceptance import (
     CanonicalTestCase,
     canonical_hash,
+    runtime_acceptance_identity,
     validate_direct_baseline,
 )
 
@@ -265,7 +266,9 @@ def _reuse_fingerprint(
         "codex_direct_baseline_hash": canonical_hash(baseline),
         "agent_execution_digest": entry.get("agent_execution_digest"),
         "acceptance_contract_digest": entry.get("acceptance_contract_digest"),
-        "runtime_snapshot_hash": canonical_hash(entry.get("runtime_snapshot")),
+        "runtime_snapshot_hash": canonical_hash(
+            runtime_acceptance_identity(entry.get("runtime_snapshot"))
+        ),
         "agent_catalog_digest": entry.get("agent_catalog_digest"),
         "skill_gate_snapshot_hash": canonical_hash(skill_snapshot),
         "sap_metadata_fingerprint": sap_metadata_fingerprint,
@@ -415,7 +418,13 @@ def _record_failure_log(
 ) -> JsonObject:
     # Arbitrary child output can contain unlabelled business values. Regex
     # redaction cannot prove it safe; retain diagnostics only as ciphertext.
-    from scripts.direct_sap_read import write_encrypted_rows
+    try:
+        from scripts.direct_sap_read import write_encrypted_rows
+    except ModuleNotFoundError:
+        # Running this file directly places ``scripts`` (rather than the
+        # repository root) on sys.path. Keep the installed/module and direct
+        # CLI entry points equivalent.
+        from direct_sap_read import write_encrypted_rows
     log = (completed.stdout or "") + "\n" + (completed.stderr or "")
     digest = "sha256:" + hashlib.sha256(log.encode("utf-8")).hexdigest()
     log_root = state_path.parent / ".private-logs"
@@ -551,11 +560,24 @@ def run(args: argparse.Namespace) -> int:
                         item["phase"] = "awaiting_frontend"
                         item["last_error"] = None
                         continue
-                    _validate_frontend_result(
-                        frontend_path,
-                        entry=entry,
-                        fixed_run_id=str((existing_artifact.get("fixed_agent") or {}).get("run_id") or ""),
-                    )
+                    try:
+                        _validate_frontend_result(
+                            frontend_path,
+                            entry=entry,
+                            fixed_run_id=str((existing_artifact.get("fixed_agent") or {}).get("run_id") or ""),
+                        )
+                    except (OSError, ValueError, json.JSONDecodeError) as exc:
+                        item["three_stage_verdict"] = terminal[0]
+                        item["verdict"] = None
+                        item["free_run_id"] = terminal[1]
+                        item["acceptance_path"] = str(existing_acceptance)
+                        item["phase"] = "awaiting_frontend"
+                        item["last_error"] = {
+                            "error_code": "frontend_acceptance_stale_or_invalid",
+                            "failed_stage": "frontend",
+                            "sanitized_message": str(exc),
+                        }
+                        continue
                 item["verdict"], item["free_run_id"] = terminal
                 item["three_stage_verdict"] = terminal[0]
                 item["acceptance_path"] = str(existing_acceptance)
@@ -650,11 +672,18 @@ def run(args: argparse.Namespace) -> int:
                     )
                     item["frontend_result"] = str(frontend_path)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    artifact["verdict"] = "FAIL"
-                    artifact.setdefault("validation_issues", []).append(
-                        {"code": "frontend_acceptance_failed", "message": str(exc)}
-                    )
-                    item.setdefault("verification_issues", []).append("frontend_acceptance_failed")
+                    item["three_stage_verdict"] = "PASS"
+                    item["verdict"] = None
+                    item["free_run_id"] = _matched_free_run_id(artifact)
+                    item["phase"] = "awaiting_frontend"
+                    item["last_error"] = {
+                        "error_code": "frontend_acceptance_stale_or_invalid",
+                        "failed_stage": "frontend",
+                        "sanitized_message": str(exc),
+                    }
+                    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    _write(state_path, state)
+                    continue
             item["verdict"] = artifact.get("verdict")
             item["three_stage_verdict"] = artifact.get("verdict")
             item["free_run_id"] = _matched_free_run_id(artifact)

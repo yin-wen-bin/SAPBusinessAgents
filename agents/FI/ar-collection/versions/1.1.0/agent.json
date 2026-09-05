@@ -10,7 +10,7 @@
     "zh": "批量重建客户应收账龄、催收冻结及催收状态，生成异常优先的催收工作清单；不处理银行来款。",
     "en": "Reconstructs customer aging, dunning blocks, and dunning status in batches and produces an exception-first collection worklist; bank receipts are out of scope."
   },
-  "status": "Three-stage live acceptance not_tested",
+  "status": "Three-stage live acceptance passed",
   "version": "1.1.0",
   "owner": "FI-AR",
   "tags": [
@@ -824,25 +824,26 @@
     }
   },
   "validation": {
-    "verdict": "NOT_TESTED",
-    "testedAt": "2026-09-04T00:00:00+08:00",
+    "verdict": "PASS",
+    "testedAt": "2026-09-05T14:49:38.340322+08:00",
     "evidenceScope": "bounded",
     "providers": [
       "embedded-sap-odata",
       "sapskillhub"
     ],
     "summary": {
-      "zh": "历史催收Skill与托管规则已接入；当前、历史和批量场景仍需完成三级真机验收。",
-      "en": "The historical dunning Skill and managed rule are integrated; current, historical, and batch scenarios still require three-stage live acceptance."
+      "zh": "独立历史催收Skill门禁、当前与历史三级真机对比、50客户容量和受限制品前台验收均已通过；此版本已就绪，等待显式启用。",
+      "en": "The independent historical-dunning Skill gate, current and historical three-stage live comparisons, 50-customer capacity case, and restricted-artifact frontend acceptance all passed. This version is ready for explicit activation."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
-    "executable": false,
+    "executable": true,
     "acceptanceMode": "three_stage",
-    "freeQueryComparison": "NOT_TESTED",
-    "fixedAgentComparison": "NOT_TESTED",
-    "blockingLimitations": [
-      "three_stage_live_acceptance_pending",
-      "historical_clearing_reversal_evidence_requires_live_validation"
-    ]
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "blockingLimitations": [],
+    "candidateLifecycleState": "validated_pending_activation",
+    "campaignHash": "sha256:70450d08bc00c9c857bf3802bc74bbe84ac9654237135f58f1804a4e8379b4d4",
+    "campaignCertificationDigest": "sha256:f773e0f6cc2488d3e71edd26cfda32c7f4bf344a9bcb169d7dd2ba2997829fae",
+    "agentCertificationDigest": "sha256:ab23f98931d3483aeab60dc85afa7ee836c3fb98928873251c6bb564c1cfa6fe"
   }
 }

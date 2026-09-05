@@ -10,7 +10,7 @@
     "zh": "核对银行来款、客户子分类账、清账凭证和发票关系；只提供确认、候选和待处理状态，不执行清账或过账。",
     "en": "Reconciles bank receipts, customer subledger entries, clearing documents, and invoices; it reports confirmed, candidate, and pending states without clearing or posting."
   },
-  "status": "Three-stage live acceptance not_tested",
+  "status": "Three-stage live acceptance blocked",
   "version": "0.1.0",
   "owner": "FI-AR",
   "tags": [
@@ -994,25 +994,30 @@
     }
   },
   "validation": {
-    "verdict": "NOT_TESTED",
-    "testedAt": "2026-09-04T00:00:00+08:00",
+    "verdict": "BLOCKED",
+    "testedAt": "2026-09-05T14:49:38.340322+08:00",
     "evidenceScope": "bounded",
     "providers": [
       "embedded-sap-odata",
       "sapskillhub"
     ],
     "summary": {
-      "zh": "Agent契约和自动化测试已建立；银行来款、FI关系及受限制品页面仍需完成三级真机验收。",
-      "en": "The Agent contract and automated tests are in place; bank receipt, FI relationship, and restricted-artifact UI paths still require three-stage live acceptance."
+      "zh": "零来款、已过账来款、客户子分类账、确认清账、待销账和受限制品前台路径均已通过；目标系统缺少可用于安全参考号精确查询的合格真机样本，因此继续阻塞。",
+      "en": "Complete-zero, posted-receipt, customer-subledger, confirmed-clearing, pending-application, and restricted-artifact frontend paths passed. The target system has no qualifying live sample for exact secure-reference lookup, so activation remains blocked."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
     "executable": false,
     "acceptanceMode": "three_stage",
-    "freeQueryComparison": "NOT_TESTED",
-    "fixedAgentComparison": "NOT_TESTED",
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
     "blockingLimitations": [
-      "three_stage_live_acceptance_pending",
-      "restricted_artifact_ui_validation_pending"
+      "secure_reference_live_test_data_gap"
+    ],
+    "campaignHash": "sha256:70450d08bc00c9c857bf3802bc74bbe84ac9654237135f58f1804a4e8379b4d4",
+    "campaignCertificationDigest": "sha256:f773e0f6cc2488d3e71edd26cfda32c7f4bf344a9bcb169d7dd2ba2997829fae",
+    "agentCertificationDigest": "sha256:4d2d1626d675dec8aee40a4bb1c67f37abe9de10559bf4bdfc0907f2f3110a58",
+    "missingCoverageTags": [
+      "secure_reference"
     ]
   }
 }

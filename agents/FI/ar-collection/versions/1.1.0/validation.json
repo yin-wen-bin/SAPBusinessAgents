@@ -1,11 +1,13 @@
 {
-  "verdict": "NOT_TESTED",
-  "executable": false,
+  "verdict": "PASS",
+  "executable": true,
   "acceptanceMode": "three_stage",
-  "freeQueryComparison": "NOT_TESTED",
-  "fixedAgentComparison": "NOT_TESTED",
-  "blockingLimitations": [
-    "three_stage_live_acceptance_pending",
-    "historical_clearing_reversal_evidence_requires_live_validation"
-  ]
+  "freeQueryComparison": "MATCH",
+  "fixedAgentComparison": "MATCH",
+  "blockingLimitations": [],
+  "candidateLifecycleState": "validated_pending_activation",
+  "testedAt": "2026-09-05T14:49:38.340322+08:00",
+  "campaignHash": "sha256:70450d08bc00c9c857bf3802bc74bbe84ac9654237135f58f1804a4e8379b4d4",
+  "campaignCertificationDigest": "sha256:f773e0f6cc2488d3e71edd26cfda32c7f4bf344a9bcb169d7dd2ba2997829fae",
+  "agentCertificationDigest": "sha256:ab23f98931d3483aeab60dc85afa7ee836c3fb98928873251c6bb564c1cfa6fe"
 }

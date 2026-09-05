@@ -10,14 +10,26 @@ from typing import Any
 from sap_business_agents_platform.acceptance import (
     CanonicalTestCase, canonical_hash, agent_execution_digest,
     validate_direct_baseline, compare_semantic_results,
+    runtime_acceptance_identity,
 )
-from scripts.run_three_stage_campaign import (
-    _load,
-    _validate_campaign,
-    _validate_frontend_result,
-    _validate_skill_gates,
-    _validate_case_expectations,
-)
+try:
+    from scripts.run_three_stage_campaign import (
+        _load,
+        _validate_campaign,
+        _validate_frontend_result,
+        _validate_skill_gates,
+        _validate_case_expectations,
+        _sap_metadata_fingerprint,
+    )
+except ModuleNotFoundError:  # direct ``python scripts/...`` execution
+    from run_three_stage_campaign import (
+        _load,
+        _validate_campaign,
+        _validate_frontend_result,
+        _validate_skill_gates,
+        _validate_case_expectations,
+        _sap_metadata_fingerprint,
+    )
 
 
 JsonObject = dict[str, Any]
@@ -31,7 +43,7 @@ def _verify_case_artifact(entry: JsonObject, artifact: JsonObject, root: Path) -
         manifest = _load((root / entry["agent_snapshot"]).resolve())
         rules_source = ((root / entry["rules_source"]).read_text(encoding="utf-8")
                         if entry.get("rules_source") else None)
-        if (manifest.get("id") != entry["agent_id"] or manifest.get("version") != entry["agent_version"]
+        if (manifest.get("slug") != entry["agent_id"] or manifest.get("version") != entry["agent_version"]
                 or agent_execution_digest(manifest, rules_source) != entry["agent_execution_digest"]):
             return [{"code": "candidate_snapshot_drift"}]
         raw_contract = manifest["execution"]["acceptance"]
@@ -45,6 +57,36 @@ def _verify_case_artifact(entry: JsonObject, artifact: JsonObject, root: Path) -
         baseline = validate_direct_baseline(baseline_payload, case)
         _validate_case_expectations(entry, baseline)
         hashes = artifact.get("hashes") or {}
+        gate_snapshot = _validate_skill_gates(entry, root)
+        expected_fingerprints = {
+            "runtime_snapshot_hash": canonical_hash(
+                runtime_acceptance_identity(entry.get("runtime_snapshot"))
+            ),
+            "agent_catalog_digest": entry.get("agent_catalog_digest"),
+            "skill_gate_snapshot_hash": canonical_hash(gate_snapshot),
+            "sap_metadata_fingerprint": _sap_metadata_fingerprint(baseline_payload),
+        }
+        for field, expected in expected_fingerprints.items():
+            if hashes.get(field) != expected:
+                return [{"code": f"{field}_drift"}]
+        expected_reuse_fingerprint = canonical_hash(
+            {
+                key: hashes.get(key)
+                for key in (
+                    "case_input_hash",
+                    "business_date",
+                    "codex_direct_baseline_hash",
+                    "agent_execution_digest",
+                    "acceptance_contract_digest",
+                    "runtime_snapshot_hash",
+                    "agent_catalog_digest",
+                    "skill_gate_snapshot_hash",
+                    "sap_metadata_fingerprint",
+                )
+            }
+        )
+        if hashes.get("reuse_fingerprint") != expected_reuse_fingerprint:
+            return [{"code": "acceptance_reuse_fingerprint_drift"}]
         if hashes.get("case_input_hash") != canonical_hash(case.input):
             return [{"code": "case_input_drift"}]
         if hashes.get("codex_direct_baseline_hash") != canonical_hash(baseline):
@@ -66,7 +108,10 @@ def _verify_case_artifact(entry: JsonObject, artifact: JsonObject, root: Path) -
                 or anchors.get("before") != anchors.get("after")
                 or anchors.get("baseline_hash") != canonical_hash(baseline_payload)):
             return [{"code": "source_anchor_verification_missing"}]
-        from scripts.acceptance_source_anchors import summarize
+        try:
+            from scripts.acceptance_source_anchors import summarize
+        except ModuleNotFoundError:  # direct ``python scripts/...`` execution
+            from acceptance_source_anchors import summarize
         frozen_anchors = []
         for phase in ("before", "after"):
             if not anchors.get(phase + "_artifact"):
@@ -221,7 +266,9 @@ def verify_campaign(campaign_path: Path, state_path: Path) -> JsonObject:
         "verdict": "PASS" if not blockers else "BLOCKED",
         "blockers": blockers,
     }
-    payload["certification_digest"] = canonical_hash(payload)
+    payload["certification_digest"] = canonical_hash(
+        {key: value for key, value in payload.items() if key != "verified_at"}
+    )
     return payload
 
 

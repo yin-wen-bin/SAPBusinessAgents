@@ -12,6 +12,7 @@ from sap_business_agents_platform.acceptance import (
     agent_execution_digest,
     canonical_hash,
     compare_semantic_results,
+    runtime_acceptance_identity,
     validate_direct_baseline,
 )
 from scripts.run_three_stage_acceptance import (
@@ -45,6 +46,31 @@ CONTRACT = {
     "metrics": ["open_items"],
     "required_limitations": ["bank_settlement_not_proven"],
 }
+
+
+def test_runtime_acceptance_identity_ignores_session_metadata() -> None:
+    first = {
+        "provider_id": "codex",
+        "sdk_id": "codex-python-sdk",
+        "version": "0.147.0",
+        "model": "gpt-5.6-sol",
+        "configuration_digest": "configuration-v1",
+        "selected_at": "2026-09-05T10:00:00+08:00",
+        "capabilities": ["planning", "tool_calling"],
+    }
+    second = {
+        **first,
+        "selected_at": "2026-09-05T11:00:00+08:00",
+        "capabilities": ["tool_calling", "planning", "streaming"],
+    }
+
+    assert runtime_acceptance_identity(first) == runtime_acceptance_identity(second)
+    assert canonical_hash(runtime_acceptance_identity(first)) == canonical_hash(
+        runtime_acceptance_identity(second)
+    )
+    assert runtime_acceptance_identity({**second, "model": "gpt-6-astra"}) != (
+        runtime_acceptance_identity(first)
+    )
 
 
 def test_v2_evidence_gaps_do_not_become_unexpected_scope_limitations():

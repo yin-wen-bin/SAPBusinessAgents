@@ -14,6 +14,27 @@ JsonObject = dict[str, Any]
 ComparisonVerdict = Literal["MATCH", "MISMATCH", "BLOCKED"]
 
 
+def runtime_acceptance_identity(value: Any) -> JsonObject:
+    """Return the stable Runtime identity used by acceptance reuse checks.
+
+    Session timestamps and advertised capability ordering are operational
+    metadata, not a change of the Runtime that produced a result.  The model,
+    SDK version and configuration digest are the reproducibility boundary.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: value.get(key)
+        for key in (
+            "provider_id",
+            "sdk_id",
+            "version",
+            "model",
+            "configuration_digest",
+        )
+    }
+
+
 @dataclass(frozen=True)
 class CanonicalTestCase:
     schema_version: str
