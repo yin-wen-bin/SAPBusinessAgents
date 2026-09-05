@@ -1,12 +1,14 @@
 {
   "schemaVersion": 1,
   "agent_id": "ar-cash-application",
-  "lifecycle_state": "inactive",
-  "state": "inactive",
-  "active_version": null,
+  "lifecycle_state": "active",
+  "state": "active",
+  "active_version": "0.1.0",
   "latest_version": "0.1.0",
-  "active_digest": null,
+  "active_digest": "sha256:431a2aa6485d8e8eb1dbb73e5efa8f71daeb15b68190284e382d78710d185ce3",
   "published_at": null,
-  "git_branch": "main",
-  "git_commit": null
+  "git_branch": "codex/agent-ar-cash-application-activate-v0.1.0-3c52fc01",
+  "git_commit": null,
+  "activated_at": "2026-09-05T09:11:57.245410+00:00",
+  "deactivated_at": null
 }
