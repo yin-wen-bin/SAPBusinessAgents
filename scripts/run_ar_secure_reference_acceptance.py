@@ -10,8 +10,12 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from sap_business_agents_platform.acceptance import CanonicalTestCase, canonical_hash
 from scripts.build_ar_cash_application_direct_baseline import build as build_baseline
@@ -27,10 +31,16 @@ def _text(row: dict, field: str) -> str:
 
 
 def _date_value(value: str) -> date | None:
-    try:
-        return date.fromisoformat(value[:10])
-    except (TypeError, ValueError):
-        return None
+    text = str(value or "").strip()
+    for parser in (
+        lambda item: date.fromisoformat(item[:10]),
+        lambda item: datetime.strptime(item[:8], "%Y%m%d").date(),
+    ):
+        try:
+            return parser(text)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _prepare_case(source: Path, output: Path) -> dict:

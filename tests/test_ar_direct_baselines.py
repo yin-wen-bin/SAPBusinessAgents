@@ -21,6 +21,13 @@ from scripts.build_ar_collection_direct_baseline import _open_at_cutoff
 from scripts.build_ar_collection_direct_baseline import _independent_dunning_events
 from datetime import date
 from scripts.direct_sap_read import write_encrypted_rows
+from scripts.run_ar_secure_reference_acceptance import _date_value
+
+
+def test_secure_reference_selector_accepts_adt_compact_dates() -> None:
+    assert _date_value("20260905") == date(2026, 9, 5)
+    assert _date_value("2026-09-05") == date(2026, 9, 5)
+    assert _date_value("invalid") is None
 
 
 def test_cash_baseline_reads_reference_only_from_sensitive_stdin(monkeypatch) -> None:
