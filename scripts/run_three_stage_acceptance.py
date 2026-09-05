@@ -800,7 +800,12 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
     ]
     record_scope = str(contract.get("record_scope") or "").strip()
     if record_scope:
-        instructions.append(f"- Record scope: {record_scope}")
+        instructions.extend(
+            [
+                f"- Record scope: {record_scope}",
+                "- The record scope is authoritative. Include only objects selected by that path in acceptance_projection.records; do not add parent summaries, empty-result customer placeholders, or aggregate rows as canonical records. Preserve those outcomes in the declared metrics and visible report instead.",
+            ]
+        )
     for metric_id, definition in (contract.get("metric_definitions") or {}).items():
         instructions.append(f"- Metric {metric_id}: {definition}")
     for fact_id, definition in (contract.get("fact_definitions") or {}).items():

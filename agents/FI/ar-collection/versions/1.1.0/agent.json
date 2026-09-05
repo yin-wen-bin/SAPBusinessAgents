@@ -782,9 +782,7 @@
         "attention_customer_count",
         "inconclusive_customer_count"
       ],
-      "requiredLimitations": [
-        "historical_dunning_master_snapshot_not_available"
-      ],
+      "requiredLimitations": [],
       "decimalFields": ["amount"],
       "decimalMetricIds": [],
       "currencyFields": ["currency"],

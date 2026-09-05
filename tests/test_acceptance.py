@@ -279,6 +279,35 @@ def test_acceptance_projection_separates_required_scope_limitations_from_gaps() 
     assert normalized["evidence_gap_codes"] == ["real_evidence_gap"]
 
 
+def test_acceptance_prompt_makes_record_scope_authoritative() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "2.0",
+            "case_id": "record-scope",
+            "agent_id": "ar-collection",
+            "question": {"zh": "测试", "en": "Test"},
+            "input": {},
+            "business_conditions": {},
+            "expected_grain": ["company_code"],
+            "expected_output": {
+                "record_fields": ["company_code"],
+                "metric_ids": [],
+                "minimum_primary_evidence_rows": 0,
+                "allow_empty_result": True,
+                "evidence_scope": "complete",
+            },
+        }
+    )
+
+    prompt = _acceptance_prompt(
+        case,
+        {**CONTRACT, "record_scope": "customer_results[].items[]"},
+    )
+
+    assert "record scope is authoritative" in prompt.casefold()
+    assert "empty-result customer placeholders" in prompt
+
+
 def test_campaign_sensitive_inputs_are_scoped_to_a_case(monkeypatch) -> None:
     monkeypatch.setattr(
         "scripts.run_three_stage_campaign.sys.stdin",
