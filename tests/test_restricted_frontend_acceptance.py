@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 from scripts.validate_restricted_artifact_frontend import (
+    _DELETE_REASON,
     _contains_any,
     _fixed_run_identity,
     _sensitive_values,
 )
+
+
+def test_frontend_acceptance_uses_public_delete_reason() -> None:
+    assert _DELETE_REASON == "user_requested"
+
+
+def test_frontend_acceptance_scans_binary_tombstone_fields() -> None:
+    assert _contains_any({"protected_key": b""}, ["PRIVATE"]) is False
+    assert _contains_any({"protected_key": b"PRIVATE"}, ["PRIVATE"]) is True
 
 
 def test_frontend_acceptance_collects_only_declared_sensitive_values() -> None:

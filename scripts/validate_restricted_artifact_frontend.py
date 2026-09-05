@@ -23,6 +23,7 @@ from sap_business_agents_platform.config import Settings
 
 
 JsonObject = dict[str, Any]
+_DELETE_REASON = "user_requested"
 SECURITY_HEADERS = {
     "cache-control": "no-store",
     "content-security-policy": "sandbox",
@@ -58,8 +59,21 @@ def _sensitive_values(rows: list[JsonObject]) -> list[str]:
 
 
 def _contains_any(payload: Any, values: list[str]) -> bool:
-    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    return any(value in serialized for value in values)
+    if not values:
+        return False
+    if isinstance(payload, str):
+        return any(value in payload for value in values)
+    if isinstance(payload, bytes):
+        decoded = payload.decode("utf-8", errors="ignore")
+        return any(value in decoded for value in values)
+    if isinstance(payload, dict):
+        return any(
+            _contains_any(key, values) or _contains_any(value, values)
+            for key, value in payload.items()
+        )
+    if isinstance(payload, (list, tuple, set)):
+        return any(_contains_any(value, values) for value in payload)
+    return False
 
 
 def _fixed_run_identity(payload: JsonObject) -> tuple[str, str, str]:
@@ -253,7 +267,10 @@ def validate(
             deleted = client.request(
                 "DELETE",
                 path,
-                json={"reason": "acceptance_destruction_run"},
+                # The public API intentionally accepts only the platform-defined
+                # reason.  Acceptance must exercise the same contract as the UI
+                # instead of relying on an internal-only marker.
+                json={"reason": _DELETE_REASON},
                 headers={**origin, "X-SAPBA-CSRF": csrf},
             )
             checks["artifact_deleted"] = deleted.status_code == 200 and bool(deleted.json().get("deleted_at"))
