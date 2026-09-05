@@ -123,6 +123,14 @@ def test_managed_rule_is_scanned_and_runs_in_isolated_process() -> None:
         validate_managed_rule("def evaluate(inputs):\n    return open('secret').read()\n")
 
 
+def test_managed_rule_preserves_unicode_across_isolated_process() -> None:
+    source = "def evaluate(inputs):\n    return {'text': '中文验收'}\n"
+
+    assert execute_managed_rule(
+        source, {}, expected_digest=source_digest(source)
+    ) == {"text": "中文验收"}
+
+
 def test_managed_rule_reuses_identical_report_without_losing_rows_or_raising_limit():
     source = "def evaluate(inputs):\n    report = {'records': [{'text': 'a' * 1200} for i in range(1000)]}\n    return {'business_report': report, 'workflow_output': {'business_report': report}}\n"
     result = execute_managed_rule(source, {}, expected_digest=source_digest(source))

@@ -88,7 +88,10 @@ if spec is None or spec.loader is None:
     raise RuntimeError("managed rule module could not be loaded")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-payload = json.load(sys.stdin)
+# ``-I`` intentionally ignores PYTHONIOENCODING, so Windows otherwise applies
+# the active ANSI code page to stdin/stdout.  Use the binary streams and a
+# fixed UTF-8 transport to preserve bilingual rule inputs and reports.
+payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
 result = module.evaluate(payload)
 if not isinstance(result, dict):
     raise TypeError("managed rule evaluate() must return an object")
@@ -104,14 +107,14 @@ wire = {"version": 1, "reuse_report": reuse_report, "result": result}
 encoded = json.dumps(wire, ensure_ascii=False, separators=(",", ":"))
 if len(encoded.encode("utf-8")) > 2_000_000:
     raise ValueError("managed rule output exceeds 2 MB")
-sys.stdout.write(encoded)
+sys.stdout.buffer.write(encoded.encode("utf-8"))
 """
 
 
 class _WindowsRuleJob:
     """Bound a managed-rule process and all descendants to one Windows Job."""
 
-    def __init__(self, process: subprocess.Popen[str], memory_bytes: int) -> None:
+    def __init__(self, process: subprocess.Popen[bytes], memory_bytes: int) -> None:
         self._handle: int | None = None
         if os.name != "nt":
             return
@@ -227,9 +230,6 @@ def execute_managed_rule(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             env=environment,
         )
         try:
@@ -243,7 +243,7 @@ def execute_managed_rule(
             ) from exc
         try:
             stdout, stderr = process.communicate(
-                input=encoded_input, timeout=max(0.1, timeout_seconds)
+                input=encoded_input.encode("utf-8"), timeout=max(0.1, timeout_seconds)
             )
         except subprocess.TimeoutExpired as exc:
             # Closing a kill-on-close Job terminates the full child process tree.
@@ -263,7 +263,7 @@ def execute_managed_rule(
             # Child exceptions may interpolate evidence values (for example a
             # KeyError). Never forward arbitrary stderr into a public run.
             message = ("Managed rule output exceeds 2 MB." if stderr.strip().endswith(
-                "ValueError: managed rule output exceeds 2 MB") else "Managed rule execution failed.")
+                b"ValueError: managed rule output exceeds 2 MB") else "Managed rule execution failed.")
             raise ManagedRuleError(
                 message, code="managed_rule_execution_failed"
             )
