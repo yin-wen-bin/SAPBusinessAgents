@@ -45,6 +45,12 @@ def _truthy(value):
     return value is True or _text(value).lower() in {"true", "x", "1", "yes"}
 
 
+def _item_key(value):
+    """Canonicalize a numeric FI item only for cross-source key comparison."""
+    text = _text(value)
+    return str(int(text)) if text.isdigit() else text
+
+
 def _walk_rows(value, step_id, active_step):
     rows = []
     if isinstance(value, dict):
@@ -122,7 +128,9 @@ def _history_events(history, row, requested_area):
             continue
         if _text(event.get("accounting_document")) != _text(row.get("AccountingDocument")):
             continue
-        if _text(event.get("accounting_document_item")) != _text(row.get("AccountingDocumentItem")):
+        if _item_key(event.get("accounting_document_item")) != _item_key(
+            row.get("AccountingDocumentItem")
+        ):
             continue
         if requested_area and _text(event.get("dunning_area")) != requested_area:
             continue

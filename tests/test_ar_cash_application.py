@@ -133,6 +133,33 @@ def test_cash_scope_ignores_sap_placeholder_subledger_references() -> None:
     assert result["fi_document_tuples"] == []
 
 
+def test_cash_result_does_not_publish_sap_placeholder_as_fi_reference() -> None:
+    result = evaluate_business_agent(
+        _cash_inputs(
+            [
+                {
+                    "statement_id": "STMT-FIXTURE",
+                    "statement_item": "1",
+                    "posting_status": "completed",
+                    "reversal_status": "not_reversed",
+                    "related_accounting_document": {
+                        "subledger_document": "*",
+                        "fiscal_year": "0000",
+                    },
+                    "amount": "100.00",
+                    "currency": "USD",
+                    "value_date": "2026-09-01",
+                }
+            ]
+        )
+    )
+
+    receipt = result["receipt_results"][0]
+    assert receipt["cash_application_status"] == "pending"
+    assert receipt["subledger_document"] is None
+    assert receipt["fiscal_year"] is None
+
+
 def test_cash_scope_uses_the_operational_cube_business_key_without_ledger() -> None:
     result = prepare_ar_cash_application_scope(
         {
@@ -207,7 +234,7 @@ def test_cash_application_confirms_only_a_real_clearing_relationship() -> None:
         "posting_status": "completed",
         "reversal_status": "not_reversed",
         "related_accounting_document": {
-            "subledger_document": "PAY-FIXTURE",
+                "subledger_document": "1400000001",
             "fiscal_year": "2026",
         },
     }
@@ -215,7 +242,7 @@ def test_cash_application_confirms_only_a_real_clearing_relationship() -> None:
         "CompanyCode": "1710",
         "Ledger": "0L",
         "FiscalYear": "2026",
-        "AccountingDocument": "PAY-FIXTURE",
+        "AccountingDocument": "1400000001",
         "AccountingDocumentItem": "1",
         "FinancialAccountType": "D",
         "Customer": "CUSTOMER-FIXTURE",
@@ -225,12 +252,12 @@ def test_cash_application_confirms_only_a_real_clearing_relationship() -> None:
         "CompanyCode": "1710",
         "Ledger": "0L",
         "FiscalYear": "2026",
-        "AccountingDocument": "INV-FIXTURE",
+        "AccountingDocument": "1800000001",
         "AccountingDocumentItem": "1",
         "FinancialAccountType": "D",
         "Customer": "CUSTOMER-FIXTURE",
         "SpecialGLCode": "",
-        "ClearingAccountingDocument": "PAY-FIXTURE",
+        "ClearingAccountingDocument": "1400000001",
         "ClearingDocFiscalYear": "2026",
     }
 
@@ -255,7 +282,7 @@ def test_cash_application_attaches_resolved_ledger_to_ledgerless_cube_rows() -> 
         "posting_status": "completed",
         "reversal_status": "not_reversed",
         "related_accounting_document": {
-            "subledger_document": "PAY-FIXTURE",
+                "subledger_document": "1400000001",
             "fiscal_year": "2026",
         },
     }
@@ -263,7 +290,7 @@ def test_cash_application_attaches_resolved_ledger_to_ledgerless_cube_rows() -> 
         "CompanyCode": "1710",
         "Ledger": "",
         "FiscalYear": "2026",
-        "AccountingDocument": "PAY-FIXTURE",
+        "AccountingDocument": "1400000001",
         "AccountingDocumentItem": "1",
         "FinancialAccountType": "D",
         "Customer": "CUSTOMER-FIXTURE",
@@ -273,12 +300,12 @@ def test_cash_application_attaches_resolved_ledger_to_ledgerless_cube_rows() -> 
         "CompanyCode": "1710",
         "Ledger": "",
         "FiscalYear": "2026",
-        "AccountingDocument": "INV-FIXTURE",
+        "AccountingDocument": "1800000001",
         "AccountingDocumentItem": "1",
         "FinancialAccountType": "D",
         "Customer": "CUSTOMER-FIXTURE",
         "SpecialGLCode": "",
-        "ClearingAccountingDocument": "PAY-FIXTURE",
+        "ClearingAccountingDocument": "1400000001",
         "ClearingDocFiscalYear": "2026",
     }
 

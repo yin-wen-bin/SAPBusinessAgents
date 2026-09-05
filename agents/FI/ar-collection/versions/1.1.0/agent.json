@@ -29,7 +29,7 @@
   ],
   "managedRule": {
     "entrypoint": "evaluate",
-    "sha256": "sha256:e00252f79c260e91fad01fc73d70fbea9ec082af8dd8795588bed2c65c430a66"
+    "sha256": "sha256:8fa43f1f29b443397bfd85fc23fa9bc8329c53863faeb5430be431f8673ad46d"
   },
   "inputs": {
     "zh": [
@@ -602,7 +602,7 @@
           "company_code": "{{input.company_code}}",
           "customers": "{{input.customers}}",
           "as_of": "{{input.as_of}}",
-          "dunning_area": "{{input.dunning_area}}"
+          "dunning_area": "{{steps.prepare_ar_collection_context.output.dunning_area}}"
         }
       },
       {
@@ -782,7 +782,9 @@
         "attention_customer_count",
         "inconclusive_customer_count"
       ],
-      "requiredLimitations": [],
+      "requiredLimitations": [
+        "historical_dunning_master_snapshot_not_available"
+      ],
       "decimalFields": ["amount"],
       "decimalMetricIds": [],
       "currencyFields": ["currency"],
@@ -793,7 +795,11 @@
       "fieldAliases": {},
       "fieldExtractors": {},
       "currencyFromDecimal": {"amount": "currency"},
-      "valueMappings": {},
+      "valueMappings": {
+        "dunning_as_of_status": {
+          "confirmed_historical": "confirmed_before_cutoff"
+        }
+      },
       "limitationKeywords": {},
       "summaryRecord": false,
       "zeroFactWhenMetricZero": {},
@@ -808,13 +814,14 @@
         "inconclusive_customer_count": "Customers with required query, currency, relationship or historical evidence gaps. Do not count scoped complete empty queries as gaps."
       },
       "factDefinitions": {
+        "accounting_document_item": "Preserve the FI item value returned by the authoritative FI source in the projection. When joining MHND/MHNK history to FI items, numeric item keys such as 1 and 001 are SAP-equivalent after leading-zero normalization; this normalization is relationship-only and must not rewrite the displayed FI key.",
         "ledger": "Read the unique leading ledger from live API_LEDGER_SRV/A_Ledger. Operational account-item Cube may project a blank Ledger; do not filter it by a guessed ledger and drop items. Verify the operational item's leading-ledger relationship with independent FI evidence before assigning the resolved ledger; otherwise leave unknown.",
-        "dunning_as_of_status": "For as_of equal to business_date, use DunningLevel and LastDunningDate on the FI item, not A_CustomerDunning as a historical item snapshot: confirmed_current when level is nonzero and date is present, otherwise not_dunned when those fields were actually read completely. For historical dates use the approved dunning-history Skill events; unknown if evidence is unavailable.",
+        "dunning_as_of_status": "For as_of equal to business_date, use DunningLevel and LastDunningDate on the FI item, not A_CustomerDunning as a historical item snapshot: confirmed_current when level is nonzero and date is present, otherwise not_dunned when those fields were actually read completely. For historical dates use the approved dunning-history Skill events: an exactly related, provably ordered event is confirmed_before_cutoff even when its dunning_level is 0; level 0 must be preserved and is not the same as absence of an event. Use not_dunned only when the complete historical event scope contains no related event, and unknown only when that evidence is unavailable or ambiguous. The required historical_dunning_master_snapshot_not_available limitation is a scope disclosure, not an evidence gap and must not lower source_complete, evidence_complete or business_complete.",
         "last_dunning_date": "Current item LastDunningDate, or the last provably ordered historical event. Null when no event is established, never inferred from current customer master data.",
         "aging_bucket": "Compare NetDueDate (or DueCalculationBaseDate if NetDueDate is absent) with as_of: not_due, 1_30, 31_60, 61_90, over_90, unknown. Preserve each item's amount and currency; never net credits or special G/L against ordinary trade overdue amounts.",
-        "amount": "Exact signed AmountInTransactionCurrency paired with TransactionCurrency from the same FI item. Read DebitCreditCode, SpecialGLCode and DunningBlockingReason to classify customer status."
+        "amount": "Exact signed AmountInTransactionCurrency paired with TransactionCurrency from the same FI item. Read DebitCreditCode, SpecialGLCode and DunningBlockingReason to classify customer status. A historical clearing/reversal timeline is required only for an item that carries a clearing or reversal reference relevant to the cutoff; do not create a global clearing-timeline gap for fully read items with no such reference."
       },
-      "businessStatusDefinition": "Classify each requested customer independently: incomplete evidence=inconclusive; otherwise ordinary overdue debit, item/master dunning block, or special G/L=attention; otherwise normal. Record business_status inherits its customer status. Aggregate inconclusive before attention before normal. Current customer dunning master only supplies procedure/block/recipient/responsible person; do not substitute it for item dunning level/date.",
+      "businessStatusDefinition": "Classify each requested customer independently: incomplete evidence=inconclusive; otherwise ordinary overdue debit, item/master dunning block, or special G/L=attention; otherwise normal. Record business_status inherits its customer status. Aggregate inconclusive before attention before normal. Current customer dunning master only supplies procedure/block/recipient/responsible person; do not substitute it for item dunning level/date. For a historical run, historical_dunning_master_snapshot_not_available is a required non-blocking scope limitation and is not incomplete evidence.",
       "businessStatusFromAnyPositiveMetric": {}
     }
   },

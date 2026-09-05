@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
+import sys
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -48,6 +50,21 @@ FI_FIELDS = [
     "AmountInCompanyCodeCurrency", "CompanyCodeCurrency", "SpecialGLCode",
     "AssignmentReference", "Reference1IDByBusinessPartner", "DocumentReferenceID",
 ]
+
+
+def _read_sensitive_reference_from_stdin(enabled: bool) -> str | None:
+    if not enabled:
+        return None
+    raw = sys.stdin.read()
+    if not raw.strip():
+        raise ValueError("--sensitive-input-stdin requires a JSON object on stdin")
+    value = json.loads(raw)
+    if not isinstance(value, dict) or set(value) != {"receipt_reference"}:
+        raise ValueError("sensitive input must contain only receipt_reference")
+    reference = value.get("receipt_reference")
+    if not isinstance(reference, str) or not reference.strip():
+        raise ValueError("receipt_reference must be a non-blank string")
+    return reference.strip()
 
 
 def _load_object(path: Path) -> JsonObject:
@@ -406,7 +423,7 @@ def build(
     observed_schema = {str(key).upper() for row in raw_rows for key in row}
     if raw_rows and not required_keys.issubset(observed_schema):
         raise ValueError("direct bank source is missing required ADT fields")
-    scoped = []
+    period_rows = []
     for row in raw_rows:
         value_date = _date(_row(row, "ValueDate"))
         if _text(row, "CompanyCode") != company or value_date is None:
@@ -414,24 +431,90 @@ def build(
         if (
             start <= value_date <= end
             and _text(row, "DebitCreditCode") == "H"
-            and (reference_value is None or _text(row, "BankReference") == reference_value)
         ):
-            scoped.append(row)
+            period_rows.append(row)
+    scoped = [
+        row for row in period_rows
+        if reference_value is None or _text(row, "BankReference") == reference_value
+    ]
     keys = [
         (_text(row, "CompanyCode"), _text(row, "BankStatementShortID"), _text(row, "BankStatementItem"))
-        for row in scoped
+        for row in period_rows
     ]
     if any(not all(key) for key in keys) or len(keys) != len(set(keys)):
         raise ValueError("direct bank source has an invalid or duplicate stable business key")
+    period_rows.sort(key=lambda row: (
+        _text(row, "CompanyCode"),
+        _text(row, "BankStatementShortID"),
+        _text(row, "BankStatementItem"),
+    ))
     scoped.sort(key=lambda row: (
         _text(row, "CompanyCode"),
         _text(row, "BankStatementShortID"),
         _text(row, "BankStatementItem"),
     ))
     artifacts.mkdir(parents=True, exist_ok=True)
-    encrypted = write_encrypted_rows(artifacts / "bank_raw", scoped)
-    bank_source["row_count"] = len(scoped)
+    bank_snapshot_target = artifacts / "bank_raw"
+    encrypted = write_encrypted_rows(bank_snapshot_target, period_rows)
+    bank_source["row_count"] = len(period_rows)
     bank_source["restricted_rows_hash"] = encrypted["ciphertext_sha256"]
+    if bank_snapshot is not None:
+        # The discovery snapshot can cover years of data. Materialize a
+        # case-scoped encrypted source and replay contract so before/after
+        # anchors compare the exact period without preserving a sensitive
+        # receipt reference in metadata.
+        original_spec = source_manifest.get("spec") if isinstance(source_manifest.get("spec"), dict) else {}
+        exact_spec = {
+            "object": "I_ARBANKSTATEMENTITEM",
+            "fields": list(original_spec.get("fields") or []),
+            "filters": [
+                {"field": "CompanyCode", "operator": "=", "value": company},
+                {"field": "DebitCreditCode", "operator": "=", "value": "H"},
+                {"field": "ValueDate", "operator": ">=", "value": start.strftime("%Y%m%d")},
+                {"field": "ValueDate", "operator": "<=", "value": end.strftime("%Y%m%d")},
+            ],
+            "row_limit": max(100, len(period_rows) + 1),
+        }
+        query_hash = canonical_hash(exact_spec)
+        rows_hash = canonical_hash(period_rows)
+        source_id = "adt_i_arbankstatementitem_" + query_hash[7:19]
+        scoped_manifest = {
+            "source_id": source_id,
+            "object": "I_ARBANKSTATEMENTITEM",
+            "access_method": "adt_data_preview",
+            "http_method": "POST",
+            "semantic_read_only": True,
+            "endpoint": "/sap/bc/adt/datapreview/freestyle",
+            "query_hash": query_hash,
+            "stable_order_by": source_manifest["stable_order_by"],
+            "source_complete": True,
+            "paging_complete": True,
+            "row_count": len(period_rows),
+            "total_rows": len(period_rows),
+            "observed_at": source_manifest.get("observed_at"),
+            "restricted_artifact": encrypted,
+            "metadata_path": source_manifest.get("metadata_path"),
+            "metadata_sha256": source_manifest["metadata_sha256"],
+            "schema_hash": source_manifest["schema_hash"],
+            "rows_hash": rows_hash,
+            "result_columns_hash": source_manifest.get("result_columns_hash"),
+            "spec": exact_spec,
+        }
+        (bank_snapshot_target / "manifest.json").write_text(
+            json.dumps(scoped_manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        source_metadata = bank_snapshot / "metadata.source"
+        if source_metadata.is_file():
+            shutil.copyfile(source_metadata, bank_snapshot_target / "metadata.source")
+        bank_source.update(
+            {
+                "source_id": source_id,
+                "query_hash": query_hash,
+                "source_snapshot_ref": str(bank_snapshot_target.resolve()),
+                "source_snapshot_hash": rows_hash,
+            }
+        )
 
     sources: list[JsonObject] = [bank_source]
     profile = _load_object(profile_path) if profile_path is not None else None
@@ -711,7 +794,15 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--reference-supplied", action="store_true")
+    parser.add_argument(
+        "--sensitive-input-stdin",
+        action="store_true",
+        help="Read receipt_reference from a JSON object on stdin without exposing it in argv.",
+    )
     args = parser.parse_args()
+    reference_value = _read_sensitive_reference_from_stdin(args.sensitive_input_stdin)
+    if args.reference_supplied and reference_value is not None:
+        raise ValueError("use either --reference-supplied or --sensitive-input-stdin")
     result = build(
         args.case.resolve(),
         args.bank_rows.resolve() if args.bank_rows else None,
@@ -720,7 +811,8 @@ def main() -> int:
         args.artifacts.resolve(),
         bank_snapshot=args.bank_snapshot.resolve() if args.bank_snapshot else None,
         profile_path=args.profile.resolve() if args.profile and args.profile.is_file() else None,
-        reference_supplied=args.reference_supplied,
+        reference_supplied=args.reference_supplied or reference_value is not None,
+        reference_value=reference_value,
     )
     normalized = result["normalized_result"]
     print(

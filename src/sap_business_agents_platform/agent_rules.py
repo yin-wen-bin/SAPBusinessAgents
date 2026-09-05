@@ -2435,18 +2435,24 @@ def _ar_cash_application(inputs: JsonObject) -> JsonObject:
         related = receipt.get("related_accounting_document") if isinstance(receipt.get("related_accounting_document"), dict) else {}
         document = str(related.get("subledger_document") or "")
         year = str(related.get("fiscal_year") or "")
+        valid_document = bool(
+            re.fullmatch(r"\d{1,10}", document)
+            and re.fullmatch(r"(?!0000)\d{4}", year)
+        )
+        relationship_document = document if valid_document else ""
+        relationship_year = year if valid_document else ""
         active = receipt.get("posting_status") == "completed" and receipt.get("reversal_status") == "not_reversed"
         company_code = str((inputs.get("run_input") or {}).get("company_code") or "")
         ledger = resolved_ledger
-        matching = [row for row in payment_rows if _text(row, "CompanyCode") == company_code and _text(row, "Ledger") == ledger and _text(row, "AccountingDocument") == document and _text(row, "FiscalYear") == year]
+        matching = [row for row in payment_rows if _text(row, "CompanyCode") == company_code and _text(row, "Ledger") == ledger and _text(row, "AccountingDocument") == relationship_document and _text(row, "FiscalYear") == relationship_year]
         customer_lines = [row for row in matching if _text(row, "FinancialAccountType") == "D" and _text(row, "Customer")]
         customers = {_text(row, "Customer") for row in customer_lines}
         special = [row for row in customer_lines if _text(row, "SpecialGLCode")]
         ordinary = [row for row in customer_lines if not _text(row, "SpecialGLCode")]
         direct_invoices = [
             row for row in direct_invoice_rows
-            if _text(row, "ClearingAccountingDocument") == document
-            and _text(row, "ClearingDocFiscalYear") == year
+            if _text(row, "ClearingAccountingDocument") == relationship_document
+            and _text(row, "ClearingDocFiscalYear") == relationship_year
             and _text(row, "FinancialAccountType") == "D"
             and not _text(row, "SpecialGLCode")
         ]
@@ -2457,7 +2463,7 @@ def _ar_cash_application(inputs: JsonObject) -> JsonObject:
         }
         relationship_ambiguous = any(not clearing_year for clearing_year, _clearing_doc in later_refs)
         later_refs = {(clearing_year, clearing_doc) for clearing_year, clearing_doc in later_refs if clearing_year}
-        if (year, document) in later_refs:
+        if (relationship_year, relationship_document) in later_refs:
             relationship_ambiguous = True
         later_documents = {
             (_text(row, "FiscalYear"), _text(row, "AccountingDocument"))
@@ -2487,7 +2493,7 @@ def _ar_cash_application(inputs: JsonObject) -> JsonObject:
                 if posting_status != "completed"
                 else "not_completed"
             )
-        elif not document or not year or not matching:
+        elif not valid_document or not matching:
             cash_status = "pending"
             business = "attention" if source_complete else "inconclusive"
             reason = "customer_subledger_document_missing"
@@ -2518,8 +2524,8 @@ def _ar_cash_application(inputs: JsonObject) -> JsonObject:
                 and not _text(row, "SpecialGLCode")
                 and _text(row, "Customer") in customers
                 and not (
-                    _text(row, "AccountingDocument") == document
-                    and _text(row, "FiscalYear") == year
+                    _text(row, "AccountingDocument") == relationship_document
+                    and _text(row, "FiscalYear") == relationship_year
                 )
                 and _text(row, "TransactionCurrency") == currency
                 and abs(_strict_decimal(row.get("AmountInTransactionCurrency")) or Decimal(0)) == receipt_amount
@@ -2538,8 +2544,8 @@ def _ar_cash_application(inputs: JsonObject) -> JsonObject:
                 "currency": receipt.get("currency"),
                 "posting_status": receipt.get("posting_status"),
                 "reversal_status": receipt.get("reversal_status"),
-                "subledger_document": document or None,
-                "fiscal_year": year or None,
+                "subledger_document": relationship_document or None,
+                "fiscal_year": relationship_year or None,
                 "customer": next(iter(customers), None) if len(customers) == 1 else None,
                 "cash_application_status": cash_status,
                 "business_status": business,

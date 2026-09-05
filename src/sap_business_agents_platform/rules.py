@@ -212,6 +212,7 @@ def prepare_ar_collection_context(inputs: dict[str, Any]) -> dict[str, Any]:
         "current": not historical,
         "as_of": as_of.isoformat(),
         "business_date": business_date.isoformat(),
+        "dunning_area": str(run_input.get("dunning_area") or "").strip(),
     }
 
 

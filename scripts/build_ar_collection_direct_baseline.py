@@ -71,6 +71,12 @@ def _text(row: JsonObject, field: str) -> str:
     return str(row.get(field) or "").strip()
 
 
+def _item_key(value: Any) -> str:
+    """Canonicalize a numeric FI item only for cross-source key comparison."""
+    text = str(value or "").strip()
+    return str(int(text)) if text.isdigit() else text
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -518,7 +524,8 @@ def build(
                     and event["customer"] == customer
                     and event["fiscal_year"] == _text(row, "FiscalYear")
                     and event["accounting_document"] == _text(row, "AccountingDocument")
-                    and event["accounting_document_item"] == _text(row, "AccountingDocumentItem")
+                    and _item_key(event["accounting_document_item"])
+                    == _item_key(row.get("AccountingDocumentItem"))
                 ]
                 latest_date = max(
                     (_date(event.get("effective_dunning_date")) for event in related),

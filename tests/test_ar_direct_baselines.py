@@ -11,13 +11,34 @@ from sap_business_agents_platform.acceptance import (
     canonical_hash,
     validate_direct_baseline,
 )
-from scripts.build_ar_cash_application_direct_baseline import build as build_cash
-from scripts.build_ar_cash_application_direct_baseline import _posting_status
+from scripts.build_ar_cash_application_direct_baseline import (
+    _posting_status,
+    _read_sensitive_reference_from_stdin,
+    build as build_cash,
+)
 from scripts.build_ar_collection_direct_baseline import build as build_collection
 from scripts.build_ar_collection_direct_baseline import _open_at_cutoff
 from scripts.build_ar_collection_direct_baseline import _independent_dunning_events
 from datetime import date
 from scripts.direct_sap_read import write_encrypted_rows
+
+
+def test_cash_baseline_reads_reference_only_from_sensitive_stdin(monkeypatch) -> None:
+    from io import StringIO
+
+    monkeypatch.setattr("sys.stdin", StringIO('{"receipt_reference":"  SAFE-REF  "}'))
+    assert _read_sensitive_reference_from_stdin(True) == "SAFE-REF"
+
+
+def test_cash_baseline_rejects_extra_sensitive_stdin_fields(monkeypatch) -> None:
+    from io import StringIO
+
+    monkeypatch.setattr(
+        "sys.stdin",
+        StringIO('{"receipt_reference":"SAFE-REF","other":"x"}'),
+    )
+    with pytest.raises(ValueError, match="only receipt_reference"):
+        _read_sensitive_reference_from_stdin(True)
 
 
 def test_independent_baseline_rebuilds_reversal_timeline_using_exact_fiscal_tuple():

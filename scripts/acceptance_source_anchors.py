@@ -10,8 +10,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scripts.direct_sap_read import run as direct_read, read_encrypted_rows, _hash_json
-from scripts.direct_ar_adt_snapshot import capture as direct_adt_read
+try:
+    from scripts.direct_sap_read import run as direct_read, read_encrypted_rows, _hash_json
+    from scripts.direct_ar_adt_snapshot import capture as direct_adt_read
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    from direct_sap_read import run as direct_read, read_encrypted_rows, _hash_json
+    from direct_ar_adt_snapshot import capture as direct_adt_read
 
 
 def anchor_value(source):

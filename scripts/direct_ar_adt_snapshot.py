@@ -16,7 +16,10 @@ from urllib.parse import quote, urlsplit
 
 import requests
 
-from scripts.direct_sap_read import write_encrypted_rows
+try:
+    from scripts.direct_sap_read import write_encrypted_rows
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    from direct_sap_read import write_encrypted_rows
 
 ENDPOINT = "/sap/bc/adt/datapreview/freestyle"
 ALLOWED = {

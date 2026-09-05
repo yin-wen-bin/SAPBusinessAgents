@@ -1086,7 +1086,10 @@ async def _main(args: argparse.Namespace) -> int:
     anchor_before = None
     anchor_profile = getattr(args, "anchor_profile", None)
     if anchor_profile:
-        from scripts.acceptance_source_anchors import capture
+        try:
+            from scripts.acceptance_source_anchors import capture
+        except ModuleNotFoundError:  # pragma: no cover - direct script execution
+            from acceptance_source_anchors import capture
         anchor_before = await asyncio.to_thread(
             capture, baseline_payload, _load_json(Path(anchor_profile).resolve()), output / "anchors-before"
         )
@@ -1284,7 +1287,10 @@ async def _main(args: argparse.Namespace) -> int:
         ),
     }
     if anchor_before is not None:
-        from scripts.acceptance_source_anchors import capture, summarize
+        try:
+            from scripts.acceptance_source_anchors import capture, summarize
+        except ModuleNotFoundError:  # pragma: no cover - direct script execution
+            from acceptance_source_anchors import capture, summarize
         anchor_after = await asyncio.to_thread(
             capture, baseline_payload, _load_json(Path(anchor_profile).resolve()), output / "anchors-after"
         )

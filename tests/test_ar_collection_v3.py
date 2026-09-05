@@ -112,6 +112,33 @@ def test_historical_dunning_event_closes_old_evidence_gap() -> None:
     assert "historical_dunning_evidence" not in result["evidence_gaps"]
 
 
+def test_historical_dunning_item_keys_allow_sap_zero_padding() -> None:
+    result = _run(
+        {
+            "status": "complete",
+            "completeness": {"source_complete": True, "evidence_complete": True},
+            "events": [
+                {
+                    "customer": "100001",
+                    "company_code": "1710",
+                    "fiscal_year": "2025",
+                    "accounting_document": "1800000001",
+                    "accounting_document_item": "001",
+                    "dunning_area": "",
+                    "effective_dunning_date": "2025-01-20",
+                    "dunning_run_date": "2025-01-20",
+                    "dunning_level": "2",
+                    "sequence_status": "ordered",
+                }
+            ],
+        }
+    )
+
+    item = result["workflow_output"]["customer_results"][0]["items"][0]
+    assert item["accounting_document_item"] == "1"
+    assert item["dunning_as_of_status"] == "confirmed_before_cutoff"
+
+
 def test_incomplete_historical_skill_remains_inconclusive() -> None:
     result = _run(
         {
