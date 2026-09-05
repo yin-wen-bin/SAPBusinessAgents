@@ -79,18 +79,31 @@ def test_ar_collection_separates_cutoff_dunning_from_current_master() -> None:
     assert all(row["business_status"] == "capability_blocked" for row in report["records"])
 
 
-def test_ar_manifest_uses_two_complete_get_only_sources() -> None:
+def test_active_ar_manifest_uses_complete_get_only_sources() -> None:
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads(
         (root / "agents" / "FI" / "ar-collection" / "agent.json").read_text(encoding="utf-8")
     )
-    plan = manifest["execution"]["steps"][0]["request"]["plan"]
+    execution_steps = {
+        step["id"]: step for step in manifest["execution"]["steps"]
+    }
+    assert execution_steps["read_leading_ledger"]["request"]["plan"]["http_method"] == "GET"
+    plan = execution_steps["collect_ar_evidence"]["request"]["plan"]
     assert plan["plan_kind"] == "multi_step"
     steps = {step["step_id"]: step for step in plan["steps"]}
-    assert set(steps) == {"customer_items", "customer_dunning"}
+    assert set(steps) == {
+        "customer_items",
+        "customer_dunning",
+        "clearing_document_evidence",
+        "clearing_reversal_documents",
+    }
     assert all(step["http_method"] == "GET" for step in steps.values())
     item_filters = {(item["field"], item["operator"]): item["value"] for item in steps["customer_items"]["filters"]}
     assert item_filters[("FinancialAccountType", "eq")] == "D"
     assert item_filters[("PostingDate", "le")] == "{{input.as_of}}"
     assert "LastDunningDate" in steps["customer_items"]["select_fields"]
     assert steps["customer_dunning"]["entity_set"] == "A_CustomerDunning"
+    historical = execution_steps["read_historical_dunning"]
+    assert historical["executor"] == "skill"
+    assert historical["skillId"] == "sap-ar-dunning-history-evidence"
+    assert historical["readOnly"] is True
