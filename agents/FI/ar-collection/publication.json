@@ -3,12 +3,12 @@
   "agent_id": "ar-collection",
   "lifecycle_state": "active",
   "state": "active",
-  "active_version": "1.1.0",
+  "active_version": "1.2.0",
   "latest_version": "1.2.0",
-  "active_digest": "sha256:5d4d40bd60a4b3693702ab49a2b3b5aa9adbe4bdaabf69ceb2090753b113beb4",
+  "active_digest": "sha256:15de391247479a20143cb16cb1079ced1fa170e62b27b2664ae2a3ed9958ea3f",
   "published_at": "2026-09-04",
-  "git_branch": "codex/agent-ar-collection-activate-v1.1.0-d536c1f4",
+  "git_branch": "codex/agent-ar-collection-activate-v1.2.0-138f13b7",
   "git_commit": null,
-  "activated_at": "2026-09-05T09:11:18.875827+00:00",
+  "activated_at": "2026-09-05T18:34:49.630869+00:00",
   "deactivated_at": null
 }

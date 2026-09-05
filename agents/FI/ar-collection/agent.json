@@ -7,11 +7,11 @@
     "en": "AR Collection Assistant"
   },
   "summary": {
-    "zh": "批量重建客户应收账龄、催收冻结及催收状态，生成异常优先的催收工作清单；不处理银行来款。",
-    "en": "Reconstructs customer aging, dunning blocks, and dunning status in batches and produces an exception-first collection worklist; bank receipts are out of scope."
+    "zh": "批量重建客户应收账龄、催收冻结及催收状态，逐凭证说明处理原因、建议动作和SAPBusinessAgents处理优先级；不处理银行来款。",
+    "en": "Reconstructs customer aging, dunning blocks, and dunning status in batches, with document-level reasons, recommended actions, and SAPBusinessAgents processing priority; bank receipts are out of scope."
   },
-  "status": "Three-stage live acceptance passed",
-  "version": "1.1.0",
+  "status": "Live acceptance passed",
+  "version": "1.2.0",
   "owner": "FI-AR",
   "tags": [
     "Accounts Receivable",
@@ -29,7 +29,7 @@
   ],
   "managedRule": {
     "entrypoint": "evaluate",
-    "sha256": "sha256:8fa43f1f29b443397bfd85fc23fa9bc8329c53863faeb5430be431f8673ad46d"
+    "sha256": "sha256:fcbee7caa4265a1631fbcb4a03ad6f51425d9dcf1a33814d26881a9178f979ad"
   },
   "inputs": {
     "zh": [
@@ -52,6 +52,8 @@
       "正常客户数",
       "需处理客户数",
       "无法确认客户数",
+      "需要处理项目数",
+      "仅监控项目数",
       "逐客户结果",
       "催收工作清单",
       "查询源完整性",
@@ -65,6 +67,8 @@
       "Normal customers",
       "Customers requiring attention",
       "Inconclusive customers",
+      "Items requiring action",
+      "Monitor-only items",
       "Customer results",
       "Collection worklist",
       "Query-source completeness",
@@ -171,7 +175,7 @@
       },
       "operations": {
         "zh": [
-          "rule.ar_collection_deterministic_v3"
+          "rule.ar_collection_deterministic_v4"
         ],
         "en": [
           "rule.evaluate_business_agent"
@@ -179,11 +183,11 @@
       },
       "tools": [
         {
-          "name": "ar_collection_deterministic_v3",
+          "name": "ar_collection_deterministic_v4",
           "kind": "Managed local deterministic rule",
           "purpose": {
-            "zh": "重建账龄并生成异常优先的催收工作清单",
-            "en": "Reconstruct aging and produce an exception-first collection worklist"
+            "zh": "重建账龄并生成逐凭证处理动作和异常优先工作清单",
+            "en": "Reconstruct aging and produce document-level actions and an exception-first worklist"
           }
         }
       ],
@@ -660,6 +664,22 @@
             "en": "Inconclusive customers"
           }
         },
+        "action_required_item_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "需要处理项目数",
+            "en": "Items requiring action"
+          }
+        },
+        "monitor_item_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "仅监控项目数",
+            "en": "Monitor-only items"
+          }
+        },
         "customer_results": {
           "type": "array",
           "title": {
@@ -667,7 +687,63 @@
             "en": "Customer results"
           },
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "action_required_item_count": {"type": "integer", "minimum": 0},
+              "monitor_item_count": {"type": "integer", "minimum": 0},
+              "dunning_procedure": {"type": ["string", "null"]},
+              "dunning_clerk": {"type": ["string", "null"]},
+              "dunning_recipient": {"type": ["string", "null"]},
+              "assignment_status": {
+                "type": "string",
+                "enum": ["assigned", "unassigned", "not_assessed", "unknown"]
+              },
+              "action_summary": {"type": "array"},
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "action_required": {"type": "boolean"},
+                    "action_code": {
+                      "type": "string",
+                      "enum": [
+                        "resolve_evidence_gap",
+                        "resolve_dunning_block",
+                        "review_special_gl",
+                        "review_credit_balance",
+                        "initiate_first_dunning",
+                        "continue_dunning_follow_up",
+                        "monitor_until_due"
+                      ]
+                    },
+                    "action_priority": {
+                      "type": "string",
+                      "enum": ["high", "medium", "low", "none", "unknown"]
+                    },
+                    "action_reason": {"type": "object"},
+                    "recommended_action": {"type": "object"}
+                  },
+                  "required": [
+                    "action_required",
+                    "action_code",
+                    "action_priority",
+                    "action_reason",
+                    "recommended_action"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "action_required_item_count",
+              "monitor_item_count",
+              "dunning_procedure",
+              "dunning_clerk",
+              "dunning_recipient",
+              "assignment_status",
+              "action_summary",
+              "items"
+            ]
           }
         },
         "worklist_artifact": {
@@ -734,6 +810,8 @@
         "normal_customer_count",
         "attention_customer_count",
         "inconclusive_customer_count",
+        "action_required_item_count",
+        "monitor_item_count",
         "customer_results",
         "worklist_artifact",
         "source_complete",
@@ -749,6 +827,8 @@
       "normal_customer_count": "{{steps.evaluate_business_result.output.workflow_output.normal_customer_count}}",
       "attention_customer_count": "{{steps.evaluate_business_result.output.workflow_output.attention_customer_count}}",
       "inconclusive_customer_count": "{{steps.evaluate_business_result.output.workflow_output.inconclusive_customer_count}}",
+      "action_required_item_count": "{{steps.evaluate_business_result.output.workflow_output.action_required_item_count}}",
+      "monitor_item_count": "{{steps.evaluate_business_result.output.workflow_output.monitor_item_count}}",
       "customer_results": "{{steps.evaluate_business_result.output.workflow_output.customer_results}}",
       "worklist_artifact": "{{steps.evaluate_business_result.output.workflow_output.worklist_artifact}}",
       "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
@@ -773,6 +853,9 @@
         "aging_bucket",
         "clearing_date",
         "dunning_as_of_status",
+        "action_required",
+        "action_code",
+        "action_priority",
         "business_status"
       ],
       "metrics": [
@@ -780,7 +863,9 @@
         "result_customer_count",
         "normal_customer_count",
         "attention_customer_count",
-        "inconclusive_customer_count"
+        "inconclusive_customer_count",
+        "action_required_item_count",
+        "monitor_item_count"
       ],
       "requiredLimitations": [],
       "decimalFields": ["amount"],
@@ -798,6 +883,9 @@
           "confirmed_historical": "confirmed_before_cutoff"
         }
       },
+      "preserveLiteralValues": [
+        "action_priority"
+      ],
       "limitationKeywords": {},
       "summaryRecord": false,
       "zeroFactWhenMetricZero": {},
@@ -810,6 +898,8 @@
         "normal_customer_count": "Customers whose complete ordinary trade receivables are not overdue and have no dunning blocks or special G/L items.",
         "attention_customer_count": "Customers with overdue ordinary debit receivables, dunning blocks, or special G/L items, with complete evidence.",
         "inconclusive_customer_count": "Customers with required query, currency, relationship or historical evidence gaps. Do not count scoped complete empty queries as gaps."
+        ,"action_required_item_count": "Number of canonical AR items whose deterministic action_required value is true. It must equal the worklist artifact row count."
+        ,"monitor_item_count": "Number of canonical AR items whose deterministic action_required value is false and action_code is monitor_until_due."
       },
       "factDefinitions": {
         "accounting_document_item": "Preserve the FI item value returned by the authoritative FI source in the projection. When joining MHND/MHNK history to FI items, numeric item keys such as 1 and 001 are SAP-equivalent after leading-zero normalization; this normalization is relationship-only and must not rewrite the displayed FI key.",
@@ -818,32 +908,37 @@
         "last_dunning_date": "Current item LastDunningDate, or the last provably ordered historical event. Null when no event is established, never inferred from current customer master data.",
         "aging_bucket": "Compare NetDueDate (or DueCalculationBaseDate if NetDueDate is absent) with as_of: not_due, 1_30, 31_60, 61_90, over_90, unknown. Preserve each item's amount and currency; never net credits or special G/L against ordinary trade overdue amounts.",
         "amount": "Exact signed AmountInTransactionCurrency paired with TransactionCurrency from the same FI item. Read DebitCreditCode, SpecialGLCode and DunningBlockingReason to classify customer status. A historical clearing/reversal timeline is required only for an item that carries a clearing or reversal reference relevant to the cutoff; do not create a global clearing-timeline gap for fully read items with no such reference."
+        ,"action_required": "True only for items that require an evidenced follow-up action. Not-yet-due ordinary debit receivables use monitor_until_due and remain outside the action worklist."
+        ,"action_code": "Deterministic action classification in this order: evidence gap, dunning block, special G/L, credit balance, overdue follow-up, monitor until due."
+        ,"action_priority": "SAPBusinessAgents processing priority, never SAP native dunning priority: high for evidence gaps, blocks, or over 90 days; medium for 31-90 days, special G/L, or credits; low for 1-30 days; none for monitor-only items."
       },
-      "businessStatusDefinition": "Classify each requested customer independently: incomplete evidence=inconclusive; otherwise ordinary overdue debit, item/master dunning block, or special G/L=attention; otherwise normal. Record business_status inherits its customer status. Aggregate inconclusive before attention before normal. Current customer dunning master only supplies procedure/block/recipient/responsible person; do not substitute it for item dunning level/date. For a historical run, historical_dunning_master_snapshot_not_available is a required non-blocking scope limitation and is not incomplete evidence.",
+      "businessStatusDefinition": "Classify each requested customer independently: incomplete evidence=inconclusive; otherwise any deterministic action other than resolve_evidence_gap or monitor_until_due=attention; otherwise normal. Every canonical item receives action_required, action_code and SAPBusinessAgents action_priority. Not-yet-due ordinary debit items remain visible but do not enter the action worklist. Record business_status inherits its customer status. Aggregate inconclusive before attention before normal. Current customer dunning master only supplies procedure/block/recipient/responsible person; do not substitute it for item dunning level/date. For a historical run, historical_dunning_master_snapshot_not_available is a required non-blocking scope limitation and is not incomplete evidence.",
       "businessStatusFromAnyPositiveMetric": {}
     }
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-09-05T14:49:38.340322+08:00",
-    "evidenceScope": "bounded",
+    "testedAt": "2026-09-06T02:17:45.011633+08:00",
+    "evidenceScope": "direct_sap_baseline_fixed_agent_frontend",
     "providers": [
-      "embedded-sap-odata",
-      "sapskillhub"
+      "embedded_sap_odata_provider",
+      "managed_agent_rule"
     ],
     "summary": {
-      "zh": "独立历史催收Skill门禁、当前与历史三级真机对比、50客户容量和受限制品前台验收均已通过；此版本已就绪，等待显式启用。",
-      "en": "The independent historical-dunning Skill gate, current and historical three-stage live comparisons, 50-customer capacity case, and restricted-artifact frontend acceptance all passed. This version is ready for explicit activation."
+      "zh": "1.2.0已通过独立SAP基线、候选固定Agent和中英文前台验收；工作清单、全部明细、Markdown与CSV保持一致。",
+      "en": "Version 1.2.0 passed independent SAP baseline, candidate fixed-Agent, and bilingual frontend acceptance; worklist, full detail, Markdown, and CSV results are consistent."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
     "executable": true,
-    "acceptanceMode": "three_stage",
-    "freeQueryComparison": "MATCH",
+    "acceptanceMode": "deterministic_runtime",
+    "freeQueryComparison": "NOT_TESTED",
     "fixedAgentComparison": "MATCH",
+    "codexDirectBaselineHash": "sha256:d718b23956d4f934d3bee6cda951aa99a9d4c32fba7208caa0e91b7f8809bac6",
+    "fixedAgentHash": "sha256:213b80088d03f5809fa801cc338b819ab7ba9a9159031bdcb8c2fa8efcf38abd",
+    "comparisonHash": "sha256:3fdb09c1411c416d00509d4291dcba151a18a640bbf4c2ae0d2cb232ccd9aa3b",
+    "frontendValidation": "PASS",
+    "artifactValidation": "PASS",
     "blockingLimitations": [],
-    "candidateLifecycleState": "validated_pending_activation",
-    "campaignHash": "sha256:70450d08bc00c9c857bf3802bc74bbe84ac9654237135f58f1804a4e8379b4d4",
-    "campaignCertificationDigest": "sha256:f773e0f6cc2488d3e71edd26cfda32c7f4bf344a9bcb169d7dd2ba2997829fae",
-    "agentCertificationDigest": "sha256:ab23f98931d3483aeab60dc85afa7ee836c3fb98928873251c6bb564c1cfa6fe"
+    "candidateLifecycleState": "validated_pending_activation"
   }
 }
