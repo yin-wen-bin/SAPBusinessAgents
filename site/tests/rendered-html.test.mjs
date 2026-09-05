@@ -9,10 +9,17 @@ const readManifest = async (module, slug) =>
 
 test("static catalog contains all agents and the GitHub Pages base path", async () => {
   const html = await readPage("zh");
-  for (const slug of ["ap-payment", "ar-collection", "gr-ir-clearing", "month-end-closing", "procure-to-pay-status"]) {
+  for (const slug of [
+    "ap-payment",
+    "ar-cash-application",
+    "ar-collection",
+    "gr-ir-clearing",
+    "month-end-closing",
+    "procure-to-pay-status",
+  ]) {
     assert.match(html, new RegExp(`/SAPBusinessAgents/zh/agents/(?:FI|MM)/${slug}/`));
   }
-  assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 4);
+  assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 1);
   assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
