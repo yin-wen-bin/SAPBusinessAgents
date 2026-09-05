@@ -523,18 +523,15 @@ def build(
     direct_invoice_rows: list[JsonObject] = []
     subsequent_clearing_rows: list[JsonObject] = []
     subsequent_invoice_rows: list[JsonObject] = []
-    # Expand every syntactically valid subledger-document reference so the
-    # independent baseline can preserve confirmed FI identity facts even when
-    # the bank item itself is not eligible for cash-application assessment.
-    # Eligibility is applied below when deriving cash_application_status; it
-    # must not silently narrow the evidence snapshot.
-    referenced_document_tuples = {
+    active_document_tuples = {
         (company, _text(row, "FiscalYear"), _text(row, "SubledgerDocument"))
         for row in scoped
-        if re.fullmatch(r"\d{1,10}", _text(row, "SubledgerDocument"))
+        if _posting_status(row, _text(row, "BankStatementStatus")) == "completed"
+        and REVERSAL.get(_text(row, "BankStatementStatus")) == "not_reversed"
+        and re.fullmatch(r"\d{1,10}", _text(row, "SubledgerDocument"))
         and re.fullmatch(r"(?!0000)\d{4}", _text(row, "FiscalYear"))
     }
-    if referenced_document_tuples:
+    if active_document_tuples:
         if profile is None:
             raise ValueError("nonzero bank baseline requires an independent OData profile for FI expansion")
         ledger_source, ledger_rows = _odata_source(
@@ -553,11 +550,11 @@ def build(
             raise ValueError("direct baseline could not resolve exactly one leading ledger")
         leading_ledger = next(iter(ledgers))
         payment_sources, payment_rows = _read_tuple_rows(
-            profile, referenced_document_tuples, artifacts, "cash_payment_documents"
+            profile, active_document_tuples, artifacts, "cash_payment_documents"
         )
         sources.extend(payment_sources)
         direct_tuples = {(company_code, fiscal_year, document)
-                         for company_code, fiscal_year, document in referenced_document_tuples}
+                         for company_code, fiscal_year, document in active_document_tuples}
         direct_sources, direct_invoice_rows = _read_tuple_rows(
             profile,
             direct_tuples,
@@ -578,7 +575,7 @@ def build(
             # not a transport failure for the complete source snapshot. Keep it
             # for per-record classification but do not query the same document
             # as a second-hop clearing document.
-            queryable_subsequent_refs = subsequent_refs - referenced_document_tuples
+            queryable_subsequent_refs = subsequent_refs - active_document_tuples
         else:
             queryable_subsequent_refs = set()
         if queryable_subsequent_refs:

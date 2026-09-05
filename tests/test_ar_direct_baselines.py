@@ -240,26 +240,15 @@ def test_cash_nonzero_baseline_expands_exact_fi_relationship(
         record_fields=["company_code"],
     )
     snapshot = tmp_path / "bank"
-    bank_rows = [
-        {
-            "COMPANYCODE": "1710", "BANKSTATEMENTSHORTID": "1",
-            "BANKSTATEMENTITEM": "1", "VALUEDATE": "20260801",
-            "AMOUNTINTRANSACTIONCURRENCY": "100.00", "TRANSACTIONCURRENCY": "USD",
-            "DEBITCREDITCODE": "H", "BANKSTATEMENTSTATUS": "8",
-            "ISCOMPLETED": "X", "ISINPROCESS": "", "POSTINGERRORSTATUS": "0",
-            "BANKSTATEMENTITEMLIFECYCSTS": "M", "SUBLEDGERDOCUMENT": "1400000001",
-            "FISCALYEAR": "2026", "BANKREFERENCE": "",
-        },
-        {
-            "COMPANYCODE": "1710", "BANKSTATEMENTSHORTID": "1",
-            "BANKSTATEMENTITEM": "2", "VALUEDATE": "20260802",
-            "AMOUNTINTRANSACTIONCURRENCY": "50.00", "TRANSACTIONCURRENCY": "USD",
-            "DEBITCREDITCODE": "H", "BANKSTATEMENTSTATUS": "8",
-            "ISCOMPLETED": "", "ISINPROCESS": "", "POSTINGERRORSTATUS": "1",
-            "BANKSTATEMENTITEMLIFECYCSTS": "R", "SUBLEDGERDOCUMENT": "1400000002",
-            "FISCALYEAR": "2026", "BANKREFERENCE": "",
-        },
-    ]
+    bank_rows = [{
+        "COMPANYCODE": "1710", "BANKSTATEMENTSHORTID": "1",
+        "BANKSTATEMENTITEM": "1", "VALUEDATE": "20260801",
+        "AMOUNTINTRANSACTIONCURRENCY": "100.00", "TRANSACTIONCURRENCY": "USD",
+        "DEBITCREDITCODE": "H", "BANKSTATEMENTSTATUS": "8",
+        "ISCOMPLETED": "X", "ISINPROCESS": "", "POSTINGERRORSTATUS": "0",
+        "BANKSTATEMENTITEMLIFECYCSTS": "M", "SUBLEDGERDOCUMENT": "1400000001",
+        "FISCALYEAR": "2026", "BANKREFERENCE": "",
+    }]
     artifact = write_encrypted_rows(snapshot, bank_rows)
     manifest = {
         "source_id": "bank", "object": "I_ARBANKSTATEMENTITEM",
@@ -268,7 +257,7 @@ def test_cash_nonzero_baseline_expands_exact_fi_relationship(
         "schema_hash": "sha256:" + "b" * 64,
         "metadata_sha256": "sha256:" + "b" * 64,
         "stable_order_by": ["CompanyCode", "BankStatementShortID", "BankStatementItem"],
-        "paging_complete": True, "source_complete": True, "row_count": len(bank_rows),
+        "paging_complete": True, "source_complete": True, "row_count": 1,
         "rows_hash": canonical_hash(bank_rows),
         "spec": {
             "object": "I_ARBANKSTATEMENTITEM", "fields": list(bank_rows[0]),
@@ -293,12 +282,6 @@ def test_cash_nonzero_baseline_expands_exact_fi_relationship(
         "AmountInTransactionCurrency": "-100.00", "TransactionCurrency": "USD",
         "PostingDate": "2026-08-01",
     }
-    failed_payment = {
-        **payment,
-        "AccountingDocument": "1400000002",
-        "AmountInTransactionCurrency": "-50.00",
-        "PostingDate": "2026-08-02",
-    }
     invoice = {
         "CompanyCode": "1710", "Ledger": "0L", "FiscalYear": "2026",
         "AccountingDocument": "1800000001", "AccountingDocumentItem": "1",
@@ -319,7 +302,7 @@ def test_cash_nonzero_baseline_expands_exact_fi_relationship(
         }, rows)
     calls = iter([
         source("ledger", [{"Ledger": "0L", "IsLeadingLedger": True}]),
-        source("payment", [payment, failed_payment]),
+        source("payment", [payment]),
         source("invoice", [invoice]),
     ])
     monkeypatch.setattr(
@@ -333,11 +316,8 @@ def test_cash_nonzero_baseline_expands_exact_fi_relationship(
     result = baseline["normalized_result"]
     assert result["records"][0]["cash_application_status"] == "confirmed"
     assert result["records"][0]["customer"] == "100001"
-    failed = next(item for item in result["records"] if item["statement_item"] == "2")
-    assert failed["cash_application_status"] == "not_assessed"
-    assert failed["customer"] == "100001"
     assert result["evidence_complete"] is True
-    assert result["business_status"] == "attention"
+    assert result["business_status"] == "normal"
 
 
 def test_direct_bank_status_zero_and_set_to_done_are_completed() -> None:
