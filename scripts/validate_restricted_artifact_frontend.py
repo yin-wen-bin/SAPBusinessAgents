@@ -62,6 +62,24 @@ def _contains_any(payload: Any, values: list[str]) -> bool:
     return any(value in serialized for value in values)
 
 
+def _fixed_run_identity(payload: JsonObject) -> tuple[str, str, str]:
+    """Accept a standalone fixed result or an immutable acceptance artifact."""
+    fixed = payload.get("fixed_agent")
+    if isinstance(fixed, dict):
+        case = payload.get("case") if isinstance(payload.get("case"), dict) else {}
+        hashes = payload.get("hashes") if isinstance(payload.get("hashes"), dict) else {}
+        return (
+            str(fixed.get("run_id") or ""),
+            str(case.get("agent_id") or ""),
+            str(hashes.get("agent_execution_digest") or ""),
+        )
+    return (
+        str(payload.get("run_id") or ""),
+        str(payload.get("agent_id") or ""),
+        str(payload.get("agent_execution_digest") or ""),
+    )
+
+
 def validate(
     *,
     repository: Path,
@@ -79,10 +97,12 @@ def validate(
     rules_source = (
         rules_source_path.read_text(encoding="utf-8") if rules_source_path else None
     )
-    run_id = str(fixed_result.get("run_id") or "")
-    if not run_id or fixed_result.get("agent_id") != manifest.get("slug"):
+    run_id, result_agent_id, result_digest = _fixed_run_identity(fixed_result)
+    if not run_id or result_agent_id != manifest.get("slug"):
         raise ValueError("fixed result does not match the candidate Agent")
     expected_digest = agent_execution_digest(manifest, rules_source)
+    if result_digest and result_digest != expected_digest:
+        raise ValueError("fixed result execution digest does not match the candidate Agent")
 
     settings = replace(
         Settings.from_env(repository),

@@ -81,6 +81,11 @@ def _select_reference(case: dict, snapshot: Path) -> str:
         and _text(row, "DebitCreditCode") == "H"
         and _text(row, "BankReference")
     }
+    # A one-character or similarly low-entropy value cannot support a
+    # meaningful literal-leak audit because it will collide with ordinary JSON
+    # and report text. Treat that as missing live test data instead of weakening
+    # the privacy gate or reporting a false leak.
+    references = {value for value in references if len(value) >= 6}
     if len(references) != 1:
         raise ValueError("test_data_gap_secure_reference_not_unique")
     return next(iter(references))

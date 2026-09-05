@@ -21,13 +21,33 @@ from scripts.build_ar_collection_direct_baseline import _open_at_cutoff
 from scripts.build_ar_collection_direct_baseline import _independent_dunning_events
 from datetime import date
 from scripts.direct_sap_read import write_encrypted_rows
-from scripts.run_ar_secure_reference_acceptance import _date_value
+from scripts.run_ar_secure_reference_acceptance import _date_value, _select_reference
 
 
 def test_secure_reference_selector_accepts_adt_compact_dates() -> None:
     assert _date_value("20260905") == date(2026, 9, 5)
     assert _date_value("2026-09-05") == date(2026, 9, 5)
     assert _date_value("invalid") is None
+
+
+def test_secure_reference_selector_rejects_low_entropy_live_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "scripts.run_ar_secure_reference_acceptance.read_encrypted_rows",
+        lambda _path: [{
+            "CompanyCode": "1710", "ValueDate": "20260905",
+            "DebitCreditCode": "H", "BankReference": "X",
+        }],
+    )
+    case = {
+        "input": {
+            "company_code": "1710", "date_from": "2026-09-01",
+            "date_to": "2026-09-05",
+        }
+    }
+    with pytest.raises(ValueError, match="test_data_gap_secure_reference_not_unique"):
+        _select_reference(case, tmp_path)
 
 
 def test_cash_baseline_reads_reference_only_from_sensitive_stdin(monkeypatch) -> None:

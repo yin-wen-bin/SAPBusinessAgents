@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from scripts.validate_restricted_artifact_frontend import _contains_any, _sensitive_values
+from scripts.validate_restricted_artifact_frontend import (
+    _contains_any,
+    _fixed_run_identity,
+    _sensitive_values,
+)
 
 
 def test_frontend_acceptance_collects_only_declared_sensitive_values() -> None:
@@ -24,3 +28,17 @@ def test_frontend_acceptance_recognizes_dunning_restricted_fields() -> None:
     )
 
     assert values == ["DUNNING-REF", "OT-1"]
+
+
+def test_frontend_acceptance_reads_fixed_identity_from_acceptance_artifact() -> None:
+    assert _fixed_run_identity(
+        {
+            "case": {"agent_id": "ar-cash-application"},
+            "fixed_agent": {"run_id": "acceptance_123"},
+            "hashes": {"agent_execution_digest": "sha256:" + "a" * 64},
+        }
+    ) == (
+        "acceptance_123",
+        "ar-cash-application",
+        "sha256:" + "a" * 64,
+    )
