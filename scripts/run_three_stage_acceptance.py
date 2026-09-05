@@ -793,6 +793,7 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
         f"- Use these canonical metric identifiers exactly and do not omit zero values: [{metrics or 'none'}].",
         "- If a metric cannot be established because required evidence is unavailable, return null; never substitute zero for unknown.",
         "- For additive quantity or amount facts, a complete exact source query with zero rows establishes 0; an unavailable or non-attributable source establishes null.",
+        "- A validated structured source whose public record array is empty and whose source_complete and evidence_complete flags are both true is an authoritative complete-zero result. Do not require a nonempty artifact, do not add a materialization gap, and set all record-count metrics for that declared scope to 0.",
         "- Put homogeneous records in a table, aggregate values in metrics, and preserve SAP source completeness separately from display pagination.",
         "- This is an acceptance-mode run. Populate acceptance_projection with the same complete canonical records and metrics shown in the validated presentation.",
         "- acceptance_projection must separately report business_status, source_complete, evidence_complete, business_complete, evidence_gap_codes, and only run-scoped verified evidence_refs.",

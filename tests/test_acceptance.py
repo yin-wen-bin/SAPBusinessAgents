@@ -306,6 +306,8 @@ def test_acceptance_prompt_makes_record_scope_authoritative() -> None:
 
     assert "record scope is authoritative" in prompt.casefold()
     assert "empty-result customer placeholders" in prompt
+    assert "authoritative complete-zero result" in prompt
+    assert "do not add a materialization gap" in prompt
 
 
 def test_campaign_sensitive_inputs_are_scoped_to_a_case(monkeypatch) -> None:

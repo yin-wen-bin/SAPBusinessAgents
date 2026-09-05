@@ -973,12 +973,12 @@
       "ignoredNoticeKeywords": [],
       "recordScope": "receipt_results[]",
       "metricDefinitions": {
-        "source_receipt_count": "Number of bank receipt rows in the complete approved Skill scope. Null, never zero, when the Skill source is partial or unavailable.",
-        "materialized_receipt_count": "Number of receipt_results records materialized from a complete Skill result.",
-        "unresolved_receipt_count": "Materialized receipts whose cash_application_status is not confirmed.",
-        "confirmed_receipt_count": "Materialized receipts with cash_application_status=confirmed.",
-        "attention_receipt_count": "Materialized receipts with business_status=attention.",
-        "inconclusive_receipt_count": "Materialized receipts with business_status=inconclusive."
+        "source_receipt_count": "Number of bank receipt rows in the complete approved Skill scope. A validated Skill result with receipts=[] and source_complete=true/evidence_complete=true establishes exactly 0. Use null, never zero, only when the Skill source is partial or unavailable.",
+        "materialized_receipt_count": "Number of receipt_results records materialized from a complete Skill result. A complete authoritative empty receipts array establishes 0 and requires no nonempty artifact.",
+        "unresolved_receipt_count": "Materialized receipts whose cash_application_status is not confirmed. This is 0 when the authoritative complete receipt scope is empty.",
+        "confirmed_receipt_count": "Materialized receipts with cash_application_status=confirmed. This is 0 when the authoritative complete receipt scope is empty.",
+        "attention_receipt_count": "Materialized receipts with business_status=attention. This is 0 when the authoritative complete receipt scope is empty.",
+        "inconclusive_receipt_count": "Materialized receipts with business_status=inconclusive. This is 0 when the authoritative complete receipt scope is empty."
       },
       "factDefinitions": {
         "posting_status": "Use the approved bank-receipt Skill's canonical posting_status. Only completed is eligible for FI cash-application assessment; in_process, not_completed and posting_failed remain attention facts.",
@@ -989,7 +989,7 @@
         "cash_application_status": "Use only confirmed, pending, candidate, ambiguous, not_found, not_assessed, or unknown. confirmed requires a complete SAP clearing relationship from an eligible completed, not-reversed receipt to an invoice. A completed receipt with a blank, dash-like, nonnumeric or otherwise unusable subledger reference is pending when the bank Skill scope is complete; absence of a usable reference is a business pending condition, not fi_subledger_tuple_invalid. A syntactically valid reference whose exact FI query is incomplete or conflicting is unknown or ambiguous. Receipts whose posting or reversal status is not eligible are not_assessed, even if a document reference exists. Never output cleared or cleared_with_posting_failure.",
         "business_status": "Use normal only for a fully evidenced confirmed application; attention for pending/candidate/not_found/not_assessed or noneligible posting/reversal states; inconclusive for incomplete source queries, ambiguous or conflicting valid tuples, unknown ledger/customer/currency evidence, or pagination gaps. Do not lower completeness merely because a complete bank item has no usable subledger reference; that is an attention/pending result."
       },
-      "businessStatusDefinition": "Evaluate each bank receipt independently. Only completed and not_reversed receipts may be assessed for application. Aggregate inconclusive before attention before normal. FI clearing confirms a cash-application relationship but is not independent proof of bank settlement.",
+      "businessStatusDefinition": "Evaluate each bank receipt independently. Only completed and not_reversed receipts may be assessed for application. A validated complete bank-receipt scope with receipts=[] is normal/no_receipts_in_period with all six count metrics equal to 0, source_complete=true, evidence_complete=true and business_complete=true; absence of rows is not a materialization gap. Otherwise aggregate inconclusive before attention before normal. FI clearing confirms a cash-application relationship but is not independent proof of bank settlement.",
       "businessStatusFromAnyPositiveMetric": {}
     }
   },
