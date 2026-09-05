@@ -16,6 +16,8 @@ from .managed_rules import ManagedRuleError, validate_managed_rule
 from .manifests import AgentRepository, ManifestError, is_agent_executable, validate_execution
 from .models import RunStatus, TERMINAL_STATUSES, utc_now
 from .acceptance import agent_execution_digest
+from .plugins import PluginError
+from .skills import SkillError, validate_agent_skill_dependencies
 from .workflows import WorkflowRepository, agent_digest
 
 
@@ -38,6 +40,7 @@ class AgentLifecycleService:
         coordinator: Any,
         runtime: Any,
         legacy_factory: Any | None = None,
+        skills: Any | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -46,7 +49,20 @@ class AgentLifecycleService:
         self.coordinator = coordinator
         self.runtime = runtime
         self.legacy_factory = legacy_factory
+        self.skills = skills
         self.draft_root = (settings.draft_root / "agents").resolve()
+
+    def _require_skill_dependencies(self, manifest: dict[str, Any]) -> list[str]:
+        if self.skills is None:
+            return []
+        try:
+            return validate_agent_skill_dependencies(manifest, self.skills)
+        except (SkillError, PluginError) as exc:
+            raise AgentLifecycleError(
+                str(exc),
+                code=str(getattr(exc, "code", "agent_skill_dependency_unavailable")),
+                detail=getattr(exc, "detail", None),
+            ) from exc
 
     def catalog(self, state: str = "all") -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -529,6 +545,8 @@ class AgentLifecycleService:
             "freeQueryComparison": (report.get("source_validation") or {}).get("freeQueryComparison", "MATCH"),
             "validated_at": report.get("completed_at") or report.get("validated_at") or utc_now(),
         }
+        if bool(payload.activate):
+            self._require_skill_dependencies(manifest)
         branch = self._prepare_branch(draft["agent_id"], "publish", target_version)
         agent_dir = self.settings.repository_root / "agents" / str(manifest.get("module") or "Common") / draft["agent_id"]
         existing_dir = self._existing_directory(draft["agent_id"])
@@ -594,6 +612,7 @@ class AgentLifecycleService:
         candidate = self.agents.get_version(agent_id, version)
         if not is_agent_executable(candidate):
             raise AgentLifecycleError("Only a PASS Agent version can be activated.", code="agent_validation_pass_required")
+        self._require_skill_dependencies(candidate)
         branch = self._prepare_branch(agent_id, "activate", version)
         directory = self.agents._path(agent_id).parent
         version_dir = directory / "versions" / version
@@ -792,9 +811,10 @@ class AgentLifecycleService:
         log_root.mkdir(parents=True, exist_ok=True)
         log_path = log_root / f"reload-{uuid.uuid4().hex[:12]}.log"
         escaped = str(launcher).replace("'", "''")
+        escaped_log_path = str(log_path).replace("'", "''")
         command = (
             "Start-Sleep -Seconds 2; "
-            f"& '{escaped}' -Restart -RebuildSite -NoBrowser *>> '{str(log_path).replace("'", "''")}'"
+            f"& '{escaped}' -Restart -RebuildSite -NoBrowser *>> '{escaped_log_path}'"
         )
         creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:

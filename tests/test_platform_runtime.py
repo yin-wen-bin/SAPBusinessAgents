@@ -17,6 +17,7 @@ from sap_business_agents_platform.database import RunStore
 from sap_business_agents_platform.engine import (
     _completeness_evidence_scope,
     _count_free_query_top_bounds,
+    _presentation_tone,
     _result_evidence_refs,
     _resolve_server_defaults,
     _validate_input,
@@ -39,6 +40,12 @@ from sap_business_agents_platform.models import (
 from sap_business_agents_platform.skills import SkillError, SkillRegistry
 from sap_business_agents_platform.scheduler import LocalRunScheduler, WorkloadClass
 from sap_business_agents_platform.workflows import workflow_digest
+
+
+def test_business_report_positive_tone_maps_to_presentation_success() -> None:
+    assert _presentation_tone("positive") == "success"
+    assert _presentation_tone("warning") == "warning"
+    assert _presentation_tone("unsupported") == "neutral"
 
 
 def test_cors_uses_the_same_configured_local_origins_as_security_checks(
@@ -1127,6 +1134,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
     assert [record["slug"] for record in repository.executable()] == [
         "product-cost-variance",
         "ap-payment",
+        "ar-cash-application",
         "ar-collection",
         "gr-ir-clearing",
         "intelligent-sourcing-rfq",
@@ -1148,6 +1156,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
     ]
     assert {record["slug"] for record in records} == {
         "ap-payment",
+        "ar-cash-application",
         "ar-collection",
         "billing-block-diagnosis",
         "billing-completeness-check",

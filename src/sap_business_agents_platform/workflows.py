@@ -822,8 +822,13 @@ def validate_workflow(
             if (node_id, str(port)) not in target_ports
             and not (
                 isinstance(properties.get(str(port)), dict)
-                and properties[str(port)].get("x-sapba-server-default") is True
-                and "default" in properties[str(port)]
+                and (
+                    properties[str(port)].get("x-sapba-server-default") == "business_date"
+                    or (
+                        properties[str(port)].get("x-sapba-server-default") is True
+                        and "default" in properties[str(port)]
+                    )
+                )
             )
         ]
         if missing:

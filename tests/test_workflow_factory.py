@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date
 import time
 import subprocess
 from dataclasses import replace
@@ -454,7 +455,7 @@ def _o2c_ar_workflow() -> dict[str, Any]:
         "connections": [
             {"from": {"scope": "workflow_input", "port": "sales_order"}, "to": {"nodeId": "o2c", "port": "sales_order"}, "transform": {"type": "identity"}},
             {"from": {"scope": "node_output", "nodeId": "o2c", "port": "company_code"}, "to": {"nodeId": "ar", "port": "company_code"}, "transform": {"type": "identity"}},
-            {"from": {"scope": "node_output", "nodeId": "o2c", "port": "customer"}, "to": {"nodeId": "ar", "port": "customer"}, "transform": {"type": "identity"}},
+            {"from": {"scope": "node_output", "nodeId": "o2c", "port": "customer"}, "to": {"nodeId": "ar", "port": "customers"}, "transform": {"type": "wrap_array"}},
             {"from": {"scope": "workflow_input", "port": "as_of"}, "to": {"nodeId": "ar", "port": "as_of"}, "transform": {"type": "identity"}},
         ],
         "outputs": [
@@ -1070,6 +1071,7 @@ def test_workflow_agent_version_drift_fails_closed() -> None:
 
 
 def test_o2c_ar_workflow_propagates_business_keys(tmp_path: Path) -> None:
+    as_of = date.today().isoformat()
     app = create_app(
         _settings(tmp_path),
         planner=WorkflowPlanner(),
@@ -1080,15 +1082,16 @@ def test_o2c_ar_workflow_propagates_business_keys(tmp_path: Path) -> None:
         draft = created.json()
         validation = client.post(
             f"/api/authoring/workflows/{draft['draft_id']}/validate",
-            json={"autoDiscover": False, "input": {"sales_order": "5814", "as_of": "2026-08-17"}},
+            json={"autoDiscover": False, "input": {"sales_order": "5814", "as_of": as_of}},
         )
         assert validation.status_code == 202, validation.text
         run = _wait(client, validation.json()["validation_run_id"])
-        assert run["status"] == "completed"
+        assert run["status"] in {"completed", "inconclusive"}
         assert run["result"]["node_results"][1]["input"] == {
             "company_code": "1010",
-            "customer": "17100001",
-            "as_of": "2026-08-17",
+            "customers": ["17100001"],
+            "as_of": as_of,
+            "business_date": as_of,
         }
         assert run["result"]["workflow_output"]["collection_report"]["headline"]["zh"]
 

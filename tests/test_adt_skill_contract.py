@@ -33,6 +33,70 @@ def _input() -> dict[str, object]:
     }
 
 
+def test_skill_registry_preserves_supply_chain_error_for_configured_skill(
+    tmp_path: Path,
+) -> None:
+    skillhub = tmp_path / "skillhub"
+    package = skillhub / "skills" / "FI" / "test-skill"
+    references = package / "references"
+    references.mkdir(parents=True)
+    (package / "run.py").write_text("print('unused')\n", encoding="utf-8")
+    (package / "manifest.json").write_text(
+        json.dumps(
+            {
+                "skill_id": "test-skill",
+                "read_only": True,
+                "validated": True,
+                "allowed_http_methods": [],
+                "allowed_endpoints": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    schema = {"type": "object", "additionalProperties": False, "properties": {}}
+    for name in ("input.schema.json", "output.schema.json"):
+        (references / name).write_text(json.dumps(schema), encoding="utf-8")
+    allowlist = tmp_path / "skills.json"
+    allowlist.write_text(
+        json.dumps(
+            {
+                "skills": [
+                    {
+                        "skill_id": "test-skill",
+                        "entrypoint": "skills/FI/test-skill/run.py",
+                        "manifest_path": "skills/FI/test-skill/manifest.json",
+                        "input_schema_path": "skills/FI/test-skill/references/input.schema.json",
+                        "output_schema_path": "skills/FI/test-skill/references/output.schema.json",
+                        "read_only": True,
+                        "validated": True,
+                        "output_policy": "public",
+                        "allowed_http_methods": [],
+                        "allowed_endpoints": [],
+                        "expected_package_sha256": "0" * 64,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry = SkillRegistry(skillhub, allowlist)
+
+    assert registry.list_all_approved_skills() == []
+    with pytest.raises(SkillError) as error:
+        registry.get("test-skill")
+    assert error.value.code == "skill_package_digest_mismatch"
+    assert error.value.detail == {
+        "skill_id": "test-skill",
+        "validation_issues": [
+            {
+                "code": "skill_package_digest_mismatch",
+                "message": "Skill package digest does not match the approved package.",
+            }
+        ],
+    }
+
+
 def _output() -> dict[str, object]:
     return {
         "schema_version": 1,

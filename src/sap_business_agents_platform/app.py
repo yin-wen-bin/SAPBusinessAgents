@@ -255,6 +255,7 @@ def create_app(
         coordinator,
         agent_runtime,
         drafts,
+        skills=skills,
     )
     role_matching = RoleMatchingService(
         settings, store, business_agents, agent_runtime, workflow_drafts

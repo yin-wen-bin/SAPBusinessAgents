@@ -41,53 +41,86 @@ class SkillRegistry:
     def list_all_approved_skills(self) -> list[dict[str, Any]]:
         """Return the single approved Skill catalog used by every execution mode."""
 
-        if not self.allowlist_path.exists():
-            return []
-        payload = json.loads(self.allowlist_path.read_text(encoding="utf-8"))
         records: list[dict[str, Any]] = []
-        for raw in payload.get("skills", []):
-            record = dict(raw)
-            entrypoint = (self.skillhub_root / str(record.get("entrypoint") or "")).resolve()
-            within_root = self.skillhub_root == entrypoint or self.skillhub_root in entrypoint.parents
-            record["available"] = bool(within_root and entrypoint.is_file())
-            record["entrypoint"] = str(entrypoint)
-            issues: list[dict[str, str]] = []
-            try:
-                for schema_name in (
-                    "input_schema",
-                    "output_schema",
-                    "public_output_schema",
-                    "restricted_row_schema",
-                ):
-                    schema_path_name = f"{schema_name}_path"
-                    if record.get(schema_path_name):
-                        record[schema_name] = _load_trusted_schema(
-                            self.skillhub_root, str(record[schema_path_name]), schema_name
-                        )
-                _validate_skill_supply_chain(self.skillhub_root, record)
-            except SkillError as exc:
-                record["available"] = False
-                issues.append({"code": exc.code, "message": str(exc)})
-            record["validation_issues"] = issues
-            has_contract = all(
-                isinstance(record.get(name), dict) and record[name].get("type") == "object"
-                for name in ("input_schema", "output_schema")
-            )
-            if (
-                record.get("read_only") is True
-                and record.get("validated") is True
-                and record.get("available") is True
-                and record.get("output_policy") in {"public", "restricted_artifact"}
-                and has_contract
-            ):
+        for raw in self._configured_skills():
+            record = self._load_record(raw)
+            if self._is_approved(record):
                 records.append(record)
         return records
 
     def get(self, skill_id: str) -> dict[str, Any]:
-        for item in self.list():
-            if item.get("skill_id") == skill_id:
-                return item
+        for raw in self._configured_skills():
+            if raw.get("skill_id") != skill_id:
+                continue
+            record = self._load_record(raw)
+            issues = record.get("validation_issues") or []
+            if issues:
+                issue = issues[0]
+                raise SkillError(
+                    str(issue.get("message") or f"Skill {skill_id} failed supply-chain validation."),
+                    code=str(issue.get("code") or "skill_contract_incompatible"),
+                    detail={"skill_id": skill_id, "validation_issues": issues},
+                )
+            if not record.get("available"):
+                raise SkillError(
+                    f"Skill {skill_id} is allowlisted but its entrypoint is unavailable.",
+                    code="skill_entrypoint_unavailable",
+                    detail={"skill_id": skill_id},
+                )
+            if not self._is_approved(record):
+                raise SkillError(
+                    f"Skill {skill_id} is not approved for read-only automation.",
+                    code="skill_not_approved",
+                    detail={"skill_id": skill_id},
+                )
+            return record
         raise KeyError(skill_id)
+
+    def _configured_skills(self) -> list[dict[str, Any]]:
+        if not self.allowlist_path.exists():
+            return []
+        payload = json.loads(self.allowlist_path.read_text(encoding="utf-8"))
+        return [item for item in payload.get("skills", []) if isinstance(item, dict)]
+
+    def _load_record(self, raw: dict[str, Any]) -> dict[str, Any]:
+        record = dict(raw)
+        entrypoint = (self.skillhub_root / str(record.get("entrypoint") or "")).resolve()
+        within_root = self.skillhub_root == entrypoint or self.skillhub_root in entrypoint.parents
+        record["available"] = bool(within_root and entrypoint.is_file())
+        record["entrypoint"] = str(entrypoint)
+        issues: list[dict[str, str]] = []
+        try:
+            for schema_name in (
+                "input_schema",
+                "output_schema",
+                "public_output_schema",
+                "restricted_row_schema",
+            ):
+                schema_path_name = f"{schema_name}_path"
+                if record.get(schema_path_name):
+                    record[schema_name] = _load_trusted_schema(
+                        self.skillhub_root, str(record[schema_path_name]), schema_name
+                    )
+            _validate_skill_supply_chain(self.skillhub_root, record)
+        except SkillError as exc:
+            record["available"] = False
+            issues.append({"code": exc.code, "message": str(exc)})
+        record["validation_issues"] = issues
+        return record
+
+    @staticmethod
+    def _is_approved(record: dict[str, Any]) -> bool:
+        has_contract = all(
+            isinstance(record.get(name), dict) and record[name].get("type") == "object"
+            for name in ("input_schema", "output_schema")
+        )
+        return bool(
+            record.get("read_only") is True
+            and record.get("validated") is True
+            and record.get("available") is True
+            and record.get("output_policy") in {"public", "restricted_artifact"}
+            and has_contract
+        )
 
     def validate_input(self, skill_id: str, input_payload: dict[str, Any]) -> None:
         """Validate a trusted Skill contract without starting its subprocess."""
@@ -172,7 +205,48 @@ class SkillRegistry:
                     f"Skill {skill_id} failed with exit code {process.returncode}. "
                     "Its stderr was intentionally not persisted because it may contain sensitive data."
                 )
-        return result
+            return result
+
+
+def validate_agent_skill_dependencies(
+    agent: dict[str, Any], skills: Any
+) -> list[str]:
+    """Resolve every Skill referenced by a deterministic Agent before it can run."""
+
+    dependencies: list[str] = []
+    execution = agent.get("execution") if isinstance(agent, dict) else None
+    for step in (execution or {}).get("steps") or []:
+        if not isinstance(step, dict) or step.get("executor") != "skill":
+            continue
+        skill_id = str(step.get("skillId") or "").strip()
+        if not skill_id or skill_id in dependencies:
+            continue
+        try:
+            skills.get(skill_id)
+        except KeyError as exc:
+            raise SkillError(
+                f"Agent {agent.get('slug') or '<unknown>'} references an unregistered Skill: {skill_id}",
+                code="agent_skill_unregistered",
+                detail={
+                    "agent_id": agent.get("slug"),
+                    "skill_id": skill_id,
+                },
+            ) from exc
+        except SkillError as exc:
+            detail = dict(exc.detail or {})
+            detail.update(
+                {
+                    "agent_id": agent.get("slug"),
+                    "skill_id": skill_id,
+                }
+            )
+            raise SkillError(
+                f"Agent {agent.get('slug') or '<unknown>'} requires unavailable Skill {skill_id}: {exc}",
+                code=exc.code,
+                detail=detail,
+            ) from exc
+        dependencies.append(skill_id)
+    return dependencies
 
 
 def _validate_skill_supply_chain(root: Path, record: dict[str, Any]) -> None:

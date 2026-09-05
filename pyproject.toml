@@ -41,7 +41,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["agents", "tests"]
 addopts = ["--import-mode=importlib"]
+norecursedirs = ["versions"]
 pythonpath = [
+  ".",
   "src",
   "agents/SD",
   "agents/FI/ap-payment/src",

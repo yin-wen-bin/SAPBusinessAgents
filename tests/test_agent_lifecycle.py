@@ -22,11 +22,13 @@ from sap_business_agents_platform.managed_rules import (
 )
 from sap_business_agents_platform.manifests import AgentRepository
 from sap_business_agents_platform.models import (
+    AgentActivateRequest,
     AgentAuthoringCreate,
     AgentDraftUpdate,
     AgentPublishRequest,
     AgentVersionDraftRequest,
 )
+from sap_business_agents_platform.skills import SkillError
 from sap_business_agents_platform.workflows import agent_digest
 
 
@@ -34,7 +36,9 @@ class _Unused:
     pass
 
 
-def _service(tmp_path: Path) -> tuple[AgentLifecycleService, RunStore, Settings]:
+def _service(
+    tmp_path: Path, *, skills: object | None = None
+) -> tuple[AgentLifecycleService, RunStore, Settings]:
     settings = Settings(
         repository_root=tmp_path,
         data_root=tmp_path / ".local-data",
@@ -48,6 +52,7 @@ def _service(tmp_path: Path) -> tuple[AgentLifecycleService, RunStore, Settings]
         _Unused(),
         _Unused(),
         _Unused(),
+        skills=skills,
     )
     return service, store, settings
 
@@ -69,6 +74,51 @@ def _write_active_agent(service: AgentLifecycleService, root: Path) -> dict:
     directory = root / "agents" / "Common" / "managed-test-agent"
     service._write_package(directory, package)
     return package["manifest"]
+
+
+def test_activation_rejects_drifted_skill_before_git_mutation(tmp_path: Path) -> None:
+    class _DriftedSkills:
+        def get(self, _skill_id: str) -> dict:
+            raise SkillError(
+                "Skill package digest does not match the approved package.",
+                code="skill_package_digest_mismatch",
+            )
+
+    service, _store, _settings = _service(tmp_path, skills=_DriftedSkills())
+    manifest = _write_active_agent(service, tmp_path)
+    manifest["execution"]["steps"].insert(
+        0,
+        {
+            "id": "read_history",
+            "executor": "skill",
+            "operation": "execute",
+            "skillId": "sap-ar-dunning-history-evidence",
+            "readOnly": True,
+            "inputMapping": {},
+        },
+    )
+    manifest["workflow"][0]["executionStepIds"].insert(0, "read_history")
+    directory = tmp_path / "agents" / "Common" / "managed-test-agent"
+    package = service._blank_package(
+        "managed-test-agent",
+        "Common",
+        {"zh": "测试固定Agent", "en": "Test Fixed Agent"},
+    )
+    package["manifest"] = manifest
+    service._write_package(directory, package)
+
+    with pytest.raises(AgentLifecycleError) as error:
+        service.activate(
+            "managed-test-agent",
+            AgentActivateRequest(
+                expectedVersion="1.0.0",
+                expectedAgentHash=agent_digest(manifest),
+                version="1.0.0",
+            ),
+        )
+
+    assert error.value.code == "skill_package_digest_mismatch"
+    assert not (tmp_path / ".git").exists()
 
 
 def test_blank_agent_creates_immutable_revision_and_requires_live_validation(tmp_path: Path) -> None:

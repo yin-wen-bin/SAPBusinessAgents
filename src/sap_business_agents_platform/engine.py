@@ -1334,7 +1334,7 @@ class RunCoordinator:
                 run_id, record.input, agent["execution"]["inputSchema"]
             )
             _validate_input(execution_input, agent["execution"]["inputSchema"])
-        except (KeyError, ManifestError, PluginError, ValueError) as exc:
+        except (KeyError, ManifestError, PluginError, SkillError, ValueError) as exc:
             raise RunExecutionError(
                 str(exc),
                 code=str(getattr(exc, "code", "agent_validation_failed")),
@@ -1813,7 +1813,7 @@ class RunCoordinator:
             }
             try:
                 skill = self.skills.get(skill_id)
-            except KeyError:
+            except (KeyError, SkillError):
                 skill = {}
             rendered = self.normalizer.normalize_input(
                 rendered, skill.get("input_schema") or {"type": "object"}
@@ -5094,6 +5094,17 @@ def _schema_label(schema: dict[str, Any], fallback: Any) -> LocalizedText:
     return _text_pair(schema.get("title"), str(fallback or ""))
 
 
+def _presentation_tone(value: Any) -> str:
+    normalized = str(value or "neutral").strip().lower()
+    aliases = {"positive": "success"}
+    normalized = aliases.get(normalized, normalized)
+    return (
+        normalized
+        if normalized in {"neutral", "success", "warning", "error", "info"}
+        else "neutral"
+    )
+
+
 def _finding_text(value: Any) -> LocalizedText:
     if not isinstance(value, dict):
         return _text_pair(value)
@@ -5137,7 +5148,7 @@ def _default_presentation(
                     type="text",
                     text=overview,
                     claim_scope="customer_business_fact",
-                    tone=str(report.get("tone") or "neutral"),
+                    tone=_presentation_tone(report.get("tone")),
                 )
             )
         stages = [item for item in report.get("stages") or [] if isinstance(item, dict)]

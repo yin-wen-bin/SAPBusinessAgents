@@ -1523,7 +1523,7 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
         assert acceptance["metrics"]
         assert "business_status" in acceptance["facts"]
         expected_limitations = {
-            "ar-collection": ["historical_dunning_evidence"],
+            "ar-collection": [],
             "ar-cash-application": ["fi_clearing_is_not_bank_settlement"],
             "month-end-closing": [
                 "fx_valuation_run_status_source_unavailable"
