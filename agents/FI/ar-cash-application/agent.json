@@ -934,6 +934,7 @@
       "metrics": [
         "source_receipt_count",
         "materialized_receipt_count",
+        "unresolved_receipt_count",
         "confirmed_receipt_count",
         "attention_receipt_count",
         "inconclusive_receipt_count"
@@ -951,7 +952,15 @@
       "fieldAliases": {},
       "fieldExtractors": {},
       "currencyFromDecimal": {"amount": "currency"},
-      "valueMappings": {},
+      "valueMappings": {
+        "cash_application_status": {
+          "cleared": "confirmed",
+          "cleared_with_posting_failure": "not_assessed"
+        },
+        "business_status": {
+          "confirmed": "normal"
+        }
+      },
       "limitationKeywords": {
         "fi_clearing_is_not_bank_settlement": [
           "FI clearing is not independent bank settlement evidence",
@@ -963,8 +972,24 @@
       "blockingLimitations": [],
       "ignoredNoticeKeywords": [],
       "recordScope": "receipt_results[]",
-      "metricDefinitions": {},
-      "businessStatusDefinition": "Business status is evaluated per bank receipt and then aggregated conservatively.",
+      "metricDefinitions": {
+        "source_receipt_count": "Number of bank receipt rows in the complete approved Skill scope. Null, never zero, when the Skill source is partial or unavailable.",
+        "materialized_receipt_count": "Number of receipt_results records materialized from a complete Skill result.",
+        "unresolved_receipt_count": "Materialized receipts whose cash_application_status is not confirmed.",
+        "confirmed_receipt_count": "Materialized receipts with cash_application_status=confirmed.",
+        "attention_receipt_count": "Materialized receipts with business_status=attention.",
+        "inconclusive_receipt_count": "Materialized receipts with business_status=inconclusive."
+      },
+      "factDefinitions": {
+        "posting_status": "Use the approved bank-receipt Skill's canonical posting_status. Only completed is eligible for FI cash-application assessment; in_process, not_completed and posting_failed remain attention facts.",
+        "reversal_status": "Use the approved bank-receipt Skill's canonical reversal_status. Only not_reversed is eligible for FI cash-application assessment.",
+        "subledger_document": "Preserve the bank Skill's customer-subledger document reference only when its company code and fiscal year form a valid exact FI tuple. A document reference alone does not prove a customer or invoice relationship.",
+        "fiscal_year": "Fiscal year paired with subledger_document in the bank evidence. Do not infer it from dates and do not query document and year as independent IN filters.",
+        "customer": "Set only when the exact CompanyCode+Ledger+FiscalYear+AccountingDocument expansion contains exactly one FinancialAccountType=D row with a nonblank Customer. Otherwise return null; a bank G/L line or document reference cannot substitute for the customer row.",
+        "cash_application_status": "Use only confirmed, pending, candidate, ambiguous, not_found, not_assessed, or unknown. confirmed requires a complete SAP clearing relationship from an eligible completed, not-reversed receipt to an invoice. A completed receipt without an eligible unique customer subledger relation is pending. Receipts whose posting or reversal status is not eligible are not_assessed, even if a document reference exists. Never output cleared or cleared_with_posting_failure.",
+        "business_status": "Use normal only for a fully evidenced confirmed application; attention for pending/candidate/not_found/not_assessed or noneligible posting/reversal states; inconclusive for incomplete, ambiguous, unknown, tuple, ledger, customer or currency evidence."
+      },
+      "businessStatusDefinition": "Evaluate each bank receipt independently. Only completed and not_reversed receipts may be assessed for application. Aggregate inconclusive before attention before normal. FI clearing confirms a cash-application relationship but is not independent proof of bank settlement.",
       "businessStatusFromAnyPositiveMetric": {}
     }
   },

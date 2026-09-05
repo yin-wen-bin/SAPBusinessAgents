@@ -746,6 +746,9 @@ def build(
         "metrics": {
             "source_receipt_count": len(scoped),
             "materialized_receipt_count": len(records),
+            "unresolved_receipt_count": sum(
+                item["cash_application_status"] != "confirmed" for item in records
+            ),
             "confirmed_receipt_count": sum(
                 item["cash_application_status"] == "confirmed" for item in records
             ),
