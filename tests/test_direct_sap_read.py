@@ -10,6 +10,8 @@ from scripts.direct_sap_read import (
     _schema,
     _sort_value,
     _validate_request,
+    _write_encrypted_rows,
+    read_encrypted_rows,
 )
 
 
@@ -55,8 +57,10 @@ def test_direct_reader_uses_live_keys_and_sap_numeric_string_semantics() -> None
     assert fields["Item"] == "Edm.String:NonNegative"
     assert _sort_value("2", fields["Item"]) == (1, Decimal("2"))
     assert _sort_value("10", fields["Item"]) == (1, Decimal("10"))
-    assert _sort_value("2", "Edm.String:UpperCase") == (1, Decimal("2"), "2")
-    assert _sort_value("10", "Edm.String:UpperCase") == (1, Decimal("10"), "10")
+    assert _sort_value("2", "Edm.String:UpperCase") == (1, 0, Decimal("2"), "2")
+    assert _sort_value("10", "Edm.String:UpperCase") == (1, 0, Decimal("10"), "10")
+    assert sorted(_sort_value(x, "Edm.String") for x in ["AB01", "10", "2", ""]) == [
+        (0, ""), (1, 0, Decimal("2"), "2"), (1, 0, Decimal("10"), "10"), (1, 1, "AB01")]
 
 
 def test_direct_reader_client_sorts_only_complete_single_page_results() -> None:
@@ -113,3 +117,23 @@ def test_direct_reader_contract_does_not_treat_the_row_ceiling_as_complete() -> 
 
     assert '"$top": str(request["max_rows"])' in source
     assert "paging_complete = False" in source
+
+
+def test_direct_reader_can_store_raw_rows_as_a_restricted_encrypted_artifact(
+    tmp_path: Path,
+) -> None:
+    private_value = "PRIVATE-DIRECT-SAP-FIXTURE"
+
+    manifest = _write_encrypted_rows(
+        tmp_path,
+        [{"Document": "1", "PrivateValue": private_value}],
+    )
+
+    ciphertext = (tmp_path / "rows.ndjson.aesgcm").read_bytes()
+    assert private_value.encode("utf-8") not in ciphertext
+    assert (tmp_path / "rows.key.dpapi").is_file()
+    assert manifest["classification"] == "restricted-sap-raw-rows"
+    assert manifest["row_count"] == 1
+    assert read_encrypted_rows(tmp_path) == [
+        {"Document": "1", "PrivateValue": private_value}
+    ]

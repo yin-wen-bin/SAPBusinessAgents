@@ -8,8 +8,14 @@ from jsonschema import Draft202012Validator
 from sap_business_agents_platform.agent_rules import evaluate_business_agent
 from sap_business_agents_platform.database import RunStore
 from sap_business_agents_platform.models import RunCreate, RunInput, RunMode
-from sap_business_agents_platform.restricted_artifacts import RestrictedArtifactStore
-from sap_business_agents_platform.rules import prepare_fi_ledger_scope
+from sap_business_agents_platform.restricted_artifacts import (
+    RestrictedArtifactError,
+    RestrictedArtifactStore,
+)
+from sap_business_agents_platform.rules import (
+    prepare_ar_cash_application_scope,
+    prepare_fi_ledger_scope,
+)
 from sap_business_agents_platform.security import LocalSecretProtector
 
 
@@ -102,6 +108,55 @@ def test_fi_ledger_scope_reads_standard_sap_read_results() -> None:
     assert result["evidence_gaps"] == []
 
 
+def test_cash_scope_ignores_sap_placeholder_subledger_references() -> None:
+    result = prepare_ar_cash_application_scope(
+        {
+            "run_input": {"company_code": "1710"},
+            "ledger_scope": _complete(ledger="0L", evidence_complete=True, evidence_gaps=[]),
+            "bank_evidence": {
+                "status": "complete",
+                "receipts": [
+                    {
+                        "posting_status": "completed",
+                        "reversal_status": "not_reversed",
+                        "related_accounting_document": {
+                            "subledger_document": "-",
+                            "fiscal_year": "0000",
+                        },
+                    }
+                ],
+            },
+        }
+    )
+
+    assert result["has_fi_documents"] is False
+    assert result["fi_document_tuples"] == []
+
+
+def test_cash_scope_uses_the_operational_cube_business_key_without_ledger() -> None:
+    result = prepare_ar_cash_application_scope(
+        {
+            "run_input": {"company_code": "1710"},
+            "ledger_scope": _complete(ledger="0L", evidence_complete=True, evidence_gaps=[]),
+            "bank_evidence": {
+                "status": "complete",
+                "receipts": [
+                    {
+                        "posting_status": "completed",
+                        "reversal_status": "not_reversed",
+                        "related_accounting_document": {
+                            "subledger_document": "1400000001",
+                            "fiscal_year": "2026",
+                        },
+                    }
+                ],
+            },
+        }
+    )
+
+    assert result["fi_document_tuples"] == [["1710", "2026", "1400000001"]]
+
+
 def test_cash_application_reports_posting_state_before_not_reversed() -> None:
     result = evaluate_business_agent(
         _cash_inputs(
@@ -190,6 +245,51 @@ def test_cash_application_confirms_only_a_real_clearing_relationship() -> None:
     )
 
 
+def test_cash_application_attaches_resolved_ledger_to_ledgerless_cube_rows() -> None:
+    receipt = {
+        "statement_id": "STMT-FIXTURE",
+        "statement_item": "1",
+        "value_date": "2026-09-02",
+        "amount": "100.00",
+        "currency": "USD",
+        "posting_status": "completed",
+        "reversal_status": "not_reversed",
+        "related_accounting_document": {
+            "subledger_document": "PAY-FIXTURE",
+            "fiscal_year": "2026",
+        },
+    }
+    payment = {
+        "CompanyCode": "1710",
+        "Ledger": "",
+        "FiscalYear": "2026",
+        "AccountingDocument": "PAY-FIXTURE",
+        "AccountingDocumentItem": "1",
+        "FinancialAccountType": "D",
+        "Customer": "CUSTOMER-FIXTURE",
+        "SpecialGLCode": "",
+    }
+    invoice = {
+        "CompanyCode": "1710",
+        "Ledger": "",
+        "FiscalYear": "2026",
+        "AccountingDocument": "INV-FIXTURE",
+        "AccountingDocumentItem": "1",
+        "FinancialAccountType": "D",
+        "Customer": "CUSTOMER-FIXTURE",
+        "SpecialGLCode": "",
+        "ClearingAccountingDocument": "PAY-FIXTURE",
+        "ClearingDocFiscalYear": "2026",
+    }
+
+    result = evaluate_business_agent(
+        _cash_inputs([receipt], payment_rows=[payment], invoice_rows=[invoice])
+    )
+
+    assert result["cash_application_status"] == "confirmed"
+    assert result["business_complete"] is True
+
+
 def test_cash_application_discards_rows_from_partial_skill_output() -> None:
     result = evaluate_business_agent(
         _cash_inputs(
@@ -262,6 +362,135 @@ def test_restricted_bank_fields_are_encrypted_and_public_projection_is_safe(
     assert artifacts.rows(run_id, artifact["artifact_id"])[0]["payer_name"] == (
         "PRIVATE-PAYER-FIXTURE"
     )
+
+
+def _declared_split_contract() -> dict[str, object]:
+    artifact_ref = {
+        "oneOf": [
+            {"type": "null"},
+            {
+                "type": "object",
+                "properties": {"artifact_id": {"type": "string"}},
+                "required": ["artifact_id"],
+                "additionalProperties": True,
+            },
+        ]
+    }
+    return {
+        "output_policy": "restricted_artifact",
+        "restricted_projection_mode": "declared_split",
+        "restricted_rows_field": "restricted_rows",
+        "public_artifact_ref_field": "restricted_artifact_ref",
+        "restricted_business_key_fields": ["document", "item"],
+        "restricted_index_domain": "test-row",
+        "public_output_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "const": "complete"},
+                "events": {"type": "array", "items": {"type": "object"}},
+                "restricted_artifact_ref": artifact_ref,
+            },
+            "required": ["status", "events", "restricted_artifact_ref"],
+            "additionalProperties": False,
+        },
+        "restricted_row_schema": {
+            "type": "object",
+            "properties": {
+                "document": {"type": "string", "minLength": 1},
+                "item": {"type": "string", "minLength": 1},
+                "private_text": {"type": "string"},
+            },
+            "required": ["document", "item", "private_text"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def test_declared_restricted_projection_encrypts_rows_and_returns_only_public_output(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "platform.sqlite3")
+    run_id = "run_declared_projection"
+    store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="fixture", input={}))
+    artifacts = RestrictedArtifactStore(tmp_path, store)
+
+    public, private_refs = artifacts.materialize_skill_output(
+        run_id=run_id,
+        skill_id="fixture-restricted-skill",
+        skill_contract=_declared_split_contract(),
+        output={
+            "status": "complete",
+            "events": [{"document": "100", "item": "1"}],
+            "restricted_rows": [
+                {"document": "100", "item": "1", "private_text": "PRIVATE-DUNNING-TEXT"}
+            ],
+        },
+    )
+
+    assert "restricted_rows" not in public
+    assert public["restricted_artifact_ref"]["row_count"] == 1
+    assert len(private_refs) == 1
+    assert b"PRIVATE-DUNNING-TEXT" not in Path(private_refs[0]["path"]).read_bytes()
+    assert artifacts.rows(run_id, private_refs[0]["artifact_id"])[0]["private_text"] == (
+        "PRIVATE-DUNNING-TEXT"
+    )
+    assert private_refs[0]["hashed_indexes"][0]["domain"] == "test-row"
+
+
+def test_declared_restricted_projection_handles_complete_empty_result_without_artifact(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "platform.sqlite3")
+    run_id = "run_declared_empty"
+    store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="fixture", input={}))
+    artifacts = RestrictedArtifactStore(tmp_path, store)
+
+    public, private_refs = artifacts.materialize_skill_output(
+        run_id=run_id,
+        skill_id="fixture-restricted-skill",
+        skill_contract=_declared_split_contract(),
+        output={"status": "complete", "events": [], "restricted_rows": []},
+    )
+
+    assert public["restricted_artifact_ref"] is None
+    assert private_refs == []
+
+
+def test_declared_restricted_projection_fails_closed_for_bad_rows_or_missing_policy(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "platform.sqlite3")
+    run_id = "run_declared_invalid"
+    store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="fixture", input={}))
+    artifacts = RestrictedArtifactStore(tmp_path, store)
+
+    try:
+        artifacts.materialize_skill_output(
+            run_id=run_id,
+            skill_id="fixture-restricted-skill",
+            skill_contract=_declared_split_contract(),
+            output={
+                "status": "complete",
+                "events": [],
+                "restricted_rows": [{"document": "100", "item": "1"}],
+            },
+        )
+    except RestrictedArtifactError as exc:
+        assert exc.code == "restricted_projection_invalid"
+    else:
+        raise AssertionError("Malformed restricted rows must fail closed.")
+
+    try:
+        artifacts.materialize_skill_output(
+            run_id=run_id,
+            skill_id="fixture-restricted-skill",
+            skill_contract={"output_policy": "restricted_artifact"},
+            output={"status": "complete"},
+        )
+    except RestrictedArtifactError as exc:
+        assert exc.code == "restricted_projection_undeclared"
+    else:
+        raise AssertionError("Restricted Skills without a projection policy must fail closed.")
 
 
 def test_secure_supplemental_input_can_be_submitted_without_chat_text() -> None:

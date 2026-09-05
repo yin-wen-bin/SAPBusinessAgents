@@ -1,0 +1,52 @@
+{
+  "schema_version": "2.0",
+  "skill_id": "sap-ar-dunning-history-evidence",
+  "git_commit": "3deba2952f0c7f20723802c03c4b69523fe38060",
+  "package_sha256": "30b35d28a6abb626de2d519d3707f055893343d4acae5ba1ef66c7fcbc0dcdd8",
+  "profile_version": "2026-09-04.1",
+  "profile_sha256": "5d5283ac5ca10a4d64a0bc127846302cbbbcdc93e7585b1fbd71c1286ad8d342",
+  "metadata_sha256": "3bfba2b91ee6bccb334f15f4257515a36931f1cb7949ddf2bf48492085ef6969",
+  "output_schema_sha256": "0dcf4ce5ce376502a3fec32dc4f615b51716a9c383178898ef3a979ee22d7f02",
+  "baseline_hash": "sha256:c4651c912e8032a8de3961418c27c4965519e08a4dd2fbd1d528ebd575ca5be9",
+  "comparison_hash": "sha256:242e3934a9c6b708e36f62fc84df534efab3449b59d8a7377aaf5dd84e9a9b82",
+  "coverage": {
+    "nonzero_event_count": 87,
+    "complete_zero_count": 0,
+    "forced_date_partitions": 2,
+    "customer_identifiers": "hashed_only"
+  },
+  "independent_validation": {
+    "tested_skill_imported": false,
+    "tested_skill_runtime_called": false,
+    "reader_id": "sapbusinessagents-direct-ar-adt-gate-v1",
+    "reader_sha256": "sha256:18de593da6c7f0b1ce89d384121fe4d5c3dd43d1438c99813c25e4647bd6025e",
+    "metadata_sha256": [
+      "sha256:37ae8cc2aaab3b3b260f42538f9af113f50baa5d6669d5a1366304da40e81c93",
+      "sha256:ab7c6e7ab7972c83e9a992191077b44c2507472d4471e255d3f8f6046171801a"
+    ],
+    "source_snapshot_hashes": [
+      "sha256:2a40f1d3007975e421bac0d5cfe328e315285ce18ef35ba3569dd75d03749293",
+      "sha256:40733d2c7b113ebea723bfc394bb2c965d8eee3b5fbc18e3eefc2c09e2ecd622",
+      "sha256:6401cd099fe71e5e1fbea219ee3c29a3ab4beec6b931a8c243c627a57ff14094",
+      "sha256:67cd2460f4b264e87a04db5af6707dba6df1152a2ca0fdc5ecadde19db65cbd7",
+      "sha256:ce0c79501b1bb7372c66535edad4114ceb7233e7d3dd9ab026b57205328589c0",
+      "sha256:fd2d3cc4388a44dec768afad8fee8f22c6bc6482019aca8d333ed2a284ed176e"
+    ],
+    "complete_zero_sample_passed": true,
+    "nonzero_sample_passed": true,
+    "partition_count": 2
+  },
+  "readonly_audit": {
+    "verdict": "PASS",
+    "methods": ["semantic_read_only_ADT_POST"],
+    "sap_write_operations": 0
+  },
+  "privacy_audit": {
+    "verdict": "PASS",
+    "public_raw_reference_fields": 0,
+    "tracked_raw_rows": 0
+  },
+  "verdict": "PASS",
+  "public_output_schema_sha256": "f4ec2faeaf40fc8cdc80bb3a1a0ebae52ac263ff1ebdce18e232ee80223f88ed",
+  "restricted_row_schema_sha256": "980e53d4585fc05ae8f4fe686058ad141239dcbb33f0bf2566c03b59478c54ee"
+}

@@ -4,11 +4,14 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import ssl
+import struct
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -97,8 +100,8 @@ def _sort_value(value: Any, edm_type: str) -> Any:
     # text as a tie-breaker so leading-zero variants remain distinct.
     text = str(value)
     if base_type == "Edm.String" and text.isdigit():
-        return (1, Decimal(text), text)
-    return (1, text)
+        return (1, 0, Decimal(text), text)
+    return (1, 1, text)
 
 
 def _ensure_stable_artifact_order(
@@ -150,6 +153,14 @@ def _ensure_stable_artifact_order(
         "stable paging key is non-monotonic at row "
         f"{first + 1}; first differing field={differing}; edm_type={fields[differing]}"
     )
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def _validate_request(value: dict[str, Any]) -> dict[str, Any]:
@@ -206,7 +217,94 @@ def _client(profile: dict[str, Any]):
     return base, str(profile.get("client") or ""), get
 
 
-def run(profile: dict[str, Any], request: dict[str, Any], output: Path) -> dict[str, Any]:
+def _write_encrypted_rows(output: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from sap_business_agents_platform.security import LocalSecretProtector
+
+    artifact_id = "direct-sap-rows-v1"
+    data_key = os.urandom(32)
+    aes = AESGCM(data_key)
+    final_path = output / "rows.ndjson.aesgcm"
+    temporary = output / ".rows.ndjson.aesgcm.tmp"
+    with temporary.open("wb") as stream:
+        stream.write(b"SAPBAR01")
+        for row in rows:
+            plaintext = (
+                json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+            ).encode("utf-8")
+            nonce = os.urandom(12)
+            ciphertext = aes.encrypt(nonce, plaintext, artifact_id.encode("utf-8"))
+            stream.write(struct.pack(">I", len(ciphertext)))
+            stream.write(nonce)
+            stream.write(ciphertext)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, final_path)
+    protector = LocalSecretProtector(output)
+    wrapped_key = protector.protect(data_key, purpose=f"sapba-artifact-key:{artifact_id}")
+    key_path = output / "rows.key.dpapi"
+    key_temporary = output / ".rows.key.dpapi.tmp"
+    key_temporary.write_bytes(wrapped_key)
+    os.replace(key_temporary, key_path)
+    return {
+        "classification": "restricted-sap-raw-rows",
+        "format": "chunked-ndjson-aes-256-gcm",
+        "ciphertext_sha256": _hash_file(final_path),
+        "row_count": len(rows),
+    }
+
+
+def write_encrypted_rows(output: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Persist a direct-source snapshot without ever creating a plaintext file."""
+
+    output.mkdir(parents=True, exist_ok=True)
+    return _write_encrypted_rows(output, rows)
+
+
+def read_encrypted_rows(output: Path) -> list[dict[str, Any]]:
+    """Read a direct-baseline raw artifact into memory without plaintext files."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from sap_business_agents_platform.security import LocalSecretProtector
+
+    artifact_id = "direct-sap-rows-v1"
+    data_key = LocalSecretProtector.unprotect(
+        (output / "rows.key.dpapi").read_bytes(),
+        purpose=f"sapba-artifact-key:{artifact_id}",
+    )
+    aes = AESGCM(data_key)
+    rows: list[dict[str, Any]] = []
+    with (output / "rows.ndjson.aesgcm").open("rb") as stream:
+        if stream.read(8) != b"SAPBAR01":
+            raise ValueError("encrypted direct-SAP artifact has an invalid header")
+        while length_bytes := stream.read(4):
+            if len(length_bytes) != 4:
+                raise ValueError("encrypted direct-SAP artifact is truncated")
+            length = struct.unpack(">I", length_bytes)[0]
+            nonce = stream.read(12)
+            ciphertext = stream.read(length)
+            if len(nonce) != 12 or len(ciphertext) != length:
+                raise ValueError("encrypted direct-SAP artifact is truncated")
+            try:
+                value = json.loads(
+                    aes.decrypt(nonce, ciphertext, artifact_id.encode("utf-8"))
+                )
+            except Exception as exc:
+                raise ValueError(
+                    "encrypted direct-SAP artifact failed integrity validation"
+                ) from exc
+            if not isinstance(value, dict):
+                raise ValueError("encrypted direct-SAP artifact row is not an object")
+            rows.append(value)
+    return rows
+
+
+def run(
+    profile: dict[str, Any],
+    request: dict[str, Any],
+    output: Path,
+    *,
+    encrypt_rows: bool = False,
+) -> dict[str, Any]:
     request = _validate_request(request)
     base, client, get = _client(profile)
     service_root = base + str(request["service_path"])
@@ -274,9 +372,16 @@ def run(profile: dict[str, Any], request: dict[str, Any], output: Path) -> dict[
     )
     output.mkdir(parents=True, exist_ok=True)
     (output / "metadata.edmx").write_bytes(metadata)
-    (output / "rows.json").write_text(
-        json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    restricted_artifact = None
+    if encrypt_rows:
+        restricted_artifact = _write_encrypted_rows(output, rows)
+        # Freeze the exact read contract privately for later anchor rechecks.
+        # Filters may contain a protected business reference.
+        write_encrypted_rows(output / "replay", [{"request": request}])
+    else:
+        (output / "rows.json").write_text(
+            json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
     manifest = {
         "source_id": request["source_id"],
         "service_name": request["service_name"],
@@ -293,7 +398,10 @@ def run(profile: dict[str, Any], request: dict[str, Any], output: Path) -> dict[
         "primary": False,
         "http_method": "GET",
         "rows_hash": _hash_json(rows),
+        "observed_at": datetime.now(timezone.utc).isoformat(),
     }
+    if restricted_artifact is not None:
+        manifest["restricted_artifact"] = restricted_artifact
     (output / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -309,11 +417,13 @@ def main() -> int:
     )
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--encrypt-rows", action="store_true")
     args = parser.parse_args()
     manifest = run(
         _load_object(args.profile.resolve()),
         _load_object(args.request.resolve()),
         args.output.resolve(),
+        encrypt_rows=args.encrypt_rows,
     )
     print(json.dumps({key: manifest[key] for key in ("source_id", "row_count", "page_count", "paging_complete", "source_complete", "schema_hash", "query_hash")}, ensure_ascii=False))
     return 0

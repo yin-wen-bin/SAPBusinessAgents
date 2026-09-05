@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from .acceptance_projection import AcceptanceProjectionSpec
 
 
 def utc_now() -> str:
@@ -72,9 +73,12 @@ class RunCreate(BaseModel):
     sensitive_inputs: dict[str, str] = Field(
         default_factory=dict, alias="sensitiveInputs"
     )
+    acceptance_spec: AcceptanceProjectionSpec | None = Field(default=None, alias="acceptanceSpec")
 
     @model_validator(mode="after")
     def validate_mode_payload(self) -> "RunCreate":
+        if self.acceptance_spec is not None and self.mode != RunMode.free_query:
+            raise ValueError("acceptanceSpec is only available in free-query acceptance mode")
         if self.query is not None:
             self.query = self.query.strip()
         if self.mode == RunMode.agent and not self.agent_id:
@@ -319,6 +323,7 @@ class RuntimeSnapshot(BaseModel):
     provider_id: str
     sdk_id: str
     version: str | None = None
+    model: str | None = None
     configuration_digest: str
     capabilities: list[str] = Field(default_factory=list)
     selected_at: str | None = None
@@ -363,6 +368,9 @@ class RunResult(BaseModel):
     completeness: Completeness = Field(default_factory=Completeness)
     summary: dict[str, str] = Field(default_factory=dict)
     presentation: RunPresentation | None = None
+    # Populated only by the Runtime's acceptance mode. Ordinary free-query
+    # callers keep this null and continue to use the business presentation.
+    acceptance_projection: dict[str, Any] | None = None
     workflow_presentation: dict[str, Any] | None = None
     errors: list[dict[str, Any]] = Field(default_factory=list)
     thread_id: str | None = None

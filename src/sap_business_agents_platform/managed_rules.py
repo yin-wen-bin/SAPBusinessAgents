@@ -92,7 +92,16 @@ payload = json.load(sys.stdin)
 result = module.evaluate(payload)
 if not isinstance(result, dict):
     raise TypeError("managed rule evaluate() must return an object")
-encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+# The normal rule contract repeats its report in workflow_output. Transmit
+# identical reports once, then restore the exact public object in the host.
+# This is transport deduplication, not truncation or a higher stdout limit.
+workflow = result.get("workflow_output")
+reuse_report = (isinstance(workflow, dict) and isinstance(workflow.get("business_report"), dict)
+                and result.get("business_report") == workflow["business_report"])
+if reuse_report:
+    result = {key: value for key, value in result.items() if key != "business_report"}
+wire = {"version": 1, "reuse_report": reuse_report, "result": result}
+encoded = json.dumps(wire, ensure_ascii=False, separators=(",", ":"))
 if len(encoded.encode("utf-8")) > 2_000_000:
     raise ValueError("managed rule output exceeds 2 MB")
 sys.stdout.write(encoded)
@@ -251,20 +260,32 @@ def execute_managed_rule(
         finally:
             job.close()
         if process.returncode != 0:
-            message = stderr.strip().splitlines()[-1] if stderr.strip() else "unknown error"
+            # Child exceptions may interpolate evidence values (for example a
+            # KeyError). Never forward arbitrary stderr into a public run.
+            message = ("Managed rule output exceeds 2 MB." if stderr.strip().endswith(
+                "ValueError: managed rule output exceeds 2 MB") else "Managed rule execution failed.")
             raise ManagedRuleError(
-                f"Managed rule execution failed: {message}", code="managed_rule_execution_failed"
+                message, code="managed_rule_execution_failed"
             )
         try:
-            output = json.loads(stdout)
+            wire = json.loads(stdout)
         except json.JSONDecodeError as exc:
             raise ManagedRuleError(
                 "Managed rule returned invalid JSON.", code="managed_rule_output_invalid"
             ) from exc
-        if not isinstance(output, dict):
+        if (not isinstance(wire, dict) or set(wire) != {"version", "reuse_report", "result"}
+                or wire["version"] != 1 or type(wire["reuse_report"]) is not bool
+                or not isinstance(wire["result"], dict)):
             raise ManagedRuleError(
-                "Managed rule output must be an object.", code="managed_rule_output_invalid"
+                "Managed rule transport contract is invalid.", code="managed_rule_output_invalid"
             )
+        output = wire["result"]
+        if wire["reuse_report"]:
+            workflow = output.get("workflow_output")
+            if ("business_report" in output or not isinstance(workflow, dict)
+                    or not isinstance(workflow.get("business_report"), dict)):
+                raise ManagedRuleError("Managed rule report reference is invalid.", code="managed_rule_output_invalid")
+            output["business_report"] = workflow["business_report"]
         return output
     finally:
         if temporary_path is not None:

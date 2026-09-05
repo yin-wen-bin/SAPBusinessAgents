@@ -1613,7 +1613,11 @@ def test_mcp_server_lists_only_declared_read_only_tools(tmp_path: Path) -> None:
         text=True,
         capture_output=True,
         check=True,
-        timeout=10,
+        # Importing the full FastAPI/Skill catalog stack can approach ten
+        # seconds on a cold Windows filesystem, especially while the complete
+        # test suite is running.  This is only a subprocess test guard, not a
+        # runtime or SAP-call timeout.
+        timeout=30,
     )
     responses = [json.loads(line) for line in completed.stdout.splitlines()]
     tools = responses[1]["result"]["tools"]

@@ -2,6 +2,50 @@
   "schema_version": "1.0",
   "skills": [
     {
+      "skill_id": "sap-ar-dunning-history-evidence",
+      "description": {
+        "zh": "按公司代码、客户和截止日期读取已执行的历史催收事件，并将原始参考字段交由受限制品存储。",
+        "en": "Reads executed historical dunning events by company code, customer, and as-of date while routing raw reference fields to restricted storage."
+      },
+      "entrypoint": "skills/FI/sap-ar-dunning-history-evidence/run.py",
+      "manifest_path": "skills/FI/sap-ar-dunning-history-evidence/manifest.json",
+      "source_profile_path": "skills/FI/sap-ar-dunning-history-evidence/references/source-profiles.json",
+      "input_schema_path": "skills/FI/sap-ar-dunning-history-evidence/references/input.schema.json",
+      "output_schema_path": "skills/FI/sap-ar-dunning-history-evidence/references/output.schema.json",
+      "public_output_schema_path": "skills/FI/sap-ar-dunning-history-evidence/references/public-output.schema.json",
+      "restricted_row_schema_path": "skills/FI/sap-ar-dunning-history-evidence/references/restricted-row.schema.json",
+      "read_only": true,
+      "validated": true,
+      "platform_timeout_seconds": 300,
+      "output_policy": "restricted_artifact",
+      "restricted_projection_mode": "declared_split",
+      "restricted_rows_field": "restricted_rows",
+      "public_artifact_ref_field": "restricted_artifact_ref",
+      "restricted_business_key_fields": [
+        "dunning_run_date",
+        "dunning_run_id",
+        "company_code",
+        "customer",
+        "accounting_document",
+        "accounting_document_item"
+      ],
+      "restricted_index_domain": "ar-dunning-history-row",
+      "restricted_classification": "restricted-ar-dunning-history-detail",
+      "expected_package_sha256": "30b35d28a6abb626de2d519d3707f055893343d4acae5ba1ef66c7fcbc0dcdd8",
+      "expected_git_commit": "29fdb88e33f1ba2bfa8344d146be51c50573ee49",
+      "expected_profile_version": "2026-09-04.1",
+      "expected_profile_sha256": "5d5283ac5ca10a4d64a0bc127846302cbbbcdc93e7585b1fbd71c1286ad8d342",
+      "expected_metadata_sha256": "3bfba2b91ee6bccb334f15f4257515a36931f1cb7949ddf2bf48492085ef6969",
+      "expected_output_schema_sha256": "0dcf4ce5ce376502a3fec32dc4f615b51716a9c383178898ef3a979ee22d7f02",
+      "expected_public_output_schema_sha256": "f4ec2faeaf40fc8cdc80bb3a1a0ebae52ac263ff1ebdce18e232ee80223f88ed",
+      "expected_restricted_row_schema_sha256": "980e53d4585fc05ae8f4fe686058ad141239dcbb33f0bf2566c03b59478c54ee",
+      "allowed_http_methods": ["GET", "POST"],
+      "allowed_endpoints": [
+        "/sap/bc/adt/datapreview/freestyle",
+        "/sap/bc/adt/ddic/tables/{ddic_object}/source/main"
+      ]
+    },
+    {
       "skill_id": "sap-bank-receipt-evidence",
       "description": {
         "zh": "按公司代码和值日期读取银行来款、过账、冲销及财务凭证引用，并将敏感银行字段交由平台受限制品存储。",
@@ -16,10 +60,12 @@
       "validated": true,
       "platform_timeout_seconds": 300,
       "output_policy": "restricted_artifact",
-      "expected_package_sha256": "4dce7a07a7e2dd101142f34bb3397505fcd53c55a476a3eeca2692cd8b829f4e",
-      "expected_git_commit": "24de13c8d073dcbad911598162b16eec16e548a1",
-      "expected_profile_version": "2026-09-03.2",
+      "expected_package_sha256": "1ebda890e2d35a792de4c4ce83d091bd58d0ac5db399fbcff52d01f248bc11ba",
+      "expected_git_commit": "3deba2952f0c7f20723802c03c4b69523fe38060",
+      "expected_profile_version": "2026-09-05.1",
+      "expected_profile_sha256": "6b8c6afd7c1423ed9404ccd0847bf1656dde0f6beda9906dca0180e01856dd8e",
       "expected_metadata_sha256": "03232d2f8a5ba02f3647a36002d85ad20d4045a38c03307ba4aabbe8c51c6e46",
+      "expected_output_schema_sha256": "d3fa22bb99712ca50390b8c92a29ace7946f58558d4d8fa34f588e521200855c",
       "allowed_http_methods": ["GET", "POST"],
       "allowed_endpoints": [
         "/sap/bc/adt/datapreview/freestyle",

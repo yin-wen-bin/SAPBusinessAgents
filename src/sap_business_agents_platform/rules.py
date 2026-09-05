@@ -65,6 +65,8 @@ def evaluate(operation: str, inputs: dict[str, Any]) -> dict[str, Any]:
         return prepare_fi_ledger_scope(inputs)
     if operation == "prepare_ar_cash_application_scope":
         return prepare_ar_cash_application_scope(inputs)
+    if operation == "prepare_ar_collection_context":
+        return prepare_ar_collection_context(inputs)
     if operation == "classify_control_object":
         return classify_control_object(inputs)
     if operation == "prepare_control_object_lookup":
@@ -160,8 +162,19 @@ def prepare_ar_cash_application_scope(inputs: dict[str, Any]) -> dict[str, Any]:
             continue
         document = str(related.get("subledger_document") or "").strip()
         fiscal_year = str(related.get("fiscal_year") or "").strip()
+        # SAP bank-statement sources sometimes use '-' and 0000 as explicit
+        # placeholders. They mean that no customer-subledger document exists;
+        # they must not be turned into an FI lookup tuple.
+        if not re.fullmatch(r"\d{1,10}", document) or not re.fullmatch(
+            r"(?!0000)\d{4}", fiscal_year
+        ):
+            continue
         if ledger and document and fiscal_year:
-            item = [company_code, ledger, fiscal_year, document]
+            # The live Operational Accounting Document Item Cube is keyed at
+            # CompanyCode/FiscalYear/Document/Item and exposes Ledger as an
+            # empty context property. Keep the independently resolved leading
+            # ledger in the rule context instead of filtering valid rows away.
+            item = [company_code, fiscal_year, document]
             if item not in tuples:
                 tuples.append(item)
     return {
@@ -173,6 +186,32 @@ def prepare_ar_cash_application_scope(inputs: dict[str, Any]) -> dict[str, Any]:
         "source_complete": ledger_scope.get("source_complete") is True and bank.get("status") == "complete",
         "evidence_complete": ledger_scope.get("evidence_complete") is True and bank.get("status") == "complete",
         "evidence_gaps": evidence_gaps,
+    }
+
+
+def prepare_ar_collection_context(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Choose current versus historical dunning evidence without reading the clock."""
+
+    run_input = inputs.get("run_input")
+    if not isinstance(run_input, dict):
+        raise ValueError("prepare_ar_collection_context requires run_input")
+    as_of_text = str(run_input.get("as_of") or "").strip()
+    business_date_text = str(run_input.get("business_date") or "").strip()
+    try:
+        as_of = date.fromisoformat(as_of_text)
+        business_date = date.fromisoformat(business_date_text)
+    except ValueError as exc:
+        raise ValueError("as_of and business_date must use YYYY-MM-DD") from exc
+    if as_of > business_date:
+        raise ValueError("as_of must not be after business_date")
+    historical = as_of < business_date
+    return {
+        "rule_id": "ar_collection_context_v1",
+        "status": "complete",
+        "historical": historical,
+        "current": not historical,
+        "as_of": as_of.isoformat(),
+        "business_date": business_date.isoformat(),
     }
 
 

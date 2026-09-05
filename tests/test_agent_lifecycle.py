@@ -123,6 +123,23 @@ def test_managed_rule_is_scanned_and_runs_in_isolated_process() -> None:
         validate_managed_rule("def evaluate(inputs):\n    return open('secret').read()\n")
 
 
+def test_managed_rule_reuses_identical_report_without_losing_rows_or_raising_limit():
+    source = "def evaluate(inputs):\n    report = {'records': [{'text': 'a' * 1200} for i in range(1000)]}\n    return {'business_report': report, 'workflow_output': {'business_report': report}}\n"
+    result = execute_managed_rule(source, {}, expected_digest=source_digest(source))
+    assert len(result['business_report']['records']) == 1000
+    assert result['business_report'] == result['workflow_output']['business_report']
+    huge = "def evaluate(inputs):\n    return {'text': 'a' * 2100000}\n"
+    with pytest.raises(ManagedRuleError, match='2 MB'):
+        execute_managed_rule(huge, {}, expected_digest=source_digest(huge))
+
+
+def test_managed_rule_exception_never_leaks_evidence_values():
+    source = "def evaluate(inputs):\n    return inputs['private-reference-12345']\n"
+    with pytest.raises(ManagedRuleError) as error:
+        execute_managed_rule(source, {}, expected_digest=source_digest(source))
+    assert 'private-reference-12345' not in str(error.value)
+
+
 def test_inactive_agent_is_hidden_from_business_catalog_but_available_to_management(tmp_path: Path) -> None:
     service, _store, _settings = _service(tmp_path)
     manifest = _write_active_agent(service, tmp_path)

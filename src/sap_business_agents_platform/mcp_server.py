@@ -73,6 +73,11 @@ _ADT_INPUT_SCHEMA: dict[str, Any] = {
 
 _SAP_TOOLS = [
     {
+        "name": "list_all_approved_skills",
+        "description": "Read the single platform-approved Skill catalog and exact input/public-output schemas. No separate Runtime exposure list. Inspect this before constructing Skill inputs; paths and private schemas are never exposed.",
+        "inputSchema": _schema({"skill_id": {"type": "string"}}),
+    },
+    {
         "name": "sap_catalog_search",
         "description": "Search the advisory bilingual SAP OData catalog. Live metadata is still required before execution.",
         "inputSchema": _schema(
@@ -198,7 +203,7 @@ _SAP_TOOLS = [
         "name": "sap_final_report_validate",
         "description": "Validate that customer-business claims cite run-scoped SAP evidence references.",
         "inputSchema": _schema(
-            {"report": {"type": "object"}}, ["report"]
+            {"report": {"type": "object"}, "acceptance_projection": {"type": "object"}}, ["report"]
         ),
     },
 ]

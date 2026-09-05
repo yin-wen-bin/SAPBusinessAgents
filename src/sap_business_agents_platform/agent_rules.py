@@ -2397,6 +2397,26 @@ def _ar_cash_application(inputs: JsonObject) -> JsonObject:
     cash_scope = evidence.get("cash_scope") if isinstance(evidence, dict) else None
     if isinstance(cash_scope, dict):
         gaps.update(str(item) for item in cash_scope.get("evidence_gaps") or [])
+    resolved_ledger = str(cash_scope.get("ledger") or "").strip() if isinstance(cash_scope, dict) else ""
+
+    def with_leading_ledger(rows: list[JsonObject]) -> list[JsonObject]:
+        normalized: list[JsonObject] = []
+        for source_row in rows:
+            row = dict(source_row)
+            source_ledger = _text(row, "Ledger")
+            if not source_ledger and resolved_ledger:
+                row["Ledger"] = resolved_ledger
+            elif source_ledger and resolved_ledger and source_ledger != resolved_ledger:
+                gaps.add("fi_nonleading_ledger_row")
+                continue
+            normalized.append(row)
+        return normalized
+
+    payment_rows = with_leading_ledger(payment_rows)
+    direct_invoice_rows = with_leading_ledger(direct_invoice_rows)
+    subsequent_clearing_rows = with_leading_ledger(subsequent_clearing_rows)
+    subsequent_invoice_rows = with_leading_ledger(subsequent_invoice_rows)
+    fi_rows = [*payment_rows, *direct_invoice_rows, *subsequent_clearing_rows, *subsequent_invoice_rows]
     if bank.get("status") == "partial":
         gaps.add("bank_receipt_source_partial")
         receipts = []
@@ -2417,7 +2437,7 @@ def _ar_cash_application(inputs: JsonObject) -> JsonObject:
         year = str(related.get("fiscal_year") or "")
         active = receipt.get("posting_status") == "completed" and receipt.get("reversal_status") == "not_reversed"
         company_code = str((inputs.get("run_input") or {}).get("company_code") or "")
-        ledger = str(cash_scope.get("ledger") or "") if isinstance(cash_scope, dict) else ""
+        ledger = resolved_ledger
         matching = [row for row in payment_rows if _text(row, "CompanyCode") == company_code and _text(row, "Ledger") == ledger and _text(row, "AccountingDocument") == document and _text(row, "FiscalYear") == year]
         customer_lines = [row for row in matching if _text(row, "FinancialAccountType") == "D" and _text(row, "Customer")]
         customers = {_text(row, "Customer") for row in customer_lines}
@@ -2471,10 +2491,16 @@ def _ar_cash_application(inputs: JsonObject) -> JsonObject:
             cash_status = "pending"
             business = "attention" if source_complete else "inconclusive"
             reason = "customer_subledger_document_missing"
-        elif len(customers) > 1 or relationship_ambiguous:
+        elif len(customer_lines) != 1 or len(customers) != 1 or relationship_ambiguous:
             cash_status = "ambiguous"
             business = "attention"
-            reason = "multiple_customers_in_payment_document" if len(customers) > 1 else "clearing_relationship_ambiguous"
+            reason = (
+                "customer_subledger_line_not_unique"
+                if len(customer_lines) != 1
+                else "multiple_customers_in_payment_document"
+                if len(customers) > 1
+                else "clearing_relationship_ambiguous"
+            )
         elif not ordinary and special:
             cash_status = "pending"
             business = "attention"
@@ -2563,8 +2589,8 @@ def _ar_cash_application(inputs: JsonObject) -> JsonObject:
         business_status=business_status,
         headline_zh=f"找到 {len(results)} 笔银行来款，其中 {sum(item['cash_application_status'] == 'confirmed' for item in results)} 笔已由SAP清账关系确认",
         headline_en=f"Found {len(results)} bank receipt(s); {sum(item['cash_application_status'] == 'confirmed' for item in results)} are confirmed by SAP clearing relationships",
-        overview_zh="银行到账事实、客户子分类账和发票清账关系分开核验；候选匹配不会显示为已清账。",
-        overview_en="Bank-receipt facts, customer subledger evidence, and invoice clearing relationships are assessed separately; candidates are never shown as cleared.",
+        overview_zh="银行到账事实、客户子分类账和发票清账关系分开核验；候选匹配不会显示为已清账，FI清账不是独立银行到账证据。",
+        overview_en="Bank-receipt facts, customer subledger evidence, and invoice clearing relationships are assessed separately; candidates are never shown as cleared, and FI clearing is not independent bank settlement evidence.",
         stages=[
             _stage("bank", "银行来款", "Bank receipts", len(results), state="confirmed" if receipt_search_status in {"found", "not_found"} else "unknown"),
             _stage("subledger", "客户子分类账", "Customer subledger", len(fi_rows), state="confirmed" if source_complete else "unknown"),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -53,6 +54,14 @@ def test_runtime_router_pins_existing_task_when_default_changes() -> None:
     router = RuntimeRouter(manager, {"codex": codex, "workbuddy": workbuddy})
 
     existing = router.snapshot()
+    assert existing["model"] is None
+    assert existing["configuration_digest"] == hashlib.sha256(
+        json.dumps(
+            {"sdk_configuration_digest": "codex", "model": None},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     manager.default_provider_id = "workbuddy"
 
     with router.pin(existing["provider_id"]):

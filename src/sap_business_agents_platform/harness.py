@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 from .config import Settings
 from .agent_rules import evaluate_business_agent
+from .acceptance_projection import output_schema, validate_projection, visible_projection_issues
 from .database import RunStore
 from .models import RunPresentation, RunStatus, TERMINAL_STATUSES
 from .normalization import SapInputNormalizationError, SapValueNormalizer
@@ -210,6 +211,19 @@ _HARNESS_OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+def _public_skill_contract(skill: dict[str, Any]) -> dict[str, Any]:
+    restricted = skill.get("output_policy") == "restricted_artifact"
+    return {
+        "skill_id": skill.get("skill_id"),
+        "read_only": skill.get("read_only"), "validated": skill.get("validated"),
+        "available": skill.get("available"), "output_policy": skill.get("output_policy"),
+        "input_schema": skill.get("input_schema"),
+        # A missing public schema is an explicit limitation, not permission to
+        # expose a restricted output schema or an on-disk artifact contract.
+        "output_schema": skill.get("public_output_schema") if restricted else skill.get("output_schema"),
+    }
+
+
 @dataclass(slots=True)
 class HarnessOutcome:
     thread_id: str | None
@@ -231,6 +245,7 @@ class HarnessOutcome:
     discovered_tool_count: int = 0
     activated_tool_count: int = 0
     presentation: RunPresentation | None = None
+    acceptance_projection: dict[str, Any] | None = None
     verified_rule_results: list[dict[str, Any]] = field(default_factory=list)
     budgeted_tool_call_count: int = 0
     elapsed_seconds: int = 0
@@ -709,7 +724,7 @@ class HarnessToolBroker:
         record = self.store.get_run(run_id)
         if record.status in TERMINAL_STATUSES or record.status == RunStatus.waiting_input:
             return
-        validation_tools = {"sap_catalog_search", "sap_schema_get", "sap_query_validate"}
+        validation_tools = {"sap_catalog_search", "sap_schema_get", "sap_query_validate", "list_all_approved_skills"}
         next_status = RunStatus.validating if tool_name in validation_tools else RunStatus.running
         # Do not move the public progress indicator backwards after live reads begin.
         if record.status == RunStatus.running and next_status == RunStatus.validating:
@@ -744,6 +759,12 @@ class HarnessToolBroker:
     async def _dispatch(
         self, run_id: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if tool_name == "list_all_approved_skills":
+            catalog = self.skills.list_all_approved_skills()
+            selected = str(arguments.get("skill_id") or "")
+            return {"ok": True, "total_approved": len(catalog), "complete": True,
+                    "skills": [_public_skill_contract(item) for item in catalog
+                               if not selected or item.get("skill_id") == selected]}
         if tool_name == "sap_catalog_search":
             result = await self.sap_read.catalog(
                 query=str(arguments.get("query") or ""),
@@ -999,7 +1020,7 @@ class HarnessToolBroker:
         skill_input_hash = ""
         expires_at_epoch = 0
         if needs_skill and prerequisite.issubset(attempted):
-            self._approved_skill(skill_id)
+            skill_contract = self._approved_skill(skill_id)
             if skill_id != "sap-adt-table-export" and skill_input is None:
                 raise ToolAdmissionError(
                     "The exact Skill input is required before issuing a non-ADT gap token.",
@@ -1009,10 +1030,9 @@ class HarnessToolBroker:
                 try:
                     self.skills.validate_input(skill_id, skill_input)
                 except Exception as exc:
-                    raise ToolAdmissionError(
-                        "The requested Skill input does not match its approved contract.",
-                        code="skill_input_invalid",
-                    ) from exc
+                    return {"ok": False, "code": "skill_input_invalid",
+                            "message": "Use the exact approved input schema; no Skill was executed.",
+                            "skill_contract": _public_skill_contract(skill_contract)}
                 skill_input_hash = _json_fingerprint(skill_input)
             gap_token = secrets.token_urlsafe(24)
             expires_at_epoch = int(time.time()) + max(
@@ -1055,7 +1075,7 @@ class HarnessToolBroker:
             skill = self.skills.get(skill_id)
         except Exception as exc:
             raise ToolAdmissionError(
-                "The requested Skill is not in the approved runtime catalog.",
+                "The requested Skill is not in the platform-approved catalog.",
                 code="skill_not_approved",
             ) from exc
         if (
@@ -1456,6 +1476,7 @@ class HarnessToolBroker:
             run_id=run_id,
             skill_id=skill_id,
             output=output,
+            skill_contract=self.skills.get(skill_id),
         )
         evidence_ref = self._save_evidence(run_id, "sap_skill", public_output)
         return {
@@ -1478,6 +1499,14 @@ class HarnessToolBroker:
             if item.get("evidence_ref")
         }
         issues: list[dict[str, Any]] = []
+        spec = self.store.get_harness_state(run_id).get("acceptance_spec")
+        projection = arguments.get("acceptance_projection")
+        if spec is not None:
+            issues.extend(validate_projection(spec, projection, known))
+            if not issues:
+                issues.extend(visible_projection_issues(spec, projection, report))
+        elif projection is not None:
+            issues.append({"code": "acceptance_projection_not_requested"})
         if _inventory_health_requested(str(self.store.get_run(run_id).query or "")):
             fifo_calls = [
                 call
@@ -1528,6 +1557,7 @@ class HarnessToolBroker:
             # Persist the exact validated object with the tool call. It is
             # stripped from the response returned to Codex below.
             "_validated_report": presentation.model_dump(mode="json"),
+            "_validated_acceptance_projection": projection if spec is not None and not issues else None,
         }
 
 
@@ -1632,10 +1662,23 @@ class CodexHarnessController:
                     thread_id = thread.id
                 self.store.update_run(run_id, thread_id=thread_id)
                 prompt = _turn_prompt(query, continuing=resuming_thread or turn_count > 1)
+                if state.get("acceptance_spec"):
+                    prompt += (
+                        "\nAcceptance mode: pass acceptance_projection together with report to "
+                        "sap_final_report_validate. Every record must cite verified SAP evidence. "
+                        "Show complete canonical records in table columns and all metrics in metric cards. "
+                        "Include metric cards business_status, source_complete, evidence_complete, "
+                        "business_complete. Use canonical values in both locales (null for unknown, "
+                        "true/false for booleans, exact decimals without currency suffix). "
+                        "Include each evidence gap code as an entry value in both languages. "
+                        "Labels and explanatory prose should remain bilingual and business-friendly. "
+                        "Do not return a final result until report validation passes. Projection contract: "
+                        + json.dumps(state["acceptance_spec"], ensure_ascii=False)
+                    )
                 turn = await thread.turn(
                     prompt,
                     approval_mode=_approval_mode(),
-                    output_schema=_HARNESS_OUTPUT_SCHEMA,
+                    output_schema=output_schema(_HARNESS_OUTPUT_SCHEMA, state.get("acceptance_spec")),
                     sandbox=_sandbox(),
                 )
                 self._active_turns[run_id] = turn
@@ -2054,6 +2097,19 @@ class CodexHarnessController:
         evidence_refs = [
             str(item) for item in payload.get("evidence_refs") or [] if str(item) in known_evidence
         ]
+        acceptance_projection = None
+        if state.get("acceptance_spec"):
+            # Only the exact, successfully validated report/projection pair is
+            # accepted. A later model final answer cannot replace either one.
+            for call in reversed(raw_calls):
+                output = call.get("output") or {}
+                if (call.get("tool_name") == "sap_final_report_validate"
+                        and call.get("status") == "completed" and output.get("ok") is True
+                        and output.get("_validated_acceptance_projection") is not None):
+                    acceptance_projection = output["_validated_acceptance_projection"]
+                    break
+            if acceptance_projection is None:
+                missing_evidence.append("acceptance_projection_not_validated")
         execute_evidence = {
             str(call.get("evidence_ref"))
             for call in calls
@@ -2137,6 +2193,7 @@ class CodexHarnessController:
             discovered_tool_count=discovered,
             activated_tool_count=activated,
             presentation=presentation,
+            acceptance_projection=acceptance_projection,
             verified_rule_results=verified_rule_results,
             budgeted_tool_call_count=budgeted_call_count,
             elapsed_seconds=int(time.monotonic() - run_started),
@@ -2329,6 +2386,10 @@ Do not emit progress, intention, or status-only assistant messages. When the que
 the required business identifiers, the first response must call sap_catalog_search or another
 appropriate read-only broker tool; a structured final response without attempted live evidence is
 invalid. Emit the structured final response only after the evidence investigation is finished.
+Before constructing any Skill input, call list_all_approved_skills (optionally with the exact skill_id)
+and use its approved input_schema. Never guess table_name, table, fields or connection parameters.
+The catalog is the same platform-wide approved list used by fixed Agents and workflows.
+An invalid Skill input is not missing SAP evidence: correct the contract rather than repeating guesses.
 The platform owns a 30-minute adaptive budget. The ordinary query window is 15 minutes and may be
 extended only for validated evidence or plan progress; all external reads close no later than minute
 25. When the broker returns harness_finalization_only, stop planning and immediately build and
@@ -2811,6 +2872,15 @@ def _validated_payload_from_store(
     presentation = _latest_validated_presentation(raw_calls)
     if presentation is None:
         return None
+    projection = None
+    if store.get_harness_state(run_id).get("acceptance_spec"):
+        validated = next((call.get("output") or {} for call in reversed(raw_calls)
+                          if call.get("tool_name") == "sap_final_report_validate"
+                          and call.get("status") == "completed"
+                          and (call.get("output") or {}).get("ok") is True), {})
+        projection = validated.get("_validated_acceptance_projection")
+        if projection is None:
+            return None
     missing = _effective_missing_evidence([], raw_calls)
     first_text = next(
         (
@@ -2821,16 +2891,17 @@ def _validated_payload_from_store(
         presentation.title,
     )
     return {
-        "status": "inconclusive" if missing else "completed",
+        "status": "inconclusive" if missing or (projection and not projection["business_complete"]) else "completed",
         "intent": "validated_live_sap_result",
         "summary": {"zh": first_text.zh, "en": first_text.en},
         "source_complete": _evidence_sources_complete(evidence),
-        "business_complete": not missing,
-        "missing_evidence": missing,
+        "business_complete": not missing and (projection is None or projection["business_complete"]),
+        "missing_evidence": list(dict.fromkeys(missing + (projection["evidence_gap_codes"] if projection else []))),
         "evidence_refs": _presentation_evidence_refs(presentation),
         "executed_plans": _executed_plans_from_calls(raw_calls),
         "clarification_question": "",
         "presentation": presentation.model_dump(mode="json"),
+        **({"acceptance_projection": projection} if projection is not None else {}),
     }
 
 

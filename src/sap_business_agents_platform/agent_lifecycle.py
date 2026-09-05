@@ -12,9 +12,10 @@ from typing import Any
 
 from .config import Settings
 from .database import RunStore
-from .managed_rules import ManagedRuleError, source_digest, validate_managed_rule
+from .managed_rules import ManagedRuleError, validate_managed_rule
 from .manifests import AgentRepository, ManifestError, is_agent_executable, validate_execution
 from .models import RunStatus, TERMINAL_STATUSES, utc_now
+from .acceptance import agent_execution_digest
 from .workflows import WorkflowRepository, agent_digest
 
 
@@ -911,8 +912,7 @@ class AgentLifecycleService:
 
 
 def _execution_digest(manifest: dict[str, Any], rules_source: str | None) -> str:
-    value = {"execution": manifest.get("execution"), "managedRule": manifest.get("managedRule"), "rules": source_digest(rules_source) if rules_source else None}
-    return _json_digest(value)
+    return agent_execution_digest(manifest, rules_source)
 
 
 def _json_digest(value: Any) -> str:

@@ -1,0 +1,47 @@
+{
+  "schema_version": "2.0",
+  "skill_id": "sap-bank-receipt-evidence",
+  "git_commit": "3deba2952f0c7f20723802c03c4b69523fe38060",
+  "package_sha256": "1ebda890e2d35a792de4c4ce83d091bd58d0ac5db399fbcff52d01f248bc11ba",
+  "profile_version": "2026-09-05.1",
+  "profile_sha256": "6b8c6afd7c1423ed9404ccd0847bf1656dde0f6beda9906dca0180e01856dd8e",
+  "metadata_sha256": "03232d2f8a5ba02f3647a36002d85ad20d4045a38c03307ba4aabbe8c51c6e46",
+  "output_schema_sha256": "d3fa22bb99712ca50390b8c92a29ace7946f58558d4d8fa34f588e521200855c",
+  "baseline_hash": "sha256:ee74f6d402c31b70f9ae0362b6ecdddf2becb2eb3d93514704fd919744e52da5",
+  "comparison_hash": "sha256:3e80bfd97bcca7ab832e98d7f64ddbe5a70cf844995703d0c7804406805df1bf",
+  "coverage": {
+    "nonzero_receipt_count": 10,
+    "complete_zero_count": 0,
+    "lifecycle_m_count": 3,
+    "posting_error_zero_count": 6,
+    "forced_partitions": 2
+  },
+  "independent_validation": {
+    "tested_skill_imported": false,
+    "tested_skill_runtime_called": false,
+    "reader_id": "sapbusinessagents-direct-ar-adt-gate-v1",
+    "reader_sha256": "sha256:18de593da6c7f0b1ce89d384121fe4d5c3dd43d1438c99813c25e4647bd6025e",
+    "metadata_sha256": [
+      "sha256:03232d2f8a5ba02f3647a36002d85ad20d4045a38c03307ba4aabbe8c51c6e46"
+    ],
+    "source_snapshot_hashes": [
+      "sha256:0a72c39e55a40c3dfd623c1718da471dc98aaa209eb29690ef3157cae3e73bdf",
+      "sha256:35ac65ec88ab9ba06fea65b3238223513d703e0fe9e90fed6c691ff3d569326f",
+      "sha256:7710b144fc95dc23fc9770155283d95561c19af4c5c9065f0bbba730de57a99c"
+    ],
+    "complete_zero_sample_passed": true,
+    "nonzero_sample_passed": true,
+    "partition_count": 2
+  },
+  "readonly_audit": {
+    "verdict": "PASS",
+    "methods": ["semantic_read_only_ADT_POST"],
+    "sap_write_operations": 0
+  },
+  "privacy_audit": {
+    "verdict": "PASS",
+    "public_raw_reference_fields": 0,
+    "tracked_raw_rows": 0
+  },
+  "verdict": "PASS"
+}

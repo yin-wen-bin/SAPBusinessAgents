@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from jsonschema import Draft202012Validator, FormatChecker
 
 from .security import LocalSecretProtector
 
@@ -35,7 +36,12 @@ class RestrictedArtifactStore:
         self.retention_days = max(1, retention_days)
 
     def materialize_skill_output(
-        self, *, run_id: str, skill_id: str, output: dict[str, Any]
+        self,
+        *,
+        run_id: str,
+        skill_id: str,
+        output: dict[str, Any],
+        skill_contract: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         if skill_id == "sap-bank-receipt-evidence":
             return self._bank_receipt_projection(run_id, output)
@@ -62,7 +68,95 @@ class RestrictedArtifactStore:
                     if key not in {"client", "endpoint", "metadata_endpoint", "system_alias"}
                 }
             return public, [artifact]
+        if (skill_contract or {}).get("restricted_projection_mode") == "declared_split":
+            return self._declared_split_projection(run_id, output, skill_contract or {})
+        if (skill_contract or {}).get("output_policy") == "restricted_artifact":
+            raise RestrictedArtifactError(
+                "Restricted Skill output has no trusted privacy projection.",
+                code="restricted_projection_undeclared",
+            )
         return dict(output), []
+
+    def _declared_split_projection(
+        self,
+        run_id: str,
+        output: dict[str, Any],
+        contract: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        restricted_field = str(contract.get("restricted_rows_field") or "restricted_rows")
+        artifact_field = str(contract.get("public_artifact_ref_field") or "restricted_artifact_ref")
+        raw_rows = output.get(restricted_field)
+        if not isinstance(raw_rows, list):
+            raise RestrictedArtifactError(
+                "Restricted Skill output does not contain its declared row array.",
+                code="restricted_projection_invalid",
+            )
+        row_schema = contract.get("restricted_row_schema")
+        public_schema = contract.get("public_output_schema")
+        if not isinstance(row_schema, dict) or not isinstance(public_schema, dict):
+            raise RestrictedArtifactError(
+                "Restricted Skill projection schemas are unavailable.",
+                code="restricted_projection_undeclared",
+            )
+        row_validator = Draft202012Validator(row_schema, format_checker=FormatChecker())
+        rows: list[dict[str, Any]] = []
+        for index, row in enumerate(raw_rows):
+            if not isinstance(row, dict):
+                raise RestrictedArtifactError(
+                    f"Restricted row {index} is invalid.",
+                    code="restricted_projection_invalid",
+                )
+            errors = sorted(row_validator.iter_errors(row), key=lambda item: list(item.path))
+            if errors:
+                raise RestrictedArtifactError(
+                    "Restricted Skill row failed its trusted schema.",
+                    code="restricted_projection_invalid",
+                )
+            rows.append(dict(row))
+        key_fields = [str(item) for item in contract.get("restricted_business_key_fields") or []]
+        if not key_fields or any(field not in row_schema.get("properties", {}) for field in key_fields):
+            raise RestrictedArtifactError(
+                "Restricted Skill business-key policy is invalid.",
+                code="restricted_projection_undeclared",
+            )
+        indexes = [
+            self.protector.hmac_descriptor(
+                "\x1f".join(str(row.get(field) or "") for field in key_fields),
+                domain=str(contract.get("restricted_index_domain") or "restricted-skill-row"),
+            )
+            for row in rows
+        ]
+        artifacts: list[dict[str, Any]] = []
+        public = dict(output)
+        public.pop(restricted_field, None)
+        if rows:
+            artifact = self.create(
+                run_id=run_id,
+                rows=rows,
+                classification=str(
+                    contract.get("restricted_classification")
+                    or "restricted-sap-business-evidence"
+                ),
+                hashed_indexes=indexes,
+            )
+            public[artifact_field] = self.public_ref(artifact)
+            artifacts.append(artifact)
+        else:
+            public[artifact_field] = None
+        errors = sorted(
+            Draft202012Validator(
+                public_schema, format_checker=FormatChecker()
+            ).iter_errors(public),
+            key=lambda item: list(item.path),
+        )
+        if errors:
+            for artifact in artifacts:
+                self.delete(run_id, str(artifact["artifact_id"]), reason="public_projection_invalid")
+            raise RestrictedArtifactError(
+                "Public Skill projection failed its trusted schema.",
+                code="restricted_public_projection_invalid",
+            )
+        return public, artifacts
 
     def _bank_receipt_projection(
         self, run_id: str, output: dict[str, Any]

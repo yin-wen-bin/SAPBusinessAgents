@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
+import json
 import subprocess
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -181,7 +183,22 @@ class RuntimeRouter:
                 + (f": {', '.join(str(value) for value in blockers)}" if blockers else "."),
                 code="runtime_not_selectable",
             )
-        return self.manager.runtime_snapshot(selected)
+        snapshot = self.manager.runtime_snapshot(selected)
+        provider = self._provider(selected)
+        model = getattr(provider, "model", None)
+        snapshot["model"] = str(model) if model else None
+        snapshot["configuration_digest"] = hashlib.sha256(
+            json.dumps(
+                {
+                    "sdk_configuration_digest": snapshot["configuration_digest"],
+                    "model": snapshot["model"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return snapshot
 
     @contextmanager
     def pin(self, provider_id: str | None) -> Iterator[None]:
@@ -292,6 +309,7 @@ class StaticRuntimeRouter:
             "provider_id": "codex",
             "sdk_id": "codex-python-sdk",
             "version": None,
+            "model": getattr(self.planner, "model", None),
             "configuration_digest": "injected-planner",
             "capabilities": ["planning"],
             "selected_at": None,

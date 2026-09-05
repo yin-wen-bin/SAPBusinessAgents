@@ -381,6 +381,10 @@ class RunCoordinator:
                         code=str(getattr(exc, "code", "runtime_not_selectable")),
                     ) from exc
         self.store.create_run(run_id, request, runtime=runtime_snapshot)
+        if request.acceptance_spec is not None:
+            self.store.update_harness_state(run_id, {
+                "acceptance_spec": request.acceptance_spec.model_dump(mode="json")
+            })
         for field, secret_ref, protected, descriptor in protected_secrets:
             self.store.save_run_secret(
                 secret_ref=secret_ref,
@@ -506,6 +510,7 @@ class RunCoordinator:
         agent: dict[str, Any],
         input_value: dict[str, Any],
         *,
+        sensitive_inputs: dict[str, str] | None = None,
         rules_source: str | None = None,
         draft_id: str | None = None,
         revision: int | None = None,
@@ -513,9 +518,28 @@ class RunCoordinator:
         """Execute an immutable draft/version snapshot during an acceptance campaign."""
 
         validate_execution(agent, f"agent-snapshot:{agent.get('slug')}")
+        sensitive_inputs = dict(sensitive_inputs or {})
+        sensitive = sensitive_input_properties(agent["execution"]["inputSchema"])
+        misplaced = sorted(set(input_value).intersection(sensitive))
+        unknown_sensitive = sorted(set(sensitive_inputs).difference(sensitive))
+        if misplaced:
+            raise RunExecutionError(
+                "Sensitive inputs must be supplied through the protected acceptance channel.",
+                code="sensitive_input_channel_required",
+                detail={"fields": misplaced},
+            )
+        if unknown_sensitive:
+            raise RunExecutionError(
+                "Unknown sensitive acceptance input fields: "
+                + ", ".join(unknown_sensitive),
+                code="agent_input_invalid",
+                detail={"fields": unknown_sensitive},
+            )
         try:
+            combined_input = dict(input_value)
+            combined_input.update(sensitive_inputs)
             effective_input, defaulted_fields = _resolve_server_defaults(
-                input_value,
+                combined_input,
                 agent["execution"]["inputSchema"],
             )
             effective_input = self.normalizer.normalize_input(
@@ -531,13 +555,41 @@ class RunCoordinator:
                 detail=getattr(exc, "detail", None),
             ) from exc
         run_id = f"acceptance_{uuid.uuid4().hex[:16]}"
+        public_input = dict(effective_input)
+        protected_secrets: list[tuple[str, str, bytes, dict[str, str]]] = []
+        for field, definition in sensitive.items():
+            if field not in effective_input:
+                continue
+            try:
+                secret_ref, protected, descriptor = self.secret_protector.create_secret_ref(
+                    run_id=run_id,
+                    field=field,
+                    value=str(effective_input[field]),
+                    domain=secret_domain(definition, field),
+                )
+            except SensitiveDataError as exc:
+                raise RunExecutionError(str(exc), code=exc.code) from exc
+            public_input[field] = {
+                "provided": True,
+                "secret_ref": secret_ref,
+                "hmac": descriptor,
+            }
+            protected_secrets.append((field, secret_ref, protected, descriptor))
         request = RunCreate(
             mode=RunMode.agent,
             agentId=str(agent.get("slug") or ""),
-            input=effective_input,
+            input=public_input,
         )
         self._acceptance_runs.add(run_id)
         self.store.create_run(run_id, request)
+        for field, secret_ref, protected, descriptor in protected_secrets:
+            self.store.save_run_secret(
+                secret_ref=secret_ref,
+                run_id=run_id,
+                field_name=field,
+                protected_value=protected,
+                hmac_descriptor=descriptor,
+            )
         self.store.save_agent_run_snapshot(
             run_id,
             agent,
@@ -1302,8 +1354,11 @@ class RunCoordinator:
         context: dict[str, Any] = {"input": execution_input, "steps": {}}
         agent_started_monotonic = time.perf_counter()
         deterministic_budget = float(self.settings.deterministic_run_seconds)
+        # Production keeps the required 540s/60s split.  Short test or
+        # operator-configured budgets preserve the same 90/10 ratio instead
+        # of consuming almost the entire run with the finalization reserve.
         finalization_reserve = min(
-            60.0, max(1.0, deterministic_budget - 1.0)
+            60.0, max(1.0, deterministic_budget * 0.10)
         )
         evidence_budget = max(
             1.0, deterministic_budget - finalization_reserve
@@ -1550,10 +1605,12 @@ class RunCoordinator:
             private_refs: list[dict[str, Any]] = []
             public_output = _public_step_output(step, output)
             if step.get("executor") == "skill" and isinstance(output, dict):
+                skill_contract = self.skills.get(str(step.get("skillId") or ""))
                 public_output, private_refs = self.restricted_artifacts.materialize_skill_output(
                     run_id=run_id,
                     skill_id=str(step.get("skillId") or ""),
                     output=output,
+                    skill_contract=skill_contract,
                 )
             execution_envelope = _step_execution_envelope(
                 step, public_output, execution_status="completed"
@@ -1561,7 +1618,7 @@ class RunCoordinator:
             context["steps"][step_id] = {
                 # Preserve the validated business payload for deterministic downstream rules.
                 # Only the safe projection is copied into persisted evidence and events.
-                "output": output,
+                "output": public_output,
                 "execution": execution_envelope,
                 # Deliberately never copied into RunResult, SQLite, SSE, or Runtime input.
                 "private_refs": [item.get("artifact_id") for item in private_refs],
@@ -2806,6 +2863,7 @@ class RunCoordinator:
             ],
             summary=outcome.summary,
             presentation=outcome.presentation,
+            acceptance_projection=outcome.acceptance_projection,
             errors=(
                 []
                 if outcome.status == "completed"

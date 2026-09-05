@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import re
+import sys
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -16,6 +18,7 @@ import httpx
 from sap_business_agents_platform.acceptance import (
     CanonicalTestCase,
     SemanticComparison,
+    agent_execution_digest,
     canonical_hash,
     compare_semantic_results,
     validate_direct_baseline,
@@ -51,6 +54,23 @@ def _load_json(path: Path) -> JsonObject:
     return value
 
 
+def _read_sensitive_inputs_from_stdin(enabled: bool) -> dict[str, str]:
+    if not enabled:
+        return {}
+    raw = sys.stdin.read()
+    if not raw.strip():
+        raise ValueError("--sensitive-input-stdin requires a JSON object on stdin")
+    value = json.loads(raw)
+    if not isinstance(value, dict) or not value:
+        raise ValueError("sensitive input payload must be a non-empty JSON object")
+    normalized: dict[str, str] = {}
+    for name, item in value.items():
+        if not isinstance(name, str) or not isinstance(item, str) or not item.strip():
+            raise ValueError("sensitive input names and values must be non-blank strings")
+        normalized[name] = item.strip()
+    return normalized
+
+
 def _localized(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("en") or value.get("zh") or "")
@@ -63,16 +83,33 @@ def _normalize_run(
     contract: JsonObject,
 ) -> JsonObject:
     result = run.get("result") if isinstance(run.get("result"), dict) else {}
+    projection = result.get("acceptance_projection")
+    if isinstance(projection, dict):
+        return _normalize_acceptance_projection(projection, case, contract)
     rule_results = [item for item in result.get("rule_results") or [] if isinstance(item, dict)]
     reports = [item for item in rule_results if isinstance(item.get("business_report"), dict)]
     if reports:
         rule_result = reports[-1]
         report = rule_result["business_report"]
-        report_records = [
-            dict(item)
-            for item in report.get("records") or []
-            if isinstance(item, dict)
-        ]
+        workflow_output = (
+            rule_result.get("workflow_output")
+            if isinstance(rule_result.get("workflow_output"), dict)
+            else result.get("workflow_output")
+            if isinstance(result.get("workflow_output"), dict)
+            else {}
+        )
+        record_scope = str(contract.get("record_scope") or "").strip()
+        if record_scope:
+            scoped_root = workflow_output
+            if not isinstance(scoped_root, dict):
+                raise ValueError("recordScope requires a structured workflow output")
+            report_records = _extract_record_scope(scoped_root, record_scope)
+        else:
+            report_records = [
+                dict(item)
+                for item in report.get("records") or []
+                if isinstance(item, dict)
+            ]
         if not report_records:
             acceptance_tables = [
                 item
@@ -87,21 +124,65 @@ def _normalize_run(
                     for item in acceptance_tables[0].get("rows") or []
                     if isinstance(item, dict)
                 ]
+        report_metrics = {
+            str(item.get("id") or item.get("name")): item.get("value")
+            for item in report.get("metrics") or []
+            if isinstance(item, dict) and (item.get("id") or item.get("name"))
+        }
+        # Deterministic Agents expose their acceptance metrics as typed output
+        # ports even when the business report intentionally omits a redundant
+        # metric card.  Prefer the explicit report value, then the validated
+        # workflow output; never infer a missing metric from prose.
+        for metric_id in contract.get("metrics") or []:
+            if metric_id not in report_metrics and metric_id in workflow_output:
+                report_metrics[str(metric_id)] = workflow_output[metric_id]
+
+        result_completeness = (
+            result.get("completeness")
+            if isinstance(result.get("completeness"), dict)
+            else {}
+        )
+
+        def completeness_value(field: str) -> bool:
+            direct = rule_result.get(field)
+            if isinstance(direct, bool):
+                return direct
+            workflow = workflow_output.get(field)
+            if isinstance(workflow, bool):
+                return workflow
+            return bool(result_completeness.get(field))
+
+        report_limitations = [
+            str(item)
+            for item in [
+                *((report.get("missing_evidence") or []) if contract.get("schema_version") != "2.0" else []),
+                *(report.get("limitations") or []),
+            ]
+            if str(item)
+        ]
+        overview_text = _localized(report.get("overview"))
+        for code, keywords in (contract.get("limitation_keywords") or {}).items():
+            if any(str(keyword).casefold() in overview_text.casefold() for keyword in keywords or []):
+                report_limitations.append(str(code))
         normalized = {
             "records": report_records,
-            "metrics": {
-                str(item.get("id") or item.get("name")): item.get("value")
-                for item in report.get("metrics") or []
-                if isinstance(item, dict) and (item.get("id") or item.get("name"))
-            },
-            "limitations": [
-                str(item)
-                for item in [
-                    *(report.get("missing_evidence") or []),
-                    *(report.get("limitations") or []),
-                ]
-            ],
-            "source_complete": bool((result.get("completeness") or {}).get("source_complete")),
+            "metrics": report_metrics,
+            "limitations": list(dict.fromkeys(report_limitations)),
+            "source_complete": completeness_value("source_complete"),
+            "evidence_complete": completeness_value("evidence_complete"),
+            "business_complete": completeness_value("business_complete"),
+            "business_status": str(rule_result.get("business_status") or ""),
+            "evidence_gap_codes": list(
+                dict.fromkeys(
+                    str(item)
+                    for item in [
+                        *(rule_result.get("evidence_gaps") or []),
+                        *(rule_result.get("missing_evidence") or []),
+                        *((report.get("missing_evidence") or []) if contract.get("schema_version") == "2.0" else []),
+                    ]
+                    if str(item)
+                )
+            ),
         }
         return _finalize_normalized(
             normalized,
@@ -212,8 +293,108 @@ def _normalize_run(
             if isinstance((result.get("completeness") or {}).get("source_complete"), bool)
             else bool(source_flags) and all(source_flags)
         ),
+        "evidence_complete": bool(
+            (result.get("completeness") or {}).get("evidence_complete")
+        ),
+        "business_complete": bool(
+            (result.get("completeness") or {}).get("business_complete")
+        ),
+        "business_status": "",
+        "evidence_gap_codes": list(
+            dict.fromkeys(str(item) for item in limitations if str(item))
+        ),
     }
     return _finalize_normalized(normalized, case, contract, business_status="")
+
+
+_RECORD_SCOPE_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[\])?$")
+
+
+def _extract_record_scope(root: JsonObject, path: str) -> list[JsonObject]:
+    """Resolve a deliberately small JSON path and inherit scalar parent context."""
+
+    segments = path.split(".")
+    if not segments or any(not _RECORD_SCOPE_SEGMENT.fullmatch(item) for item in segments):
+        raise ValueError("recordScope contains an unsupported JSON path")
+    current: list[tuple[Any, JsonObject]] = [(root, {})]
+    for segment in segments:
+        is_array = segment.endswith("[]")
+        field = segment[:-2] if is_array else segment
+        next_values: list[tuple[Any, JsonObject]] = []
+        for value, inherited in current:
+            if not isinstance(value, dict) or field not in value:
+                raise ValueError(f"recordScope field {field} is unavailable")
+            parent_scalars = {
+                str(key): item
+                for key, item in value.items()
+                if not isinstance(item, (dict, list)) and key != field
+            }
+            context = {**inherited, **parent_scalars}
+            selected = value[field]
+            if is_array:
+                if not isinstance(selected, list):
+                    raise ValueError(f"recordScope field {field} is not an array")
+                for item in selected:
+                    if not isinstance(item, dict):
+                        raise ValueError(f"recordScope field {field} contains a non-object")
+                    next_values.append((item, context))
+            else:
+                if not isinstance(selected, dict):
+                    raise ValueError(f"recordScope field {field} is not an object")
+                next_values.append((selected, context))
+        current = next_values
+    return [{**inherited, **value} for value, inherited in current if isinstance(value, dict)]
+
+
+def _normalize_acceptance_projection(
+    projection: JsonObject,
+    case: CanonicalTestCase,
+    contract: JsonObject,
+) -> JsonObject:
+    required = {
+        "records",
+        "metrics",
+        "business_status",
+        "source_complete",
+        "evidence_complete",
+        "business_complete",
+        "evidence_gap_codes",
+        "evidence_refs",
+    }
+    if set(projection) != required:
+        raise ValueError("acceptance_projection has unexpected or missing fields")
+    if not isinstance(projection.get("records"), list) or any(
+        not isinstance(item, dict) for item in projection.get("records") or []
+    ):
+        raise ValueError("acceptance_projection.records must be an object array")
+    if not isinstance(projection.get("metrics"), dict):
+        raise ValueError("acceptance_projection.metrics must be an object")
+    for field in ("source_complete", "evidence_complete", "business_complete"):
+        if not isinstance(projection.get(field), bool):
+            raise ValueError(f"acceptance_projection.{field} must be boolean")
+    for field in ("evidence_gap_codes", "evidence_refs"):
+        if not isinstance(projection.get(field), list) or any(
+            not str(item).strip() for item in projection.get(field) or []
+        ):
+            raise ValueError(f"acceptance_projection.{field} must be an identifier array")
+    if projection.get("records") and not projection.get("evidence_refs"):
+        raise ValueError("acceptance_projection records require verified evidence references")
+    return _finalize_normalized(
+        {
+            "records": [dict(item) for item in projection["records"]],
+            "metrics": dict(projection["metrics"]),
+            "limitations": list(projection["evidence_gap_codes"]),
+            "source_complete": projection["source_complete"],
+            "evidence_complete": projection["evidence_complete"],
+            "business_complete": projection["business_complete"],
+            "business_status": str(projection.get("business_status") or ""),
+            "evidence_gap_codes": list(projection["evidence_gap_codes"]),
+        },
+        case,
+        contract,
+        business_status=str(projection.get("business_status") or ""),
+        records_are_canonical=True,
+    )
 
 
 def _field_token(value: Any) -> str:
@@ -598,12 +779,15 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
     instructions = [
         "Acceptance reporting contract (do not alter the business conditions or infer values):",
         f"- Return every business record at stable grain [{grain}] and include business_status on each record.",
-        "- business_status is the overall Agent conclusion, never a raw SAP status field.",
+        "- business_status is the deterministic business conclusion at the declared record grain, never a raw SAP status field. The projection root is the conservative overall conclusion.",
         f"- Use these canonical fact field identifiers exactly: [{facts or 'none'}].",
         f"- Use these canonical metric identifiers exactly and do not omit zero values: [{metrics or 'none'}].",
         "- If a metric cannot be established because required evidence is unavailable, return null; never substitute zero for unknown.",
         "- For additive quantity or amount facts, a complete exact source query with zero rows establishes 0; an unavailable or non-attributable source establishes null.",
         "- Put homogeneous records in a table, aggregate values in metrics, and preserve SAP source completeness separately from display pagination.",
+        "- This is an acceptance-mode run. Populate acceptance_projection with the same complete canonical records and metrics shown in the validated presentation.",
+        "- acceptance_projection must separately report business_status, source_complete, evidence_complete, business_complete, evidence_gap_codes, and only run-scoped verified evidence_refs.",
+        "- Never infer acceptance_projection from prose and never omit a required record merely because it is normal, zero, or not_found.",
     ]
     record_scope = str(contract.get("record_scope") or "").strip()
     if record_scope:
@@ -669,19 +853,77 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
     return f"{case.question['en']}\n\n" + "\n".join(instructions)
 
 
+def _projection_spec(contract: JsonObject) -> JsonObject:
+    from sap_business_agents_platform.acceptance_projection import AcceptanceProjectionSpec
+    fields = list(dict.fromkeys(str(item) for key in (
+        "business_keys", "facts", "decimal_fields", "currency_fields", "unit_fields", "date_fields"
+    ) for item in contract.get(key) or []))
+    return AcceptanceProjectionSpec(
+        record_fields=fields,
+        metric_fields=list(contract.get("metrics") or []),
+        decimal_fields=list(contract.get("decimal_fields") or []),
+        decimal_metrics=list(contract.get("decimal_metrics") or []),
+        boolean_fields=list(contract.get("boolean_fields") or []),
+    ).model_dump(mode="json")
+
+
+def _validate_projection_matches_visible_report(
+    run: JsonObject,
+    projection: JsonObject,
+    case: CanonicalTestCase,
+    contract: JsonObject,
+) -> SemanticComparison:
+    visible_run = copy.deepcopy(run)
+    result = visible_run.get("result")
+    if isinstance(result, dict):
+        result.pop("acceptance_projection", None)
+    visible = _normalize_run(visible_run, case, contract)
+    expected = {
+        "records": projection.get("records") or [],
+        "metrics": projection.get("metrics") or {},
+        "limitations": [],
+        "source_complete": True,
+    }
+    actual = {
+        "records": visible.get("records") or [],
+        "metrics": visible.get("metrics") or {},
+        "limitations": [],
+        "source_complete": True,
+    }
+    relaxed = {
+        **contract,
+        "schema_version": "2.0",
+        "required_limitations": [],
+    }
+    return _compare(expected, actual, relaxed)
+
+
 async def _run_free_query(
     api_url: str,
     case: CanonicalTestCase,
     contract: JsonObject,
     timeout: int,
+    *,
+    sensitive_inputs: dict[str, str],
 ) -> JsonObject:
+    # Reporting instructions stay value-free; explicit user query inputs are
+    # supplied separately. Never include secure business values or baseline facts.
+    public_input = {key: value for key, value in case.input.items()
+                    if key != "receipt_reference"}
+    query = (_acceptance_prompt(case, contract) + "\n\nCanonical query inputs: "
+             + json.dumps(public_input, ensure_ascii=False))
     async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10)) as client:
         response = await client.post(
             f"{api_url}/api/runs",
             # The live campaign stores both languages.  Use the English form for
             # the machine-driven run so a damaged legacy zh encoding cannot
             # silently change the business conditions being accepted.
-            json={"mode": "free_query", "query": _acceptance_prompt(case, contract)},
+            json={
+                "mode": "free_query",
+                "query": query,
+                "acceptanceSpec": _projection_spec(contract),
+                "sensitiveInputs": sensitive_inputs,
+            },
         )
         response.raise_for_status()
         return await _wait_api(client, api_url, str(response.json()["run_id"]), timeout)
@@ -699,7 +941,16 @@ async def _read_completed_free_query(api_url: str, run_id: str) -> JsonObject:
     return run
 
 
-async def _run_fixed(root: Path, output: Path, case: CanonicalTestCase, timeout: int) -> JsonObject:
+async def _run_fixed(
+    root: Path,
+    output: Path,
+    case: CanonicalTestCase,
+    timeout: int,
+    agent_snapshot: JsonObject,
+    *,
+    rules_source: str | None,
+    sensitive_inputs: dict[str, str],
+) -> JsonObject:
     settings = Settings.from_env(root)
     isolated = replace(
         settings,
@@ -712,8 +963,11 @@ async def _run_fixed(root: Path, output: Path, case: CanonicalTestCase, timeout:
     app = create_app(isolated)
     async with app.router.lifespan_context(app):
         coordinator = app.state.coordinator
-        run_id = await coordinator.submit_acceptance(
-            RunCreate(mode=RunMode.agent, agentId=case.agent_id, input=case.input)
+        run_id = await coordinator.submit_agent_snapshot(
+            agent_snapshot,
+            case.input,
+            sensitive_inputs=sensitive_inputs,
+            rules_source=rules_source,
         )
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -748,11 +1002,35 @@ def _read_fixed_result(path: Path, case: CanonicalTestCase) -> JsonObject:
 
 async def _main(args: argparse.Namespace) -> int:
     root = Path(args.repository).resolve()
+    sensitive_inputs = _read_sensitive_inputs_from_stdin(args.sensitive_input_stdin)
     case = CanonicalTestCase.from_dict(_load_json(Path(args.case).resolve()))
     baseline_payload = _load_json(Path(args.baseline).resolve())
     baseline = validate_direct_baseline(baseline_payload, case)
-    manifest = _load_json(root / "agents" / args.module / case.agent_id / "agent.json")
+    manifest_path = (
+        Path(args.agent_snapshot).resolve()
+        if args.agent_snapshot
+        else root / "agents" / args.module / case.agent_id / "agent.json"
+    )
+    manifest = _load_json(manifest_path)
+    if manifest.get("slug") != case.agent_id:
+        raise ValueError("candidate Agent snapshot does not match the CanonicalTestCase")
+    if args.agent_version and manifest.get("version") != args.agent_version:
+        raise ValueError("candidate Agent version does not match the campaign pin")
+    rules_source = (
+        Path(args.rules_source).resolve().read_text(encoding="utf-8")
+        if args.rules_source
+        else None
+    )
+    execution_digest = agent_execution_digest(manifest, rules_source)
+    if args.agent_execution_digest and execution_digest != args.agent_execution_digest:
+        raise ValueError("candidate Agent execution digest does not match the campaign pin")
     contract_value = manifest["execution"]["acceptance"]
+    acceptance_contract_digest = canonical_hash(contract_value)
+    if (
+        args.acceptance_contract_digest
+        and acceptance_contract_digest != args.acceptance_contract_digest
+    ):
+        raise ValueError("candidate Agent acceptance contract digest does not match the campaign pin")
     contract = {
         "schema_version": contract_value.get("schemaVersion", "1.0"),
         "business_keys": contract_value["businessKeys"],
@@ -802,17 +1080,69 @@ async def _main(args: argparse.Namespace) -> int:
         )
     )
     output = Path(args.output).resolve()
+    if (output / "acceptance.json").exists():
+        raise ValueError("acceptance_artifact_immutable")
     output.mkdir(parents=True, exist_ok=True)
-
-    free_run = (
-        await _read_completed_free_query(args.api_url.rstrip("/"), args.free_run_id)
-        if args.free_run_id
-        else await _run_free_query(
-            args.api_url.rstrip("/"), case, contract, args.timeout
+    anchor_before = None
+    anchor_profile = getattr(args, "anchor_profile", None)
+    if anchor_profile:
+        from scripts.acceptance_source_anchors import capture
+        anchor_before = await asyncio.to_thread(
+            capture, baseline_payload, _load_json(Path(anchor_profile).resolve()), output / "anchors-before"
         )
-    )
-    free_normalized = _normalize_run(free_run, case, contract)
-    free_comparison = _compare(baseline, free_normalized, contract)
+        if anchor_before["verdict"] != "PASS":
+            raise ValueError("sap_source_changed_before_acceptance")
+
+    if args.skip_free_query:
+        free_run = {"run_id": None, "status": "not_required", "result": {}}
+        free_normalized = dict(baseline)
+        free_comparison = _compare(baseline, free_normalized, contract)
+    else:
+        free_run = (
+            await _read_completed_free_query(args.api_url.rstrip("/"), args.free_run_id)
+            if args.free_run_id
+            else await _run_free_query(
+                args.api_url.rstrip("/"),
+                case,
+                contract,
+                args.free_timeout,
+                sensitive_inputs=sensitive_inputs,
+            )
+        )
+        free_normalized = _normalize_run(free_run, case, contract)
+        free_comparison = _compare(baseline, free_normalized, contract)
+        free_projection = (free_run.get("result") or {}).get("acceptance_projection")
+        if not isinstance(free_projection, dict):
+            free_comparison = SemanticComparison(
+                verdict="MISMATCH",
+                expected_hash=free_comparison.expected_hash,
+                actual_hash=free_comparison.actual_hash,
+                differences=tuple(
+                    [
+                        *free_comparison.differences,
+                        {"code": "free_query_acceptance_projection_missing"},
+                    ]
+                ),
+            )
+        else:
+            report_comparison = _validate_projection_matches_visible_report(
+                free_run, free_normalized, case, contract
+            )
+            if report_comparison.verdict != "MATCH":
+                free_comparison = SemanticComparison(
+                    verdict="MISMATCH",
+                    expected_hash=free_comparison.expected_hash,
+                    actual_hash=free_comparison.actual_hash,
+                    differences=tuple(
+                        [
+                            *free_comparison.differences,
+                            {
+                                "code": "acceptance_projection_report_mismatch",
+                                "differences": list(report_comparison.differences),
+                            },
+                        ]
+                    ),
+                )
 
     fixed_run: JsonObject | None = None
     fixed_normalized: JsonObject = {"blocked": True}
@@ -821,7 +1151,15 @@ async def _main(args: argparse.Namespace) -> int:
         fixed_run = (
             _read_fixed_result(Path(args.fixed_result).resolve(), case)
             if args.fixed_result
-            else await _run_fixed(root, output, case, args.timeout)
+            else await _run_fixed(
+                root,
+                output,
+                case,
+                args.fixed_timeout,
+                manifest,
+                rules_source=rules_source,
+                sensitive_inputs=sensitive_inputs,
+            )
         )
         fixed_normalized = _normalize_run(fixed_run, case, contract)
         fixed_comparison = _compare(baseline, fixed_normalized, contract)
@@ -846,7 +1184,7 @@ async def _main(args: argparse.Namespace) -> int:
     evidenced_blockers = (blocking_limitations & observed_limitations) | qualification_blockers
     externally_blocked = bool(evidenced_blockers)
     artifact = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "tested_at": datetime.now(timezone.utc).isoformat(),
         "case": case.as_dict(),
         "direct_baseline": {
@@ -863,9 +1201,13 @@ async def _main(args: argparse.Namespace) -> int:
                     key: source.get(key)
                     for key in (
                         "source_id",
+                        "access_method",
+                        "http_method",
+                        "semantic_read_only",
                         "service_name",
                         "odata_version",
                         "entity_set",
+                        "object",
                         "schema_hash",
                         "query_hash",
                         "row_count",
@@ -903,6 +1245,15 @@ async def _main(args: argparse.Namespace) -> int:
             "qualification": baseline_payload.get("qualification"),
         },
         "hashes": {
+            "agent_execution_digest": execution_digest,
+            "acceptance_contract_digest": acceptance_contract_digest,
+            "case_input_hash": args.case_input_hash or canonical_hash(case.input),
+            "business_date": args.business_date or str(
+                case.input.get("business_date") or case.input.get("as_of") or ""
+            ),
+            "skill_gate_snapshot_hash": args.skill_gate_snapshot_hash,
+            "sap_metadata_fingerprint": args.sap_metadata_fingerprint,
+            "agent_catalog_digest": args.agent_catalog_digest,
             "codex_direct_baseline_hash": canonical_hash(baseline),
             "free_query_hash": canonical_hash(free_normalized),
             "adjudicated_result_hash": canonical_hash(baseline),
@@ -911,6 +1262,7 @@ async def _main(args: argparse.Namespace) -> int:
         "free_query": {
             "run_id": free_run.get("run_id"),
             "status": free_run.get("status"),
+            "runtime": free_run.get("runtime"),
             "comparison": free_comparison.as_dict(),
             "normalized_result": free_normalized,
         },
@@ -931,6 +1283,50 @@ async def _main(args: argparse.Namespace) -> int:
             else "BLOCKED"
         ),
     }
+    if anchor_before is not None:
+        from scripts.acceptance_source_anchors import capture, summarize
+        anchor_after = await asyncio.to_thread(
+            capture, baseline_payload, _load_json(Path(anchor_profile).resolve()), output / "anchors-after"
+        )
+        artifact["source_anchors"] = summarize(baseline_payload, anchor_before, anchor_after)
+        artifact["source_anchors"]["before_artifact"] = str(output / "anchors-before" / "anchor.json")
+        artifact["source_anchors"]["after_artifact"] = str(output / "anchors-after" / "anchor.json")
+        artifact["source_anchors"]["before_artifact_hash"] = canonical_hash(anchor_before)
+        artifact["source_anchors"]["after_artifact_hash"] = canonical_hash(anchor_after)
+        if artifact["source_anchors"]["verdict"] != "PASS":
+            artifact["verdict"] = "BLOCKED"
+            artifact.setdefault("validation_issues", []).append(
+                {"code": "sap_source_changed_during_acceptance", "classification": "environment"}
+            )
+    observed_runtime_hash = canonical_hash(artifact["free_query"].get("runtime"))
+    if (
+        args.runtime_snapshot_hash
+        and not args.skip_free_query
+        and observed_runtime_hash != args.runtime_snapshot_hash
+    ):
+        artifact["verdict"] = "FAIL"
+        artifact.setdefault("validation_issues", []).append(
+            {"code": "runtime_snapshot_drift"}
+        )
+    artifact["hashes"]["runtime_snapshot_hash"] = (
+        args.runtime_snapshot_hash or observed_runtime_hash
+    )
+    artifact["hashes"]["reuse_fingerprint"] = canonical_hash(
+        {
+            key: artifact["hashes"].get(key)
+            for key in (
+                "case_input_hash",
+                "business_date",
+                "codex_direct_baseline_hash",
+                "agent_execution_digest",
+                "acceptance_contract_digest",
+                "runtime_snapshot_hash",
+                "agent_catalog_digest",
+                "skill_gate_snapshot_hash",
+                "sap_metadata_fingerprint",
+            )
+        }
+    )
     (output / "acceptance.json").write_text(
         json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -949,6 +1345,27 @@ def main() -> int:
     parser.add_argument("--fixed-result")
     parser.add_argument("--output", required=True)
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--baseline-timeout", type=int, default=600)
+    parser.add_argument("--free-timeout", type=int, default=1800)
+    parser.add_argument("--fixed-timeout", type=int, default=600)
+    parser.add_argument("--agent-snapshot")
+    parser.add_argument("--rules-source")
+    parser.add_argument("--agent-version")
+    parser.add_argument("--agent-execution-digest")
+    parser.add_argument("--acceptance-contract-digest")
+    parser.add_argument("--case-input-hash")
+    parser.add_argument("--business-date")
+    parser.add_argument("--skill-gate-snapshot-hash")
+    parser.add_argument("--sap-metadata-fingerprint")
+    parser.add_argument("--agent-catalog-digest")
+    parser.add_argument("--runtime-snapshot-hash")
+    parser.add_argument("--skip-free-query", action="store_true")
+    parser.add_argument("--anchor-profile", help="Independent read-only profile for fresh before/after source checks.")
+    parser.add_argument(
+        "--sensitive-input-stdin",
+        action="store_true",
+        help="Read a JSON object of protected business inputs from stdin.",
+    )
     return asyncio.run(_main(parser.parse_args()))
 
 

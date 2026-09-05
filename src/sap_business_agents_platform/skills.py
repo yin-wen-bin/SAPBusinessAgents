@@ -53,7 +53,12 @@ class SkillRegistry:
             record["entrypoint"] = str(entrypoint)
             issues: list[dict[str, str]] = []
             try:
-                for schema_name in ("input_schema", "output_schema"):
+                for schema_name in (
+                    "input_schema",
+                    "output_schema",
+                    "public_output_schema",
+                    "restricted_row_schema",
+                ):
                     schema_path_name = f"{schema_name}_path"
                     if record.get(schema_path_name):
                         record[schema_name] = _load_trusted_schema(
@@ -197,6 +202,38 @@ def _validate_skill_supply_chain(root: Path, record: dict[str, Any]) -> None:
                 f"Skill manifest {field} does not match the approved contract.",
                 code="skill_manifest_mismatch",
             )
+    projection_mode = record.get("restricted_projection_mode")
+    if output_policy == "restricted_artifact" and projection_mode == "declared_split":
+        if not all(
+            isinstance(record.get(field), dict)
+            for field in ("public_output_schema", "restricted_row_schema")
+        ):
+            raise SkillError(
+                "Declared restricted projection schemas are unavailable.",
+                code="skill_contract_incompatible",
+            )
+        def projection_path_matches(manifest_field: str, record_field: str) -> bool:
+            declared = str(manifest.get(manifest_field) or "")
+            configured = str(record.get(record_field) or "")
+            if not declared or not configured:
+                return False
+            declared_path = (manifest_path.parent / declared).resolve()
+            configured_path = (root / configured).resolve()
+            return (
+                declared_path == configured_path
+                and manifest_path.parent in declared_path.parents
+                and root in configured_path.parents
+            )
+
+        if not projection_path_matches(
+            "public_output_schema", "public_output_schema_path"
+        ) or not projection_path_matches(
+            "restricted_row_schema", "restricted_row_schema_path"
+        ):
+            raise SkillError(
+                "Skill privacy projection drifted from its manifest.",
+                code="skill_manifest_mismatch",
+            )
     if sorted(manifest.get("allowed_http_methods") or []) != sorted(
         record.get("allowed_http_methods") or []
     ) or sorted(manifest.get("allowed_endpoints") or []) != sorted(
@@ -228,6 +265,28 @@ def _validate_skill_supply_chain(root: Path, record: dict[str, Any]) -> None:
             raise SkillError(
                 "Skill source metadata fingerprint drifted from the validated target.",
                 code="skill_metadata_drift",
+            )
+        expected_profile_digest = str(record.get("expected_profile_sha256") or "")
+        if expected_profile_digest and hashlib.sha256(profile_path.read_bytes()).hexdigest() != expected_profile_digest:
+            raise SkillError(
+                "Skill source profile content drifted from the approved snapshot.",
+                code="skill_profile_drift",
+            )
+    for schema_field, digest_field in (
+        ("output_schema_path", "expected_output_schema_sha256"),
+        ("public_output_schema_path", "expected_public_output_schema_sha256"),
+        ("restricted_row_schema_path", "expected_restricted_row_schema_sha256"),
+    ):
+        expected_schema_digest = str(record.get(digest_field) or "")
+        if not expected_schema_digest:
+            continue
+        schema_path = (root / str(record.get(schema_field) or "")).resolve()
+        if root not in schema_path.parents or not schema_path.is_file() or hashlib.sha256(
+            schema_path.read_bytes()
+        ).hexdigest() != expected_schema_digest:
+            raise SkillError(
+                "Skill schema content drifted from the approved snapshot.",
+                code="skill_schema_drift",
             )
     expected_digest = str(record.get("expected_package_sha256") or "")
     if expected_digest:

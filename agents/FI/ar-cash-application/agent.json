@@ -435,7 +435,6 @@
                 ],
                 "order_by": [
                   "CompanyCode",
-                  "Ledger",
                   "FiscalYear",
                   "AccountingDocument",
                   "AccountingDocumentItem"
@@ -445,7 +444,6 @@
                   {
                     "fields": [
                       "CompanyCode",
-                      "Ledger",
                       "FiscalYear",
                       "AccountingDocument"
                     ],
@@ -491,7 +489,6 @@
                 ],
                 "order_by": [
                   "CompanyCode",
-                  "Ledger",
                   "FiscalYear",
                   "AccountingDocument",
                   "AccountingDocumentItem"
@@ -502,11 +499,6 @@
                     "field": "CompanyCode",
                     "source_step_id": "subledger_payment_documents",
                     "source_field": "CompanyCode"
-                  },
-                  {
-                    "field": "Ledger",
-                    "source_step_id": "subledger_payment_documents",
-                    "source_field": "Ledger"
                   },
                   {
                     "field": "ClearingDocFiscalYear",
@@ -557,7 +549,6 @@
                 ],
                 "order_by": [
                   "CompanyCode",
-                  "Ledger",
                   "FiscalYear",
                   "AccountingDocument",
                   "AccountingDocumentItem"
@@ -568,11 +559,6 @@
                     "field": "CompanyCode",
                     "source_step_id": "subledger_payment_documents",
                     "source_field": "CompanyCode"
-                  },
-                  {
-                    "field": "Ledger",
-                    "source_step_id": "subledger_payment_documents",
-                    "source_field": "Ledger"
                   },
                   {
                     "field": "FiscalYear",
@@ -623,7 +609,6 @@
                 ],
                 "order_by": [
                   "CompanyCode",
-                  "Ledger",
                   "FiscalYear",
                   "AccountingDocument",
                   "AccountingDocumentItem"
@@ -634,11 +619,6 @@
                     "field": "CompanyCode",
                     "source_step_id": "subsequent_clearing_documents",
                     "source_field": "CompanyCode"
-                  },
-                  {
-                    "field": "Ledger",
-                    "source_step_id": "subsequent_clearing_documents",
-                    "source_field": "Ledger"
                   },
                   {
                     "field": "ClearingDocFiscalYear",
@@ -982,7 +962,7 @@
       "zeroFactWhenMetricZero": {},
       "blockingLimitations": [],
       "ignoredNoticeKeywords": [],
-      "recordScope": "receipt_results",
+      "recordScope": "receipt_results[]",
       "metricDefinitions": {},
       "businessStatusDefinition": "Business status is evaluated per bank receipt and then aggregated conservatively.",
       "businessStatusFromAnyPositiveMetric": {}

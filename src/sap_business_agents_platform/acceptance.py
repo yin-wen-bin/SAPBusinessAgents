@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
+from .managed_rules import source_digest
+
 
 JsonObject = dict[str, Any]
 ComparisonVerdict = Literal["MATCH", "MISMATCH", "BLOCKED"]
@@ -89,8 +91,18 @@ def validate_direct_baseline(
         raise ValueError("baseline runtime must be codex_app_direct_sap")
     if value.get("used_sap_business_agents") is not False:
         raise ValueError("direct baseline must attest used_sap_business_agents=false")
-    is_v2 = str(value.get("schema_version") or "1.0") == "2.0"
-    if is_v2:
+    baseline_version = str(value.get("schema_version") or "1.0")
+    is_v2 = baseline_version == "2.0"
+    is_v3 = baseline_version == "3.0"
+    if is_v3:
+        sources = value.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise ValueError("direct baseline v3 sources are required")
+        for index, source in enumerate(sources):
+            _validate_baseline_v3_source(source, index)
+        if value.get("supplemental_sources") is not None:
+            raise ValueError("direct baseline v3 must describe all reads in sources")
+    elif is_v2:
         methods = value.get("http_methods")
         if not isinstance(methods, list) or not methods or set(methods) != {"GET"}:
             raise ValueError("direct baseline v2 must contain GET-only http_methods")
@@ -111,11 +123,20 @@ def validate_direct_baseline(
     normalized = value.get("normalized_result")
     if not isinstance(normalized, dict):
         raise ValueError("direct baseline normalized_result is required")
-    _validate_normalized_result(normalized)
+    _validate_normalized_result(normalized, version=baseline_version)
     expected_hash = canonical_hash(normalized)
     if value.get("result_hash") != expected_hash:
         raise ValueError("direct baseline result_hash does not match normalized_result")
-    if is_v2:
+    if is_v3:
+        if normalized.get("source_complete") is not True and not (
+            normalized.get("evidence_gap_codes") or normalized.get("limitations")
+        ):
+            raise ValueError(
+                "an incomplete direct baseline v3 requires explicit evidence gaps or limitations"
+            )
+        if case is not None and case.schema_version == "2.0":
+            _validate_case_evidence(value, normalized, case)
+    elif is_v2:
         if normalized.get("source_complete") is not True:
             evidence_scope = (
                 (case.expected_output or {}).get("evidence_scope")
@@ -185,10 +206,14 @@ def _validate_expected_output(value: Any, grain: tuple[str, ...]) -> None:
     if not isinstance(metrics, list) or any(not str(item).strip() for item in metrics):
         raise ValueError("expected_output.metric_ids must be an array of identifiers")
     minimum_rows = value.get("minimum_primary_evidence_rows")
-    if not isinstance(minimum_rows, int) or isinstance(minimum_rows, bool) or minimum_rows < 1:
-        raise ValueError("minimum_primary_evidence_rows must be a positive integer")
+    if not isinstance(minimum_rows, int) or isinstance(minimum_rows, bool) or minimum_rows < 0:
+        raise ValueError("minimum_primary_evidence_rows must be a non-negative integer")
     if not isinstance(value.get("allow_empty_result"), bool):
         raise ValueError("allow_empty_result must be boolean")
+    if minimum_rows == 0 and value.get("allow_empty_result") is not True:
+        raise ValueError(
+            "minimum_primary_evidence_rows may be zero only when empty results are allowed"
+        )
     if value.get("evidence_scope") not in {"complete", "bounded"}:
         raise ValueError("evidence_scope must be complete or bounded")
 
@@ -231,6 +256,57 @@ def _validate_baseline_source(value: Any, index: int) -> None:
             raise ValueError(f"direct baseline sources[{index}].{field} must be boolean")
     if value.get("paging_complete") is not True or value.get("source_complete") is not True:
         raise ValueError(f"direct baseline sources[{index}] is incomplete")
+
+
+def _validate_baseline_v3_source(value: Any, index: int) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"direct baseline sources[{index}] must be an object")
+    required = {
+        "access_method",
+        "http_method",
+        "semantic_read_only",
+        "schema_hash",
+        "query_hash",
+        "stable_order_by",
+        "paging_complete",
+        "source_complete",
+    }
+    if not required.issubset(value):
+        raise ValueError(f"direct baseline v3 sources[{index}] is missing required fields")
+    access_method = value.get("access_method")
+    method = value.get("http_method")
+    if access_method not in {"odata_get", "adt_data_preview"}:
+        raise ValueError(f"direct baseline v3 sources[{index}].access_method is invalid")
+    expected_method = "GET" if access_method == "odata_get" else "POST"
+    if method != expected_method:
+        raise ValueError(
+            f"direct baseline v3 sources[{index}] must use {expected_method} for {access_method}"
+        )
+    if value.get("semantic_read_only") is not True:
+        raise ValueError(
+            f"direct baseline v3 sources[{index}].semantic_read_only must be true"
+        )
+    _require_sha256(value.get("schema_hash"), f"direct baseline v3 sources[{index}].schema_hash")
+    _require_sha256(value.get("query_hash"), f"direct baseline v3 sources[{index}].query_hash")
+    order = value.get("stable_order_by")
+    if not isinstance(order, list) or not order or any(not str(item).strip() for item in order):
+        raise ValueError(
+            f"direct baseline v3 sources[{index}].stable_order_by is required"
+        )
+    for field in ("paging_complete", "source_complete"):
+        if not isinstance(value.get(field), bool):
+            raise ValueError(
+                f"direct baseline v3 sources[{index}].{field} must be boolean"
+            )
+    for field in ("row_count", "page_count"):
+        if field in value and (
+            not isinstance(value[field], int)
+            or isinstance(value[field], bool)
+            or value[field] < (1 if field == "page_count" else 0)
+        ):
+            raise ValueError(
+                f"direct baseline v3 sources[{index}].{field} is invalid"
+            )
 
 
 def _validate_supplemental_adt_source(value: Any, index: int) -> None:
@@ -291,7 +367,7 @@ def _validate_supplemental_adt_source(value: Any, index: int) -> None:
             )
 
 
-def _validate_normalized_result(value: JsonObject) -> None:
+def _validate_normalized_result(value: JsonObject, *, version: str = "1.0") -> None:
     if not isinstance(value.get("records"), list):
         raise ValueError("normalized_result.records must be an array")
     if not isinstance(value.get("metrics"), dict):
@@ -300,6 +376,18 @@ def _validate_normalized_result(value: JsonObject) -> None:
         raise ValueError("normalized_result.limitations must be an array")
     if not isinstance(value.get("source_complete"), bool):
         raise ValueError("normalized_result.source_complete must be boolean")
+    if version == "3.0":
+        if not str(value.get("business_status") or "").strip():
+            raise ValueError("normalized_result.business_status is required for baseline v3")
+        for field in ("evidence_complete", "business_complete"):
+            if not isinstance(value.get(field), bool):
+                raise ValueError(f"normalized_result.{field} must be boolean for baseline v3")
+        if not isinstance(value.get("evidence_gap_codes"), list) or any(
+            not str(item).strip() for item in value.get("evidence_gap_codes") or []
+        ):
+            raise ValueError(
+                "normalized_result.evidence_gap_codes must be an identifier array for baseline v3"
+            )
 
 
 def _validate_case_evidence(
@@ -313,7 +401,10 @@ def _validate_case_evidence(
         for source in baseline.get("sources") or []
         if isinstance(source, dict) and source.get("primary") is True
     )
-    if primary_rows < int(expected.get("minimum_primary_evidence_rows") or 1):
+    minimum_primary_rows = expected.get("minimum_primary_evidence_rows")
+    if minimum_primary_rows is None:
+        minimum_primary_rows = 1
+    if primary_rows < int(minimum_primary_rows):
         raise ValueError("direct baseline does not contain enough primary evidence rows")
     records = normalized.get("records") or []
     if not expected.get("allow_empty_result") and not records:
@@ -343,6 +434,26 @@ def canonical_hash(value: Any) -> str:
         default=str,
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def agent_execution_digest(
+    manifest: JsonObject,
+    rules_source: str | None = None,
+) -> str:
+    """Hash every input that can change deterministic Agent behavior.
+
+    Keeping the managed-rule declaration and source in the same acceptance
+    fingerprint prevents a rules.py-only change from reusing an older live
+    validation campaign.
+    """
+
+    return canonical_hash(
+        {
+            "execution": manifest.get("execution"),
+            "managedRule": manifest.get("managedRule"),
+            "rules": source_digest(rules_source) if rules_source is not None else None,
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -398,7 +509,7 @@ def compare_semantic_results(
     decimal_fields = tuple(str(item) for item in contract.get("decimal_fields") or [])
     currency_fields = tuple(str(item) for item in contract.get("currency_fields") or [])
     unit_fields = tuple(str(item) for item in contract.get("unit_fields") or [])
-    strict_v2 = str(contract.get("schema_version") or "1.0") == "2.0"
+    strict_v2 = str(contract.get("schema_version") or "1.0") in {"2.0", "3.0"}
 
     blank_key_fields = {
         str(item) for item in contract.get("blank_business_key_fields") or []
@@ -483,8 +594,32 @@ def compare_semantic_results(
                 }
             )
 
-    if expected.get("source_complete") is False and actual.get("source_complete") is True:
+    strict_completeness = str(contract.get("schema_version") or "1.0") == "3.0" or all(
+        field in expected for field in ("evidence_complete", "business_complete")
+    )
+    if strict_completeness:
+        for field in ("source_complete", "evidence_complete", "business_complete"):
+            if expected.get(field) != actual.get(field):
+                differences.append(
+                    {
+                        "code": "completeness_mismatch",
+                        "field": field,
+                        "expected": expected.get(field),
+                        "actual": actual.get(field),
+                    }
+                )
+    elif expected.get("source_complete") is False and actual.get("source_complete") is True:
         differences.append({"code": "completeness_overstated"})
+    if "business_status" in expected and expected.get("business_status") != actual.get(
+        "business_status"
+    ):
+        differences.append(
+            {
+                "code": "business_status_mismatch",
+                "expected": expected.get("business_status"),
+                "actual": actual.get("business_status"),
+            }
+        )
 
     required_limitations = {
         str(item) for item in contract.get("required_limitations") or [] if str(item)
@@ -510,6 +645,21 @@ def compare_semantic_results(
         if unexpected:
             differences.append(
                 {"code": "unexpected_limitations", "items": unexpected}
+            )
+    if "evidence_gap_codes" in expected:
+        expected_gaps = {
+            str(item) for item in expected.get("evidence_gap_codes") or [] if str(item)
+        }
+        actual_gaps = {
+            str(item) for item in actual.get("evidence_gap_codes") or [] if str(item)
+        }
+        if expected_gaps != actual_gaps:
+            differences.append(
+                {
+                    "code": "evidence_gap_mismatch",
+                    "missing": sorted(expected_gaps - actual_gaps),
+                    "unexpected": sorted(actual_gaps - expected_gaps),
+                }
             )
 
     return SemanticComparison(

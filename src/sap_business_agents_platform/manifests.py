@@ -24,6 +24,7 @@ ALLOWED_RULE_OPERATIONS = {
     "prepare_ap_input",
     "prepare_fi_ledger_scope",
     "prepare_ar_cash_application_scope",
+    "prepare_ar_collection_context",
     "assess_o2c_document_flow",
     "classify_control_object",
     "prepare_control_object_lookup",

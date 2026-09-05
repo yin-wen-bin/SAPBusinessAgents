@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import io
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from sap_business_agents_platform.acceptance import (
     CanonicalTestCase,
+    agent_execution_digest,
     canonical_hash,
     compare_semantic_results,
     validate_direct_baseline,
@@ -17,12 +21,17 @@ from scripts.run_three_stage_acceptance import (
     _normalize_run,
     _normalize_record,
     _read_fixed_result,
+    _read_sensitive_inputs_from_stdin,
+    _extract_record_scope,
 )
 from scripts.run_three_stage_campaign import (
     _matched_free_run_id,
+    _read_sensitive_case_inputs,
     _terminal_acceptance,
     _validate_campaign,
+    _validate_skill_gates,
 )
+from scripts.verify_agent_acceptance_campaign import verify_campaign
 from scripts.promote_three_stage_acceptance import baseline_report
 from scripts.build_material_shortage_direct_baseline import select_qualified_coverage
 
@@ -35,6 +44,208 @@ CONTRACT = {
     "metrics": ["open_items"],
     "required_limitations": ["bank_settlement_not_proven"],
 }
+
+
+def test_v2_evidence_gaps_do_not_become_unexpected_scope_limitations():
+    case = CanonicalTestCase.from_dict({
+        "schema_version": "2.0", "case_id": "gap-separation", "agent_id": "ar-collection",
+        "question": {"zh": "测试", "en": "Test"}, "input": {}, "business_conditions": {},
+        "expected_grain": ["customer"], "expected_output": {
+            "record_fields": ["customer"], "metric_ids": [], "minimum_primary_evidence_rows": 0,
+            "allow_empty_result": True, "evidence_scope": "complete"}})
+    contract = {"schema_version": "2.0", "business_keys": ["customer"], "facts": [],
+                "metrics": [], "required_limitations": []}
+    rule = {"business_status": "inconclusive", "source_complete": True,
+            "evidence_complete": False, "business_complete": False,
+            "evidence_gaps": ["date_missing"], "business_report": {
+                "records": [], "metrics": [], "missing_evidence": ["date_missing"], "limitations": []}}
+    value = _normalize_run({"result": {"rule_results": [rule]}}, case, contract)
+    assert value["evidence_gap_codes"] == ["date_missing"]
+    assert value["limitations"] == []
+
+
+def test_agent_execution_digest_changes_with_managed_rule_source() -> None:
+    manifest = {
+        "execution": {"mode": "deterministic", "steps": []},
+        "managedRule": {"entrypoint": "evaluate", "sha256": "sha256:" + "a" * 64},
+    }
+
+    first = agent_execution_digest(manifest, "def evaluate(value):\n    return value\n")
+    second = agent_execution_digest(manifest, "def evaluate(value):\n    return {}\n")
+
+    assert first != second
+
+
+def test_complete_zero_case_may_declare_zero_primary_evidence_rows() -> None:
+    value = {
+        "schema_version": "2.0",
+        "case_id": "complete-zero",
+        "agent_id": "ar-cash-application",
+        "question": {"zh": "零结果", "en": "Zero result"},
+        "input": {},
+        "business_conditions": {},
+        "expected_grain": ["company_code"],
+        "expected_output": {
+            "record_fields": ["company_code"],
+            "metric_ids": [],
+            "minimum_primary_evidence_rows": 0,
+            "allow_empty_result": True,
+            "evidence_scope": "complete",
+        },
+    }
+
+    assert CanonicalTestCase.from_dict(value).expected_output is not None
+
+
+def test_nonempty_case_cannot_lower_primary_evidence_requirement_to_zero() -> None:
+    value = {
+        "schema_version": "2.0",
+        "case_id": "invalid-zero",
+        "agent_id": "ar-collection",
+        "question": {"zh": "非空", "en": "Nonempty"},
+        "input": {},
+        "business_conditions": {},
+        "expected_grain": ["company_code"],
+        "expected_output": {
+            "record_fields": ["company_code"],
+            "metric_ids": [],
+            "minimum_primary_evidence_rows": 0,
+            "allow_empty_result": False,
+            "evidence_scope": "complete",
+        },
+    }
+
+    with pytest.raises(ValueError, match="only when empty results are allowed"):
+        CanonicalTestCase.from_dict(value)
+
+
+def test_fixed_agent_normalization_uses_typed_output_metrics_and_rule_completeness() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "2.0",
+            "case_id": "typed-output",
+            "agent_id": "ar-collection",
+            "question": {"zh": "测试", "en": "Test"},
+            "input": {},
+            "business_conditions": {},
+            "expected_grain": ["company_code"],
+            "expected_output": {
+                "record_fields": ["company_code"],
+                "metric_ids": ["requested_customer_count"],
+                "minimum_primary_evidence_rows": 1,
+                "allow_empty_result": False,
+                "evidence_scope": "complete",
+            },
+        }
+    )
+    contract = {
+        **CONTRACT,
+        "business_keys": ["company_code"],
+        "facts": [],
+        "metrics": ["requested_customer_count"],
+        "record_scope": "customer_results[].items[]",
+        "required_limitations": [],
+        "decimal_fields": [],
+        "currency_fields": [],
+    }
+    run = {
+        "result": {
+            "completeness": {
+                "source_complete": True,
+                "evidence_complete": False,
+                "business_complete": False,
+            },
+            "rule_results": [
+                {
+                    "business_status": "attention",
+                    "source_complete": True,
+                    "evidence_complete": True,
+                    "business_complete": True,
+                    "business_report": {"metrics": [], "missing_evidence": [], "limitations": []},
+                    "workflow_output": {
+                        "requested_customer_count": 1,
+                        "customer_results": [
+                            {"business_status": "attention", "items": [{"company_code": "1710"}]}
+                        ],
+                    },
+                }
+            ],
+        }
+    }
+
+    normalized = _normalize_run(run, case, contract)
+
+    assert normalized["metrics"] == {"requested_customer_count": 1}
+    assert normalized["evidence_complete"] is True
+    assert normalized["business_complete"] is True
+
+
+def test_fixed_agent_normalization_reads_required_limitation_from_visible_overview() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "2.0", "case_id": "visible-limitation",
+            "agent_id": "ar-cash-application",
+            "question": {"zh": "测试", "en": "Test"}, "input": {},
+            "business_conditions": {}, "expected_grain": ["company_code"],
+            "expected_output": {
+                "record_fields": ["company_code"], "metric_ids": [],
+                "minimum_primary_evidence_rows": 0, "allow_empty_result": True,
+                "evidence_scope": "complete",
+            },
+        }
+    )
+    contract = {
+        **CONTRACT, "business_keys": ["company_code"], "facts": [], "metrics": [],
+        "record_scope": "records[]", "required_limitations": ["fi_boundary"],
+        "decimal_fields": [], "currency_fields": [],
+        "limitation_keywords": {
+            "fi_boundary": ["FI clearing is not independent bank settlement evidence"]
+        },
+    }
+    run = {"result": {"rule_results": [{
+        "business_status": "normal", "source_complete": True,
+        "evidence_complete": True, "business_complete": True,
+        "business_report": {
+            "overview": {"en": "FI clearing is not independent bank settlement evidence."},
+            "metrics": [], "missing_evidence": [], "limitations": [],
+        },
+        "workflow_output": {"records": []},
+    }]}}
+
+    normalized = _normalize_run(run, case, contract)
+
+    assert normalized["limitations"] == ["fi_boundary"]
+
+
+def test_acceptance_sensitive_input_is_read_only_from_stdin(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.run_three_stage_acceptance.sys.stdin",
+        io.StringIO('{"receipt_reference":"  REF-FIXTURE  "}'),
+    )
+
+    assert _read_sensitive_inputs_from_stdin(True) == {
+        "receipt_reference": "REF-FIXTURE"
+    }
+
+
+def test_campaign_sensitive_inputs_are_scoped_to_a_case(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "scripts.run_three_stage_campaign.sys.stdin",
+        io.StringIO(
+            '{"cases":{"ar-cash-application@0.1.0:secure-reference":'
+            '{"receipt_reference":"REF-FIXTURE"}}}'
+        ),
+    )
+
+    value = _read_sensitive_case_inputs(True)
+
+    assert value == {
+        "ar-cash-application@0.1.0:secure-reference": {
+            "receipt_reference": "REF-FIXTURE"
+        }
+    }
 
 
 def _result(records: list[dict], *, complete: bool = True) -> dict:
@@ -905,6 +1116,289 @@ def test_v2_semantic_comparison_checks_units_decimal_metrics_and_limitations() -
         "currency_or_unit_mismatch",
         "baseline_limitations_missing",
     }
+
+
+def test_baseline_v3_accepts_get_and_semantic_read_only_adt_and_compares_all_completeness() -> None:
+    normalized = {
+        "records": [{"document": "1", "business_status": "inconclusive"}],
+        "metrics": {"rows": 1},
+        "business_status": "inconclusive",
+        "source_complete": True,
+        "evidence_complete": False,
+        "business_complete": False,
+        "evidence_gap_codes": ["bank_settlement_not_proven"],
+        "limitations": ["bank_settlement_not_proven"],
+    }
+    baseline = {
+        "schema_version": "3.0",
+        "runtime": "codex_app_direct_sap",
+        "used_sap_business_agents": False,
+        "sources": [
+            {
+                "source_id": "fi",
+                "access_method": "odata_get",
+                "http_method": "GET",
+                "semantic_read_only": True,
+                "schema_hash": "sha256:" + "a" * 64,
+                "query_hash": "sha256:" + "b" * 64,
+                "stable_order_by": ["Document"],
+                "paging_complete": True,
+                "source_complete": True,
+                "row_count": 1,
+                "page_count": 1,
+            },
+            {
+                "source_id": "history",
+                "access_method": "adt_data_preview",
+                "http_method": "POST",
+                "semantic_read_only": True,
+                "schema_hash": "sha256:" + "c" * 64,
+                "query_hash": "sha256:" + "d" * 64,
+                "stable_order_by": ["Object", "Item"],
+                "paging_complete": True,
+                "source_complete": True,
+                "row_count": 1,
+                "page_count": 1,
+            },
+        ],
+        "normalized_result": normalized,
+        "result_hash": canonical_hash(normalized),
+    }
+
+    assert validate_direct_baseline(baseline) == normalized
+    actual = {**normalized, "evidence_complete": True, "evidence_gap_codes": []}
+    comparison = compare_semantic_results(
+        normalized,
+        actual,
+        {
+            "schema_version": "3.0",
+            "business_keys": ["document"],
+            "facts": ["business_status"],
+            "metrics": ["rows"],
+            "required_limitations": [],
+        },
+    )
+    assert comparison.verdict == "MISMATCH"
+    assert {item["code"] for item in comparison.differences} >= {
+        "completeness_mismatch",
+        "evidence_gap_mismatch",
+    }
+
+
+def test_record_scope_is_array_explicit_inherits_parent_context_and_fails_closed() -> None:
+    root = {
+        "customer_results": [
+            {
+                "customer": "C1",
+                "business_status": "attention",
+                "source_complete": True,
+                "items": [{"document": "1", "amount": "10.00"}],
+            }
+        ]
+    }
+
+    assert _extract_record_scope(root, "customer_results[].items[]") == [
+        {
+            "customer": "C1",
+            "business_status": "attention",
+            "source_complete": True,
+            "document": "1",
+            "amount": "10.00",
+        }
+    ]
+    for invalid in ("customer_results.items[]", "customer_results[*]", "../items[]"):
+        try:
+            _extract_record_scope(root, invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Unsafe or ambiguous recordScope was accepted: {invalid}")
+
+
+def test_campaign_v2_flattens_cases_and_preserves_agent_version_identity() -> None:
+    entries = _validate_campaign(
+        {
+            "schema_version": "2.0",
+            "agents": [
+                {
+                    "module": "FI",
+                    "agent_id": "ar-collection",
+                    "agent_version": "1.1.0",
+                    "agent_execution_digest": "sha256:" + "a" * 64,
+                    "acceptance_contract_digest": "sha256:" + "b" * 64,
+                    "runtime_snapshot": {
+                        "provider_id": "codex",
+                        "sdk_id": "codex-python-sdk",
+                        "version": "0.144.4",
+                    },
+                    "agent_catalog_digest": "sha256:" + "c" * 64,
+                    "prerequisite_skill_gates": [],
+                    "required_coverage_tags": ["current_overdue"],
+                    "cases": [
+                        {
+                            "case_id": "current-overdue",
+                            "kind": "mandatory_live",
+                            "coverage_tags": ["current_overdue"],
+                            "required_stages": ["baseline", "free_query", "fixed_agent"],
+                            "expected_business_status": ["attention"],
+                            "expected_source_complete": True,
+                            "expected_evidence_complete": True,
+                            "expected_business_complete": True,
+                            "expected_gap_codes": [],
+                            "case": "case.json",
+                            "baseline": "baseline.json",
+                            "output": "output",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert entries[0]["agent_id"] == "ar-collection"
+    assert entries[0]["agent_version"] == "1.1.0"
+    assert entries[0]["case_id"] == "current-overdue"
+
+
+def test_campaign_skill_gate_is_identity_pinned_and_audited(tmp_path: Path) -> None:
+    gate = {
+        "schema_version": "2.0",
+        "skill_id": "sap-bank-receipt-evidence",
+        "git_commit": "a" * 40,
+        "package_sha256": "b" * 64,
+        "profile_sha256": "c" * 64,
+        "metadata_sha256": "d" * 64,
+        "output_schema_sha256": "e" * 64,
+        "baseline_hash": "sha256:" + "f" * 64,
+        "comparison_hash": "sha256:" + "1" * 64,
+        "readonly_audit": {"verdict": "PASS"},
+        "privacy_audit": {"verdict": "PASS"},
+        "independent_validation": {
+            "reader_id": "direct-reader-v1",
+            "reader_sha256": "sha256:" + "2" * 64,
+            "tested_skill_imported": False,
+            "tested_skill_runtime_called": False,
+            "metadata_sha256": ["sha256:" + "3" * 64],
+            "source_snapshot_hashes": ["sha256:" + "4" * 64],
+            "complete_zero_sample_passed": True,
+            "nonzero_sample_passed": True,
+            "partition_count": 2,
+        },
+        "verdict": "PASS",
+    }
+    gate_path = tmp_path / "gate.json"
+    gate_path.write_text(json.dumps(gate), encoding="utf-8")
+    entry = {
+        "prerequisite_skill_gates": [
+            {
+                "skill_id": "sap-bank-receipt-evidence",
+                "path": "gate.json",
+                "git_commit": "a" * 40,
+                "package_sha256": "b" * 64,
+            }
+        ]
+    }
+
+    snapshots = _validate_skill_gates(entry, tmp_path)
+
+    assert snapshots[0]["skill_id"] == "sap-bank-receipt-evidence"
+    gate["skill_id"] = "different-skill"
+    gate_path.write_text(json.dumps(gate), encoding="utf-8")
+    with pytest.raises(ValueError, match="identity"):
+        _validate_skill_gates(entry, tmp_path)
+
+    gate["skill_id"] = "sap-bank-receipt-evidence"
+    gate["privacy_audit"] = {"verdict": "FAIL"}
+    gate_path.write_text(json.dumps(gate), encoding="utf-8")
+    with pytest.raises(ValueError, match="privacy_audit"):
+        _validate_skill_gates(entry, tmp_path)
+
+    gate["privacy_audit"] = {"verdict": "PASS"}
+    gate["independent_validation"]["tested_skill_imported"] = True
+    gate_path.write_text(json.dumps(gate), encoding="utf-8")
+    with pytest.raises(ValueError, match="imported the tested Skill"):
+        _validate_skill_gates(entry, tmp_path)
+
+
+def test_campaign_certification_requires_agent_aggregate_and_pinned_case_artifact(
+    tmp_path: Path,
+) -> None:
+    execution_digest = "sha256:" + "a" * 64
+    contract_digest = "sha256:" + "b" * 64
+    campaign = {
+        "schema_version": "2.0",
+        "agents": [
+            {
+                "module": "FI",
+                "agent_id": "ar-collection",
+                "agent_version": "1.1.0",
+                "agent_execution_digest": execution_digest,
+                "acceptance_contract_digest": contract_digest,
+                "runtime_snapshot": {"provider_id": "codex"},
+                "agent_catalog_digest": "sha256:" + "c" * 64,
+                "prerequisite_skill_gates": [],
+                "required_coverage_tags": ["current_overdue"],
+                "cases": [
+                    {
+                        "case_id": "current-overdue",
+                        "kind": "mandatory_live",
+                        "coverage_tags": ["current_overdue"],
+                        "required_stages": ["baseline", "free_query", "fixed_agent"],
+                        "expected_business_status": ["attention"],
+                        "expected_source_complete": True,
+                        "expected_evidence_complete": True,
+                        "expected_business_complete": True,
+                        "expected_gap_codes": [],
+                        "case": "case.json",
+                        "baseline": "baseline.json",
+                        "output": "output",
+                    }
+                ],
+            }
+        ],
+    }
+    campaign_path = tmp_path / "campaign.json"
+    campaign_path.write_text(json.dumps(campaign), encoding="utf-8")
+    acceptance_path = tmp_path / "acceptance.json"
+    acceptance_path.write_text(
+        json.dumps(
+            {
+                "verdict": "PASS",
+                "hashes": {
+                    "agent_execution_digest": execution_digest,
+                    "acceptance_contract_digest": contract_digest,
+                    "reuse_fingerprint": "sha256:" + "d" * 64,
+                },
+                "fixed_agent": {"run_id": "acceptance-fixed"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = {
+        "campaign_hash": canonical_hash(campaign),
+        "cases": {
+            "ar-collection@1.1.0:current-overdue": {
+                "verdict": "PASS",
+                "acceptance_path": str(acceptance_path),
+            }
+        },
+        "agents": {
+            "ar-collection@1.1.0": {
+                "verdict": "PASS",
+                "missing_coverage_tags": [],
+                "failed_mandatory_cases": [],
+            }
+        },
+    }
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    certification = verify_campaign(campaign_path, state_path)
+
+    # An aggregate PASS plus matching labels cannot certify missing baseline,
+    # candidate snapshot, stage artifacts or source anchors.
+    assert certification["verdict"] == "BLOCKED"
+    assert any(item["code"] == "candidate_snapshot_required" for item in certification["blockers"])
 
 
 def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
