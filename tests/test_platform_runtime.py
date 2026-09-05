@@ -41,6 +41,28 @@ from sap_business_agents_platform.scheduler import LocalRunScheduler, WorkloadCl
 from sap_business_agents_platform.workflows import workflow_digest
 
 
+def test_cors_uses_the_same_configured_local_origins_as_security_checks(
+    tmp_path: Path,
+) -> None:
+    origin = "http://127.0.0.1:4324"
+    app = create_app(
+        replace(_settings(tmp_path), local_ui_origins=(origin,)),
+        planner=FakePlanner(),
+        embedded_provider=FakeEmbeddedProvider(),
+    )
+    with TestClient(app) as client:
+        response = client.options(
+            "/api/config/status",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+
+
 def test_validate_input_enforces_string_length_and_pattern() -> None:
     schema = {
         "type": "object",

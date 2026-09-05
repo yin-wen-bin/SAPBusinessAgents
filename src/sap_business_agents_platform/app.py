@@ -289,12 +289,7 @@ def create_app(
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://127.0.0.1:4321",
-            "http://localhost:4321",
-            "http://127.0.0.1:3000",
-            "http://localhost:3000",
-        ],
+        allow_origins=list(settings.local_ui_origins),
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
     )
