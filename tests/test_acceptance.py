@@ -18,6 +18,7 @@ from scripts.run_three_stage_acceptance import (
     _acceptance_prompt,
     _finalize_normalized,
     _limitation_codes,
+    _normalize_acceptance_projection,
     _normalize_run,
     _normalize_record,
     _read_fixed_result,
@@ -228,6 +229,54 @@ def test_acceptance_sensitive_input_is_read_only_from_stdin(
     assert _read_sensitive_inputs_from_stdin(True) == {
         "receipt_reference": "REF-FIXTURE"
     }
+
+
+def test_acceptance_projection_separates_required_scope_limitations_from_gaps() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "2.0",
+            "case_id": "scope-limitation",
+            "agent_id": "ar-collection",
+            "question": {"zh": "测试", "en": "Test"},
+            "input": {},
+            "business_conditions": {},
+            "expected_grain": ["company_code"],
+            "expected_output": {
+                "record_fields": ["company_code"],
+                "metric_ids": [],
+                "minimum_primary_evidence_rows": 0,
+                "allow_empty_result": True,
+                "evidence_scope": "complete",
+            },
+        }
+    )
+    contract = {
+        **CONTRACT,
+        "business_keys": ["company_code"],
+        "facts": [],
+        "metrics": [],
+        "decimal_fields": [],
+        "currency_fields": [],
+        "required_limitations": ["historical_snapshot_not_available"],
+    }
+    projection = {
+        "records": [{"company_code": "1710"}],
+        "metrics": {},
+        "business_status": "attention",
+        "source_complete": True,
+        "evidence_complete": True,
+        "business_complete": True,
+        "evidence_gap_codes": [
+            "historical_snapshot_not_available",
+            "real_evidence_gap",
+        ],
+        "evidence_refs": ["evidence:fixture"],
+    }
+
+    normalized = _normalize_acceptance_projection(projection, case, contract)
+
+    assert normalized["limitations"] == ["historical_snapshot_not_available"]
+    assert normalized["evidence_gap_codes"] == ["real_evidence_gap"]
 
 
 def test_campaign_sensitive_inputs_are_scoped_to_a_case(monkeypatch) -> None:

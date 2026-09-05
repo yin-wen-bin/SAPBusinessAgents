@@ -379,16 +379,25 @@ def _normalize_acceptance_projection(
             raise ValueError(f"acceptance_projection.{field} must be an identifier array")
     if projection.get("records") and not projection.get("evidence_refs"):
         raise ValueError("acceptance_projection records require verified evidence references")
+    projected_codes = list(dict.fromkeys(str(item) for item in projection["evidence_gap_codes"]))
+    declared_limitations = {
+        str(item) for item in contract.get("required_limitations") or [] if str(item)
+    }
+    # The legacy acceptance projection has one diagnostic-code array.  Split
+    # contract-declared scope limitations from actual evidence gaps before the
+    # semantic comparison so a non-blocking limitation cannot lower completeness.
+    limitation_codes = [item for item in projected_codes if item in declared_limitations]
+    evidence_gap_codes = [item for item in projected_codes if item not in declared_limitations]
     return _finalize_normalized(
         {
             "records": [dict(item) for item in projection["records"]],
             "metrics": dict(projection["metrics"]),
-            "limitations": list(projection["evidence_gap_codes"]),
+            "limitations": limitation_codes,
             "source_complete": projection["source_complete"],
             "evidence_complete": projection["evidence_complete"],
             "business_complete": projection["business_complete"],
             "business_status": str(projection.get("business_status") or ""),
-            "evidence_gap_codes": list(projection["evidence_gap_codes"]),
+            "evidence_gap_codes": evidence_gap_codes,
         },
         case,
         contract,
