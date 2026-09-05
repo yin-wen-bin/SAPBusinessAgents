@@ -919,7 +919,7 @@
   "validation": {
     "verdict": "PASS",
     "testedAt": "2026-09-06T02:17:45.011633+08:00",
-    "evidenceScope": "direct_sap_baseline_fixed_agent_frontend",
+    "evidenceScope": "bounded",
     "providers": [
       "embedded_sap_odata_provider",
       "managed_agent_rule"
