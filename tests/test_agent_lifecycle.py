@@ -28,6 +28,7 @@ from sap_business_agents_platform.models import (
     AgentDraftUpdate,
     AgentPublishRequest,
     AgentVersionDraftRequest,
+    DraftRecord,
     RunCreate,
     RunStatus,
 )
@@ -37,6 +38,125 @@ from sap_business_agents_platform.workflows import agent_digest
 
 class _Unused:
     pass
+
+
+def _source_draft(service, store, settings, source_id="draft_importsample"):
+    package = service._blank_package("imported-agent", "SD", {"zh": "测试", "en": "Test"})
+    package["files"] = {"src/rules.py": "# review required\n", "content.zh.md": "说明", "docs/source.json": "{}"}
+    path = settings.draft_root / source_id
+    service._write_package(path, package)
+    (path / "attachment.bin").write_bytes(b"\xff\x00\xa0")
+    (path / "__pycache__").mkdir()
+    (path / "__pycache__" / "rules.pyc").write_bytes(b"\xff\x00")
+    source = DraftRecord(draft_id=source_id, run_id="run_source", status="validated", path=str(path),
+                         created_at="2026-09-06T00:00:00Z", validation={"valid": True},
+                         origin={"free_query_session": {"source_session_id": "session_test", "accepted_iteration": 2, "result_digest": "hash"},
+                                 "workflow_draft_id": "workflow_test", "gap_id": "gap_test"})
+    store.save_draft(source)
+    return source
+
+
+def test_source_import_is_persistent_concurrent_complete_and_requires_review(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    service, store, settings = _service(tmp_path)
+    source = _source_draft(service, store, settings)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(service.import_source_draft, [source.draft_id] * 8))
+    assert len({item["managed_draft_id"] for item in results}) == 1
+    managed_id = results[0]["managed_draft_id"]
+    draft = service.get_draft(managed_id)
+    assert draft["status"] == "needs_review"
+    assert draft["validation"]["verdict"] == "NOT_TESTED"
+    assert draft["conversation"][0]["turn"] == 1
+    assert draft["conversation"][0]["decision"]["source_draft_id"] == source.draft_id
+    assert draft["metadata"]["origin"] == source.origin
+    assert draft["metadata"]["source_run_id"] == source.run_id
+    assert draft["package"]["files"]["src/rules.py"] == "# review required\n"
+    assert (Path(draft["path"]) / "attachment.bin").read_bytes() == b"\xff\x00\xa0"
+    assert service.list_drafts("unpublished")[0]["draft_id"] == managed_id
+    restarted, _, _ = _service(tmp_path)
+    assert restarted.import_source_draft(source.draft_id)["managed_draft_id"] == managed_id
+    assert Path(source.path).exists()
+    public = service._publication_package(draft, draft["package"])
+    assert "binary_files" not in public
+    assert "docs/source.json" not in public["files"]
+    assert public["files"]["content.zh.md"] == "说明"
+    assert "attachment.bin" in draft["metadata"]["private_source_files"]
+    assert "attachment.bin" in draft["package"]["binary_files"]
+    assert "__pycache__/rules.pyc" not in draft["package"]["binary_files"]
+
+
+def test_import_recovers_after_mapping_failure_without_overwriting_managed_edits(tmp_path: Path, monkeypatch) -> None:
+    service, store, settings = _service(tmp_path)
+    source = _source_draft(service, store, settings)
+    save = store.save_draft_import
+    monkeypatch.setattr(store, "save_draft_import", lambda *args: (_ for _ in ()).throw(OSError("temporary")))
+    with pytest.raises(OSError):
+        service.import_source_draft(source.draft_id)
+    draft = store.list_agent_authoring_drafts()[0]
+    draft["revision"] = 2
+    store.save_agent_authoring_draft(draft)
+    monkeypatch.setattr(store, "save_draft_import", save)
+    assert service.import_source_draft(source.draft_id)["managed_draft_id"] == draft["draft_id"]
+    assert store.get_agent_authoring_draft(draft["draft_id"])["revision"] == 2
+
+
+def test_import_rejects_registered_path_escape(tmp_path: Path) -> None:
+    service, store, settings = _service(tmp_path)
+    source = _source_draft(service, store, settings)
+    source.path = str(tmp_path)
+    store.save_draft(source)
+    with pytest.raises(AgentLifecycleError, match="registered directory"):
+        service.import_source_draft(source.draft_id)
+
+
+def test_import_rejects_external_attachment(tmp_path: Path) -> None:
+    service, store, settings = _service(tmp_path)
+    source = _source_draft(service, store, settings)
+    external = tmp_path / "outside.txt"
+    external.write_text("not imported", encoding="utf-8")
+    try:
+        (Path(source.path) / "external.txt").symlink_to(external)
+    except OSError:
+        pytest.skip("Symlinks unavailable on this host")
+    with pytest.raises(AgentLifecycleError, match="external file link"):
+        service.import_source_draft(source.draft_id)
+
+
+@pytest.mark.parametrize(("status", "verdict"), [(RunStatus.completed, "PASS"), (RunStatus.inconclusive, "INCONCLUSIVE"), (RunStatus.failed, "FAIL")])
+def test_list_synchronizes_validation_terminal_without_sap(tmp_path: Path, monkeypatch, status, verdict) -> None:
+    service, store, _ = _service(tmp_path)
+    draft = asyncio.run(service.create(AgentAuthoringCreate(source="blank", agentId="sync-agent", module="SD")))
+    draft.update(status="validating", validation_run_id="validation_current", validation={"verdict": "pending"})
+    store.save_agent_authoring_draft(draft)
+    store.save_agent_validation_attempt(draft_id=draft["draft_id"], run_id="validation_current", revision=1, report={"verdict": "pending"}, report_digest=None)
+    run = SimpleNamespace(status=status, completed_at="2026-09-06T00:00:00Z", error=None,
+                          result=SimpleNamespace(tool_calls=[], workflow_output={}, errors=[],
+                              completeness=SimpleNamespace(source_complete=True, business_complete=True)))
+    monkeypatch.setattr(store, "get_run", lambda _: run)
+    listed = service.list_drafts("unpublished")[0]
+    assert listed["validation"]["verdict"] == verdict
+    assert listed["status"] == ("validated" if verdict == "PASS" else "needs_review")
+    assert listed["sync_error"] is None
+    assert service.validation_report(draft["draft_id"])["report_digest"]
+
+
+def test_list_keeps_sync_gap_and_stale_run_cannot_update_revision(tmp_path: Path) -> None:
+    service, store, _ = _service(tmp_path)
+    draft = asyncio.run(service.create(AgentAuthoringCreate(source="blank", agentId="sync-agent", module="SD")))
+    draft.update(status="validating", revision=2, validation_run_id="new_run", validation={"verdict": "pending"})
+    store.save_agent_authoring_draft(draft)
+    assert service.list_drafts("unpublished")[0]["sync_error"] == "validation_state_unavailable"
+    assert not store.finish_agent_validation(draft["draft_id"], "old_run", 1,
+        {"verdict": "PASS", "completed_at": "2026-09-06T00:00:00Z"}, "hash")
+    assert not store.finish_agent_validation(draft["draft_id"], "old_run", 2,
+        {"verdict": "PASS", "completed_at": "2026-09-06T00:00:00Z"}, "hash")
+    assert not store.finish_agent_validation(draft["draft_id"], "new_run", 1,
+        {"verdict": "PASS", "completed_at": "2026-09-06T00:00:00Z"}, "hash")
+    assert not store.finish_agent_validation(draft["draft_id"], "new_run", 2,
+        {"verdict": "PASS", "completed_at": "2026-09-06T00:00:00Z"}, "hash")  # missing attempt
+    current = store.get_agent_authoring_draft(draft["draft_id"])
+    assert current["revision"] == 2 and current["validation"]["verdict"] == "pending"
 
 
 def _service(

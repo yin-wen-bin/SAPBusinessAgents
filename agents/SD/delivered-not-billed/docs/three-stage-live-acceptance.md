@@ -1,49 +1,40 @@
-# Three-stage live SAP acceptance: delivered-not-billed
+# Three-stage live SAP acceptance: delivered-not-billed 0.2.0
 
 ## Verdict
 
 `PASS` / `executable=true`
 
-- Case: `delivered-not-billed-live-001`
-- Tested at: `2026-08-20T05:19:35.535162+00:00`
-- Direct baseline runtime: `codex_app_direct_sap`
-- Used SAPBusinessAgents for baseline: `false`
-- Free-query comparison: `MATCH`
+- Tested at: `2026-09-06T15:25:40+08:00`
+- Acceptance mode: `deterministic_runtime`
+- Embedded Provider: `embedded-odata` `2.0.0`, read-only
 - Fixed-Agent comparison: `MATCH`
-- Normalized business records: `18`
-- Required limitations preserved: `none`
+- Free-query comparison: `NOT_TESTED`（确定性Agent本轮不以自由查询作为验收门槛）
+- Normalized delivery-item records: `18`
 - SAP write operations: none
+
+## Three stages
+
+1. 实时Schema与计划验证：7个计划步骤全部通过字段、GET-only和批准关系校验。实时元数据不宣称交货键可排序，因此两个交货步骤不发送不受支持的`$orderby`；本次均为单页完整结果，规则层按交货号和项目号确定性排序。
+2. Embedded直接GET基线：查询源完整，无截断、无校验问题；交货抬头18行、交货项目18行、开票项目18行、开票抬头18行、取消反查0行、销售订单项目18行。
+3. 固定Agent：执行6次真实GET，返回18条项目记录；`source_complete=true`、`business_complete=true`，与直接基线的规范化结果Hash一致。
+
+## Business result
+
+- `delivered_not_billed=0`
+- `unbilled_items=0`
+- `partially_billed_items=0`
+- `fully_billed_items=18`
+- `overbilled_items=0`
+- `inconclusive_items=0`
+- 业务状态：`normal`
+- 数量按1种单位独立汇总，金额按1种币种独立汇总；未跨单位或币种合计。
+
+本次真实样本只观测到完全开票状态。完全未开票、部分开票、超量开票以及截止日前取消状态由Fixture覆盖，不标记为真机状态通过。
 
 ## Evidence hashes
 
-- Codex direct baseline: `sha256:f0914a309e6b70d11547f25d226fa13ff56dc75d11eedded39418d0599d6c242`
-- SAPBusinessAgents free query: `sha256:5b632c66285997b7df20321554eff1c96d4eb97c60f369608c3fec5e274dde01`
-- Adjudicated result: `sha256:f0914a309e6b70d11547f25d226fa13ff56dc75d11eedded39418d0599d6c242`
-- Fixed Agent: `sha256:f0914a309e6b70d11547f25d226fa13ff56dc75d11eedded39418d0599d6c242`
-- Fixed comparison: `sha256:65cb364e4a87e035afd2f9bd84201f2f14f2841ebd8991341445eb68d179d0d6`
+- Embedded direct baseline: `sha256:bd94ddd7e3250601d686be0a5be277500d874e38a2da2a838179e1dc2a98bc0a`
+- Fixed Agent: `sha256:bd94ddd7e3250601d686be0a5be277500d874e38a2da2a838179e1dc2a98bc0a`
+- Candidate execution: `sha256:68f61927c2f098527e367a66a3a1afcc4dab2db67b1a79c0822aff0764510372`
 
-## Sanitized case scope
-
-- Selection rule: first independently discovered live sample satisfying the case criteria after real-time schema validation and stable-key ordering.
-- Structured input fields: `date_from, date_to, sales_organization` (values remain in ignored artifacts).
-- Business-condition fields: `date_from, date_to, sales_organization` (values remain in ignored artifacts).
-- Accepted business grain: `delivery_document, delivery_document_item`.
-
-## Direct baseline source coverage
-
-| Source | Service | OData | Entity | Rows | Pages | Stable order | Paging complete | Source complete |
-|---|---|:---:|---|---:|---:|---|:---:|:---:|
-| range_delivery_headers | API_OUTBOUND_DELIVERY_SRV | 2.0 | A_OutbDeliveryHeader | 18 | 1 | DeliveryDocument | true | true |
-| range_delivery_items | API_OUTBOUND_DELIVERY_SRV | 2.0 | A_OutbDeliveryItem | 18 | 1 | DeliveryDocument, DeliveryDocumentItem | true | true |
-| range_billing_items | API_BILLING_DOCUMENT_SRV | 2.0 | A_BillingDocumentItem | 18 | 1 | BillingDocument, BillingDocumentItem | true | true |
-
-Schema/query manifests:
-- `range_delivery_headers` schema `sha256:77414c3d7fd8ad508bcc94f160799b17e7bc3382165e377ac7e077ff914628c5`; query `sha256:eb07e863ab4060f66e9c549be5bdf9e39576adb455f37991bfb198c87312025b`.
-- `range_delivery_items` schema `sha256:77414c3d7fd8ad508bcc94f160799b17e7bc3382165e377ac7e077ff914628c5`; query `sha256:5137044ddfc91b7094f4d06e4564aa909e3a00d441dbd67b70fd47f4f6a5cfc9`.
-- `range_billing_items` schema `sha256:a7bd8d8ea98baead41d14d74e7a061a9b5de9013f3b59ea96b47a1ad9899d7d2`; query `sha256:5c0a0e5a2894f03e627c32d78741a50bb0dbe2b35568cfddb725aae0702cce2e`.
-
-## Repair and adjudication outcome
-
-The final comparison uses stable business keys, deterministic facts, Decimal-aware metrics, currencies, units, limitations, and completeness rather than display prose or row order. Platform and fixed-Agent corrections are covered by the campaign regression suite; runtime logic contains no test-document constants.
-
-Raw SAP rows, URLs, credentials, business identifiers, and connection details remain in ignored local artifacts.
+原始SAP行、业务标识、金额、URL和凭据仅保存在被忽略的`.local-data/live-tests/embedded-adt/`中；仓库报告只保留聚合证据。

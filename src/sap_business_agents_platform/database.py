@@ -276,6 +276,16 @@ class RunStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS agent_draft_creation_keys (
+                    creation_key TEXT PRIMARY KEY,
+                    draft_id TEXT NOT NULL UNIQUE
+                );
+                CREATE TABLE IF NOT EXISTS agent_draft_imports (
+                    source_draft_id TEXT PRIMARY KEY,
+                    managed_draft_id TEXT NOT NULL UNIQUE,
+                    source_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS agent_authoring_agent
                     ON agent_authoring_drafts(agent_id, updated_at);
                 CREATE TABLE IF NOT EXISTS agent_authoring_revisions (
@@ -2001,6 +2011,60 @@ class RunStore:
             }
             for row in rows
         ]
+
+    def reserve_draft_creation(self, key: str, draft_id: str) -> tuple[str, bool]:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO agent_draft_creation_keys VALUES (?, ?)", (key, draft_id)
+            )
+            row = connection.execute(
+                "SELECT draft_id FROM agent_draft_creation_keys WHERE creation_key = ?", (key,)
+            ).fetchone()
+            return str(row[0]), cursor.rowcount == 1
+
+    def release_draft_creation(self, key: str, draft_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM agent_draft_creation_keys WHERE creation_key = ? AND draft_id = ?",
+                (key, draft_id),
+            )
+
+    def get_draft_import(self, source_draft_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_draft_imports WHERE source_draft_id = ?", (source_draft_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_draft_import(self, source_id: str, managed_id: str, source_hash: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "INSERT INTO agent_draft_imports VALUES (?, ?, ?, ?)",
+                (source_id, managed_id, source_hash, utc_now()),
+            )
+
+    def finish_agent_validation(
+        self, draft_id: str, run_id: str, revision: int, report: dict[str, Any], digest: str
+    ) -> bool:
+        """Commit the report only while this run still owns the draft revision."""
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE agent_authoring_drafts SET status = ?, validation_json = ?, updated_at = ?
+                WHERE draft_id = ? AND revision = ? AND validation_run_id = ?
+                AND status = 'validating'
+                AND EXISTS (SELECT 1 FROM agent_validation_attempts
+                            WHERE draft_id = ? AND run_id = ? AND revision = ?)""",
+                ("validated" if report["verdict"] == "PASS" else "needs_review", _dump(report),
+                 utc_now(), draft_id, revision, run_id, draft_id, run_id, revision),
+            )
+            if cursor.rowcount != 1:
+                return False
+            connection.execute(
+                """UPDATE agent_validation_attempts SET report_json = ?, report_digest = ?, completed_at = ?
+                WHERE draft_id = ? AND run_id = ? AND revision = ?""",
+                (_dump(report), digest, report["completed_at"], draft_id, run_id, revision),
+            )
+        return True
 
     def save_agent_authoring_draft(
         self, item: dict[str, Any], *, package: dict[str, Any] | None = None,

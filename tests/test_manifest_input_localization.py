@@ -24,7 +24,7 @@ def _manifest(module: str, agent_id: str) -> dict[str, object]:
 def test_all_agent_manifests_have_locale_consistent_public_input_titles() -> None:
     manifests = AgentRepository(ROOT / "agents").list_all()
 
-    assert len(manifests) == 33
+    assert len(manifests) == 32
 
 
 def test_manifest_rejects_english_label_in_chinese_input_title() -> None:
@@ -70,3 +70,18 @@ def test_manifest_allows_mixed_neutral_acronym_and_chinese_business_label() -> N
 
     assert manifest["execution"]["inputSchema"]["properties"]["mrp_area"]["title"]["zh"] == "MRP范围"
     validate_manifest(manifest)
+
+
+def test_order_to_cash_status_public_definition_matches_sales_order_only_input() -> None:
+    manifest = _manifest("SD", "order-to-cash-status")
+    schema = manifest["execution"]["inputSchema"]
+
+    assert manifest["version"] == "0.1.1"
+    assert list(schema["properties"]) == ["sales_order"]
+    assert schema["required"] == ["sales_order"]
+    assert manifest["summary"]["zh"].startswith("从销售订单出发")
+    assert manifest["summary"]["en"].startswith("Starts from a sales order")
+    for unsupported in ("客户PO", "交货或发票", "customer PO", "delivery or invoice"):
+        assert unsupported.lower() not in (
+            manifest["summary"]["zh"] + " " + manifest["summary"]["en"]
+        ).lower()

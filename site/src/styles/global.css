@@ -50,16 +50,21 @@ a {
 .agent-management textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; }
 .agent-panel { display: grid; gap: 16px; padding: 22px; margin: 18px 0; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-bg-subtle); }
 .agent-panel.danger { border-color: #dc9c9c; }
-.agent-tabs, .agent-steps, .agent-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
-.agent-tabs button, .agent-steps button { background: white; color: var(--color-primary); }
-.agent-tabs button.active, .agent-steps button.active { background: var(--color-primary); color: white; }
+.agent-steps, .agent-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+.agent-steps button { background: white; color: var(--color-primary); }
+.agent-steps button.active { background: var(--color-primary); color: white; }
+.agent-management > .agent-management-heading { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 24px; }
+.agent-create-link { display: inline-flex; justify-content: center; align-items: center; padding: 11px 18px; border-radius: 8px; background: var(--color-primary); color: white; font-weight: 600; white-space: nowrap; text-decoration: none; }
+.agent-create-link:hover { filter: brightness(.92); }
+.agent-filter-bar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; gap: 16px; padding: 18px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-subtle); }
+.agent-filter-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.agent-result-count { color: var(--color-text-muted); font-size: 14px; }
+.agent-resource-status button { margin-left: 8px; }
 .agent-management-list { overflow: hidden; border: 1px solid var(--color-border); border-radius: 10px; background: white; }
 .agent-list-header,
 .agent-list-row { display: grid; align-items: center; gap: 16px; padding: 14px 16px; }
-.agent-management-list-catalog .agent-list-header,
-.agent-management-list-catalog .agent-list-row { grid-template-columns: 72px minmax(260px, 1fr) 100px 160px 110px; }
-.agent-management-list-drafts .agent-list-header,
-.agent-management-list-drafts .agent-list-row { grid-template-columns: 72px minmax(190px, 1fr) 125px 100px 150px 145px 190px; }
+.agent-management-list-unified .agent-list-header,
+.agent-management-list-unified .agent-list-row { grid-template-columns: 60px minmax(180px, 1fr) 100px 112px 100px 106px; }
 .agent-list-header { background: var(--color-bg-subtle); color: var(--color-text-muted); font-size: 13px; font-weight: 700; }
 .agent-list-item { border-top: 1px solid var(--color-border); }
 .agent-list-row > div { min-width: 0; }
@@ -87,8 +92,10 @@ a {
   .agent-steps { display: grid; }
   .agent-steps button { width: 100%; }
   .agent-list-header { display: none; }
-  .agent-management-list-catalog .agent-list-row,
-  .agent-management-list-drafts .agent-list-row { grid-template-columns: 1fr; gap: 9px; }
+  .agent-management > .agent-management-heading { grid-template-columns: 1fr; gap: 12px; }
+  .agent-create-link { justify-self: start; }
+  .agent-filter-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agent-management-list-unified .agent-list-row { grid-template-columns: 1fr; gap: 9px; }
   .agent-list-row > div { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 10px; }
   .agent-list-row > div::before { content: attr(data-label); color: var(--color-text-muted); font-size: 13px; font-weight: 700; }
   .agent-list-identity strong,
@@ -98,6 +105,12 @@ a {
   .agent-list-identity span { white-space: normal; }
   .agent-list-actions { justify-content: flex-start; }
   .agent-list-actions::before { align-self: center; }
+}
+
+@media (max-width: 480px) {
+  .agent-filter-bar { grid-template-columns: 1fr; padding: 14px; }
+  .agent-create-link { justify-self: stretch; }
+  .agent-list-row > div { grid-template-columns: 76px minmax(0, 1fr); }
 }
 
 button,
@@ -1263,6 +1276,14 @@ select {
 }
 
 @media (max-width: 1080px) {
+  .header-actions { gap: 12px; flex-shrink: 0; }
+  .header-link { min-width: 24px; min-height: 32px; justify-content: center; }
+  .header-link span {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  .header-divider { display: none; }
+
   :root {
     --sidebar-width: 220px;
   }
@@ -1368,18 +1389,22 @@ select {
 }
 
 @media (max-width: 520px) {
+  :root { --header-height: 92px; }
+  .site-header { flex-direction: column; justify-content: center; gap: 6px; padding-block: 8px; }
   .site-brand {
     font-size: 18px;
+    white-space: nowrap;
   }
 
-  .header-link span,
   .language-link svg,
   .header-divider {
     display: none;
   }
 
   .header-actions {
-    gap: 12px;
+    gap: 8px;
+    width: 100%;
+    justify-content: space-between;
   }
 
   .catalog-heading h1 {

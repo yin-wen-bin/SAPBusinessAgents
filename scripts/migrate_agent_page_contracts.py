@@ -41,7 +41,6 @@ BUSINESS_KEYS = {
     "delivered-not-billed": ["delivery_document", "delivery_document_item"],
     "delivery-delay-prediction": ["sales_order", "sales_order_item", "schedule_line"],
     "due-delivery-prioritization": ["sales_order", "sales_order_item", "schedule_line"],
-    "order-to-cash-anomaly-monitor": ["sales_order", "sales_order_item"],
     "returns-credit-anomaly": ["customer_return", "customer_return_item"],
     "shortage-allocation-advisor": ["sales_order", "sales_order_item", "schedule_line"],
     "demand-forecast-planning": ["material", "plant", "requirement_date"],
@@ -248,8 +247,6 @@ def migrate(path: Path) -> None:
 
 def main() -> int:
     paths = sorted(ROOT.glob("agents/*/*/agent.json"))
-    if len(paths) != 30:
-        raise RuntimeError(f"expected 30 Agent manifests, found {len(paths)}")
     missing = sorted({json.loads(path.read_text(encoding="utf-8"))["slug"] for path in paths} - BUSINESS_KEYS.keys())
     if missing:
         raise RuntimeError(f"missing business keys for: {', '.join(missing)}")

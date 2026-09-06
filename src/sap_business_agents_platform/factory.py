@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
@@ -24,6 +25,7 @@ class AgentDraftService:
         self.settings = settings
         self.store = store
         self.author = author
+        self._creation_locks: dict[str, asyncio.Lock] = {}
 
     async def create_from_run(
         self,
@@ -33,12 +35,30 @@ class AgentDraftService:
         origin: dict[str, Any] | None = None,
         execution_plan: dict[str, Any] | None = None,
     ) -> DraftRecord:
+        key = _content_digest({"run_id": run_id, "correction": correction, "origin": origin or {}, "plan": execution_plan})
+        async with self._creation_locks.setdefault(key, asyncio.Lock()):
+            draft_id, claimed = self.store.reserve_draft_creation(key, f"draft_{uuid.uuid4().hex[:12]}")
+            if not claimed:
+                try:
+                    return self.store.get_draft(draft_id)
+                except KeyError as exc:
+                    raise DraftError("Draft generation is already pending; retry the same request later.") from exc
+            try:
+                return await self._create_from_run(run_id, correction, origin=origin, execution_plan=execution_plan, draft_id=draft_id)
+            except Exception:
+                if not (self.settings.draft_root / draft_id).exists():
+                    self.store.release_draft_creation(key, draft_id)
+                raise
+
+    async def _create_from_run(
+        self, run_id: str, correction: str, *, origin: dict[str, Any] | None,
+        execution_plan: dict[str, Any] | None, draft_id: str,
+    ) -> DraftRecord:
         run = self.store.get_run(run_id)
         if run.mode != RunMode.free_query:
             raise DraftError("Only a free_query run can become an Agent draft.")
         if run.status not in {RunStatus.completed, RunStatus.inconclusive} or not run.result or not run.plan:
             raise DraftError("The free query must finish with a validated plan before drafting an Agent.")
-        draft_id = f"draft_{uuid.uuid4().hex[:12]}"
         slug = f"free-query-{draft_id[-8:]}"
         draft_dir = (self.settings.draft_root / draft_id).resolve()
         if self.settings.draft_root.resolve() not in draft_dir.parents:
@@ -172,7 +192,16 @@ class AgentDraftService:
         return self.validate(draft_id)
 
     async def create_from_session(self, session_id: str) -> DraftRecord:
+        async with self._creation_locks.setdefault(f"session:{session_id}", asyncio.Lock()):
+            return await self._create_from_session(session_id)
+
+    async def _create_from_session(self, session_id: str) -> DraftRecord:
         session = self.store.get_free_query_session(session_id)
+        if session.get("status") == "draft_created" and session.get("draft_id"):
+            existing = self.store.get_draft(session["draft_id"])
+            source = existing.origin.get("free_query_session") or {}
+            if source.get("accepted_iteration") == session.get("accepted_iteration") and source.get("result_digest") == session.get("accepted_result_digest"):
+                return existing
         if session.get("status") != "satisfied" or not session.get("accepted_iteration"):
             raise DraftError("The latest free-query result must be accepted before drafting an Agent.")
         iteration = self.store.get_free_query_iteration(
@@ -325,6 +354,11 @@ class AgentDraftService:
             "steps": steps,
         }
 
+    def _assert_not_imported(self, draft_id: str) -> None:
+        imported = self.store.get_draft_import(draft_id)
+        if imported:
+            raise DraftError(f"Continue editing in Agent management: {imported['managed_draft_id']}")
+
     def validate(self, draft_id: str) -> DraftRecord:
         draft = self.store.get_draft(draft_id)
         path = Path(draft.path)
@@ -358,6 +392,7 @@ class AgentDraftService:
         return draft
 
     def add_review_input(self, draft_id: str, review_input: str) -> DraftRecord:
+        self._assert_not_imported(draft_id)
         draft = self.store.get_draft(draft_id)
         if draft.status == "applied":
             raise DraftError("An applied draft can no longer be revised in the isolation directory.")
@@ -376,6 +411,7 @@ class AgentDraftService:
         return self.validate(draft_id)
 
     def apply(self, draft_id: str) -> DraftRecord:
+        self._assert_not_imported(draft_id)
         draft = self.validate(draft_id)
         if draft.status != "validated":
             raise DraftError("Draft validation failed and cannot be applied.")

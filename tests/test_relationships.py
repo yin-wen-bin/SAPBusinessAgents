@@ -111,6 +111,17 @@ def test_relationship_catalog_accepts_o2c_delivery_billing_fi_chain() -> None:
     assert _catalog().validate_plans(_plan(steps)) == []
 
 
+def test_relationship_catalog_accepts_delivered_not_billed_item_and_cancellation_chain() -> None:
+    manifest = json.loads(
+        (ROOT / "agents" / "SD" / "delivered-not-billed" / "agent.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    plan = manifest["execution"]["steps"][0]["request"]["plan"]
+
+    assert _catalog().validate_plans([("delivered-not-billed", plan)]) == []
+
+
 def test_relationship_catalog_rejects_unregistered_cross_entity_binding() -> None:
     steps: list[dict[str, object]] = [
         _literal_step(

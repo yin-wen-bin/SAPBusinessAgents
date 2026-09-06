@@ -1515,7 +1515,7 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
         if path.parent.name not in {"ap-payment", "role-agent-matching"}
     ]
 
-    assert len(manifests) == 31
+    assert len(manifests) == 30
     for manifest in manifests:
         acceptance = manifest["execution"]["acceptance"]
         assert acceptance["schemaVersion"] == "2.0"
@@ -1531,10 +1531,6 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
             "billing-output-monitor": ["billing_output_status_evidence"],
             "billing-dispute-classification": ["billing_dispute_case_evidence"],
             "shortage-allocation-advisor": ["atp_availability_evidence"],
-            "order-to-cash-anomaly-monitor": [
-                "billing_output_status_evidence",
-                "billing_dispute_case_evidence",
-            ],
             "due-delivery-prioritization": [
                 "current_stock_not_historical_atp"
             ],
@@ -1581,11 +1577,14 @@ def test_agent_status_matches_terminal_three_stage_verdict() -> None:
     ]
 
     deterministic = [item for item in manifests if item.get("kind") != "platform_assistant"]
-    assert len(deterministic) == 32
+    assert len(deterministic) == 31
     for manifest in deterministic:
         verdict = manifest["validation"]["verdict"]
         expected = "passed" if verdict == "PASS" else verdict.lower()
-        assert manifest["status"] == f"Three-stage live acceptance {expected}"
+        allowed = {f"Three-stage live acceptance {expected}"}
+        if manifest["validation"].get("acceptanceMode") == "deterministic_runtime":
+            allowed.add(f"Live acceptance {expected}")
+        assert manifest["status"] in allowed
 
 
 def test_completed_fixed_result_can_be_reused_only_for_the_exact_case(tmp_path: Path) -> None:

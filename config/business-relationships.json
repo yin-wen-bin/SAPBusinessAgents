@@ -27,6 +27,13 @@
       "service_name": "API_OUTBOUND_DELIVERY_SRV",
       "odata_version": "2.0",
       "entity_set": "A_OutbDeliveryItem",
+      "field": "ReferenceSDDocumentItem",
+      "semantic": "sd_reference_document_item_id"
+    },
+    {
+      "service_name": "API_OUTBOUND_DELIVERY_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_OutbDeliveryItem",
       "field": "DeliveryDocument",
       "semantic": "delivery_document_id"
     },
@@ -63,6 +70,13 @@
       "odata_version": "2.0",
       "entity_set": "A_BillingDocument",
       "field": "BillingDocument",
+      "semantic": "billing_document_id"
+    },
+    {
+      "service_name": "API_BILLING_DOCUMENT_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_BillingDocument",
+      "field": "CancelledBillingDocument",
       "semantic": "billing_document_id"
     },
     {
@@ -1979,6 +1993,96 @@
         "odata_version": "2.0",
         "entity_set": "A_OperationalAcctgDocItemCube",
         "field": "FiscalYear"
+      }
+    },
+    {
+      "id": "sd-delivery-item-to-billing-reference-item",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "DeliveryDocumentItem"
+      },
+      "target": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_BillingDocumentItem",
+        "field": "ReferenceSDDocumentItem"
+      }
+    },
+    {
+      "id": "sd-delivery-reference-to-sales-order",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "ReferenceSDDocument"
+      },
+      "target": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_SalesOrderItem",
+        "field": "SalesOrder"
+      }
+    },
+    {
+      "id": "sd-delivery-reference-item-to-sales-order-item",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_OUTBOUND_DELIVERY_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_OutbDeliveryItem",
+        "field": "ReferenceSDDocumentItem"
+      },
+      "target": {
+        "service_name": "API_SALES_ORDER_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_SalesOrderItem",
+        "field": "SalesOrderItem"
+      }
+    },
+    {
+      "id": "sd-billing-cancelled-document-reference",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_BillingDocument",
+        "field": "CancelledBillingDocument"
+      },
+      "target": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_BillingDocument",
+        "field": "BillingDocument"
+      }
+    },
+    {
+      "id": "sd-billing-cancellation-back-reference",
+      "modes": [
+        "binding"
+      ],
+      "source": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_BillingDocument",
+        "field": "BillingDocument"
+      },
+      "target": {
+        "service_name": "API_BILLING_DOCUMENT_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_BillingDocument",
+        "field": "CancelledBillingDocument"
       }
     }
   ]

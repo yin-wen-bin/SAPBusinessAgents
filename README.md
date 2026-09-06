@@ -43,8 +43,7 @@ SAP Business Agents 是一个按 SAP 业务模块组织的可运行 Agent 目录
 | SD | [Shortage Allocation Advisor](agents/SD/shortage-allocation-advisor/) | 缺货场景的只读库存分配建议 |
 | SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/) | 客户拒票与发票争议分类 |
 | SD | [Returns and Credit Anomaly Monitor](agents/SD/returns-credit-anomaly/) | 退货及贷项异常检测 |
-| SD | [Order-to-Cash Anomaly Monitor](agents/SD/order-to-cash-anomaly-monitor/) | O2C端到端异常聚合与待办 |
-| SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/) | 订单、交货、开票、FI与回款状态 |
+| SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/) | 从销售订单追踪交货、PGI、开票与FI清账状态 |
 
 ### 仓库结构
 
@@ -274,7 +273,6 @@ Live catalog: [https://yin-wen-bin.github.io/SAPBusinessAgents/](https://yin-wen
 | SD | [Shortage Allocation Advisor](agents/SD/shortage-allocation-advisor/) | Read-only shortage allocation advice |
 | SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/) | Billing rejection and dispute classification |
 | SD | [Returns and Credit Anomaly Monitor](agents/SD/returns-credit-anomaly/) | Returns and credit anomaly detection |
-| SD | [Order-to-Cash Anomaly Monitor](agents/SD/order-to-cash-anomaly-monitor/) | End-to-end O2C anomaly worklist |
 | SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/) | Sales order through FI clearing status |
 
 ### Repository structure

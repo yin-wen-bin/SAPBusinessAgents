@@ -125,6 +125,10 @@ def _safe_csv_cell(value: Any) -> str:
     return text
 
 
+class DraftImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 class LocalConfigUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     values: dict[str, str] = Field(default_factory=dict)
@@ -888,7 +892,10 @@ def create_app(
     @app.get("/api/free-query-sessions/{session_id}")
     def get_free_query_session(session_id: str) -> dict[str, Any]:
         try:
-            return coordinator.free_query_session(session_id)
+            result = coordinator.free_query_session(session_id)
+            imported = store.get_draft_import(result["draft_id"]) if result.get("draft_id") else None
+            result["managed_draft_id"] = imported["managed_draft_id"] if imported else None
+            return result
         except KeyError as exc:
             raise HTTPException(404, "Free-query session not found") from exc
 
@@ -1046,13 +1053,29 @@ def create_app(
                 {"code": exc.code, "message": str(exc), "detail": exc.detail},
             ) from exc
 
+    def attach_management_draft(draft: Any) -> dict[str, Any]:
+        payload = draft.model_dump(mode="json")
+        try:
+            payload.update(agent_lifecycle.import_source_draft(draft.draft_id))
+        except (AgentLifecycleError, OSError, ValueError, KeyError):
+            payload.update(managed_draft_id=None, management_import_status="failed",
+                           management_import_error="management_import_failed")
+        return payload
+
+    def guard_source_draft_write(draft_id: str) -> None:
+        imported = store.get_draft_import(draft_id)
+        if imported:
+            raise HTTPException(409, {"code": "draft_managed_elsewhere",
+                "message": "Continue editing and publishing in Agent management.",
+                "managed_draft_id": imported["managed_draft_id"]})
+
     @app.post("/api/free-query-sessions/{session_id}/agent-draft", status_code=201)
     async def create_free_query_session_agent_draft(
         session_id: str,
     ) -> dict[str, Any]:
         try:
             draft = await drafts.create_from_session(session_id)
-            return draft.model_dump(mode="json")
+            return attach_management_draft(draft)
         except KeyError as exc:
             raise HTTPException(404, "Free-query session not found") from exc
         except DraftError as exc:
@@ -1530,7 +1553,7 @@ def create_app(
                 workflow_drafts.link_agent_draft(
                     str(origin["workflow_draft_id"]), str(origin["gap_id"]), draft.draft_id
                 )
-            return draft.model_dump(mode="json")
+            return attach_management_draft(draft)
         except KeyError as exc:
             raise HTTPException(404, "Run or workflow gap not found") from exc
         except WorkflowDraftError as exc:
@@ -1549,7 +1572,7 @@ def create_app(
                 workflow_drafts.link_agent_draft(
                     str(origin["workflow_draft_id"]), str(origin["gap_id"]), draft.draft_id
                 )
-            return draft.model_dump(mode="json")
+            return attach_management_draft(draft)
         except KeyError as exc:
             raise HTTPException(404, "Run or workflow gap not found") from exc
         except WorkflowDraftError as exc:
@@ -1558,6 +1581,17 @@ def create_app(
             ) from exc
         except DraftError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/authoring/drafts/{draft_id}/import-to-management")
+    def import_authoring_draft(draft_id: str, _payload: DraftImportRequest | None = None) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.import_source_draft(draft_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Source draft not found") from exc
+        except AgentLifecycleError as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, {"code": "management_import_failed", "message": "The draft could not be imported; its source is retained."}) from exc
 
     @app.get("/api/authoring/drafts/{draft_id}")
     def get_draft(draft_id: str) -> dict[str, Any]:
@@ -1568,6 +1602,7 @@ def create_app(
 
     @app.post("/api/authoring/drafts/{draft_id}/validate")
     def validate_draft(draft_id: str) -> dict[str, Any]:
+        guard_source_draft_write(draft_id)
         try:
             return drafts.validate(draft_id).model_dump(mode="json")
         except KeyError as exc:
@@ -1575,6 +1610,7 @@ def create_app(
 
     @app.post("/api/authoring/drafts/{draft_id}/input")
     def revise_draft(draft_id: str, payload: DraftInput) -> dict[str, Any]:
+        guard_source_draft_write(draft_id)
         try:
             return drafts.add_review_input(draft_id, payload.input).model_dump(mode="json")
         except KeyError as exc:
@@ -1584,6 +1620,7 @@ def create_app(
 
     @app.post("/api/authoring/drafts/{draft_id}/apply")
     def apply_draft(draft_id: str) -> dict[str, Any]:
+        guard_source_draft_write(draft_id)
         try:
             return drafts.apply(draft_id).model_dump(mode="json")
         except KeyError as exc:

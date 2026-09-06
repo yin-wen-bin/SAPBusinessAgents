@@ -7,11 +7,11 @@
     "en": "Delivered-not-Billed Monitor"
   },
   "summary": {
-    "zh": "识别已完成PGI但尚未完全开票的外向交货，并按滞留时间分级。",
-    "en": "Identifies outbound deliveries with completed goods issue that are not fully billed, and grades them by aging."
+    "zh": "按交货项目识别完全未开票、部分开票和超量开票，计算剩余数量、预计未开票净额并按账龄分级。",
+    "en": "Detects unbilled, partially billed, and overbilled delivery items; calculates remaining quantity, estimates unbilled net amount, and grades aging."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "SD / FI-AR",
   "tags": [
     "Order-to-Cash",
@@ -84,12 +84,16 @@
         "zh": [
           "GET API_OUTBOUND_DELIVERY_SRV@2.0/A_OutbDeliveryHeader",
           "GET API_OUTBOUND_DELIVERY_SRV@2.0/A_OutbDeliveryItem",
-          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem"
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocument",
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderItem"
         ],
         "en": [
           "GET API_OUTBOUND_DELIVERY_SRV@2.0/A_OutbDeliveryHeader",
           "GET API_OUTBOUND_DELIVERY_SRV@2.0/A_OutbDeliveryItem",
-          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem"
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocument",
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderItem"
         ]
       },
       "tools": [
@@ -199,7 +203,8 @@
           "minLength": 1,
           "maxLength": 10,
           "format": "date",
-          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "x-sapba-server-default": "business_date"
         }
       },
       "required": [
@@ -246,7 +251,7 @@
                   "HeaderBillingBlockReason",
                   "PlannedGoodsIssueDate"
                 ],
-                "rationale": "Load deliveries in the selected PGI period.",
+                "rationale": "Load deliveries in the selected PGI period; the Embedded Provider follows server next links and reports paging completeness.",
                 "filters": [
                   {
                     "field": "SalesOrganization",
@@ -282,10 +287,11 @@
                   "Plant",
                   "Material",
                   "ActualDeliveryQuantity",
+                  "DeliveryQuantityUnit",
                   "GoodsMovementStatus",
                   "DeliveryRelatedBillingStatus"
                 ],
-                "rationale": "Load items for selected deliveries.",
+                "rationale": "Load items for selected deliveries; deterministic output sorting is applied after complete retrieval because live metadata does not advertise delivery keys as sortable.",
                 "filter_from_previous": [
                   {
                     "field": "DeliveryDocument",
@@ -308,8 +314,13 @@
                   "ReferenceSDDocument",
                   "ReferenceSDDocumentItem",
                   "BillingQuantity",
+                  "BillingQuantityUnit",
                   "NetAmount",
                   "TransactionCurrency"
+                ],
+                "order_by": [
+                  "BillingDocument",
+                  "BillingDocumentItem"
                 ],
                 "rationale": "Load billing items referencing selected deliveries.",
                 "filter_from_previous": [
@@ -317,6 +328,130 @@
                     "field": "ReferenceSDDocument",
                     "source_step_id": "delivery_items",
                     "source_field": "DeliveryDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "ReferenceSDDocumentItem",
+                    "source_step_id": "delivery_items",
+                    "source_field": "DeliveryDocumentItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_headers",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentDate",
+                  "BillingDocumentIsCancelled",
+                  "CancelledBillingDocument",
+                  "BillingDocumentCategory"
+                ],
+                "order_by": [
+                  "BillingDocument"
+                ],
+                "rationale": "Load billing dates and cancellation relationships for the referenced billing items.",
+                "filter_from_previous": [
+                  {
+                    "field": "BillingDocument",
+                    "source_step_id": "billing_items",
+                    "source_field": "BillingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "cancellation_documents_by_reference",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentDate",
+                  "BillingDocumentIsCancelled",
+                  "CancelledBillingDocument",
+                  "BillingDocumentCategory"
+                ],
+                "order_by": [
+                  "BillingDocument"
+                ],
+                "rationale": "Load cancellation documents referenced by billing headers.",
+                "filter_from_previous": [
+                  {
+                    "field": "BillingDocument",
+                    "source_step_id": "billing_headers",
+                    "source_field": "CancelledBillingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "cancellation_documents_by_target",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentDate",
+                  "BillingDocumentIsCancelled",
+                  "CancelledBillingDocument",
+                  "BillingDocumentCategory"
+                ],
+                "order_by": [
+                  "BillingDocument"
+                ],
+                "rationale": "Load cancellation documents that point back to billing headers.",
+                "filter_from_previous": [
+                  {
+                    "field": "CancelledBillingDocument",
+                    "source_step_id": "billing_headers",
+                    "source_field": "BillingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "source_sales_items",
+                "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_SalesOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "RequestedQuantity",
+                  "RequestedQuantityUnit",
+                  "NetAmount",
+                  "TransactionCurrency"
+                ],
+                "order_by": [
+                  "SalesOrder",
+                  "SalesOrderItem"
+                ],
+                "rationale": "Load source sales-order quantities and net amounts for transparent amount proration.",
+                "filter_from_previous": [
+                  {
+                    "field": "SalesOrder",
+                    "source_step_id": "delivery_items",
+                    "source_field": "ReferenceSDDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "field": "SalesOrderItem",
+                    "source_step_id": "delivery_items",
+                    "source_field": "ReferenceSDDocumentItem",
                     "fanout": true,
                     "fetch_all_for_binding": true
                   }
@@ -449,22 +584,56 @@
       ],
       "facts": [
         "actual_goods_movement_date",
+        "sales_order",
+        "sales_order_item",
+        "delivered_quantity",
+        "delivery_unit",
+        "active_billed_quantity",
+        "remaining_quantity",
+        "billing_state",
         "is_billed",
+        "expected_delivery_net_amount",
+        "active_billed_net_amount",
+        "unbilled_net_amount",
+        "currency",
+        "amount_basis",
+        "amount_is_estimate",
+        "age_days",
+        "aging_bucket",
         "business_status"
       ],
       "metrics": [
-        "delivered_not_billed"
+        "delivered_not_billed",
+        "unbilled_items",
+        "partially_billed_items",
+        "fully_billed_items",
+        "overbilled_items",
+        "inconclusive_items"
       ],
-      "decimalFields": [],
+      "decimalFields": [
+        "delivered_quantity",
+        "active_billed_quantity",
+        "remaining_quantity",
+        "expected_delivery_net_amount",
+        "active_billed_net_amount",
+        "unbilled_net_amount"
+      ],
       "decimalMetricIds": [],
-      "currencyFields": [],
-      "unitFields": [],
+      "currencyFields": [
+        "currency"
+      ],
+      "unitFields": [
+        "delivery_unit"
+      ],
       "dateFields": [
         "actual_goods_movement_date"
       ],
       "codeSetFields": [],
       "zeroPadFields": {},
-      "booleanFields": [],
+      "booleanFields": [
+        "is_billed",
+        "amount_is_estimate"
+      ],
       "inputDefaults": {},
       "constantDefaults": {},
       "fieldAliases": {},
@@ -498,6 +667,9 @@
           "capability gap",
           "evidence unavailable",
           "inconclusive",
+          "unbilled_amount_evidence",
+          "billing_cancellation_evidence",
+          "quantity_unit_mismatch",
           "能力缺口",
           "证据不足",
           "无法确认"
@@ -506,44 +678,53 @@
       "summaryRecord": false,
       "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
       "requiredLimitations": [],
-      "businessStatusFromMetric": {
-        "metric": "delivered_not_billed",
-        "zero": "normal",
-        "nonzero": "attention"
-      },
+      "businessStatusFromMetric": {},
       "limitationsFromMetrics": {},
       "blankValueKeywords": {},
       "blockingLimitations": [],
       "ignoredNoticeKeywords": [],
       "zeroFactWhenMetricZero": {},
       "recordScope": "",
-      "metricDefinitions": {},
-      "businessStatusDefinition": "",
-      "businessStatusFromAnyPositiveMetric": {}
+      "metricDefinitions": {
+        "delivered_not_billed": "Count of PGI-complete delivery items classified as unbilled or partially_billed; overbilled and inconclusive items are reported separately.",
+        "unbilled_items": "Count of items whose active billed quantity is within 0.001 of zero while remaining quantity exceeds 0.001.",
+        "partially_billed_items": "Count of items whose active billed quantity exceeds 0.001 but is below delivered quantity minus 0.001.",
+        "fully_billed_items": "Count of items whose delivered and active billed quantities differ by no more than 0.001.",
+        "overbilled_items": "Count of items whose active billed quantity exceeds delivered quantity by more than 0.001.",
+        "inconclusive_items": "Count of items whose quantity state cannot be established from complete, unit-consistent delivery, billing, pagination, reference, and cancellation evidence."
+      },
+      "businessStatusDefinition": "attention when any item is unbilled, partially_billed, or overbilled; inconclusive when evidence gaps remain without a confirmed anomaly; normal only when complete sources prove every PGI-complete item fully billed.",
+      "businessStatusFromAnyPositiveMetric": {
+        "metrics": [
+          "delivered_not_billed",
+          "overbilled_items"
+        ],
+        "zero": "normal",
+        "positive": "attention"
+      }
     }
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-08-20T05:19:35.535162+00:00",
+    "testedAt": "2026-09-06T15:25:40+08:00",
     "evidenceScope": "complete",
     "providers": [
-      "codex-app-direct-sap",
       "embedded-sap-odata"
     ],
     "summary": {
-      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
-      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+      "zh": "实时Schema、Embedded直接GET基线与固定Agent的项目级业务结果一致；部分开票、取消和超量开票状态本次未观测。",
+      "en": "Live schema, the direct Embedded GET baseline, and the fixed Agent agree at item grain; partial billing, cancellation, and overbilling were not observed in this run."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
     "executable": true,
-    "freeQueryComparison": "MATCH",
+    "acceptanceMode": "deterministic_runtime",
+    "freeQueryComparison": "NOT_TESTED",
     "fixedAgentComparison": "MATCH",
-    "baselineRuntime": "codex_app_direct_sap",
+    "baselineRuntime": "embedded_direct_sap",
     "usedSapBusinessAgentsForBaseline": false,
-    "codexDirectBaselineHash": "sha256:f0914a309e6b70d11547f25d226fa13ff56dc75d11eedded39418d0599d6c242",
-    "freeQueryHash": "sha256:5b632c66285997b7df20321554eff1c96d4eb97c60f369608c3fec5e274dde01",
-    "adjudicatedResultHash": "sha256:f0914a309e6b70d11547f25d226fa13ff56dc75d11eedded39418d0599d6c242",
-    "fixedAgentHash": "sha256:f0914a309e6b70d11547f25d226fa13ff56dc75d11eedded39418d0599d6c242",
-    "comparisonHash": "sha256:65cb364e4a87e035afd2f9bd84201f2f14f2841ebd8991341445eb68d179d0d6"
+    "codexDirectBaselineHash": "sha256:bd94ddd7e3250601d686be0a5be277500d874e38a2da2a838179e1dc2a98bc0a",
+    "adjudicatedResultHash": "sha256:bd94ddd7e3250601d686be0a5be277500d874e38a2da2a838179e1dc2a98bc0a",
+    "fixedAgentHash": "sha256:bd94ddd7e3250601d686be0a5be277500d874e38a2da2a838179e1dc2a98bc0a",
+    "comparisonHash": "sha256:7373502dea6563821b16affb3186ab41d5ec97734e2f1fc91287273595ecfa44"
   }
 }

@@ -42,6 +42,7 @@ export interface ExecutionInputProperty {
   placeholder?: LocalizedText;
   default?: string | number | boolean | null | unknown[] | Record<string, unknown>;
   "x-sapba-server-default"?: boolean | "business_date";
+  "x-sapba-not-after-business-date"?: boolean;
   "x-sapba-sap-identifier"?: boolean;
   "x-sapba-input-normalization"?: "uppercase" | "preserve";
   "x-sapba-internal"?: boolean;
@@ -105,6 +106,7 @@ export interface AgentExecutionStep {
   skillId?: string;
   failurePolicy?: "fail_run" | "record_gap";
   when?: { source: string; equals: boolean };
+  onSkip?: Record<string, unknown>;
 }
 
 export interface AgentValidation {
@@ -117,7 +119,7 @@ export interface AgentValidation {
   executable?: boolean;
   acceptanceMode?: "three_stage" | "deterministic_runtime";
   caseId?: string;
-  baselineRuntime?: "codex_app_direct_sap" | "embedded-odata";
+  baselineRuntime?: "codex_app_direct_sap" | "embedded-odata" | "embedded_direct_sap";
   runtimeCaseIds?: string[];
   workflowRunIds?: string[];
   usedSapBusinessAgentsForBaseline?: boolean;
@@ -128,6 +130,13 @@ export interface AgentValidation {
   comparisonHash?: string;
   freeQueryComparison?: "MATCH" | "MISMATCH" | "BLOCKED" | "NOT_TESTED";
   fixedAgentComparison?: "MATCH" | "MISMATCH" | "BLOCKED" | "NOT_TESTED";
+  frontendValidation?: "PASS" | "PARTIAL" | "FAIL" | "BLOCKED" | "NOT_TESTED";
+  artifactValidation?: "PASS" | "PARTIAL" | "FAIL" | "BLOCKED" | "NOT_TESTED";
+  campaignHash?: string;
+  campaignCertificationDigest?: string;
+  agentCertificationDigest?: string;
+  missingCoverageTags?: string[];
+  candidateLifecycleState?: string;
   blockingLimitations?: string[];
   focusedReplay?: {
     runId: string;
@@ -162,10 +171,11 @@ export interface AgentAcceptance {
   fieldExtractors?: Record<string, unknown>;
   currencyFromDecimal?: Record<string, unknown>;
   valueMappings?: Record<string, unknown>;
+  preserveLiteralValues?: string[];
   metricValueMappings?: Record<string, unknown>;
   limitationKeywords?: Record<string, string[]>;
   summaryRecord?: boolean;
-  currencyAndUnitPolicy: "compare_only_when_same_or_conversion_validated";
+  currencyAndUnitPolicy?: "compare_only_when_same_or_conversion_validated";
   requiredLimitations: string[];
   businessStatusFromMetric?: Record<string, unknown>;
   limitationsFromMetrics?: Record<string, Record<string, string>>;
@@ -353,6 +363,10 @@ export interface AgentDefinition {
   transactions: string[];
   tables: string[];
   systems: string[];
+  managedRule?: {
+    entrypoint: string;
+    sha256: string;
+  };
   inputs: LocalizedList;
   outputs: LocalizedList;
   guardrails: LocalizedList;

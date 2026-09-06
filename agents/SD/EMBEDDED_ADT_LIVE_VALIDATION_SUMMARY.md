@@ -8,6 +8,9 @@
 - ADT平台预检：`blocked`
 - 原始证据：仅保存在被忽略的 `.local-data/live-tests/embedded-adt/`。
 - 增量复测：`billing-block-diagnosis` 于2026-08-23使用Embedded Provider `2.0.0`和VBUV ADT补证通过三阶段验收；其原始证据位于被忽略的 `.local-data/live-tests/billing-block-unblock/`。
+- 增量复测：`delivered-not-billed` 0.2.0于2026-09-06使用Embedded Provider `2.0.0`完成6次GET，18条项目记录均完整且与直接基线Hash一致；部分开票、取消和超量开票状态未观测。
+- 定义回归：`order-to-cash-status` 0.1.1于2026-09-06仅以销售订单号完成9次GET，订单、交货、PGI和开票已确认，FI清账未确认，业务状态保持`partial`。
+- 历史快照说明：`order-to-cash-anomaly-monitor` 后续已退役；原表行和“SD 11 Agent”标题仅保留用于审计，不代表当前 Catalog。
 
 | Agent | 技术状态 | 业务结论 | SAP GET | 查询源完整 | 关键缺口 |
 | --- | --- | --- | ---: | --- | --- |

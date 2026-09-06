@@ -19,8 +19,21 @@
     {
       "id": "DLV-DEMO-01",
       "goods_movement_complete": true,
-      "billing_status": "B",
-      "actual_goods_movement_date": "2026-07-20"
+      "delivery_document": "DLV-DEMO-01",
+      "delivery_document_item": "000010",
+      "sales_order": "SO-DEMO-01",
+      "sales_order_item": "000010",
+      "actual_goods_movement_date": "2026-07-20",
+      "delivered_quantity": "10",
+      "delivery_unit": "PC",
+      "active_billed_quantity": "4",
+      "billing_unit": "PC",
+      "expected_delivery_net_amount": "100.00",
+      "active_billed_net_amount": "40.00",
+      "unbilled_net_amount": "60.00",
+      "currency": "USD",
+      "amount_basis": "sales_order_item_net_amount_proration",
+      "amount_is_estimate": true
     }
   ]
 }

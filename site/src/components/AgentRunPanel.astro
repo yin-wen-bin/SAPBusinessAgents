@@ -203,6 +203,7 @@ const runtimeMessages = {
                   title={property.description?.[locale]}
                   required={execution.inputSchema.required?.includes(name)}
                   data-sensitive={property["x-sapba-sensitive"] === true ? "true" : undefined}
+                  data-server-default={property["x-sapba-server-default"] === "business_date" ? "business_date" : undefined}
                   autocomplete={property["x-sapba-sensitive"] === true ? "off" : undefined}
                 />
               )}
@@ -489,6 +490,14 @@ const runtimeMessages = {
     const error = panel.querySelector<HTMLElement>(".runtime-form-error");
     const messages = JSON.parse(panel.dataset.messages || "{}") as LocalizedMessages;
     const dateRangePairs = JSON.parse(panel.dataset.dateRangePairs || "[]") as Array<{ from?: string; to?: string; maxDays?: number }>;
+    form?.querySelectorAll<HTMLInputElement>('input[type="date"][data-server-default="business_date"]').forEach((field) => {
+      if (field.value) return;
+      const now = new Date();
+      const year = String(now.getFullYear()).padStart(4, "0");
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const day = String(now.getDate()).padStart(2, "0");
+      field.value = `${year}-${month}-${day}`;
+    });
     const addObjectRow = (field: HTMLElement, source?: HTMLElement) => {
       const rows = field.querySelector<HTMLElement>("[data-object-array-rows]");
       const template = field.querySelector<HTMLTemplateElement>("[data-object-array-template]");

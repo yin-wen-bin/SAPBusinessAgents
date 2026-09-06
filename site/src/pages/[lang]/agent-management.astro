@@ -1,7 +1,7 @@
 ---
 import SiteLayout from "../../layouts/SiteLayout.astro";
 import AgentManagementCenter from "../../components/AgentManagementCenter";
-import { agentManagementPath, runPath } from "../../lib/urls";
+import { agentManagementPath, askPath, runPath } from "../../lib/urls";
 import type { Locale } from "../../lib/types";
 
 export function getStaticPaths() {
@@ -19,5 +19,5 @@ const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
   locale={locale}
   alternateHref={agentManagementPath(base, other)}
 >
-  <AgentManagementCenter apiBase={apiBase} locale={locale} runPath={runPath(base, locale)} client:load />
+  <AgentManagementCenter apiBase={apiBase} locale={locale} runPath={runPath(base, locale)} askPath={askPath(base, locale)} client:load />
 </SiteLayout>

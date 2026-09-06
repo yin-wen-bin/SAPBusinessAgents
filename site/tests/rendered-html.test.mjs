@@ -23,7 +23,7 @@ test("static catalog contains all agents and the GitHub Pages base path", async 
   assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 1);
   assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
-  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 12);
+  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 11);
   assert.match(html, /class="odata-version-tag">V2</);
   assert.doesNotMatch(html, /href="\/zh\//);
 });
@@ -113,6 +113,11 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   const globalStyles = await readFile(path.join("src", "styles", "global.css"), "utf8");
   assert.match(zh, /Agent 管理中心/);
   assert.match(en, /Agent management center/);
+  for (const [locale, html] of [["zh", zh], ["en", en]]) {
+    assert.match(html, new RegExp(`class="agent-create-link" href="/SAPBusinessAgents/${locale}/ask/"`));
+    assert.equal((html.match(/<select/g) || []).length, 3);
+    assert.doesNotMatch(html, /agent-tabs|agent-create-form/);
+  }
   assert.match(component, /创建新版本/);
   assert.match(component, /GET-only 真机验证/);
   assert.match(component, /发布并启用/);
@@ -177,12 +182,12 @@ test("supplier performance accepts punctuated SAP identifiers and localizes run 
   assert.match(panelSource, /caught instanceof RunCreateHttpError/);
 });
 
-test("SD detail pages render eleven execution-mapped workflows", async () => {
+test("SD detail pages render ten execution-mapped workflows", async () => {
   const slugs = [
     "delivered-not-billed", "billing-block-diagnosis", "billing-completeness-check",
     "billing-output-monitor", "delivery-delay-prediction", "due-delivery-prioritization",
     "shortage-allocation-advisor", "billing-dispute-classification", "returns-credit-anomaly",
-    "order-to-cash-anomaly-monitor", "order-to-cash-status",
+    "order-to-cash-status",
   ];
   for (const slug of slugs) {
     const zh = await readPage("zh", "agents", "SD", slug);
@@ -194,6 +199,22 @@ test("SD detail pages render eleven execution-mapped workflows", async () => {
     }
     assert.match(zh, /严格只读/);
   }
+});
+
+test("retired O2C anomaly monitor no longer has a runnable page", async () => {
+  await assert.rejects(
+    () => readPage("zh", "agents", "SD", "order-to-cash-anomaly-monitor"),
+    (error) => error?.code === "ENOENT",
+  );
+});
+
+test("delivered-not-billed renders an editable business-date default marker", async () => {
+  const zh = await readPage("zh", "agents", "SD", "delivered-not-billed");
+  const panelSource = await readFile(path.join("src", "components", "AgentRunPanel.astro"), "utf8");
+  assert.match(zh, /name="date_to"[^>]*type="date"[^>]*data-server-default="business_date"/);
+  assert.match(panelSource, /input\[type="date"\]\[data-server-default="business_date"\]/);
+  assert.match(panelSource, /if \(field\.value\) return/);
+  assert.match(panelSource, /field\.value = `\$\{year\}-\$\{month\}-\$\{day\}`/);
 });
 
 test("English catalog reuses the SAPSkillhub UI structure", async () => {

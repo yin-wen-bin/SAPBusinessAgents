@@ -70,15 +70,85 @@ def _identifier(row: JsonObject, index: int) -> str:
 
 def _delivered_not_billed(records: list[JsonObject], as_of: date):
     findings: list[JsonObject] = []
+    details: list[JsonObject] = []
+    blockers: list[str] = []
+    tolerance = Decimal("0.001")
+
+    def optional_decimal(value: Any) -> Decimal | None:
+        if value in (None, ""):
+            return None
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+        return parsed if parsed.is_finite() else None
+
     for index, row in enumerate(records):
-        if not _truthy(row.get("goods_movement_complete")) or _complete(row.get("billing_status")):
+        if not _truthy(row.get("goods_movement_complete")):
             continue
+        delivered = optional_decimal(row.get("delivered_quantity"))
+        billed = optional_decimal(row.get("active_billed_quantity"))
+        delivery_unit = str(row.get("delivery_unit") or "").strip().upper()
+        billing_unit = str(row.get("billing_unit") or delivery_unit).strip().upper()
         movement_date = _date(row.get("actual_goods_movement_date"))
         age = max((as_of - movement_date).days, 0) if movement_date else None
-        severity = "high" if age is not None and age > 7 else "medium"
         ref = _identifier(row, index)
-        findings.append(_finding("DELIVERED_NOT_BILLED", severity, f"{ref} 已发货但未完全开票" + (f"，已滞留 {age} 天" if age is not None else ""), ref))
-    return ("attention" if findings else "complete", None, findings, [], ["复核开票到期清单并解除业务冻结"] if findings else [], [])
+        state = "inconclusive"
+        remaining: Decimal | None = None
+        if (
+            delivered is not None
+            and billed is not None
+            and delivered >= 0
+            and billed >= 0
+            and delivery_unit
+            and billing_unit == delivery_unit
+            and movement_date is not None
+        ):
+            remaining = max(delivered - billed, Decimal(0))
+            if billed > delivered + tolerance:
+                state = "overbilled"
+            elif abs(delivered - billed) <= tolerance:
+                state = "fully_billed"
+            elif billed <= tolerance and remaining > tolerance:
+                state = "unbilled"
+            elif billed > tolerance and billed < delivered - tolerance:
+                state = "partially_billed"
+        if state == "inconclusive":
+            blockers.append(f"{ref}: 数量、单位、PGI日期或取消关系证据不足")
+        aging_bucket = (
+            "low" if age is not None and age <= 7
+            else "medium" if age is not None and age <= 30
+            else "high" if age is not None and age <= 60
+            else "critical" if age is not None
+            else "unknown"
+        )
+        normalized = {
+            **row,
+            "billing_state": state,
+            "remaining_quantity": str(remaining) if remaining is not None else None,
+            "age_days": age,
+            "aging_bucket": aging_bucket,
+            "amount_basis": row.get("amount_basis") or "sales_order_item_net_amount_proration",
+            "amount_is_estimate": row.get("amount_is_estimate", True),
+        }
+        details.append(normalized)
+        if state != "fully_billed":
+            code = {
+                "unbilled": "DELIVERED_NOT_BILLED",
+                "partially_billed": "PARTIALLY_BILLED",
+                "overbilled": "OVERBILLED",
+                "inconclusive": "BILLING_STATE_INCONCLUSIVE",
+            }[state]
+            findings.append(
+                _finding(
+                    code,
+                    "critical" if state in {"overbilled", "inconclusive"} else aging_bucket,
+                    f"{ref}: {state}" + (f"，账龄 {age} 天" if age is not None else ""),
+                    ref,
+                )
+            )
+    status = "attention" if any(item["code"] != "BILLING_STATE_INCONCLUSIVE" for item in findings) else "unknown" if blockers else "complete"
+    return (status, None, findings, sorted(set(blockers)), ["按账龄复核未开票、部分开票和超量开票项目"] if findings else [], details)
 
 
 def _billing_block(records: list[JsonObject], as_of: date):
@@ -244,20 +314,10 @@ def _returns_credit(records: list[JsonObject], as_of: date):
     return ("attention" if findings else "complete", None, findings, [], ["复核异常退货、贷项及审批证据"] if findings else [], [])
 
 
-def _o2c_anomaly(records: list[JsonObject], as_of: date):
-    del as_of
-    rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
-    ordered = sorted(records, key=lambda r: (-rank.get(str(r.get("severity") or "low").lower(), 0), -float(r.get("amount_impact") or 0), -int(r.get("age_days") or 0), str(r.get("id") or "")))
-    findings = [_finding(str(r.get("code") or "O2C_ANOMALY"), str(r.get("severity") or "medium"), str(r.get("message") or "O2C流程异常"), _identifier(r, i)) for i, r in enumerate(ordered)]
-    completeness = sum(float(r.get("evidence_completeness") or 0) for r in ordered) / len(ordered) if ordered else 1
-    blockers = ["聚合证据完整度低于80%"] if completeness < 0.8 else []
-    return ("attention" if findings else "complete", None, findings, blockers, ["按严重度、金额和老化天数处理统一待办"] if findings else [], ordered)
-
-
 def _o2c_status(records: list[JsonObject], as_of: date):
     del as_of
     if not records:
-        return ("unknown", None, [], ["未找到订单到现金凭证链"], ["确认销售订单、客户PO、交货或发票标识"], [])
+        return ("unknown", None, [], ["未找到订单到现金凭证链"], ["确认销售订单号"], [])
     row = records[0]
     stages = [
         ("sales_order", "订单"), ("delivery", "交货"), ("goods_issue", "PGI"),
@@ -282,7 +342,6 @@ SPECS: dict[str, AgentSpec] = {
     "shortage-allocation-advisor": AgentSpec("shortage-allocation-advisor", "shortage-allocation-advisor", "Shortage Allocation Advisor", _shortage_allocation),
     "billing-dispute-classification": AgentSpec("billing-dispute-classification", "billing-dispute-classification", "Billing Dispute Classification", _billing_dispute),
     "returns-credit-anomaly": AgentSpec("returns-credit-anomaly", "returns-credit-anomaly", "Returns and Credit Anomaly Monitor", _returns_credit),
-    "order-to-cash-anomaly-monitor": AgentSpec("order-to-cash-anomaly-monitor", "order-to-cash-anomaly-monitor", "Order-to-Cash Anomaly Monitor", _o2c_anomaly),
     "order-to-cash-status": AgentSpec("order-to-cash-status", "order-to-cash-status", "Order-to-Cash Status", _o2c_status),
 }
 

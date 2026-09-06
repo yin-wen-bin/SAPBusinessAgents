@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -443,6 +444,29 @@ def test_server_defaults_apply_only_to_omitted_opted_in_fields() -> None:
         pass
     else:
         raise AssertionError("An explicit empty required input must not be replaced by a default")
+
+
+def test_business_date_server_default_fills_only_an_omitted_date() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "date_to": {
+                "type": "string",
+                "format": "date",
+                "x-sapba-server-default": "business_date",
+            }
+        },
+        "required": ["date_to"],
+        "additionalProperties": False,
+    }
+
+    resolved, fields = _resolve_server_defaults({}, schema)
+    assert resolved == {"date_to": date.today().isoformat()}
+    assert fields == ["date_to"]
+
+    custom, fields = _resolve_server_defaults({"date_to": "2026-08-31"}, schema)
+    assert custom == {"date_to": "2026-08-31"}
+    assert fields == []
 
 
 def test_fixed_agent_input_is_normalized_before_first_persistence(tmp_path: Path) -> None:
@@ -1196,7 +1220,6 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "month-end-closing",
         "mrp-exception-analysis",
         "new-sales-demand-coverage",
-        "order-to-cash-anomaly-monitor",
         "procure-to-pay-status",
         "order-to-cash-status",
         "production-order-monitoring",
@@ -2468,6 +2491,15 @@ def test_accepted_free_query_session_generates_traceable_needs_review_agent_draf
         ).json()
         assert locked["status"] == "draft_created"
         assert locked["draft_id"] == drafted.json()["draft_id"]
+        managed_id = drafted.json()["managed_draft_id"]
+        assert managed_id and locked["managed_draft_id"] == managed_id
+        repeated = client.post(f"/api/free-query-sessions/{created['session_id']}/agent-draft").json()
+        assert repeated["draft_id"] == drafted.json()["draft_id"]
+        assert repeated["managed_draft_id"] == managed_id
+        managed = client.get(f"/api/authoring/agents/{managed_id}").json()
+        assert managed["status"] == "needs_review"
+        assert managed["validation"]["verdict"] == "NOT_TESTED"
+        assert managed["metadata"]["origin"]["free_query_session"] == origin
 
 
 def test_non_deterministic_agent_can_start_a_guided_read_only_query(tmp_path: Path) -> None:
@@ -2525,6 +2557,46 @@ def test_validated_free_query_creates_isolated_agent_draft(tmp_path: Path) -> No
         assert (Path(draft["path"]) / "content.en.md").is_file()
         assert (Path(draft["path"]) / "src" / "rules.py").is_file()
         assert (Path(draft["path"]) / "docs" / "data-contract.json").is_file()
+
+
+def test_draft_creation_import_failure_retries_existing_source_and_guards_legacy_writes(tmp_path: Path, monkeypatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from sap_business_agents_platform.agent_lifecycle import AgentLifecycleError
+    provider = FakeEmbeddedProvider()
+    app = create_app(_settings(tmp_path), planner=FakePlanner(), embedded_provider=provider)
+    with TestClient(app) as client:
+        run_id = client.post("/api/runs", json={"mode": "free_query", "query": "查询采购订单 4500000001"}).json()["run_id"]
+        _wait(client, run_id)
+        calls_before = len(provider.executed_plans)
+        service = app.state.agent_lifecycle
+        original_import = service.import_source_draft
+        monkeypatch.setattr(service, "import_source_draft", lambda _: (_ for _ in ()).throw(AgentLifecycleError("temporary", code="test_failure")))
+        route = f"/api/runs/{run_id}/create-agent-draft"
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            responses = list(pool.map(lambda _: client.post(route, json={"correction": ""}).json(), range(3)))
+        assert len({item["draft_id"] for item in responses}) == 1
+        source_id = responses[0]["draft_id"]
+        assert all(item["management_import_status"] == "failed" for item in responses)
+        monkeypatch.setattr(service, "import_source_draft", original_import)
+        assert client.post(f"/api/authoring/drafts/{source_id}/import-to-management", json={"path": "../outside"}).status_code == 422
+        assert client.post("/api/authoring/drafts/draft_unknown/import-to-management").status_code == 404
+        imported = client.post(f"/api/authoring/drafts/{source_id}/import-to-management").json()
+        managed_id = imported["managed_draft_id"]
+        assert client.post(route, json={"correction": ""}).json()["managed_draft_id"] == managed_id
+        assert client.post("/api/authoring/agents", json={"source": "free_query", "runId": run_id}).json()["draft_id"] == managed_id
+        listed = client.get("/api/authoring/agents?state=unpublished").json()
+        assert sum(item["draft_id"] == managed_id for item in listed) == 1
+        managed = client.get(f"/api/authoring/agents/{managed_id}").json()
+        result = client.get(f"/api/runs/{run_id}").json()["result"]
+        assert managed["metadata"]["source_result_available"] is True
+        assert managed["metadata"]["source_summary"] == result["summary"]
+        assert managed["metadata"]["source_evidence_refs"] == sorted({item["evidence_ref"] for item in result["evidence"] if item.get("evidence_ref")})
+        for action, body in [("input", {"input": "change"}), ("apply", {}), ("validate", {})]:
+            rejected = client.post(f"/api/authoring/drafts/{source_id}/{action}", json=body)
+            assert rejected.status_code == 409
+            assert rejected.json()["detail"]["managed_draft_id"] == managed_id
+        assert client.get(f"/api/authoring/drafts/{source_id}").status_code == 200
+        assert len(provider.executed_plans) == calls_before
 
 
 def test_gap_origin_is_preserved_and_linked_when_free_query_becomes_agent_draft(

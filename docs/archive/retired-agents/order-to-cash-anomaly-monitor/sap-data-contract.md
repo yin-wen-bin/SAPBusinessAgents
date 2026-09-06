@@ -1,5 +1,7 @@
 # SAP数据契约
 
+> 历史快照：该 Agent 已退役，本契约仅用于审计，不代表当前 Catalog 或可运行能力。
+
 ## 输入边界
 
 - 根对象必须包含 `metadata`、`scope` 和 `records`。

@@ -7,11 +7,11 @@
     "en": "Order-to-Cash Status"
   },
   "summary": {
-    "zh": "从销售订单、客户PO、交货或发票出发，追踪到FI清账和回款状态。",
-    "en": "Traces a sales order, customer PO, delivery or invoice through FI clearing and collection status."
+    "zh": "从销售订单出发，追踪交货、PGI、开票和FI清账状态。",
+    "en": "Starts from a sales order and traces delivery, PGI, billing, and FI clearing status."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "owner": "SD / FI-AR",
   "tags": [
     "Order-to-Cash",
@@ -969,15 +969,15 @@
   },
   "validation": {
     "verdict": "PASS",
-    "testedAt": "2026-08-20T05:19:41.273991+00:00",
+    "testedAt": "2026-09-06T15:29:30+08:00",
     "evidenceScope": "complete",
     "providers": [
       "codex-app-direct-sap",
       "embedded-sap-odata"
     ],
     "summary": {
-      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
-      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+      "zh": "0.1.1仅收窄公开定义；销售订单单入口与固定Agent回归一致，原三级业务验收仍有效。",
+      "en": "Version 0.1.1 only narrows the public definition; the sales-order-only entry matches the fixed-Agent regression and the prior three-stage business acceptance remains valid."
     },
     "reportPath": "docs/three-stage-live-acceptance.md",
     "executable": true,

@@ -26,9 +26,9 @@ def _steps(manifest: dict[str, object]) -> list[dict[str, object]]:
     return [step for step in steps if isinstance(step, dict)]
 
 
-def test_all_twelve_sd_agents_use_schema_v2_embedded_reads() -> None:
+def test_all_eleven_sd_agents_use_schema_v2_embedded_reads() -> None:
     manifests = _manifests()
-    assert len(manifests) == 12
+    assert len(manifests) == 11
     for manifest in manifests:
         assert manifest["schemaVersion"] == 2
         assert {step.get("executor") for step in _steps(manifest)} <= {
@@ -52,7 +52,7 @@ def test_sd_acceptance_outputs_use_positive_provider_and_write_safety_evidence()
     assert "自动 Provider 回退调用数" not in generator
 
     reports = sorted(SD_ROOT.glob("*/docs/live-sap-test-report.md"))
-    assert len(reports) == 11
+    assert len(reports) == 10
     acceptance_outputs = [SD_ROOT / "EMBEDDED_ADT_LIVE_VALIDATION_SUMMARY.md", *reports]
     retired_provider_name = "SAP" + "Claw"
     for path in acceptance_outputs:

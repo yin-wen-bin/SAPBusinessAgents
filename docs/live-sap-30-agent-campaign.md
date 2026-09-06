@@ -4,6 +4,8 @@ All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgent
 
 The `billing-block-diagnosis` row reflects the 2026-08-23 incremental VBUV revalidation. The `inventory-health-balancing` row reflects the 2026-08-24 FIFO quantity-aging and batch-expiry revalidation. The PP production-variance row reflects the 2026-08-25 revalidation. The CO product-cost-variance row reflects 2026-08-26; internal-order/project-control reflects its 0.4.0 resolver, value-type, ledger/currency-role, and fail-closed commitment revalidation on 2026-08-27. All other rows retain their original campaign evidence.
 
+Historical-snapshot notice: `order-to-cash-anomaly-monitor` was later retired. Its row and the original campaign totals are retained for audit and do not represent the current Catalog.
+
 ## Summary
 
 - PASS / executable: 19

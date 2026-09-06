@@ -8,3 +8,7 @@ def test_delivered_not_billed_demo_contract_and_rule():
     assert report["status"] == "attention"
     assert report["read_only"] is True
     assert report["pagination"]["complete"] is True
+    assert report["details"][0]["billing_state"] == "partially_billed"
+    assert report["details"][0]["remaining_quantity"] == "6"
+    assert report["details"][0]["aging_bucket"] == "medium"
+    assert report["findings"][0]["code"] == "PARTIALLY_BILLED"

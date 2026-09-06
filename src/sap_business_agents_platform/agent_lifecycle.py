@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import json
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import uuid
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from .config import Settings
@@ -51,6 +53,7 @@ class AgentLifecycleService:
         self.legacy_factory = legacy_factory
         self.skills = skills
         self.draft_root = (settings.draft_root / "agents").resolve()
+        self._import_lock = RLock()
 
     def _require_skill_dependencies(self, manifest: dict[str, Any]) -> list[str]:
         if self.skills is None:
@@ -134,6 +137,9 @@ class AgentLifecycleService:
             if self.legacy_factory is None:
                 raise AgentLifecycleError("Agent Factory is unavailable.", code="agent_factory_unavailable")
             generated = await self.legacy_factory.create_from_run(str(payload.run_id))
+            if not payload.agent_id:
+                imported = self.import_source_draft(generated.draft_id)
+                return self.get_draft(imported["managed_draft_id"])
             package = self._capture_package(Path(generated.path))
             if payload.agent_id:
                 package["manifest"]["slug"] = str(payload.agent_id)
@@ -197,6 +203,80 @@ class AgentLifecycleService:
         )
         return self.get_draft(draft_id)
 
+    def import_source_draft(self, source_id: str) -> dict[str, Any]:
+        """Import an existing isolated package; never regenerate or run SAP."""
+        with self._import_lock:
+            imported = self.store.get_draft_import(source_id)
+            if imported:
+                try:
+                    self.store.get_agent_authoring_draft(imported["managed_draft_id"])
+                except KeyError as exc:
+                    raise AgentLifecycleError("The imported management draft was deleted.", code="managed_draft_deleted", detail={"managed_draft_id": imported["managed_draft_id"]}) from exc
+                return {"draft_id": source_id, "managed_draft_id": imported["managed_draft_id"], "management_import_status": "complete"}
+            source = self.store.get_draft(source_id)
+            if source.status == "applied":
+                raise AgentLifecycleError("An applied source draft cannot be imported.", code="source_draft_applied")
+            root = self.settings.draft_root.resolve()
+            path = Path(source.path).resolve()
+            if not re.fullmatch(r"draft_[a-zA-Z0-9_-]+", source_id) or path != root / source_id or root not in path.parents:
+                raise AgentLifecycleError("Source draft escaped its registered directory.", code="agent_draft_path_invalid")
+            package = self._capture_package(path)
+            self._assert_manageable(package["manifest"])
+            source_hash = _json_digest(package)
+            managed_id = "agent_draft_" + hashlib.sha256(source_id.encode()).hexdigest()[:24]
+            # Deterministic identity also recovers a process interruption between the two saves.
+            try:
+                previous = self.store.get_agent_authoring_draft(managed_id)
+            except KeyError:
+                previous = None
+            if previous:
+                if previous.get("metadata", {}).get("source_draft_id") != source_id:
+                    raise AgentLifecycleError("Draft import identity conflict.", code="agent_draft_conflict")
+                source_hash = previous["metadata"]["source_package_hash"]
+            else:
+                package["manifest"]["validation"] = _not_tested_validation()
+                try:
+                    source_result = self.store.get_run(source.run_id).result
+                except KeyError:
+                    source_result = None
+                now = utc_now()
+                target = self._draft_path(managed_id)
+                self._write_package(target, package)
+                draft = {
+                    "draft_id": managed_id, "agent_id": package["manifest"]["slug"],
+                    "source_type": "free_query", "status": "needs_review", "revision": 1,
+                    "path": str(target), "thread_id": None, "source_version": None, "source_hash": None,
+                    "target_version": package["manifest"].get("version", "0.1.0"),
+                    "risk_class": "behavior_change", "validation_run_id": None,
+                    "validation": _not_tested_validation(),
+                    "metadata": {"source_draft_id": source_id, "source_run_id": source.run_id,
+                                 "source_package_hash": source_hash, "source_validation": source.validation,
+                                 "source_result_available": source_result is not None,
+                                 "source_summary": copy.deepcopy(source_result.summary) if source_result else None,
+                                 "source_evidence_refs": sorted({
+                                     str(item["evidence_ref"]) for item in source_result.evidence
+                                     if isinstance(item, dict) and item.get("evidence_ref")
+                                 }) if source_result else [],
+                                 "private_source_files": sorted(
+                                     (set(package.get("files", {})) - _GENERATED_PUBLIC_FILES)
+                                     | set(package.get("binary_files", {}))
+                                 ),
+                                 "origin": copy.deepcopy(source.origin)},
+                    "created_at": now, "updated_at": now,
+                }
+                self.store.save_agent_authoring_draft(draft, package=package, diff=[])
+            if not self.store.list_agent_conversation_turns(managed_id):
+                self.store.save_agent_conversation_turn({
+                    "draft_id": managed_id, "turn": 1, "parent_turn": None, "kind": "initial",
+                    "status": "completed", "decision": {"source": "free_query", "source_draft_id": source_id},
+                    "base_revision": None, "result_revision": 1, "diff": [], "completed_at": utc_now(),
+                })
+            self.store.save_draft_import(source_id, managed_id, source_hash)
+            self._audit(package["manifest"]["slug"], "import_source_draft", None,
+                        package["manifest"].get("version"), source_hash, None, None,
+                        {"source_draft_id": source_id, "managed_draft_id": managed_id})
+            return {"draft_id": source_id, "managed_draft_id": managed_id, "management_import_status": "complete"}
+
     def create_version_draft(
         self,
         agent_id: str,
@@ -257,6 +337,15 @@ class AgentLifecycleService:
             )
         items: list[dict[str, Any]] = []
         for draft in self.store.list_agent_authoring_drafts():
+            sync_error = None
+            if draft.get("status") == "validating":
+                try:
+                    if not draft.get("validation_run_id"):
+                        raise KeyError("Missing validation run")
+                    self.validation_report(draft["draft_id"])
+                    draft = self.store.get_agent_authoring_draft(draft["draft_id"])
+                except (KeyError, AgentLifecycleError):
+                    sync_error = "validation_state_unavailable"
             if state == "unpublished" and draft["status"] in {"published", "cancelled"}:
                 continue
             try:
@@ -270,6 +359,7 @@ class AgentLifecycleService:
             items.append(
                 {
                     **draft,
+                    "sync_error": sync_error,
                     "title": copy.deepcopy((manifest or {}).get("title") or {}),
                     "module": (manifest or {}).get("module"),
                     "management": {
@@ -584,6 +674,8 @@ class AgentLifecycleService:
         if not run_id:
             return copy.deepcopy(draft.get("validation") or {})
         attempt = self.store.get_agent_validation_attempt(draft_id, run_id)
+        if int(attempt["revision"]) != int(draft["revision"]):
+            raise AgentLifecycleError("Validation belongs to an older draft revision.", code="agent_validation_revision_conflict")
         run = self.store.get_run(run_id)
         if run.status not in TERMINAL_STATUSES:
             return {**attempt["report"], "status": "running", "progress": run.progress.model_dump(mode="json")}
@@ -605,7 +697,7 @@ class AgentLifecycleService:
             **attempt["report"],
             "status": "completed",
             "verdict": verdict,
-            "completed_at": run.completed_at,
+            "completed_at": run.completed_at or utc_now(),
             "fixedAgentComparison": "MATCH" if verdict == "PASS" else "BLOCKED",
             "read_only_audit": tool_read_only,
             "output_schema_valid": schema_complete,
@@ -614,16 +706,9 @@ class AgentLifecycleService:
             "errors": copy.deepcopy(run.error or (result.errors if result else [])),
         }
         digest = _json_digest(report)
-        self.store.save_agent_validation_attempt(
-            draft_id=draft_id,
-            run_id=run_id,
-            revision=int(draft["revision"]),
-            report=report,
-            report_digest=digest,
-            completed_at=run.completed_at or utc_now(),
-        )
-        draft.update(status="validated" if verdict == "PASS" else "needs_review", validation=report, updated_at=utc_now())
-        self.store.save_agent_authoring_draft(draft)
+        report["report_digest"] = digest
+        if not self.store.finish_agent_validation(draft_id, run_id, int(draft["revision"]), report, digest):
+            raise AgentLifecycleError("The draft changed while validation was synchronizing.", code="agent_validation_revision_conflict")
         return {**report, "report_digest": digest}
 
     def publish(self, draft_id: str, payload: Any) -> dict[str, Any]:
@@ -655,6 +740,7 @@ class AgentLifecycleService:
         }
         if bool(payload.activate):
             self._require_skill_dependencies(manifest)
+        package = self._publication_package(draft, package)
         branch = self._prepare_branch(draft["agent_id"], "publish", target_version)
         agent_dir = self.settings.repository_root / "agents" / str(manifest.get("module") or "Common") / draft["agent_id"]
         existing_dir = self._existing_directory(draft["agent_id"])
@@ -975,17 +1061,38 @@ class AgentLifecycleService:
     def _audit(self, agent_id: str, action: str, from_version: str | None, to_version: str | None, digest: str | None, branch: str | None, commit: str | None, detail: dict[str, Any]) -> None:
         self.store.append_agent_management_event(event_id=f"agent_event_{uuid.uuid4().hex[:16]}", agent_id=agent_id, action=action, from_version=from_version, to_version=to_version, agent_hash=digest, branch=branch, commit_sha=commit, detail=detail)
 
+    @staticmethod
+    def _publication_package(draft: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+        if not draft.get("metadata", {}).get("source_draft_id"):
+            return package
+        # Keep source samples and attachments in the ignored management package.
+        # Only the generated reviewable code/docs accompany a published Agent.
+        public = copy.deepcopy(package)
+        public["files"] = {name: value for name, value in package.get("files", {}).items() if name in _GENERATED_PUBLIC_FILES}
+        public.pop("binary_files", None)
+        return public
+
     def _capture_package(self, directory: Path) -> dict[str, Any]:
+        excluded = {"versions", "__pycache__", ".pytest_cache", ".git", ".venv", "node_modules"}
+        paths = [path for path in directory.rglob("*") if not excluded.intersection(path.relative_to(directory).parts)]
+        # Check every entry before reading even the manifest or README.
+        for path in paths:
+            if path.is_symlink() or directory.resolve() not in path.resolve().parents:
+                raise AgentLifecycleError("Agent package contains an external file link.", code="agent_draft_path_invalid")
         manifest = self._read_json(directory / "agent.json")
         files: dict[str, str] = {}
-        for path in directory.rglob("*"):
-            if path.is_dir() or "versions" in path.relative_to(directory).parts or path.name in {"agent.json", "README.md", "rules.py", "publication.json", "validation.json"}:
+        binary_files: dict[str, str] = {}
+        for path in paths:
+            if path.is_dir() or "versions" in path.relative_to(directory).parts or path.relative_to(directory).as_posix() in {"agent.json", "README.md", "rules.py", "publication.json", "validation.json"}:
                 continue
             try:
                 files[path.relative_to(directory).as_posix()] = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
-                continue
-        return {"manifest": manifest, "readme": self._read_optional(directory / "README.md"), "rules": self._read_optional(directory / "rules.py") or None, "files": files}
+                binary_files[path.relative_to(directory).as_posix()] = base64.b64encode(path.read_bytes()).decode("ascii")
+        package = {"manifest": manifest, "readme": self._read_optional(directory / "README.md"), "rules": self._read_optional(directory / "rules.py") or None, "files": files}
+        if binary_files:
+            package["binary_files"] = binary_files
+        return package
 
     def _write_package(self, directory: Path, package: dict[str, Any], *, manifest_override: dict[str, Any] | None = None) -> None:
         directory.mkdir(parents=True, exist_ok=True)
@@ -1002,6 +1109,12 @@ class AgentLifecycleService:
                 raise AgentLifecycleError("Agent package file escaped its directory.", code="agent_package_path_invalid")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(str(content), encoding="utf-8")
+        for name, content in (package.get("binary_files") or {}).items():
+            target = (directory / name).resolve()
+            if directory.resolve() not in target.parents:
+                raise AgentLifecycleError("Agent attachment escaped its directory.", code="agent_package_path_invalid")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(base64.b64decode(content, validate=True))
 
     @staticmethod
     def _blank_package(agent_id: str, module: str, title: dict[str, str]) -> dict[str, Any]:
@@ -1076,6 +1189,12 @@ def _execution_digest(manifest: dict[str, Any], rules_source: str | None) -> str
     return agent_execution_digest(manifest, rules_source)
 
 
+_GENERATED_PUBLIC_FILES = {
+    "content.zh.md", "content.en.md", "src/rules.py", "src/rule-review-notes.json",
+    "tests/test_manifest_contract.py", "docs/data-contract.json",
+}
+
+
 def _json_digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -1087,7 +1206,7 @@ def _not_tested_validation() -> dict[str, Any]:
 def _package_diff(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
     changes: list[dict[str, Any]] = []
     _diff_value(before.get("manifest"), after.get("manifest"), "/manifest", changes)
-    for name in ("readme", "rules", "files"):
+    for name in ("readme", "rules", "files", "binary_files"):
         if before.get(name) != after.get(name):
             changes.append({"path": f"/{name}", "change": "modified", "before_digest": _json_digest(before.get(name)), "after_digest": _json_digest(after.get(name))})
     return changes

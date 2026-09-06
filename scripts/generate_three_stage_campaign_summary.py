@@ -40,11 +40,9 @@ def generate(root: Path, output: Path) -> Path:
                 "limitations": ", ".join(str(item) for item in validation.get("blockingLimitations") or []) or "none",
             }
         )
-    if len(rows) != 30:
-        raise ValueError(f"expected 30 Agents, found {len(rows)}")
     counts = Counter(row["verdict"] for row in rows)
     lines = [
-        "# 30-Agent three-stage live SAP acceptance campaign",
+        f"# {len(rows)}-Agent three-stage live SAP acceptance campaign",
         "",
         "All direct baselines use `codex_app_direct_sap` and do not call SAPBusinessAgents. All SAP execution is read-only GET; raw rows, URLs, and credentials remain in ignored local artifacts.",
         "",
@@ -69,9 +67,9 @@ def generate(root: Path, output: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate the final 30-Agent live acceptance summary.")
+    parser = argparse.ArgumentParser(description="Generate the current Agent live acceptance summary.")
     parser.add_argument("--repository", default=str(Path(__file__).resolve().parents[1]))
-    parser.add_argument("--output", default="docs/live-sap-30-agent-campaign.md")
+    parser.add_argument("--output", default="docs/live-sap-agent-campaign.md")
     args = parser.parse_args()
     root = Path(args.repository).resolve()
     output = Path(args.output)

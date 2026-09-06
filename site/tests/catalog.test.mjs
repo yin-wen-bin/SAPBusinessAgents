@@ -9,9 +9,9 @@ test("Astro React development runtime stays on supported Vite 7", () => {
   assert.match(packageJson.overrides?.vite ?? "", /^\^?7\./);
 });
 
-test("catalog discovers thirty-two deterministic agents and one platform assistant", () => {
+test("catalog discovers thirty-one deterministic agents and one platform assistant", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
-  assert.equal(records.length, 33);
+  assert.equal(records.length, 32);
   assert.deepEqual(
     records.map((agent) => `${agent.module}/${agent.slug}`),
     [
@@ -34,7 +34,6 @@ test("catalog discovers thirty-two deterministic agents and one platform assista
       "SD/delivery-delay-prediction",
       "SD/due-delivery-prioritization",
       "SD/new-sales-demand-coverage",
-      "SD/order-to-cash-anomaly-monitor",
       "SD/order-to-cash-status",
       "SD/returns-credit-anomaly",
       "SD/shortage-allocation-advisor",
@@ -77,7 +76,7 @@ test("catalog discovers thirty-two deterministic agents and one platform assista
   assert.equal(assistant.execution, undefined);
 
   const sdAgents = records.filter((agent) => agent.module === "SD");
-  assert.equal(sdAgents.length, 12);
+  assert.equal(sdAgents.length, 11);
   assert.ok(sdAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(sdAgents.every((agent) => agent.guardrails.zh.some((item) => item.includes("只读"))));
   for (const agent of records.filter((agent) => agent.kind !== "platform_assistant")) {
@@ -122,6 +121,27 @@ test("catalog discovers thirty-two deterministic agents and one platform assista
   const o2c = records.find((agent) => agent.slug === "order-to-cash-status");
   assert.equal(o2c.schemaVersion, 2);
   assert.equal(o2c.execution.mode, "deterministic");
+  assert.equal(o2c.version, "0.1.1");
+  assert.deepEqual(Object.keys(o2c.execution.inputSchema.properties), ["sales_order"]);
+  assert.deepEqual(o2c.execution.inputSchema.required, ["sales_order"]);
+  assert.match(o2c.summary.zh, /^从销售订单出发/);
+  assert.match(o2c.summary.en, /^Starts from a sales order/);
+  assert.doesNotMatch(o2c.summary.zh, /客户PO|交货或发票/);
+  assert.doesNotMatch(o2c.summary.en, /customer PO|delivery or invoice/i);
+
+  const dnb = records.find((agent) => agent.slug === "delivered-not-billed");
+  assert.equal(dnb.version, "0.2.0");
+  assert.equal(dnb.execution.inputSchema.properties.date_to["x-sapba-server-default"], "business_date");
+  const dnbPlan = dnb.execution.steps.find((step) => step.id === "collect_delivered_not_billed").request.plan;
+  assert.deepEqual(dnbPlan.steps.map((step) => step.step_id), [
+    "delivery_headers",
+    "delivery_items",
+    "billing_items",
+    "billing_headers",
+    "cancellation_documents_by_reference",
+    "cancellation_documents_by_target",
+    "source_sales_items",
+  ]);
 
   const ppAgents = records.filter((agent) => agent.module === "PP");
   assert.equal(ppAgents.length, 5);

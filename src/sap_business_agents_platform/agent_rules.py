@@ -1125,45 +1125,474 @@ def _billing_completeness(inputs: JsonObject) -> JsonObject:
 
 
 def _delivered_not_billed(inputs: JsonObject) -> JsonObject:
-    deliveries = _rows(inputs, "delivery_headers")
-    delivery_items = _rows(inputs, "delivery_items")
-    billing = _rows(inputs, "billing_items")
-    billed_refs = {str(row.get("ReferenceSDDocument") or "") for row in billing}
-    candidates = [
-        row for row in deliveries
-        if (_truthy(row.get("OverallGoodsMovementStatus")) or row.get("ActualGoodsMovementDate"))
-        and str(row.get("DeliveryDocument") or "") not in billed_refs
-    ]
-    findings = [{"code": "DELIVERED_NOT_BILLED", "severity": "high", "delivery": str(row.get("DeliveryDocument") or "")} for row in candidates]
-    candidate_ids = {_text(row, "DeliveryDocument") for row in candidates}
-    header_by_delivery = {_text(row, "DeliveryDocument"): row for row in deliveries}
-    records = [
-        {
-            "delivery_document": _text(row, "DeliveryDocument"),
-            "delivery_document_item": _text(row, "DeliveryDocumentItem"),
-            "actual_goods_movement_date": _date_text(
-                header_by_delivery.get(_text(row, "DeliveryDocument"), {}),
-                "ActualGoodsMovementDate",
-            ),
-            "is_billed": _text(row, "DeliveryDocument") not in candidate_ids,
-        }
-        for row in delivery_items
-        if _text(row, "DeliveryDocument") and _text(row, "DeliveryDocumentItem")
-    ]
-    return _result(
+    tolerance = Decimal("0.001")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    cutoff = _date(run_input.get("date_to")) or date.today()
+    delivery_headers = _rows(inputs, "delivery_headers")
+    delivery_item_rows = _rows(inputs, "delivery_items")
+    billing_item_rows = _rows(inputs, "billing_items")
+    billing_headers = _rows(
         inputs,
-        business_status="attention" if candidates else "normal",
-        headline_zh=f"发现 {len(candidates)} 张已发货未开票交货单" if candidates else "未发现已发货未开票交货单",
-        headline_en=f"Found {len(candidates)} delivered-not-billed delivery document(s)" if candidates else "No delivered-not-billed delivery was found",
-        overview_zh="仅把已完成发货过账且没有关联开票凭证的交货列为异常。",
-        overview_en="Only deliveries with PGI evidence and no linked billing document are flagged.",
-        stages=[_stage("delivery", "已发货交货", "PGI deliveries", len(deliveries) + len(delivery_items)), _stage("billing", "关联开票", "Linked billing", len(billing))],
-        findings=findings,
-        metrics=[{"id": "delivered_not_billed", "value": len(candidates)}],
-        records=records,
-        actions_zh=["检查开票到期清单、开票冻结和凭证完整性。"] if candidates else [],
-        actions_en=["Review billing due lists, billing blocks, and document completeness."] if candidates else [],
+        "billing_headers",
+        "cancellation_documents_by_reference",
+        "cancellation_documents_by_target",
     )
+    sales_item_rows = _rows(inputs, "source_sales_items")
+
+    def decimal_text(value: Decimal | None) -> str | None:
+        return format(value, "f") if value is not None else None
+
+    def delivery_key(row: JsonObject) -> tuple[str, str]:
+        return (
+            _canonical_sd_key(row.get("DeliveryDocument"), 10),
+            _canonical_sd_key(row.get("DeliveryDocumentItem"), 6),
+        )
+
+    def billing_key(row: JsonObject) -> tuple[str, str]:
+        return (
+            _canonical_sd_key(row.get("BillingDocument"), 10),
+            _canonical_sd_key(row.get("BillingDocumentItem"), 6),
+        )
+
+    def billing_reference_key(row: JsonObject) -> tuple[str, str]:
+        return (
+            _canonical_sd_key(row.get("ReferenceSDDocument"), 10),
+            _canonical_sd_key(row.get("ReferenceSDDocumentItem"), 6),
+        )
+
+    def sales_key(row: JsonObject) -> tuple[str, str]:
+        return (
+            _canonical_sd_key(row.get("SalesOrder"), 10),
+            _canonical_sd_key(row.get("SalesOrderItem"), 6),
+        )
+
+    headers_by_delivery = {
+        _canonical_sd_key(row.get("DeliveryDocument"), 10): row
+        for row in delivery_headers
+        if _text(row, "DeliveryDocument")
+    }
+    duplicate_delivery_conflicts: set[tuple[str, str]] = set()
+    delivery_items: dict[tuple[str, str], JsonObject] = {}
+    for row in delivery_item_rows:
+        key = delivery_key(row)
+        if not all(key):
+            continue
+        existing = delivery_items.get(key)
+        if existing is not None and existing != row:
+            duplicate_delivery_conflicts.add(key)
+            continue
+        delivery_items[key] = row
+
+    duplicate_billing_conflicts: set[tuple[str, str]] = set()
+    ambiguous_reference_deliveries: set[str] = set()
+    billing_items: dict[tuple[str, str], JsonObject] = {}
+    for row in billing_item_rows:
+        key = billing_key(row)
+        reference = billing_reference_key(row)
+        if not all(key):
+            continue
+        existing = billing_items.get(key)
+        if existing is not None and existing != row:
+            duplicate_billing_conflicts.add(key)
+            for candidate in (billing_reference_key(existing), reference):
+                if candidate[0]:
+                    ambiguous_reference_deliveries.add(candidate[0])
+            continue
+        billing_items[key] = row
+        if reference[0] and not reference[1]:
+            ambiguous_reference_deliveries.add(reference[0])
+
+    headers_by_billing: dict[str, JsonObject] = {}
+    conflicting_billing_headers: set[str] = set()
+    for row in billing_headers:
+        key = _canonical_sd_key(row.get("BillingDocument"), 10)
+        if not key:
+            continue
+        existing = headers_by_billing.get(key)
+        if existing is not None and existing != row:
+            conflicting_billing_headers.add(key)
+            continue
+        headers_by_billing[key] = row
+
+    sales_items: dict[tuple[str, str], JsonObject] = {}
+    conflicting_sales_items: set[tuple[str, str]] = set()
+    for row in sales_item_rows:
+        key = sales_key(row)
+        if not all(key):
+            continue
+        existing = sales_items.get(key)
+        if existing is not None and existing != row:
+            conflicting_sales_items.add(key)
+            continue
+        sales_items[key] = row
+
+    cancellation_targets: set[str] = set()
+    cancellation_documents: set[str] = set()
+    ambiguous_cancellation_documents: set[str] = set(conflicting_billing_headers)
+    for document, header in headers_by_billing.items():
+        linked = _canonical_sd_key(header.get("CancelledBillingDocument"), 10)
+        header_date = _date(header.get("BillingDocumentDate"))
+        is_cancelled = _truthy(header.get("BillingDocumentIsCancelled"))
+        if linked:
+            linked_header = headers_by_billing.get(linked)
+            linked_date = _date(linked_header.get("BillingDocumentDate")) if linked_header else None
+            # SAP may expose this relationship from either side.  Both dated
+            # headers are required; the later date is the cancellation cutoff.
+            if header_date is None or linked_date is None:
+                ambiguous_cancellation_documents.update({document, linked})
+            elif max(header_date, linked_date) <= cutoff:
+                cancellation_documents.update({document, linked})
+                cancellation_targets.update({document, linked})
+        elif is_cancelled:
+            # A cancellation flag without a dated relationship cannot establish
+            # whether the document was active at the historical cutoff.
+            ambiguous_cancellation_documents.add(document)
+
+    billing_by_delivery_item: dict[tuple[str, str], list[JsonObject]] = {}
+    for row in billing_items.values():
+        reference = billing_reference_key(row)
+        if all(reference):
+            billing_by_delivery_item.setdefault(reference, []).append(row)
+
+    critical_steps = (
+        "delivery_headers",
+        "delivery_items",
+        "billing_items",
+        "billing_headers",
+        "cancellation_documents_by_reference",
+        "cancellation_documents_by_target",
+    )
+    classification_sources_complete = all(
+        _step_source_complete(inputs, step_id) for step_id in critical_steps
+    )
+    sales_source_complete = _step_source_complete(inputs, "source_sales_items")
+    gaps: set[str] = set()
+    if not classification_sources_complete:
+        gaps.add("source_incomplete")
+    if duplicate_delivery_conflicts:
+        gaps.add("delivery_item_reference_conflict")
+    if duplicate_billing_conflicts or ambiguous_reference_deliveries:
+        gaps.add("billing_item_reference_conflict")
+    if ambiguous_cancellation_documents:
+        gaps.add("billing_cancellation_evidence")
+    if not sales_source_complete or conflicting_sales_items:
+        gaps.add("unbilled_amount_evidence")
+
+    records: list[JsonObject] = []
+    findings: list[JsonObject] = []
+    quantity_totals: dict[str, JsonObject] = {}
+    amount_totals: dict[str, JsonObject] = {}
+    counts = {
+        "unbilled": 0,
+        "partially_billed": 0,
+        "fully_billed": 0,
+        "overbilled": 0,
+        "inconclusive": 0,
+    }
+    severity_rank = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+    for key, item in sorted(delivery_items.items()):
+        delivery_document, delivery_document_item = key
+        header = headers_by_delivery.get(delivery_document, {})
+        goods_movement_complete = (
+            str(item.get("GoodsMovementStatus") or "").strip().upper() == "C"
+            or str(header.get("OverallGoodsMovementStatus") or "").strip().upper() == "C"
+        )
+        movement_date = _date(header.get("ActualGoodsMovementDate"))
+        if not goods_movement_complete:
+            continue
+
+        sales_order = _canonical_sd_key(item.get("ReferenceSDDocument"), 10)
+        sales_order_item = _canonical_sd_key(item.get("ReferenceSDDocumentItem"), 6)
+        delivered_quantity = _strict_decimal(item.get("ActualDeliveryQuantity"))
+        delivery_unit = _unit_key(item.get("DeliveryQuantityUnit"))
+        item_billing = billing_by_delivery_item.get(key, [])
+        item_gaps: set[str] = set()
+        if key in duplicate_delivery_conflicts:
+            item_gaps.add("delivery_item_reference_conflict")
+        if delivery_document in ambiguous_reference_deliveries:
+            item_gaps.add("billing_item_reference_conflict")
+        if not classification_sources_complete:
+            item_gaps.add("source_incomplete")
+        if movement_date is None:
+            item_gaps.add("actual_goods_movement_date")
+        if delivered_quantity is None or delivered_quantity < 0:
+            item_gaps.add("delivered_quantity_evidence")
+        if not delivery_unit:
+            item_gaps.add("delivery_unit_evidence")
+
+        active_billed_quantity = Decimal(0)
+        active_billed_net_amount = Decimal(0)
+        billing_units: set[str] = set()
+        billing_currencies: set[str] = set()
+        active_rows = 0
+        for billing_row in item_billing:
+            billing_document = _canonical_sd_key(billing_row.get("BillingDocument"), 10)
+            if billing_key(billing_row) in duplicate_billing_conflicts:
+                item_gaps.add("billing_item_reference_conflict")
+                continue
+            billing_header = headers_by_billing.get(billing_document)
+            if billing_header is None:
+                item_gaps.add("billing_header_evidence")
+                continue
+            billing_date = _date(billing_header.get("BillingDocumentDate"))
+            if billing_date is None:
+                item_gaps.add("billing_document_date_evidence")
+                continue
+            if billing_date > cutoff:
+                continue
+            if billing_document in ambiguous_cancellation_documents:
+                item_gaps.add("billing_cancellation_evidence")
+                continue
+            if billing_document in cancellation_documents or billing_document in cancellation_targets:
+                continue
+            billing_quantity = _strict_decimal(billing_row.get("BillingQuantity"))
+            billing_unit = _unit_key(billing_row.get("BillingQuantityUnit"))
+            billing_amount = _strict_decimal(billing_row.get("NetAmount"))
+            billing_currency = _unit_key(billing_row.get("TransactionCurrency"))
+            if billing_quantity is None or billing_quantity < 0:
+                item_gaps.add("billing_quantity_evidence")
+            else:
+                active_billed_quantity += billing_quantity
+            if not billing_unit:
+                item_gaps.add("billing_unit_evidence")
+            else:
+                billing_units.add(billing_unit)
+            if billing_amount is None:
+                item_gaps.add("billing_amount_evidence")
+            else:
+                active_billed_net_amount += billing_amount
+            if not billing_currency:
+                item_gaps.add("billing_currency_evidence")
+            else:
+                billing_currencies.add(billing_currency)
+            active_rows += 1
+
+        if active_rows and (len(billing_units) != 1 or billing_units != {delivery_unit}):
+            item_gaps.add("quantity_unit_mismatch")
+
+        billing_state = "inconclusive"
+        remaining_quantity: Decimal | None = None
+        if not item_gaps.intersection(
+            {
+                "source_incomplete",
+                "delivery_item_reference_conflict",
+                "billing_item_reference_conflict",
+                "billing_header_evidence",
+                "billing_document_date_evidence",
+                "billing_cancellation_evidence",
+                "actual_goods_movement_date",
+                "delivered_quantity_evidence",
+                "delivery_unit_evidence",
+                "billing_quantity_evidence",
+                "billing_unit_evidence",
+                "quantity_unit_mismatch",
+            }
+        ) and delivered_quantity is not None:
+            remaining_quantity = max(delivered_quantity - active_billed_quantity, Decimal(0))
+            if active_billed_quantity > delivered_quantity + tolerance:
+                billing_state = "overbilled"
+            elif abs(delivered_quantity - active_billed_quantity) <= tolerance:
+                billing_state = "fully_billed"
+            elif active_billed_quantity <= tolerance and remaining_quantity > tolerance:
+                billing_state = "unbilled"
+            elif active_billed_quantity > tolerance and active_billed_quantity < delivered_quantity - tolerance:
+                billing_state = "partially_billed"
+
+        age_days = max((cutoff - movement_date).days, 0) if movement_date else None
+        aging_bucket = (
+            "low" if age_days is not None and age_days <= 7
+            else "medium" if age_days is not None and age_days <= 30
+            else "high" if age_days is not None and age_days <= 60
+            else "critical" if age_days is not None
+            else "unknown"
+        )
+
+        expected_delivery_net: Decimal | None = None
+        unbilled_net_amount: Decimal | None = None
+        currency = ""
+        amount_complete = billing_state != "inconclusive"
+        sales_item = sales_items.get((sales_order, sales_order_item))
+        if not sales_order or not sales_order_item or sales_item is None:
+            amount_complete = False
+        if (sales_order, sales_order_item) in conflicting_sales_items:
+            amount_complete = False
+        if not sales_source_complete:
+            amount_complete = False
+        requested_quantity = _strict_decimal(sales_item.get("RequestedQuantity")) if sales_item else None
+        requested_unit = _unit_key(sales_item.get("RequestedQuantityUnit")) if sales_item else ""
+        order_net_amount = _strict_decimal(sales_item.get("NetAmount")) if sales_item else None
+        order_currency = _unit_key(sales_item.get("TransactionCurrency")) if sales_item else ""
+        if (
+            requested_quantity is None
+            or requested_quantity <= 0
+            or delivered_quantity is None
+            or requested_unit != delivery_unit
+            or order_net_amount is None
+            or not order_currency
+        ):
+            amount_complete = False
+        if active_rows and (len(billing_currencies) != 1 or billing_currencies != {order_currency}):
+            amount_complete = False
+        if item_gaps.intersection(
+            {
+                "billing_amount_evidence",
+                "billing_currency_evidence",
+                "billing_cancellation_evidence",
+                "billing_header_evidence",
+            }
+        ):
+            amount_complete = False
+        if amount_complete and requested_quantity and delivered_quantity is not None and order_net_amount is not None:
+            expected_delivery_net = order_net_amount * delivered_quantity / requested_quantity
+            unbilled_net_amount = max(expected_delivery_net - active_billed_net_amount, Decimal(0))
+            currency = order_currency
+        else:
+            gaps.add("unbilled_amount_evidence")
+            item_gaps.add("unbilled_amount_evidence")
+
+        counts[billing_state] += 1
+        record_status = "normal" if billing_state == "fully_billed" else "attention" if billing_state in {"unbilled", "partially_billed", "overbilled"} else "inconclusive"
+        record = {
+            "delivery_document": delivery_document,
+            "delivery_document_item": delivery_document_item,
+            "sales_order": sales_order,
+            "sales_order_item": sales_order_item,
+            "actual_goods_movement_date": movement_date.isoformat() if movement_date else "",
+            "delivered_quantity": decimal_text(delivered_quantity),
+            "delivery_unit": delivery_unit,
+            "active_billed_quantity": decimal_text(active_billed_quantity) if billing_state != "inconclusive" else None,
+            "remaining_quantity": decimal_text(remaining_quantity),
+            "billing_state": billing_state,
+            "is_billed": billing_state == "fully_billed",
+            "expected_delivery_net_amount": decimal_text(expected_delivery_net),
+            "active_billed_net_amount": decimal_text(active_billed_net_amount) if amount_complete else None,
+            "unbilled_net_amount": decimal_text(unbilled_net_amount),
+            "currency": currency,
+            "amount_basis": "sales_order_item_net_amount_proration" if amount_complete else None,
+            "amount_is_estimate": True if amount_complete else None,
+            "age_days": age_days,
+            "aging_bucket": aging_bucket,
+            "evidence_gaps": sorted(item_gaps),
+            "business_status": record_status,
+        }
+        records.append(record)
+
+        if billing_state != "fully_billed":
+            finding_code = {
+                "unbilled": "DELIVERED_NOT_BILLED",
+                "partially_billed": "PARTIALLY_BILLED",
+                "overbilled": "OVERBILLED",
+                "inconclusive": "BILLING_STATE_INCONCLUSIVE",
+            }[billing_state]
+            severity = "critical" if billing_state in {"overbilled", "inconclusive"} else aging_bucket
+            findings.append(
+                {
+                    "code": finding_code,
+                    "severity": severity,
+                    "delivery_document": delivery_document,
+                    "delivery_document_item": delivery_document_item,
+                    "billing_state": billing_state,
+                    "age_days": age_days,
+                    "detail": {
+                        "zh": f"交货项目 {delivery_document}/{delivery_document_item}：{billing_state}，账龄 {age_days if age_days is not None else '未知'} 天。",
+                        "en": f"Delivery item {delivery_document}/{delivery_document_item}: {billing_state}; age {age_days if age_days is not None else 'unknown'} day(s).",
+                    },
+                }
+            )
+
+        if delivery_unit and delivered_quantity is not None:
+            totals = quantity_totals.setdefault(
+                delivery_unit,
+                {
+                    "unit": delivery_unit,
+                    "delivered_quantity": Decimal(0),
+                    "active_billed_quantity": Decimal(0),
+                    "remaining_quantity": Decimal(0),
+                },
+            )
+            totals["delivered_quantity"] += delivered_quantity
+            if billing_state != "inconclusive":
+                totals["active_billed_quantity"] += active_billed_quantity
+                totals["remaining_quantity"] += remaining_quantity or Decimal(0)
+        if currency and expected_delivery_net is not None and unbilled_net_amount is not None:
+            totals = amount_totals.setdefault(
+                currency,
+                {
+                    "currency": currency,
+                    "expected_delivery_net_amount": Decimal(0),
+                    "active_billed_net_amount": Decimal(0),
+                    "unbilled_net_amount": Decimal(0),
+                },
+            )
+            totals["expected_delivery_net_amount"] += expected_delivery_net
+            totals["active_billed_net_amount"] += active_billed_net_amount
+            totals["unbilled_net_amount"] += unbilled_net_amount
+
+    records.sort(key=lambda row: (row["delivery_document"], row["delivery_document_item"]))
+    findings.sort(
+        key=lambda row: (
+            -severity_rank.get(str(row.get("severity") or ""), 0),
+            -(row.get("age_days") if isinstance(row.get("age_days"), int) else -1),
+            str(row.get("delivery_document") or ""),
+            str(row.get("delivery_document_item") or ""),
+        )
+    )
+    quantity_summary = [
+        {key: decimal_text(value) if isinstance(value, Decimal) else value for key, value in totals.items()}
+        for _, totals in sorted(quantity_totals.items())
+    ]
+    amount_summary = [
+        {key: decimal_text(value) if isinstance(value, Decimal) else value for key, value in totals.items()}
+        for _, totals in sorted(amount_totals.items())
+    ]
+    confirmed_anomalies = counts["unbilled"] + counts["partially_billed"] + counts["overbilled"]
+    business_status = "attention" if confirmed_anomalies else "inconclusive" if counts["inconclusive"] or gaps else "normal"
+    headline_zh = (
+        f"发现 {confirmed_anomalies} 个已发货项目存在开票异常"
+        if confirmed_anomalies
+        else "开票状态无法完整判定"
+        if business_status == "inconclusive"
+        else "全部已发货项目均已完全开票"
+    )
+    headline_en = (
+        f"Found {confirmed_anomalies} delivered item(s) with billing exceptions"
+        if confirmed_anomalies
+        else "Billing status could not be determined completely"
+        if business_status == "inconclusive"
+        else "All delivered items are fully billed"
+    )
+    result = _result(
+        inputs,
+        business_status=business_status,
+        headline_zh=headline_zh,
+        headline_en=headline_en,
+        overview_zh="以交货项目为粒度核对截止日内有效开票数量，并按订单项目净额比例估算未开票净额。",
+        overview_en="Reconciles active billed quantity at delivery-item grain as of the cutoff and estimates unbilled net amount by prorating the sales-order item net amount.",
+        stages=[
+            _stage("delivery", "已完成PGI的交货项目", "PGI-complete delivery items", len(records)),
+            _stage("billing", "关联有效开票项目", "Linked active billing items", len(billing_items)),
+            _stage("sales_order", "来源销售订单项目", "Source sales-order items", len(sales_items)),
+        ],
+        findings=findings,
+        metrics=[
+            {"id": "delivered_not_billed", "value": counts["unbilled"] + counts["partially_billed"]},
+            {"id": "unbilled_items", "value": counts["unbilled"]},
+            {"id": "partially_billed_items", "value": counts["partially_billed"]},
+            {"id": "fully_billed_items", "value": counts["fully_billed"]},
+            {"id": "overbilled_items", "value": counts["overbilled"]},
+            {"id": "inconclusive_items", "value": counts["inconclusive"]},
+        ],
+        gaps=_gaps(inputs, *sorted(gaps)),
+        records=records,
+        allow_empty_records=True,
+        preserve_business_status_on_gap=True,
+        actions_zh=["按账龄优先复核未开票、部分开票和超量开票项目，并检查开票冻结及取消链。"] if findings else [],
+        actions_en=["Prioritize unbilled, partially billed, and overbilled items by age, then review billing blocks and cancellation chains."] if findings else [],
+    )
+    result["business_report"]["quantity_totals_by_unit"] = quantity_summary
+    result["business_report"]["amount_totals_by_currency"] = amount_summary
+    return result
 
 
 def _delivery_delay(inputs: JsonObject) -> JsonObject:
@@ -1504,81 +1933,6 @@ def _shortage_allocation(inputs: JsonObject) -> JsonObject:
         source_complete_override=_source_complete(inputs),
         actions_zh=["由计划人员在 SAP 中执行 ATP 复核后再决定分配。"],
         actions_en=["Have a planner run an ATP review in SAP before deciding allocations."],
-    )
-
-
-def _o2c_anomaly(inputs: JsonObject) -> JsonObject:
-    orders = _rows(inputs, "sales_orders")
-    order_items = _rows(inputs, "sales_order_items")
-    deliveries = _rows(inputs, "delivery_headers")
-    billing = _rows(inputs, "billing_headers")
-    accounting_by_key: dict[tuple[str, str, str, str], JsonObject] = {}
-    for row in _rows(inputs, "accounting_items", "accounting_items_by_billing"):
-        key = (
-            _text(row, "CompanyCode"),
-            _text(row, "FiscalYear"),
-            _text(row, "AccountingDocument"),
-            _text(row, "AccountingDocumentItem"),
-        )
-        accounting_by_key[key] = row
-    # O2C receivable anomalies belong to the customer subledger.  The
-    # accounting document also contains GL lines, which must not be counted as
-    # three separate open-receivable anomalies.
-    accounting = [
-        row
-        for row in accounting_by_key.values()
-        if _text(row, "FinancialAccountType") == "D"
-    ]
-    anomalies = sum(1 for row in orders if row.get("TotalBlockStatus"))
-    anomalies += sum(1 for row in billing if _truthy(row.get("BillingDocumentIsCancelled")))
-    anomalies += sum(1 for row in accounting if not _truthy(row.get("IsCleared")))
-    output_rows = _adt_rows(inputs, "output_status")
-    dispute_rows = _adt_rows(inputs, "dispute_case")
-    output_complete = _adt_complete(_fallback(inputs, "output_status")) and bool(output_rows)
-    dispute_complete = _adt_complete(_fallback(inputs, "dispute_case")) and bool(dispute_rows)
-    missing = []
-    if not output_complete:
-        missing.append("billing_output_status_evidence")
-    if not dispute_complete:
-        missing.append("billing_dispute_case_evidence")
-    gaps = _gaps(inputs, *missing)
-    order_by_id = {_text(row, "SalesOrder"): row for row in orders}
-    records = [
-        {
-            "sales_order": _text(row, "SalesOrder"),
-            "sales_order_item": _text(row, "SalesOrderItem"),
-            "material": _text(row, "Material"),
-            "item_billing_status": _text(
-                row,
-                "OverallBillingStatus",
-                "OverallOrdReltdBillgStatus",
-            )
-            or _text(
-                order_by_id.get(_text(row, "SalesOrder"), {}),
-                "OverallOrdReltdBillgStatus",
-            ),
-            "item_delivery_status": _text(row, "DeliveryStatus", "OverallDeliveryStatus")
-            or _text(
-                order_by_id.get(_text(row, "SalesOrder"), {}),
-                "OverallDeliveryStatus",
-            ),
-        }
-        for row in order_items
-        if _text(row, "SalesOrder") and _text(row, "SalesOrderItem")
-    ]
-    return _result(
-        inputs,
-        business_status="attention" if anomalies else "partial",
-        headline_zh=f"当前证据中识别到 {anomalies} 项 O2C 异常",
-        headline_en=f"Identified {anomalies} O2C anomaly item(s) in current evidence",
-        overview_zh="结果覆盖订单、交货、开票和应收，并复用经过完整性与 Hash 验证的输出及争议 ADT 证据。",
-        overview_en="The result covers orders, deliveries, billing, and receivables and reuses completeness- and hash-verified output and dispute ADT evidence.",
-        stages=[_stage("orders", "销售订单", "Sales orders", len(orders)), _stage("deliveries", "交货", "Deliveries", len(deliveries)), _stage("billing", "开票", "Billing", len(billing)), _stage("accounting", "应收", "Receivables", len(accounting)), _stage("output", "输出状态", "Output status", len(output_rows), state="confirmed" if output_complete else "unknown"), _stage("dispute", "争议案件", "Dispute cases", len(dispute_rows), state="confirmed" if dispute_complete else "unknown")],
-        metrics=[{"id": "anomaly_count", "value": anomalies}],
-        records=records,
-        gaps=gaps,
-        actions_zh=["按冻结、取消和未清应收分别分派责任人。"] if anomalies else [],
-        actions_en=["Assign owners for blocks, cancellations, and open receivables."] if anomalies else [],
     )
 
 
@@ -7993,7 +8347,6 @@ _EVALUATORS: dict[str, Callable[[JsonObject], JsonObject]] = {
     "delivered-not-billed": _delivered_not_billed,
     "delivery-delay-prediction": _delivery_delay,
     "due-delivery-prioritization": _due_priority,
-    "order-to-cash-anomaly-monitor": _o2c_anomaly,
     "returns-credit-anomaly": _returns_credit,
     "shortage-allocation-advisor": _shortage_allocation,
     "demand-forecast-planning": _demand_forecast,

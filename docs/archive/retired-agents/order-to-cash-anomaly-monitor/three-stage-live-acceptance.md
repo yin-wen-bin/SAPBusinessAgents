@@ -1,5 +1,7 @@
 # Three-stage live SAP acceptance: order-to-cash-anomaly-monitor
 
+> Historical snapshot: this Agent is retired. The report is retained for audit only and does not represent the current Catalog or an executable capability.
+
 ## Verdict
 
 `BLOCKED` / `executable=false`

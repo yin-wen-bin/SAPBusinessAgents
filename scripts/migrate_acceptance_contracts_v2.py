@@ -132,7 +132,24 @@ SPECS: dict[str, dict[str, Any]] = {
     ),
     "delivered-not-billed": _spec(
         ["delivery_document", "delivery_document_item"],
-        ["actual_goods_movement_date", "is_billed"], ["delivered_not_billed"],
+        [
+            "sales_order", "sales_order_item", "actual_goods_movement_date",
+            "delivered_quantity", "delivery_unit", "active_billed_quantity",
+            "remaining_quantity", "billing_state", "is_billed",
+            "expected_delivery_net_amount", "active_billed_net_amount",
+            "unbilled_net_amount", "currency", "amount_basis",
+            "amount_is_estimate", "age_days", "aging_bucket",
+        ],
+        [
+            "delivered_not_billed", "unbilled_items", "partially_billed_items",
+            "fully_billed_items", "overbilled_items", "inconclusive_items",
+        ],
+        decimals=[
+            "delivered_quantity", "active_billed_quantity", "remaining_quantity",
+            "expected_delivery_net_amount", "active_billed_net_amount",
+            "unbilled_net_amount",
+        ],
+        currencies=["currency"], units=["delivery_unit"],
         dates=["actual_goods_movement_date"],
     ),
     "delivery-delay-prediction": _spec(
@@ -154,10 +171,6 @@ SPECS: dict[str, dict[str, Any]] = {
         ["requested", "confirmed", "stock", "uncovered"],
         decimals=["requested_quantity", "confirmed_quantity"],
         decimal_metrics=["requested", "confirmed", "stock", "uncovered"], units=["unit"],
-    ),
-    "order-to-cash-anomaly-monitor": _spec(
-        ["sales_order", "sales_order_item"],
-        ["material", "item_billing_status", "item_delivery_status"], ["anomaly_count"],
     ),
     "billing-output-monitor": _spec(
         ["billing_document", "output_request"],
@@ -563,32 +576,6 @@ SPECS["shortage-allocation-advisor"]["limitationKeywords"] = {
     ],
 }
 
-SPECS["order-to-cash-anomaly-monitor"]["constantDefaults"] = {
-    "business_status": "capability_blocked",
-}
-SPECS["order-to-cash-anomaly-monitor"]["fieldAliases"] = {
-    "item_billing_status": ["order_billing_status", "Order Billing Status", "Billing Status"],
-    "item_delivery_status": ["delivery_status", "Delivery Status"],
-}
-SPECS["order-to-cash-anomaly-monitor"]["blankValueKeywords"] = {
-    "item_billing_status": ["blank", "empty", "none", "空白", "未设置"],
-}
-SPECS["order-to-cash-anomaly-monitor"]["ignoredNoticeKeywords"] = [
-    "anomaly definition",
-    "anomaly rule",
-    "异常定义",
-    "异常规则",
-]
-SPECS["order-to-cash-anomaly-monitor"]["requiredLimitations"] = [
-    "billing_output_status_evidence",
-    "billing_dispute_case_evidence",
-]
-SPECS["order-to-cash-anomaly-monitor"]["limitationKeywords"] = {
-    **COMMON_LIMITATION_KEYWORDS,
-    "billing_output_status_evidence": SPECS["billing-output-monitor"]["limitationKeywords"]["billing_output_status_evidence"],
-    "billing_dispute_case_evidence": SPECS["billing-dispute-classification"]["limitationKeywords"]["billing_dispute_case_evidence"],
-}
-
 SPECS["order-to-cash-status"]["limitationKeywords"] = {
     **COMMON_LIMITATION_KEYWORDS,
     "o2c_ar_clearing_evidence": [
@@ -698,10 +685,6 @@ for _agent_id, _blocking_items in {
     "billing-output-monitor": ["billing_output_status_evidence"],
     "billing-dispute-classification": ["billing_dispute_case_evidence"],
     "shortage-allocation-advisor": ["atp_availability_evidence"],
-    "order-to-cash-anomaly-monitor": [
-        "billing_output_status_evidence",
-        "billing_dispute_case_evidence",
-    ],
     "production-variance-analysis": [],
     "demand-forecast-planning": ["pir_evidence", "sales_demand_period_evidence"],
     "mrp-exception-analysis": ["mrp_coverage_or_supply_demand_evidence"],
@@ -779,7 +762,6 @@ SPECS["budget-rolling-forecast"]["limitationKeywords"]["budget_evidence_missing"
 
 for _agent_id, _metric_id, _zero_status, _nonzero_status in (
     ("billing-completeness-check", "finding_count", "normal", "attention"),
-    ("delivered-not-billed", "delivered_not_billed", "normal", "attention"),
     ("delivery-delay-prediction", "maximum_risk_score", "normal", "attention"),
     ("due-delivery-prioritization", "ranked_requirements", "normal", "attention"),
     ("returns-credit-anomaly", "finding_count", "normal", "attention"),
@@ -997,6 +979,30 @@ SPECS["production-variance-analysis"]["limitationKeywords"] = {
         "成本未评估",
         "本agent未评估",
     ],
+}
+SPECS["delivered-not-billed"]["booleanFields"] = ["is_billed", "amount_is_estimate"]
+SPECS["delivered-not-billed"]["limitationKeywords"] = {
+    **COMMON_LIMITATION_KEYWORDS,
+    "unbilled_amount_evidence": ["unbilled_amount_evidence"],
+    "billing_cancellation_evidence": ["billing_cancellation_evidence"],
+    "quantity_unit_mismatch": ["quantity_unit_mismatch"],
+}
+SPECS["delivered-not-billed"]["metricDefinitions"] = {
+    "delivered_not_billed": "Count of unbilled plus partially_billed delivery items.",
+    "unbilled_items": "Count of delivery items with no active billed quantity above the 0.001 tolerance.",
+    "partially_billed_items": "Count of delivery items billed above 0.001 but below delivered quantity minus 0.001.",
+    "fully_billed_items": "Count of delivery items whose delivered and active billed quantities differ by no more than 0.001.",
+    "overbilled_items": "Count of delivery items billed above delivered quantity plus 0.001.",
+    "inconclusive_items": "Count of delivery items whose billing state is not provable from complete comparable evidence.",
+}
+SPECS["delivered-not-billed"]["businessStatusDefinition"] = (
+    "attention for confirmed unbilled, partially_billed, or overbilled items; "
+    "inconclusive for unresolved evidence; normal only when complete evidence proves every item fully billed."
+)
+SPECS["delivered-not-billed"]["businessStatusFromAnyPositiveMetric"] = {
+    "metrics": ["delivered_not_billed", "overbilled_items"],
+    "zero": "normal",
+    "positive": "attention",
 }
 SPECS["production-variance-analysis"]["recordScope"] = "one_summary_record_per_manufacturing_order"
 SPECS["production-variance-analysis"]["factDefinitions"] = {

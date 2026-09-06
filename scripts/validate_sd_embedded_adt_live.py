@@ -25,7 +25,7 @@ SD_AGENTS = (
     "shortage-allocation-advisor",
     "billing-dispute-classification",
     "returns-credit-anomaly",
-    "order-to-cash-anomaly-monitor",
+    "new-sales-demand-coverage",
     "order-to-cash-status",
 )
 ISSUES = {
@@ -157,7 +157,7 @@ def _write_reports(
     (output / "comparison.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     summary = [
-        "# SD 11 Agent Embedded + ADT 真机校验总览",
+        f"# SD {len(SD_AGENTS)} Agent Embedded + ADT 真机校验总览",
         "",
         f"- 测试时间：{payload['generated_at']}",
         f"- 代码版本：`{code_version}`",
@@ -310,7 +310,7 @@ async def _main(args: argparse.Namespace) -> int:
                     "elapsed_ms": 0,
                 }
             cases.append(case)
-            print(f"{index:02d}/11 {agent}: {case['status']} GET={case['sap_get_count']}", flush=True)
+            print(f"{index:02d}/{len(SD_AGENTS)} {agent}: {case['status']} GET={case['sap_get_count']}", flush=True)
 
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     output = root / ".local-data" / "live-tests" / "embedded-adt" / stamp
@@ -320,7 +320,9 @@ async def _main(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run all 11 SD Agents against Embedded SAP and controlled ADT fallbacks.")
+    parser = argparse.ArgumentParser(
+        description=f"Run all {len(SD_AGENTS)} SD Agents against Embedded SAP and controlled ADT fallbacks."
+    )
     parser.add_argument("--repository", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--api-url", default="http://127.0.0.1:8765")
     return asyncio.run(_main(parser.parse_args()))

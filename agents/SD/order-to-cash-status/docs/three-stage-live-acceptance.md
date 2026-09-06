@@ -1,11 +1,12 @@
-# Three-stage live SAP acceptance: order-to-cash-status
+# Three-stage live SAP acceptance: order-to-cash-status 0.1.1
 
 ## Verdict
 
 `PASS` / `executable=true`
 
 - Case: `order-to-cash-status-live-001`
-- Tested at: `2026-08-20T05:19:41.273991+00:00`
+- Original three-stage test: `2026-08-20T05:19:41.273991+00:00`
+- Definition-only regression: `2026-09-06T15:29:30+08:00`
 - Direct baseline runtime: `codex_app_direct_sap`
 - Used SAPBusinessAgents for baseline: `false`
 - Free-query comparison: `MATCH`
@@ -55,3 +56,9 @@ Schema/query manifests:
 The final comparison uses stable business keys, deterministic facts, Decimal-aware metrics, currencies, units, limitations, and completeness rather than display prose or row order. Platform and fixed-Agent corrections are covered by the campaign regression suite; runtime logic contains no test-document constants.
 
 Raw SAP rows, URLs, credentials, business identifiers, and connection details remain in ignored local artifacts.
+
+## Version 0.1.1 definition regression
+
+Version 0.1.1 changes only the public summary and README. The input schema still exposes exactly one required numeric `sales_order` field; the execution graph, status rule, and output contract are unchanged.
+
+The fixed Agent was rerun with a real sales-order identifier. It completed 9 Embedded GET requests with `source_complete=true` and `business_complete=true`, returning one item-grain record. Sales order, item, delivery, PGI, and billing stages were confirmed; FI clearing was not confirmed, so the business status correctly remained `partial`. No SAP write operation was executed.

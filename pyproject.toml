@@ -69,6 +69,5 @@ pythonpath = [
   "agents/SD/shortage-allocation-advisor/src",
   "agents/SD/billing-dispute-classification/src",
   "agents/SD/returns-credit-anomaly/src",
-  "agents/SD/order-to-cash-anomaly-monitor/src",
   "agents/SD/order-to-cash-status/src",
 ]
