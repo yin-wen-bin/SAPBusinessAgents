@@ -157,7 +157,7 @@ const labels = locale === "zh" ? {
     requery: "已根据反馈重新读取 SAP", reinterpret: "复用已验证证据调整展示", initial: "首次查询",
     feedback: "用户反馈", understood: "系统理解", changes: "与上一轮的变化", noChanges: "首轮结果",
     expectations: "用户期望与SAP证据核对", expectationStatus: { confirmed: "证据支持", mismatch: "与SAP证据不一致", not_verifiable: "当前证据无法核验" },
-    correct: "结果需要修正", satisfied: "结果符合预期", newQuestion: "这是另一个问题",
+    correct: "结果需要修正", satisfied: "结果符合预期",
     feedbackPrompt: "请说明哪些结果不正确，以及你期望系统如何核对。用户期望会与SAP证据比较，不会直接覆盖事实。",
     feedbackPlaceholder: "例如：当前只返回订单抬头，我还需要发票、清账和付款凭证证据",
     submitFeedback: "提交反馈并继续", accepting: "正在确认…", accepted: "已确认当前结果",
@@ -321,7 +321,7 @@ const labels = locale === "zh" ? {
     requery: "SAP was read again for this correction", reinterpret: "Validated evidence was reused to revise the presentation", initial: "Initial query",
     feedback: "User feedback", understood: "System interpretation", changes: "Changes from the previous iteration", noChanges: "Initial result",
     expectations: "User expectations checked against SAP evidence", expectationStatus: { confirmed: "Supported by evidence", mismatch: "Does not match SAP evidence", not_verifiable: "Not verifiable from current evidence" },
-    correct: "Result needs correction", satisfied: "Result meets expectations", newQuestion: "This is a different question",
+    correct: "Result needs correction", satisfied: "Result meets expectations",
     feedbackPrompt: "Describe what is incorrect and how it should be checked. Expectations are compared with SAP evidence and never overwrite facts.",
     feedbackPlaceholder: "Example: the result only shows the order header; include invoice, clearing, and payment-document evidence",
     submitFeedback: "Submit feedback and continue", accepting: "Accepting…", accepted: "Current result accepted",
@@ -466,7 +466,6 @@ const labels = locale === "zh" ? {
     <div class="free-query-session-actions" data-session-actions hidden>
       <button type="button" data-session-correct>{labels.freeQuerySession.correct}</button>
       <button type="button" class="secondary-button" data-session-accept>{labels.freeQuerySession.satisfied}</button>
-      <button type="button" class="secondary-button" data-session-new>{labels.freeQuerySession.newQuestion}</button>
       <button type="button" class="secondary-button" data-session-reopen hidden>{labels.freeQuerySession.reopen}</button>
       <button type="button" data-session-draft hidden>{labels.freeQuerySession.createDraft}</button>
     </div>
@@ -1583,7 +1582,6 @@ const labels = locale === "zh" ? {
     actions.hidden = !latestTerminal || session.status === "reviewing_feedback";
     root.querySelector("[data-session-correct]").hidden = session.status !== "reviewing" || !latestReviewable;
     root.querySelector("[data-session-accept]").hidden = session.status !== "reviewing" || !latestReviewable;
-    root.querySelector("[data-session-new]").hidden = !["reviewing", "satisfied"].includes(session.status);
     root.querySelector("[data-session-reopen]").hidden = session.status !== "satisfied";
     root.querySelector("[data-session-draft]").hidden = session.status !== "satisfied";
     if (session.status === "draft_created" && session.draft_id) showDraftManagement({ draft_id: session.draft_id, managed_draft_id: session.managed_draft_id });
@@ -1981,10 +1979,6 @@ const labels = locale === "zh" ? {
     if (response.ok) { await loadSession(); showDraftManagement(payload); } else button.disabled = false;
     } catch (_) { button.disabled = false; showAlert(labels.unavailable); }
   });
-  root?.querySelector("[data-session-new]")?.addEventListener("click", () => {
-    window.location.href = window.location.pathname.replace(/\/run\/?$/, "/ask/");
-  });
-
   if (runId || sessionId) {
     Promise.all([loadRun(), sessionId ? loadSession() : Promise.resolve()]).then(connect).catch(() => {
       showAlert(labels.unavailable);
