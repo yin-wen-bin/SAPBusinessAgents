@@ -23,7 +23,7 @@ test("static catalog contains all agents and the GitHub Pages base path", async 
   assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 1);
   assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
-  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 11);
+  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 10);
   assert.match(html, /class="odata-version-tag">V2</);
   assert.doesNotMatch(html, /href="\/zh\//);
 });
@@ -182,11 +182,11 @@ test("supplier performance accepts punctuated SAP identifiers and localizes run 
   assert.match(panelSource, /caught instanceof RunCreateHttpError/);
 });
 
-test("SD detail pages render ten execution-mapped workflows", async () => {
+test("SD detail pages render nine execution-mapped workflows", async () => {
   const slugs = [
     "delivered-not-billed", "billing-block-diagnosis", "billing-completeness-check",
     "billing-output-monitor", "delivery-delay-prediction", "due-delivery-prioritization",
-    "shortage-allocation-advisor", "billing-dispute-classification", "returns-credit-anomaly",
+    "shortage-allocation-advisor", "returns-credit-anomaly",
     "order-to-cash-status",
   ];
   for (const slug of slugs) {
@@ -204,6 +204,13 @@ test("SD detail pages render ten execution-mapped workflows", async () => {
 test("retired O2C anomaly monitor no longer has a runnable page", async () => {
   await assert.rejects(
     () => readPage("zh", "agents", "SD", "order-to-cash-anomaly-monitor"),
+    (error) => error?.code === "ENOENT",
+  );
+});
+
+test("inactive billing dispute classification no longer has a runnable page", async () => {
+  await assert.rejects(
+    () => readPage("zh", "agents", "SD", "billing-dispute-classification"),
     (error) => error?.code === "ENOENT",
   );
 });
@@ -251,13 +258,21 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   const ask = await readPage("zh", "ask");
   const askEn = await readPage("en", "ask");
   const run = await readPage("zh", "run");
+  const runEn = await readPage("en", "run");
   const plugins = await readPage("zh", "plugins");
   const settings = await readPage("zh", "settings");
+  const globalStyles = await readFile(path.join("src", "styles", "global.css"), "utf8");
   assert.match(home, /自由查询/);
   assert.match(homeEn, /Free query/);
   assert.doesNotMatch(home, /没有合适的 Agent？直接询问 SAP/);
   assert.doesNotMatch(homeEn, /No matching Agent\? Ask SAP directly/);
   assert.match(ask, /开始只读查询/);
+  assert.match(ask, /你希望查询什么？/);
+  assert.match(ask, /for="free-query-question-zh"/);
+  assert.match(ask, /安全参数（可选）/);
+  assert.match(ask, /<details class="free-query-secure">/);
+  assert.match(askEn, /What do you want to query\?/);
+  assert.match(askEn, /Secure parameters \(optional\)/);
   assert.match(ask, /<title>自由查询 — SAP Business Agents<\/title>/);
   assert.match(askEn, /<title>Free query — SAP Business Agents<\/title>/);
   assert.match(run, /查询进度/);
@@ -293,7 +308,15 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /workflow-ap-scopes\.csv/);
   assert.match(run, /const pageSize = 20/);
   assert.match(run, /payment_run_evidence_incomplete/);
-  assert.match(run, /多轮查询与修正/);
+  assert.match(run, /修订历史/);
+  assert.match(runEn, /Revision history/);
+  assert.match(run, /查看完整问题/);
+  assert.match(run, /查询与证据详情/);
+  assert.match(run, /data-progress-disclosure/);
+  assert.match(run, /data-reconnect hidden/);
+  assert.match(run, /data-download-links/);
+  assert.ok(run.indexOf('class="business-result-card"') < run.indexOf('class="free-query-session-card"'));
+  assert.ok(run.indexOf('class="free-query-session-card"') < run.indexOf('class="run-evidence-details"'));
   assert.match(run, /结果需要修正/);
   assert.match(run, /继续修正此结果/);
   assert.match(run, /结果符合预期/);
@@ -307,6 +330,9 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /feedback-requests/);
   assert.match(run, /harness_finalization_started/);
   assert.match(run, /已自适应延长/);
+  assert.match(globalStyles, /\.free-query-panel\s*\{[^}]*width: min\(100%, 880px\);/s);
+  assert.match(globalStyles, /\.run-console\[data-run-mode="free_query"\]/);
+  assert.match(globalStyles, /@media \(max-width: 560px\)/);
   assert.doesNotMatch(run, /\.innerHTML\s*=/);
   assert.match(plugins, /插件与能力/);
   assert.match(plugins, /data-plugin-manager/);

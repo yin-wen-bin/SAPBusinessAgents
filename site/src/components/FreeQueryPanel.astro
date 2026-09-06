@@ -1,5 +1,5 @@
 ---
-import { ArrowRight, MessageSquareText, ShieldCheck } from "@lucide/astro";
+import { ArrowRight, ChevronDown, MessageSquareText, ShieldCheck } from "@lucide/astro";
 import type { Locale } from "../lib/types";
 import { runPath } from "../lib/urls";
 
@@ -8,46 +8,63 @@ const { locale } = Astro.props;
 const base = import.meta.env.BASE_URL;
 const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const destination = runPath(base, locale);
+const questionId = `free-query-question-${locale}`;
+const questionHelpId = `free-query-question-help-${locale}`;
+const secureId = `free-query-receipt-reference-${locale}`;
+const secureHelpId = `free-query-secure-help-${locale}`;
 const copy = locale === "zh" ? {
-  eyebrow: "自由 SAP 查询",
-  title: "没有合适的 Agent？直接询问 SAP",
-  body: "当前默认 Agent Runtime 从已注册的只读能力目录生成查询计划；SAP 只读 Provider 会再次验证元数据、字段和 GET 边界。",
+  eyebrow: "自由查询",
+  title: "直接查询 SAP 业务数据",
+  body: "说明你想核对的业务问题，Agent Runtime 会使用已注册的只读能力准备查询并整理结果。",
+  questionLabel: "你希望查询什么？",
+  questionHelp: "请尽量提供业务对象编号、日期范围和需要核对的状态或关系。",
   placeholder: "例如：查询供应商 1000123 上个月到期但尚未付款的采购订单",
   submit: "开始只读查询",
   safety: "仅允许 SAP Provider GET 和已批准的只读 Skill",
   error: "无法连接本地运行服务，请先启动 127.0.0.1:8765。",
   gapContext: "正在为工作流补齐缺口 Agent。完成查询后，请点击“保存为 Agent 草稿”。",
-  secureLabel: "银行来款参考号（可选安全参数）",
+  secureSummary: "安全参数（可选）",
+  secureLabel: "银行来款参考号",
   secureHelp: "请勿把银行参考号写入问题正文；需要时在这里填写，平台会加密并在运行结束后销毁原值。",
 } : {
-  eyebrow: "Free SAP query",
-  title: "No matching Agent? Ask SAP directly",
-  body: "The current default Agent Runtime authors a plan from registered read-only capabilities; the SAP read Provider revalidates metadata, fields, and the GET-only boundary.",
+  eyebrow: "Free query",
+  title: "Query SAP business data directly",
+  body: "Describe the business question you want to check. The Agent Runtime will prepare a query from registered read-only capabilities and organize the result.",
+  questionLabel: "What do you want to query?",
+  questionHelp: "Include business object IDs, date ranges, and the statuses or relationships you want to verify when possible.",
   placeholder: "Example: find purchase orders for supplier 1000123 that were due last month but remain unpaid",
   submit: "Start read-only query",
   safety: "Only SAP Provider GET and approved read-only Skills are allowed",
   error: "Cannot reach the local runtime. Start 127.0.0.1:8765 first.",
   gapContext: "This query is closing a workflow Agent gap. When it finishes, select Save as Agent draft.",
-  secureLabel: "Bank receipt reference (optional secure parameter)",
+  secureSummary: "Secure parameters (optional)",
+  secureLabel: "Bank receipt reference",
   secureHelp: "Do not put a bank reference in the question text. Enter it here when needed; the platform encrypts it and destroys the original value after the run.",
 };
 ---
 
 <section class="free-query-panel" data-free-query data-api-base={apiBase} data-run-path={destination} data-locale={locale}>
-  <div>
+  <header class="free-query-heading">
     <p class="runtime-eyebrow"><MessageSquareText size={16} aria-hidden="true" />{copy.eyebrow}</p>
     <h2>{copy.title}</h2>
     <p>{copy.body}</p>
-    <p class="free-query-gap-context" data-gap-context hidden>{copy.gapContext}</p>
     <p class="runtime-safety"><ShieldCheck size={16} aria-hidden="true" />{copy.safety}</p>
-  </div>
+  </header>
   <form class="free-query-form">
-    <textarea name="query" required rows="4" placeholder={copy.placeholder}></textarea>
-    <label>
-      <span>{copy.secureLabel}</span>
-      <small>{copy.secureHelp}</small>
-      <input name="receipt_reference" type="password" autocomplete="off" maxlength="35" />
+    <p class="free-query-gap-context" data-gap-context hidden>{copy.gapContext}</p>
+    <label class="free-query-question" for={questionId}>
+      <strong>{copy.questionLabel}</strong>
+      <small id={questionHelpId}>{copy.questionHelp}</small>
     </label>
+    <textarea id={questionId} name="query" required rows="6" placeholder={copy.placeholder} aria-describedby={questionHelpId}></textarea>
+    <details class="free-query-secure">
+      <summary><span>{copy.secureSummary}</span><ChevronDown size={17} aria-hidden="true" /></summary>
+      <div>
+        <label for={secureId}>{copy.secureLabel}</label>
+        <small id={secureHelpId}>{copy.secureHelp}</small>
+        <input id={secureId} name="receipt_reference" type="password" autocomplete="off" maxlength="35" aria-describedby={secureHelpId} />
+      </div>
+    </details>
     <div class="runtime-form-actions">
       <span class="runtime-form-error" role="alert" hidden>{copy.error}</span>
       <button type="submit">{copy.submit}<ArrowRight size={17} aria-hidden="true" /></button>

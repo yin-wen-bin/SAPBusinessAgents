@@ -1,5 +1,5 @@
 ---
-import { Ban, Download, FilePlus, RefreshCw, Send } from "@lucide/astro";
+import { Ban, ChevronDown, Download, FilePlus, RefreshCw, Send } from "@lucide/astro";
 import type { Locale } from "../lib/types";
 import { agentManagementPath, workflowsPath } from "../lib/urls";
 
@@ -24,6 +24,8 @@ const labels = locale === "zh" ? {
   scope: "本次查询范围",
   evidence: "查询结果明细",
   completeness: "数据范围说明",
+  evidenceDetails: "查询与证据详情",
+  evidenceDetailsHelp: "查看处理记录、完整性、查询范围和证据明细",
   technical: "技术详情（供 IT 支持和审计使用）",
   rawPlan: "原始执行计划",
   rawRules: "原始规则结果",
@@ -151,7 +153,7 @@ const labels = locale === "zh" ? {
   runtimeLabel: "Agent Runtime",
   mode: { agent: "固定 Agent", free_query: "自由 SAP 查询", workflow: "组合工作流", guided: "Agent 引导查询" },
   freeQuerySession: {
-    title: "多轮查询与修正", original: "原始问题", iteration: "第 {n} 轮", latest: "当前结果",
+    title: "修订历史", historyHelp: "每轮结果、反馈和证据使用方式都会保留", original: "原始问题", viewOriginal: "查看完整问题", hideOriginal: "收起完整问题", iteration: "第 {n} 轮", latest: "当前结果",
     requery: "已根据反馈重新读取 SAP", reinterpret: "复用已验证证据调整展示", initial: "首次查询",
     feedback: "用户反馈", understood: "系统理解", changes: "与上一轮的变化", noChanges: "首轮结果",
     expectations: "用户期望与SAP证据核对", expectationStatus: { confirmed: "证据支持", mismatch: "与SAP证据不一致", not_verifiable: "当前证据无法核验" },
@@ -186,6 +188,8 @@ const labels = locale === "zh" ? {
   scope: "Query scope",
   evidence: "Query result details",
   completeness: "Data scope",
+  evidenceDetails: "Query and evidence details",
+  evidenceDetailsHelp: "View processing history, completeness, query scope, and evidence",
   technical: "Technical details (for IT support and audit)",
   rawPlan: "Raw execution plan",
   rawRules: "Raw rule results",
@@ -313,7 +317,7 @@ const labels = locale === "zh" ? {
   runtimeLabel: "Agent Runtime",
   mode: { agent: "Fixed Agent", free_query: "Free SAP query", workflow: "Composite workflow", guided: "Agent-guided query" },
   freeQuerySession: {
-    title: "Multi-turn query and correction", original: "Original question", iteration: "Iteration {n}", latest: "Current result",
+    title: "Revision history", historyHelp: "Every result, feedback item, and evidence-use decision is retained", original: "Original question", viewOriginal: "View full question", hideOriginal: "Collapse full question", iteration: "Iteration {n}", latest: "Current result",
     requery: "SAP was read again for this correction", reinterpret: "Validated evidence was reused to revise the presentation", initial: "Initial query",
     feedback: "User feedback", understood: "System interpretation", changes: "Changes from the previous iteration", noChanges: "Initial result",
     expectations: "User expectations checked against SAP evidence", expectationStatus: { confirmed: "Supported by evidence", mismatch: "Does not match SAP evidence", not_verifiable: "Not verifiable from current evidence" },
@@ -341,6 +345,16 @@ const labels = locale === "zh" ? {
       <p class="runtime-eyebrow">SAPBusinessAgents</p>
       <h1>{labels.title}</h1>
       <p class="run-identity" data-run-identity></p>
+      <details class="run-query-summary" data-run-query-summary hidden>
+        <summary>
+          <span class="run-query-summary-label">{labels.freeQuerySession.original}</span>
+          <span class="run-query-preview" data-session-original-preview></span>
+          <span class="run-query-summary-action run-query-summary-action--open">{labels.freeQuerySession.viewOriginal}</span>
+          <span class="run-query-summary-action run-query-summary-action--close">{labels.freeQuerySession.hideOriginal}</span>
+          <ChevronDown class="disclosure-chevron" size={17} aria-hidden="true" />
+        </summary>
+        <p data-session-original></p>
+      </details>
     </div>
     <span class="run-status" data-run-status aria-live="polite">{labels.connecting}</span>
   </header>
@@ -348,52 +362,19 @@ const labels = locale === "zh" ? {
   <div class="run-alert" data-run-alert hidden>{labels.noRun}</div>
 
   <div class="run-actions">
-    <button type="button" class="secondary-button" data-cancel><Ban size={16} aria-hidden="true" />{labels.cancel}</button>
-    <button type="button" class="secondary-button" data-reconnect><RefreshCw size={16} aria-hidden="true" />{labels.reconnect}</button>
+    <button type="button" class="secondary-button" data-cancel hidden><Ban size={16} aria-hidden="true" />{labels.cancel}</button>
+    <button type="button" class="secondary-button" data-reconnect hidden><RefreshCw size={16} aria-hidden="true" />{labels.reconnect}</button>
     <button type="button" class="secondary-button" data-start-session hidden>{labels.continueCorrection}</button>
     <button type="button" data-draft hidden><FilePlus size={16} aria-hidden="true" />{labels.draft}</button>
     <a class="secondary-button" data-gap-return hidden>{labels.returnWorkflow}</a>
     <a class="secondary-button" data-managed-draft-link hidden>{labels.manageDraft}</a>
     <button type="button" data-import-draft hidden>{labels.retryImport}</button>
     <p data-import-draft-status aria-live="polite" hidden></p>
-    <span class="run-downloads" data-downloads hidden><Download size={16} aria-hidden="true" /><span>{labels.downloads}</span></span>
+    <details class="run-downloads" data-downloads hidden>
+      <summary><Download size={16} aria-hidden="true" /><span>{labels.downloads}</span><ChevronDown class="disclosure-chevron" size={16} aria-hidden="true" /></summary>
+      <div class="run-download-links" data-download-links></div>
+    </details>
   </div>
-
-  <section class="free-query-session-card" data-free-query-session hidden>
-    <header>
-      <div><p class="runtime-eyebrow">{labels.freeQuerySession.title}</p><h2 data-session-original></h2></div>
-      <span class="run-status" data-session-status></span>
-    </header>
-    <div class="free-query-iteration-list" data-session-iterations></div>
-    <section class="free-query-feedback-progress" data-feedback-progress aria-live="polite" hidden>
-      <div class="free-query-feedback-progress-heading">
-        <strong>{labels.freeQuerySession.feedbackProgress}</strong>
-        <button type="button" class="secondary-button" data-feedback-cancel>{labels.freeQuerySession.cancelFeedback}</button>
-      </div>
-      <ol>
-        {labels.freeQuerySession.feedbackSteps.map((step, index) => <li data-feedback-step={index}><span>{index + 1}</span><b>{step}</b></li>)}
-      </ol>
-      <p data-feedback-progress-detail></p>
-    </section>
-    <div class="free-query-session-actions" data-session-actions hidden>
-      <button type="button" data-session-correct>{labels.freeQuerySession.correct}</button>
-      <button type="button" class="secondary-button" data-session-accept>{labels.freeQuerySession.satisfied}</button>
-      <button type="button" class="secondary-button" data-session-new>{labels.freeQuerySession.newQuestion}</button>
-      <button type="button" class="secondary-button" data-session-reopen hidden>{labels.freeQuerySession.reopen}</button>
-      <button type="button" data-session-draft hidden>{labels.freeQuerySession.createDraft}</button>
-    </div>
-    <form class="free-query-feedback-form" data-session-feedback hidden>
-      <p data-session-feedback-question>{labels.freeQuerySession.feedbackPrompt}</p>
-      <div class="free-query-feedback-chips" data-session-chips>
-        {Object.entries(labels.freeQuerySession.chips).map(([value, text]) => <button type="button" data-feedback-type={value}>{text}</button>)}
-      </div>
-      <textarea name="feedback" rows="4" required placeholder={labels.freeQuerySession.feedbackPlaceholder}></textarea>
-      <p class="run-input-feedback" data-session-feedback-status aria-live="polite" hidden></p>
-      <div class="runtime-form-actions">
-        <button type="submit"><Send size={16} aria-hidden="true" />{labels.freeQuerySession.submitFeedback}</button>
-      </div>
-    </form>
-  </section>
 
   <details class="run-input-disclosure" data-input-disclosure hidden>
     <summary data-input-summary>{labels.steerTitle}</summary>
@@ -409,8 +390,8 @@ const labels = locale === "zh" ? {
     </form>
   </details>
 
-  <section class="run-progress-card" aria-labelledby="run-progress-title">
-    <div class="run-progress-summary">
+  <details class="run-progress-card" data-progress-disclosure open>
+    <summary class="run-progress-summary">
       <span class="run-progress-indicator" data-progress-indicator aria-hidden="true"></span>
       <div>
         <h2 id="run-progress-title">{labels.progress}</h2>
@@ -418,12 +399,15 @@ const labels = locale === "zh" ? {
         <small>{labels.progressHint}</small>
         <small class="run-limit-summary" data-limit-summary hidden></small>
       </div>
+      <ChevronDown class="disclosure-chevron" size={18} aria-hidden="true" />
+    </summary>
+    <div class="run-progress-body">
+      <div class="run-progress-track" aria-hidden="true"><span data-progress-bar></span></div>
+      <ol class="run-progress-steps">
+        {labels.phaseLabels.map((phase, index) => <li data-progress-step={index}><span>{index + 1}</span><b>{phase}</b></li>)}
+      </ol>
     </div>
-    <div class="run-progress-track" aria-hidden="true"><span data-progress-bar></span></div>
-    <ol class="run-progress-steps">
-      {labels.phaseLabels.map((phase, index) => <li data-progress-step={index}><span>{index + 1}</span><b>{phase}</b></li>)}
-    </ol>
-  </section>
+  </details>
 
   <section class="business-result-card" data-business-result hidden aria-labelledby="business-result-title">
     <div class="business-result-heading">
@@ -474,7 +458,45 @@ const labels = locale === "zh" ? {
     </div>
   </section>
 
-  <div class="run-grid run-business-grid">
+  <section class="free-query-session-card" data-free-query-session hidden>
+    <header>
+      <div><p class="runtime-eyebrow">{labels.freeQuerySession.title}</p><h2>{labels.freeQuerySession.historyHelp}</h2></div>
+      <span class="run-status" data-session-status></span>
+    </header>
+    <div class="free-query-session-actions" data-session-actions hidden>
+      <button type="button" data-session-correct>{labels.freeQuerySession.correct}</button>
+      <button type="button" class="secondary-button" data-session-accept>{labels.freeQuerySession.satisfied}</button>
+      <button type="button" class="secondary-button" data-session-new>{labels.freeQuerySession.newQuestion}</button>
+      <button type="button" class="secondary-button" data-session-reopen hidden>{labels.freeQuerySession.reopen}</button>
+      <button type="button" data-session-draft hidden>{labels.freeQuerySession.createDraft}</button>
+    </div>
+    <section class="free-query-feedback-progress" data-feedback-progress tabindex="-1" aria-live="polite" hidden>
+      <div class="free-query-feedback-progress-heading">
+        <strong>{labels.freeQuerySession.feedbackProgress}</strong>
+        <button type="button" class="secondary-button" data-feedback-cancel>{labels.freeQuerySession.cancelFeedback}</button>
+      </div>
+      <ol>
+        {labels.freeQuerySession.feedbackSteps.map((step, index) => <li data-feedback-step={index}><span>{index + 1}</span><b>{step}</b></li>)}
+      </ol>
+      <p data-feedback-progress-detail></p>
+    </section>
+    <form class="free-query-feedback-form" data-session-feedback hidden>
+      <label class="free-query-feedback-label" for={`free-query-feedback-${locale}`} data-session-feedback-question>{labels.freeQuerySession.feedbackPrompt}</label>
+      <div class="free-query-feedback-chips" data-session-chips>
+        {Object.entries(labels.freeQuerySession.chips).map(([value, text]) => <button type="button" data-feedback-type={value}>{text}</button>)}
+      </div>
+      <textarea id={`free-query-feedback-${locale}`} name="feedback" rows="4" required placeholder={labels.freeQuerySession.feedbackPlaceholder}></textarea>
+      <p class="run-input-feedback" data-session-feedback-status aria-live="polite" hidden></p>
+      <div class="runtime-form-actions">
+        <button type="submit"><Send size={16} aria-hidden="true" />{labels.freeQuerySession.submitFeedback}</button>
+      </div>
+    </form>
+    <div class="free-query-iteration-list" data-session-iterations></div>
+  </section>
+
+  <details class="run-evidence-details">
+    <summary><span><strong>{labels.evidenceDetails}</strong><small>{labels.evidenceDetailsHelp}</small></span><ChevronDown class="disclosure-chevron" size={18} aria-hidden="true" /></summary>
+    <div class="run-grid run-business-grid">
     <section class="run-panel run-timeline-panel">
       <h2>{labels.timeline}</h2>
       <ol class="run-timeline" data-timeline aria-live="polite"></ol>
@@ -501,7 +523,8 @@ const labels = locale === "zh" ? {
         </table>
       </div>
     </section>
-  </div>
+    </div>
+  </details>
 
   <details class="run-technical-details">
     <summary>{labels.technical}</summary>
@@ -1484,7 +1507,11 @@ const labels = locale === "zh" ? {
     currentSession = session;
     const card = root.querySelector("[data-free-query-session]");
     card.hidden = false;
-    root.querySelector("[data-session-original]").textContent = `${labels.freeQuerySession.original}: ${session.original_query}`;
+    const querySummary = root.querySelector("[data-run-query-summary]");
+    const originalQuery = String(session.original_query || "").trim();
+    root.querySelector("[data-session-original-preview]").textContent = originalQuery;
+    root.querySelector("[data-session-original]").textContent = originalQuery;
+    querySummary.hidden = !originalQuery;
     root.querySelector("[data-session-status]").textContent = labels.status[session.status] || session.status;
     renderFeedbackProgress(session.active_feedback_request || null);
     const list = root.querySelector("[data-session-iterations]");
@@ -1628,6 +1655,14 @@ const labels = locale === "zh" ? {
     const currentSequence = Number(currentRun?.progress?.event_sequence || 0);
     if (currentRun && incomingSequence < currentSequence) run.progress = currentRun.progress;
     currentRun = run;
+    root.dataset.runMode = String(run.mode || "");
+    if (run.mode === "free_query" && !currentSession) {
+      const querySummary = root.querySelector("[data-run-query-summary]");
+      const originalQuery = String(run.query || "").trim();
+      root.querySelector("[data-session-original-preview]").textContent = originalQuery;
+      root.querySelector("[data-session-original]").textContent = originalQuery;
+      querySummary.hidden = !originalQuery;
+    }
     if (run.free_query_session?.session_id && !sessionId) {
       sessionId = String(run.free_query_session.session_id);
       const params = new URLSearchParams(window.location.search);
@@ -1643,6 +1678,12 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-run-identity]").textContent = `${modeLabel}${subject ? ` · ${subject}` : ""}${runtimeIdentity} · ${run.run_id}`;
     const progressState = run.progress?.state || (terminal.has(run.status) ? run.status : "active");
     root.querySelector("[data-run-status]").textContent = labels.progressState[progressState] || labels.phaseLabels[progressIndex(run)] || labels.connecting;
+    const progressDisclosure = root.querySelector("[data-progress-disclosure]");
+    const progressMode = terminal.has(run.status) ? "terminal" : "active";
+    if (progressDisclosure.dataset.displayMode !== progressMode) {
+      progressDisclosure.open = progressMode === "active";
+      progressDisclosure.dataset.displayMode = progressMode;
+    }
     root.querySelector("[data-plan]").textContent = format(run.plan || run.result?.plan);
     root.querySelector("[data-rules]").textContent = format(run.result?.rule_results);
     root.querySelector("[data-tool-calls]").textContent = format(run.result?.tool_calls);
@@ -1674,22 +1715,23 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-draft]").hidden = Boolean(sessionId) || run.mode !== "free_query" || !terminal.has(run.status) || !run.plan;
     root.querySelector("[data-start-session]").hidden = Boolean(sessionId) || run.mode !== "free_query" || !["completed", "inconclusive"].includes(run.status);
     const downloads = root.querySelector("[data-downloads]");
-    downloads.querySelectorAll("a").forEach((node) => node.remove());
+    const downloadLinks = downloads.querySelector("[data-download-links]");
+    downloadLinks.querySelectorAll("a").forEach((node) => node.remove());
     if (run.mode === "workflow" && run.result?.workflow_presentation) {
       ["workflow-report.md", "workflow-orders.csv", "workflow-ap-scopes.csv"].forEach((name) => {
         const link = document.createElement("a");
         link.href = `${apiBase}/api/runs/${encodeURIComponent(run.run_id)}/${encodeURIComponent(name)}`;
-        link.textContent = labels.artifact[name] || name; link.download = name; downloads.append(link);
+        link.textContent = labels.artifact[name] || name; link.download = name; downloadLinks.append(link);
       });
     }
     (run.result?.artifacts || []).forEach((artifact) => {
       if (run.mode === "workflow" && ["report.md", "business-stages.csv", "workflow-report.md", "workflow-orders.csv", "workflow-ap-scopes.csv"].includes(artifact.name)) return;
       const link = document.createElement("a");
       link.href = `${apiBase}/api/runs/${encodeURIComponent(run.run_id)}/artifacts/${encodeURIComponent(artifact.name)}`;
-      link.textContent = labels.artifact[artifact.name] || artifact.name; link.download = artifact.name; downloads.append(link);
+      link.textContent = labels.artifact[artifact.name] || artifact.name; link.download = artifact.name; downloadLinks.append(link);
     });
-    downloads.hidden = downloads.querySelectorAll("a").length === 0;
-    root.querySelector("[data-cancel]").disabled = terminal.has(run.status);
+    downloads.hidden = downloadLinks.querySelectorAll("a").length === 0;
+    root.querySelector("[data-cancel]").hidden = terminal.has(run.status);
   };
 
   const loadRun = async () => {
@@ -1720,7 +1762,9 @@ const labels = locale === "zh" ? {
   const connect = () => {
     source?.close();
     if (!runId || !apiBase) { showAlert(labels.noRun); return; }
+    root.querySelector("[data-reconnect]").hidden = true;
     source = new EventSource(`${apiBase}/api/runs/${encodeURIComponent(runId)}/events`);
+    source.onopen = () => { root.querySelector("[data-reconnect]").hidden = true; };
     eventNames.forEach((name) => source.addEventListener(name, (event) => {
       if (name !== "progress_changed") {
         try { appendEvent(name, JSON.parse(event.data)); } catch { appendEvent(name, {}); }
@@ -1729,10 +1773,19 @@ const labels = locale === "zh" ? {
       if (sessionId) loadSession().catch(() => {});
       if (["run_completed", "run_inconclusive", "run_failed", "run_cancelled"].includes(name)) source.close();
     }));
-    source.onerror = () => loadRun().catch(() => showAlert(labels.unavailable));
+    source.onerror = () => {
+      root.querySelector("[data-reconnect]").hidden = false;
+      loadRun().catch(() => showAlert(labels.unavailable));
+    };
   };
 
-  root?.querySelector("[data-reconnect]")?.addEventListener("click", connect);
+  root?.querySelector("[data-reconnect]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try { await loadRun(); connect(); }
+    catch (_) { showAlert(labels.unavailable); button.hidden = false; }
+    finally { button.disabled = false; }
+  });
   root?.querySelector("[data-restricted-reveal]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget; const panel = root.querySelector("[data-restricted-artifact]"); const status = panel.querySelector("[data-restricted-status]");
     button.disabled = true; status.textContent = "";
@@ -1881,6 +1934,7 @@ const labels = locale === "zh" ? {
       form.reset(); selectedFeedbackType = ""; form.hidden = true;
       root.querySelectorAll("[data-feedback-type]").forEach((item) => item.classList.remove("is-selected"));
       renderFeedbackProgress(payload);
+      root.querySelector("[data-feedback-progress]")?.focus();
       connectFeedback(String(payload.feedback_request_id || ""));
       await loadSession();
     } catch (error) {
@@ -1932,6 +1986,9 @@ const labels = locale === "zh" ? {
   });
 
   if (runId || sessionId) {
-    Promise.all([loadRun(), sessionId ? loadSession() : Promise.resolve()]).then(connect).catch(() => showAlert(labels.unavailable));
+    Promise.all([loadRun(), sessionId ? loadSession() : Promise.resolve()]).then(connect).catch(() => {
+      showAlert(labels.unavailable);
+      root.querySelector("[data-reconnect]").hidden = false;
+    });
   } else showAlert(labels.noRun);
 </script>
