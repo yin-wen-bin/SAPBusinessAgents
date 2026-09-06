@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "billing-dispute-classification",
+  "state": "inactive",
+  "lifecycle_state": "inactive",
+  "active_version": "0.1.0",
+  "latest_version": "0.1.0",
+  "active_digest": "sha256:068ffb8b361321d4fd67566c2433ef4a62dfb36bd91b56b4e761c92f473e747f",
+  "deactivated_at": "2026-09-06T10:02:38.600299+00:00",
+  "deactivation_reason": "",
+  "git_branch": "codex/agent-billing-dispute-classification-deactivate-v0.1.0-c5ded3f5"
+}
