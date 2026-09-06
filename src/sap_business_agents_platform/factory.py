@@ -89,7 +89,8 @@ class AgentDraftService:
             try:
                 pin = getattr(self.author, "pin", None)
                 provider_id = run.runtime.provider_id if run.runtime else "codex"
-                context = pin(provider_id) if callable(pin) else nullcontext()
+                model_id = run.runtime.model if run.runtime else None
+                context = pin(provider_id, model_id) if callable(pin) else nullcontext()
                 with context:
                     authored = await author_draft(
                         thread_id=run.thread_id,

@@ -103,7 +103,8 @@ class _FakeRuntime:
         return {"provider_id": provider_id or "codex", "sdk_id": "codex-python-sdk", "version": "test", "configuration_digest": "test", "capabilities": ["role_matching"]}
 
     @contextmanager
-    def pin(self, provider_id: str | None):
+    def pin(self, provider_id: str | None, model_id: str | None = None):
+        del provider_id, model_id
         yield
 
     async def cancel(self, thread_id: str | None = None) -> None:
@@ -718,7 +719,7 @@ def test_incomplete_catalog_suppresses_gaps_and_workflow_suggestions(
     asyncio.run(_incomplete_catalog_scenario(tmp_path))
 
 
-def test_workflow_suggestions_use_only_executable_agents_and_compiler_v4(tmp_path: Path) -> None:
+def test_workflow_suggestions_use_only_executable_agents_and_current_compiler(tmp_path: Path) -> None:
     repository_root = Path(__file__).resolve().parents[1]
     settings = replace(
         Settings(), repository_root=repository_root, data_root=tmp_path / "data",
@@ -755,7 +756,7 @@ def test_workflow_suggestions_use_only_executable_agents_and_compiler_v4(tmp_pat
         "rolesession_12345678", [valid], catalog, "zh"
     )
     assert issues == []
-    assert compiled[0]["compiler_version"] == 4
+    assert compiled[0]["compiler_version"] == 5
     assert compiled[0]["compiled_workflow"]["readOnly"] is True
     assert compiled[0]["compiled_workflow"]["nodes"][0]["agentId"] == "procure-to-pay-status"
 

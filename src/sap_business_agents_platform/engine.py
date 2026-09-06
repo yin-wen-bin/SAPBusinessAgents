@@ -21,6 +21,7 @@ from .codex_planner import Planner
 from .config import Settings
 from .database import RunStore
 from .harness import CodexHarnessController
+from .integrations import IntegrationError
 from .manifests import AgentRepository, ManifestError, is_agent_executable, validate_execution
 from .managed_rules import ManagedRuleError, execute_managed_rule
 from .models import (
@@ -118,6 +119,7 @@ class RunCoordinator:
         planner: Planner,
         workflows: WorkflowRepository | None = None,
         harness: CodexHarnessController | None = None,
+        integrations: Any = None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -127,6 +129,7 @@ class RunCoordinator:
         self.planner = planner
         self.workflows = workflows
         self.harness = harness
+        self.integrations = integrations
         self.relationships = RelationshipCatalog.load(
             settings.repository_root / "config" / "business-relationships.json"
         )
@@ -336,12 +339,31 @@ class RunCoordinator:
                         detail={"agent_ids": inactive_agents},
                     )
             try:
+                integration_ports = {
+                    str(item.get("targetPort") or "")
+                    for item in workflow.get("integrationInputs") or []
+                    if isinstance(item, dict) and item.get("targetPort")
+                }
+                overridden = sorted(integration_ports.intersection(request.input))
+                if overridden:
+                    raise InputValidationError(
+                        "Runtime integration inputs cannot be supplied by the caller.",
+                        code="workflow_integration_input_override",
+                        fields=overridden,
+                        constraint="integration_owned",
+                    )
+                submission_schema = copy.deepcopy(workflow["inputSchema"])
+                submission_schema["required"] = [
+                    item
+                    for item in submission_schema.get("required") or []
+                    if str(item) not in integration_ports
+                ]
                 normalized_input = self.normalizer.normalize_input(
-                    request.input, workflow["inputSchema"]
+                    request.input, submission_schema
                 )
                 _validate_input(
                     normalized_input,
-                    workflow["inputSchema"],
+                    submission_schema,
                     error_code="workflow_input_invalid",
                 )
             except (SapInputNormalizationError, ValueError) as exc:
@@ -960,7 +982,9 @@ class RunCoordinator:
             feedback_request["session_id"], int(feedback_request["base_iteration"])
         )
         session_id = str(session["session_id"])
-        provider_id = str((session.get("runtime") or {}).get("provider_id") or "codex")
+        runtime_snapshot = session.get("runtime") or {}
+        provider_id = str(runtime_snapshot.get("provider_id") or "codex")
+        model_id = runtime_snapshot.get("model")
         feedback_reviewer = getattr(self.planner, "review_free_query_feedback", None)
         self.store.update_free_query_feedback_request(
             feedback_request_id,
@@ -971,7 +995,7 @@ class RunCoordinator:
         )
         try:
             pin = getattr(self.planner, "pin", None)
-            context = pin(provider_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
             with context:
                 decision = await feedback_reviewer(
                     thread_id=previous.thread_id,
@@ -1182,9 +1206,11 @@ class RunCoordinator:
         if job is not None:
             await self.scheduler.cancel(str(job["job_id"]))
         session = self.store.get_free_query_session(session_id)
-        provider_id = str((session.get("runtime") or {}).get("provider_id") or "codex")
+        runtime_snapshot = session.get("runtime") or {}
+        provider_id = str(runtime_snapshot.get("provider_id") or "codex")
+        model_id = runtime_snapshot.get("model")
         pin = getattr(self.planner, "pin", None)
-        context = pin(provider_id) if callable(pin) else nullcontext()
+        context = pin(provider_id, model_id) if callable(pin) else nullcontext()
         with context:
             cancel = getattr(self.planner, "cancel", None)
             if callable(cancel):
@@ -1251,7 +1277,8 @@ class RunCoordinator:
                 await self.harness.interrupt(run_id)
             else:
                 pin = getattr(self.planner, "pin", None)
-                context = pin(provider_id) if callable(pin) else nullcontext()
+                model_id = record.runtime.model if record.runtime else None
+                context = pin(provider_id, model_id) if callable(pin) else nullcontext()
                 with context:
                     cancel = getattr(self.planner, "cancel", None)
                     if callable(cancel):
@@ -1875,11 +1902,6 @@ class RunCoordinator:
                 source=f"workflow:{record.workflow_id}",
                 require_pins=True,
             )
-            _validate_input(
-                record.input,
-                workflow["inputSchema"],
-                error_code="workflow_input_invalid",
-            )
         except (KeyError, WorkflowError, ValueError) as exc:
             code = getattr(exc, "code", "workflow_validation_failed")
             raise RunExecutionError(str(exc), code=code, detail=getattr(exc, "detail", None)) from exc
@@ -1913,6 +1935,22 @@ class RunCoordinator:
             plan=workflow,
             started_at=record.started_at,
         )
+        try:
+            workflow_input = await self._execute_workflow_integration_inputs(
+                run_id, workflow, record.input, result
+            )
+            _validate_input(
+                workflow_input,
+                workflow["inputSchema"],
+                error_code="workflow_input_invalid",
+            )
+            result.input = workflow_input
+        except (IntegrationError, ValueError) as exc:
+            raise RunExecutionError(
+                str(exc),
+                code=str(getattr(exc, "code", "workflow_integration_input_failed")),
+                detail=getattr(exc, "detail", None),
+            ) from exc
         nodes = {str(item["id"]): item for item in workflow.get("nodes") or []}
         node_outputs: dict[str, dict[str, Any]] = {}
         degraded = False
@@ -1934,7 +1972,7 @@ class RunCoordinator:
             try:
                 should_run = _workflow_run_if_matches(
                     node,
-                    record.input,
+                    workflow_input,
                     node_outputs,
                 )
             except WorkflowError as exc:
@@ -2005,7 +2043,7 @@ class RunCoordinator:
                     run_id=run_id,
                     workflow=workflow,
                     node=node,
-                    workflow_input=record.input,
+                    workflow_input=workflow_input,
                     node_outputs=node_outputs,
                     result=result,
                 )
@@ -2026,7 +2064,7 @@ class RunCoordinator:
                 node_input = _resolve_node_input(
                     workflow,
                     node_id,
-                    record.input,
+                    workflow_input,
                     node_outputs,
                 )
                 agent = self.agents.get_version(
@@ -2235,7 +2273,7 @@ class RunCoordinator:
 
         try:
             result.workflow_output = _resolve_workflow_output(
-                workflow, record.input, node_outputs
+                workflow, workflow_input, node_outputs
             )
             validate_value(
                 result.workflow_output,
@@ -2248,6 +2286,16 @@ class RunCoordinator:
                 result.errors.append({"code": exc.code, "message": str(exc)})
             else:
                 raise RunExecutionError(str(exc), code=exc.code, detail=exc.detail) from exc
+        try:
+            result.integration_actions = await self._create_workflow_output_actions(
+                run_id, workflow, workflow_input, result.workflow_output
+            )
+        except (IntegrationError, ValueError) as exc:
+            raise RunExecutionError(
+                str(exc),
+                code=str(getattr(exc, "code", "workflow_output_action_failed")),
+                detail=getattr(exc, "detail", None),
+            ) from exc
         self._set_progress(
             run_id,
             phase="preparing_result",
@@ -2257,6 +2305,144 @@ class RunCoordinator:
             determinate=True,
         )
         self._complete_workflow_result(run_id, result, degraded=degraded or bool(blocked_nodes))
+
+    async def _execute_workflow_integration_inputs(
+        self,
+        run_id: str,
+        workflow: dict[str, Any],
+        supplied_input: dict[str, Any],
+        result: RunResult,
+    ) -> dict[str, Any]:
+        effective = copy.deepcopy(supplied_input)
+        for item in workflow.get("integrationInputs") or []:
+            if self.integrations is None:
+                raise IntegrationError(
+                    "Workflow integration runtime is unavailable.",
+                    code="runtime_adapter_unavailable",
+                )
+            target_port = str(item["targetPort"])
+            if target_port in effective:
+                raise IntegrationError(
+                    "Runtime integration input would overwrite caller input.",
+                    code="workflow_integration_input_override",
+                    detail={"target_port": target_port},
+                )
+            self._verify_workflow_binding(item)
+            arguments = _render_template(
+                item.get("arguments") or {}, {"input": effective}
+            )
+            self.store.append_event(
+                run_id,
+                "integration_input_started",
+                {
+                    "integration_input_id": item["id"],
+                    "capability": item["capability"],
+                    "operation": item["operation"],
+                    "binding_id": item["bindingId"],
+                },
+            )
+            native_result = await self.integrations.invoke_binding(
+                str(item["bindingId"]), arguments
+            )
+            normalized = _normalize_mail_integration_result(
+                str(item["operation"]), native_result
+            )
+            if item.get("resultPointer"):
+                normalized = _json_pointer(
+                    normalized, str(item["resultPointer"])
+                )
+            effective[target_port] = normalized
+            record = {
+                "integration_input_id": item["id"],
+                "capability": item["capability"],
+                "operation": item["operation"],
+                "binding_id": item["bindingId"],
+                "target_port": target_port,
+                "argument_digest": _stable_json_digest(arguments),
+                "output": normalized,
+            }
+            result.integration_results.append(record)
+            self.store.append_event(
+                run_id,
+                "integration_input_completed",
+                {
+                    key: value
+                    for key, value in record.items()
+                    if key != "output"
+                },
+            )
+            self.store.update_run(run_id, result_json=result)
+        return effective
+
+    async def _create_workflow_output_actions(
+        self,
+        run_id: str,
+        workflow: dict[str, Any],
+        workflow_input: dict[str, Any],
+        workflow_output: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        for item in workflow.get("outputActions") or []:
+            if self.integrations is None:
+                raise IntegrationError(
+                    "Workflow integration runtime is unavailable.",
+                    code="runtime_adapter_unavailable",
+                )
+            if item.get("operation") == "send":
+                self._verify_workflow_binding(item)
+            draft = _render_template(
+                item.get("draftMapping") or {},
+                {"input": workflow_input, "output": workflow_output},
+            )
+            action = self.integrations.create_mail_draft(
+                run_id,
+                draft,
+                connection_id=item.get("connectionId"),
+                binding_id=(
+                    item.get("bindingId") if item.get("operation") == "send" else None
+                ),
+                idempotency_key=_stable_json_digest(
+                    {"run_id": run_id, "action_id": item["id"]}
+                ),
+            )
+            actions.append(action)
+            self.store.append_event(
+                run_id,
+                "integration_action_created",
+                {
+                    "action_id": action["action_id"],
+                    "workflow_action_id": item["id"],
+                    "status": action["status"],
+                    "draft_digest": action["draft_digest"],
+                },
+            )
+        return actions
+
+    def _verify_workflow_binding(self, item: dict[str, Any]) -> None:
+        binding = self.integrations.state.get_binding(str(item["bindingId"]))
+        connection = self.integrations.state.get_connection(
+            str(item["connectionId"])
+        )
+        expected = {
+            "connection_id": item["connectionId"],
+            "backend_id": item["integrationBackendId"],
+            "native_server": item["nativeServer"],
+            "native_tool": item["nativeTool"],
+            "schema_hash": item["schemaHash"],
+        }
+        actual = {
+            "connection_id": binding["connection_id"],
+            "backend_id": connection["backend_id"],
+            "native_server": binding["native_server"],
+            "native_tool": binding["native_tool"],
+            "schema_hash": binding["schema_hash"],
+        }
+        if actual != expected:
+            raise IntegrationError(
+                "The workflow integration binding changed after publication.",
+                code="tool_contract_changed",
+                detail={"expected": expected, "actual": actual},
+            )
 
     async def _execute_foreach_node(
         self,
@@ -2593,8 +2779,9 @@ class RunCoordinator:
             await self._execute_free_query_reinterpret(run_id, iteration)
             return
         provider_id = record.runtime.provider_id if record.runtime else "codex"
+        model_id = record.runtime.model if record.runtime else None
         pin = getattr(self.planner, "pin", None)
-        context = pin(provider_id) if callable(pin) else nullcontext()
+        context = pin(provider_id, model_id) if callable(pin) else nullcontext()
         bind_events = getattr(self.planner, "bind_events", None)
         event_context = (
             bind_events(
@@ -2666,7 +2853,8 @@ class RunCoordinator:
         )
         try:
             pin = getattr(self.planner, "pin", None)
-            context = pin(provider_id) if callable(pin) else nullcontext()
+            model_id = record.runtime.model if record.runtime else None
+            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
             with context:
                 revised = await presentation_reviser(
                     thread_id=str(record.thread_id or source.thread_id or ""),
@@ -2791,7 +2979,12 @@ class RunCoordinator:
             "planning_started",
             {"query": query, "agent_id": record.agent_id, "runtime": "codex_app_server"},
         )
-        outcome = await self.harness.run(run_id, harness_query, record.thread_id)
+        outcome = await self.harness.run(
+            run_id,
+            harness_query,
+            record.thread_id,
+            record.runtime.model if record.runtime else None,
+        )
         self.store.update_run(run_id, thread_id=outcome.thread_id)
         if outcome.status == "waiting_input":
             question = outcome.clarification_question or "请补充完成查询所必需的信息。"
@@ -4355,6 +4548,171 @@ def _validate_input(
 
 
 _TEMPLATE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+
+
+def _stable_json_digest(value: Any) -> str:
+    canonical = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _normalize_mail_integration_result(operation: str, result: Any) -> Any:
+    payload = _integration_structured_payload(result)
+    if operation == "search":
+        messages = _mail_message_collection(payload)
+        return [_mail_message_ref(item) for item in messages if isinstance(item, dict)]
+    if operation == "read":
+        if isinstance(payload, dict):
+            for key in ("message", "item", "data"):
+                if isinstance(payload.get(key), dict):
+                    payload = payload[key]
+                    break
+        return _mail_message_ref(payload) if isinstance(payload, dict) else {
+            "native_result_digest": _stable_json_digest(result)
+        }
+    raise IntegrationError(
+        "Unsupported mail integration input operation.",
+        code="workflow_integration_operation_invalid",
+    )
+
+
+def _integration_structured_payload(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    for key in ("structuredContent", "structured_content"):
+        if key in result:
+            return result[key]
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+                continue
+            try:
+                return json.loads(item["text"])
+            except json.JSONDecodeError:
+                continue
+    return result
+
+
+def _mail_message_collection(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ("messages", "items", "value", "data", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = _mail_message_collection(value)
+            if nested:
+                return nested
+    return []
+
+
+def _mail_message_ref(message: dict[str, Any]) -> dict[str, Any]:
+    message_id = _first_text(
+        message, "message_id", "messageId", "id", "internetMessageId"
+    )
+    thread_id = _first_text(
+        message, "thread_id", "threadId", "conversationId", "conversation_id"
+    )
+    sender = _mail_address(message.get("sender") or message.get("from"))
+    recipients = _mail_addresses(
+        message.get("recipients")
+        or message.get("to")
+        or message.get("toRecipients")
+        or []
+    )
+    subject = _first_text(message, "subject", "title")
+    received_at = _first_text(
+        message,
+        "received_at",
+        "receivedAt",
+        "receivedDateTime",
+        "date",
+        "sentDateTime",
+    )
+    body = message.get("body")
+    if isinstance(body, dict):
+        body = body.get("content") or body.get("text")
+    content = str(
+        message.get("snippet")
+        or message.get("bodyPreview")
+        or message.get("content_summary")
+        or body
+        or ""
+    )
+    value: dict[str, Any] = {
+        "message_id": message_id,
+        "thread_id": thread_id,
+        "sender": sender,
+        "recipients": recipients,
+        "subject": subject,
+        "received_at": received_at,
+        "content_summary": content[:500],
+    }
+    if content:
+        value["content_digest"] = _stable_json_digest(content)
+    return {key: item for key, item in value.items() if item not in (None, "", [])}
+
+
+def _mail_addresses(value: Any) -> list[str]:
+    values = value if isinstance(value, list) else [value]
+    result: list[str] = []
+    for item in values:
+        address = _mail_address(item)
+        if address and address not in result:
+            result.append(address)
+    return result
+
+
+def _mail_address(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    if not isinstance(value, dict):
+        return None
+    nested = value.get("emailAddress")
+    if isinstance(nested, dict):
+        value = nested
+    for key in ("address", "email", "mail", "name"):
+        if value.get(key):
+            return str(value[key]).strip() or None
+    return None
+
+
+def _first_text(value: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        if value.get(key) is not None:
+            text = str(value[key]).strip()
+            if text:
+                return text
+    return None
+
+
+def _json_pointer(value: Any, pointer: str) -> Any:
+    if pointer in {"", "/"}:
+        return value
+    if not pointer.startswith("/"):
+        raise IntegrationError(
+            "Integration resultPointer must be an absolute JSON Pointer.",
+            code="workflow_integration_result_mapping_invalid",
+        )
+    current = value
+    for raw in pointer[1:].split("/"):
+        part = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+        else:
+            raise IntegrationError(
+                "Integration resultPointer is unavailable in the normalized result.",
+                code="workflow_integration_result_mapping_invalid",
+                detail={"pointer": pointer},
+            )
+    return current
 
 
 def _render_template(value: Any, context: dict[str, Any]) -> Any:

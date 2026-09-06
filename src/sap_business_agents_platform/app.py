@@ -30,6 +30,12 @@ from .database import RunStore
 from .engine import RunCoordinator, RunExecutionError, presentation_table_page
 from .factory import AgentDraftService, DraftError
 from .harness import CodexHarnessController, HarnessToolBroker
+from .integrations import (
+    IntegrationError,
+    IntegrationGateway,
+    IntegrationStateStore,
+    build_integration_adapters,
+)
 from .manifests import AgentRepository
 from .models import (
     AgentActivateRequest,
@@ -144,12 +150,47 @@ class RuntimeDefaultUpdate(BaseModel):
     provider_id: str
 
 
+class RuntimeModelUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_id: str
+
+
+class RuntimeDisableUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirm_provider_id: str
+
+
+class IntegrationBindingUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    native_server: str
+    native_tool: str
+    enabled: bool = False
+    expected_schema_hash: str | None = None
+    argument_mapping: dict[str, Any] = Field(default_factory=dict)
+
+
+class IntegrationMailActionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    draft: dict[str, Any]
+    connection_id: str | None = None
+    binding_id: str | None = None
+    idempotency_key: str | None = None
+
+
+class IntegrationMailActionDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: str
+    expected_draft_digest: str
+    actor: str = "local-user"
+
+
 def create_app(
     settings: Settings | None = None,
     *,
     planner: Planner | None = None,
     embedded_provider: SapReadProvider | None = None,
     sdk_manager: SDKManager | None = None,
+    integration_gateway: IntegrationGateway | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     store = RunStore(settings.database_path)
@@ -186,17 +227,17 @@ def create_app(
             "workbuddy": WorkBuddyRuntimeProbe(settings.repository_root),
         },
         selection_path=settings.sdk_runtime_state_path,
+        legacy_model=settings.codex_model,
     )
     if planner_supplied:
         runtime_planner = StaticRuntimeRouter(planner)
     else:
         runtime_planner = RuntimeRouter(
             sdk_registry,
-            {
-                "codex": CodexPlanner(
-                    settings.repository_root, model=settings.codex_model
-                ),
-                "workbuddy": WorkBuddyPlanner(settings.repository_root),
+            {},
+            provider_factories={
+                "codex": lambda model: CodexPlanner(settings.repository_root, model=model),
+                "workbuddy": lambda model: WorkBuddyPlanner(settings.repository_root, model=model),
             },
         )
     plugin_manager = PluginManager(
@@ -213,6 +254,12 @@ def create_app(
     )
     plugin_manager.bind_provider(
         "business-agent-catalog", BusinessAgentPluginProvider(agents)
+    )
+    integrations = integration_gateway or IntegrationGateway(
+        plugin_manager,
+        sdk_registry,
+        IntegrationStateStore(settings.database_path),
+        build_integration_adapters(settings.repository_root, sdk_registry),
     )
     sap_read = SapReadCapability(plugin_manager)
     skills = SkillCapability(plugin_manager)
@@ -241,10 +288,17 @@ def create_app(
         agent_runtime,
         workflows,
         harness=harness,
+        integrations=integrations,
     )
     drafts = AgentDraftService(settings, store, agent_runtime)
     workflow_drafts = WorkflowDraftService(
-        settings, store, business_agents, coordinator, sap_read, agent_runtime
+        settings,
+        store,
+        business_agents,
+        coordinator,
+        sap_read,
+        agent_runtime,
+        integrations=integrations,
     )
     workflow_management = WorkflowManagementService(
         repository_root=settings.repository_root,
@@ -286,6 +340,7 @@ def create_app(
         finally:
             await role_matching.stop()
             await coordinator.stop()
+            await integrations.close()
             await plugin_manager.stop()
 
     app = FastAPI(
@@ -318,6 +373,7 @@ def create_app(
     app.state.role_matching = role_matching
     app.state.restricted_artifacts = restricted_artifacts
     app.state.sdk_manager = sdk_registry
+    app.state.integrations = integrations
 
     @app.exception_handler(RequestValidationError)
     async def safe_role_matching_validation_error(
@@ -388,6 +444,189 @@ def create_app(
     @app.get("/api/plugins")
     def list_plugins() -> list[dict[str, Any]]:
         return plugin_manager.list()
+
+    @app.get("/api/plugins/catalog")
+    async def list_plugin_catalog(
+        runtime_provider_id: str | None = None,
+        source_kind: str | None = None,
+        status: str | None = None,
+        capability: str | None = None,
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        try:
+            items = await integrations.list_catalog(
+                provider_id=runtime_provider_id,
+                source_kind=source_kind,
+                status=status,
+                capability=capability,
+            )
+            reference_counts = _integration_workflow_reference_counts(
+                workflows.list()
+            )
+            for item in items:
+                connection_id = (item.get("connection") or {}).get("connection_id")
+                item["workflow_reference_count"] = reference_counts.get(
+                    str(connection_id or ""), 0
+                )
+            total = len(items)
+            page = items[offset : offset + limit]
+            next_offset = offset + len(page)
+            return {
+                "items": page,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "next_offset": next_offset if next_offset < total else None,
+            }
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.post("/api/plugins/catalog/refresh")
+    async def refresh_plugin_catalog() -> dict[str, Any]:
+        try:
+            items = await integrations.list_catalog(force_refresh=True)
+            reference_counts = _integration_workflow_reference_counts(
+                workflows.list()
+            )
+            for item in items:
+                connection_id = (item.get("connection") or {}).get("connection_id")
+                item["workflow_reference_count"] = reference_counts.get(
+                    str(connection_id or ""), 0
+                )
+            return {"items": items, "total": len(items)}
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.get("/api/plugins/runtime-adapters")
+    def list_plugin_runtime_adapters() -> dict[str, Any]:
+        items = integrations.runtime_adapters()
+        return {"items": items, "total": len(items)}
+
+    @app.get("/api/plugins/connections")
+    def list_plugin_connections() -> dict[str, Any]:
+        items = integrations.state.list_connections()
+        return {"items": items, "total": len(items)}
+
+    @app.post("/api/plugins/catalog/{catalog_id}/connect")
+    async def connect_plugin_catalog_item(catalog_id: str) -> dict[str, Any]:
+        try:
+            return await integrations.connect(catalog_id)
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.post("/api/plugins/connections/{connection_id}/refresh")
+    async def refresh_plugin_connection(connection_id: str) -> dict[str, Any]:
+        try:
+            return {"connection": await integrations.refresh_connection(connection_id)}
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.put("/api/plugins/connections/{connection_id}/enabled")
+    async def set_plugin_connection_enabled(
+        connection_id: str, payload: PluginEnableUpdate
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "connection": await integrations.set_connection_enabled(
+                    connection_id, payload.enabled
+                )
+            }
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.get("/api/plugins/connections/{connection_id}/bindings")
+    def list_plugin_connection_bindings(connection_id: str) -> dict[str, Any]:
+        try:
+            integrations.state.get_connection(connection_id)
+            items = integrations.state.list_bindings(connection_id)
+            return {"items": items, "total": len(items)}
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.put(
+        "/api/plugins/connections/{connection_id}/bindings/{capability}/{operation}"
+    )
+    async def bind_plugin_connection_tool(
+        connection_id: str,
+        capability: str,
+        operation: str,
+        payload: IntegrationBindingUpdate,
+    ) -> dict[str, Any]:
+        try:
+            binding = await integrations.bind_tool(
+                connection_id,
+                capability,
+                operation,
+                native_server=payload.native_server,
+                native_tool=payload.native_tool,
+                enabled=payload.enabled,
+                expected_schema_hash=payload.expected_schema_hash,
+                argument_mapping=payload.argument_mapping,
+            )
+            return {"binding": binding}
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.post("/api/runs/{run_id}/integration-actions", status_code=201)
+    def create_integration_action(
+        run_id: str, payload: IntegrationMailActionCreate
+    ) -> dict[str, Any]:
+        try:
+            store.get_run(run_id)
+            action = integrations.create_mail_draft(
+                run_id,
+                payload.draft,
+                connection_id=payload.connection_id,
+                binding_id=payload.binding_id,
+                idempotency_key=payload.idempotency_key,
+            )
+            return {"action": action}
+        except KeyError as exc:
+            raise HTTPException(404, "Run not found") from exc
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.get("/api/runs/{run_id}/integration-actions")
+    def list_integration_actions(run_id: str) -> dict[str, Any]:
+        try:
+            store.get_run(run_id)
+            items = integrations.state.list_actions(run_id)
+            return {"items": items, "total": len(items)}
+        except KeyError as exc:
+            raise HTTPException(404, "Run not found") from exc
+
+    @app.post("/api/runs/{run_id}/integration-actions/{action_id}/decision")
+    async def decide_integration_action(
+        run_id: str,
+        action_id: str,
+        payload: IntegrationMailActionDecision,
+        x_sapba_action: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if payload.decision == "approve" and x_sapba_action != "mail-send":
+                raise IntegrationError(
+                    "Mail send confirmation header is required.",
+                    code="integration_approval_required",
+                )
+            store.get_run(run_id)
+            action = integrations.state.get_action(action_id)
+            if action["run_id"] != run_id:
+                raise IntegrationError(
+                    "Integration action does not belong to this run.",
+                    code="integration_action_run_mismatch",
+                )
+            result = await integrations.decide_mail_action(
+                action_id,
+                decision=payload.decision,
+                expected_draft_digest=payload.expected_draft_digest,
+                actor=payload.actor,
+            )
+            return {"action": result}
+        except KeyError as exc:
+            raise HTTPException(404, "Run not found") from exc
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
 
     @app.get("/api/plugins/{plugin_id}")
     def get_plugin(plugin_id: str) -> dict[str, Any]:
@@ -1912,7 +2151,7 @@ def create_app(
     @app.post("/api/authoring/workflows/{draft_id}/reconcile", status_code=202)
     async def reconcile_workflow_draft(draft_id: str) -> dict[str, Any]:
         try:
-            return workflow_drafts.reconcile(draft_id).model_dump(mode="json")
+            return (await workflow_drafts.reconcile(draft_id)).model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(404, "Workflow draft not found") from exc
         except (WorkflowDraftError, PluginError) as exc:
@@ -2019,6 +2258,10 @@ def create_app(
 
     @app.get("/api/config/status")
     def config_status() -> dict[str, Any]:
+        runtime_items = sdk_registry.list()
+        codex_runtime = next(
+            (item for item in runtime_items if item.get("provider_id") == "codex"), {}
+        )
         return {
             "sap_read_provider": selected_provider,
             "sap_base_url_configured": bool(settings.sap_base_url),
@@ -2029,28 +2272,23 @@ def create_app(
             "skillhub_root": str(settings.skillhub_root),
             "skillhub_available": settings.skillhub_root.is_dir(),
             "codex_sdk_installed": importlib.util.find_spec("openai_codex") is not None,
-            "codex_model": settings.codex_model,
-            "default_agent_runtime": str(
-                getattr(sdk_registry, "default_provider_id", "codex")
-            ),
+            "codex_model": codex_runtime.get("default_model_id"),
+            "codex_model_source": codex_runtime.get("model_source"),
+            "default_agent_runtime": getattr(sdk_registry, "default_provider_id", None),
             "data_root": str(settings.data_root),
         }
 
     @app.get("/api/system/sdk-runtimes")
     def list_sdk_runtimes() -> dict[str, Any]:
         return {
-            "default_provider_id": str(
-                getattr(sdk_registry, "default_provider_id", "codex")
-            ),
+            "default_provider_id": getattr(sdk_registry, "default_provider_id", None),
             "items": sdk_registry.list(),
         }
 
     @app.post("/api/system/sdk-runtimes/check")
     async def check_all_sdk_runtimes() -> dict[str, Any]:
         return {
-            "default_provider_id": str(
-                getattr(sdk_registry, "default_provider_id", "codex")
-            ),
+            "default_provider_id": getattr(sdk_registry, "default_provider_id", None),
             "items": await sdk_registry.check_all(),
         }
 
@@ -2085,6 +2323,136 @@ def create_app(
                 "default_provider_id": payload.provider_id,
                 "item": item,
                 "message": "The default Agent Runtime was updated for new tasks.",
+            }
+        except SDKManagerError as exc:
+            status_code = 404 if exc.code == "runtime_not_found" else 409
+            raise HTTPException(
+                status_code,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.post("/api/system/sdk-runtimes/{provider_id}/enable")
+    def enable_sdk_runtime(provider_id: str) -> dict[str, Any]:
+        try:
+            set_enabled = getattr(sdk_registry, "set_enabled", None)
+            if not callable(set_enabled):
+                raise SDKManagerError(
+                    "Runtime enablement is unavailable.",
+                    code="runtime_enablement_unavailable",
+                )
+            return {"item": set_enabled(provider_id, True)}
+        except SDKManagerError as exc:
+            status_code = 404 if exc.code == "runtime_not_found" else 409
+            raise HTTPException(
+                status_code,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.post("/api/system/sdk-runtimes/{provider_id}/disable")
+    def disable_sdk_runtime(
+        provider_id: str,
+        payload: RuntimeDisableUpdate,
+        x_sapba_action: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        if x_sapba_action != "runtime-disable":
+            raise HTTPException(
+                403,
+                {
+                    "code": "runtime_disable_confirmation_required",
+                    "message": "Runtime disable confirmation header is required.",
+                },
+            )
+        if payload.confirm_provider_id != provider_id:
+            raise HTTPException(
+                403,
+                {
+                    "code": "runtime_disable_confirmation_mismatch",
+                    "message": "The Runtime confirmation does not match the target provider.",
+                },
+            )
+        try:
+            set_enabled = getattr(sdk_registry, "set_enabled", None)
+            if not callable(set_enabled):
+                raise SDKManagerError(
+                    "Runtime enablement is unavailable.",
+                    code="runtime_enablement_unavailable",
+                )
+            return {"item": set_enabled(provider_id, False)}
+        except SDKManagerError as exc:
+            status_code = 404 if exc.code == "runtime_not_found" else 409
+            raise HTTPException(
+                status_code,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.get("/api/system/sdk-runtimes/{provider_id}/models")
+    def list_runtime_models(provider_id: str) -> dict[str, Any]:
+        try:
+            method = getattr(sdk_registry, "models", None)
+            if not callable(method):
+                raise SDKManagerError(
+                    "Runtime model discovery is unavailable.",
+                    code="model_catalog_unavailable",
+                )
+            return method(provider_id)
+        except SDKManagerError as exc:
+            status_code = 404 if exc.code == "runtime_not_found" else 409
+            raise HTTPException(
+                status_code,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.post("/api/system/sdk-runtimes/{provider_id}/models/refresh")
+    async def refresh_runtime_models(provider_id: str) -> dict[str, Any]:
+        try:
+            method = getattr(sdk_registry, "refresh_models", None)
+            if not callable(method):
+                raise SDKManagerError(
+                    "Runtime model discovery is unavailable.",
+                    code="model_catalog_unavailable",
+                )
+            return await method(provider_id)
+        except SDKManagerError as exc:
+            status_code = 404 if exc.code == "runtime_not_found" else 409
+            raise HTTPException(
+                status_code,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.post("/api/system/sdk-runtimes/{provider_id}/models/check")
+    async def check_runtime_model(
+        provider_id: str, payload: RuntimeModelUpdate
+    ) -> dict[str, Any]:
+        try:
+            method = getattr(sdk_registry, "check_model", None)
+            if not callable(method):
+                raise SDKManagerError(
+                    "Runtime model checks are unavailable.",
+                    code="runtime_model_check_unavailable",
+                )
+            return await method(provider_id, payload.model_id)
+        except SDKManagerError as exc:
+            status_code = 404 if exc.code == "runtime_not_found" else 409
+            raise HTTPException(
+                status_code,
+                {"code": exc.code, "message": str(exc), "detail": exc.detail},
+            ) from exc
+
+    @app.put("/api/system/sdk-runtimes/{provider_id}/default-model")
+    async def set_runtime_default_model(
+        provider_id: str, payload: RuntimeModelUpdate
+    ) -> dict[str, Any]:
+        try:
+            method = getattr(sdk_registry, "set_default_model", None)
+            if not callable(method):
+                raise SDKManagerError(
+                    "Runtime model selection is unavailable.",
+                    code="runtime_model_selection_unavailable",
+                )
+            item = await method(provider_id, payload.model_id)
+            return {
+                "item": item,
+                "message": "The default model was updated for new Runtime tasks.",
             }
         except SDKManagerError as exc:
             status_code = 404 if exc.code == "runtime_not_found" else 409
@@ -2156,6 +2524,53 @@ def create_app(
     return app
 
 
+def _integration_http_error(exc: IntegrationError) -> HTTPException:
+    status = 409
+    if exc.code in {
+        "plugin_catalog_item_not_found",
+        "integration_connection_not_found",
+        "integration_binding_not_found",
+        "integration_action_not_found",
+    }:
+        status = 404
+    elif exc.code in {
+        "integration_approval_required",
+        "permission_required",
+        "integration_draft_tampered",
+        "integration_action_run_mismatch",
+    }:
+        status = 403
+    return HTTPException(
+        status,
+        {"code": exc.code, "message": str(exc), "detail": exc.detail},
+    )
+
+
+def _integration_workflow_reference_counts(
+    workflow_items: list[dict[str, Any]],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for workflow in workflow_items:
+        if not isinstance(workflow, dict):
+            continue
+        definition = workflow.get("workflow")
+        if not isinstance(definition, dict):
+            definition = workflow
+        seen: set[str] = set()
+        for item in [
+            *(definition.get("integrationInputs") or []),
+            *(definition.get("outputActions") or []),
+        ]:
+            if not isinstance(item, dict):
+                continue
+            connection_id = str(item.get("connectionId") or "")
+            if connection_id:
+                seen.add(connection_id)
+        for connection_id in seen:
+            counts[connection_id] = counts.get(connection_id, 0) + 1
+    return counts
+
+
 def _agent_lifecycle_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError):
         return HTTPException(404, "Agent or Agent draft not found")
@@ -2182,6 +2597,11 @@ def _agent_draft_origin(workflow_drafts: WorkflowDraftService, payload: Any) -> 
     if not workflow_draft_id or not gap_id:
         return {}
     gap = workflow_drafts.gap(str(workflow_draft_id), str(gap_id), locale="zh")["gap"]
+    if str(gap.get("gap_type") or "agent_missing") != "agent_missing":
+        raise WorkflowDraftError(
+            "Only Agent gaps can create an Agent draft through free query.",
+            code="workflow_gap_resolution_invalid",
+        )
     return {
         "workflow_draft_id": str(workflow_draft_id),
         "gap_id": str(gap_id),

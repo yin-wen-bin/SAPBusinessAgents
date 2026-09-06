@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+from importlib import metadata
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
@@ -20,8 +21,96 @@ class RuntimeUnavailableError(RuntimeError):
 
 
 class CodexRuntimeProbe:
-    def __init__(self, *, timeout_seconds: float = 10.0) -> None:
+    def __init__(self, *, timeout_seconds: float = 10.0, model_timeout_seconds: float = 20.0) -> None:
         self.timeout_seconds = timeout_seconds
+        self.model_timeout_seconds = model_timeout_seconds
+
+    def client_version(self, definition: SDKDefinition) -> str | None:
+        del definition
+        try:
+            return metadata.version("openai-codex-cli-bin")
+        except metadata.PackageNotFoundError:
+            return None
+
+    async def list_models(self, definition: SDKDefinition) -> dict[str, Any]:
+        del definition
+        try:
+            from openai_codex import AsyncCodex
+        except ImportError as exc:
+            raise RuntimeUnavailableError(
+                "The Codex Python SDK is not installed.", code="sdk_not_installed"
+            ) from exc
+        async with AsyncCodex() as codex:
+            response = await asyncio.wait_for(
+                codex.models(include_hidden=False), timeout=self.model_timeout_seconds
+            )
+        return {
+            "models": [item.model_dump(mode="json") for item in response.data],
+            "next_cursor": response.next_cursor,
+        }
+
+    async def check_model(
+        self, definition: SDKDefinition, model_id: str, workspace: Path
+    ) -> dict[str, Any]:
+        del definition
+        try:
+            from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+        except ImportError as exc:
+            raise RuntimeUnavailableError(
+                "The Codex Python SDK is not installed.", code="sdk_not_installed"
+            ) from exc
+
+        async def execute() -> None:
+            async with AsyncCodex() as codex:
+                thread = await codex.thread_start(
+                    cwd=str(workspace),
+                    ephemeral=True,
+                    model=model_id,
+                    sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all,
+                    developer_instructions=(
+                        "This is a compatibility probe. Do not use tools, inspect files, "
+                        "or access any external system. Return only the requested JSON."
+                    ),
+                )
+                result = await thread.run(
+                    'Return exactly {"status":"ok"}.',
+                    output_schema={
+                        "type": "object",
+                        "properties": {"status": {"type": "string", "const": "ok"}},
+                        "required": ["status"],
+                        "additionalProperties": False,
+                    },
+                )
+                payload = json.loads(result.final_response or "{}")
+                if payload != {"status": "ok"}:
+                    raise RuntimeUnavailableError(
+                        "The model probe returned an invalid response.",
+                        code="runtime_model_probe_invalid_response",
+                    )
+
+        try:
+            await asyncio.wait_for(execute(), timeout=self.model_timeout_seconds)
+        except TimeoutError as exc:
+            raise RuntimeUnavailableError(
+                "The model compatibility check timed out.",
+                code="runtime_model_probe_timeout",
+            ) from exc
+        except Exception as exc:
+            if isinstance(exc, RuntimeUnavailableError):
+                raise
+            message = str(exc) or type(exc).__name__
+            lowered = message.lower()
+            if "requires a newer version" in lowered or "upgrade" in lowered:
+                code = "runtime_model_incompatible"
+            elif any(value in lowered for value in ("not available", "not found", "permission", "access")):
+                code = "runtime_model_access_unavailable"
+            elif any(value in lowered for value in ("login", "authentication", "unauthorized")):
+                code = "runtime_model_authentication_failed"
+            else:
+                code = "runtime_model_probe_failed"
+            raise RuntimeUnavailableError(message, code=code) from exc
+        return {"compatible": True, "status": "compatible", "error": None}
 
     async def check_authentication(self, definition: SDKDefinition) -> dict[str, Any]:
         del definition
@@ -155,16 +244,40 @@ class RuntimeRouter:
     pins a provider so a later settings change cannot move an in-flight task.
     """
 
-    def __init__(self, manager: SDKManager, providers: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        manager: SDKManager,
+        providers: dict[str, Any],
+        *,
+        provider_factories: dict[str, Any] | None = None,
+    ) -> None:
         self.manager = manager
         self.providers = dict(providers)
-        self._pinned_provider: ContextVar[str | None] = ContextVar(
-            "sapba_runtime_provider", default=None
+        self.provider_factories = dict(provider_factories or {})
+        self._provider_cache: dict[tuple[str, str | None], Any] = {}
+        self._pinned_binding: ContextVar[tuple[str, str | None] | None] = ContextVar(
+            "sapba_runtime_binding", default=None
         )
 
     @property
     def current_provider_id(self) -> str:
-        return self._pinned_provider.get() or self.manager.default_provider_id
+        pinned = self._pinned_binding.get()
+        selected = pinned[0] if pinned else self.manager.default_provider_id
+        if not selected:
+            raise RuntimeUnavailableError(
+                "No default Agent Runtime is configured.",
+                code="runtime_default_not_configured",
+            )
+        return selected
+
+    @property
+    def current_model_id(self) -> str | None:
+        pinned = self._pinned_binding.get()
+        if pinned:
+            return pinned[1]
+        snapshot = self.manager.runtime_snapshot(self.current_provider_id)
+        model = snapshot.get("model")
+        return str(model) if model else None
 
     def snapshot(self, provider_id: str | None = None) -> dict[str, Any]:
         selected = provider_id or self.current_provider_id
@@ -184,14 +297,18 @@ class RuntimeRouter:
                 code="runtime_not_selectable",
             )
         snapshot = self.manager.runtime_snapshot(selected)
-        provider = self._provider(selected)
-        model = getattr(provider, "model", None)
-        snapshot["model"] = str(model) if model else None
+        model = snapshot.get("model")
+        self._provider(selected, str(model) if model else None)
         snapshot["configuration_digest"] = hashlib.sha256(
             json.dumps(
                 {
                     "sdk_configuration_digest": snapshot["configuration_digest"],
                     "model": snapshot["model"],
+                    "model_catalog_digest": snapshot.get("model_catalog_digest"),
+                    "model_check_digest": snapshot.get("model_check_digest"),
+                    "runtime_configuration_revision": snapshot.get(
+                        "runtime_configuration_revision"
+                    ),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -201,21 +318,29 @@ class RuntimeRouter:
         return snapshot
 
     @contextmanager
-    def pin(self, provider_id: str | None) -> Iterator[None]:
+    def pin(self, provider_id: str | None, model_id: str | None = None) -> Iterator[None]:
         selected = provider_id or self.manager.default_provider_id
-        self._provider(selected)
-        token = self._pinned_provider.set(selected)
+        if not selected:
+            raise RuntimeUnavailableError(
+                "No default Agent Runtime is configured.",
+                code="runtime_default_not_configured",
+            )
+        if model_id is None:
+            model = self.manager.runtime_snapshot(selected).get("model")
+            model_id = str(model) if model else None
+        self._provider(selected, model_id)
+        token = self._pinned_binding.set((selected, model_id))
         try:
             yield
         finally:
-            self._pinned_provider.reset(token)
+            self._pinned_binding.reset(token)
 
     def supports(self, operation: str) -> bool:
-        provider = self._provider(self.current_provider_id)
+        provider = self._provider(self.current_provider_id, self.current_model_id)
         return callable(getattr(provider, operation, None))
 
     def bind_events(self, sink: Any) -> Any:
-        provider = self._provider(self.current_provider_id)
+        provider = self._provider(self.current_provider_id, self.current_model_id)
         method = getattr(provider, "bind_events", None)
         return method(sink) if callable(method) else nullcontext()
 
@@ -268,7 +393,7 @@ class RuntimeRouter:
         return await self._invoke("review_role_matching_feedback", *args, **kwargs)
 
     async def cancel(self, thread_id: str | None = None) -> None:
-        provider = self._provider(self.current_provider_id)
+        provider = self._provider(self.current_provider_id, self.current_model_id)
         method = getattr(provider, "cancel", None)
         if callable(method):
             await method(thread_id)
@@ -277,7 +402,7 @@ class RuntimeRouter:
         return await self._invoke(operation, *args, **kwargs)
 
     async def _invoke(self, operation: str, *args: Any, **kwargs: Any) -> Any:
-        provider = self._provider(self.current_provider_id)
+        provider = self._provider(self.current_provider_id, self.current_model_id)
         method = getattr(provider, operation, None)
         if not callable(method):
             raise RuntimeUnavailableError(
@@ -286,7 +411,13 @@ class RuntimeRouter:
             )
         return await method(*args, **kwargs)
 
-    def _provider(self, provider_id: str) -> Any:
+    def _provider(self, provider_id: str, model_id: str | None = None) -> Any:
+        factory = self.provider_factories.get(provider_id)
+        if callable(factory):
+            key = (provider_id, model_id)
+            if key not in self._provider_cache:
+                self._provider_cache[key] = factory(model_id)
+            return self._provider_cache[key]
         provider = self.providers.get(provider_id)
         if provider is None:
             raise RuntimeUnavailableError(
@@ -316,8 +447,8 @@ class StaticRuntimeRouter:
         }
 
     @contextmanager
-    def pin(self, provider_id: str | None) -> Iterator[None]:
-        del provider_id
+    def pin(self, provider_id: str | None, model_id: str | None = None) -> Iterator[None]:
+        del provider_id, model_id
         yield
 
     def supports(self, operation: str) -> bool:

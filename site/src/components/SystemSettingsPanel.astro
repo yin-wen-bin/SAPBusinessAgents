@@ -6,127 +6,73 @@ interface Props { locale: Locale }
 const { locale } = Astro.props;
 const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const copy = locale === "zh" ? {
-  eyebrow: "系统配置",
-  title: "Agent Runtime 与 SDK",
-  body: "选择新任务使用的 Agent Runtime，并集中检查安装、登录、平台兼容性和 SDK 版本。固定 Agent 不受此设置影响。",
-  checkAll: "检查全部 Runtime",
-  loading: "正在读取本机 Agent Runtime 信息…",
-  unavailable: "无法连接本机 API，请先启动 SAPBusinessAgents。",
-  current: "当前版本",
-  latest: "最新版本",
-  package: "安装包",
-  ecosystem: "运行环境",
-  checkedAt: "检查时间",
-  notChecked: "尚未检查",
-  notInstalled: "未安装",
-  check: "检查状态与更新",
-  checking: "正在检查…",
-  update: "更新到最新版本",
-  updating: "正在更新…",
-  currentState: "已是最新版本",
-  updateState: "发现新版本",
-  failedState: "检查失败",
-  pendingState: "等待检查",
-  updateDisabled: "此 SDK 只能查看版本，不能由平台更新。",
-  restart: "更新完成。请重启 SAPBusinessAgents，使新 SDK 版本对所有任务生效。",
-  updated: "SDK 更新完成。",
+  eyebrow: "系统配置", title: "Agent Runtime 与 SDK",
+  body: "管理新任务使用的 Runtime、SDK 客户端和系统默认模型。模型切换只影响新会话；固定 Agent 与确定性工作流不受 Runtime 启停影响。",
+  checkAll: "检查全部 Runtime", loading: "正在读取本机 Agent Runtime 信息…", unavailable: "无法连接本机 API，请先启动 SAPBusinessAgents。",
+  noDefault: "当前没有默认 Runtime。Runtime 相关的新任务不可用，固定 Agent 仍可执行。",
+  sdkClient: "SDK 与客户端", runtimeState: "Runtime 状态", modelCatalog: "模型目录",
+  current: "SDK 版本", cliVersion: "绑定 CLI 版本", latest: "最新版本", package: "安装包", ecosystem: "运行环境",
+  checkedAt: "检查时间", notChecked: "尚未检查", notInstalled: "未安装", check: "检查安装与登录", checking: "正在检查…",
+  update: "更新到最新版本", updating: "正在更新…", currentState: "已是最新版本", updateState: "发现新版本", failedState: "检查失败", pendingState: "等待检查",
+  updateDisabled: "此 SDK 只能查看版本，不能由平台更新。", restart: "更新完成。请重启 SAPBusinessAgents，使新 SDK 与 CLI 版本生效。", updated: "SDK 更新完成。",
   confirmUpdate: "将更新本机 SDK 依赖，运行中的任务不会自动切换版本。确定继续吗？",
-  provider: "Runtime Provider",
-  authentication: "登录状态",
-  authenticated: "已复用本机登录",
-  unauthenticated: "登录不可用",
-  authUnknown: "尚未检查",
-  platform: "平台兼容性",
-  supported: "支持当前平台",
-  unsupported: "不支持当前平台",
-  capabilities: "平台能力",
-  blockers: "不可用原因",
-  selected: "当前默认",
-  select: "设为默认 Runtime",
-  selecting: "正在切换…",
-  reserved: "预留",
-  planned: "待验收",
-  switchConfirm: "只会影响新创建的任务；运行中和等待补充信息的任务继续使用原 Runtime。确定切换吗？",
-  switched: "默认 Agent Runtime 已更新，新任务将使用该 Runtime。",
+  provider: "Runtime Provider", enabled: "已启用", disabled: "已停用", enable: "启用 Runtime", enabling: "正在启用…", disable: "停用 Runtime", disabling: "正在停用…",
+  confirmDisable: "请输入 Runtime Provider ID 以确认停用：", disabledDone: "Runtime 已停用。新 Runtime 任务将被阻止。", enabledDone: "Runtime 已启用。是否作为默认 Runtime 仍需单独设置。",
+  authentication: "登录状态", authenticated: "已复用本机登录", unauthenticated: "登录不可用", authUnknown: "尚未检查",
+  platform: "平台兼容性", supported: "支持当前平台", unsupported: "不支持当前平台", capabilities: "平台能力", blockers: "不可用原因",
+  selected: "当前默认 Runtime", select: "设为默认 Runtime", selecting: "正在切换…", reserved: "预留", planned: "待验收",
+  switchConfirm: "只会影响新创建的任务；运行中和等待补充信息的任务继续使用原 Runtime。确定切换吗？", switched: "默认 Agent Runtime 已更新，新任务将使用该 Runtime。",
+  refreshModels: "刷新模型目录", refreshingModels: "正在刷新模型…", catalogUnavailable: "此 Runtime 不支持从当前 SDK 发现模型。",
+  catalogNotLoaded: "尚未读取当前 SDK 的模型目录。", catalogIncomplete: "模型目录不完整，暂时不能检查或保存模型。", catalogStale: "这是过期缓存。请刷新后再修改模型。", catalogFailed: "模型目录读取失败。",
+  sdkDefault: "SDK 默认", currentModel: "当前系统默认", modalities: "输入模态", reasoning: "推理强度", tiers: "服务等级",
+  checkModel: "检查兼容性", checkingModel: "正在检查…", modelCompatible: "兼容性检查通过", modelCheckRequired: "需要兼容性检查", modelIncompatible: "兼容性检查未通过", modelRetired: "当前 SDK 已不再提供",
+  setModel: "设为默认模型", settingModel: "正在设置…", modelSet: "系统默认模型已更新，只影响新会话和新草稿。", upgradeTo: "建议迁移到", emptyModels: "当前完整目录中没有可显示的非隐藏模型。",
   blockerLabels: {
-    native_windows_runtime_unavailable: "官方 Runtime 暂不支持原生 Windows",
-    sdk_not_installed: "SDK 尚未安装",
-    platform_not_supported: "当前操作系统不受支持",
-    provider_not_implemented: "Runtime Provider 尚未实现",
-    authentication_not_configured: "认证方式尚未配置",
-    authentication_not_checked: "尚未检查本机登录状态",
-    authentication_unavailable: "本机登录不可用",
-    free_query_live_acceptance_required: "自由 SAP 查询真机验收尚未通过",
+    native_windows_runtime_unavailable: "官方 Runtime 暂不支持原生 Windows", sdk_not_installed: "SDK 尚未安装", platform_not_supported: "当前操作系统不受支持",
+    provider_not_implemented: "Runtime Provider 尚未实现", authentication_not_configured: "认证方式尚未配置", authentication_not_checked: "尚未检查本机登录状态",
+    authentication_unavailable: "本机登录不可用", free_query_live_acceptance_required: "自由查询真机验收尚未通过", runtime_disabled: "Runtime 已由用户停用",
+    runtime_model_not_configured: "尚未选择系统默认模型", runtime_model_catalog_unavailable: "当前 Runtime 不支持模型目录发现", runtime_model_catalog_required: "需要读取当前 SDK 模型目录", runtime_model_catalog_stale: "模型目录已过期",
+    runtime_model_catalog_incomplete: "模型目录不完整", runtime_model_retired: "当前模型已从 SDK 目录移除", runtime_model_check_required: "当前模型尚未通过兼容性检查",
   },
 } : {
-  eyebrow: "System settings",
-  title: "Agent Runtimes and SDKs",
-  body: "Select the Agent Runtime for new tasks and inspect installation, login, platform compatibility, and SDK versions. Fixed Agents are unaffected.",
-  checkAll: "Check all runtimes",
-  loading: "Reading local Agent Runtime information…",
-  unavailable: "Cannot reach the local API. Start SAPBusinessAgents first.",
-  current: "Current version",
-  latest: "Latest version",
-  package: "Package",
-  ecosystem: "Runtime",
-  checkedAt: "Last checked",
-  notChecked: "Not checked",
-  notInstalled: "Not installed",
-  check: "Check status and updates",
-  checking: "Checking…",
-  update: "Update to latest",
-  updating: "Updating…",
-  currentState: "Up to date",
-  updateState: "Update available",
-  failedState: "Check failed",
-  pendingState: "Not checked",
-  updateDisabled: "This SDK is version-visible but cannot be updated by the platform.",
-  restart: "Update completed. Restart SAPBusinessAgents so every task uses the new SDK version.",
-  updated: "SDK update completed.",
+  eyebrow: "System settings", title: "Agent Runtimes and SDKs",
+  body: "Manage the Runtime, SDK client, and system-default model used by new tasks. Model changes affect only new sessions; fixed Agents and deterministic workflows are unaffected by Runtime enablement.",
+  checkAll: "Check all runtimes", loading: "Reading local Agent Runtime information…", unavailable: "Cannot reach the local API. Start SAPBusinessAgents first.",
+  noDefault: "No default Runtime is configured. New Runtime tasks are unavailable; fixed Agents remain executable.",
+  sdkClient: "SDK and client", runtimeState: "Runtime status", modelCatalog: "Model catalog",
+  current: "SDK version", cliVersion: "Bundled CLI version", latest: "Latest version", package: "Package", ecosystem: "Runtime",
+  checkedAt: "Last checked", notChecked: "Not checked", notInstalled: "Not installed", check: "Check installation and login", checking: "Checking…",
+  update: "Update to latest", updating: "Updating…", currentState: "Up to date", updateState: "Update available", failedState: "Check failed", pendingState: "Not checked",
+  updateDisabled: "This SDK is version-visible but cannot be updated by the platform.", restart: "Update completed. Restart SAPBusinessAgents so the new SDK and CLI versions take effect.", updated: "SDK update completed.",
   confirmUpdate: "This will update a local SDK dependency. Running tasks will not switch versions automatically. Continue?",
-  provider: "Runtime provider",
-  authentication: "Login status",
-  authenticated: "Local login available",
-  unauthenticated: "Login unavailable",
-  authUnknown: "Not checked",
-  platform: "Platform compatibility",
-  supported: "Current platform supported",
-  unsupported: "Current platform unsupported",
-  capabilities: "Capabilities",
-  blockers: "Unavailable because",
-  selected: "Current default",
-  select: "Set as default runtime",
-  selecting: "Switching…",
-  reserved: "Reserved",
-  planned: "Pending acceptance",
-  switchConfirm: "Only new tasks will switch. Running and waiting tasks remain pinned to their original runtime. Continue?",
-  switched: "The default Agent Runtime was updated for new tasks.",
+  provider: "Runtime provider", enabled: "Enabled", disabled: "Disabled", enable: "Enable Runtime", enabling: "Enabling…", disable: "Disable Runtime", disabling: "Disabling…",
+  confirmDisable: "Enter the Runtime provider ID to confirm disabling:", disabledDone: "The Runtime was disabled. New Runtime tasks will be blocked.", enabledDone: "The Runtime was enabled. Setting it as the default is a separate action.",
+  authentication: "Login status", authenticated: "Local login available", unauthenticated: "Login unavailable", authUnknown: "Not checked",
+  platform: "Platform compatibility", supported: "Current platform supported", unsupported: "Current platform unsupported", capabilities: "Capabilities", blockers: "Unavailable because",
+  selected: "Current default Runtime", select: "Set as default Runtime", selecting: "Switching…", reserved: "Reserved", planned: "Pending acceptance",
+  switchConfirm: "Only new tasks will switch. Running and waiting tasks remain pinned to their original Runtime. Continue?", switched: "The default Agent Runtime was updated for new tasks.",
+  refreshModels: "Refresh model catalog", refreshingModels: "Refreshing models…", catalogUnavailable: "This Runtime cannot discover models from its current SDK.",
+  catalogNotLoaded: "The current SDK model catalog has not been loaded.", catalogIncomplete: "The model catalog is incomplete. Models cannot be checked or saved.", catalogStale: "This is a stale cache. Refresh it before changing the model.", catalogFailed: "The model catalog could not be loaded.",
+  sdkDefault: "SDK default", currentModel: "Current system default", modalities: "Input modalities", reasoning: "Reasoning efforts", tiers: "Service tiers",
+  checkModel: "Check compatibility", checkingModel: "Checking…", modelCompatible: "Compatibility check passed", modelCheckRequired: "Compatibility check required", modelIncompatible: "Compatibility check failed", modelRetired: "No longer offered by the current SDK",
+  setModel: "Set as default model", settingModel: "Setting…", modelSet: "The system-default model was updated for new sessions and drafts only.", upgradeTo: "Recommended upgrade", emptyModels: "The complete catalog contains no visible models.",
   blockerLabels: {
-    native_windows_runtime_unavailable: "The official runtime does not support native Windows",
-    sdk_not_installed: "The SDK is not installed",
-    platform_not_supported: "The current operating system is unsupported",
-    provider_not_implemented: "The Runtime Provider is not implemented",
-    authentication_not_configured: "Authentication is not configured",
-    authentication_not_checked: "The local login has not been checked",
-    authentication_unavailable: "The local login is unavailable",
-    free_query_live_acceptance_required: "Live free-SAP-query acceptance has not passed",
+    native_windows_runtime_unavailable: "The official Runtime does not support native Windows", sdk_not_installed: "The SDK is not installed", platform_not_supported: "The current operating system is unsupported",
+    provider_not_implemented: "The Runtime Provider is not implemented", authentication_not_configured: "Authentication is not configured", authentication_not_checked: "The local login has not been checked",
+    authentication_unavailable: "The local login is unavailable", free_query_live_acceptance_required: "Live free-query acceptance has not passed", runtime_disabled: "The Runtime was disabled by the user",
+    runtime_model_not_configured: "No system-default model is selected", runtime_model_catalog_unavailable: "The Runtime does not support model catalog discovery", runtime_model_catalog_required: "The current SDK model catalog must be loaded", runtime_model_catalog_stale: "The model catalog is stale",
+    runtime_model_catalog_incomplete: "The model catalog is incomplete", runtime_model_retired: "The current model was removed from the SDK catalog", runtime_model_check_required: "The current model has not passed compatibility checking",
   },
 };
 ---
 
 <section class="sdk-manager" data-sdk-manager data-api-base={apiBase}>
   <header class="plugin-manager-header">
-    <div>
-      <p class="runtime-eyebrow"><Settings size={16} aria-hidden="true" />{copy.eyebrow}</p>
-      <h1>{copy.title}</h1>
-      <p>{copy.body}</p>
-    </div>
-    <button type="button" class="secondary-button" data-check-all>
-      <RefreshCw size={16} aria-hidden="true" />{copy.checkAll}
-    </button>
+    <div><p class="runtime-eyebrow"><Settings size={16} aria-hidden="true" />{copy.eyebrow}</p><h1>{copy.title}</h1><p>{copy.body}</p></div>
+    <button type="button" class="secondary-button" data-check-all><RefreshCw size={16} aria-hidden="true" />{copy.checkAll}</button>
   </header>
-
   <div class="plugin-alert" data-sdk-alert>{copy.loading}</div>
+  <div class="plugin-alert" data-no-default hidden>{copy.noDefault}</div>
   <div class="sdk-grid" data-sdk-grid></div>
 </section>
 
@@ -134,200 +80,99 @@ const copy = locale === "zh" ? {
   const root = document.querySelector("[data-sdk-manager]");
   const grid = root?.querySelector("[data-sdk-grid]");
   const alert = root?.querySelector("[data-sdk-alert]");
+  const noDefault = root?.querySelector("[data-no-default]");
   const apiBase = root?.dataset.apiBase;
-
-  const element = (tag, className, text) => {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
-  };
-
+  const element = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
   const localized = (value) => value?.[locale] || value?.zh || value?.en || "";
-  const checkedTime = (value) => value
-    ? new Date(value).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")
-    : copy.notChecked;
+  const checkedTime = (value) => value ? new Date(value).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") : copy.notChecked;
   const blockerText = (value) => copy.blockerLabels?.[value] || value;
-
-  const responseError = async (response) => {
-    try {
-      const payload = await response.json();
-      return payload?.detail?.message || payload?.detail || response.statusText;
-    } catch {
-      return response.statusText;
-    }
-  };
+  const showMessage = (message, tone = "") => { alert.hidden = false; alert.dataset.tone = tone; alert.textContent = message; };
+  const responseError = async (response) => { try { const payload = await response.json(); return payload?.detail?.message || payload?.detail?.detail?.message || payload?.detail || response.statusText; } catch { return response.statusText; } };
+  const request = async (url, options = {}) => { const response = await fetch(url, options); if (!response.ok) throw new Error(await responseError(response)); return await response.json(); };
 
   const stateFor = (sdk) => {
     if (sdk.selected) return { key: "ready", text: copy.selected };
-    if (sdk.availability === "reserved" || sdk.availability === "reserved_blocked") {
-      return { key: "pending", text: copy.reserved };
-    }
+    if (!sdk.enabled) return { key: "pending", text: copy.disabled };
+    if (["reserved", "reserved_blocked"].includes(sdk.availability)) return { key: "pending", text: copy.reserved };
     if (sdk.availability === "planned") return { key: "pending", text: copy.planned };
     if (sdk.check_status === "failed") return { key: "failed", text: copy.failedState };
     if (!sdk.installed) return { key: "failed", text: copy.notInstalled };
     if (sdk.update_available) return { key: "update", text: copy.updateState };
-    if (sdk.check_status === "checked") return { key: "ready", text: copy.currentState };
-    return { key: "pending", text: copy.pendingState };
+    return { key: "ready", text: copy.enabled };
+  };
+  const modelState = (model) => {
+    if (model.retired) return { key: "failed", text: copy.modelRetired };
+    if (model.check_status === "compatible") return { key: "ready", text: copy.modelCompatible };
+    if (model.check_status === "check_required") return { key: "pending", text: copy.modelCheckRequired };
+    return { key: "failed", text: copy.modelIncompatible };
   };
 
-  const render = (sdks) => {
-    grid.replaceChildren();
-    alert.hidden = true;
+  const renderModels = (sdk, section, payload) => {
+    section.replaceChildren();
+    const heading = element("div", "sdk-model-heading");
+    const headingText = element("div");
+    headingText.append(element("h3", "", copy.modelCatalog));
+    const statusText = payload.catalog_status === "ready" ? `${payload.items?.length || 0} · ${checkedTime(payload.captured_at)}` : payload.catalog_status === "incomplete" ? copy.catalogIncomplete : payload.catalog_status === "stale" ? copy.catalogStale : payload.catalog_status === "failed" ? copy.catalogFailed : copy.catalogNotLoaded;
+    headingText.append(element("p", "", statusText));
+    const refresh = element("button", "secondary-button", copy.refreshModels); refresh.type = "button";
+    refresh.addEventListener("click", async () => {
+      refresh.disabled = true; refresh.textContent = copy.refreshingModels;
+      try { const updated = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/refresh`, { method: "POST" }); renderModels(sdk, section, updated); await load(false); }
+      catch (error) { showMessage(String(error.message || error), "error"); refresh.disabled = false; refresh.textContent = copy.refreshModels; }
+    });
+    heading.append(headingText, refresh); section.append(heading);
+    const list = element("div", "sdk-model-list");
+    for (const model of payload.items || []) {
+      const state = modelState(model); const row = element("article", "sdk-model-row"); const identity = element("div", "sdk-model-identity");
+      const name = element("div", "sdk-model-name"); name.append(element("strong", "", model.display_name || model.model_id), element("code", "", model.model_id));
+      const badges = element("div", "sdk-model-badges"); if (model.is_sdk_default) badges.append(element("span", "sdk-model-badge", copy.sdkDefault)); if (model.selected) badges.append(element("span", "sdk-model-badge is-selected", copy.currentModel)); badges.append(element("span", `sdk-status status-${state.key}`, state.text)); identity.append(name, badges);
+      const facts = element("dl", "sdk-model-facts"); facts.append(element("dt", "", copy.modalities), element("dd", "", (model.input_modalities || []).join(", ") || "—"), element("dt", "", copy.reasoning), element("dd", "", (model.supported_reasoning_efforts || []).join(", ") || "—"), element("dt", "", copy.tiers), element("dd", "", (model.service_tiers || []).join(", ") || "—"));
+      row.append(identity, facts); if (model.upgrade_target) row.append(element("p", "sdk-model-upgrade", `${copy.upgradeTo}: ${model.upgrade_target}`));
+      const actions = element("div", "sdk-model-actions");
+      if (!model.retired && payload.model_catalog_complete) {
+        const check = element("button", "secondary-button", copy.checkModel); check.type = "button";
+        check.addEventListener("click", async () => { check.disabled = true; check.textContent = copy.checkingModel; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/check`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id }) }); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); await load(false); } }); actions.append(check);
+      }
+      if (model.selectable && !model.selected && payload.model_catalog_complete) {
+        const select = element("button", "sdk-update-button", copy.setModel); select.type = "button";
+        select.addEventListener("click", async () => { select.disabled = true; select.textContent = copy.settingModel; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/default-model`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id }) }); showMessage(copy.modelSet, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); select.disabled = false; } }); actions.append(select);
+      }
+      row.append(actions); list.append(row);
+    }
+    if (!(payload.items || []).length) list.append(element("p", "sdk-update-note", copy.emptyModels)); section.append(list);
+  };
+
+  const loadModels = async (sdk, section) => {
+    if (!sdk.model_discovery_supported) { section.append(element("h3", "", copy.modelCatalog), element("p", "sdk-update-note", copy.catalogUnavailable)); return; }
+    try { let payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models`); if (["not_loaded", "stale", "failed"].includes(payload.catalog_status)) payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/refresh`, { method: "POST" }); renderModels(sdk, section, payload); }
+    catch (error) { section.replaceChildren(element("h3", "", copy.modelCatalog), element("p", "sdk-error", String(error.message || error))); }
+  };
+
+  const render = (sdks, defaultProviderId) => {
+    grid.replaceChildren(); alert.hidden = true; noDefault.hidden = Boolean(defaultProviderId);
     for (const sdk of sdks) {
-      const state = stateFor(sdk);
-      const card = element("article", "sdk-card");
-      const heading = element("header", "sdk-card-heading");
-      const titleWrap = element("div");
-      titleWrap.append(
-        element("h2", "", localized(sdk.name) || sdk.sdk_id),
-        element("p", "", localized(sdk.description)),
-      );
-      heading.append(titleWrap, element("span", `sdk-status status-${state.key}`, state.text));
-
-      const versions = element("div", "sdk-version-grid");
-      const current = element("section", "sdk-version-block");
-      current.append(element("span", "", copy.current), element("strong", "", sdk.current_version || copy.notInstalled));
-      const latest = element("section", "sdk-version-block");
-      latest.append(element("span", "", copy.latest), element("strong", "", sdk.latest_version || copy.notChecked));
-      versions.append(current, latest);
-
-      const facts = element("dl", "plugin-facts sdk-facts");
-      facts.append(
-        element("dt", "", copy.provider), element("dd", "", sdk.provider_id),
-        element("dt", "", copy.package), element("dd", "", sdk.package_name),
-        element("dt", "", copy.ecosystem), element("dd", "", sdk.ecosystem),
-        element("dt", "", copy.authentication),
-        element(
-          "dd",
-          "",
-          sdk.authenticated === true
-            ? copy.authenticated
-            : sdk.authenticated === false
-              ? copy.unauthenticated
-              : copy.authUnknown,
-        ),
-        element("dt", "", copy.platform),
-        element("dd", "", sdk.platform_supported ? copy.supported : copy.unsupported),
-        element("dt", "", copy.capabilities),
-        element("dd", "", (sdk.capabilities || []).join(", ") || "—"),
-        element("dt", "", copy.checkedAt), element("dd", "", checkedTime(sdk.checked_at)),
-      );
-      if (sdk.blockers?.length) {
-        facts.append(
-          element("dt", "", copy.blockers),
-          element("dd", "sdk-error", sdk.blockers.map(blockerText).join(locale === "zh" ? "；" : "; ")),
-        );
+      const state = stateFor(sdk); const card = element("article", "sdk-card"); const heading = element("header", "sdk-card-heading"); const titleWrap = element("div");
+      titleWrap.append(element("h2", "", localized(sdk.name) || sdk.sdk_id), element("p", "", localized(sdk.description))); heading.append(titleWrap, element("span", `sdk-status status-${state.key}`, state.text));
+      const sdkSection = element("section", "sdk-settings-section"); sdkSection.append(element("h3", "", copy.sdkClient)); const versions = element("div", "sdk-version-grid");
+      for (const [label, value] of [[copy.current, sdk.current_version || copy.notInstalled], [copy.cliVersion, sdk.cli_version || copy.notInstalled], [copy.latest, sdk.latest_version || copy.notChecked]]) { const block = element("section", "sdk-version-block"); block.append(element("span", "", label), element("strong", "", value)); versions.append(block); } sdkSection.append(versions);
+      const runtimeSection = element("section", "sdk-settings-section"); runtimeSection.append(element("h3", "", copy.runtimeState)); const facts = element("dl", "plugin-facts sdk-facts");
+      facts.append(element("dt", "", copy.provider), element("dd", "", sdk.provider_id), element("dt", "", copy.package), element("dd", "", sdk.package_name), element("dt", "", copy.ecosystem), element("dd", "", sdk.ecosystem), element("dt", "", copy.runtimeState), element("dd", "", sdk.enabled ? copy.enabled : copy.disabled), element("dt", "", copy.currentModel), element("dd", "", sdk.default_model_id || "—"), element("dt", "", copy.authentication), element("dd", "", sdk.authenticated === true ? copy.authenticated : sdk.authenticated === false ? copy.unauthenticated : copy.authUnknown), element("dt", "", copy.platform), element("dd", "", sdk.platform_supported ? copy.supported : copy.unsupported), element("dt", "", copy.capabilities), element("dd", "", (sdk.capabilities || []).join(", ") || "—"), element("dt", "", copy.checkedAt), element("dd", "", checkedTime(sdk.checked_at)));
+      if (sdk.blockers?.length) facts.append(element("dt", "", copy.blockers), element("dd", "sdk-error", sdk.blockers.map(blockerText).join(locale === "zh" ? "；" : "; "))); if (sdk.error?.message) facts.append(element("dt", "", copy.failedState), element("dd", "sdk-error", sdk.error.message)); runtimeSection.append(facts);
+      const actions = element("footer", "plugin-card-actions sdk-card-actions"); const check = element("button", "secondary-button", copy.check); check.type = "button";
+      check.addEventListener("click", async () => { check.disabled = true; check.textContent = copy.checking; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/check`, { method: "POST" }); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); check.disabled = false; } }); actions.append(check);
+      if (sdk.enabled) {
+        const disable = element("button", "danger-outline-button", copy.disable); disable.type = "button";
+        disable.addEventListener("click", async () => { const confirmation = window.prompt(`${copy.confirmDisable}\n${sdk.provider_id}`); if (confirmation !== sdk.provider_id) return; disable.disabled = true; disable.textContent = copy.disabling; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/disable`, { method: "POST", headers: { "Content-Type": "application/json", "X-SAPBA-Action": "runtime-disable" }, body: JSON.stringify({ confirm_provider_id: confirmation }) }); showMessage(copy.disabledDone, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); disable.disabled = false; } }); actions.append(disable);
+      } else {
+        const enable = element("button", "secondary-button", copy.enable); enable.type = "button"; enable.disabled = !sdk.can_enable;
+        enable.addEventListener("click", async () => { enable.disabled = true; enable.textContent = copy.enabling; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/enable`, { method: "POST" }); showMessage(copy.enabledDone, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); enable.disabled = false; } }); actions.append(enable);
       }
-      if (sdk.error?.message) {
-        facts.append(element("dt", "", copy.failedState), element("dd", "sdk-error", sdk.error.message));
-      }
-
-      const actions = element("footer", "plugin-card-actions sdk-card-actions");
-      const check = element("button", "secondary-button", copy.check);
-      check.type = "button";
-      check.addEventListener("click", async () => {
-        check.disabled = true; check.textContent = copy.checking;
-        try {
-          const response = await fetch(
-            apiBase + "/api/system/sdk-runtimes/" + encodeURIComponent(sdk.provider_id) + "/check",
-            { method: "POST" },
-          );
-          if (!response.ok) throw new Error(await responseError(response));
-          await load();
-        } catch (error) {
-          alert.hidden = false; alert.textContent = String(error.message || error);
-        } finally {
-          check.disabled = false;
-        }
-      });
-      actions.append(check);
-
-      if (sdk.selectable && !sdk.selected) {
-        const select = element("button", "sdk-update-button", copy.select);
-        select.type = "button";
-        select.addEventListener("click", async () => {
-          if (!window.confirm(copy.switchConfirm)) return;
-          select.disabled = true;
-          select.textContent = copy.selecting;
-          try {
-            const response = await fetch(apiBase + "/api/system/sdk-runtimes/default", {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ provider_id: sdk.provider_id }),
-            });
-            if (!response.ok) throw new Error(await responseError(response));
-            alert.hidden = false;
-            alert.dataset.tone = "success";
-            alert.textContent = copy.switched;
-            await load();
-          } catch (error) {
-            alert.hidden = false;
-            alert.dataset.tone = "error";
-            alert.textContent = String(error.message || error);
-          } finally {
-            select.disabled = false;
-          }
-        });
-        actions.append(select);
-      }
-
-      if (sdk.update_available && sdk.update_enabled) {
-        const update = element("button", "sdk-update-button", copy.update);
-        update.type = "button";
-        update.addEventListener("click", async () => {
-          if (!window.confirm(copy.confirmUpdate)) return;
-          update.disabled = true; update.textContent = copy.updating;
-          try {
-            const response = await fetch(`${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/update`, {
-              method: "POST",
-              headers: { "X-SAPBA-Action": "sdk-update" },
-            });
-            if (!response.ok) throw new Error(await responseError(response));
-            const payload = await response.json();
-            alert.hidden = false;
-            alert.dataset.tone = "success";
-            alert.textContent = payload.restart_required ? copy.restart : copy.updated;
-            render([payload.item, ...sdks.filter((item) => item.sdk_id !== sdk.sdk_id)]);
-            alert.hidden = false;
-          } catch (error) {
-            alert.hidden = false; alert.dataset.tone = "error"; alert.textContent = String(error.message || error);
-          } finally {
-            update.disabled = false;
-          }
-        });
-        actions.append(update);
-      } else if (sdk.check_status === "checked" && !sdk.update_enabled) {
-        actions.append(element("small", "sdk-update-note", copy.updateDisabled));
-      }
-
-      card.append(heading, versions, facts, actions);
-      grid.append(card);
+      if (sdk.selectable && !sdk.selected) { const select = element("button", "sdk-update-button", copy.select); select.type = "button"; select.addEventListener("click", async () => { if (!window.confirm(copy.switchConfirm)) return; select.disabled = true; select.textContent = copy.selecting; try { await request(`${apiBase}/api/system/sdk-runtimes/default`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider_id: sdk.provider_id }) }); showMessage(copy.switched, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); select.disabled = false; } }); actions.append(select); }
+      if (sdk.update_available && sdk.update_enabled) { const update = element("button", "sdk-update-button", copy.update); update.type = "button"; update.addEventListener("click", async () => { if (!window.confirm(copy.confirmUpdate)) return; update.disabled = true; update.textContent = copy.updating; try { const payload = await request(`${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/update`, { method: "POST", headers: { "X-SAPBA-Action": "sdk-update" } }); showMessage(payload.restart_required ? copy.restart : copy.updated, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); update.disabled = false; } }); actions.append(update); } else if (sdk.check_status === "checked" && !sdk.update_enabled) actions.append(element("small", "sdk-update-note", copy.updateDisabled));
+      runtimeSection.append(actions); const modelSection = element("section", "sdk-settings-section sdk-model-section"); card.append(heading, sdkSection, runtimeSection, modelSection); grid.append(card); loadModels(sdk, modelSection);
     }
   };
-
-  const load = async () => {
-    const response = await fetch(apiBase + "/api/system/sdk-runtimes");
-    if (!response.ok) throw new Error(await responseError(response));
-    const payload = await response.json();
-    render(payload.items || []);
-  };
-
-  root?.querySelector("[data-check-all]")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    alert.hidden = false; alert.dataset.tone = ""; alert.textContent = copy.checking;
-    try {
-      const response = await fetch(apiBase + "/api/system/sdk-runtimes/check", { method: "POST" });
-      if (!response.ok) throw new Error(await responseError(response));
-      const payload = await response.json();
-      render(payload.items || []);
-    } catch (error) {
-      alert.hidden = false; alert.dataset.tone = "error"; alert.textContent = String(error.message || error);
-    } finally {
-      button.disabled = false;
-    }
-  });
-
-  load().catch(() => { alert.hidden = false; alert.textContent = copy.unavailable; });
+  const load = async (showLoading = true) => { if (showLoading) showMessage(copy.loading); const payload = await request(apiBase + "/api/system/sdk-runtimes"); render(payload.items || [], payload.default_provider_id); };
+  root?.querySelector("[data-check-all]")?.addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; showMessage(copy.checking); try { const payload = await request(apiBase + "/api/system/sdk-runtimes/check", { method: "POST" }); render(payload.items || [], payload.default_provider_id); } catch (error) { showMessage(String(error.message || error), "error"); } finally { button.disabled = false; } });
+  load().catch(() => showMessage(copy.unavailable, "error"));
 </script>

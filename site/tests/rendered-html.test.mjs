@@ -334,13 +334,21 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(globalStyles, /\.run-console\[data-run-mode="free_query"\]/);
   assert.match(globalStyles, /@media \(max-width: 560px\)/);
   assert.doesNotMatch(run, /\.innerHTML\s*=/);
-  assert.match(plugins, /插件与能力/);
+  assert.match(plugins, /插件与连接/);
   assert.match(plugins, /data-plugin-manager/);
-  assert.match(plugins, /禁止 SAP 写入/);
+  assert.match(plugins, /SAP 只读执行不会继承外部连接/);
+  assert.match(plugins, /Runtime App/);
+  assert.match(plugins, /MCP Server/);
   assert.match(settings, /Agent Runtime 与 SDK/);
   assert.match(settings, /检查全部 Runtime/);
   assert.match(settings, /data-sdk-manager/);
   assert.match(settings, /设为默认 Runtime/);
+  assert.match(settings, /停用 Runtime/);
+  assert.match(settings, /刷新模型目录/);
+  assert.match(settings, /检查兼容性/);
+  assert.match(settings, /设为默认模型/);
+  assert.match(settings, /models\/refresh/);
+  assert.match(settings, /default-model/);
 });
 
 test("workflow builder is rendered and consistently localized", async () => {

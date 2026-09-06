@@ -174,7 +174,7 @@ npm run dev
 
 顶部“Agent 管理”进入固定 Agent 全生命周期向导。每次运行保存不可变 Agent 版本快照；已发布工作流继续解析固定历史版本。`platform_assistant`不进入此管理链。完整门禁与接口见 [固定 Agent 全生命周期管理](docs/agent-lifecycle-management.md)。
 
-插件页显示本机注册表、健康状态、能力、传输方式和安全权限。对应接口为 `GET /api/plugins`、`GET /api/capabilities`、`POST /api/plugins/rescan`、`POST /api/plugins/{plugin_id}/health` 和 `PUT /api/plugins/{plugin_id}/enabled`。详细契约见 [本机插件平台设计](docs/local-plugin-platform.md)。
+插件页已升级为“插件与连接”，在保留本机插件注册表的同时统一展示 Codex App、MCP Server、多 Runtime 能力矩阵、连接、认证、健康状态和工作流引用。Agent Runtime 与 Integration Backend 独立固定；平台不保存 Runtime 管理的 OAuth 或邮箱凭据。原有 `GET /api/plugins`、`GET /api/capabilities` 等接口保持兼容，新增统一目录和连接接口。详细契约见 [多运行时插件、连接器与工作流集成](docs/runtime-integrations.md) 和 [本机插件平台设计](docs/local-plugin-platform.md)。
 
 “我的工作流”现在以自然语言多轮对话为默认入口：Codex 自动匹配当前仓库中的可执行 Agent，用户可持续反馈步骤、映射、条件、输出或验证结果；服务端对每一轮建议固定版本与摘要、重新编译类型化 DAG，并保留不可变修订和验证报告。设计确认与验证报告确认是两个独立门禁，原可视化画布保留为高级编辑并记入同一时间线。正式工作流执行时不调用 Codex。完整边界与接口见 [用户自定义工作流](docs/user-workflows.md)。
 
@@ -312,7 +312,7 @@ The local runtime is a Python/FastAPI microkernel without Cordis. It routes vers
 
 ### Agent Runtime selection
 
-The system settings page reads the versioned registry at `config/sdks.json`. Codex and WorkBuddy have implemented adapters; DeepSeek Harness and Claude Agent SDK are reserved and cannot be selected. A runtime becomes selectable only after installation, platform, existing-login, provider, safety, and live free-query gates pass. Changing the global default affects new tasks only. Every free-query run persists its provider, SDK version and configuration digest, and no automatic fallback is performed.
+The system settings page reads the versioned registry at `config/sdks.json`. Codex and WorkBuddy have implemented adapters; DeepSeek Harness and Claude Agent SDK are reserved and cannot be selected. A runtime becomes selectable only after installation, platform, existing-login, provider, safety, model compatibility, and live free-query gates pass. Model choices come from the installed SDK's non-hidden account-level catalog, not a platform-maintained allowlist. The current SDK and bundled CLI versions, catalog digest, model-check digest, explicit model ID, and runtime configuration revision are frozen into every new Runtime task. Runtime or model changes affect new sessions and drafts only; there is no automatic provider or model fallback. All Runtimes may be disabled while fixed Agents and deterministic workflows remain available.
 
 ### Runtime dependency version policy
 

@@ -255,6 +255,7 @@ class WorkflowRepository:
             "planning",
             "waiting_input",
             "needs_agents",
+            "needs_integrations",
             "draft",
             "validated",
             "inconclusive",
@@ -676,6 +677,7 @@ def validate_workflow(
         raise WorkflowError(f"{source} must be deterministic and readOnly=true")
     _validate_object_schema(workflow.get("inputSchema"), f"{source}.inputSchema")
     _validate_object_schema(workflow.get("outputSchema"), f"{source}.outputSchema")
+    _validate_integration_contracts(workflow, source)
     nodes = workflow.get("nodes")
     if not isinstance(nodes, list) or not nodes:
         raise WorkflowError(f"{source}.nodes must be a non-empty array")
@@ -850,6 +852,107 @@ def validate_workflow(
     return drift
 
 
+def _validate_integration_contracts(workflow: dict[str, Any], source: str) -> None:
+    integration_inputs = workflow.get("integrationInputs", [])
+    output_actions = workflow.get("outputActions", [])
+    if not isinstance(integration_inputs, list):
+        raise WorkflowError(f"{source}.integrationInputs must be an array")
+    if not isinstance(output_actions, list):
+        raise WorkflowError(f"{source}.outputActions must be an array")
+
+    input_ids: set[str] = set()
+    target_ports: set[str] = set()
+    workflow_ports = set((workflow.get("inputSchema") or {}).get("properties") or {})
+    for index, item in enumerate(integration_inputs):
+        location = f"{source}.integrationInputs[{index}]"
+        if not isinstance(item, dict):
+            raise WorkflowError(f"{location} must be an object")
+        input_id = str(item.get("id") or "")
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", input_id) or input_id in input_ids:
+            raise WorkflowError(f"{location}.id is invalid or duplicated")
+        input_ids.add(input_id)
+        if item.get("capability") != "mail.v1" or item.get("operation") not in {
+            "search",
+            "read",
+        }:
+            raise WorkflowError(
+                f"{location} must use mail.v1/search or mail.v1/read",
+                code="workflow_integration_operation_invalid",
+            )
+        _validate_fixed_binding(item, location, approval_required=False)
+        target_port = str(item.get("targetPort") or "")
+        if target_port not in workflow_ports or target_port in target_ports:
+            raise WorkflowError(
+                f"{location}.targetPort is unavailable or duplicated",
+                code="workflow_integration_target_invalid",
+            )
+        target_ports.add(target_port)
+        if not isinstance(item.get("arguments"), dict):
+            raise WorkflowError(f"{location}.arguments must be an object")
+        if item.get("resultPointer") is not None and not re.fullmatch(
+            r"(?:|/(?:[^~/]|~[01])*)+(?:/(?:[^~/]|~[01])*)*",
+            str(item.get("resultPointer") or ""),
+        ):
+            raise WorkflowError(
+                f"{location}.resultPointer must be a JSON Pointer",
+                code="workflow_integration_result_mapping_invalid",
+            )
+
+    action_ids: set[str] = set()
+    for index, item in enumerate(output_actions):
+        location = f"{source}.outputActions[{index}]"
+        if not isinstance(item, dict):
+            raise WorkflowError(f"{location} must be an object")
+        action_id = str(item.get("id") or "")
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", action_id) or action_id in action_ids:
+            raise WorkflowError(f"{location}.id is invalid or duplicated")
+        action_ids.add(action_id)
+        if item.get("capability") != "mail.v1" or item.get("operation") not in {
+            "draft",
+            "send",
+        }:
+            raise WorkflowError(
+                f"{location} must use mail.v1/draft or mail.v1/send",
+                code="workflow_integration_operation_invalid",
+            )
+        if not isinstance(item.get("draftMapping"), dict):
+            raise WorkflowError(f"{location}.draftMapping must be an object")
+        if item.get("operation") == "send":
+            _validate_fixed_binding(item, location, approval_required=True)
+
+
+def _validate_fixed_binding(
+    item: dict[str, Any], location: str, *, approval_required: bool
+) -> None:
+    required = (
+        "connectionId",
+        "integrationBackendId",
+        "bindingId",
+        "nativeServer",
+        "nativeTool",
+        "schemaHash",
+        "bindingSnapshot",
+    )
+    missing = [name for name in required if not item.get(name)]
+    if missing:
+        raise WorkflowError(
+            f"{location} is missing fixed binding fields: {', '.join(missing)}",
+            code="workflow_integration_binding_unpinned",
+        )
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(item.get("schemaHash") or "")):
+        raise WorkflowError(
+            f"{location}.schemaHash is invalid",
+            code="workflow_integration_binding_unpinned",
+        )
+    if not isinstance(item.get("bindingSnapshot"), dict):
+        raise WorkflowError(f"{location}.bindingSnapshot must be an object")
+    if approval_required and item.get("approvalPolicy") != "always":
+        raise WorkflowError(
+            f"{location}.approvalPolicy must be always for mail sending",
+            code="workflow_integration_approval_invalid",
+        )
+
+
 def workflow_review_contract(workflow: dict[str, Any], agents: Any) -> dict[str, Any]:
     """Build the deterministic contract that bounds an Agent Runtime review.
 
@@ -938,6 +1041,13 @@ def workflow_review_contract(workflow: dict[str, Any], agents: Any) -> dict[str,
         "completeness_outputs": sorted(
             name for name in required_terminal_outputs if "complete" in name
         ),
+        "integration_inputs": json.loads(
+            json.dumps(workflow.get("integrationInputs") or [])
+        ),
+        "output_actions": json.loads(
+            json.dumps(workflow.get("outputActions") or [])
+        ),
+        "sap_runtime_inherits_external_integrations": False,
     }
 
 

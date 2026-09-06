@@ -44,6 +44,15 @@ class WorkflowDraftError(RuntimeError):
         self.detail = detail
 
 
+def _draft_status_for_gaps(composition: dict[str, Any]) -> str:
+    gaps = [item for item in composition.get("gaps") or [] if isinstance(item, dict)]
+    if any(str(item.get("gap_type") or "agent_missing") == "agent_missing" for item in gaps):
+        return "needs_agents"
+    if gaps:
+        return "needs_integrations"
+    return "draft"
+
+
 class WorkflowDraftService:
     def __init__(
         self,
@@ -53,6 +62,7 @@ class WorkflowDraftService:
         coordinator: RunCoordinator,
         sap_read: Any,
         author: Any = None,
+        integrations: Any = None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -60,6 +70,7 @@ class WorkflowDraftService:
         self.coordinator = coordinator
         self.sap_read = sap_read
         self.author = author
+        self.integrations = integrations
         self._tasks: set[asyncio.Task[Any]] = set()
 
     def create(
@@ -175,6 +186,16 @@ class WorkflowDraftService:
     def _conversation_state(self, draft: WorkflowDraftRecord) -> dict[str, Any]:
         value = draft.composition.get("conversation")
         return value if isinstance(value, dict) else {}
+
+    def _runtime_binding(self, draft: WorkflowDraftRecord) -> tuple[str, str | None]:
+        snapshot = self._conversation_state(draft).get("runtime_snapshot") or {}
+        provider_id = str(
+            snapshot.get("provider_id")
+            or draft.composition.get("runtime_provider_id")
+            or "codex"
+        )
+        model_id = snapshot.get("model")
+        return provider_id, str(model_id) if model_id else None
 
     def _initialize_conversation(
         self,
@@ -498,6 +519,7 @@ class WorkflowDraftService:
         state = self._conversation_state(draft)
         pending = deepcopy_json(state.get("pending_feedback") or {})
         try:
+            integration_catalog = await self._workflow_integration_catalog()
             review = getattr(self.author, "review_workflow_feedback", None)
             supports = getattr(self.author, "supports", None)
             if not callable(review) or (callable(supports) and not supports("review_workflow_feedback")):
@@ -505,9 +527,9 @@ class WorkflowDraftService:
                     "The selected Agent Runtime does not support workflow feedback.",
                     code="workflow_feedback_unavailable",
                 )
-            provider_id = str(draft.composition.get("runtime_provider_id") or "codex")
+            provider_id, model_id = self._runtime_binding(draft)
             pin = getattr(self.author, "pin", None)
-            context = pin(provider_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
             validation_report = None
             if pending.get("validation_run_id"):
                 try:
@@ -560,7 +582,7 @@ class WorkflowDraftService:
                 state["status"] = "reviewing"
                 state["pending_feedback"] = None
                 draft.composition["conversation"] = state
-                draft.status = "needs_agents" if draft.composition.get("gaps") else "draft"
+                draft.status = _draft_status_for_gaps(draft.composition)
                 self._complete_turn(draft, turn, action=action, decision=decision)
                 draft.updated_at = utc_now()
                 self.store.save_workflow_draft(draft)
@@ -609,6 +631,7 @@ class WorkflowDraftService:
                 proposal=proposal,
                 catalog=compact_agent_catalog(self.agents),
                 provider_id=str(draft.composition.get("runtime_provider_id") or "codex"),
+                integration_catalog=integration_catalog,
             )
             state = self._conversation_state(draft)
             state["pending_feedback"] = None
@@ -657,7 +680,13 @@ class WorkflowDraftService:
                 "The workflow changed before design confirmation.",
                 code="workflow_design_confirmation_conflict",
             )
-        if draft.status in {"planning", "waiting_input", "needs_agents", "invalid"}:
+        if draft.status in {
+            "planning",
+            "waiting_input",
+            "needs_agents",
+            "needs_integrations",
+            "invalid",
+        }:
             raise WorkflowDraftError(
                 "The current workflow design cannot be confirmed.",
                 code="workflow_design_not_ready",
@@ -745,7 +774,7 @@ class WorkflowDraftService:
             return draft
         draft.workflow = restored
         draft.revision += 1
-        draft.status = "needs_agents" if draft.composition.get("gaps") else "draft"
+        draft.status = _draft_status_for_gaps(draft.composition)
         draft.validation_run_id = None
         draft.validation = {
             "valid": False,
@@ -791,10 +820,13 @@ class WorkflowDraftService:
             raise KeyError(run_id)
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def reconcile(self, draft_id: str) -> WorkflowDraftRecord:
+    async def reconcile(self, draft_id: str) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
+        integration_catalog = await self._workflow_integration_catalog()
         previous_revision = draft.revision
-        migrated = self._ensure_current_compiler(draft)
+        migrated = self._ensure_current_compiler(
+            draft, integration_catalog=integration_catalog
+        )
         if migrated.revision != previous_revision:
             return migrated
         draft = migrated
@@ -821,6 +853,7 @@ class WorkflowDraftService:
                     provider_id=str(
                         draft.composition.get("runtime_provider_id") or "codex"
                     ),
+                    integration_catalog=integration_catalog,
                 )
             draft.status = "planning"
             draft.composition["error"] = None
@@ -835,11 +868,29 @@ class WorkflowDraftService:
             self.store.save_workflow_draft(draft)
             self._schedule_composition(draft_id)
             return draft
-        if draft.status != "needs_agents":
+        if draft.status not in {"needs_agents", "needs_integrations"}:
             return draft
         current_catalog = compact_agent_catalog(self.agents)
-        if draft.composition.get("catalog_digest") == current_catalog["digest"]:
+        agent_catalog_changed = (
+            draft.composition.get("catalog_digest") != current_catalog["digest"]
+        )
+        integration_catalog_changed = (
+            draft.composition.get("integration_catalog_digest")
+            != integration_catalog.get("digest")
+        )
+        if not agent_catalog_changed and not integration_catalog_changed:
             return draft
+        proposal = draft.composition.get("proposal_snapshot")
+        if isinstance(proposal, dict) and isinstance(proposal.get("stages"), list):
+            return self._apply_compiled_proposal(
+                draft,
+                proposal=proposal,
+                catalog=current_catalog,
+                provider_id=str(
+                    draft.composition.get("runtime_provider_id") or "codex"
+                ),
+                integration_catalog=integration_catalog,
+            )
         draft.status = "planning"
         draft.composition["reconciling"] = True
         draft.composition["active_conversation_turn"] = self._next_turn(
@@ -865,10 +916,25 @@ class WorkflowDraftService:
         )
         if gap is None:
             raise KeyError(gap_id)
+        gap_type = str(gap.get("gap_type") or "agent_missing")
+        if gap_type != "agent_missing":
+            runtime = str(gap.get("target_runtime_provider_id") or "")
+            query = (
+                f"?capability={gap.get('required_capability') or ''}"
+                f"&operation={gap.get('required_operation') or ''}"
+                f"&runtime={runtime}&workflowDraft={draft_id}&gap={gap_id}"
+            )
+            return {
+                "workflow_draft_id": draft_id,
+                "gap": gap,
+                "prompt": None,
+                "resolution": {"target": "plugins", "path": f"/plugins{query}"},
+            }
         return {
             "workflow_draft_id": draft_id,
             "gap": gap,
             "prompt": gap_free_query_prompt(gap, locale=locale),
+            "resolution": {"target": "free_query"},
         }
 
     def link_agent_draft(
@@ -880,6 +946,11 @@ class WorkflowDraftService:
         for gap in gaps:
             if str(gap.get("gap_id") or "") != gap_id:
                 continue
+            if str(gap.get("gap_type") or "agent_missing") != "agent_missing":
+                raise WorkflowDraftError(
+                    "Only Agent gaps can link an Agent draft.",
+                    code="workflow_gap_resolution_invalid",
+                )
             gap["status"] = "agent_draft_created"
             gap["agent_draft_id"] = agent_draft_id
             found = True
@@ -909,7 +980,7 @@ class WorkflowDraftService:
             return current
         current.workflow = normalized
         current.revision += 1
-        current.status = "needs_agents" if current.composition.get("gaps") else "draft"
+        current.status = _draft_status_for_gaps(current.composition)
         current.validation_run_id = None
         current.validation = {
             "valid": False,
@@ -1031,8 +1102,17 @@ class WorkflowDraftService:
             state["active_validation_turn"] = turn
             draft.composition["conversation"] = state
             self.store.save_workflow_draft(draft)
+        integration_owned_inputs = _integration_owned_input_ports(draft.workflow)
+        overridden_inputs = sorted(integration_owned_inputs.intersection(supplied_input))
+        if overridden_inputs:
+            raise WorkflowDraftError(
+                "Runtime integration inputs cannot be supplied by the caller.",
+                code="workflow_integration_input_override",
+                detail={"fields": overridden_inputs},
+            )
         required_inputs = [
             str(item) for item in draft.workflow.get("inputSchema", {}).get("required") or []
+            if str(item) not in integration_owned_inputs
         ]
         review_contract = workflow_review_contract(draft.workflow, self.agents)
         validation_input_shape = {
@@ -1054,11 +1134,9 @@ class WorkflowDraftService:
                 error_type="UnsupportedCapability",
             )
         try:
-            provider_id = str(
-                draft.composition.get("runtime_provider_id") or "codex"
-            )
+            provider_id, model_id = self._runtime_binding(draft)
             pin = getattr(self.author, "pin", None)
-            context = pin(provider_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
             with context:
                 raw_review = await asyncio.wait_for(
                     review_workflow(
@@ -1323,13 +1401,11 @@ class WorkflowDraftService:
                     code="workflow_composition_unavailable",
                 )
             catalog = compact_agent_catalog(self.agents)
-            provider_id = str(
-                draft.composition.get("runtime_provider_id")
-                or getattr(self.author, "current_provider_id", "codex")
-            )
+            integration_catalog = await self._workflow_integration_catalog()
+            provider_id, model_id = self._runtime_binding(draft)
             draft.composition["runtime_provider_id"] = provider_id
             pin = getattr(self.author, "pin", None)
-            context = pin(provider_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
             with context:
                 result = await compose(
                     requirement=requirement,
@@ -1338,6 +1414,7 @@ class WorkflowDraftService:
                     thread_id=draft.thread_id,
                     clarification_input=clarification_input,
                     previous=draft.composition,
+                    integration_catalog=integration_catalog,
                 )
             draft = self.store.get_workflow_draft(draft_id)
             draft.thread_id = str(result.get("thread_id") or draft.thread_id or "") or None
@@ -1388,6 +1465,7 @@ class WorkflowDraftService:
                 proposal=proposal_snapshot,
                 catalog=catalog,
                 provider_id=provider_id,
+                integration_catalog=integration_catalog,
             )
             state = self._conversation_state(draft)
             state["status"] = "reviewing"
@@ -1432,6 +1510,7 @@ class WorkflowDraftService:
         proposal: dict[str, Any],
         catalog: dict[str, Any],
         provider_id: str,
+        integration_catalog: dict[str, Any] | None = None,
     ) -> WorkflowDraftRecord:
         preserved = {
             key: deepcopy_json(draft.composition.get(key))
@@ -1445,6 +1524,7 @@ class WorkflowDraftService:
             proposal=proposal,
             catalog=catalog,
             agents=self.agents,
+            integration_catalog=integration_catalog,
         )
         old_gaps = {
             str(item.get("gap_id") or ""): item
@@ -1467,12 +1547,16 @@ class WorkflowDraftService:
         if diff:
             draft.revision += 1
         draft.composition = composition
-        draft.status = "needs_agents" if composition.get("gaps") else "draft"
+        draft.status = _draft_status_for_gaps(composition)
         draft.validation_run_id = None
         draft.validation = {
             "valid": False,
             "issues": (
-                ["Missing Agents must be created and accepted before validation."]
+                [
+                    "Missing Agents must be created and accepted before validation."
+                    if draft.status == "needs_agents"
+                    else "Plugin connections and permissions must be resolved before validation."
+                ]
                 if composition.get("gaps")
                 else ["Generated workflow has not been validated."]
             ),
@@ -1485,7 +1569,32 @@ class WorkflowDraftService:
         self.store.save_workflow_draft(draft, diff=diff if diff else None)
         return draft
 
-    def _ensure_current_compiler(self, draft: WorkflowDraftRecord) -> WorkflowDraftRecord:
+    async def _workflow_integration_catalog(self) -> dict[str, Any]:
+        method = getattr(self.integrations, "workflow_catalog", None)
+        if not callable(method):
+            return {"digest": "", "items": [], "bindings": []}
+        try:
+            value = await method()
+        except Exception as exc:
+            return {
+                "digest": "",
+                "items": [],
+                "bindings": [],
+                "error": {
+                    "code": str(
+                        getattr(exc, "code", "runtime_integration_catalog_unavailable")
+                    ),
+                    "message": str(exc),
+                },
+            }
+        return value if isinstance(value, dict) else {"digest": "", "items": [], "bindings": []}
+
+    def _ensure_current_compiler(
+        self,
+        draft: WorkflowDraftRecord,
+        *,
+        integration_catalog: dict[str, Any] | None = None,
+    ) -> WorkflowDraftRecord:
         if draft.status == "published":
             return draft
         stages = draft.composition.get("stages")
@@ -1506,6 +1615,24 @@ class WorkflowDraftService:
                 draft.composition.get("validation_defaults") or {}
             ),
             "stages": deepcopy_json(stages),
+            "integration_inputs": deepcopy_json(
+                (draft.composition.get("proposal_snapshot") or {}).get(
+                    "integration_inputs"
+                )
+                or []
+            ),
+            "output_actions": deepcopy_json(
+                (draft.composition.get("proposal_snapshot") or {}).get(
+                    "output_actions"
+                )
+                or []
+            ),
+            "integration_gaps": deepcopy_json(
+                (draft.composition.get("proposal_snapshot") or {}).get(
+                    "integration_gaps"
+                )
+                or []
+            ),
         }
         try:
             preserved = {
@@ -1520,6 +1647,11 @@ class WorkflowDraftService:
                 proposal=proposal,
                 catalog=catalog,
                 agents=self.agents,
+                integration_catalog=(
+                    integration_catalog
+                    if integration_catalog is not None
+                    else _workflow_binding_catalog(draft.workflow)
+                ),
             )
         except WorkflowCompositionError as exc:
             raise WorkflowDraftError(
@@ -1551,7 +1683,7 @@ class WorkflowDraftService:
         draft.composition = composition
         if diff:
             draft.revision += 1
-        draft.status = "needs_agents" if composition.get("gaps") else "draft"
+        draft.status = _draft_status_for_gaps(composition)
         draft.validation_run_id = None
         draft.validation = {
             "valid": False,
@@ -1969,11 +2101,9 @@ class WorkflowDraftService:
             self._finalize_validation_report(draft, record)
             return
         try:
-            provider_id = str(
-                draft.composition.get("runtime_provider_id") or "codex"
-            )
+            provider_id, model_id = self._runtime_binding(draft)
             pin = getattr(self.author, "pin", None)
-            context = pin(provider_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
             with context:
                 proposal = await repair(
                     workflow=draft.workflow,
@@ -2044,7 +2174,12 @@ class WorkflowDraftService:
         self, draft: WorkflowDraftRecord, supplied: dict[str, Any]
     ) -> dict[str, Any]:
         resolved = dict(supplied)
-        required = [str(item) for item in draft.workflow["inputSchema"].get("required") or []]
+        integration_owned = _integration_owned_input_ports(draft.workflow)
+        required = [
+            str(item)
+            for item in draft.workflow["inputSchema"].get("required") or []
+            if str(item) not in integration_owned
+        ]
         missing = [name for name in required if _validation_input_is_missing(resolved.get(name))]
         if not missing:
             return resolved
@@ -2182,6 +2317,55 @@ def _extract_rows(value: Any) -> list[dict[str, Any]]:
         for child in value:
             rows.extend(_extract_rows(child))
     return rows
+
+
+def _integration_owned_input_ports(workflow: dict[str, Any]) -> set[str]:
+    return {
+        str(item.get("targetPort") or "")
+        for item in workflow.get("integrationInputs") or []
+        if isinstance(item, dict) and item.get("targetPort")
+    }
+
+
+def _workflow_binding_catalog(workflow: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the minimum immutable catalog needed for compiler migration."""
+    bindings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in [
+        *(workflow.get("integrationInputs") or []),
+        *(workflow.get("outputActions") or []),
+    ]:
+        if not isinstance(item, dict) or not item.get("bindingId"):
+            continue
+        binding_id = str(item["bindingId"])
+        if binding_id in seen:
+            continue
+        seen.add(binding_id)
+        snapshot = item.get("bindingSnapshot") or {}
+        bindings.append(
+            {
+                "binding_id": binding_id,
+                "capability": str(item.get("capability") or ""),
+                "operation": str(item.get("operation") or ""),
+                "connection_id": str(item.get("connectionId") or ""),
+                "integration_backend_id": str(
+                    item.get("integrationBackendId") or ""
+                ),
+                "runtime_provider_id": snapshot.get("runtimeProviderId"),
+                "native_server": str(item.get("nativeServer") or ""),
+                "native_tool": str(item.get("nativeTool") or ""),
+                "schema_hash": str(item.get("schemaHash") or ""),
+                "input_schema": deepcopy_json(snapshot.get("inputSchema") or {}),
+                "output_schema": deepcopy_json(snapshot.get("outputSchema") or {}),
+                "read_only": bool(snapshot.get("readOnly")),
+                "side_effect": bool(snapshot.get("sideEffect")),
+                "approval_policy": str(snapshot.get("approvalPolicy") or "none"),
+                "enabled": True,
+                "connection_status": "ready",
+                "connection_enabled": True,
+            }
+        )
+    return {"digest": "published-binding-snapshot", "items": [], "bindings": bindings}
 
 
 def _validation_input_is_missing(value: Any) -> bool:

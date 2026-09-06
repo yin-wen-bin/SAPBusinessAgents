@@ -1607,7 +1607,13 @@ class CodexHarnessController:
                 return
             previous_phase = phase
 
-    async def run(self, run_id: str, query: str, thread_id: str | None) -> HarnessOutcome:
+    async def run(
+        self,
+        run_id: str,
+        query: str,
+        thread_id: str | None,
+        model: str | None = None,
+    ) -> HarnessOutcome:
         run_started = time.monotonic()
         deadline_monitor: asyncio.Task[None] | None = None
         resuming_thread = bool(thread_id)
@@ -1649,6 +1655,7 @@ class CodexHarnessController:
                         approval_mode=_approval_mode(),
                         developer_instructions=_developer_instructions(),
                         cwd=str(workspace),
+                        model=model,
                         sandbox=_sandbox(),
                     )
                 else:
@@ -1656,7 +1663,7 @@ class CodexHarnessController:
                         approval_mode=_approval_mode(),
                         developer_instructions=_developer_instructions(),
                         cwd=str(workspace),
-                        model=self.settings.codex_model,
+                        model=model,
                         sandbox=_sandbox(),
                     )
                     thread_id = thread.id
@@ -1678,6 +1685,7 @@ class CodexHarnessController:
                 turn = await thread.turn(
                     prompt,
                     approval_mode=_approval_mode(),
+                    model=model,
                     output_schema=output_schema(_HARNESS_OUTPUT_SCHEMA, state.get("acceptance_spec")),
                     sandbox=_sandbox(),
                 )

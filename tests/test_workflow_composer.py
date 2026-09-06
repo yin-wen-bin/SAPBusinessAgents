@@ -11,6 +11,7 @@ from sap_business_agents_platform.app import create_app
 from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.manifests import AgentRepository
 from sap_business_agents_platform.workflow_composer import (
+    WORKFLOW_COMPILER_VERSION,
     WorkflowCompositionError,
     compact_agent_catalog,
     compile_workflow_proposal,
@@ -176,6 +177,130 @@ def _wait_draft(client: TestClient, draft_id: str) -> dict[str, Any]:
             return value
         time.sleep(0.03)
     raise AssertionError("Workflow composition did not settle")
+
+
+def test_compiler_classifies_agent_and_plugin_gaps_separately() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    agents = AgentRepository(repository / "agents")
+    catalog = compact_agent_catalog(agents)
+    proposal = _proposal(with_gap=True)
+    proposal["integration_gaps"] = [
+        {
+            "id": "mail_connection",
+            "gap_type": "connection_required",
+            "operation": "send",
+            "runtime_provider_id": "codex",
+            "title": {"zh": "连接邮箱", "en": "Connect mailbox"},
+            "description": {"zh": "需要邮件连接", "en": "Mail connection required"},
+        }
+    ]
+
+    workflow, composition = compile_workflow_proposal(
+        workflow_id="typed-gaps",
+        requirement="复核采购付款并发送邮件",
+        locale="zh",
+        proposal=proposal,
+        catalog=catalog,
+        agents=agents,
+        integration_catalog={"digest": "sha256:test", "items": [], "bindings": []},
+    )
+
+    assert workflow["integrationInputs"] == []
+    assert workflow["outputActions"] == []
+    assert {item["gap_type"] for item in composition["gaps"]} == {
+        "agent_missing",
+        "connection_required",
+    }
+    assert next(
+        item for item in composition["gaps"] if item["gap_type"] == "agent_missing"
+    )["resolution_target"] == "free_query"
+    assert next(
+        item
+        for item in composition["gaps"]
+        if item["gap_type"] == "connection_required"
+    )["resolution_target"] == "plugins"
+
+
+def test_compiler_pins_ready_mail_binding_in_workflow_revision() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    agents = AgentRepository(repository / "agents")
+    proposal = _proposal()
+    proposal["integration_inputs"] = [
+        {
+            "id": "mail_search",
+            "operation": "search",
+            "binding_id": "binding-search",
+            "target_stage_id": "p2p",
+            "target_input_port": "purchase_orders",
+            "arguments": {"query": "{{input.as_of}}"},
+        }
+    ]
+    proposal["output_actions"] = [
+        {
+            "id": "send_summary",
+            "operation": "send",
+            "binding_id": "binding-send",
+            "draft_mapping": {
+                "to": ["reviewer@example.com"],
+                "subject": "P2P review",
+                "body_text": "{{output.ap_business_report}}",
+            },
+        }
+    ]
+    common = {
+        "integration_backend_id": "codex-app-server",
+        "runtime_provider_id": "codex",
+        "connection_id": "connection-mail",
+        "connection_status": "ready",
+        "connection_enabled": True,
+        "native_server": "outlook-email",
+        "schema_hash": "sha256:" + "a" * 64,
+        "input_schema": {"type": "object", "properties": {}},
+        "output_schema": {"type": "object", "properties": {}},
+        "approval_policy": "none",
+        "enabled": True,
+    }
+    integration_catalog = {
+        "digest": "sha256:catalog",
+        "items": [],
+        "bindings": [
+            {
+                **common,
+                "binding_id": "binding-search",
+                "capability": "mail.v1",
+                "operation": "search",
+                "native_tool": "search_mail",
+                "read_only": True,
+                "side_effect": False,
+            },
+            {
+                **common,
+                "binding_id": "binding-send",
+                "capability": "mail.v1",
+                "operation": "send",
+                "native_tool": "send_mail",
+                "read_only": False,
+                "side_effect": True,
+                "approval_policy": "always",
+            },
+        ],
+    }
+
+    workflow, composition = compile_workflow_proposal(
+        workflow_id="mail-p2p",
+        requirement="从邮件读取采购订单并发送复核摘要",
+        locale="zh",
+        proposal=proposal,
+        catalog=compact_agent_catalog(agents),
+        agents=agents,
+        integration_catalog=integration_catalog,
+    )
+
+    assert composition["gaps"] == []
+    assert workflow["integrationInputs"][0]["integrationBackendId"] == "codex-app-server"
+    assert workflow["integrationInputs"][0]["targetPort"] == "purchase_orders"
+    assert workflow["outputActions"][0]["approvalPolicy"] == "always"
+    assert workflow["outputActions"][0]["bindingSnapshot"]["schemaHash"] == "sha256:" + "a" * 64
 
 
 def test_workflow_feedback_creates_immutable_turn_and_revision(tmp_path: Path) -> None:
@@ -349,7 +474,7 @@ def test_compiler_pins_agents_and_connects_only_declared_same_name_ports() -> No
         if item["to"] == {"nodeId": "ap", "port": "query_mode"}
     )
     assert query_mode["from"] == {"scope": "constant", "value": "p2p_evidence"}
-    assert composition["compiler_version"] == 4
+    assert composition["compiler_version"] == WORKFLOW_COMPILER_VERSION
     assert composition["validation_defaults"] == {
         "purchase_orders": ["4500000030"],
         "as_of": "2026-08-25",
@@ -518,7 +643,7 @@ def test_composition_api_normalizes_runtime_input_echo_outputs_and_keeps_audit(
         generated = _wait_draft(client, response.json()["draft_id"])
         assert generated["status"] == "draft"
         assert generated["thread_id"] == "workflow-echo-thread"
-        assert generated["composition"]["compiler_version"] == 4
+        assert generated["composition"]["compiler_version"] == WORKFLOW_COMPILER_VERSION
         assert generated["composition"]["proposal_snapshot"]["stages"][1][
             "requested_outputs"
         ][-2:] == ["query_mode", "as_of"]
@@ -566,7 +691,7 @@ def test_legacy_failed_composition_reconciles_in_place_with_current_compiler(
         generated = _wait_draft(client, legacy.draft_id)
         assert generated["draft_id"] == legacy.draft_id
         assert generated["status"] == "draft"
-        assert generated["composition"]["compiler_version"] == 4
+        assert generated["composition"]["compiler_version"] == WORKFLOW_COMPILER_VERSION
         assert len(generated["workflow"]["nodes"]) == 2
         assert planner.calls == 1
 

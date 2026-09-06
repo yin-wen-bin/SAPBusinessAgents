@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "defaultProviderId": "codex",
   "providers": [
     {
@@ -22,6 +22,7 @@
       "capabilities": [
         "planning",
         "tool_calling",
+        "mcp",
         "streaming",
         "resume",
         "structured_output",
@@ -35,6 +36,21 @@
       "liveValidated": true,
       "updateEnabled": true,
       "restartRequired": true,
+      "integrationRuntime": {
+        "adapterId": "codex-app-server",
+        "resourceKinds": ["app", "mcp_server"],
+        "features": {
+          "catalog": true,
+          "configuredDiscovery": true,
+          "status": true,
+          "authentication": true,
+          "configuration": true,
+          "directToolCall": true
+        },
+        "credentialOwner": "runtime",
+        "readiness": "production",
+        "blockers": []
+      },
       "blockers": []
     },
     {
@@ -69,6 +85,21 @@
       "liveValidated": false,
       "updateEnabled": true,
       "restartRequired": true,
+      "integrationRuntime": {
+        "adapterId": "workbuddy-mcp",
+        "resourceKinds": ["mcp_server"],
+        "features": {
+          "catalog": false,
+          "configuredDiscovery": true,
+          "status": true,
+          "authentication": false,
+          "configuration": false,
+          "directToolCall": false
+        },
+        "credentialOwner": "runtime",
+        "readiness": "preview",
+        "blockers": ["integration_direct_tool_call_unvalidated"]
+      },
       "blockers": ["free_query_live_acceptance_required"]
     },
     {
@@ -94,6 +125,21 @@
       "liveValidated": false,
       "updateEnabled": false,
       "restartRequired": true,
+      "integrationRuntime": {
+        "adapterId": null,
+        "resourceKinds": [],
+        "features": {
+          "catalog": false,
+          "configuredDiscovery": false,
+          "status": false,
+          "authentication": false,
+          "configuration": false,
+          "directToolCall": false
+        },
+        "credentialOwner": "runtime",
+        "readiness": "reserved",
+        "blockers": ["integration_adapter_not_implemented"]
+      },
       "blockers": ["native_windows_runtime_unavailable"]
     },
     {
@@ -119,6 +165,21 @@
       "liveValidated": false,
       "updateEnabled": false,
       "restartRequired": true,
+      "integrationRuntime": {
+        "adapterId": null,
+        "resourceKinds": [],
+        "features": {
+          "catalog": false,
+          "configuredDiscovery": false,
+          "status": false,
+          "authentication": false,
+          "configuration": false,
+          "directToolCall": false
+        },
+        "credentialOwner": "runtime",
+        "readiness": "reserved",
+        "blockers": ["integration_adapter_not_implemented"]
+      },
       "blockers": ["provider_not_implemented", "authentication_not_configured", "free_query_live_acceptance_required"]
     }
   ]

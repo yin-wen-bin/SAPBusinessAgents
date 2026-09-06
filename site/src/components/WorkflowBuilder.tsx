@@ -120,7 +120,7 @@ const labels = {
     compositionFailed: "草稿生成未完成",
     unsafeSkipOutput: "节点 {node} 的输出 {port} 无法生成安全、真实的跳过值。",
     retryComposition: "重新生成草稿",
-    retryingComposition: "正在使用compiler v4重新生成草稿…",
+    retryingComposition: "正在使用compiler v5重新生成草稿…",
     advanced: "高级编辑",
     hideAdvanced: "收起高级编辑",
     manual: "从空白画布开始",
@@ -128,9 +128,11 @@ const labels = {
     route: "自动编排结果",
     matchedAgent: "已匹配 Agent",
     missingAgent: "缺口 Agent",
-    gapTitle: "还缺少以下 Agent",
-    gapHelp: "缺口解决前不能验证或发布。可转到自由查询，先完成一次只读查询，再保存为待审核 Agent 草稿。",
+    gapTitle: "还存在以下能力缺口",
+    gapHelp: "缺口解决前不能验证或发布。Agent 缺口进入自由查询；连接、认证或权限缺口进入插件与连接页面处理。",
     createGapAgent: "用自由查询创建此 Agent",
+    resolvePluginGap: "在插件与连接中处理",
+    integrationGap: "集成缺口",
     gapDraft: "Agent 草稿",
     awaitingCatalog: "草稿尚未进入可执行目录；完成审核、真机验证和发布后，返回此页会自动重新匹配。",
     clarify: "Agent Runtime 需要确认一个关键信息",
@@ -256,7 +258,7 @@ const labels = {
     compositionFailed: "Workflow draft generation did not complete",
     unsafeSkipOutput: "Node {node} cannot derive a safe and truthful skipped value for output {port}.",
     retryComposition: "Generate draft again",
-    retryingComposition: "Regenerating the draft with compiler v4…",
+    retryingComposition: "Regenerating the draft with compiler v5…",
     advanced: "Advanced editor",
     hideAdvanced: "Hide advanced editor",
     manual: "Start with a blank canvas",
@@ -264,9 +266,11 @@ const labels = {
     route: "Composed route",
     matchedAgent: "Matched Agent",
     missingAgent: "Missing Agent",
-    gapTitle: "These Agents are still missing",
-    gapHelp: "Validation and publishing stay blocked until every gap is resolved. Use a read-only free query, then save the result as an Agent draft for review.",
+    gapTitle: "Capability gaps remain",
+    gapHelp: "Validation and publishing remain blocked. Agent gaps open free query; connection, authentication, and permission gaps open Plugins & Connections.",
     createGapAgent: "Create this Agent with free query",
+    resolvePluginGap: "Resolve in Plugins & Connections",
+    integrationGap: "Integration gap",
     gapDraft: "Agent draft",
     awaitingCatalog: "The draft is not executable yet. After review, live validation, and publishing, return here to trigger automatic matching.",
     clarify: "The Agent Runtime needs one key detail",
@@ -885,9 +889,16 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
     setRequirement(""); setFeedbackText(""); setMessage(""); moveToStep("compose");
   };
 
+  const integrationOwnedInputs = new Set(
+    (draft?.workflow.integrationInputs ?? [])
+      .map((item) => String(item.targetPort ?? ""))
+      .filter(Boolean),
+  );
+
   const validate = async () => {
     if (!draft) return;
-    const requiredInputs = draft.workflow.inputSchema.required ?? [];
+    const requiredInputs = (draft.workflow.inputSchema.required ?? [])
+      .filter((name) => !integrationOwnedInputs.has(name));
     const needsDiscovery = requiredInputs.some((name) => !(validationInputs[name] ?? "").trim());
     setBusy(true); setValidating(true); setMessage("");
     setValidationFeedback({ kind: "progress", text: needsDiscovery ? t.discovering : t.validating });
@@ -1075,7 +1086,7 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
       {activeStep === "review" && draft && <section className="workflow-wizard-stage">
         {dismissedRequestedOutputs.length > 0 && <section className="workflow-normalization-note" role="note"><strong>{t.normalizedOutputs} · {dismissedRequestedOutputs.length}</strong><p>{t.normalizedOutputsHelp}</p><code>{dismissedRequestedOutputs.map((item) => `${item.stage_id}.${item.port}`).join(" · ")}</code></section>}
         {hasComposition && <section className="workflow-composition-summary"><div className="workflow-intent-summary"><span>{t.intent}</span><h2>{localizedText(composition?.intent, locale) || requirement}</h2></div><div className="workflow-route-heading"><h2>{t.route}</h2><small>{draft.workflow.nodes.length} / {(composition?.stages ?? []).length} {t.matchedAgent}</small></div><ol className="workflow-route-list">{(composition?.stages ?? []).map((stage, index) => { const gap = gaps.find((item) => item.stage_id === stage.id); const agent = stage.agent_id ? agentMap.get(stage.agent_id) : undefined; return <li className={gap ? "is-gap" : "is-matched"} key={stage.id}><span className="workflow-route-index">{index + 1}</span><div><strong>{localizedText(stage.capability, locale)}</strong><small>{gap ? t.missingAgent : `${t.matchedAgent} · ${agent?.title[locale] ?? stage.agent_id}`}</small></div></li>; })}</ol></section>}
-        {gaps.length > 0 && <section className="workflow-gap-panel"><header><div><p className="eyebrow">Blocked</p><h2>{t.gapTitle}</h2><p>{t.gapHelp}</p></div><strong>{gaps.length}</strong></header><div className="workflow-gap-list">{gaps.map((gap) => <article key={gap.gap_id}><div><h3>{localizedText(gap.title, locale)}</h3><p>{localizedText(gap.description, locale)}</p></div><dl><div><dt>Inputs</dt><dd>{gap.required_inputs.map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div><div><dt>Outputs</dt><dd>{gap.required_outputs.map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div></dl>{gap.agent_draft_id && <p className="workflow-gap-draft"><strong>{t.gapDraft}: {gap.agent_draft_id}</strong><br /><span>{t.awaitingCatalog}</span></p>}<a className="workflow-gap-action" href={`${askPath}?workflowDraft=${encodeURIComponent(draft.draft_id)}&gap=${encodeURIComponent(gap.gap_id)}`}>{t.createGapAgent}</a></article>)}</div></section>}
+        {gaps.length > 0 && <section className="workflow-gap-panel"><header><div><p className="eyebrow">Blocked</p><h2>{t.gapTitle}</h2><p>{t.gapHelp}</p></div><strong>{gaps.length}</strong></header><div className="workflow-gap-list">{gaps.map((gap) => { const agentGap = (gap.gap_type ?? "agent_missing") === "agent_missing"; const pluginPath = `/${locale}/plugins?capability=${encodeURIComponent(gap.required_capability ?? "mail.v1")}&operation=${encodeURIComponent(gap.required_operation ?? "")}&runtime=${encodeURIComponent(gap.target_runtime_provider_id ?? "")}&workflowDraft=${encodeURIComponent(draft.draft_id)}&gap=${encodeURIComponent(gap.gap_id)}`; return <article key={gap.gap_id}><div><small>{agentGap ? t.missingAgent : `${t.integrationGap} · ${gap.gap_type}`}</small><h3>{localizedText(gap.title, locale)}</h3><p>{localizedText(gap.description, locale)}</p></div>{agentGap && <dl><div><dt>Inputs</dt><dd>{(gap.required_inputs ?? []).map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div><div><dt>Outputs</dt><dd>{(gap.required_outputs ?? []).map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div></dl>}{gap.agent_draft_id && <p className="workflow-gap-draft"><strong>{t.gapDraft}: {gap.agent_draft_id}</strong><br /><span>{t.awaitingCatalog}</span></p>}<a className="workflow-gap-action" href={agentGap ? `${askPath}?workflowDraft=${encodeURIComponent(draft.draft_id)}&gap=${encodeURIComponent(gap.gap_id)}` : pluginPath}>{agentGap ? t.createGapAgent : t.resolvePluginGap}</a></article>; })}</div></section>}
         <div className="workflow-review-toolbar"><button onClick={() => setAdvanced((value) => !value)}>{advanced ? t.hideAdvanced : t.advanced}</button>{advanced && <button disabled={busy} onClick={save}>{t.save}</button>}</div>
         {advanced && <section className="workflow-builder-grid"><aside className="workflow-agent-palette"><h2>{t.agents}</h2>{agents.map((agent) => <button key={agent.slug} onClick={() => addAgent(agent)}><strong>{agent.title[locale]}</strong><small>{agent.module} · {agent.slug}</small></button>)}</aside><div className="workflow-canvas" aria-label={t.title}><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onConnect={onConnect} onNodeClick={(_, node) => setSelectedNode(node.id)} onNodesChange={(changes) => mutateWorkflow((workflow) => { for (const change of changes) if (change.type === "position" && change.position) { const item = workflow.nodes.find((node) => node.id === change.id); if (item) item.position = change.position; } })} fitView><Background /><MiniMap /><Controls /></ReactFlow></div><aside className="workflow-inspector"><h2>{t.metadata}</h2><div className="workflow-metadata-fields"><label><span>{t.workflowId}</span><input value={draft.workflow.id} pattern="[a-z][a-z0-9-]*" onChange={(event) => mutateWorkflow((workflow) => { workflow.id = event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"); })} /></label><label><span>{t.workflowName}</span><input value={draft.workflow.title[locale]} onChange={(event) => mutateWorkflow((workflow) => { workflow.title[locale] = event.target.value; })} /></label></div><h2>{t.mapping}</h2>{selected && selectedAgent ? <NodeInspector workflow={draft.workflow} nodeId={selected.id} agent={selectedAgent} agents={agentMap} locale={locale} onChange={mutateWorkflow} onRemove={() => { mutateWorkflow((workflow) => removeNode(workflow, selected.id)); setSelectedNode(null); }} removeLabel={t.remove} /> : <p>{t.selectNode}</p>}</aside></section>}
         <WorkflowFeedbackComposer labels={t} validation={false} value={feedbackText} typeValue={feedbackType} onValue={setFeedbackText} onType={setFeedbackType} onSubmit={() => void sendWorkflowFeedback(false)} onNewWorkflow={startAnotherWorkflow} busy={busy} />
@@ -1088,7 +1099,7 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
           <div className={`workflow-validation-status is-${validationVerdict}`} aria-live="polite">{["preflight", "queued", "running"].includes(validationPhase) && <span className="workflow-spinner" />}<div><strong>{statusText}</strong>{draft.validation_run_id && <small>{draft.validation_run_id}</small>}{["preflight", "queued", "running"].includes(validationPhase) && Boolean(progress?.phase) && <small>{String(progress?.phase)}{progress?.current_node_id ? ` · ${String(progress.current_node_id)}` : ""}</small>}</div></div>
           {validationVerdict === "blocked" && preflightReview && <section className="workflow-preflight-blocked" role="alert"><header><div><p className="eyebrow">{t.preflightTitle}</p><h2>{preflightStale ? t.preflightStale : t.preflightBlockedTitle}</h2></div><strong>{preflightIssues.length}</strong></header><p>{preflightSummary || t.preflightBlockedHelp}</p><p className="workflow-preflight-no-sap">{preflightStale ? t.preflightStaleHelp : t.preflightNoSap}</p>{preflightIssues.length > 0 && <div className="workflow-preflight-issues">{preflightIssues.map((issue, index) => { const issueMessage = issue.message && typeof issue.message === "object" ? localizedText(issue.message as { zh?: string; en?: string }, locale) : String(issue.message ?? ""); return <article key={`${String(issue.code ?? "issue")}:${index}`}><div><code>{String(issue.code ?? "workflow_review_issue")}</code><strong>{issueMessage}</strong></div><dl>{issue.node_id != null && <div><dt>{t.issueNode}</dt><dd><code>{String(issue.node_id)}</code></dd></div>}{issue.port != null && <div><dt>{t.issuePort}</dt><dd><code>{String(issue.port)}</code></dd></div>}</dl></article>; })}</div>}</section>}
           <h2>{t.validationInputs}</h2><p>{t.autoDiscover}</p>
-          <div className="workflow-validation-inputs">{Object.entries(draft.workflow.inputSchema.properties ?? {}).filter(([, schema]) => schema["x-sapba-workflow-only"] !== true).map(([name, schema]) => { const required = (draft.workflow.inputSchema.required ?? []).includes(name); return <label className={required ? "is-required" : ""} key={name}><span>{schema.title?.[locale] ?? name}{required && <em>{t.required}</em>}</span>{schema.type === "array" ? <textarea rows={4} aria-required={required} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? (locale === "zh" ? "每行或用逗号分隔" : "One per line or comma-separated")} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} /> : <input type={schema.format === "date" ? "date" : schema.type === "number" || schema.type === "integer" ? "number" : "text"} aria-required={required} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? name} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} />}</label>; })}</div>
+          <div className="workflow-validation-inputs">{Object.entries(draft.workflow.inputSchema.properties ?? {}).filter(([name, schema]) => schema["x-sapba-workflow-only"] !== true && !integrationOwnedInputs.has(name)).map(([name, schema]) => { const required = (draft.workflow.inputSchema.required ?? []).includes(name); return <label className={required ? "is-required" : ""} key={name}><span>{schema.title?.[locale] ?? name}{required && <em>{t.required}</em>}</span>{schema.type === "array" ? <textarea rows={4} aria-required={required} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? (locale === "zh" ? "每行或用逗号分隔" : "One per line or comma-separated")} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} /> : <input type={schema.format === "date" ? "date" : schema.type === "number" || schema.type === "integer" ? "number" : "text"} aria-required={required} value={validationInputs[name] ?? ""} placeholder={schema.placeholder?.[locale] ?? name} onChange={(event) => setValidationInputs((current) => ({ ...current, [name]: event.target.value }))} />}</label>; })}</div>
           <div className="workflow-expectations"><div><h2>{t.expectations}</h2><p>{t.expectationsHelp}</p></div>{expectations.map((item, index) => <div className="workflow-expectation-row" key={`${item.output}:${index}`}><label><span>{t.expectedOutput}</span><select value={item.output} onChange={(event) => updateExpectation(index, { ...item, output: event.target.value })}>{outputNames.map((name) => <option key={name} value={name}>{name}</option>)}</select></label><label><span>{t.expectedOperator}</span><select value={item.operator} onChange={(event) => { const operator = event.target.value as ValidationExpectation["operator"]; updateExpectation(index, { output: item.output, operator, ...(operator === "exists" || operator === "non_empty" ? {} : { expected: "" }), ...(operator === "decimal_within" ? { tolerance: "0.01" } : {}) }); }}>{["equals", "one_of", "exists", "non_empty", "decimal_within"].map((operator) => <option key={operator}>{operator}</option>)}</select></label>{!["exists", "non_empty"].includes(item.operator) && <label><span>{t.expectedValue}</span><input value={Array.isArray(item.expected) ? item.expected.join(", ") : String(item.expected ?? "")} onChange={(event) => updateExpectation(index, { ...item, expected: item.operator === "one_of" ? event.target.value.split(/[,，]/).map((value) => value.trim()).filter(Boolean) : event.target.value })} /></label>}{item.operator === "decimal_within" && <label><span>{t.tolerance}</span><input type="number" min="0" step="any" value={item.tolerance ?? "0.01"} onChange={(event) => updateExpectation(index, { ...item, tolerance: event.target.value })} /></label>}<button className="danger-button" onClick={() => setExpectations((current) => current.filter((_, itemIndex) => itemIndex !== index))}>{t.remove}</button></div>)}<button disabled={expectations.length >= Math.min(20, outputNames.length)} onClick={addExpectation}>{t.addExpectation}</button></div>
           <div className="workflow-stage-actions"><button onClick={() => moveToStep("review", draft.draft_id)}>{validationVerdict === "blocked" ? t.returnToReview : t.back}</button><button className="primary" disabled={busy || !canValidate} onClick={validate}>{validating && <span className="workflow-spinner workflow-spinner--button" />}{validating ? t.validating : validationVerdict === "blocked" ? t.retryPreflight : t.validate}</button></div>
         </section>

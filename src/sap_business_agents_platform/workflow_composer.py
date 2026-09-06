@@ -12,7 +12,7 @@ from .workflows import normalize_workflow, validate_workflow
 
 
 ALLOWED_PORT_TYPES = {"string", "integer", "number", "boolean", "object", "array"}
-WORKFLOW_COMPILER_VERSION = 4
+WORKFLOW_COMPILER_VERSION = 5
 
 
 class WorkflowCompositionError(ValueError):
@@ -62,6 +62,7 @@ def compile_workflow_proposal(
     proposal: dict[str, Any],
     catalog: dict[str, Any],
     agents: Any,
+    integration_catalog: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     raw_stages = proposal.get("stages")
     if not isinstance(raw_stages, list) or not raw_stages:
@@ -99,6 +100,8 @@ def compile_workflow_proposal(
             continue
         gap = {
             "gap_id": f"gap-{stage_id.replace('_', '-')}",
+            "gap_type": "agent_missing",
+            "resolution_target": "free_query",
             "stage_id": stage_id,
             "title": _localized(raw.get("gap_title") or raw.get("capability"), fallback=f"Missing Agent {index}"),
             "description": _localized(raw.get("gap_description") or raw.get("capability"), fallback=""),
@@ -348,6 +351,12 @@ def compile_workflow_proposal(
 
     title = _localized(proposal.get("title"), fallback=requirement[:80])
     description = _localized(proposal.get("description"), fallback=requirement)
+    integration_inputs, output_actions, integration_gaps = _compile_integrations(
+        proposal=proposal,
+        integration_catalog=integration_catalog or {"items": [], "bindings": []},
+        connections=connections,
+    )
+    gaps.extend(integration_gaps)
     workflow = {
         "schemaVersion": 2,
         "id": workflow_id,
@@ -361,6 +370,8 @@ def compile_workflow_proposal(
         "nodes": nodes,
         "connections": connections,
         "outputs": outputs,
+        "integrationInputs": integration_inputs,
+        "outputActions": output_actions,
         "policies": {"onInconclusive": "continue_if_required_outputs_present"},
     }
     workflow = normalize_workflow(workflow, agents)
@@ -377,6 +388,9 @@ def compile_workflow_proposal(
         "locale": locale if locale in {"zh", "en"} else "zh",
         "intent": _localized(proposal.get("intent"), fallback=requirement),
         "catalog_digest": str(catalog.get("digest") or ""),
+        "integration_catalog_digest": str(
+            (integration_catalog or {}).get("digest") or ""
+        ),
         "stages": stages,
         "gaps": gaps,
         "validation_defaults": safe_defaults,
@@ -389,6 +403,249 @@ def compile_workflow_proposal(
         },
     }
     return workflow, composition
+
+
+def _compile_integrations(
+    *,
+    proposal: dict[str, Any],
+    integration_catalog: dict[str, Any],
+    connections: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    bindings = {
+        str(item.get("binding_id") or ""): item
+        for item in integration_catalog.get("bindings") or []
+        if isinstance(item, dict) and item.get("binding_id")
+    }
+    catalog_items = [
+        item
+        for item in integration_catalog.get("items") or []
+        if isinstance(item, dict)
+    ]
+    integration_inputs: list[dict[str, Any]] = []
+    output_actions: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+
+    for index, raw in enumerate(proposal.get("integration_inputs") or [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        item_id = _unique_stage_id(
+            str(raw.get("id") or f"mail_input_{index}"), used_ids
+        )
+        operation = str(raw.get("operation") or "")
+        if operation not in {"search", "read"}:
+            raise WorkflowCompositionError(
+                f"Integration input {item_id} has an unsupported operation.",
+                code="workflow_integration_operation_invalid",
+            )
+        binding, gap_type = _available_integration_binding(
+            raw,
+            bindings=bindings,
+            catalog_items=catalog_items,
+            operation=operation,
+        )
+        if binding is None:
+            gaps.append(_integration_gap(raw, item_id, gap_type, operation))
+            continue
+        target_stage = str(raw.get("target_stage_id") or "")
+        target_agent_port = str(raw.get("target_input_port") or "")
+        target_port = next(
+            (
+                str(source.get("port") or "")
+                for connection in connections
+                if str((connection.get("to") or {}).get("nodeId") or "")
+                == target_stage
+                and str((connection.get("to") or {}).get("port") or "")
+                == target_agent_port
+                and (source := connection.get("from") or {}).get("scope")
+                == "workflow_input"
+            ),
+            "",
+        )
+        if not target_port:
+            raise WorkflowCompositionError(
+                f"Integration input {item_id} does not target an exposed workflow input.",
+                code="workflow_integration_target_invalid",
+                detail={
+                    "target_stage_id": target_stage,
+                    "target_input_port": target_agent_port,
+                },
+            )
+        integration_inputs.append(
+            {
+                "id": item_id,
+                "capability": "mail.v1",
+                "operation": operation,
+                "connectionId": binding["connection_id"],
+                "integrationBackendId": binding["integration_backend_id"],
+                "bindingId": binding["binding_id"],
+                "nativeServer": binding["native_server"],
+                "nativeTool": binding["native_tool"],
+                "schemaHash": binding["schema_hash"],
+                "targetPort": target_port,
+                "arguments": deepcopy(raw.get("arguments") or {}),
+                **(
+                    {"resultPointer": str(raw.get("result_pointer"))}
+                    if raw.get("result_pointer")
+                    else {}
+                ),
+                "bindingSnapshot": _binding_snapshot(binding),
+            }
+        )
+
+    for index, raw in enumerate(proposal.get("output_actions") or [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        item_id = _unique_stage_id(
+            str(raw.get("id") or f"mail_action_{index}"), used_ids
+        )
+        operation = str(raw.get("operation") or "draft")
+        if operation not in {"draft", "send"}:
+            raise WorkflowCompositionError(
+                f"Output action {item_id} has an unsupported operation.",
+                code="workflow_integration_operation_invalid",
+            )
+        action = {
+            "id": item_id,
+            "capability": "mail.v1",
+            "operation": operation,
+            "draftMapping": deepcopy(raw.get("draft_mapping") or {}),
+        }
+        if operation == "draft":
+            output_actions.append(action)
+            continue
+        binding, gap_type = _available_integration_binding(
+            raw,
+            bindings=bindings,
+            catalog_items=catalog_items,
+            operation="send",
+        )
+        if binding is None:
+            gaps.append(_integration_gap(raw, item_id, gap_type, "send"))
+            continue
+        action.update(
+            {
+                "connectionId": binding["connection_id"],
+                "integrationBackendId": binding["integration_backend_id"],
+                "bindingId": binding["binding_id"],
+                "nativeServer": binding["native_server"],
+                "nativeTool": binding["native_tool"],
+                "schemaHash": binding["schema_hash"],
+                "approvalPolicy": "always",
+                "bindingSnapshot": _binding_snapshot(binding),
+            }
+        )
+        output_actions.append(action)
+
+    for index, raw in enumerate(proposal.get("integration_gaps") or [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        item_id = _unique_stage_id(
+            str(raw.get("id") or f"integration_gap_{index}"), used_ids
+        )
+        requested_type = str(raw.get("gap_type") or "plugin_missing")
+        if requested_type not in {
+            "plugin_missing",
+            "connection_required",
+            "reauthentication_required",
+            "permission_required",
+            "runtime_adapter_unavailable",
+            "tool_contract_changed",
+        }:
+            requested_type = "plugin_missing"
+        gaps.append(
+            _integration_gap(
+                raw,
+                item_id,
+                requested_type,
+                str(raw.get("operation") or "search"),
+            )
+        )
+    return integration_inputs, output_actions, gaps
+
+
+def _available_integration_binding(
+    raw: dict[str, Any],
+    *,
+    bindings: dict[str, dict[str, Any]],
+    catalog_items: list[dict[str, Any]],
+    operation: str,
+) -> tuple[dict[str, Any] | None, str]:
+    binding_id = str(raw.get("binding_id") or "")
+    binding = bindings.get(binding_id)
+    if binding is None or binding.get("capability") != "mail.v1" or binding.get(
+        "operation"
+    ) != operation:
+        mail_items = [
+            item
+            for item in catalog_items
+            if any(
+                isinstance(capability, dict)
+                and capability.get("capability") == "mail.v1"
+                for capability in item.get("capabilities") or []
+            )
+        ]
+        if not mail_items:
+            return None, "plugin_missing"
+        if any(
+            not (item.get("compatibility") or {}).get("supported", False)
+            for item in mail_items
+        ):
+            return None, "runtime_adapter_unavailable"
+        if any(item.get("auth_status") in {"expired", "not_logged_in"} for item in mail_items):
+            return None, "reauthentication_required"
+        return None, "connection_required"
+    if binding.get("connection_status") == "authentication_required":
+        return None, "reauthentication_required"
+    if binding.get("connection_status") != "ready" or not binding.get(
+        "connection_enabled"
+    ):
+        return None, "connection_required"
+    if not binding.get("enabled"):
+        return None, "permission_required"
+    if operation in {"search", "read"} and not binding.get("read_only"):
+        return None, "permission_required"
+    return binding, ""
+
+
+def _binding_snapshot(binding: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "connectionId": binding["connection_id"],
+        "integrationBackendId": binding["integration_backend_id"],
+        "runtimeProviderId": binding.get("runtime_provider_id"),
+        "nativeServer": binding["native_server"],
+        "nativeTool": binding["native_tool"],
+        "schemaHash": binding["schema_hash"],
+        "inputSchema": deepcopy(binding.get("input_schema") or {}),
+        "outputSchema": deepcopy(binding.get("output_schema") or {}),
+        "readOnly": bool(binding.get("read_only")),
+        "sideEffect": bool(binding.get("side_effect")),
+        "approvalPolicy": binding.get("approval_policy") or "none",
+    }
+
+
+def _integration_gap(
+    raw: dict[str, Any], gap_id: str, gap_type: str, operation: str
+) -> dict[str, Any]:
+    title = raw.get("gap_title") or raw.get("title") or {
+        "zh": "需要邮件连接能力",
+        "en": "Mail connection capability required",
+    }
+    description = raw.get("gap_description") or raw.get("description") or {
+        "zh": f"工作流需要 mail.v1/{operation}，请在插件与连接页面完成配置。",
+        "en": f"This workflow requires mail.v1/{operation}; configure it on Plugins & Connections.",
+    }
+    return {
+        "gap_id": f"gap-{gap_id.replace('_', '-')}",
+        "gap_type": gap_type,
+        "resolution_target": "plugins",
+        "required_capability": "mail.v1",
+        "required_operation": operation,
+        "target_runtime_provider_id": raw.get("runtime_provider_id"),
+        "title": _localized(title, fallback="Mail integration required"),
+        "description": _localized(description, fallback="Mail integration is not ready."),
+        "status": "open",
+    }
 
 
 def _safe_conditional_skip_value(
@@ -438,6 +695,15 @@ def _safe_conditional_skip_value(
 
 
 def gap_free_query_prompt(gap: dict[str, Any], *, locale: str) -> str:
+    if str(gap.get("gap_type") or "agent_missing") != "agent_missing":
+        raise WorkflowCompositionError(
+            "Only Agent gaps can be opened in free query.",
+            code="workflow_gap_resolution_invalid",
+            detail={
+                "gap_type": gap.get("gap_type"),
+                "resolution_target": gap.get("resolution_target"),
+            },
+        )
     title = _localized(gap.get("title"), fallback="Missing Agent")
     description = _localized(gap.get("description"), fallback="")
     guardrails = _localized_list(gap.get("guardrails"))

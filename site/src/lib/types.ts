@@ -271,6 +271,8 @@ export interface WorkflowDefinition {
       precedence?: string[];
     };
   }>;
+  integrationInputs?: Array<Record<string, unknown>>;
+  outputActions?: Array<Record<string, unknown>>;
   policies: { onInconclusive: "continue_if_required_outputs_present" };
 }
 
@@ -283,13 +285,18 @@ export interface WorkflowCompositionPort {
 
 export interface WorkflowCompositionGap {
   gap_id: string;
-  stage_id: string;
+  gap_type?: "agent_missing" | "plugin_missing" | "connection_required" | "reauthentication_required" | "permission_required" | "runtime_adapter_unavailable" | "tool_contract_changed";
+  resolution_target?: "free_query" | "plugins";
+  stage_id?: string;
   title: LocalizedText;
   description: LocalizedText;
-  required_inputs: WorkflowCompositionPort[];
-  required_outputs: WorkflowCompositionPort[];
-  guardrails: LocalizedList;
-  acceptance: LocalizedText;
+  required_inputs?: WorkflowCompositionPort[];
+  required_outputs?: WorkflowCompositionPort[];
+  guardrails?: LocalizedList;
+  acceptance?: LocalizedText;
+  required_capability?: string;
+  required_operation?: string;
+  target_runtime_provider_id?: string | null;
   status: string;
   agent_draft_id?: string | null;
 }

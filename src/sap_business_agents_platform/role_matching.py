@@ -560,8 +560,9 @@ class RoleMatchingService:
             self._phase(session_id, "understanding", "understanding_started")
             if self.get(session_id)["status"] == "cancelled":
                 return
-            provider_id = str((session.get("runtime") or {}).get("provider_id") or "codex")
-            with self.runtime.pin(provider_id):
+            runtime_snapshot = session.get("runtime") or {}
+            provider_id = str(runtime_snapshot.get("provider_id") or "codex")
+            with self.runtime.pin(provider_id, runtime_snapshot.get("model")):
                 method = self.runtime.review_role_matching_feedback if previous else self.runtime.analyze_role_matching
                 raw = await method(
                     documents=runtime_documents,

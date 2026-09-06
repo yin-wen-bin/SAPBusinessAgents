@@ -772,13 +772,13 @@ class AgentRuntimeCapability:
             }
         return method(provider_id)
 
-    def pin(self, provider_id: str | None) -> Any:
+    def pin(self, provider_id: str | None, model_id: str | None = None) -> Any:
         method = getattr(self._planner(), "pin", None)
         if not callable(method):
             from contextlib import nullcontext
 
             return nullcontext()
-        return method(provider_id)
+        return method(provider_id, model_id)
 
     def bind_events(self, sink: Any) -> Any:
         method = getattr(self._planner(), "bind_events", None)

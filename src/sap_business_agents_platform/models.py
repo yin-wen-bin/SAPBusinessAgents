@@ -323,7 +323,12 @@ class RuntimeSnapshot(BaseModel):
     provider_id: str
     sdk_id: str
     version: str | None = None
+    cli_version: str | None = None
     model: str | None = None
+    model_source: str | None = None
+    model_catalog_digest: str | None = None
+    model_check_digest: str | None = None
+    runtime_configuration_revision: int | None = None
     configuration_digest: str
     capabilities: list[str] = Field(default_factory=list)
     selected_at: str | None = None
@@ -362,6 +367,8 @@ class RunResult(BaseModel):
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     rule_results: list[dict[str, Any]] = Field(default_factory=list)
     node_results: list[dict[str, Any]] = Field(default_factory=list)
+    integration_results: list[dict[str, Any]] = Field(default_factory=list)
+    integration_actions: list[dict[str, Any]] = Field(default_factory=list)
     workflow_output: dict[str, Any] = Field(default_factory=dict)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
@@ -768,6 +775,7 @@ class WorkflowDraftRecord(BaseModel):
         "planning",
         "waiting_input",
         "needs_agents",
+        "needs_integrations",
         "draft",
         "invalid",
         "validated",

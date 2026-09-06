@@ -306,6 +306,7 @@ class Planner(Protocol):
         thread_id: str | None = None,
         clarification_input: str | None = None,
         previous: dict[str, Any] | None = None,
+        integration_catalog: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
     async def review_workflow_feedback(self, **kwargs: Any) -> dict[str, Any]: ...
@@ -1105,6 +1106,7 @@ Rules:
         thread_id: str | None = None,
         clarification_input: str | None = None,
         previous: dict[str, Any] | None = None,
+        integration_catalog: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from openai_codex import ApprovalMode, AsyncCodex, Sandbox
 
@@ -1114,6 +1116,7 @@ Rules:
             locale=locale,
             clarification_input=clarification_input,
             previous=previous or {},
+            integration_catalog=integration_catalog or {"items": [], "bindings": []},
         )
         async with AsyncCodex() as codex:
             if thread_id:
@@ -1133,8 +1136,8 @@ Rules:
                     service_name="sap_business_agents_workflow_composer",
                     developer_instructions=(
                         "You compose reusable deterministic read-only workflows only from the supplied "
-                        "executable Agent catalog. Never call tools, inspect other files, execute SAP, edit "
-                        "files, invent Agent IDs, or propose write operations."
+                        "executable Agent and integration catalogs. Never call tools, inspect other files, "
+                        "execute SAP, edit files, invent catalog IDs, or directly perform an external action."
                     ),
                 )
             result = await thread.run(prompt, output_schema=WORKFLOW_COMPOSITION_OUTPUT_SCHEMA)
@@ -1309,6 +1312,7 @@ def _workflow_composition_prompt(
     locale: str,
     clarification_input: str | None,
     previous: dict[str, Any],
+    integration_catalog: dict[str, Any] | None = None,
 ) -> str:
     if clarification_input:
         follow_up = (
@@ -1333,6 +1337,9 @@ Preferred UI language: {locale}
 Executable Agent catalog snapshot (the only Agents you may select):
 {_safe_json(catalog, limit=140_000)}
 
+Connected integration catalog snapshot (the only external bindings you may select):
+{_safe_json(integration_catalog or {"items": [], "bindings": []}, limit=80_000)}
+
 Rules:
 1. Decompose the complete requested outcome into ordered business capability stages.
 2. Select an Agent only when one catalog entry is a high-confidence semantic match. Use its exact agent_id.
@@ -1340,8 +1347,11 @@ Rules:
 4. If no Agent covers a stage, keep agent_id empty and describe one missing Agent contract. Never hide or merge away an uncovered stage.
 5. A binding may connect only an earlier selected stage output to a later input with the exact same port name. Otherwise omit the binding; the server will expose a workflow input.
 6. Concrete identifiers and dates in the requirement belong only in validation_defaults. Never make them workflow constants.
-7. Select no tools and describe no SAP write operation. Source completeness and business completion remain separate concepts.
+7. Select no SAP tools and describe no SAP write operation. Source completeness and business completion remain separate concepts.
 8. requested_outputs must contain business results and completeness results only. Do not request input-context echoes such as query_mode, dates, company codes, or identifiers unless a later stage actually consumes that exact output port.
+9. External mail reads may use only exact ready mail.v1/search or mail.v1/read binding_id values. Target one selected stage input by target_stage_id and target_input_port.
+10. Mail draft is a platform-local output action. Mail send may use only an exact ready mail.v1/send binding_id and always remains a human-approved draft; never treat it as automatic execution.
+11. If a required integration is absent or not ready, add an integration_gaps entry using plugin_missing, connection_required, reauthentication_required, permission_required, runtime_adapter_unavailable, or tool_contract_changed. Do not turn it into an Agent gap.
 
 Return proposal_json as a JSON object with exactly this conceptual shape:
 {{
@@ -1363,6 +1373,29 @@ Return proposal_json as a JSON object with exactly this conceptual shape:
     "required_outputs":[{{"name":"snake_case","type":"string|integer|number|boolean|object|array","required":true,"description":{{"zh":"...","en":"..."}}}}],
     "guardrails":{{"zh":["..."],"en":["..."]}},
     "acceptance":{{"zh":"...","en":"..."}}
+  }}],
+  "integration_inputs": [{{
+    "id":"mail_search",
+    "operation":"search|read",
+    "binding_id":"exact catalog binding id",
+    "target_stage_id":"selected stage id",
+    "target_input_port":"declared Agent input port",
+    "arguments":{{"native_argument":"literal or {{{{input.workflow_port}}}}"}},
+    "result_pointer":"optional JSON Pointer into normalized MailMessageRef output"
+  }}],
+  "output_actions": [{{
+    "id":"prepare_email",
+    "operation":"draft|send",
+    "binding_id":"exact send binding id, empty for draft",
+    "draft_mapping":{{"to":"{{{{output.some_port}}}}","subject":"...","body_text":"..."}}
+  }}],
+  "integration_gaps": [{{
+    "id":"mail_connection",
+    "gap_type":"plugin_missing|connection_required|reauthentication_required|permission_required|runtime_adapter_unavailable|tool_contract_changed",
+    "operation":"search|read|send",
+    "runtime_provider_id":"target Runtime when known",
+    "title":{{"zh":"...","en":"..."}},
+    "description":{{"zh":"...","en":"..."}}
   }}]
 }}
 

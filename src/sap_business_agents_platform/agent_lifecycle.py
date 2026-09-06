@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -160,6 +161,7 @@ class AgentLifecycleService:
         path.mkdir(parents=True, exist_ok=False)
         self._write_package(path, package)
         now = utc_now()
+        runtime_snapshot = self._new_runtime_snapshot()
         draft = {
             "draft_id": draft_id,
             "agent_id": str(package["manifest"]["slug"]),
@@ -180,7 +182,8 @@ class AgentLifecycleService:
                     "runId": payload.run_id,
                     "workflowDraftId": payload.workflow_draft_id,
                     "gapId": payload.gap_id,
-                }
+                },
+                "runtime_snapshot": runtime_snapshot,
             },
             "created_at": now,
             "updated_at": now,
@@ -236,8 +239,10 @@ class AgentLifecycleService:
             else:
                 package["manifest"]["validation"] = _not_tested_validation()
                 try:
-                    source_result = self.store.get_run(source.run_id).result
+                    source_run = self.store.get_run(source.run_id)
+                    source_result = source_run.result
                 except KeyError:
+                    source_run = None
                     source_result = None
                 now = utc_now()
                 target = self._draft_path(managed_id)
@@ -253,6 +258,11 @@ class AgentLifecycleService:
                                  "source_package_hash": source_hash, "source_validation": source.validation,
                                  "source_result_available": source_result is not None,
                                  "source_summary": copy.deepcopy(source_result.summary) if source_result else None,
+                                 "runtime_snapshot": (
+                                     source_run.runtime.model_dump(mode="json")
+                                     if source_run and source_run.runtime
+                                     else self._new_runtime_snapshot()
+                                 ),
                                  "source_evidence_refs": sorted({
                                      str(item["evidence_ref"]) for item in source_result.evidence
                                      if isinstance(item, dict) and item.get("evidence_ref")
@@ -312,7 +322,10 @@ class AgentLifecycleService:
             "risk_class": "metadata_only",
             "validation_run_id": None,
             "validation": {},
-            "metadata": {"version_origin": {"bump": bump}},
+            "metadata": {
+                "version_origin": {"bump": bump},
+                "runtime_snapshot": self._new_runtime_snapshot(),
+            },
             "created_at": now,
             "updated_at": now,
         }
@@ -502,20 +515,30 @@ class AgentLifecycleService:
         self._assert_editable(draft)
         if int(payload.base_revision) != int(draft["revision"]):
             raise AgentLifecycleError("Agent draft revision changed.", code="agent_draft_conflict")
-        supports = getattr(self.runtime, "supports", None)
-        if callable(supports) and not supports("review_agent_feedback"):
-            raise AgentLifecycleError(
-                "The selected Agent Runtime does not support Agent revision conversations.",
-                code="runtime_agent_feedback_unavailable",
-            )
         current = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))["package"]
+        runtime_snapshot = (draft.get("metadata") or {}).get("runtime_snapshot") or {}
+        provider_id = runtime_snapshot.get("provider_id")
+        model_id = runtime_snapshot.get("model")
         try:
-            decision = await self.runtime.review_agent_feedback(
-                feedback=str(payload.feedback),
-                locale=str(payload.locale),
-                package=current,
-                thread_id=draft.get("thread_id"),
+            pin = getattr(self.runtime, "pin", None)
+            context = (
+                pin(provider_id, model_id)
+                if callable(pin) and provider_id
+                else nullcontext()
             )
+            with context:
+                supports = getattr(self.runtime, "supports", None)
+                if callable(supports) and not supports("review_agent_feedback"):
+                    raise AgentLifecycleError(
+                        "The selected Agent Runtime does not support Agent revision conversations.",
+                        code="runtime_agent_feedback_unavailable",
+                    )
+                decision = await self.runtime.review_agent_feedback(
+                    feedback=str(payload.feedback),
+                    locale=str(payload.locale),
+                    package=current,
+                    thread_id=draft.get("thread_id"),
+                )
         except Exception as exc:
             raise AgentLifecycleError(
                 "Agent Runtime could not produce a safe Agent revision.",
@@ -543,6 +566,16 @@ class AgentLifecycleService:
         }
         self.store.save_agent_authoring_draft(refreshed)
         return self.get_draft(draft_id)
+
+    def _new_runtime_snapshot(self) -> dict[str, Any] | None:
+        snapshot = getattr(self.runtime, "snapshot", None)
+        if not callable(snapshot):
+            return None
+        try:
+            value = snapshot()
+        except Exception:
+            return None
+        return copy.deepcopy(value) if isinstance(value, dict) else None
 
     def undo(self, draft_id: str, *, expected_revision: int, target_revision: int) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)

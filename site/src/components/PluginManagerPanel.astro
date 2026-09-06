@@ -6,51 +6,40 @@ interface Props { locale: Locale }
 const { locale } = Astro.props;
 const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const copy = locale === "zh" ? {
-  eyebrow: "本机插件平台",
-  title: "插件与能力",
-  body: "核心只按版本化能力路由。插件清单不能申请 SAP 写入、任意 Shell、任意代码或远程传输。",
-  refresh: "重新扫描",
-  loading: "正在读取本机插件注册表…",
-  unavailable: "无法连接 127.0.0.1:8765，请先启动本地 API。",
-  capability: "能力",
-  transport: "传输",
-  permissions: "安全边界",
-  health: "健康检查",
-  disable: "停用",
-  enable: "启用",
-  readOnly: "SAP 只读",
-  noWrite: "禁止 SAP 写入",
+  eyebrow: "插件与连接", title: "统一管理本地插件与 Runtime 连接",
+  body: "Agent Runtime 负责编排，连接器后端负责外部工具。OAuth 凭据仍由对应 Runtime 管理；SAP 只读执行不会继承外部连接。",
+  refresh: "刷新目录与状态", loading: "正在读取插件、Runtime App 与 MCP Server…", unavailable: "无法连接本地 API，请先启动服务。",
+  all: "全部", local: "本地插件", app: "Runtime App", mcp: "MCP Server", allRuntimes: "全部 Runtime", allStates: "全部状态",
+  capability: "工具能力", source: "来源", connection: "连接", authentication: "认证", health: "健康", workflowRefs: "工作流引用",
+  connect: "安装 / 连接", refreshState: "刷新状态", disable: "停用", enable: "启用", healthCheck: "健康检查",
+  configuredByRuntime: "凭据由 Runtime 管理", adapters: "Runtime 适配器", blockers: "当前阻塞项", tools: "工具与规范能力绑定",
+  bind: "保存绑定", sendDisabled: "邮件发送绑定默认关闭；明确启用后，每封邮件仍需人工审批。", noItems: "没有符合当前筛选条件的项目。",
+  missingConnection: "请先完成连接或认证", details: "查看连接、权限与诊断", success: "操作已完成。",
 } : {
-  eyebrow: "Local plugin platform",
-  title: "Plugins and capabilities",
-  body: "The core routes only by versioned capability. Manifests cannot request SAP writes, arbitrary shell, arbitrary code, or remote transport.",
-  refresh: "Rescan",
-  loading: "Reading the local plugin registry…",
-  unavailable: "Cannot reach 127.0.0.1:8765. Start the local API first.",
-  capability: "Capabilities",
-  transport: "Transport",
-  permissions: "Safety boundary",
-  health: "Health check",
-  disable: "Disable",
-  enable: "Enable",
-  readOnly: "SAP read-only",
-  noWrite: "SAP writes forbidden",
+  eyebrow: "Plugins & Connections", title: "Manage local plugins and Runtime connections",
+  body: "Agent Runtimes compose workflows; integration backends execute external tools. OAuth credentials remain Runtime-owned, and SAP read-only execution never inherits external connections.",
+  refresh: "Refresh catalog and status", loading: "Reading plugins, Runtime Apps, and MCP servers…", unavailable: "Cannot reach the local API. Start it first.",
+  all: "All", local: "Local plugins", app: "Runtime Apps", mcp: "MCP servers", allRuntimes: "All Runtimes", allStates: "All states",
+  capability: "Tool capabilities", source: "Source", connection: "Connection", authentication: "Authentication", health: "Health", workflowRefs: "Workflow references",
+  connect: "Install / connect", refreshState: "Refresh status", disable: "Disable", enable: "Enable", healthCheck: "Health check",
+  configuredByRuntime: "Credentials are managed by the Runtime", adapters: "Runtime adapters", blockers: "Current blockers", tools: "Tools and normalized capability bindings",
+  bind: "Save binding", sendDisabled: "Mail send bindings start disabled. After explicit enablement, every message still requires human approval.", noItems: "No item matches the current filters.",
+  missingConnection: "Connect or authenticate first", details: "View connections, permissions, and diagnostics", success: "Operation completed.",
 };
 ---
 
 <section class="plugin-manager" data-plugin-manager data-api-base={apiBase}>
   <header class="plugin-manager-header">
-    <div>
-      <p class="runtime-eyebrow"><Plug size={16} aria-hidden="true" />{copy.eyebrow}</p>
-      <h1>{copy.title}</h1>
-      <p>{copy.body}</p>
-    </div>
-    <button type="button" class="secondary-button" data-rescan>
-      <RefreshCw size={16} aria-hidden="true" />{copy.refresh}
-    </button>
+    <div><p class="runtime-eyebrow"><Plug size={16} aria-hidden="true" />{copy.eyebrow}</p><h1>{copy.title}</h1><p>{copy.body}</p></div>
+    <button type="button" class="secondary-button" data-rescan><RefreshCw size={16} aria-hidden="true" />{copy.refresh}</button>
   </header>
-
+  <div class="plugin-catalog-filters">
+    <label><span>{copy.source}</span><select data-source-filter><option value="">{copy.all}</option><option value="local_plugin">{copy.local}</option><option value="app">{copy.app}</option><option value="mcp_server">{copy.mcp}</option></select></label>
+    <label><span>Runtime</span><select data-runtime-filter><option value="">{copy.allRuntimes}</option></select></label>
+    <label><span>{copy.connection}</span><select data-state-filter><option value="">{copy.allStates}</option><option value="ready">ready</option><option value="available">available</option><option value="installation_required">installation_required</option><option value="authentication_required">authentication_required</option><option value="disabled">disabled</option><option value="unhealthy">unhealthy</option></select></label>
+  </div>
   <div class="plugin-alert" data-plugin-alert>{copy.loading}</div>
+  <section class="plugin-adapter-panel" data-adapter-panel hidden><h2>{copy.adapters}</h2><div class="plugin-adapter-grid" data-adapter-grid></div></section>
   <div class="plugin-grid" data-plugin-grid></div>
 </section>
 
@@ -58,87 +47,113 @@ const copy = locale === "zh" ? {
   const root = document.querySelector("[data-plugin-manager]");
   const grid = root?.querySelector("[data-plugin-grid]");
   const alert = root?.querySelector("[data-plugin-alert]");
+  const adapterPanel = root?.querySelector("[data-adapter-panel]");
+  const adapterGrid = root?.querySelector("[data-adapter-grid]");
+  const sourceFilter = root?.querySelector("[data-source-filter]");
+  const runtimeFilter = root?.querySelector("[data-runtime-filter]");
+  const stateFilter = root?.querySelector("[data-state-filter]");
   const apiBase = root?.dataset.apiBase;
+  const params = new URLSearchParams(window.location.search);
+  const requestedCapability = params.get("capability") || "";
+  const requestedOperation = params.get("operation") || "";
+  const requestedRuntime = params.get("runtime") || "";
+  let catalog = [];
 
-  const element = (tag, className, text) => {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
+  const element = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
+  const request = async (path, options) => { const response = await fetch(`${apiBase}${path}`, options); if (!response.ok) { let message = await response.text(); try { const value = JSON.parse(message); message = value?.detail?.message || value?.detail || message; } catch {} throw new Error(String(message)); } return response.json(); };
+  const sourceLabel = (kind) => kind === "local_plugin" ? copy.local : kind === "app" ? copy.app : copy.mcp;
+  const capabilityText = (item) => (item.capabilities || []).map((value) => `${value.capability} · ${(value.operations || []).join(", ")}`).join(" · ") || "—";
+  const showNotice = (text, tone = "success") => { alert.hidden = false; alert.dataset.tone = tone; alert.textContent = text; };
+
+  const renderAdapters = (adapters) => {
+    adapterGrid.replaceChildren();
+    for (const adapter of adapters) {
+      const card = element("article", "plugin-adapter-card");
+      const head = element("div", "plugin-adapter-heading"); head.append(element("strong", "", adapter.runtime_provider_id), element("code", "", adapter.integration_backend_id));
+      card.append(head, element("span", `plugin-status status-${adapter.readiness}`, adapter.readiness));
+      card.append(element("p", "", Object.entries(adapter.features || {}).map(([name, ready]) => `${ready ? "✓" : "○"} ${name}`).join(" · ")));
+      if ((adapter.blockers || []).length) card.append(element("small", "plugin-adapter-blocker", `${copy.blockers}: ${adapter.blockers.join(", ")}`));
+      adapterGrid.append(card);
+      if (![...runtimeFilter.options].some((option) => option.value === adapter.runtime_provider_id)) runtimeFilter.append(new Option(adapter.runtime_provider_id, adapter.runtime_provider_id));
+    }
+    adapterPanel.hidden = adapters.length === 0;
   };
 
-  const render = (plugins) => {
+  const createBindingControl = (item, tool) => {
+    const wrap = element("div", "plugin-tool-binding"); const summary = element("div"); summary.append(element("strong", "", tool.title || tool.native_tool), element("code", "", tool.native_tool));
+    const select = element("select"); for (const operation of ["search", "read", "send"]) select.append(new Option(`mail.v1/${operation}`, operation));
+    const bind = element("button", "secondary-button", copy.bind);
+    bind.addEventListener("click", async () => {
+      bind.disabled = true;
+      try {
+        if (!item.connection) throw new Error(copy.missingConnection);
+        const operation = select.value;
+        const existing = (item.bindings || []).find((value) => value.capability === "mail.v1" && value.operation === operation && value.native_tool === tool.native_tool);
+        const enableBinding = operation !== "send" || Boolean(existing);
+        if (operation === "send" && enableBinding && !window.confirm(copy.sendDisabled)) return;
+        await request(`/api/plugins/connections/${encodeURIComponent(item.connection.connection_id)}/bindings/mail.v1/${operation}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ native_server: item.native_id, native_tool: tool.native_tool, expected_schema_hash: tool.schema_hash, enabled: enableBinding, argument_mapping: existing?.snapshot?.argument_mapping || {} }) });
+        showNotice(operation === "send" && !enableBinding ? copy.sendDisabled : copy.success); await load();
+      } catch (error) { showNotice(error.message, "error"); } finally { bind.disabled = false; }
+    });
+    wrap.append(summary, select, bind); return wrap;
+  };
+
+  const render = () => {
     grid.replaceChildren();
-    alert.hidden = true;
-    for (const plugin of plugins) {
-      const card = element("article", "plugin-card");
-      const heading = element("header", "plugin-card-heading");
-      const titleWrap = element("div");
-      titleWrap.append(
-        element("h2", "", plugin.name?.[locale] || plugin.name?.en || plugin.plugin_id),
-        element("code", "", `${plugin.plugin_id}@${plugin.version}`),
-      );
-      heading.append(titleWrap, element("span", `plugin-status status-${plugin.status}`, plugin.status));
-
-      const capabilities = element("section", "plugin-card-section");
-      capabilities.append(element("h3", "", copy.capability));
-      const capabilityList = element("ul", "plugin-capabilities");
-      for (const item of plugin.capabilities || []) {
-        capabilityList.append(element("li", "", `${item.capability} · ${item.operations.join(", ")}`));
-      }
-      capabilities.append(capabilityList);
-
-      const facts = element("dl", "plugin-facts");
-      facts.append(
-        element("dt", "", copy.transport),
-        element("dd", "", plugin.transport?.type || "—"),
-        element("dt", "", copy.permissions),
-        element("dd", "", `${plugin.permissions?.sap_read ? copy.readOnly : "—"} · ${copy.noWrite}`),
-      );
-
+    const visible = catalog.filter((item) => {
+      const capabilities = item.capabilities || [];
+      const requestedMatch = !requestedCapability || capabilities.some((entry) => entry.capability === requestedCapability && (!requestedOperation || (entry.operations || []).includes(requestedOperation)));
+      return requestedMatch && (!sourceFilter.value || item.source_kind === sourceFilter.value) && (!runtimeFilter.value || item.runtime_provider_id === runtimeFilter.value) && (!stateFilter.value || item.connection_status === stateFilter.value);
+    });
+    if (!visible.length) grid.append(element("p", "plugin-empty", copy.noItems));
+    for (const item of visible) {
+      const card = element("article", "plugin-card"); const heading = element("header", "plugin-card-heading"); const titleWrap = element("div");
+      titleWrap.append(element("h2", "", item.display?.[locale] || item.name || item.native_id), element("code", "", `${item.integration_backend_id} · ${item.native_id}`));
+      heading.append(titleWrap, element("span", `plugin-status status-${item.connection_status}`, item.connection_status));
+      const facts = element("dl", "plugin-facts"); facts.append(element("dt", "", copy.source), element("dd", "", `${sourceLabel(item.source_kind)}${item.runtime_provider_id ? ` · ${item.runtime_provider_id}` : ""}`), element("dt", "", copy.authentication), element("dd", "", item.auth_status || "—"), element("dt", "", copy.health), element("dd", "", item.health_status || "—"), element("dt", "", copy.workflowRefs), element("dd", "", String(item.workflow_reference_count || 0)));
+      const capabilities = element("section", "plugin-card-section"); capabilities.append(element("h3", "", copy.capability), element("p", "", capabilityText(item)));
+      const detail = element("details", "plugin-card-details"); detail.append(element("summary", "", copy.details)); const detailBody = element("div", "plugin-card-detail-body"); detailBody.append(element("p", "", copy.configuredByRuntime));
+      if ((item.compatibility?.blockers || []).length) detailBody.append(element("p", "plugin-adapter-blocker", `${copy.blockers}: ${item.compatibility.blockers.join(", ")}`));
+      const callableTools = (item.tools || []).filter((tool) => !tool.display_only);
+      if (callableTools.length) { detailBody.append(element("h3", "", copy.tools)); for (const tool of callableTools) detailBody.append(createBindingControl(item, tool)); } detail.append(detailBody);
       const actions = element("footer", "plugin-card-actions");
-      const health = element("button", "secondary-button", copy.health);
-      const toggle = element("button", "secondary-button", plugin.enabled ? copy.disable : copy.enable);
-      health.addEventListener("click", async () => {
-        health.disabled = true;
-        await fetch(`${apiBase}/api/plugins/${encodeURIComponent(plugin.plugin_id)}/health`, { method: "POST" });
-        await load();
-      });
-      toggle.addEventListener("click", async () => {
-        toggle.disabled = true;
-        await fetch(`${apiBase}/api/plugins/${encodeURIComponent(plugin.plugin_id)}/enabled`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: !plugin.enabled }),
-        });
-        await load();
-      });
-      actions.append(health, toggle);
-      card.append(heading, capabilities, facts, actions);
-      grid.append(card);
+      if (item.source_kind === "local_plugin") {
+        const health = element("button", "secondary-button", copy.healthCheck); const toggle = element("button", "secondary-button", item.enabled ? copy.disable : copy.enable);
+        health.addEventListener("click", async () => { health.disabled = true; try { await request(`/api/plugins/${encodeURIComponent(item.native_id)}/health`, { method: "POST" }); await load(); } catch (error) { showNotice(error.message, "error"); } });
+        toggle.addEventListener("click", async () => { toggle.disabled = true; try { await request(`/api/plugins/${encodeURIComponent(item.native_id)}/enabled`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !item.enabled }) }); await load(); } catch (error) { showNotice(error.message, "error"); } }); actions.append(health, toggle);
+      } else if (!item.connection) {
+        const connect = element("button", "secondary-button", copy.connect); connect.disabled = item.compatibility?.supported === false;
+        connect.addEventListener("click", async () => { connect.disabled = true; try { const value = await request(`/api/plugins/catalog/${encodeURIComponent(item.catalog_id)}/connect`, { method: "POST" }); if (value.url) window.open(value.url, "_blank", "noopener,noreferrer"); showNotice(copy.success); await load(); } catch (error) { showNotice(error.message, "error"); } finally { connect.disabled = false; } }); actions.append(connect);
+      } else {
+        const refresh = element("button", "secondary-button", copy.refreshState); const toggle = element("button", "secondary-button", item.enabled ? copy.disable : copy.enable);
+        refresh.addEventListener("click", async () => { refresh.disabled = true; try { await request(`/api/plugins/connections/${encodeURIComponent(item.connection.connection_id)}/refresh`, { method: "POST" }); await load(); } catch (error) { showNotice(error.message, "error"); } });
+        toggle.addEventListener("click", async () => { toggle.disabled = true; try { await request(`/api/plugins/connections/${encodeURIComponent(item.connection.connection_id)}/enabled`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !item.enabled }) }); await load(); } catch (error) { showNotice(error.message, "error"); } }); actions.append(refresh, toggle);
+      }
+      card.append(heading, capabilities, facts, detail, actions); grid.append(card);
     }
   };
 
-  const load = async () => {
+  const load = async (force = false) => {
     try {
-      const response = await fetch(`${apiBase}/api/plugins`);
-      if (!response.ok) throw new Error(await response.text());
-      render(await response.json());
-    } catch {
-      alert.hidden = false;
-      alert.textContent = copy.unavailable;
-    }
+      const adapterPromise = request("/api/plugins/runtime-adapters");
+      let catalogResult;
+      if (force) {
+        catalogResult = await request("/api/plugins/catalog/refresh", { method: "POST" });
+      } else {
+        const items = []; let offset = 0;
+        do {
+          const page = await request(`/api/plugins/catalog?offset=${offset}&limit=100`);
+          items.push(...(page.items || []));
+          offset = page.next_offset == null ? -1 : Number(page.next_offset);
+        } while (offset >= 0);
+        catalogResult = { items };
+      }
+      const adapterResult = await adapterPromise;
+      catalog = catalogResult.items || []; renderAdapters(adapterResult.items || []); alert.hidden = true; render();
+    } catch (error) { showNotice(error?.message || copy.unavailable, "error"); }
   };
-
-  root?.querySelector("[data-rescan]")?.addEventListener("click", async (event) => {
-    event.currentTarget.disabled = true;
-    try {
-      await fetch(`${apiBase}/api/plugins/rescan`, { method: "POST" });
-      await load();
-    } finally {
-      event.currentTarget.disabled = false;
-    }
-  });
-
-  load();
+  for (const control of [sourceFilter, runtimeFilter, stateFilter]) control?.addEventListener("change", render);
+  if (requestedRuntime) runtimeFilter.dataset.requestedValue = requestedRuntime;
+  root?.querySelector("[data-rescan]")?.addEventListener("click", async (event) => { event.currentTarget.disabled = true; try { await load(true); } finally { event.currentTarget.disabled = false; } });
+  load().then(() => { if (runtimeFilter.dataset.requestedValue) { runtimeFilter.value = runtimeFilter.dataset.requestedValue; render(); } });
 </script>

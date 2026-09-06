@@ -1203,7 +1203,6 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "ar-collection",
         "billing-block-diagnosis",
         "billing-completeness-check",
-        "billing-dispute-classification",
         "billing-output-monitor",
         "budget-rolling-forecast",
         "co-month-end-allocation-settlement",

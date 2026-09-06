@@ -207,6 +207,7 @@ Explain purpose, inputs, fixed steps, evidence provenance and limitations. Retur
         thread_id: str | None = None,
         clarification_input: str | None = None,
         previous: dict[str, Any] | None = None,
+        integration_catalog: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         raw, session_id = await self._structured_turn(
             _workflow_composition_prompt(
@@ -215,12 +216,13 @@ Explain purpose, inputs, fixed steps, evidence provenance and limitations. Retur
                 locale=locale,
                 clarification_input=clarification_input,
                 previous=previous or {},
+                integration_catalog=integration_catalog or {"items": [], "bindings": []},
             ),
             WORKFLOW_COMPOSITION_OUTPUT_SCHEMA,
             thread_id=thread_id,
             system_prompt=(
-                "Compose deterministic read-only workflows only from the supplied Agent "
-                "catalog. Do not call tools, inspect files, execute SAP, or edit files. "
+                "Compose deterministic read-only workflows only from the supplied Agent and "
+                "integration catalogs. Do not call tools, inspect files, execute SAP, or edit files. "
                 "Request only business-result and completeness output ports; omit input-context echoes unless a later stage consumes them."
             ),
         )

@@ -15,6 +15,7 @@ from sap_business_agents_platform.workbuddy_planner import WorkBuddyPlanner
 class FakeManager:
     def __init__(self) -> None:
         self.default_provider_id = "codex"
+        self.models = {"codex": "codex-model", "workbuddy": "workbuddy-model"}
 
     def list(self) -> list[dict[str, Any]]:
         return [
@@ -31,6 +32,10 @@ class FakeManager:
             "provider_id": provider_id,
             "sdk_id": f"{provider_id}-sdk",
             "version": "1.0.0",
+            "model": self.models[provider_id],
+            "model_catalog_digest": "catalog",
+            "model_check_digest": "check",
+            "runtime_configuration_revision": 7,
             "configuration_digest": provider_id,
             "capabilities": ["planning"],
             "selected_at": "2026-08-29T00:00:00Z",
@@ -54,21 +59,47 @@ def test_runtime_router_pins_existing_task_when_default_changes() -> None:
     router = RuntimeRouter(manager, {"codex": codex, "workbuddy": workbuddy})
 
     existing = router.snapshot()
-    assert existing["model"] is None
+    assert existing["model"] == "codex-model"
     assert existing["configuration_digest"] == hashlib.sha256(
         json.dumps(
-            {"sdk_configuration_digest": "codex", "model": None},
+            {
+                "sdk_configuration_digest": "codex",
+                "model": "codex-model",
+                "model_catalog_digest": "catalog",
+                "model_check_digest": "check",
+                "runtime_configuration_revision": 7,
+            },
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
     manager.default_provider_id = "workbuddy"
 
-    with router.pin(existing["provider_id"]):
+    with router.pin(existing["provider_id"], existing["model"]):
         assert asyncio.run(router.plan("existing", {}, {}, [])) == "codex"
     assert asyncio.run(router.plan("new", {}, {}, [])) == "workbuddy"
     assert codex.calls == ["existing"]
     assert workbuddy.calls == ["new"]
+
+
+def test_runtime_router_uses_isolated_provider_instances_per_model() -> None:
+    manager = FakeManager()
+    created: dict[str, FakePlanner] = {}
+
+    def factory(model: str | None) -> FakePlanner:
+        planner = FakePlanner(f"codex:{model}")
+        created[str(model)] = planner
+        return planner
+
+    router = RuntimeRouter(manager, {}, provider_factories={"codex": factory})
+    existing = router.snapshot()
+    manager.models["codex"] = "new-model"
+
+    with router.pin(existing["provider_id"], existing["model"]):
+        assert asyncio.run(router.plan("existing", {}, {}, [])) == "codex:codex-model"
+    assert asyncio.run(router.plan("new", {}, {}, [])) == "codex:new-model"
+    assert created["codex-model"].calls == ["existing"]
+    assert created["new-model"].calls == ["new"]
 
 
 def test_workbuddy_adapter_denies_builtin_tools_and_resumes_session(
