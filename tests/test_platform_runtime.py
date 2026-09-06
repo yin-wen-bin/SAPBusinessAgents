@@ -133,6 +133,18 @@ def test_agent_management_catalog_excludes_platform_assistants_and_creates_blank
         )
         assert checked.status_code == 200, checked.text
         assert checked.json()["validation"]["verdict"] == "NOT_TESTED"
+        listed = client.get("/api/authoring/agents?state=unpublished")
+        assert listed.status_code == 200, listed.text
+        assert listed.json()[0]["agent_id"] == "api-created-agent"
+        assert listed.json()[0]["management"]["can_delete"] is True
+        deleted = client.request(
+            "DELETE",
+            f"/api/authoring/agents/{draft['draft_id']}",
+            json={"expectedRevision": 1, "confirmAgentId": "api-created-agent"},
+        )
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json()["deleted"] is True
+        assert client.get(f"/api/authoring/agents/{draft['draft_id']}").status_code == 404
 
 
 def test_restricted_artifact_access_is_local_one_time_audited_and_csv_safe(
@@ -2438,6 +2450,10 @@ def test_accepted_free_query_session_generates_traceable_needs_review_agent_draf
         assert list(manifest["execution"]["inputSchema"]["properties"]) == [
             "purchase_order"
         ]
+        assert manifest["execution"]["inputSchema"]["properties"]["purchase_order"]["title"] == {
+            "zh": "采购订单",
+            "en": "Purchase Order",
+        }
         encoded_steps = json.dumps(manifest["execution"]["steps"])
         assert "4500000001" not in encoded_steps
         assert "{{input.purchase_order}}" in encoded_steps

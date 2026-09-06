@@ -11,7 +11,7 @@
     "en": "Builds a transparent monthly-average rolling forecast from cost-center year-to-date actuals and full-year plan."
   },
   "status": "Three-stage live acceptance blocked",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "owner": "CO Planning / FP&A",
   "tags": [
     "Budget",
@@ -34,11 +34,11 @@
   "inputs": {
     "zh": [
       "公司代码",
-      "fiscal year",
-      "cost center",
-      "current period",
-      "planning category",
-      "risk threshold pct"
+      "会计年度",
+      "成本中心",
+      "当前期间",
+      "计划类别",
+      "风险阈值（%）"
     ],
     "en": [
       "Company code",
@@ -293,7 +293,7 @@
           "maxLength": 4,
           "pattern": "^[0-9]{4}$",
           "title": {
-            "zh": "fiscal year",
+            "zh": "会计年度",
             "en": "Fiscal Year"
           }
         },
@@ -303,7 +303,7 @@
           "maxLength": 10,
           "pattern": "^[0-9A-Za-z_-]+$",
           "title": {
-            "zh": "cost center",
+            "zh": "成本中心",
             "en": "Cost Center"
           }
         },
@@ -311,7 +311,7 @@
           "type": "string",
           "pattern": "^[0-9]{3}$",
           "title": {
-            "zh": "current period",
+            "zh": "当前期间",
             "en": "Current Period"
           }
         },
@@ -320,7 +320,7 @@
           "minLength": 1,
           "maxLength": 10,
           "title": {
-            "zh": "planning category",
+            "zh": "计划类别",
             "en": "Planning Category"
           }
         },
@@ -328,7 +328,7 @@
           "type": "number",
           "default": 10,
           "title": {
-            "zh": "risk threshold pct",
+            "zh": "风险阈值（%）",
             "en": "Risk Threshold Pct"
           }
         }

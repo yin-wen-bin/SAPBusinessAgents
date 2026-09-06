@@ -210,6 +210,55 @@ test("manifest validation rejects mismatched localized operations", () => {
   );
 });
 
+test("manifest validation rejects English text used as a Chinese input title", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "supplier-performance-risk"));
+  example.execution.inputSchema.properties.supplier.title.zh = "supplier";
+  example.inputs.zh[0] = "supplier";
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /title\.zh must contain a Chinese business label/,
+  );
+});
+
+test("manifest validation rejects Chinese text used as an English input title", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "supplier-performance-risk"));
+  example.execution.inputSchema.properties.supplier.title.en = "供应商";
+  example.inputs.en[0] = "供应商";
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /title\.en must not contain Chinese characters/,
+  );
+});
+
+test("manifest validation checks public object-array child input titles", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "new-sales-demand-coverage"));
+  example.execution.inputSchema.properties.demand_items.items.properties.material.title.zh = "material";
+  assert.throws(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+    /demand_items\.items\.properties\.material\.title\.zh/,
+  );
+});
+
+test("manifest validation skips workflow-only input subtrees", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "new-sales-demand-coverage"));
+  const demandItems = example.execution.inputSchema.properties.demand_items;
+  demandItems["x-sapba-workflow-only"] = true;
+  demandItems.items.properties.material.title.zh = "material";
+  example.inputs.zh.pop();
+  example.inputs.en.pop();
+  assert.doesNotThrow(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+  );
+});
+
+test("manifest validation allows locale-neutral acronyms inside Chinese business labels", () => {
+  const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "new-sales-demand-coverage"));
+  assert.equal(example.execution.inputSchema.properties.mrp_area.title.zh, "MRP范围");
+  assert.doesNotThrow(
+    () => validateAgent(example, example.module, example.slug, "example/agent.json"),
+  );
+});
+
 test("manifest validation rejects a public enum without bilingual display labels", () => {
   const example = structuredClone(loadAgentCatalog(path.resolve("..", "agents")).find((agent) => agent.slug === "inventory-health-balancing"));
   delete example.execution.outputSchema.properties.selected_checks["x-sapba-display"];

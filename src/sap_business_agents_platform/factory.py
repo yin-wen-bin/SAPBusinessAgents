@@ -741,12 +741,38 @@ def _parameter_name(
         name = f"{base}_{suffix}"
         suffix += 1
     schema = _schema_for_sample(sample)
-    schema["title"] = {"zh": field, "en": field}
+    schema["title"] = _localized_parameter_title(field)
     schema["source_field"] = field
     schema["sample_hash"] = sample_digest
     specs[name] = schema
     source_keys[key] = name
     return name
+
+
+_PARAMETER_TITLES_ZH = {
+    "accountingdocument": "财务凭证",
+    "accountingdocumentitem": "财务凭证行项目",
+    "companycode": "公司代码",
+    "customer": "客户",
+    "fiscalyear": "会计年度",
+    "material": "物料",
+    "plant": "工厂",
+    "purchaseorder": "采购订单",
+    "purchaseorderitem": "采购订单项目",
+    "salesorder": "销售订单",
+    "salesorderitem": "销售订单项目",
+    "supplier": "供应商",
+}
+
+
+def _localized_parameter_title(field: str) -> dict[str, str]:
+    normalized = re.sub(r"[^a-z0-9]+", "", field.lower())
+    english = re.sub(r"(?<!^)(?=[A-Z])", " ", field).replace("_", " ").strip()
+    english = english[:1].upper() + english[1:] if english else "Business field"
+    return {
+        "zh": _PARAMETER_TITLES_ZH.get(normalized, f"业务字段（{field}）"),
+        "en": english,
+    }
 
 
 def _schema_for_sample(sample: Any) -> dict[str, Any]:

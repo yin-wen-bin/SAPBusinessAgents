@@ -482,6 +482,13 @@ class AgentDraftUpdate(BaseModel):
     rules: str = Field(default="", max_length=500_000)
 
 
+class AgentDraftDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+    confirm_agent_id: str = Field(alias="confirmAgentId", min_length=1, max_length=80)
+
+
 class AgentFeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

@@ -8,6 +8,7 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..", "..");
 const agentsRoot = path.join(repositoryRoot, "agents");
 const outputPath = path.join(scriptDirectory, "..", "src", "generated", "agents.ts");
+const HAN_CHARACTER = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
 
 function requireString(value, location) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${location} must be a non-empty string`);
@@ -25,6 +26,35 @@ function requireList(value, location) {
 
 function requireArray(value, location) {
   if (!Array.isArray(value)) throw new Error(`${location} must be an array`);
+}
+
+function validatePublicInputTitleLanguages(properties, location) {
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+    throw new Error(`${location}.properties must be an object`);
+  }
+  for (const [name, property] of Object.entries(properties)) {
+    const propertyLocation = `${location}.properties.${name}`;
+    if (!property || typeof property !== "object" || Array.isArray(property)) {
+      throw new Error(`${propertyLocation} must be an object`);
+    }
+    if (property["x-sapba-workflow-only"] === true || property["x-sapba-internal"] === true) {
+      continue;
+    }
+    requireLocalized(property.title, `${propertyLocation}.title`);
+    if (!HAN_CHARACTER.test(property.title.zh.trim())) {
+      throw new Error(`${propertyLocation}.title.zh must contain a Chinese business label`);
+    }
+    if (HAN_CHARACTER.test(property.title.en.trim())) {
+      throw new Error(`${propertyLocation}.title.en must not contain Chinese characters`);
+    }
+    if (property.properties !== undefined) {
+      validatePublicInputTitleLanguages(property.properties, propertyLocation);
+    }
+    const items = property.items;
+    if (items && typeof items === "object" && !Array.isArray(items) && items.properties !== undefined) {
+      validatePublicInputTitleLanguages(items.properties, `${propertyLocation}.items`);
+    }
+  }
 }
 
 function validateOutputDisplay(properties, location) {
@@ -197,6 +227,10 @@ export function validateAgent(agent, expectedModule, expectedSlug, source) {
     }
     return result;
   };
+  validatePublicInputTitleLanguages(
+    agent.execution.inputSchema.properties,
+    `${source}.execution.inputSchema`,
+  );
   if (JSON.stringify(agent.inputs) !== JSON.stringify(localizedSchemaTitles(agent.execution.inputSchema, `${source}.execution.inputSchema`, true))) {
     throw new Error(`${source}.inputs must mirror execution.inputSchema titles`);
   }

@@ -250,8 +250,116 @@ class AgentLifecycleService:
             "conversation": self.store.list_agent_conversation_turns(draft_id),
         }
 
-    def list_drafts(self) -> list[dict[str, Any]]:
-        return self.store.list_agent_authoring_drafts()
+    def list_drafts(self, state: str = "all") -> list[dict[str, Any]]:
+        if state not in {"all", "unpublished"}:
+            raise AgentLifecycleError(
+                "Unknown Agent draft state filter.", code="agent_draft_state_invalid"
+            )
+        items: list[dict[str, Any]] = []
+        for draft in self.store.list_agent_authoring_drafts():
+            if state == "unpublished" and draft["status"] in {"published", "cancelled"}:
+                continue
+            try:
+                package = self.store.get_agent_authoring_revision(
+                    draft["draft_id"], int(draft["revision"])
+                )["package"]
+            except KeyError:
+                package = {}
+            manifest = package.get("manifest") if isinstance(package, dict) else {}
+            blockers = self._draft_delete_blockers(draft)
+            items.append(
+                {
+                    **draft,
+                    "title": copy.deepcopy((manifest or {}).get("title") or {}),
+                    "module": (manifest or {}).get("module"),
+                    "management": {
+                        "can_delete": not blockers,
+                        "delete_blockers": blockers,
+                    },
+                }
+            )
+        return items
+
+    def delete_draft(self, draft_id: str, payload: Any) -> dict[str, Any]:
+        draft = self.store.get_agent_authoring_draft(draft_id)
+        if int(payload.expected_revision) != int(draft["revision"]):
+            raise AgentLifecycleError(
+                "Agent draft revision changed.", code="agent_draft_conflict"
+            )
+        if str(payload.confirm_agent_id) != str(draft["agent_id"]):
+            raise AgentLifecycleError(
+                "Agent ID confirmation does not match.",
+                code="agent_draft_delete_confirmation_mismatch",
+            )
+        if draft["status"] == "published":
+            raise AgentLifecycleError(
+                "A published Agent draft is immutable.", code="agent_draft_published"
+            )
+        blockers = self._draft_delete_blockers(draft)
+        if blockers:
+            raise AgentLifecycleError(
+                "The Agent draft cannot be deleted while validation is active.",
+                code="agent_draft_validation_active",
+                detail={"blockers": blockers},
+            )
+
+        path = Path(str(draft["path"])).resolve()
+        expected = self._draft_path(draft_id)
+        if path != expected or self.draft_root not in path.parents:
+            raise AgentLifecycleError(
+                "Agent draft deletion target escaped the draft root.",
+                code="agent_draft_path_invalid",
+            )
+        trash_root = (self.settings.draft_root / "management-trash").resolve()
+        trash_root.mkdir(parents=True, exist_ok=True)
+        trash = (trash_root / f"{draft_id}-{uuid.uuid4().hex[:12]}").resolve()
+        if trash_root not in trash.parents:
+            raise AgentLifecycleError(
+                "Agent draft trash target escaped its root.",
+                code="agent_draft_path_invalid",
+            )
+        moved = False
+        package_snapshot: dict[str, bytes] = {}
+        if path.exists():
+            package_snapshot = self._snapshot_draft_package(path)
+            shutil.move(str(path), str(trash))
+            moved = True
+            try:
+                shutil.rmtree(trash)
+            except Exception:
+                self._restore_draft_package(path, package_snapshot)
+                raise
+        audit_event_id = f"agent_event_{uuid.uuid4().hex[:16]}"
+        try:
+            retained_run_ids = self.store.delete_agent_authoring_draft(
+                draft_id,
+                expected_revision=int(payload.expected_revision),
+                audit_event_id=audit_event_id,
+                agent_id=str(draft["agent_id"]),
+                detail={
+                    "draft_id": draft_id,
+                    "revision": int(draft["revision"]),
+                    "source_type": draft["source_type"],
+                    "target_version": draft.get("target_version"),
+                },
+            )
+        except ValueError as exc:
+            if moved:
+                self._restore_draft_package(path, package_snapshot)
+            raise AgentLifecycleError(
+                "Agent draft revision changed.", code="agent_draft_conflict"
+            ) from exc
+        except Exception:
+            if moved:
+                self._restore_draft_package(path, package_snapshot)
+            raise
+        return {
+            "draft_id": draft_id,
+            "agent_id": draft["agent_id"],
+            "deleted": True,
+            "retained_validation_run_ids": retained_run_ids,
+            "audit_event_id": audit_event_id,
+        }
 
     def update(self, draft_id: str, payload: Any) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
@@ -727,6 +835,39 @@ class AgentLifecycleService:
 
     def _open_drafts(self, agent_id: str) -> list[str]:
         return [item["draft_id"] for item in self.store.list_agent_authoring_drafts() if item["agent_id"] == agent_id and item["status"] not in {"published", "cancelled"}]
+
+    def _draft_delete_blockers(self, draft: dict[str, Any]) -> list[str]:
+        if draft["status"] in {"published", "cancelled"}:
+            return [f"agent_draft_{draft['status']}"]
+        run_id = draft.get("validation_run_id")
+        if not run_id:
+            return []
+        try:
+            run = self.store.get_run(str(run_id))
+        except KeyError:
+            return ["agent_draft_validation_state_unknown"] if draft["status"] == "validating" else []
+        return [] if run.status in TERMINAL_STATUSES else ["agent_draft_validation_active"]
+
+    @staticmethod
+    def _snapshot_draft_package(path: Path) -> dict[str, bytes]:
+        snapshot: dict[str, bytes] = {}
+        for item in path.rglob("*"):
+            if item.is_symlink():
+                raise AgentLifecycleError(
+                    "Agent draft package contains a symbolic link.",
+                    code="agent_draft_path_invalid",
+                )
+            if item.is_file():
+                snapshot[item.relative_to(path).as_posix()] = item.read_bytes()
+        return snapshot
+
+    @staticmethod
+    def _restore_draft_package(path: Path, snapshot: dict[str, bytes]) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        for relative, content in snapshot.items():
+            target = path.joinpath(*relative.split("/"))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
 
     @staticmethod
     def _assert_editable(draft: dict[str, Any]) -> None:

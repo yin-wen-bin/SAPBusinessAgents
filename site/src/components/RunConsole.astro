@@ -10,7 +10,7 @@ const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const workflowDestination = workflowsPath(base, locale);
 const labels = locale === "zh" ? {
   title: "SAP 业务查询",
-  noRun: "链接中没有查询编号。请从 Agent 页面或“直接询问 SAP”页面重新发起查询。",
+  noRun: "链接中没有查询编号。请从 Agent 页面或“自由查询”页面重新发起查询。",
   connecting: "正在连接查询服务…",
   progress: "查询进度",
   progressHint: "页面会自动更新，查询期间无需反复刷新。",

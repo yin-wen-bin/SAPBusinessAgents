@@ -11,7 +11,7 @@
     "en": "Calculates evidence-constrained On Time In Full (OTIF) by PO schedule line and cumulative net receipts while flagging delays, returns, reversals, and supplier-status risks."
   },
   "status": "Three-stage live acceptance passed",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "owner": "MM-PUR / Supplier Management",
   "tags": [
     "Supplier Performance",
@@ -37,8 +37,8 @@
       "供应商",
       "采购组织",
       "工厂",
-      "date from",
-      "date to"
+      "开始日期",
+      "结束日期"
     ],
     "en": [
       "Supplier",
@@ -550,7 +550,7 @@
           "type": "string",
           "format": "date",
           "title": {
-            "zh": "date from",
+            "zh": "开始日期",
             "en": "Date From"
           }
         },
@@ -558,7 +558,7 @@
           "type": "string",
           "format": "date",
           "title": {
-            "zh": "date to",
+            "zh": "结束日期",
             "en": "Date To"
           }
         }

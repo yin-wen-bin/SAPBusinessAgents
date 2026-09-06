@@ -2050,6 +2050,51 @@ class RunStore:
             ).fetchall()
         return [_agent_authoring_draft_from_row(row) for row in rows]
 
+    def delete_agent_authoring_draft(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int,
+        audit_event_id: str,
+        agent_id: str,
+        detail: dict[str, Any],
+    ) -> list[str]:
+        """Delete authoring-only state while preserving immutable validation runs."""
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT revision FROM agent_authoring_drafts WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(draft_id)
+            if int(row["revision"]) != int(expected_revision):
+                raise ValueError("agent_draft_conflict")
+            validation_rows = connection.execute(
+                "SELECT run_id FROM agent_validation_attempts WHERE draft_id = ? ORDER BY created_at",
+                (draft_id,),
+            ).fetchall()
+            retained_run_ids = [str(item["run_id"]) for item in validation_rows]
+            connection.execute(
+                "DELETE FROM agent_validation_attempts WHERE draft_id = ?", (draft_id,)
+            )
+            connection.execute(
+                "DELETE FROM agent_conversation_turns WHERE draft_id = ?", (draft_id,)
+            )
+            connection.execute(
+                "DELETE FROM agent_authoring_revisions WHERE draft_id = ?", (draft_id,)
+            )
+            connection.execute(
+                "DELETE FROM agent_authoring_drafts WHERE draft_id = ?", (draft_id,)
+            )
+            connection.execute(
+                """INSERT INTO agent_management_events
+                (event_id, agent_id, action, from_version, to_version, agent_hash,
+                 branch, commit_sha, detail_json, created_at)
+                VALUES (?, ?, 'draft_deleted', NULL, NULL, NULL, NULL, NULL, ?, ?)""",
+                (audit_event_id, agent_id, _dump(detail), utc_now()),
+            )
+        return retained_run_ids
+
     def get_agent_authoring_revision(self, draft_id: str, revision: int) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute(

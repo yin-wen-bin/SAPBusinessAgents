@@ -43,6 +43,7 @@ ALLOWED_RULE_OPERATIONS = {
 }
 ALLOWED_FAILURE_POLICIES = {"fail_run", "record_gap"}
 _TEMPLATE_EXPRESSION = re.compile(r"\{\{\s*[^{}]+?\s*\}\}")
+_HAN_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 class ManifestError(ValueError):
@@ -357,6 +358,43 @@ def _localized_titles(
     return values
 
 
+def _validate_public_input_title_languages(properties: Any, source: str) -> None:
+    if not isinstance(properties, dict):
+        raise ManifestError(f"{source}.properties must be an object")
+    for name, schema in properties.items():
+        location = f"{source}.properties.{name}"
+        if not isinstance(schema, dict):
+            raise ManifestError(f"{location} must be an object")
+        if (
+            schema.get("x-sapba-workflow-only") is True
+            or schema.get("x-sapba-internal") is True
+        ):
+            continue
+        title = schema.get("title")
+        if not isinstance(title, dict) or not all(
+            str(title.get(locale) or "").strip() for locale in ("zh", "en")
+        ):
+            raise ManifestError(f"{location}.title must be bilingual")
+        zh_title = str(title["zh"]).strip()
+        en_title = str(title["en"]).strip()
+        if _HAN_CHARACTER.search(zh_title) is None:
+            raise ManifestError(
+                f"{location}.title.zh must contain a Chinese business label"
+            )
+        if _HAN_CHARACTER.search(en_title) is not None:
+            raise ManifestError(
+                f"{location}.title.en must not contain Chinese characters"
+            )
+        nested_properties = schema.get("properties")
+        if nested_properties is not None:
+            _validate_public_input_title_languages(nested_properties, location)
+        items = schema.get("items")
+        if isinstance(items, dict) and items.get("properties") is not None:
+            _validate_public_input_title_languages(
+                items.get("properties"), f"{location}.items"
+            )
+
+
 def _validate_input_server_defaults(properties: dict[str, Any], source: str) -> None:
     for name, schema in properties.items():
         if not isinstance(schema, dict):
@@ -551,6 +589,9 @@ def _validate_output_display(properties: dict[str, Any], source: str) -> None:
 def _validate_page_contract(agent: dict[str, Any], inputs: dict[str, Any], source: str) -> None:
     if "SAP ECC" in (agent.get("systems") or []):
         raise ManifestError(f"{source}.systems must not advertise SAP ECC")
+    _validate_public_input_title_languages(
+        inputs.get("properties"), f"{source}.execution.inputSchema"
+    )
     expected_inputs = _localized_titles(
         inputs.get("properties"),
         f"{source}.execution.inputSchema",

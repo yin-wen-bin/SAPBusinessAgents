@@ -23,6 +23,12 @@ const text = {
     gitNote: "发布会自动创建本地 Git 分支和提交，不会推送远端。", passRequired: "只有 PASS 版本才能启用。",
     confirmId: "输入完整 Agent ID 确认永久删除", reason: "原因（可选）", patch: "补丁版本",
     minor: "次版本", major: "主版本", openRun: "查看验证运行", refresh: "刷新",
+    agent: "Agent", state: "状态", actions: "操作", revision: "修订", updatedAt: "更新时间",
+    draftSource: "创建来源", deleteDraft: "删除草稿", cancel: "取消",
+    deleteDraftWarning: "此操作会永久删除草稿包、修订和对话，无法恢复。历史验证运行将继续保留。",
+    confirmDraftId: "输入完整 Agent ID 确认删除草稿", draftDeleted: "未发布草稿已删除。",
+    statusLabels: { draft: "编辑中", invalid: "检查未通过", validated: "已验证", validating: "正在真机验证", needs_review: "需要复核", published: "已发布", cancelled: "已取消", active: "使用中", inactive: "已停用", PASS: "通过", BLOCKED: "阻塞", NOT_TESTED: "未测试", INCONCLUSIVE: "证据不足", FAIL: "失败" },
+    sourceLabels: { blank: "空白模板", clone: "复制现有 Agent", free_query: "成功自由查询", workflow_gap: "工作流能力缺口" },
   },
   en: {
     eyebrow: "Deterministic Agent lifecycle", heading: "Agent management center",
@@ -43,12 +49,33 @@ const text = {
     gitNote: "Publication creates and commits a local Git branch. It never pushes.", passRequired: "Only PASS versions can be activated.",
     confirmId: "Enter the complete Agent ID to confirm permanent deletion", reason: "Reason (optional)", patch: "Patch",
     minor: "Minor", major: "Major", openRun: "Open validation run", refresh: "Refresh",
+    agent: "Agent", state: "Status", actions: "Actions", revision: "Revision", updatedAt: "Updated",
+    draftSource: "Source", deleteDraft: "Delete draft", cancel: "Cancel",
+    deleteDraftWarning: "This permanently deletes the draft package, revisions and conversation. Validation runs remain available.",
+    confirmDraftId: "Enter the complete Agent ID to confirm draft deletion", draftDeleted: "The unpublished draft was deleted.",
+    statusLabels: { draft: "Editing", invalid: "Checks failed", validated: "Validated", validating: "Live validation running", needs_review: "Needs review", published: "Published", cancelled: "Cancelled", active: "Active", inactive: "Inactive", PASS: "Passed", BLOCKED: "Blocked", NOT_TESTED: "Not tested", INCONCLUSIVE: "Inconclusive", FAIL: "Failed" },
+    sourceLabels: { blank: "Blank template", clone: "Existing Agent copy", free_query: "Successful free query", workflow_gap: "Workflow capability gap" },
   },
 };
 
 function localized(value: any, locale: Locale): string {
   if (value && typeof value === "object") return String(value[locale] || value.zh || value.en || "");
   return String(value || "");
+}
+
+function mappedLabel(values: Record<string, string>, value: unknown): string {
+  const key = String(value || "");
+  return values[key] || key || "—";
+}
+
+function formattedDate(value: unknown, locale: Locale): string {
+  const date = new Date(String(value || ""));
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      });
 }
 
 async function request(url: string, init?: RequestInit) {
@@ -84,13 +111,15 @@ export default function AgentManagementCenter({ apiBase, locale, runPath }: Prop
   const [targetVersion, setTargetVersion] = useState("");
   const [confirmId, setConfirmId] = useState("");
   const [reason, setReason] = useState("");
+  const [deleteCandidate, setDeleteCandidate] = useState<any>(null);
+  const [draftConfirmId, setDraftConfirmId] = useState("");
 
   const load = async () => {
     setError("");
     try {
       const [agents, openDrafts] = await Promise.all([
         request(`${apiBase}/api/agents/catalog?state=all`),
-        request(`${apiBase}/api/authoring/agents`),
+        request(`${apiBase}/api/authoring/agents?state=unpublished`),
       ]);
       setCatalog(agents); setDrafts(openDrafts);
       const requestedAgent = new URLSearchParams(window.location.search).get("agent");
@@ -105,7 +134,19 @@ export default function AgentManagementCenter({ apiBase, locale, runPath }: Prop
     if (draftId) void openDraft(draftId, (params.get("step") as any) || "compose");
   }, []);
 
-  const list = useMemo(() => tab === "drafts" ? drafts : catalog.filter((item) => item.lifecycle?.state === tab), [tab, catalog, drafts]);
+  const list = useMemo(() => {
+    if (tab === "drafts") {
+      return [...drafts].sort((left, right) =>
+        String(right.updated_at || "").localeCompare(String(left.updated_at || ""))
+      );
+    }
+    return catalog
+      .filter((item) => item.lifecycle?.state === tab)
+      .sort((left, right) => {
+        const moduleOrder = String(left.module || "").localeCompare(String(right.module || ""));
+        return moduleOrder || localized(left.title, locale).localeCompare(localized(right.title, locale), locale);
+      });
+  }, [tab, catalog, drafts, locale]);
 
   const openDraft = async (draftId: string, requestedStep: any = "compose") => {
     setBusy(true); setError("");
@@ -204,6 +245,18 @@ export default function AgentManagementCenter({ apiBase, locale, runPath }: Prop
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
+  const deleteDraft = async (item: any) => {
+    setBusy(true); setError("");
+    try {
+      await request(`${apiBase}/api/authoring/agents/${encodeURIComponent(item.draft_id)}`, {
+        method: "DELETE",
+        body: JSON.stringify({ expectedRevision: item.revision, confirmAgentId: draftConfirmId }),
+      });
+      setDeleteCandidate(null); setDraftConfirmId("");
+      await load(); setNotice(t.draftDeleted);
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  };
+
   if (draft) return <main className="agent-management"><header><button onClick={() => { setDraft(null); history.replaceState({}, "", window.location.pathname); }}>{t.back}</button><p className="eyebrow">{t.eyebrow}</p><h1>{localized(draft.package.manifest.title, locale)}</h1><p><code>{draft.agent_id}</code> · {t.version} {draft.package.manifest.version}</p></header>
     <nav className="agent-steps">{(["compose", "review", "validate", "publish"] as const).map((name, index) => <button className={step === name ? "active" : ""} onClick={() => setStep(name)}>{index + 1}. {t[name]}</button>)}</nav>
     {error && <p className="agent-alert error">{error}</p>}{notice && <p className="agent-alert" aria-live="polite">{notice}</p>}
@@ -220,9 +273,32 @@ export default function AgentManagementCenter({ apiBase, locale, runPath }: Prop
     <section className="agent-panel danger"><h2>{t.delete}</h2>{(selected.management?.delete_blockers || []).length > 0 && <ul>{selected.management.delete_blockers.map((item: string) => <li>{item}</li>)}</ul>}<label>{t.confirmId}<input value={confirmId} onChange={(e) => setConfirmId(e.target.value)} /></label><button disabled={busy || !selected.management?.can_delete || confirmId !== selected.id} onClick={() => lifecycleAction("delete")}>{t.delete}</button></section>
   </main>;
 
-  return <main className="agent-management"><header><p className="eyebrow">{t.eyebrow}</p><h1>{t.heading}</h1><p>{t.lead}</p><button onClick={() => setCreateOpen(!createOpen)}>{t.create}</button></header>{error && <p className="agent-alert error">{error}</p>}{notice && <p className="agent-alert">{notice}</p>}
+  return <main className="agent-management"><header><p className="eyebrow">{t.eyebrow}</p><h1>{t.heading}</h1><p>{t.lead}</p><button onClick={() => setCreateOpen(!createOpen)}>{t.create}</button></header>{error && <p className="agent-alert error" aria-live="assertive">{error}</p>}{notice && <p className="agent-alert" aria-live="polite">{notice}</p>}
     {createOpen && <section className="agent-panel"><label>{t.source}<select value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })}><option value="blank">{t.blank}</option><option value="clone">{t.clone}</option><option value="free_query">{t.free}</option><option value="workflow_gap">{t.gap}</option></select></label>{form.source === "blank" && <><label>{t.agentId}<input value={form.agentId} onChange={(e) => setForm({ ...form, agentId: e.target.value })} /></label><label>{t.module}<select value={form.module} onChange={(e) => setForm({ ...form, module: e.target.value })}>{["Common", "FI", "CO", "MM", "SD", "PP"].map((m) => <option>{m}</option>)}</select></label></>}{form.source === "clone" && <label>{t.sourceAgent}<select value={form.sourceAgentId} onChange={(e) => setForm({ ...form, sourceAgentId: e.target.value })}><option value=""></option>{catalog.map((item) => <option value={item.id}>{localized(item.title, locale)}</option>)}</select></label>}{["free_query", "workflow_gap"].includes(form.source) && <label>{t.runId}<input value={form.runId} onChange={(e) => setForm({ ...form, runId: e.target.value })} /></label>}{form.source === "workflow_gap" && <><label>{t.workflowDraft}<input value={form.workflowDraftId} onChange={(e) => setForm({ ...form, workflowDraftId: e.target.value })} /></label><label>{t.gapId}<input value={form.gapId} onChange={(e) => setForm({ ...form, gapId: e.target.value })} /></label></>}<button disabled={busy} onClick={createDraft}>{t.start}</button></section>}
-    <nav className="agent-tabs"><button className={tab === "active" ? "active" : ""} onClick={() => setTab("active")}>{t.active}</button><button className={tab === "inactive" ? "active" : ""} onClick={() => setTab("inactive")}>{t.inactive}</button><button className={tab === "drafts" ? "active" : ""} onClick={() => setTab("drafts")}>{t.drafts}</button></nav>
-    {list.length === 0 ? <p>{t.empty}</p> : <div className="agent-card-grid">{list.map((item: any) => tab === "drafts" ? <article><h2>{item.agent_id}</h2><p>{item.status} · rev {item.revision}</p><button onClick={() => openDraft(item.draft_id)}>{t.view}</button></article> : <article><p className="eyebrow">{item.module}</p><h2>{localized(item.title, locale)}</h2><p>{localized(item.summary, locale)}</p><p>{t.version} {item.version} · {item.validation?.verdict || "-"}</p><button onClick={() => setSelected(item)}>{t.view}</button></article>)}</div>}
+    <nav className="agent-tabs"><button className={tab === "active" ? "active" : ""} onClick={() => { setTab("active"); setDeleteCandidate(null); }}>{t.active}</button><button className={tab === "inactive" ? "active" : ""} onClick={() => { setTab("inactive"); setDeleteCandidate(null); }}>{t.inactive}</button><button className={tab === "drafts" ? "active" : ""} onClick={() => setTab("drafts")}>{t.drafts}</button></nav>
+    {list.length === 0 ? <p>{t.empty}</p> : tab === "drafts" ? <section className="agent-management-list agent-management-list-drafts" aria-label={t.drafts}>
+      <div className="agent-list-header" aria-hidden="true"><span>{t.module}</span><span>{t.agent}</span><span>{t.draftSource}</span><span>{t.targetVersion}</span><span>{t.state}</span><span>{t.updatedAt}</span><span>{t.actions}</span></div>
+      {list.map((item: any) => <article className="agent-list-item" key={item.draft_id}>
+        <div className="agent-list-row">
+          <div data-label={t.module}>{item.module || "—"}</div>
+          <div className="agent-list-identity" data-label={t.agent}><strong>{localized(item.title, locale) || item.agent_id}</strong><code>{item.agent_id}</code></div>
+          <div data-label={t.draftSource}>{mappedLabel(t.sourceLabels, item.source_type)}</div>
+          <div data-label={t.targetVersion}>{item.target_version || "—"}</div>
+          <div data-label={t.state}><span className="agent-list-status">{mappedLabel(t.statusLabels, item.status)}</span><small>{t.revision} {item.revision}</small></div>
+          <div data-label={t.updatedAt}>{formattedDate(item.updated_at, locale)}</div>
+          <div className="agent-list-actions" data-label={t.actions}><button onClick={() => openDraft(item.draft_id)}>{t.view}</button><button className="agent-danger-action" disabled={busy || !item.management?.can_delete} title={(item.management?.delete_blockers || []).join(", ")} onClick={() => { setDeleteCandidate(item); setDraftConfirmId(""); setError(""); }}>{t.deleteDraft}</button></div>
+        </div>
+        {deleteCandidate?.draft_id === item.draft_id && <div className="agent-draft-delete-confirm"><p>{t.deleteDraftWarning}</p><label>{t.confirmDraftId}<input value={draftConfirmId} onChange={(event) => setDraftConfirmId(event.target.value)} autoComplete="off" /></label><div className="agent-actions"><button className="agent-secondary-action" disabled={busy} onClick={() => { setDeleteCandidate(null); setDraftConfirmId(""); }}>{t.cancel}</button><button className="agent-danger-action solid" disabled={busy || draftConfirmId !== item.agent_id} onClick={() => deleteDraft(item)}>{t.deleteDraft}</button></div></div>}
+      </article>)}
+    </section> : <section className="agent-management-list agent-management-list-catalog" aria-label={tab === "active" ? t.active : t.inactive}>
+      <div className="agent-list-header" aria-hidden="true"><span>{t.module}</span><span>{t.agent}</span><span>{t.version}</span><span>{t.state}</span><span>{t.actions}</span></div>
+      {list.map((item: any) => <article className="agent-list-item" key={item.id}><div className="agent-list-row">
+        <div data-label={t.module}>{item.module || "—"}</div>
+        <div className="agent-list-identity" data-label={t.agent}><strong>{localized(item.title, locale)}</strong><span>{localized(item.summary, locale)}</span><code>{item.id}</code></div>
+        <div data-label={t.version}>{item.version || "—"}</div>
+        <div data-label={t.state}><span className="agent-list-status">{mappedLabel(t.statusLabels, item.lifecycle?.state)}</span><small>{t.validation}: {mappedLabel(t.statusLabels, item.validation?.verdict)}</small></div>
+        <div className="agent-list-actions" data-label={t.actions}><button onClick={() => setSelected(item)}>{t.view}</button></div>
+      </div></article>)}
+    </section>}
   </main>;
 }

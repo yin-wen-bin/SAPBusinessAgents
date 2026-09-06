@@ -2,7 +2,6 @@
 import SiteLayout from "../../layouts/SiteLayout.astro";
 import Sidebar from "../../components/Sidebar.astro";
 import AgentCatalog from "../../components/AgentCatalog.astro";
-import FreeQueryPanel from "../../components/FreeQueryPanel.astro";
 import { getAgents, moduleCounts } from "../../lib/catalog";
 import { homePath } from "../../lib/urls";
 import type { Locale } from "../../lib/types";
@@ -26,7 +25,6 @@ const description = locale === "zh"
   <div class="app-shell">
     <Sidebar locale={locale} counts={counts} />
     <main id="main-content" class="main-content">
-      <FreeQueryPanel locale={locale} />
       <AgentCatalog locale={locale} agents={agents} counts={counts} />
     </main>
   </div>

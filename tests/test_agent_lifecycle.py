@@ -24,9 +24,12 @@ from sap_business_agents_platform.manifests import AgentRepository
 from sap_business_agents_platform.models import (
     AgentActivateRequest,
     AgentAuthoringCreate,
+    AgentDraftDeleteRequest,
     AgentDraftUpdate,
     AgentPublishRequest,
     AgentVersionDraftRequest,
+    RunCreate,
+    RunStatus,
 )
 from sap_business_agents_platform.skills import SkillError
 from sap_business_agents_platform.workflows import agent_digest
@@ -161,6 +164,182 @@ def test_structured_edit_creates_new_revision_and_diff(tmp_path: Path) -> None:
     assert revised["revision"] == 2
     assert any(item["path"] == "/manifest/summary/zh" for item in revised["diff"])
     assert service.store.get_agent_authoring_revision(draft["draft_id"], 1)["package"]["manifest"]["summary"]["zh"] != "更新后的说明"
+
+
+def test_unpublished_draft_delete_removes_authoring_state_and_preserves_validation_run(
+    tmp_path: Path,
+) -> None:
+    service, store, _settings = _service(tmp_path)
+    draft = asyncio.run(
+        service.create(
+            AgentAuthoringCreate(source="blank", agentId="deletable-agent", module="Common")
+        )
+    )
+    run_id = "run_retained_validation"
+    store.create_run(
+        run_id,
+        RunCreate(mode="agent", agentId="deletable-agent", input={}),
+    )
+    store.update_run(run_id, status=RunStatus.completed)
+    store.save_agent_run_snapshot(
+        run_id,
+        draft["package"]["manifest"],
+        draft_id=draft["draft_id"],
+        revision=1,
+    )
+    store.save_agent_validation_attempt(
+        draft_id=draft["draft_id"],
+        run_id=run_id,
+        revision=1,
+        report={"status": "completed"},
+        report_digest="sha256:" + "0" * 64,
+        completed_at=draft["updated_at"],
+    )
+    draft_row = store.get_agent_authoring_draft(draft["draft_id"])
+    draft_row.update(status="needs_review", validation_run_id=run_id)
+    store.save_agent_authoring_draft(draft_row)
+    draft_path = Path(draft["path"])
+
+    result = service.delete_draft(
+        draft["draft_id"],
+        AgentDraftDeleteRequest(expectedRevision=1, confirmAgentId="deletable-agent"),
+    )
+
+    assert result["deleted"] is True
+    assert result["retained_validation_run_ids"] == [run_id]
+    assert not draft_path.exists()
+    with pytest.raises(KeyError):
+        store.get_agent_authoring_draft(draft["draft_id"])
+    assert store.get_run(run_id).run_id == run_id
+    assert store.get_agent_run_snapshot(run_id)["validation_draft_id"] == draft["draft_id"]
+    with store._connect() as connection:
+        event = connection.execute(
+            "SELECT action, detail_json FROM agent_management_events WHERE event_id = ?",
+            (result["audit_event_id"],),
+        ).fetchone()
+    assert event["action"] == "draft_deleted"
+    assert "deletable-agent" not in event["detail_json"]
+
+
+def test_draft_delete_rejects_confirmation_conflict_and_active_validation(tmp_path: Path) -> None:
+    service, store, _settings = _service(tmp_path)
+    draft = asyncio.run(
+        service.create(
+            AgentAuthoringCreate(source="blank", agentId="guarded-agent", module="Common")
+        )
+    )
+    with pytest.raises(AgentLifecycleError) as mismatch:
+        service.delete_draft(
+            draft["draft_id"],
+            AgentDraftDeleteRequest(expectedRevision=1, confirmAgentId="other-agent"),
+        )
+    assert mismatch.value.code == "agent_draft_delete_confirmation_mismatch"
+
+    with pytest.raises(AgentLifecycleError) as conflict:
+        service.delete_draft(
+            draft["draft_id"],
+            AgentDraftDeleteRequest(expectedRevision=2, confirmAgentId="guarded-agent"),
+        )
+    assert conflict.value.code == "agent_draft_conflict"
+
+    run_id = "run_active_validation"
+    store.create_run(
+        run_id,
+        RunCreate(mode="agent", agentId="guarded-agent", input={}),
+    )
+    draft_row = store.get_agent_authoring_draft(draft["draft_id"])
+    draft_row.update(status="validating", validation_run_id=run_id)
+    store.save_agent_authoring_draft(draft_row)
+    with pytest.raises(AgentLifecycleError) as active:
+        service.delete_draft(
+            draft["draft_id"],
+            AgentDraftDeleteRequest(expectedRevision=1, confirmAgentId="guarded-agent"),
+        )
+    assert active.value.code == "agent_draft_validation_active"
+    assert Path(draft["path"]).exists()
+
+
+def test_unpublished_draft_listing_is_localized_and_excludes_published(tmp_path: Path) -> None:
+    service, store, _settings = _service(tmp_path)
+    draft = asyncio.run(
+        service.create(
+            AgentAuthoringCreate(source="blank", agentId="listed-agent", module="FI")
+        )
+    )
+    listed = service.list_drafts("unpublished")
+    assert listed[0]["agent_id"] == "listed-agent"
+    assert listed[0]["module"] == "FI"
+    assert listed[0]["title"]["zh"] == "新固定Agent"
+    assert listed[0]["management"]["can_delete"] is True
+
+    draft_row = store.get_agent_authoring_draft(draft["draft_id"])
+    draft_row["status"] = "published"
+    store.save_agent_authoring_draft(draft_row)
+    assert service.list_drafts("unpublished") == []
+    assert service.list_drafts("all")[0]["status"] == "published"
+
+    with pytest.raises(AgentLifecycleError) as published:
+        service.delete_draft(
+            draft["draft_id"],
+            AgentDraftDeleteRequest(expectedRevision=1, confirmAgentId="listed-agent"),
+        )
+    assert published.value.code == "agent_draft_published"
+
+
+def test_draft_delete_rejects_path_outside_authoring_root(tmp_path: Path) -> None:
+    service, store, _settings = _service(tmp_path)
+    draft = asyncio.run(
+        service.create(
+            AgentAuthoringCreate(source="blank", agentId="path-guard-agent", module="Common")
+        )
+    )
+    draft_row = store.get_agent_authoring_draft(draft["draft_id"])
+    draft_row["path"] = str(tmp_path / "outside")
+    store.save_agent_authoring_draft(draft_row)
+
+    with pytest.raises(AgentLifecycleError) as invalid:
+        service.delete_draft(
+            draft["draft_id"],
+            AgentDraftDeleteRequest(expectedRevision=1, confirmAgentId="path-guard-agent"),
+        )
+    assert invalid.value.code == "agent_draft_path_invalid"
+    assert Path(draft["path"]).exists()
+
+
+def test_draft_delete_restores_package_when_database_delete_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _store, _settings = _service(tmp_path)
+    draft = asyncio.run(
+        service.create(
+            AgentAuthoringCreate(source="blank", agentId="restore-delete", module="Common")
+        )
+    )
+    draft_path = Path(draft["path"])
+    original_files = {
+        item.relative_to(draft_path).as_posix(): item.read_bytes()
+        for item in draft_path.rglob("*")
+        if item.is_file()
+    }
+
+    def fail_delete(*args, **kwargs):
+        raise RuntimeError("simulated database failure")
+
+    monkeypatch.setattr(service.store, "delete_agent_authoring_draft", fail_delete)
+    with pytest.raises(RuntimeError, match="simulated database failure"):
+        service.delete_draft(
+            draft["draft_id"],
+            AgentDraftDeleteRequest(
+                expectedRevision=draft["revision"], confirmAgentId="restore-delete"
+            ),
+        )
+
+    assert service.get_draft(draft["draft_id"])["agent_id"] == "restore-delete"
+    assert {
+        item.relative_to(draft_path).as_posix(): item.read_bytes()
+        for item in draft_path.rglob("*")
+        if item.is_file()
+    } == original_files
 
 
 def test_managed_rule_is_scanned_and_runs_in_isolated_process() -> None:

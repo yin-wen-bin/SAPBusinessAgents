@@ -35,6 +35,7 @@ from .models import (
     AgentActivateRequest,
     AgentAuthoringCreate,
     AgentDeleteRequest,
+    AgentDraftDeleteRequest,
     AgentDraftUpdate,
     AgentFeedbackRequest,
     AgentLifecycleRequest,
@@ -1598,8 +1599,10 @@ def create_app(
             raise _agent_lifecycle_http_error(exc) from exc
 
     @app.get("/api/authoring/agents")
-    def list_managed_agent_drafts() -> list[dict[str, Any]]:
-        return agent_lifecycle.list_drafts()
+    def list_managed_agent_drafts(
+        state: str = Query(default="all", pattern="^(all|unpublished)$"),
+    ) -> list[dict[str, Any]]:
+        return agent_lifecycle.list_drafts(state)
 
     @app.get("/api/authoring/agents/{draft_id}")
     def get_managed_agent_draft(draft_id: str) -> dict[str, Any]:
@@ -1612,6 +1615,15 @@ def create_app(
     def update_managed_agent_draft(draft_id: str, payload: AgentDraftUpdate) -> dict[str, Any]:
         try:
             return agent_lifecycle.update(draft_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.delete("/api/authoring/agents/{draft_id}")
+    def delete_managed_agent_draft(
+        draft_id: str, payload: AgentDraftDeleteRequest
+    ) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.delete_draft(draft_id, payload)
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 

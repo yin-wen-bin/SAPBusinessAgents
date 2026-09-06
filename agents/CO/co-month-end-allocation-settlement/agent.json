@@ -11,7 +11,7 @@
     "en": "Read-only assessment of period postings, allocation cycle, object status, and settlement rules for one CO object."
   },
   "status": "Three-stage live acceptance blocked",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "owner": "CO-OM / Period-End Closing",
   "tags": [
     "Month End",
@@ -36,11 +36,11 @@
   "inputs": {
     "zh": [
       "公司代码",
-      "fiscal year",
-      "controlling area",
-      "period",
-      "internal order",
-      "allocation cycle"
+      "会计年度",
+      "控制范围",
+      "会计期间",
+      "内部订单",
+      "分配循环"
     ],
     "en": [
       "Company code",
@@ -359,7 +359,7 @@
           "maxLength": 4,
           "pattern": "^[0-9]{4}$",
           "title": {
-            "zh": "fiscal year",
+            "zh": "会计年度",
             "en": "Fiscal Year"
           }
         },
@@ -368,7 +368,7 @@
           "minLength": 1,
           "maxLength": 4,
           "title": {
-            "zh": "controlling area",
+            "zh": "控制范围",
             "en": "Controlling Area"
           }
         },
@@ -376,7 +376,7 @@
           "type": "string",
           "pattern": "^[0-9]{1,3}$",
           "title": {
-            "zh": "period",
+            "zh": "会计期间",
             "en": "Period"
           }
         },
@@ -386,7 +386,7 @@
           "maxLength": 12,
           "pattern": "^[0-9A-Za-z_-]+$",
           "title": {
-            "zh": "internal order",
+            "zh": "内部订单",
             "en": "Internal Order"
           }
         },
@@ -396,7 +396,7 @@
           "maxLength": 10,
           "pattern": "^[0-9A-Za-z_-]+$",
           "title": {
-            "zh": "allocation cycle",
+            "zh": "分配循环",
             "en": "Allocation Cycle"
           }
         }

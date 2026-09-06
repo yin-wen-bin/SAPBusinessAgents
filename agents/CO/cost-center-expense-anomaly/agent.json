@@ -11,7 +11,7 @@
     "en": "Compares cost-center actual and plan expense to identify threshold breaches and master-data blocks."
   },
   "status": "Three-stage live acceptance blocked",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "owner": "CO-OM-CCA / Cost Center Accounting",
   "tags": [
     "Cost Center",
@@ -35,13 +35,13 @@
   "inputs": {
     "zh": [
       "公司代码",
-      "fiscal year",
-      "controlling area",
-      "cost center",
-      "period from",
-      "period to",
-      "planning category",
-      "variance threshold pct"
+      "会计年度",
+      "控制范围",
+      "成本中心",
+      "起始期间",
+      "结束期间",
+      "计划类别",
+      "差异阈值（%）"
     ],
     "en": [
       "Company code",
@@ -362,7 +362,7 @@
           "maxLength": 4,
           "pattern": "^[0-9]{4}$",
           "title": {
-            "zh": "fiscal year",
+            "zh": "会计年度",
             "en": "Fiscal Year"
           }
         },
@@ -372,7 +372,7 @@
           "maxLength": 4,
           "pattern": "^[0-9A-Za-z_-]+$",
           "title": {
-            "zh": "controlling area",
+            "zh": "控制范围",
             "en": "Controlling Area"
           }
         },
@@ -382,7 +382,7 @@
           "maxLength": 10,
           "pattern": "^[0-9A-Za-z_-]+$",
           "title": {
-            "zh": "cost center",
+            "zh": "成本中心",
             "en": "Cost Center"
           }
         },
@@ -390,7 +390,7 @@
           "type": "string",
           "pattern": "^[0-9]{1,3}$",
           "title": {
-            "zh": "period from",
+            "zh": "起始期间",
             "en": "Period From"
           }
         },
@@ -398,7 +398,7 @@
           "type": "string",
           "pattern": "^[0-9]{1,3}$",
           "title": {
-            "zh": "period to",
+            "zh": "结束期间",
             "en": "Period To"
           }
         },
@@ -407,7 +407,7 @@
           "minLength": 1,
           "maxLength": 10,
           "title": {
-            "zh": "planning category",
+            "zh": "计划类别",
             "en": "Planning Category"
           }
         },
@@ -415,7 +415,7 @@
           "type": "number",
           "default": 20,
           "title": {
-            "zh": "variance threshold pct",
+            "zh": "差异阈值（%）",
             "en": "Variance Threshold Pct"
           }
         }

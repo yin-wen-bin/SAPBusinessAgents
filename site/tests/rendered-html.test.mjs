@@ -49,6 +49,30 @@ test("CO detail pages render the exact manifest execution workflows", async () =
   }
 });
 
+test("affected Agent run forms render input titles in the selected language", async () => {
+  const cases = [
+    ["CO", "budget-rolling-forecast", ["会计年度", "成本中心", "当前期间", "计划类别", "风险阈值（%）"], ["Fiscal Year", "Cost Center", "Current Period", "Planning Category", "Risk Threshold Pct"]],
+    ["CO", "co-month-end-allocation-settlement", ["会计年度", "控制范围", "会计期间", "内部订单", "分配循环"], ["Fiscal Year", "Controlling Area", "Period", "Internal Order", "Allocation Cycle"]],
+    ["CO", "cost-center-expense-anomaly", ["会计年度", "控制范围", "成本中心", "起始期间", "结束期间", "计划类别", "差异阈值（%）"], ["Fiscal Year", "Controlling Area", "Cost Center", "Period From", "Period To", "Planning Category", "Variance Threshold Pct"]],
+    ["MM", "supplier-performance-risk", ["开始日期", "结束日期"], ["Date From", "Date To"]],
+  ];
+
+  for (const [module, slug, zhTitles, enTitles] of cases) {
+    const zh = await readPage("zh", "agents", module, slug);
+    const en = await readPage("en", "agents", module, slug);
+    const zhForm = zh.match(/<form class="agent-run-form"[\s\S]*?<\/form>/)?.[0] ?? "";
+    const enForm = en.match(/<form class="agent-run-form"[\s\S]*?<\/form>/)?.[0] ?? "";
+    for (const title of zhTitles) {
+      assert.ok(zhForm.includes(`<span>${title}</span>`), `${slug} zh form is missing ${title}`);
+      assert.ok(!enForm.includes(`<span>${title}</span>`), `${slug} en form contains ${title}`);
+    }
+    for (const title of enTitles) {
+      assert.ok(enForm.includes(`<span>${title}</span>`), `${slug} en form is missing ${title}`);
+      assert.ok(!zhForm.includes(`<span>${title}</span>`), `${slug} zh form contains ${title}`);
+    }
+  }
+});
+
 test("new MM detail pages render exact steps and fail-closed validation metadata", async () => {
   for (const slug of [
     "material-shortage-procurement-response",
@@ -86,6 +110,7 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   const zh = await readPage("zh", "agent-management");
   const en = await readPage("en", "agent-management");
   const component = await readFile(path.join("src", "components", "AgentManagementCenter.tsx"), "utf8");
+  const globalStyles = await readFile(path.join("src", "styles", "global.css"), "utf8");
   assert.match(zh, /Agent 管理中心/);
   assert.match(en, /Agent management center/);
   assert.match(component, /创建新版本/);
@@ -95,6 +120,14 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   assert.match(component, /validation-report/);
   assert.match(component, /expectedAgentHash/);
   assert.match(component, /validationReportDigest/);
+  assert.match(component, /agent-management-list/);
+  assert.match(component, /state=unpublished/);
+  assert.match(component, /method: "DELETE"/);
+  assert.match(component, /删除草稿/);
+  assert.match(component, /Delete draft/);
+  assert.doesNotMatch(component, /agent-card-grid/);
+  assert.match(globalStyles, /\.agent-management-list/);
+  assert.match(globalStyles, /@media \(max-width: 820px\)/);
 });
 
 test("material shortage inputs are localized, documented, and prefilled", async () => {
@@ -126,7 +159,7 @@ test("supplier performance accepts punctuated SAP identifiers and localizes run 
   const panelSource = await readFile(path.join("src", "components", "AgentRunPanel.astro"), "utf8");
   const supplier = manifest.execution.inputSchema.properties.supplier;
 
-  assert.equal(manifest.version, "0.2.1");
+  assert.equal(manifest.version, "0.2.2");
   assert.equal(supplier.maxLength, 10);
   assert.equal(supplier["x-sapba-sap-identifier"], true);
   assert.equal(supplier.pattern, undefined);
@@ -193,12 +226,19 @@ test("catalog and Agent run entry points are consistently localized", async () =
 
 test("dual-mode prototype renders free-query and run pages", async () => {
   const home = await readPage("zh");
+  const homeEn = await readPage("en");
   const ask = await readPage("zh", "ask");
+  const askEn = await readPage("en", "ask");
   const run = await readPage("zh", "run");
   const plugins = await readPage("zh", "plugins");
   const settings = await readPage("zh", "settings");
-  assert.match(home, /直接询问 SAP/);
+  assert.match(home, /自由查询/);
+  assert.match(homeEn, /Free query/);
+  assert.doesNotMatch(home, /没有合适的 Agent？直接询问 SAP/);
+  assert.doesNotMatch(homeEn, /No matching Agent\? Ask SAP directly/);
   assert.match(ask, /开始只读查询/);
+  assert.match(ask, /<title>自由查询 — SAP Business Agents<\/title>/);
+  assert.match(askEn, /<title>Free query — SAP Business Agents<\/title>/);
   assert.match(run, /查询进度/);
   assert.match(run, /业务结论/);
   assert.match(run, /各阶段结果/);
@@ -337,7 +377,8 @@ test("detail pages render workflow and step-level tools", async () => {
   assert.match(ap, /GET API_OPLACCTGDOCITEMCUBE_SRV@2\.0/);
   assert.match(ap, /evaluate_business_agent/);
   assert.match(globalStyles, /\.runtime-field-grid input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\[type="file"\]\):not\(\[type="hidden"\]\)\s*\{\s*height: 46px;/);
-  assert.match(globalStyles, /\.agent-document-body > section \+ section\s*\{\s*margin-block-start: 42px;/);
+  assert.match(globalStyles, /\.agent-document-body > section ~ section\s*\{\s*margin-block-start: 42px;/);
+  assert.doesNotMatch(globalStyles, /\.agent-document-body > section \+ section\s*\{/);
   assert.match(globalStyles, /\.agent-document-body > section > h2:first-child\s*\{\s*margin-block-start: 0;/);
   assert.match(globalStyles, /\.markdown-body > h2:first-child\s*\{/);
   assert.doesNotMatch(globalStyles, /\.markdown-body h2:first-child\s*\{/);
