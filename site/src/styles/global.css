@@ -1142,7 +1142,7 @@ select {
   letter-spacing: -0.02em;
 }
 
-.markdown-body h2:first-child {
+.markdown-body > h2:first-child {
   margin-top: 0;
 }
 
@@ -1520,6 +1520,10 @@ select {
   color: var(--color-text);
   padding: 11px 12px;
   font: inherit;
+}
+
+.runtime-field-grid input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]) {
+  height: 46px;
 }
 
 .free-query-form textarea:focus,
@@ -3273,6 +3277,18 @@ button:disabled {
 /* Agent-specific document sections use the SAP Skill Hub visual system. */
 .agent-document-body section {
   scroll-margin-top: calc(var(--header-height) + 20px);
+}
+
+.agent-document-body > section {
+  margin-block: 0;
+}
+
+.agent-document-body > section + section {
+  margin-block-start: 42px;
+}
+
+.agent-document-body > section > h2:first-child {
+  margin-block-start: 0;
 }
 
 .profile-grid {

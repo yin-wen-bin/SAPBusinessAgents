@@ -323,7 +323,10 @@ test("workflow builder is rendered and consistently localized", async () => {
 
 test("detail pages render workflow and step-level tools", async () => {
   const ap = await readPage("zh", "agents", "FI", "ap-payment");
+  const apEn = await readPage("en", "agents", "FI", "ap-payment");
+  const globalStyles = await readFile(path.join("src", "styles", "global.css"), "utf8");
   assert.match(ap, /工作流与 Tools/);
+  assert.match(apEn, /Workflow &amp; Tools/);
   assert.doesNotMatch(ap, /class="table-of-contents"/);
   assert.doesNotMatch(ap, /本页目录/);
   assert.doesNotMatch(ap, /class="tag-list detail-tags"/);
@@ -333,6 +336,11 @@ test("detail pages render workflow and step-level tools", async () => {
   assert.match(ap, /class="source-button detail-source-button"/);
   assert.match(ap, /GET API_OPLACCTGDOCITEMCUBE_SRV@2\.0/);
   assert.match(ap, /evaluate_business_agent/);
+  assert.match(globalStyles, /\.runtime-field-grid input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\[type="file"\]\):not\(\[type="hidden"\]\)\s*\{\s*height: 46px;/);
+  assert.match(globalStyles, /\.agent-document-body > section \+ section\s*\{\s*margin-block-start: 42px;/);
+  assert.match(globalStyles, /\.agent-document-body > section > h2:first-child\s*\{\s*margin-block-start: 0;/);
+  assert.match(globalStyles, /\.markdown-body > h2:first-child\s*\{/);
+  assert.doesNotMatch(globalStyles, /\.markdown-body h2:first-child\s*\{/);
 
   const closing = await readPage("zh", "agents", "FI", "month-end-closing");
   const grir = await readPage("zh", "agents", "FI", "gr-ir-clearing");
