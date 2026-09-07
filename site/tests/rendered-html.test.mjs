@@ -168,8 +168,9 @@ test("supplier performance accepts punctuated SAP identifiers and localizes run 
   assert.equal(supplier.maxLength, 10);
   assert.equal(supplier["x-sapba-sap-identifier"], true);
   assert.equal(supplier.pattern, undefined);
-  assert.match(zh, /允许企业供应商编码中的连字符/);
-  assert.match(en, /enterprise supplier IDs may contain non-control characters such as hyphens/);
+  assert.equal(supplier.description, undefined);
+  assert.doesNotMatch(zh, /允许企业供应商编码中的连字符/);
+  assert.doesNotMatch(en, /enterprise supplier IDs may contain non-control characters such as hyphens/);
   assert.match(zh, /准时足量交付率\(OTIF\)/);
   assert.match(en, /On Time In Full \(OTIF\)/);
   assert.match(zh, /<form class="agent-run-form" novalidate>/);

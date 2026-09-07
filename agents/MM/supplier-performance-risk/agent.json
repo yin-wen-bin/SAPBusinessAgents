@@ -520,10 +520,6 @@
           "title": {
             "zh": "供应商",
             "en": "Supplier"
-          },
-          "description": {
-            "zh": "输入 SAP 中的完整供应商代码；允许企业供应商编码中的连字符等非控制字符。",
-            "en": "Enter the complete SAP supplier ID; enterprise supplier IDs may contain non-control characters such as hyphens."
           }
         },
         "purchasing_organization": {
