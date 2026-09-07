@@ -14,7 +14,7 @@ const copy = locale === "zh" ? {
   capability: "工具能力", source: "来源", connection: "连接", authentication: "认证", health: "健康", workflowRefs: "工作流引用",
   connect: "安装 / 连接", refreshState: "刷新状态", disable: "停用", enable: "启用", healthCheck: "健康检查", reconnect: "重新认证", editConfig: "编辑配置",
   configuredByRuntime: "凭据由 Runtime 管理", adapters: "Runtime 适配器", blockers: "当前阻塞项", tools: "工具与规范能力绑定", sourceStatus: "来源状态",
-  bind: "保存绑定", sendDisabled: "邮件发送绑定默认关闭；明确启用后，每封邮件仍需人工审批。", noItems: "没有符合当前筛选条件的项目。",
+  bind: "保存绑定", chooseOperation: "选择邮件操作", bound: "已绑定", bindingDisabled: "已保存，当前停用", sendDisabled: "邮件发送绑定默认关闭；明确启用后，每封邮件仍需人工审批。", noItems: "没有符合当前筛选条件的项目。",
   missingConnection: "请先完成连接或认证", details: "查看连接、权限与诊断", success: "操作已完成。",
   runtime: "Runtime", method: "配置方式", runtimeApp: "Runtime 邮件 App", customMcp: "自定义 HTTP MCP", chooseApp: "选择邮件 App", noMailApps: "当前没有可用的邮件 App。你仍可配置 HTTP MCP。",
   serverId: "Server ID", displayName: "显示名称", serverUrl: "MCP 地址", authMode: "认证方式", oauth: "OAuth", bearerEnv: "Bearer Token 环境变量", noAuth: "无认证", envName: "环境变量名",
@@ -31,7 +31,7 @@ const copy = locale === "zh" ? {
   capability: "Tool capabilities", source: "Source", connection: "Connection", authentication: "Authentication", health: "Health", workflowRefs: "Workflow references",
   connect: "Install / connect", refreshState: "Refresh status", disable: "Disable", enable: "Enable", healthCheck: "Health check", reconnect: "Authenticate again", editConfig: "Edit configuration",
   configuredByRuntime: "Credentials are managed by the Runtime", adapters: "Runtime adapters", blockers: "Current blockers", tools: "Tools and normalized capability bindings", sourceStatus: "Source status",
-  bind: "Save binding", sendDisabled: "Mail send bindings start disabled. After explicit enablement, every message still requires human approval.", noItems: "No item matches the current filters.",
+  bind: "Save binding", chooseOperation: "Choose a mail operation", bound: "Bound", bindingDisabled: "Saved, currently disabled", sendDisabled: "Mail send bindings start disabled. After explicit enablement, every message still requires human approval.", noItems: "No item matches the current filters.",
   missingConnection: "Connect or authenticate first", details: "View connections, permissions, and diagnostics", success: "Operation completed.",
   runtime: "Runtime", method: "Setup method", runtimeApp: "Runtime mail app", customMcp: "Custom HTTP MCP", chooseApp: "Choose a mail app", noMailApps: "No mail app is currently available. You can still configure an HTTP MCP.",
   serverId: "Server ID", displayName: "Display name", serverUrl: "MCP URL", authMode: "Authentication", oauth: "OAuth", bearerEnv: "Bearer token environment variable", noAuth: "No authentication", envName: "Environment variable name",
@@ -255,21 +255,48 @@ const copy = locale === "zh" ? {
     } catch (error) { showSetupErrors([{ message: error.message }]); }
   };
 
+  const mailOperationsForTool = (item, tool) => {
+    const serverIdentity = `${item.native_id || ""} ${item.name || ""}`.toLowerCase();
+    const toolIdentity = `${tool.native_tool || ""} ${tool.title || ""}`.toLowerCase();
+    if (!["mail", "email", "gmail", "outlook"].some((word) => serverIdentity.includes(word) || toolIdentity.includes(word))) return [];
+    const operations = [];
+    if (["search", "list", "query", "find"].some((word) => toolIdentity.includes(word))) operations.push("search");
+    if (["read", "get", "fetch"].some((word) => toolIdentity.includes(word))) operations.push("read");
+    if (["send", "reply", "forward"].some((word) => toolIdentity.includes(word))) operations.push("send");
+    return operations;
+  };
+
   const createBindingControl = (item, tool) => {
-    const wrap = element("div", "plugin-tool-binding"); const summary = element("div"); summary.append(element("strong", "", tool.title || tool.native_tool), element("code", "", tool.native_tool));
-    const select = element("select"); for (const operation of ["search", "read", "send"]) select.append(new Option(`mail.v1/${operation}`, operation));
+    const existingBindings = (item.bindings || []).filter((value) => value.capability === "mail.v1" && value.native_tool === tool.native_tool);
+    const operations = [...new Set([...mailOperationsForTool(item, tool), ...existingBindings.map((value) => value.operation)])];
+    const preferredBinding = existingBindings.find((value) => value.enabled) || existingBindings[0];
+    const wrap = element("div", `plugin-tool-binding${existingBindings.length ? " is-bound" : ""}`);
+    const summary = element("div");
+    summary.append(element("strong", "", tool.title || tool.native_tool), element("code", "", tool.native_tool));
+    if (existingBindings.length) {
+      const stateText = existingBindings.map((value) => `${copy.bound}: mail.v1/${value.operation}${value.enabled ? "" : ` · ${copy.bindingDisabled}`}`).join(" · ");
+      summary.append(element("small", `plugin-binding-state${existingBindings.some((value) => value.enabled) ? " is-active" : " is-disabled"}`, stateText));
+    }
+    const select = element("select");
+    select.append(new Option(copy.chooseOperation, ""));
+    for (const operation of operations) select.append(new Option(`mail.v1/${operation}`, operation));
+    if (preferredBinding) select.value = preferredBinding.operation;
     const bind = element("button", "secondary-button", copy.bind);
+    const syncBindState = () => { bind.disabled = !item.connection || !select.value; };
+    select.addEventListener("change", syncBindState);
+    syncBindState();
     bind.addEventListener("click", async () => {
       bind.disabled = true;
       try {
         if (!item.connection) throw new Error(copy.missingConnection);
         const operation = select.value;
+        if (!operation) return;
         const existing = (item.bindings || []).find((value) => value.capability === "mail.v1" && value.operation === operation && value.native_tool === tool.native_tool);
         const enableBinding = operation !== "send" || Boolean(existing);
         if (operation === "send" && enableBinding && !window.confirm(copy.sendDisabled)) return;
         await request(`/api/plugins/connections/${encodeURIComponent(item.connection.connection_id)}/bindings/mail.v1/${operation}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ native_server: item.native_id, native_tool: tool.native_tool, expected_schema_hash: tool.schema_hash, enabled: enableBinding, argument_mapping: existing?.snapshot?.argument_mapping || {} }) });
         showNotice(operation === "send" && !enableBinding ? copy.sendDisabled : copy.success); await load();
-      } catch (error) { showNotice(error.message, "error"); } finally { bind.disabled = false; }
+      } catch (error) { showNotice(error.message, "error"); } finally { syncBindState(); }
     });
     wrap.append(summary, select, bind); return wrap;
   };
@@ -291,7 +318,7 @@ const copy = locale === "zh" ? {
       if (item.connection_status === "installed_non_callable") capabilities.append(element("p", "plugin-inline-warning", copy.installedNonCallable));
       const detail = element("details", "plugin-card-details"); detail.append(element("summary", "", copy.details)); const detailBody = element("div", "plugin-card-detail-body"); detailBody.append(element("p", "", copy.configuredByRuntime));
       if ((item.compatibility?.blockers || []).length) detailBody.append(element("p", "plugin-adapter-blocker", `${copy.blockers}: ${item.compatibility.blockers.join(", ")}`));
-      const callableTools = (item.tools || []).filter((tool) => !tool.display_only);
+      const callableTools = (item.tools || []).filter((tool) => !tool.display_only && (mailOperationsForTool(item, tool).length || (item.bindings || []).some((binding) => binding.capability === "mail.v1" && binding.native_tool === tool.native_tool)));
       if (callableTools.length) { detailBody.append(element("h3", "", copy.tools)); for (const tool of callableTools) detailBody.append(createBindingControl(item, tool)); } detail.append(detailBody);
       const actions = element("footer", "plugin-card-actions");
       if (item.source_kind === "local_plugin") {

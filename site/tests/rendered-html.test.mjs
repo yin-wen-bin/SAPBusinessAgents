@@ -182,6 +182,20 @@ test("supplier performance accepts punctuated SAP identifiers and localizes run 
   assert.match(panelSource, /caught instanceof RunCreateHttpError/);
 });
 
+test("primitive array Agent inputs use the compact resizable list field", async () => {
+  const forecast = await readPage("zh", "agents", "PP", "demand-forecast-planning");
+  const collection = await readPage("zh", "agents", "FI", "ar-collection");
+  const p2p = await readPage("zh", "agents", "MM", "procure-to-pay-status");
+  const globalStyles = await readFile(path.join("src", "styles", "global.css"), "utf8");
+
+  assert.match(forecast, /<textarea class="runtime-list-input" name="materials" rows="3"/);
+  assert.match(collection, /<textarea class="runtime-list-input" name="customers" rows="3"/);
+  assert.match(p2p, /<textarea class="runtime-list-input" name="purchase_orders" rows="3"/);
+  assert.doesNotMatch(forecast, /name="materials" rows="5"/);
+  assert.match(globalStyles, /\.runtime-field-grid \.runtime-list-input\s*\{\s*min-height: 82px;\s*resize: vertical;/);
+  assert.match(globalStyles, /\.runtime-field-grid > label\s*\{\s*align-content: start;/);
+});
+
 test("SD detail pages render nine execution-mapped workflows", async () => {
   const slugs = [
     "delivered-not-billed", "billing-block-diagnosis", "billing-completeness-check",
@@ -347,6 +361,9 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(plugins, /connections\/\$\{encodeURIComponent\(connectionId\)\}\/authenticate/);
   assert.match(plugins, /attempt < 60/);
   assert.match(plugins, /mail\.v1/);
+  assert.match(plugins, /选择邮件操作/);
+  assert.match(plugins, /mailOperationsForTool/);
+  assert.match(plugins, /plugin-binding-state/);
   assert.doesNotMatch(plugins, /name="(?:password|token|access_token|refresh_token)"/);
   assert.match(settings, /Agent Runtime 与 SDK/);
   assert.match(settings, /检查全部 Runtime/);

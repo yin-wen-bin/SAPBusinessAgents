@@ -177,8 +177,9 @@ const runtimeMessages = {
                 </fieldset>
               ) : property.type === "array" ? (
                 <textarea
+                  class="runtime-list-input"
                   name={name}
-                  rows={5}
+                  rows={3}
                   placeholder={property.placeholder?.[locale]}
                   data-value-type="array"
                   data-item-pattern={property.items?.pattern}
