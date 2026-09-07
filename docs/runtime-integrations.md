@@ -20,7 +20,9 @@ schema v2 仍可读取，但会按“不支持外部集成”处理。当前状�
 
 凭据所有者始终为 Runtime。平台不保存 OAuth token、刷新令牌或邮箱密码。
 Codex MCP 继续配置在用户级 `~/.codex/config.toml`，或可信项目的
-`.codex/config.toml`；平台只读取 App Server 返回的有效状态并触发认证流程。
+`.codex/config.toml`。插件页可以发现两种作用域，但只允许通过 App Server
+`config/batchWrite` 修改用户级配置；项目级或外部配置标记为 `runtime_external`，
+连接和认证可用，传输参数只读。
 
 ## 插件与连接 API
 
@@ -29,9 +31,16 @@ Codex MCP 继续配置在用户级 `~/.codex/config.toml`，或可信项目的
 - `GET /api/plugins/catalog`
 - `POST /api/plugins/catalog/refresh`
 - `GET /api/plugins/runtime-adapters`
+- `GET /api/plugins/setup-options?capability=mail.v1`
+- `POST /api/plugins/setup-drafts`
+- `GET /api/plugins/setup-drafts/{setup_id}`
+- `PUT /api/plugins/setup-drafts/{setup_id}`
+- `POST /api/plugins/setup-drafts/{setup_id}/validate`
+- `POST /api/plugins/setup-drafts/{setup_id}/commit`
 - `GET /api/plugins/connections`
 - `POST /api/plugins/catalog/{catalog_id}/connect`
 - `POST /api/plugins/connections/{connection_id}/refresh`
+- `POST /api/plugins/connections/{connection_id}/authenticate`
 - `PUT /api/plugins/connections/{connection_id}/enabled`
 - `GET /api/plugins/connections/{connection_id}/bindings`
 - `PUT /api/plugins/connections/{connection_id}/bindings/{capability}/{operation}`
@@ -40,8 +49,31 @@ Codex MCP 继续配置在用户级 `~/.codex/config.toml`，或可信项目的
 中不会自动合并，防止不同账号或不同工具契约被误认为同一连接。
 
 Codex App 未安装时，连接接口只返回 App Server 提供的 `installUrl`；平台不调用
-开发中的安装 RPC。MCP 需要登录时，连接接口返回 App Server OAuth URL，前端打开
-该 URL 后通过连接刷新接口轮询状态。
+开发中的安装 RPC。安装后必须刷新目录；App 本身只展示工具摘要，只有独立发现到的
+`mcp_server` 工具可以绑定。未出现 MCP Server 时 App 状态为
+`installed_non_callable`。MCP 需要登录时，连接接口返回 App Server OAuth URL，
+前端每两秒刷新连接状态，最多等待两分钟。
+
+## 前台邮箱配置
+
+“插件与连接”页的“添加邮箱服务”向导有两种入口：
+
+- Runtime 邮件 App：从 App Server 目录选择 Outlook Email 等邮件 App，打开其
+  `installUrl`，再重新扫描 MCP Server。
+- 自定义 HTTP MCP：写入 Codex 用户级配置。只允许 HTTPS，`localhost` 和
+  `127.0.0.1` 可使用 HTTP；认证限定为 OAuth、Bearer Token 环境变量或无认证。
+
+自定义 MCP 的 30 分钟草稿只保存 Server ID、显示名称、URL、认证类型、环境变量
+名称、超时和工具白名单。API 拒绝密码、Token 值、Cookie、静态 Header、带用户信息
+或 fragment 的 URL，也不开放 STDIO 命令。提交固定写入
+`default_tools_approval_mode = "prompt"`，随后调用 `config/mcpServer/reload` 并以
+`mcpServerStatus/list` 验证状态和工具契约。配置写入结果不确定时，平台通过
+`config/read` 核对；仍无法确认则锁定草稿为 `configuration_outcome_unknown`，不会
+盲目重写。
+
+草稿提交按 `setup_id` 幂等。平台连接只保存配置 digest 与来源，不复制 MCP 完整
+配置。首期用停用代替删除；被工作流引用的连接停用后，运行返回
+`connection_required`。
 
 ## 邮件能力
 

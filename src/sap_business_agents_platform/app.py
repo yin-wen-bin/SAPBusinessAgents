@@ -169,6 +169,23 @@ class IntegrationBindingUpdate(BaseModel):
     argument_mapping: dict[str, Any] = Field(default_factory=dict)
 
 
+class IntegrationSetupDraftCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    integration_backend_id: str
+    mode: str = "http_mcp"
+    connection_id: str | None = None
+    native_id: str = ""
+    display_name: str = ""
+    configuration: dict[str, Any] = Field(default_factory=dict)
+
+
+class IntegrationSetupDraftUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    native_id: str | None = None
+    display_name: str | None = None
+    configuration: dict[str, Any] | None = None
+
+
 class IntegrationMailActionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     draft: dict[str, Any]
@@ -445,6 +462,63 @@ def create_app(
     def list_plugins() -> list[dict[str, Any]]:
         return plugin_manager.list()
 
+    @app.get("/api/plugins/setup-options")
+    def list_plugin_setup_options(
+        capability: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            items = integrations.setup_options(capability)
+            return {"items": items, "total": len(items)}
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.post("/api/plugins/setup-drafts", status_code=201)
+    async def create_plugin_setup_draft(
+        payload: IntegrationSetupDraftCreate,
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "setup": await integrations.create_setup_draft(
+                    payload.model_dump()
+                )
+            }
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.get("/api/plugins/setup-drafts/{setup_id}")
+    def get_plugin_setup_draft(setup_id: str) -> dict[str, Any]:
+        try:
+            return {"setup": integrations.get_setup_draft(setup_id)}
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.put("/api/plugins/setup-drafts/{setup_id}")
+    def update_plugin_setup_draft(
+        setup_id: str, payload: IntegrationSetupDraftUpdate
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "setup": integrations.update_setup_draft(
+                    setup_id, payload.model_dump(exclude_unset=True)
+                )
+            }
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.post("/api/plugins/setup-drafts/{setup_id}/validate")
+    async def validate_plugin_setup_draft(setup_id: str) -> dict[str, Any]:
+        try:
+            return await integrations.validate_setup_draft(setup_id)
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.post("/api/plugins/setup-drafts/{setup_id}/commit")
+    async def commit_plugin_setup_draft(setup_id: str) -> dict[str, Any]:
+        try:
+            return await integrations.commit_setup_draft(setup_id)
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
     @app.get("/api/plugins/catalog")
     async def list_plugin_catalog(
         runtime_provider_id: str | None = None,
@@ -519,6 +593,13 @@ def create_app(
     async def refresh_plugin_connection(connection_id: str) -> dict[str, Any]:
         try:
             return {"connection": await integrations.refresh_connection(connection_id)}
+        except IntegrationError as exc:
+            raise _integration_http_error(exc) from exc
+
+    @app.post("/api/plugins/connections/{connection_id}/authenticate")
+    async def authenticate_plugin_connection(connection_id: str) -> dict[str, Any]:
+        try:
+            return await integrations.authenticate_connection(connection_id)
         except IntegrationError as exc:
             raise _integration_http_error(exc) from exc
 
@@ -2531,8 +2612,16 @@ def _integration_http_error(exc: IntegrationError) -> HTTPException:
         "integration_connection_not_found",
         "integration_binding_not_found",
         "integration_action_not_found",
+        "integration_setup_draft_not_found",
     }:
         status = 404
+    elif exc.code in {
+        "integration_setup_invalid",
+        "integration_setup_forbidden_field",
+        "integration_setup_url_credentials_forbidden",
+        "integration_setup_url_secret_forbidden",
+    }:
+        status = 422
     elif exc.code in {
         "integration_approval_required",
         "permission_required",

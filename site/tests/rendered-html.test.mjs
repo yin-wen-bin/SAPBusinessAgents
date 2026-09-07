@@ -339,6 +339,15 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(plugins, /SAP 只读执行不会继承外部连接/);
   assert.match(plugins, /Runtime App/);
   assert.match(plugins, /MCP Server/);
+  assert.match(plugins, /添加邮箱服务/);
+  assert.match(plugins, /data-setup-form/);
+  assert.match(plugins, /自定义 HTTP MCP/);
+  assert.match(plugins, /Bearer Token 环境变量/);
+  assert.match(plugins, /setup-drafts/);
+  assert.match(plugins, /connections\/\$\{encodeURIComponent\(connectionId\)\}\/authenticate/);
+  assert.match(plugins, /attempt < 60/);
+  assert.match(plugins, /mail\.v1/);
+  assert.doesNotMatch(plugins, /name="(?:password|token|access_token|refresh_token)"/);
   assert.match(settings, /Agent Runtime 与 SDK/);
   assert.match(settings, /检查全部 Runtime/);
   assert.match(settings, /data-sdk-manager/);

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -88,6 +90,48 @@ class _FakeAdapter:
             "blockers": [],
         }
 
+    def describe_setup_options(self) -> dict[str, Any]:
+        return {
+            "configuration_scope": "user",
+            "credential_owner": "runtime",
+            "modes": [],
+            "blockers": [],
+        }
+
+    async def read_setup_configuration(
+        self, connection: dict[str, Any]
+    ) -> dict[str, Any]:
+        del connection
+        raise IntegrationError(
+            "Setup is unavailable in this fake.",
+            code="runtime_integration_configuration_unavailable",
+        )
+
+    async def validate_setup(self, draft: dict[str, Any]) -> dict[str, Any]:
+        del draft
+        raise IntegrationError(
+            "Setup is unavailable in this fake.",
+            code="runtime_integration_configuration_unavailable",
+        )
+
+    async def commit_setup(self, draft: dict[str, Any]) -> dict[str, Any]:
+        del draft
+        raise IntegrationError(
+            "Setup is unavailable in this fake.",
+            code="runtime_integration_configuration_unavailable",
+        )
+
+    async def begin_authentication(
+        self, connection: dict[str, Any]
+    ) -> dict[str, Any]:
+        del connection
+        return {
+            "outcome": "open_auth_url",
+            "url": "https://login.example.test/oauth",
+            "status": "authentication_required",
+            "auth_status": "not_logged_in",
+        }
+
     async def list_catalog(self, force_refresh: bool = False) -> list[dict[str, Any]]:
         del force_refresh
         tool = deepcopy(self.contract)
@@ -172,6 +216,7 @@ class _FakeAdapter:
 class _FakeCodexTransport:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.config: dict[str, Any] = {"mcp_servers": {}}
 
     async def request(
         self,
@@ -202,6 +247,7 @@ class _FakeCodexTransport:
                         "name": "Outlook",
                         "description": "Outlook app",
                         "installUrl": "https://example.test/install",
+                        "oauth": {"access_token": "must-not-leak"},
                         "toolSummaries": [{"name": "search_mail"}],
                     }
                 ],
@@ -219,6 +265,27 @@ class _FakeCodexTransport:
                 ]
             }
         if method == "mcpServerStatus/list":
+            configured = []
+            for name, value in self.config["mcp_servers"].items():
+                configured.append(
+                    {
+                        "name": name,
+                        "authStatus": (
+                            "notLoggedIn"
+                            if value.get("auth") == "oauth"
+                            else "loggedIn"
+                        ),
+                        "status": "ready",
+                        "serverInfo": {"title": name, "description": "Configured MCP"},
+                        "tools": {
+                            "search_mail": {
+                                "name": "search_mail",
+                                "description": "Search email",
+                                "inputSchema": {"type": "object"},
+                            }
+                        },
+                    }
+                )
             return {
                 "data": [
                     {
@@ -238,10 +305,23 @@ class _FakeCodexTransport:
                                 },
                             }
                         },
-                    }
+                    },
+                    *configured,
                 ],
                 "nextCursor": None,
             }
+        if method == "config/read":
+            return {"config": deepcopy(self.config)}
+        if method == "config/batchWrite":
+            for edit in params.get("edits") or []:
+                prefix, name = str(edit["keyPath"]).split(".", 1)
+                assert prefix == "mcp_servers"
+                self.config["mcp_servers"][name] = deepcopy(edit["value"])
+            return {}
+        if method == "config/mcpServer/reload":
+            return {}
+        if method == "mcpServer/oauth/login":
+            return {"authorizationUrl": "https://login.example.test/oauth"}
         if method == "config/value/write":
             return {}
         raise AssertionError(method)
@@ -292,11 +372,446 @@ def test_codex_adapter_uses_public_app_server_catalog_contract(tmp_path: Path) -
 
     assert [item["source_kind"] for item in items] == ["app", "mcp_server"]
     assert items[0]["installed"] is True
+    assert items[0]["connection_status"] == "installed_non_callable"
     assert items[0]["tools"][0]["display_only"] is True
+    assert "must-not-leak" not in json.dumps(items)
     assert items[1]["auth_status"] == "logged_in"
     assert items[1]["health_status"] == "healthy"
     contract = asyncio.run(adapter.get_tool_contract("outlook-email", "send_mail"))
     assert contract["input_schema"]["properties"]["subject"]["type"] == "string"
+
+
+class _FailingSourceCodexTransport(_FakeCodexTransport):
+    def __init__(self, failing_method: str) -> None:
+        super().__init__()
+        self.failing_method = failing_method
+
+    async def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        approval_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if method == self.failing_method:
+            raise IntegrationError(
+                f"{method} failed with https://example.test/path?secret=value",
+                code="test_source_failed",
+            )
+        return await super().request(
+            method, params, approval_context=approval_context
+        )
+
+
+class _AmbiguousWriteCodexTransport(_FakeCodexTransport):
+    def __init__(self, *, write_completed: bool) -> None:
+        super().__init__()
+        self.write_completed = write_completed
+
+    async def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        approval_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if method == "config/batchWrite":
+            if self.write_completed:
+                await super().request(
+                    method, params, approval_context=approval_context
+                )
+            raise ConnectionError("connection closed before write acknowledgement")
+        return await super().request(
+            method, params, approval_context=approval_context
+        )
+
+
+class _FailingAuthCodexTransport(_FakeCodexTransport):
+    async def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        approval_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if method == "mcpServer/oauth/login":
+            raise ConnectionError("OAuth endpoint unavailable")
+        return await super().request(
+            method, params, approval_context=approval_context
+        )
+
+
+def test_codex_catalog_sources_fail_independently(tmp_path: Path) -> None:
+    app_failure = CodexAppServerIntegrationAdapter(
+        tmp_path,
+        {"features": {"directToolCall": True}},
+        transport=_FailingSourceCodexTransport("app/list"),
+    )
+    mcp_items = asyncio.run(app_failure.list_catalog(force_refresh=True))
+    assert [item["source_kind"] for item in mcp_items] == ["mcp_server"]
+    app_status = app_failure.describe_capabilities()["source_status"]["app"]
+    assert app_status["status"] == "error"
+    assert "secret=value" not in app_status["error"]["message"]
+
+    mcp_failure = CodexAppServerIntegrationAdapter(
+        tmp_path,
+        {"features": {"directToolCall": True}},
+        transport=_FailingSourceCodexTransport("mcpServerStatus/list"),
+    )
+    app_items = asyncio.run(mcp_failure.list_catalog(force_refresh=True))
+    assert [item["source_kind"] for item in app_items] == ["app"]
+    assert mcp_failure.describe_capabilities()["source_status"]["mcp_server"][
+        "status"
+    ] == "error"
+
+
+def test_http_mcp_setup_writes_user_config_and_starts_oauth(tmp_path: Path) -> None:
+    transport = _FakeCodexTransport()
+    adapter = CodexAppServerIntegrationAdapter(
+        tmp_path,
+        {
+            "resource_kinds": ["app", "mcp_server"],
+            "features": {
+                "catalog": True,
+                "configuredDiscovery": True,
+                "status": True,
+                "authentication": True,
+                "configuration": True,
+                "directToolCall": True,
+            },
+            "readiness": "production",
+        },
+        transport=transport,
+    )
+    gateway = IntegrationGateway(
+        _LocalPlugins(),
+        _SDKManager(),
+        IntegrationStateStore(tmp_path / "platform.sqlite3"),
+        [adapter],
+    )
+
+    options = gateway.setup_options("mail.v1")
+    assert options[0]["enabled"] is True
+    assert [mode["id"] for mode in options[0]["modes"]] == [
+        "runtime_app",
+        "http_mcp",
+    ]
+
+    draft = asyncio.run(
+        gateway.create_setup_draft(
+            {
+                "integration_backend_id": "codex-app-server",
+                "mode": "http_mcp",
+                "native_id": "mail-team",
+                "display_name": "Team Mail",
+                "configuration": {
+                    "url": "https://mail.example.test/mcp?tenant=team",
+                    "auth_mode": "oauth",
+                    "enabled_tools": ["search_mail"],
+                },
+            }
+        )
+    )
+    validation = asyncio.run(gateway.validate_setup_draft(draft["setup_id"]))
+    assert validation["valid"] is True
+
+    committed = asyncio.run(gateway.commit_setup_draft(draft["setup_id"]))
+    assert committed["outcome"] == "open_auth_url"
+    assert committed["url"] == "https://login.example.test/oauth"
+    assert committed["connection"]["metadata"]["configuration_origin"] == (
+        "platform_user_config"
+    )
+    assert committed["connection"]["status"] == "authentication_required"
+    saved_config = transport.config["mcp_servers"]["mail-team"]
+    assert saved_config == {
+        "url": "https://mail.example.test/mcp?tenant=team",
+        "enabled": True,
+        "default_tools_approval_mode": "prompt",
+        "auth": "oauth",
+        "enabled_tools": ["search_mail"],
+    }
+    repeated = asyncio.run(gateway.commit_setup_draft(draft["setup_id"]))
+    assert repeated["outcome"] == "already_committed"
+    assert len(
+        [call for call in transport.calls if call[0] == "config/batchWrite"]
+    ) == 1
+
+
+def test_http_mcp_setup_confirms_or_locks_ambiguous_writes(tmp_path: Path) -> None:
+    async def exercise(write_completed: bool, database_name: str) -> tuple[
+        IntegrationGateway, dict[str, Any]
+    ]:
+        adapter = CodexAppServerIntegrationAdapter(
+            tmp_path,
+            {"features": {"configuration": True, "directToolCall": True}},
+            transport=_AmbiguousWriteCodexTransport(
+                write_completed=write_completed
+            ),
+        )
+        gateway = IntegrationGateway(
+            _LocalPlugins(),
+            _SDKManager(),
+            IntegrationStateStore(tmp_path / database_name),
+            [adapter],
+        )
+        draft = await gateway.create_setup_draft(
+            {
+                "integration_backend_id": "codex-app-server",
+                "mode": "http_mcp",
+                "native_id": f"ambiguous-{write_completed}",
+                "display_name": "Ambiguous Mail",
+                "configuration": {
+                    "url": "https://mail.example.test/mcp",
+                    "auth_mode": "none",
+                },
+            }
+        )
+        return gateway, draft
+
+    confirmed_gateway, confirmed_draft = asyncio.run(
+        exercise(True, "confirmed.sqlite3")
+    )
+    confirmed = asyncio.run(
+        confirmed_gateway.commit_setup_draft(confirmed_draft["setup_id"])
+    )
+    assert confirmed["connection"]["status"] == "ready"
+
+    unknown_gateway, unknown_draft = asyncio.run(
+        exercise(False, "unknown.sqlite3")
+    )
+    try:
+        asyncio.run(unknown_gateway.commit_setup_draft(unknown_draft["setup_id"]))
+    except IntegrationError as exc:
+        assert exc.code == "configuration_outcome_unknown"
+    else:
+        raise AssertionError("An unconfirmed config write must fail closed")
+    assert unknown_gateway.get_setup_draft(unknown_draft["setup_id"])[
+        "status"
+    ] == "configuration_outcome_unknown"
+
+
+def test_http_mcp_setup_stays_committed_when_oauth_start_fails(tmp_path: Path) -> None:
+    adapter = CodexAppServerIntegrationAdapter(
+        tmp_path,
+        {"features": {"configuration": True, "directToolCall": True}},
+        transport=_FailingAuthCodexTransport(),
+    )
+    gateway = IntegrationGateway(
+        _LocalPlugins(),
+        _SDKManager(),
+        IntegrationStateStore(tmp_path / "platform.sqlite3"),
+        [adapter],
+    )
+    draft = asyncio.run(
+        gateway.create_setup_draft(
+            {
+                "integration_backend_id": "codex-app-server",
+                "mode": "http_mcp",
+                "native_id": "oauth-retry-mail",
+                "display_name": "OAuth Retry Mail",
+                "configuration": {
+                    "url": "https://mail.example.test/mcp",
+                    "auth_mode": "oauth",
+                },
+            }
+        )
+    )
+
+    result = asyncio.run(gateway.commit_setup_draft(draft["setup_id"]))
+
+    assert result["outcome"] == "authentication_required"
+    assert result["connection"]["status"] == "authentication_required"
+    assert result["authentication_warning"]["code"] == (
+        "runtime_integration_authentication_unavailable"
+    )
+    assert gateway.get_setup_draft(draft["setup_id"])["status"] == "committed"
+    assert asyncio.run(gateway.commit_setup_draft(draft["setup_id"]))[
+        "outcome"
+    ] == "already_committed"
+
+
+def test_http_mcp_setup_rejects_secrets_before_persistence(tmp_path: Path) -> None:
+    adapter = CodexAppServerIntegrationAdapter(
+        tmp_path,
+        {"features": {"configuration": True, "directToolCall": True}},
+        transport=_FakeCodexTransport(),
+    )
+    state = IntegrationStateStore(tmp_path / "platform.sqlite3")
+    gateway = IntegrationGateway(_LocalPlugins(), _SDKManager(), state, [adapter])
+    try:
+        asyncio.run(
+            gateway.create_setup_draft(
+                {
+                    "integration_backend_id": "codex-app-server",
+                    "mode": "http_mcp",
+                    "native_id": "mail",
+                    "display_name": "Mail",
+                    "configuration": {
+                        "url": "https://mail.example.test/mcp",
+                        "auth_mode": "oauth",
+                        "password": "must-not-persist",
+                    },
+                }
+            )
+        )
+    except IntegrationError as exc:
+        assert exc.code == "integration_setup_forbidden_field"
+    else:
+        raise AssertionError("Secret setup fields must be rejected")
+    assert b"must-not-persist" not in (tmp_path / "platform.sqlite3").read_bytes()
+
+    try:
+        asyncio.run(
+            gateway.create_setup_draft(
+                {
+                    "integration_backend_id": "codex-app-server",
+                    "mode": "http_mcp",
+                    "native_id": "mail-query-secret",
+                    "display_name": "Mail",
+                    "configuration": {
+                        "url": "https://mail.example.test/mcp?access_token=must-not-persist",
+                        "auth_mode": "oauth",
+                    },
+                }
+            )
+        )
+    except IntegrationError as exc:
+        assert exc.code == "integration_setup_url_secret_forbidden"
+    else:
+        raise AssertionError("Secret MCP URL query parameters must be rejected")
+    assert b"must-not-persist" not in (tmp_path / "platform.sqlite3").read_bytes()
+
+
+def test_http_mcp_setup_api_lifecycle_and_external_edit_guard(tmp_path: Path) -> None:
+    adapter = CodexAppServerIntegrationAdapter(
+        tmp_path,
+        {
+            "features": {
+                "configuration": True,
+                "authentication": True,
+                "directToolCall": True,
+            }
+        },
+        transport=_FakeCodexTransport(),
+    )
+    gateway = IntegrationGateway(
+        _LocalPlugins(),
+        _SDKManager(),
+        IntegrationStateStore(tmp_path / "platform.sqlite3"),
+        [adapter],
+    )
+    app = create_app(_settings(tmp_path), integration_gateway=gateway)
+
+    with TestClient(app) as client:
+        options = client.get("/api/plugins/setup-options?capability=mail.v1")
+        created = client.post(
+            "/api/plugins/setup-drafts",
+            json={
+                "integration_backend_id": "codex-app-server",
+                "mode": "http_mcp",
+                "native_id": "frontdesk-mail",
+                "display_name": "Frontdesk Mail",
+                "configuration": {
+                    "url": "https://mail.example.test/mcp",
+                    "auth_mode": "bearer_env",
+                    "bearer_token_env_var": "FRONTDESK_MAIL_TOKEN",
+                    "tool_timeout_sec": 45,
+                },
+            },
+        )
+        setup_id = created.json()["setup"]["setup_id"]
+        fetched = client.get(f"/api/plugins/setup-drafts/{setup_id}")
+        validated = client.post(
+            f"/api/plugins/setup-drafts/{setup_id}/validate"
+        )
+        committed = client.post(f"/api/plugins/setup-drafts/{setup_id}/commit")
+        repeated = client.post(f"/api/plugins/setup-drafts/{setup_id}/commit")
+
+    assert options.status_code == 200
+    assert options.json()["items"][0]["configuration_scope"] == "user"
+    assert created.status_code == 201
+    assert fetched.status_code == 200
+    assert validated.json()["valid"] is True
+    assert committed.status_code == 200
+    assert committed.json()["connection"]["metadata"]["configuration_origin"] == (
+        "platform_user_config"
+    )
+    assert repeated.json()["outcome"] == "already_committed"
+    response_text = " ".join(
+        [created.text, fetched.text, validated.text, committed.text, repeated.text]
+    )
+    assert "FRONTDESK_MAIL_TOKEN" in response_text
+    assert "token-secret-value" not in response_text
+
+    external = next(
+        item
+        for item in asyncio.run(gateway.list_catalog(force_refresh=True))
+        if item["native_id"] == "outlook-email"
+        and item["source_kind"] == "mcp_server"
+    )
+    external_connection = asyncio.run(gateway.connect(external["catalog_id"]))[
+        "connection"
+    ]
+    try:
+        asyncio.run(
+            gateway.create_setup_draft(
+                {
+                    "integration_backend_id": "codex-app-server",
+                    "mode": "http_mcp",
+                    "connection_id": external_connection["connection_id"],
+                }
+            )
+        )
+    except IntegrationError as exc:
+        assert exc.code == "integration_setup_external_configuration_read_only"
+    else:
+        raise AssertionError("Runtime-external MCP configuration must remain read-only")
+
+
+def test_http_mcp_setup_validation_and_expiry(tmp_path: Path) -> None:
+    adapter = CodexAppServerIntegrationAdapter(
+        tmp_path,
+        {"features": {"configuration": True, "directToolCall": True}},
+        transport=_FakeCodexTransport(),
+    )
+    state = IntegrationStateStore(tmp_path / "platform.sqlite3")
+    gateway = IntegrationGateway(_LocalPlugins(), _SDKManager(), state, [adapter])
+    draft = asyncio.run(
+        gateway.create_setup_draft(
+            {
+                "integration_backend_id": "codex-app-server",
+                "mode": "http_mcp",
+                "native_id": "bad id",
+                "display_name": "Invalid Mail",
+                "configuration": {
+                    "url": "http://mail.example.test/mcp#fragment",
+                    "auth_mode": "bearer_env",
+                    "bearer_token_env_var": "not an env name",
+                },
+            }
+        )
+    )
+    validation = asyncio.run(gateway.validate_setup_draft(draft["setup_id"]))
+    codes = {error["code"] for error in validation["errors"]}
+    assert {
+        "runtime_configuration_id_invalid",
+        "integration_setup_https_required",
+        "integration_setup_url_fragment_forbidden",
+        "integration_setup_environment_variable_invalid",
+    }.issubset(codes)
+
+    with sqlite3.connect(state.path) as conn:
+        conn.execute(
+            "UPDATE integration_setup_drafts SET expires_at = ? WHERE setup_id = ?",
+            ("2000-01-01T00:00:00+00:00", draft["setup_id"]),
+        )
+        conn.commit()
+    try:
+        gateway.get_setup_draft(draft["setup_id"])
+    except IntegrationError as exc:
+        assert exc.code == "integration_setup_draft_not_found"
+    else:
+        raise AssertionError("An expired mutable setup draft must be removed lazily")
 
 
 def test_unified_catalog_preserves_local_and_runtime_identity(tmp_path: Path) -> None:
@@ -473,6 +988,13 @@ def test_workbuddy_and_reserved_adapters_fail_closed() -> None:
         "workbuddy", "workbuddy-mcp", capabilities
     )
     assert adapter.describe_capabilities()["features"]["directToolCall"] is False
+    assert adapter.describe_setup_options()["modes"] == []
+    try:
+        asyncio.run(adapter.validate_setup({}))
+    except IntegrationError as exc:
+        assert exc.code == "runtime_integration_configuration_unavailable"
+    else:
+        raise AssertionError("WorkBuddy setup must remain unavailable")
     try:
         asyncio.run(adapter.invoke_exact({}, {}, {}, None))
     except IntegrationError as exc:
