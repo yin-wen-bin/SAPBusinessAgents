@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "intelligent-sourcing-rfq",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.1.1",
+  "latest_version": "0.1.1",
+  "active_digest": "sha256:7b4f98114f763e1a402f05efc52672b0f8d0b2f614bcd51a352bd5ffe2ed0842",
+  "published_at": "2026-09-08T05:52:42.490667+00:00",
+  "git_branch": "codex/agent-intelligent-sourcing-rfq-publish-v0.1.1-c97824d8",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:52:42.517848+00:00",
+  "deactivated_at": null
+}
