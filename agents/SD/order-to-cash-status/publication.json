@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "order-to-cash-status",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.1.2",
+  "latest_version": "0.1.2",
+  "active_digest": "sha256:c404802fa1ea8cfa65ad90e093fd3f93920804005085d613c6d02ea28425d9dc",
+  "published_at": "2026-09-08T05:53:07.640946+00:00",
+  "git_branch": "codex/agent-order-to-cash-status-publish-v0.1.2-cfd415ad",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:53:07.667282+00:00",
+  "deactivated_at": null
+}
