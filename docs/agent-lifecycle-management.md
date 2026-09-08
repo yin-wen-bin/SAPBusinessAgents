@@ -73,3 +73,15 @@ node site/tests/browser/agent-management.mjs
 ```
 
 2026-09-06 本轮回归：完整 Python 为 661 passed / 1 skipped；跳过项是本机无符号链接创建权限的外部附件测试，登记路径越界与拒绝路径参数测试已通过。站点 `validate`、`check`（0 errors / warnings）及 38 项测试通过；9 组浏览器检查覆盖两种语言、三种视口、加载/状态场景及会话/单次运行创建闭环。本轮接入与状态同步测试没有新增 SAP 业务查询。
+
+## 文案版本与原验收 / Documentation versions and original acceptance
+
+只修改README或共享翻译不递增Agent版本。修改正式清单摘要/步骤文案时，具有可复用PASS的固定Agent走patch发布；执行、Schema和规则摘要必须完全相同。保留原验收模式、日期、Provider、比较结果、范围、限制和报告路径，单独记录documentationReuse来源版本/摘要与文案复核时间。复核时间不是新的SAP验收日期。未验收版本保留草稿，停用版本不会因改文案而启用。
+
+README-only or shared-translation changes do not bump Agent versions. Manifest summary/step copy uses a patch release only with reusable PASS acceptance and unchanged execution/schema/rules. Preserve original mode, date, Provider, comparisons, scope, limitations and report path; record documentationReuse provenance and review time separately. Review time is not a new SAP test date. Unaccepted changes remain drafts and inactive Agents are not activated by editing copy.
+
+## English user guide
+
+Use Agent management for deterministic fixed Agents, not platform assistants. Create or import a draft, edit structurally or through Runtime, review the Diff, validate, then publish/activate through the lifecycle gates. Draft deletion requires exact Agent ID confirmation and revision checks; published versions use the separate stricter permanent-deletion gate. Validation runs and their evidence survive draft deletion.
+
+An active Agent and an accepted Agent are distinct states. Local publication creates a branch and commit but never pushes. Running tasks retain snapshots, and published workflows retain pinned historical versions. Deactivation blocks new work; it does not cancel running tasks. See the Chinese technical sections above for interface IDs and regression entry points.

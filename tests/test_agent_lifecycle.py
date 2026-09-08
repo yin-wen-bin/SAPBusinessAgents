@@ -187,13 +187,24 @@ def _write_active_agent(service: AgentLifecycleService, root: Path) -> dict:
         {"zh": "测试固定Agent", "en": "Test Fixed Agent"},
     )
     package["manifest"]["version"] = "1.0.0"
+    package["manifest"]["inputs"] = {"zh": ["范围"], "en": ["Scope"]}
+    package["manifest"]["execution"]["inputSchema"]["properties"] = {
+        "scope": {"type": "string", "title": {"zh": "范围", "en": "Scope"}}
+    }
     package["manifest"]["validation"] = {
         "verdict": "PASS",
         "executable": True,
         "acceptanceMode": "deterministic_runtime",
         "fixedAgentComparison": "MATCH",
         "freeQueryComparison": "NOT_TESTED",
+        "evidenceScope": "bounded",
+        "testedAt": "2026-01-01T00:00:00Z",
+        "providers": ["embedded-odata"],
+        "summary": {"zh": "原始限定范围验收。", "en": "Original bounded acceptance."},
+        "reportPath": "docs/acceptance.md",
+        "blockingLimitations": [],
     }
+    package["files"]["docs/acceptance.md"] = "# Original acceptance\n"
     directory = root / "agents" / "Common" / "managed-test-agent"
     service._write_package(directory, package)
     return package["manifest"]
@@ -518,9 +529,14 @@ def test_inactive_agent_is_hidden_from_business_catalog_but_available_to_managem
     assert service.catalog("inactive")[0]["id"] == "managed-test-agent"
 
 
-def test_metadata_only_version_reuses_pass_acceptance_and_publishes_local_commit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", ["deterministic_runtime", "three_stage"])
+def test_metadata_only_version_reuses_pass_acceptance_and_publishes_local_commit(tmp_path: Path, mode: str) -> None:
     service, _store, _settings = _service(tmp_path)
     current = _write_active_agent(service, tmp_path)
+    current["validation"]["acceptanceMode"] = mode
+    if mode == "three_stage":
+        current["validation"]["freeQueryComparison"] = "MATCH"
+    service._write_json(service.agents._path(current["slug"]), current)
     (tmp_path / ".gitignore").write_text(".local-data/\n.prototype/\n", encoding="utf-8")
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
@@ -560,6 +576,12 @@ def test_metadata_only_version_reuses_pass_acceptance_and_publishes_local_commit
     assert result["active"] is True
     assert len(result["commit_sha"]) == 40
     assert service.agents.get("managed-test-agent")["version"] == "1.0.1"
+    published = service.agents.get("managed-test-agent")["validation"]
+    assert {k: v for k, v in published.items() if k != "documentationReuse"} == current["validation"]
+    assert published["documentationReuse"]["sourceVersion"] == "1.0.0"
+    assert published["documentationReuse"]["executionDigest"] == validated["validation"]["execution_digest"]
+    assert published["testedAt"] != published["documentationReuse"]["reviewedAt"]
+    assert validated["validation"]["sap_get_count"] == 0
     assert (tmp_path / "agents" / "Common" / "managed-test-agent" / "versions" / "1.0.0" / "agent.json").is_file()
     assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout == ""
 
@@ -568,3 +590,42 @@ def test_permanent_delete_is_blocked_while_agent_is_active(tmp_path: Path) -> No
     service, _store, _settings = _service(tmp_path)
     _write_active_agent(service, tmp_path)
     assert "agent_must_be_inactive" in service._delete_blockers("managed-test-agent")
+
+
+def test_documentation_reuse_rejects_changed_acceptance_before_git(tmp_path: Path):
+    service, _, _ = _service(tmp_path)
+    current = _write_active_agent(service, tmp_path)
+    draft = service.create_version_draft(current["slug"], bump="patch", expected_version=current["version"], expected_hash=agent_digest(current))
+    service.validate(draft["draft_id"])
+    current["validation"]["testedAt"] = "2026-02-01T00:00:00Z"
+    service._write_json(service.agents._path(current["slug"]), current)
+    with pytest.raises(AgentLifecycleError) as error:
+        service.publish(draft["draft_id"], AgentPublishRequest(expectedRevision=1, targetVersion="1.0.1"))
+    assert error.value.code == "agent_validation_report_conflict"
+    assert not (tmp_path / ".git").exists()
+
+
+def test_documentation_package_requires_full_catalog_and_report(tmp_path: Path):
+    service, _, _ = _service(tmp_path)
+    _write_active_agent(service, tmp_path)
+    package = service._capture_package(tmp_path / "agents/Common/managed-test-agent")
+    service._validate_documentation_package(package)
+    del package["manifest"]["validation"]["testedAt"]
+    with pytest.raises(AgentLifecycleError) as error:
+        service._validate_documentation_package(package)
+    assert error.value.code == "agent_package_invalid"
+
+
+def test_publication_capture_excludes_runtime_cache_and_local_environment(tmp_path: Path):
+    service, _, _ = _service(tmp_path)
+    _write_active_agent(service, tmp_path)
+    directory = tmp_path / "agents/Common/managed-test-agent"
+    (directory / "__pycache__").mkdir()
+    (directory / "__pycache__/test.pyc").write_bytes(b"cache")
+    (directory / ".env").write_text("TEST_ONLY=not-a-real-secret")
+    package = service._capture_package(directory)
+    assert not any("__pycache__" in p or p == ".env" for p in package["files"])
+    archive = directory / "versions/1.0.0"
+    service._copy_current_package(directory, archive)
+    assert not (archive / ".env").exists()
+    assert not (archive / "__pycache__").exists()

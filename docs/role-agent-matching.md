@@ -14,7 +14,9 @@
 
 ## 输出与复核
 
-每个业务理解、Agent 匹配、工作流建议和能力缺口都必须带材料来源引用。文档引用保留页码、工作表、幻灯片或行号；岗位描述引用明确显示“用户提供的岗位描述”和轮次。Runtime 只能建议当前目录中的 Agent；平台会丢弃未知 Agent ID，并对组合建议运行 compiler v4 的版本固定、端口类型、`oneOf`、基数、`runIf/onSkip`、完整性传播和只读检查。只有 `PASS/executable=true` 的 Agent 能进入工作流建议。
+每个业务理解、Agent匹配、工作流建议和能力缺口都须带来源引用。文档保留页码、工作表、幻灯片或行号，描述显示“用户提供的岗位描述”和轮次。主匹配表只展示full/partial；none进入折叠的已排除候选，不计入匹配数量。平台复核全部目录及其摘要；目录不完整时结果为临时结果，不生成确定性缺口，也不允许创建工作流草稿。只有PASS/executable=true、端口与版本契约有效的Agent可以进入工作流建议。
+
+目录变化后，使用“使用当前完整目录重新匹配”生成新的全量修订；旧会话和来源引用保持不变。无需为了获得新目录而重写历史结果。
 
 ## 多轮会话
 
@@ -52,3 +54,11 @@ DELETE /api/role-matching/sessions/{session_id}
 ```
 
 默认限制为 500 个文件、单文件 50 MB、材料总计 1 GB、12 个 Runtime 轮次。当前只有 Codex Runtime 被允许执行岗位匹配。
+
+## English quick guide
+
+Provide role-description text, local documents, or both; at least one source is required. Descriptions allow up to 12,000 characters and paths up to 100 entries. Consent is required before source text is stored/read or sent to Runtime. Paths are not sent to Runtime. User descriptions remain explicitly labeled user sources, not SAP facts or formal policies. The assistant does not call SAP or modify documents, Agents or workflows.
+
+Inspect source citations for each conclusion. Main matches contain full/partial only; none candidates are kept in collapsed audit detail and excluded from counts. An incomplete catalog produces provisional matching, no definitive capability gaps and no workflow-draft creation. Only executable accepted Agents with valid version/port contracts can support workflows. Choose full rematching with the current catalog after a catalog change; old revisions remain immutable.
+
+Add descriptions or documents, exclude sources, or correct interpretations in subsequent rounds. Incremental mode reuses unchanged sources; full mode analyzes all active sources. Excluding every source is rejected before Runtime. Existing limits include 500 files, 50 MB/file, 1 GB total and 12 Runtime turns. Supported text-bearing formats are listed above; OCR, macros and executable embedded content are not processed. Current role matching requires the accepted Codex Runtime capability.

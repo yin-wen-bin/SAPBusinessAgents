@@ -1,34 +1,60 @@
-# Billing Block Diagnosis
+# 开票冻结诊断 / Billing Block Diagnosis
 
-诊断销售订单、项目与交货层的开票冻结、信用检查及不完整状态。
+## 用途与使用场景 / Purpose and scenario
 
-## 能力
+逐项目排查销售开票冻结、不完整日志、交货冻结和信用状态，查看具体字段或代码解释。
 
-- 严格只读，Embedded SAP Read Provider优先，SAPSkillhub仅按缺口补证。
-- Embedded缺少项目级不完整状态时，条件调用 `sap-adt-table-export` 精确读取VBUV不完整日志；预检限定一个订单项目，正式查询最多200行。
-- 支持Fixture和脱敏evidence输入，输出统一Markdown或JSON契约。
-- 自然语言示例：为什么这张订单不能开票？
+Investigate billing blocks, incompletion logs, delivery blocks and credit status at item level, including field/code explanations.
 
-## 运行
+## 如何开始 / Getting started
 
-```powershell
-$env:PYTHONPATH = "src;.."
-python -m billing_block_diagnosis "为什么这张订单不能开票？" --source fixture --as-of 2026-08-10 --json
-```
+从下方本地网页入口进入；先确认生命周期、验收状态和本机连接配置。填写公开输入后执行，技术字段名仅用于对照契约。示例场景（非真实SAP样本）：用本系统中具有查看权限的业务对象及适用日期运行一次，核对输入范围，再展开一条异常明细；请勿将示例当作测试数据或承诺的结果。
 
-真机证据由验证编排层写入被忽略的 `.local-data/live-tests/billing-block-unblock/<run-id>/`，再通过 `--source evidence --evidence <path>` 读取。Agent不会直接执行SAP写操作。
+Open the local page below and confirm lifecycle, acceptance and connection readiness. Supply the public inputs; technical IDs help cross-reference the contract. Example scenario (not live SAP data): use a permitted business object or batch with applicable dates, verify scope, then inspect one exception. This is not a test dataset or a promised result.
 
-## 数据源
+## 结果解读与下一步 / Reading results and next steps
 
-- `API_SALES_ORDER_SRV`
-- `API_OUTBOUND_DELIVERY_SRV`
-- `API_BILLING_DOCUMENT_SRV`
-- 条件ADT对象：`VBUV`，仅选择 `VBELN`、`POSNR`、`ETENR`、`TBNAM`、`FDNAM`、`FEHGR`、`STATG`
-- VBUV是缺失字段的稀疏日志；精确订单范围完整且返回零行表示未记录缺失字段，不要求每个订单项目各返回一行。
+主界面先看冻结原因及缺证项；原始代码用于追踪，不代表已解除冻结。条件文本补充被跳过时不应解释为没有冻结。
 
-## 测试
+Read business reasons and gaps first. Raw codes support tracing, not a claim that blocks were removed. A skipped text lookup does not establish the absence of a block.
 
-```powershell
-$env:PYTHONPATH = "src;.."
-python -m pytest -q
-```
+查询执行结束不等于业务完成。先看业务结论和证据缺口，再看数量、金额、币种与明细。缺证应补齐后复核，不以零值代替未知；不同币种不合计。建议由业务人员确认后在授权流程中处理，Agent不执行SAP写操作。
+
+A completed query is not a completed business process. Review conclusions and gaps, then counts, amounts, currencies and detail. Resolve gaps before acting; unknown is not zero and currencies are not aggregated. Business staff act through authorized processes; the Agent performs no SAP writes.
+
+## 当前范围与输入输出 / Current scope and I/O
+
+<!-- generated:facts:start -->
+版本 / Version: **0.2.0** · 使用中 / Active · 验收通过 / Passed
+
+网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/SD/billing-block-diagnosis/) · [en](http://127.0.0.1:4321/en/agents/SD/billing-block-diagnosis/)
+
+验收模式 / Acceptance mode: `not_recorded` · 原记录日期 / Recorded date: 2026-08-23T04:39:40.907959+00:00
+证据范围 / Evidence scope: `complete`
+原三级验收保持通过；增量真机复测确认冻结、信用和不完整字段代码均保留原值并取得SAP权威文本。
+The original three-stage acceptance remains passed; the incremental live replay confirms that block, credit, and incompletion codes retain their raw values and resolve authoritative SAP texts.
+
+### 输入 / Inputs
+
+| 字段 / Field | 名称 / Name | 要求 / Requirement | 类型 / Type | 约束 / Constraints |
+|---|---|---|---|---|
+| `sales_order` | 销售订单号 / Sales order | 必填 / Required | `string` | {"minLength": 1, "maxLength": 10, "pattern": "^[0-9]+$"} |
+
+约束中的 default 是默认值；示例不是 SAP 测试样本。条件必填规则以网页提示和完整 Schema 为准。 / `default` denotes a default, not live test data. Conditional requirements are defined by the form and full Schema.
+
+### 结果字段 / Result fields
+
+- 销售订单号 / Sales order
+- 业务状态 / Business status
+- 查询源完整性 / Query-source completeness
+- 结构化业务报告 / Structured business report
+
+### 数据与开发资料 / Contracts and development
+
+- [Agent 定义与完整输入输出契约 / Manifest and complete I/O contract](agent.json)
+- [原始验收记录（适用范围以原报告为准） / Original acceptance record (original scope applies)](docs/three-stage-live-acceptance.md)
+- [docs/sap-data-contract.md](docs/sap-data-contract.md)
+- [docs/offline-regression.md](docs/offline-regression.md)
+- [tests](tests)
+- [开发指南 / Developer guide](../../../docs/developer-guide.md)
+<!-- generated:facts:end -->

@@ -1,113 +1,65 @@
-# Procure-to-Pay Status Assistant
+# 采购到付款状态助手 / Procure-to-Pay Status Assistant
 
-一个可直接运行的 SAP MM/FI-AP 纵向切片：从自然语言问题中提取采购订单和可选行项目，沿 `PO → GR → IV → FI → Payment` 凭证链逐项目判断状态，并给出阻塞原因与原始凭证证据。
+## 用途与使用场景 / Purpose and scenario
 
-## 已实现能力
+一次输入1–50张不重复的采购订单，逐单追踪采购→收货→发票→FI→付款状态；无需逐张启动。
 
-- 中英文自然语言入口：识别 6–12 位显式 PO，或独立的 10 位采购订单号；支持 `项目 20` / `item 20`。
-- 跨对象关联：`EKKO/EKPO`、`EKBE`、`MKPF/MSEG`、`RBKP/RSEG`、`BKPF/BSEG`。
-- 项目级状态：未收货、部分收货、已收货未发票、部分发票、已发票未付款、部分付款、已付款、已删除/取消。
-- 净额处理：按借贷标识对收货/冲销、发票/贷项做正负汇总；MSEG 缺失时明确标注并回退到 EKBE。
-- 异常解释：短交关闭、超收、发票数量超过收货、无 GR 发票、未过账发票、发票冻结、付款冻结、未到期/逾期、FI 关联缺失、非付款凭证清账。
-- 付款识别：通过发票 FI 供应商行的 `AUGBL/AUGGJ` 追踪清账凭证并校验付款凭证类型；也支持通过 `REBZG/REBZJ` 识别部分付款。
-- 人类可读 Markdown 与稳定 JSON 两种输出。
-- 无真实 SAP 时使用包内 SAP-like JSON fixture；生产适配器只需实现一个协议。
-- 可读取由 Embedded Provider 或受控 SAPSkillhub Skill 生成的脱敏 evidence 快照；数据采集与业务分析保持解耦。
+Enter 1–50 unique purchase orders to trace procurement → receipt → invoice → FI → payment, with independent results per order.
 
-## 快速运行
+## 如何开始 / Getting started
 
-要求 Python 3.11+。所有命令都在本目录执行：
+从下方本地网页入口进入；先确认生命周期、验收状态和本机连接配置。填写公开输入后执行，技术字段名仅用于对照契约。示例场景（非真实SAP样本）：用本系统中具有查看权限的业务对象及适用日期运行一次，核对输入范围，再展开一条异常明细；请勿将示例当作测试数据或承诺的结果。
 
-```powershell
-cd D:\SAPBusinessAgents\agents\MM\procure-to-pay-status
-python -m pip install -e .
-p2p-status "PO 4500001234 是否已经收货、发票校验和付款？" --as-of 2026-07-22
-```
+Open the local page below and confirm lifecycle, acceptance and connection readiness. Supply the public inputs; technical IDs help cross-reference the contract. Example scenario (not live SAP data): use a permitted business object or batch with applicable dates, verify scope, then inspect one exception. This is not a test dataset or a promised result.
 
-只看一个项目：
+## 结果解读与下一步 / Reading results and next steps
 
-```powershell
-p2p-status "采购订单 4500001234 项目 40 的付款状态"
-```
+先看逐单结论和证据缺口，再展开收货、发票与付款凭证。单个分块失败不证明该订单无数据；FI清账或付款凭证不能证明银行实际扣款。
 
-机器可读输出：
+Read per-order conclusions and evidence gaps before receipt, invoice and payment details. A failed chunk does not establish absence; FI clearing or payment documents do not prove bank settlement.
 
-```powershell
-p2p-status "PO 4500001234 item 50" --json
-```
+查询执行结束不等于业务完成。先看业务结论和证据缺口，再看数量、金额、币种与明细。缺证应补齐后复核，不以零值代替未知；不同币种不合计。建议由业务人员确认后在授权流程中处理，Agent不执行SAP写操作。
 
-读取真实 SAP 验证编排层生成的 evidence：
+A completed query is not a completed business process. Review conclusions and gaps, then counts, amounts, currencies and detail. Resolve gaps before acting; unknown is not zero and currencies are not aggregated. Business staff act through authorized processes; the Agent performs no SAP writes.
 
-```powershell
-p2p-status "PO 4500001234 是否已经收货、发票校验和付款？" `
-  --source evidence `
-  --evidence D:\SAPBusinessAgents\.local\runs\procure-to-pay-status\RUN_ID\sap-read-evidence.json `
-  --payment-document-types KZ,ZP,PY `
-  --as-of 2026-08-09 `
-  --json
-```
+## 当前范围与输入输出 / Current scope and I/O
 
-evidence 必须明确标记 `completeness.complete=true`，并包含 PO、物料凭证、供应商发票和 FI/清账实体。缺页、币种不一致或单位不一致时数据源会拒绝分析，而不是生成推测性状态。
+<!-- generated:facts:start -->
+版本 / Version: **0.3.1** · 使用中 / Active · 验收通过 / Passed
 
-不安装也可运行：
+网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/MM/procure-to-pay-status/) · [en](http://127.0.0.1:4321/en/agents/MM/procure-to-pay-status/)
 
-```powershell
-$env:PYTHONPATH = "src"
-python -m procure_to_pay_status "PO 4500001234 是否已付款？" --as-of 2026-07-22
-```
+验收模式 / Acceptance mode: `deterministic_runtime` · 原记录日期 / Recorded date: 2026-08-29T16:35:00+00:00
+证据范围 / Evidence scope: `complete`
+既有业务语义验收继续有效；活跃查询路径已迁移为 Embedded OData，历史报告不声明重新执行了架构验收。
+The existing business-semantic acceptance remains valid; the active query path is Embedded OData, while the historical report does not claim a rerun of architecture acceptance.
 
-演示 PO `4500001234` 有 6 个项目，分别覆盖未收货、部分收货、已收货未发票、冻结且逾期的已发票未付款、已付款、部分付款。
+### 输入 / Inputs
 
-## 结构
+| 字段 / Field | 名称 / Name | 要求 / Requirement | 类型 / Type | 约束 / Constraints |
+|---|---|---|---|---|
+| `purchase_orders` | 采购订单号列表 / Purchase orders | 必填 / Required | `array` | {"minItems": 1, "maxItems": 50} |
 
-```text
-procure-to-pay-status/
-├─ src/procure_to_pay_status/
-│  ├─ extractor.py       # 确定性 PO/item 参数抽取
-│  ├─ port.py            # 可替换 SAP 数据源协议
-│  ├─ fixture.py         # JSON fixture 适配器及远端过滤模拟
-│  ├─ analyzer.py        # 跨表关联、金额分摊、状态机、异常解释
-│  ├─ assistant.py       # 自然语言应用服务入口
-│  ├─ formatting.py      # 逐行 Markdown 输出
-│  ├─ cli.py             # CLI / JSON 输出
-│  └─ fixtures/          # 不含凭据的演示数据
-├─ tests/                # 参数、状态边界、完整链路与 CLI 测试
-└─ docs/                 # SAP 接口契约和判定规则
-```
+约束中的 default 是默认值；示例不是 SAP 测试样本。条件必填规则以网页提示和完整 Schema 为准。 / `default` denotes a default, not live test data. Conditional requirements are defined by the form and full Schema.
 
-核心边界是 `P2PDataSource.load_purchase_order(po_number) -> P2PTables`。真实 RFC、OData、CDS 或数据仓库适配器负责高效、授权地读取相关记录；`P2PAnalyzer` 始终负责关联和业务判断，因此 fixture 与生产环境复用同一套状态逻辑。
+### 结果字段 / Result fields
 
-## 状态优先级
+- 采购订单列表 / Purchase orders
+- 公司代码列表 / Company codes
+- 供应商列表 / Suppliers
+- 逐采购订单结果 / Per-PO results
+- 应付账款证据分组 / AP evidence scopes
+- 业务状态 / Business status
+- 查询源完整性 / Query-source completeness
+- 业务证据完整性 / Business-evidence completeness
+- 结构化业务报告 / Structured business report
 
-状态代表当前最前面的未完成业务阶段。若前序阶段未完成，即使已经发生后序凭证，仍保留前序状态并追加异常。例如“收货 4/10、发票 10/10”仍显示“部分收货”，同时报告“发票数量超过收货”。
+### 数据与开发资料 / Contracts and development
 
-1. 删除标识 → 已删除/取消
-2. 净收货 `<= 0` → 未收货
-3. 净收货 `< 订单数量` → 部分收货
-4. 已过账净发票 `<= 0` → 已收货未发票
-5. 净发票数量 `< 净收货` → 部分发票
-6. 已确认付款金额覆盖发票 → 已付款
-7. 已确认部分付款 → 部分付款
-8. 其余 → 已发票未付款
-
-数量比较使用 `0.0001` 容差。付款金额按发票级已付比例分摊到 PO item，避免一个多项目发票把整笔付款重复计到每个项目。
-
-## 测试
-
-测试只依赖 Python 标准库：
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m unittest discover -s tests -v
-```
-
-## 生产接入注意事项
-
-- fixture 不含真实凭据或个人数据；认证、重试、分页、权限与连接池属于适配器职责。
-- `KZ/ZP/PY` 是当前已知付款凭证类型，客户自定义凭证类型必须配置或映射后才能判定为付款；仅有 `AUGBL` 不等于付款。
-- `FAEDT` 在接口契约中是可选的派生净到期日。若源端只提供 `ZFBDT/ZTERM/ZBD*T`，应在适配器或 SAP 标准函数中计算，不能把基准日直接当到期日。
-- `--payment-document-types` 默认使用 `KZ,ZP/PY`；客户自定义付款凭证类型必须显式配置。
-- S/4HANA 可从 CDS/API 或 MATDOC 兼容视图提供与本契约等价的字段，不要求直接读取透明表。
-- 当前参数抽取故意保持确定性与可审计性。需要自由表达时，可在上层增加 LLM extractor，但应返回相同 `QueryParameters` 并保留此实现作为校验/回退。
-
-详细字段与查询顺序见 [SAP 数据契约](docs/sap-data-contract.md)。
+- [Agent 定义与完整输入输出契约 / Manifest and complete I/O contract](agent.json)
+- [原始验收记录（适用范围以原报告为准） / Original acceptance record (original scope applies)](docs/p2p-ap-workflow-live-acceptance.md)
+- [docs/sap-data-contract.md](docs/sap-data-contract.md)
+- [docs/offline-regression.md](docs/offline-regression.md)
+- [tests](tests)
+- [开发指南 / Developer guide](../../../docs/developer-guide.md)
+<!-- generated:facts:end -->

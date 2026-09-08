@@ -2,10 +2,28 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { loadAgentCatalog } from "../scripts/generate-agent-catalog.mjs";
 
 const readPage = (...segments) => readFile(path.join("dist", ...segments, "index.html"), "utf8");
 const readManifest = async (module, slug) =>
   JSON.parse(await readFile(path.join("..", "agents", module, slug, "agent.json"), "utf8"));
+
+test("acceptance labels use recorded mode and preserve documentation-reuse provenance", async () => {
+  for (const agent of loadAgentCatalog(undefined, { includeInactive: false })) {
+    if (!agent.validation) continue;
+    for (const lang of ["zh", "en"]) {
+      const html = await readPage(lang, "agents", agent.module, agent.slug);
+      const profile = html.match(/<section[^>]*id="agent-profile"[\s\S]*?<\/section>/)?.[0];
+      assert.ok(profile, agent.slug);
+      if (agent.validation.documentationReuse) {
+        assert.ok(profile.includes(lang === "zh" ? "复用原版本验收" : "Original acceptance reused"));
+      } else if (agent.validation.acceptanceMode !== "three_stage" || agent.validation.verdict !== "PASS") {
+        assert.doesNotMatch(profile, /三级验收通过|Three-stage acceptance passed/);
+      }
+      if (lang === "zh") assert.doesNotMatch(profile, /Three-stage live acceptance passed|Live acceptance passed/);
+    }
+  }
+});
 
 test("static catalog contains all agents and the GitHub Pages base path", async () => {
   const html = await readPage("zh");
@@ -85,7 +103,7 @@ test("new MM detail pages render exact steps and fail-closed validation metadata
     assert.equal((zh.match(/class="workflow-step"/g) ?? []).length, manifest.execution.steps.length);
     assert.match(zh, /Embedded SAP OData Provider/);
     assert.match(zh, /sap-adt-table-export/);
-    assert.match(zh, new RegExp(manifest.validation.verdict));
+    assert.match(zh, /验收通过/);
     assert.match(zh, /three-stage-live-acceptance\.md/);
     assert.match(zh, /class="odata-version-badge">V2</);
   }

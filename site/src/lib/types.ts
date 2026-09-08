@@ -110,6 +110,12 @@ export interface AgentExecutionStep {
 }
 
 export interface AgentValidation {
+  documentationReuse?: {
+    sourceVersion: string;
+    executionDigest: string;
+    sourceValidationDigest: string;
+    reviewedAt: string;
+  };
   verdict: "PASS" | "PARTIAL" | "FAIL" | "BLOCKED" | "NOT_TESTED";
   testedAt: string;
   evidenceScope: "complete" | "partial" | "bounded";

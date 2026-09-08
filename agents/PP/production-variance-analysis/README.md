@@ -1,7 +1,75 @@
-# Production Quantity and Material Variance Analysis Assistant
+# 生产数量与物料差异根因分析助手 / Production Quantity and Material Variance Analysis Assistant
 
-比较生产订单计划数量、最终工序确认产量、成品入库、组件领料和物料移动/冲销，输出证据支持的候选原因。成本由独立的 `product-cost-variance` Agent 分析。
+## 用途与使用场景 / Purpose and scenario
 
-规则不会累加多道工序的确认产量，不把“入库6件”写成“只生产6件”，也不会执行确认、收发货、冲销、TECO、重估或结算。
+核对生产订单的计划与实际耗料、确认、报废和收货数量，定位数量偏差。
 
-真实 SAP 验证结果见 [docs/live-sap-test-report.md](docs/live-sap-test-report.md)。
+Compare planned and actual consumption, confirmations, scrap and receipt quantities for production orders.
+
+## 如何开始 / Getting started
+
+从下方本地网页入口进入；先确认生命周期、验收状态和本机连接配置。填写公开输入后执行，技术字段名仅用于对照契约。示例场景（非真实SAP样本）：用本系统中具有查看权限的业务对象及适用日期运行一次，核对输入范围，再展开一条异常明细；请勿将示例当作测试数据或承诺的结果。
+
+Open the local page below and confirm lifecycle, acceptance and connection readiness. Supply the public inputs; technical IDs help cross-reference the contract. Example scenario (not live SAP data): use a permitted business object or batch with applicable dates, verify scope, then inspect one exception. This is not a test dataset or a promised result.
+
+## 结果解读与下一步 / Reading results and next steps
+
+数量偏差不是成本差异金额。需要计划、目标与实际成本分析时使用CO生产订单成本差异助手。
+
+Quantity variance is not monetary cost variance. Use the CO production-order cost assistant for planned, target and actual costs.
+
+查询执行结束不等于业务完成。先看业务结论和证据缺口，再看数量、金额、币种与明细。缺证应补齐后复核，不以零值代替未知；不同币种不合计。建议由业务人员确认后在授权流程中处理，Agent不执行SAP写操作。
+
+A completed query is not a completed business process. Review conclusions and gaps, then counts, amounts, currencies and detail. Resolve gaps before acting; unknown is not zero and currencies are not aggregated. Business staff act through authorized processes; the Agent performs no SAP writes.
+
+## 当前范围与输入输出 / Current scope and I/O
+
+<!-- generated:facts:start -->
+版本 / Version: **0.2.0** · 使用中 / Active · 验收通过 / Passed
+
+网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/PP/production-variance-analysis/) · [en](http://127.0.0.1:4321/en/agents/PP/production-variance-analysis/)
+
+验收模式 / Acceptance mode: `not_recorded` · 原记录日期 / Recorded date: 2026-08-25T18:30:00+08:00
+证据范围 / Evidence scope: `complete`
+订单1001233三级真机验收一致：计划及最终工序确认7 PC、成品入库6 PC、三个组件足额领料、无冲销；判定为完工确认后少入库1 PC。
+Three-stage live acceptance matched for order 1001233: 7 PC planned and finally confirmed, 6 PC received, all three components fully withdrawn, and no reversals; the deterministic finding is a 1 PC receipt shortfall after confirmation.
+
+### 输入 / Inputs
+
+| 字段 / Field | 名称 / Name | 要求 / Requirement | 类型 / Type | 约束 / Constraints |
+|---|---|---|---|---|
+| `manufacturing_order` | 生产订单号 / Manufacturing order | 必填 / Required | `string` | {"minLength": 1, "maxLength": 12, "pattern": "^[0-9]+$"} |
+
+约束中的 default 是默认值；示例不是 SAP 测试样本。条件必填规则以网页提示和完整 Schema 为准。 / `default` denotes a default, not live test data. Conditional requirements are defined by the form and full Schema.
+
+### 结果字段 / Result fields
+
+- 生产订单号 / Manufacturing order
+- 物料 / Material
+- 工厂 / Plant
+- TECO状态 / TECO status
+- 生产单位 / Production unit
+- 计划数量 / Planned quantity
+- 最终工序确认产量 / Final-operation confirmed yield
+- 成品入库数量 / Finished-goods receipt quantity
+- 入库差异数量 / Receipt variance quantity
+- 入库差异百分比 / Receipt variance percent
+- 数量状态 / Quantity status
+- 工序状态 / Operation status
+- 组件状态 / Component status
+- 物料移动状态 / Material movement status
+- 成本状态 / Cost status
+- 存在差异的组件数 / Components with variance
+- 冲销数量 / Reversal count
+- 候选原因 / Candidate causes
+- 业务状态 / Business status
+- 查询源完整性 / Query-source completeness
+- 证据完整性 / Evidence completeness
+- 结构化业务报告 / Structured business report
+
+### 数据与开发资料 / Contracts and development
+
+- [Agent 定义与完整输入输出契约 / Manifest and complete I/O contract](agent.json)
+- [原始验收记录（适用范围以原报告为准） / Original acceptance record (original scope applies)](docs/three-stage-live-acceptance.md)
+- [开发指南 / Developer guide](../../../docs/developer-guide.md)
+<!-- generated:facts:end -->

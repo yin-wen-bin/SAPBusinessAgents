@@ -1,120 +1,70 @@
-# AP Payment Assistant
+# 应付账款付款助手 / AP Payment Assistant
 
-> 说明：本目录下的 `ap_payment_assistant` Python 包是历史 fixture/CLI 回归工具，不是网站或工作流调用的生产规则引擎。AP 0.2.0 唯一的生产规则实现位于 `src/sap_business_agents_platform/agent_rules.py`，重复候选、逾期、到期、现金折扣、付款冻结和证据完整性均由该实现统一计算。历史包不再作为真实 SAP 结论来源，尤其不得用其 mock 银行数据判断实际付款或“无风险”。
+## 用途与使用场景 / Purpose and scenario
 
-供应商付款状态查询与付款风险检查的本地 fixture 纵向切片。实现完全位于 `agents/FI/ap-payment/`，用于保留意图解析和展示兼容回归。
+在安排供应商付款前，查看未清项、到期日、付款冻结、折扣和重复付款候选；先按公司代码与供应商查询。
 
-支持的问题包括：
+Before scheduling a vendor payment, inspect open items, due dates, payment blocks, discounts and possible duplicates; start with company code and supplier.
 
-- “供应商 10001234 下周有哪些到期应付款？”
-- “供应商 10001234 有哪些未清项目？”
-- “发票 INV-PAID-001 付款了吗？”
-- “检查供应商 10001234 的付款风险”
+## 如何开始 / Getting started
 
-当前工具只使用 JSON mock。真实 SAP 接入必须走 Agent manifest、平台生产规则和 GET-only Provider，不应通过实现 `SapApDataAdapter` 把这个历史 CLI 重新接入生产。
+从下方本地网页入口进入；先确认生命周期、验收状态和本机连接配置。填写公开输入后执行，技术字段名仅用于对照契约。示例场景（非真实SAP样本）：用本系统中具有查看权限的业务对象及适用日期运行一次，核对输入范围，再展开一条异常明细；请勿将示例当作测试数据或承诺的结果。
 
-## Fixture 回归运行
+Open the local page below and confirm lifecycle, acceptance and connection readiness. Supply the public inputs; technical IDs help cross-reference the contract. Example scenario (not live SAP data): use a permitted business object or batch with applicable dates, verify scope, then inspect one exception. This is not a test dataset or a promised result.
 
-在 PowerShell 中：
+## 结果解读与下一步 / Reading results and next steps
 
-```powershell
-Set-Location D:\SAPBusinessAgents\agents\FI\ap-payment
-$env:PYTHONPATH = (Resolve-Path .\src).Path
-python -m ap_payment_assistant "供应商 10001234 下周有哪些到期应付款？" --as-of 2026-07-22
-```
+付款准备度不表示已经付款。工作流传入的 P2P 证据是另一种入口，不要求用户在网页手工构造内部证据。
 
-`--as-of` 用于让“本周/下周/未来 N 天”可重现；不传时使用系统当天。也可以安装为独立命令：
+Payment readiness does not mean payment has occurred. Workflow-supplied P2P evidence is a separate entry point, not a manual web-form requirement.
 
-```powershell
-python -m pip install -e .
-ap-payment-assistant "发票 INV-PAID-001 付款了吗？" --as-of 2026-07-22
-```
+查询执行结束不等于业务完成。先看业务结论和证据缺口，再看数量、金额、币种与明细。缺证应补齐后复核，不以零值代替未知；不同币种不合计。建议由业务人员确认后在授权流程中处理，Agent不执行SAP写操作。
 
-替换本地 fixture：
+A completed query is not a completed business process. Review conclusions and gaps, then counts, amounts, currencies and detail. Resolve gaps before acting; unknown is not zero and currencies are not aggregated. Business staff act through authorized processes; the Agent performs no SAP writes.
 
-```powershell
-python -m ap_payment_assistant "检查供应商 10004567 的付款风险" `
-  --as-of 2026-07-22 `
-  --fixture .\src\ap_payment_assistant\fixtures\mock_sap_ap.json
-```
+## 当前范围与输入输出 / Current scope and I/O
 
-## 纵向链路
+<!-- generated:facts:start -->
+版本 / Version: **0.2.0** · 使用中 / Active · 验收通过 / Passed
 
-```text
-自然语言
-  -> ApIntentParser（意图、供应商/公司代码/发票/凭证/日期范围）
-  -> ApPaymentAssistant（校验、默认值、查询编排）
-  -> SapApDataAdapter（SAP 数据端口）
-  -> PaymentRiskEngine（可解释规则及证据）
-  -> AssistantResponse（摘要、项目、风险、回答、追踪）
-```
+网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/FI/ap-payment/) · [en](http://127.0.0.1:4321/en/agents/FI/ap-payment/)
 
-目录：
+验收模式 / Acceptance mode: `deterministic_runtime` · 原记录日期 / Recorded date: 2026-08-29T07:00:00+00:00
+证据范围 / Evidence scope: `complete`
+既有业务语义验收继续有效；活跃查询路径已迁移为 Embedded OData，历史报告不声明重新执行了架构验收。
+The existing business-semantic acceptance remains valid; the active query path is Embedded OData, while the historical report does not claim a rerun of architecture acceptance.
 
-```text
-agents/FI/ap-payment/
-├── docs/sap-adapter-contract.md
-├── src/ap_payment_assistant/
-│   ├── adapter.py
-│   ├── intent.py
-│   ├── mock_adapter.py
-│   ├── models.py
-│   ├── risk.py
-│   ├── service.py
-│   ├── cli.py
-│   └── fixtures/mock_sap_ap.json
-└── tests/
-```
+### 输入 / Inputs
 
-## 意图与参数
+| 字段 / Field | 名称 / Name | 要求 / Requirement | 类型 / Type | 约束 / Constraints |
+|---|---|---|---|---|
+| `company_code` | 公司代码 / Company code | 可选 / Optional | `string` | {"minLength": 1, "maxLength": 4, "pattern": "^[0-9A-Za-z_-]+$"} |
+| `supplier` | 供应商编号 / Supplier | 可选 / Optional | `string` | {"minLength": 1, "maxLength": 10, "pattern": "^[0-9A-Za-z_-]+$"} |
+| `as_of` | 查询基准日 / As-of date | 必填 / Required | `string` | {"format": "date", "minLength": 1, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"} |
 
-| 意图 | 典型表达 | 数据范围 |
-|---|---|---|
-| `upcoming_due` | 到期、应付款、下周、未来 N 天 | 未清项目，并按净到期日过滤 |
-| `open_items` | 未清、未付款、欠款、余额 | 供应商全部未清项目 |
-| `invoice_status` | 发票/会计凭证 + 付款状态 | 同时搜索未清和已清项目 |
-| `payment_risk` | 风险、重复、冻结、异常银行、逾期 | 供应商全部未清项目 |
+约束中的 default 是默认值；示例不是 SAP 测试样本。条件必填规则以网页提示和完整 Schema 为准。 / `default` denotes a default, not live test data. Conditional requirements are defined by the form and full Schema.
 
-支持抽取供应商编号、公司代码、发票参考号、会计凭证号、财年以及明确日期范围。“下周”按下一自然周的周一至周日解析；仅说“到期”而未给时间范围时，默认查询未来 30 天，并在 `trace.extraction_notes` 中披露。
+### 结果字段 / Result fields
 
-## 风险规则
+- 查询模式 / Query mode
+- 公司代码 / Company code
+- 供应商编号 / Supplier
+- 查询基准日 / As-of date
+- 分组付款复核结果 / Payment review scope results
+- 业务状态 / Business status
+- 查询源完整性 / Query-source completeness
+- 业务证据完整性 / Business-evidence completeness
+- 付款运行证据完整性 / Payment-run evidence completeness
+- 银行主数据证据完整性 / Bank-master evidence completeness
+- 银行扣款证据完整性 / Bank-settlement evidence completeness
+- 银行扣款核验状态 / Bank-settlement verification status
+- 结构化业务报告 / Structured business report
 
-| `rule_id` | 等级 | 判定 |
-|---|---|---|
-| `DUPLICATE_INVOICE_REFERENCE` | 高 | 同一供应商/公司代码的多个未清项目具有相同规范化发票参考号 |
-| `DUPLICATE_AMOUNT` | 中 | 30 天内不同发票参考号出现相同供应商、币种和金额 |
-| `PAYMENT_BLOCK` | 高 | 未清项目存在付款冻结代码 |
-| `BANK_ACCOUNT_NOT_FOUND` | 高 | 项目引用的银行账户不在当前主数据快照中 |
-| `ABNORMAL_BANK_ACCOUNT` | 高/中 | 银行账户未验证，或银行国家与供应商国家不一致 |
-| `OVERDUE_PAYMENT` | 中 | 查询基准日已超过到期日且项目未清账 |
+### 数据与开发资料 / Contracts and development
 
-每项风险都包含关联凭证键、证据和建议动作。银行账户只输出掩码值。
-
-## 结构化回答
-
-CLI 返回 UTF-8 JSON，顶层字段为：
-
-- `ok`、`errors`：执行状态和可操作的参数错误。
-- `intent`、`parameters`：识别结果与最终使用的日期范围。
-- `summary`：笔数、分币种金额、状态分布、风险等级分布。
-- `items`：凭证、发票、金额、到期日、清账/付款运行和来源对象。
-- `risks`：规则编号、等级、说明、关联凭证、证据和建议动作。
-- `answer`：面向业务人员的简洁中文回答。
-- `trace`：适配器健康状态、置信度、解析说明和实际来源对象。
-
-进入 REGUH/REGUP 付款运行但尚未清账的项目返回 `scheduled`，不会误报为 `paid`；只有存在清账凭证/清账日期的项目返回 `paid`。
-
-## SAP 接入
-
-接口和字段映射详见 [SAP 数据适配契约](docs/sap-adapter-contract.md)。主要覆盖 FI-AP、MM-IV、Bank Accounting，并为 BSIK、BSAK、BKPF、BSEG、LFA1、LFB1、REGUH、REGUP 保留来源追踪；银行账户风险额外需要 LFBK 或等价的已批准 API。
-
-生产适配器需要自行处理授权、分页、币种与借贷符号、付款条件净到期日、SAP 时区以及敏感字段掩码。mock 数据仅用于展示接口行为和规则测试，不代表真实 SAP 数据。
-
-## 测试
-
-```powershell
-Set-Location D:\SAPBusinessAgents\agents\FI\ap-payment
-python -m pytest
-```
-
-测试固定基准日为 `2026-07-22`，覆盖意图/参数抽取、mock 过滤、典型下周查询、已付款发票、重复发票/金额、付款冻结、异常银行账户、逾期付款和输入校验。
+- [Agent 定义与完整输入输出契约 / Manifest and complete I/O contract](agent.json)
+- [原始验收记录（适用范围以原报告为准） / Original acceptance record (original scope applies)](docs/p2p-evidence-workflow-live-acceptance.md)
+- [docs/offline-regression.md](docs/offline-regression.md)
+- [tests](tests)
+- [开发指南 / Developer guide](../../../docs/developer-guide.md)
+<!-- generated:facts:end -->

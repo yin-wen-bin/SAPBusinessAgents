@@ -1,61 +1,75 @@
-# 月结只读业务助理 v0.2.0
+# 月结助手 / Month-end Closing Assistant
 
-`month-end-closing` 是 SAPBusinessAgents 面向财务月结用户的唯一入口。固定 Agent 使用平台内置 `EmbeddedODataProvider`，通过 `sap_read.v2` 发起 GET-only OData 查询，并将共享证据交给 12 个确定性检查模块。
+## 用途与使用场景 / Purpose and scenario
 
-运行链路：
+按公司、会计年度和期间检查月结证据，查看检查项结论、阻塞项与后续复核范围。
 
-```text
-agent.json sap_read step
-  -> sap_read.v2
-  -> embedded-sap-odata
-  -> EmbeddedODataProvider
-  -> SAP OData GET
-  -> shared EvidenceBundle
-  -> 12 checks and one aggregator
-```
+Inspect month-end evidence by company, fiscal year and period, including checklist results, blockers and follow-up scopes.
 
-已废弃的外部 SAP 查询运行时、任何 SAPClaw MCP 和自动 Provider fallback 都不是运行依赖。Released OData 确认缺少权威状态时，只有经过审核、只读并已验证的 SAPSkillhub adapter 才能条件补证；补证失败时结论保持 `inconclusive`。
+## 如何开始 / Getting started
 
-## 输入与结论
+从下方本地网页入口进入；先确认生命周期、验收状态和本机连接配置。填写公开输入后执行，技术字段名仅用于对照契约。示例场景（非真实SAP样本）：用本系统中具有查看权限的业务对象及适用日期运行一次，核对输入范围，再展开一条异常明细；请勿将示例当作测试数据或承诺的结果。
 
-必填输入为 `company_code`、`fiscal_year`、`period` 和 `as_of`；`ledger` 与 `profile_id` 可选。`as_of` 不得晚于运行日。非 K4 会计年度和特殊期间 13–16 必须由公司配置提供日期边界。
+Open the local page below and confirm lifecycle, acceptance and connection readiness. Supply the public inputs; technical IDs help cross-reference the contract. Example scenario (not live SAP data): use a permitted business object or batch with applicable dates, verify scope, then inspect one exception. This is not a test dataset or a promised result.
 
-业务状态只有：
+## 结果解读与下一步 / Reading results and next steps
 
-- `inconclusive`：必需证据、配置、分页或检查不完整；
-- `action_required`：证据完整，但有异常或人工确认候选；
-- `in_progress`：12 项已通过且证据完整，但尚未到期间结束日；
-- `ready_for_review`：12 项已通过、证据完整且已到期间结束日，仅表示可提交人工复核。
+当前是否可运行以生成状态区为准。公司配置和缺证项必须先完成复核；关账准备度建议不是已经完成月结，也不运行SAP关账程序。
 
-`source_complete`、`checklist_complete` 与 `evidence_complete` 分开输出。空结果只有在查询范围和来源完整、且该检查允许“零记录即通过”时才会通过。
+The generated status below determines availability. Review company profiles and evidence gaps first; close-readiness advice is not a completed close and does not execute SAP closing programs.
 
-## 公司配置
+查询执行结束不等于业务完成。先看业务结论和证据缺口，再看数量、金额、币种与明细。缺证应补齐后复核，不以零值代替未知；不同币种不合计。建议由业务人员确认后在授权流程中处理，Agent不执行SAP写操作。
 
-运行配置位于 `.local-data/config/month-end-closing/profiles.json`，该路径保持 Git 忽略。仓库只跟踪：
+A completed query is not a completed business process. Review conclusions and gaps, then counts, amounts, currencies and detail. Resolve gaps before acting; unknown is not zero and currencies are not aggregated. Business staff act through authorized processes; the Agent performs no SAP writes.
 
-- [`config/month-end-closing-profiles.schema.json`](../../../config/month-end-closing-profiles.schema.json)
-- [`config/profiles.example.json`](config/profiles.example.json)
+## 当前范围与输入输出 / Current scope and I/O
 
-配置只允许引用审核过的 evidence source ID，不允许传入 SAP URL、client、凭据、任意表名或字段。每次运行记录 profile ID、版本和规范化 SHA-256。
+<!-- generated:facts:start -->
+版本 / Version: **0.2.0** · 使用中 / Active · 尚未验收 / Not tested
 
-## 12 项准备度检查
+网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/FI/month-end-closing/) · [en](http://127.0.0.1:4321/en/agents/FI/month-end-closing/)
 
-检查范围包含 AP 逾期、AR 未分配收款、GL 未清、GR/IR 长账龄、GR/IR 调整候选、AA 折旧状态、外币估值状态、GL 自动清账候选、FI 期间控制、MM 期间状态、CO 未分配成本和 SD 开票传输错误。目标 SAP 的 `API_GLACCOUNTLINEITEM` 不提供 `NetDueDate`，因此 AP 到期证据由审核目录中的 `API_OPLACCTGDOCITEMCUBE_SRV` 提供；查询覆盖截至基准日的历史过账项目，以保留以前期间结转的未清项，Agent 不自行推算到期日。
+当前不能执行；完成证据与验收门禁后才可启用执行。 / Execution is blocked until evidence and acceptance gates pass.
+验收模式 / Acceptance mode: `not_recorded` · 原记录日期 / Recorded date: 2026-09-04T06:59:17+08:00
+证据范围 / Evidence scope: `bounded`
+Embedded OData v0.2.0 已实现；必须完成 12 项真实 SAP 对照后才可更新为 PASS。
+Embedded OData v0.2.0 is implemented; PASS requires live SAP comparison of all twelve checks.
 
-检查模块只消费同一运行期 EvidenceBundle，不直接访问 SAP。任何一项 `not_assessed` 或 `error` 都会使整体保持 `inconclusive`。
+### 输入 / Inputs
 
-## CLI 与 fixture
+| 字段 / Field | 名称 / Name | 要求 / Requirement | 类型 / Type | 约束 / Constraints |
+|---|---|---|---|---|
+| `company_code` | 公司代码 / Company code | 必填 / Required | `string` | {"minLength": 1, "maxLength": 4, "pattern": "^[0-9A-Za-z]+$"} |
+| `fiscal_year` | 会计年度 / Fiscal year | 必填 / Required | `string` | {"pattern": "^[0-9]{4}$"} |
+| `period` | 会计期间 / Fiscal period | 必填 / Required | `integer` | {"minimum": 1, "maximum": 16} |
+| `as_of` | 基准日 / As-of date | 必填 / Required | `string` | {"format": "date"} |
+| `ledger` | 分类账（可选） / Ledger (optional) | 可选 / Optional | `string` | {"minLength": 1, "maxLength": 2} |
+| `profile_id` | 公司月结配置（可选） / Company closing profile (optional) | 可选 / Optional | `string` | {"minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._-]+$"} |
 
-固定 Agent 和 CLI 的 `--platform-evidence` 模式调用同一个生产规则入口。evidence 文件应包含平台规则所需的 `run_input`、`scope`、`evidence` 与 `fallbacks`：
+约束中的 default 是默认值；示例不是 SAP 测试样本。条件必填规则以网页提示和完整 Schema 为准。 / `default` denotes a default, not live test data. Conditional requirements are defined by the form and full Schema.
 
-```powershell
-month-end-closing --platform-evidence .local-data/runs/month-end/evidence.json
-```
+### 结果字段 / Result fields
 
-原有 `fixture` 和人工 SE16N manifest 模式仅保留为历史离线回归和诊断工具，不是固定 Agent 的 SAP Provider，也不能作为 v0.2.0 真实 SAP 验收。
+- 月结范围 / Closing scope
+- 准备度状态 / Readiness status
+- 查询源完整性 / Query-source completeness
+- 检查清单完整性 / Checklist completeness
+- 业务证据完整性 / Business-evidence completeness
+- 12 项检查结果 / Twelve check results
+- 异常 / Findings
+- 责任待办 / Owner actions
+- 缺失证据 / Missing evidence
+- GR/IR 专项范围 / GR/IR follow-up scopes
+- AP 专项范围 / AP follow-up scopes
+- 不支持的专项复核 / Unsupported follow-ups
+- 专项范围完整性 / Follow-up scope completeness
+- 结构化业务报告 / Structured business report
 
-## 安全边界与验收
+### 数据与开发资料 / Contracts and development
 
-Agent 永不执行或批准 OB52、MMPV、AFAB、F.05、F.13、MR11、结算、过账或清账。所有 SAP 请求必须是 GET。
-
-当前版本在完成 12 项真实 SAP 验收前保持 `validation.verdict=NOT_TESTED` 和 `executable=false`。实施后的验收门槛见 [`docs/embedded-odata-live-acceptance.md`](docs/embedded-odata-live-acceptance.md)；旧验收记录只保留为历史证据。
+- [Agent 定义与完整输入输出契约 / Manifest and complete I/O contract](agent.json)
+- [原始验收记录（适用范围以原报告为准） / Original acceptance record (original scope applies)](docs/embedded-odata-live-acceptance.md)
+- [docs/offline-regression.md](docs/offline-regression.md)
+- [tests](tests)
+- [开发指南 / Developer guide](../../../docs/developer-guide.md)
+<!-- generated:facts:end -->

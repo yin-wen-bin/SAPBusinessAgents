@@ -1,31 +1,66 @@
-# Due Delivery Prioritization
+# 到期交货优先级排序 / Due Delivery Prioritization
 
-按逾期、SAP交货优先级、临近程度、冻结和库存覆盖率排序交货需求。
+## 用途与使用场景 / Purpose and scenario
 
-## 能力
+按到期交货和当前状态形成只读处理优先顺序，帮助安排人工交货跟进。
 
-- 严格只读，Embedded SAP Read Provider优先，SAPSkillhub仅按缺口补证。
-- 支持Fixture和脱敏evidence输入，输出统一Markdown或JSON契约。
-- 自然语言示例：今天应该优先处理哪些到期交货？
+Prioritize due deliveries and current statuses into a read-only follow-up worklist.
 
-## 运行
+## 如何开始 / Getting started
 
-```powershell
-$env:PYTHONPATH = "src;.."
-python -m due_delivery_prioritization "今天应该优先处理哪些到期交货？" --source fixture --as-of 2026-08-10 --json
-```
+从下方本地网页入口进入；先确认生命周期、验收状态和本机连接配置。填写公开输入后执行，技术字段名仅用于对照契约。示例场景（非真实SAP样本）：用本系统中具有查看权限的业务对象及适用日期运行一次，核对输入范围，再展开一条异常明细；请勿将示例当作测试数据或承诺的结果。
 
-真机证据由验证编排层写入被忽略的 `.local/runs/due-delivery-prioritization/<run-id>/`，再通过 `--source evidence --evidence <path>` 读取。Agent不会直接执行SAP写操作。
+Open the local page below and confirm lifecycle, acceptance and connection readiness. Supply the public inputs; technical IDs help cross-reference the contract. Example scenario (not live SAP data): use a permitted business object or batch with applicable dates, verify scope, then inspect one exception. This is not a test dataset or a promised result.
 
-## 数据源
+## 结果解读与下一步 / Reading results and next steps
 
-- `API_SALES_ORDER_SRV`
-- `API_OUTBOUND_DELIVERY_SRV`
-- `API_MATERIAL_STOCK_SRV`
+优先级是本平台建议，不更改SAP交货优先级、不自动发货或过账。
 
-## 测试
+Priority is platform advice; it does not change SAP delivery priority, ship goods or post documents.
 
-```powershell
-$env:PYTHONPATH = "src;.."
-python -m pytest -q
-```
+查询执行结束不等于业务完成。先看业务结论和证据缺口，再看数量、金额、币种与明细。缺证应补齐后复核，不以零值代替未知；不同币种不合计。建议由业务人员确认后在授权流程中处理，Agent不执行SAP写操作。
+
+A completed query is not a completed business process. Review conclusions and gaps, then counts, amounts, currencies and detail. Resolve gaps before acting; unknown is not zero and currencies are not aggregated. Business staff act through authorized processes; the Agent performs no SAP writes.
+
+## 当前范围与输入输出 / Current scope and I/O
+
+<!-- generated:facts:start -->
+版本 / Version: **0.1.0** · 使用中 / Active · 验收通过 / Passed
+
+网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/SD/due-delivery-prioritization/) · [en](http://127.0.0.1:4321/en/agents/SD/due-delivery-prioritization/)
+
+验收模式 / Acceptance mode: `not_recorded` · 原记录日期 / Recorded date: 2026-08-20T05:19:39.268273+00:00
+证据范围 / Evidence scope: `complete`
+独立直连基线、自由查询和固定 Agent 的业务语义一致。
+The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent.
+
+### 输入 / Inputs
+
+| 字段 / Field | 名称 / Name | 要求 / Requirement | 类型 / Type | 约束 / Constraints |
+|---|---|---|---|---|
+| `sales_organization` | 销售组织 / Sales organization | 必填 / Required | `string` | {"minLength": 1, "maxLength": 4, "pattern": "^[0-9A-Za-z_-]+$"} |
+| `plant` | 工厂 / Plant | 必填 / Required | `string` | {"minLength": 1, "maxLength": 4, "pattern": "^[0-9A-Za-z_-]+$"} |
+| `date_from` | 开始日期 / Start date | 必填 / Required | `string` | {"format": "date", "minLength": 1, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"} |
+| `date_to` | 结束日期 / End date | 必填 / Required | `string` | {"format": "date", "minLength": 1, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"} |
+
+约束中的 default 是默认值；示例不是 SAP 测试样本。条件必填规则以网页提示和完整 Schema 为准。 / `default` denotes a default, not live test data. Conditional requirements are defined by the form and full Schema.
+
+### 结果字段 / Result fields
+
+- 销售组织 / Sales organization
+- 工厂 / Plant
+- 开始日期 / Start date
+- 结束日期 / End date
+- 业务状态 / Business status
+- 查询源完整性 / Query-source completeness
+- 结构化业务报告 / Structured business report
+
+### 数据与开发资料 / Contracts and development
+
+- [Agent 定义与完整输入输出契约 / Manifest and complete I/O contract](agent.json)
+- [原始验收记录（适用范围以原报告为准） / Original acceptance record (original scope applies)](docs/three-stage-live-acceptance.md)
+- [docs/sap-data-contract.md](docs/sap-data-contract.md)
+- [docs/offline-regression.md](docs/offline-regression.md)
+- [tests](tests)
+- [开发指南 / Developer guide](../../../docs/developer-guide.md)
+<!-- generated:facts:end -->
