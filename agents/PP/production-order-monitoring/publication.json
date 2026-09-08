@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "production-order-monitoring",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.2.1",
+  "latest_version": "0.2.1",
+  "active_digest": "sha256:8a60c9b2111257cb15b7325ac95960a12d3615ef004e06ad66e19e296d960a76",
+  "published_at": "2026-09-08T05:52:53.914636+00:00",
+  "git_branch": "codex/agent-production-order-monitoring-publish-v0.2.1-54650ef5",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:52:53.923286+00:00",
+  "deactivated_at": null
+}

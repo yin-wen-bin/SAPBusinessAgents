@@ -1,0 +1,769 @@
+{
+  "schemaVersion": 2,
+  "slug": "production-order-monitoring",
+  "module": "PP",
+  "title": {
+    "zh": "生产订单执行监控助手",
+    "en": "Production Order Execution Monitoring Assistant"
+  },
+  "summary": {
+    "zh": "按生产订单串联抬头、工序、组件、确认和物料移动，识别延期、缺料与执行阻塞。",
+    "en": "Traces production-order headers, operations, components, confirmations and goods movements to identify delays, shortages and execution blockers."
+  },
+  "status": "Three-stage live acceptance passed",
+  "version": "0.2.0",
+  "owner": "PP-SFC / Shop Floor Control",
+  "tags": [
+    "Production Order",
+    "Execution",
+    "Confirmation",
+    "Material Movement"
+  ],
+  "sapModules": [
+    "PP-SFC",
+    "MM-IM"
+  ],
+  "transactions": [],
+  "tables": [],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "生产订单号"
+    ],
+    "en": [
+      "Manufacturing order"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "生产订单号",
+      "订单抬头",
+      "订单行项目",
+      "订单状态明细",
+      "释放状态观察",
+      "工序执行明细",
+      "组件领料明细",
+      "物料移动明细",
+      "计划数量",
+      "确认产量",
+      "工序数",
+      "未完全确认工序",
+      "组件数",
+      "待领料组件",
+      "物料移动行项目",
+      "业务状态",
+      "查询源完整性",
+      "业务证据完整性",
+      "结构化业务报告"
+    ],
+    "en": [
+      "Manufacturing order",
+      "Order header",
+      "Order items",
+      "Order status details",
+      "Release-status observation",
+      "Operation execution details",
+      "Component withdrawal details",
+      "Material movement details",
+      "Planned quantity",
+      "Confirmed yield",
+      "Operation count",
+      "Operations not fully confirmed",
+      "Component count",
+      "Components pending withdrawal",
+      "Material movement items",
+      "Business status",
+      "Query-source completeness",
+      "Business-evidence completeness",
+      "Structured business report"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "只读监控，不确认、不发料、不收货",
+      "订单级查询优先于全工厂扫描",
+      "空物料凭证不等于业务错误",
+      "状态字段为空时保留原值并用其他证据解释"
+    ],
+    "en": [
+      "Read-only monitoring; never confirm, issue or receive goods",
+      "Prefer exact order queries over broad plant scans",
+      "No material document does not itself mean an error",
+      "Preserve blank status values and explain with other evidence"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "execute-collect_production_execution",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `collect_production_execution`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_production_execution` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrder_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderItem_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderStatus_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderOperation_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderComponent_2",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem"
+        ],
+        "en": [
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrder_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderItem_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderStatus_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderOperation_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderComponent_2",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `collect_production_execution` / `execute_plan`",
+            "en": "Execute `collect_production_execution` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "collect_production_execution"
+      ]
+    },
+    {
+      "id": "execute-evaluate_business_result",
+      "title": {
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
+      },
+      "description": {
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.evaluate_business_agent"
+        ],
+        "en": [
+          "rule.evaluate_business_agent"
+        ]
+      },
+      "tools": [
+        {
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "manufacturing_order": {
+          "type": "string",
+          "title": {
+            "zh": "生产订单号",
+            "en": "Manufacturing order"
+          },
+          "description": {
+            "zh": "请输入生产订单号。",
+            "en": "Enter the manufacturing order."
+          },
+          "placeholder": {
+            "zh": "例如：1000000",
+            "en": "Example: 1000000"
+          },
+          "minLength": 1,
+          "maxLength": 12,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "manufacturing_order"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_production_execution",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_PRODUCTION_ORDER_2_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_ProductionOrder_2",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "production_order",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrder_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ProductionPlant",
+                  "Material",
+                  "ManufacturingOrderType",
+                  "MfgOrderPlannedStartDate",
+                  "MfgOrderPlannedEndDate",
+                  "TotalQuantity",
+                  "MfgOrderConfirmedYieldQty"
+                ],
+                "rationale": "Load production-order header.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_order_items",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrderItem_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "MfgOrderItemPlannedTotalQty",
+                  "MfgOrderItemGoodsReceiptQty",
+                  "MfgOrderItemActualDeviationQty"
+                ],
+                "rationale": "Load production-order items.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_statuses",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrderStatus_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "StatusCode",
+                  "StatusShortName",
+                  "StatusName"
+                ],
+                "rationale": "Load production-order statuses.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_operations",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrderOperation_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderOperation",
+                  "WorkCenter",
+                  "OperationIsConfirmed",
+                  "OperationIsPartiallyConfirmed",
+                  "OpPlannedTotalQuantity",
+                  "OpTotalConfirmedYieldQty",
+                  "OpErlstSchedldExecStrtDte",
+                  "OpErlstSchedldExecEndDte"
+                ],
+                "rationale": "Load production operations, planned dates, and confirmations.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_components",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrderComponent_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "Reservation",
+                  "ReservationItem",
+                  "Material",
+                  "Plant",
+                  "RequiredQuantity",
+                  "WithdrawnQuantity",
+                  "ConfirmedAvailableQuantity"
+                ],
+                "rationale": "Load production-order components.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "material_documents",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "ManufacturingOrder",
+                  "Material",
+                  "Plant",
+                  "QuantityInBaseUnit",
+                  "DebitCreditCode",
+                  "ReversedMaterialDocument"
+                ],
+                "rationale": "Load material issues, receipts, and reversals.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect production execution evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "production-order-monitoring",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_production_execution": "{{steps.collect_production_execution.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "manufacturing_order": {
+          "type": "string",
+          "title": {
+            "zh": "生产订单号",
+            "en": "Manufacturing order"
+          },
+          "description": {
+            "zh": "请输入生产订单号。",
+            "en": "Enter the manufacturing order."
+          },
+          "placeholder": {
+            "zh": "例如：1000000",
+            "en": "Example: 1000000"
+          },
+          "minLength": 1,
+          "maxLength": 12,
+          "pattern": "^[0-9]+$"
+        },
+        "order_header": {
+          "type": ["object", "null"],
+          "title": {"zh": "订单抬头", "en": "Order header"},
+          "properties": {
+            "manufacturing_order": {"type": "string"},
+            "order_type": {"type": ["string", "null"]},
+            "material": {"type": ["string", "null"]},
+            "plant": {"type": ["string", "null"]},
+            "planned_start": {"type": ["string", "null"]},
+            "planned_end": {"type": ["string", "null"]},
+            "planned_quantity": {"type": ["string", "null"]},
+            "confirmed_yield_quantity": {"type": ["string", "null"]}
+          },
+          "required": ["manufacturing_order", "order_type", "material", "plant", "planned_start", "planned_end", "planned_quantity", "confirmed_yield_quantity"],
+          "additionalProperties": false
+        },
+        "order_items": {
+          "type": "array",
+          "title": {"zh": "订单行项目", "en": "Order items"},
+          "items": {
+            "type": "object",
+            "properties": {
+              "manufacturing_order": {"type": "string"},
+              "item": {"type": ["string", "null"]},
+              "material": {"type": ["string", "null"]},
+              "plant": {"type": ["string", "null"]},
+              "planned_quantity": {"type": ["string", "null"]},
+              "goods_receipt_quantity": {"type": ["string", "null"]},
+              "actual_deviation_quantity": {"type": ["string", "null"]}
+            },
+            "required": ["manufacturing_order", "item", "material", "plant", "planned_quantity", "goods_receipt_quantity", "actual_deviation_quantity"],
+            "additionalProperties": false
+          }
+        },
+        "status_details": {
+          "type": "array",
+          "title": {"zh": "订单状态明细", "en": "Order status details"},
+          "items": {
+            "type": "object",
+            "properties": {
+              "manufacturing_order": {"type": "string"},
+              "status_code": {"type": ["string", "null"]},
+              "status_short_name": {"type": ["string", "null"]},
+              "status_name": {"type": ["string", "null"]}
+            },
+            "required": ["manufacturing_order", "status_code", "status_short_name", "status_name"],
+            "additionalProperties": false
+          }
+        },
+        "release_observation": {
+          "type": "string",
+          "enum": ["released", "rel_not_observed", "unknown"],
+          "title": {"zh": "释放状态观察", "en": "Release-status observation"},
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "released": {"zh": "已观察到 REL", "en": "REL observed"},
+              "rel_not_observed": {"zh": "完整状态集中未观察到 REL", "en": "REL not observed in complete status set"},
+              "unknown": {"zh": "无法确认", "en": "Unknown"}
+            }
+          }
+        },
+        "operation_details": {
+          "type": "array",
+          "title": {"zh": "工序执行明细", "en": "Operation execution details"},
+          "items": {
+            "type": "object",
+            "properties": {
+              "manufacturing_order": {"type": "string"},
+              "operation": {"type": ["string", "null"]},
+              "work_center": {"type": ["string", "null"]},
+              "confirmed": {"type": "boolean"},
+              "partially_confirmed": {"type": "boolean"},
+              "confirmation_status": {"type": "string", "enum": ["confirmed", "partial", "not_confirmed"]},
+              "planned_quantity": {"type": ["string", "null"]},
+              "confirmed_yield_quantity": {"type": ["string", "null"]},
+              "planned_start": {"type": ["string", "null"]},
+              "planned_end": {"type": ["string", "null"]}
+            },
+            "required": ["manufacturing_order", "operation", "work_center", "confirmed", "partially_confirmed", "confirmation_status", "planned_quantity", "confirmed_yield_quantity", "planned_start", "planned_end"],
+            "additionalProperties": false
+          }
+        },
+        "component_details": {
+          "type": "array",
+          "title": {"zh": "组件领料明细", "en": "Component withdrawal details"},
+          "items": {
+            "type": "object",
+            "properties": {
+              "manufacturing_order": {"type": "string"},
+              "reservation": {"type": ["string", "null"]},
+              "reservation_item": {"type": ["string", "null"]},
+              "material": {"type": ["string", "null"]},
+              "plant": {"type": ["string", "null"]},
+              "required_quantity": {"type": ["string", "null"]},
+              "withdrawn_quantity": {"type": ["string", "null"]},
+              "confirmed_available_quantity": {"type": ["string", "null"]},
+              "withdrawal_status": {"type": "string", "enum": ["unknown", "pending", "complete", "over_withdrawn"]}
+            },
+            "required": ["manufacturing_order", "reservation", "reservation_item", "material", "plant", "required_quantity", "withdrawn_quantity", "confirmed_available_quantity", "withdrawal_status"],
+            "additionalProperties": false
+          }
+        },
+        "movement_details": {
+          "type": "array",
+          "title": {"zh": "物料移动明细", "en": "Material movement details"},
+          "items": {
+            "type": "object",
+            "properties": {
+              "manufacturing_order": {"type": "string"},
+              "material_document_year": {"type": ["string", "null"]},
+              "material_document": {"type": ["string", "null"]},
+              "material_document_item": {"type": ["string", "null"]},
+              "material": {"type": ["string", "null"]},
+              "plant": {"type": ["string", "null"]},
+              "quantity_in_base_unit": {"type": ["string", "null"]},
+              "debit_credit_code": {"type": ["string", "null"]},
+              "reversed_material_document": {"type": ["string", "null"]}
+            },
+            "required": ["manufacturing_order", "material_document_year", "material_document", "material_document_item", "material", "plant", "quantity_in_base_unit", "debit_credit_code", "reversed_material_document"],
+            "additionalProperties": false
+          }
+        },
+        "planned_quantity": {
+          "type": ["string", "null"],
+          "title": {"zh": "计划数量", "en": "Planned quantity"}
+        },
+        "confirmed_yield_quantity": {
+          "type": ["string", "null"],
+          "title": {"zh": "确认产量", "en": "Confirmed yield"}
+        },
+        "operation_count": {
+          "type": "integer",
+          "title": {"zh": "工序数", "en": "Operation count"}
+        },
+        "unconfirmed_operation_count": {
+          "type": "integer",
+          "title": {"zh": "未完全确认工序", "en": "Operations not fully confirmed"}
+        },
+        "component_count": {
+          "type": "integer",
+          "title": {"zh": "组件数", "en": "Component count"}
+        },
+        "pending_withdrawal_component_count": {
+          "type": "integer",
+          "title": {"zh": "待领料组件", "en": "Components pending withdrawal"}
+        },
+        "material_movement_item_count": {
+          "type": "integer",
+          "title": {"zh": "物料移动行项目", "en": "Material movement items"}
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务证据完整性",
+            "en": "Business-evidence completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "manufacturing_order",
+        "order_header",
+        "order_items",
+        "status_details",
+        "release_observation",
+        "operation_details",
+        "component_details",
+        "movement_details",
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "operation_count",
+        "unconfirmed_operation_count",
+        "component_count",
+        "pending_withdrawal_component_count",
+        "material_movement_item_count",
+        "business_status",
+        "source_complete",
+        "evidence_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "manufacturing_order": "{{steps.evaluate_business_result.output.workflow_output.manufacturing_order}}",
+      "order_header": "{{steps.evaluate_business_result.output.workflow_output.order_header}}",
+      "order_items": "{{steps.evaluate_business_result.output.workflow_output.order_items}}",
+      "status_details": "{{steps.evaluate_business_result.output.workflow_output.status_details}}",
+      "release_observation": "{{steps.evaluate_business_result.output.workflow_output.release_observation}}",
+      "operation_details": "{{steps.evaluate_business_result.output.workflow_output.operation_details}}",
+      "component_details": "{{steps.evaluate_business_result.output.workflow_output.component_details}}",
+      "movement_details": "{{steps.evaluate_business_result.output.workflow_output.movement_details}}",
+      "planned_quantity": "{{steps.evaluate_business_result.output.workflow_output.planned_quantity}}",
+      "confirmed_yield_quantity": "{{steps.evaluate_business_result.output.workflow_output.confirmed_yield_quantity}}",
+      "operation_count": "{{steps.evaluate_business_result.output.workflow_output.operation_count}}",
+      "unconfirmed_operation_count": "{{steps.evaluate_business_result.output.workflow_output.unconfirmed_operation_count}}",
+      "component_count": "{{steps.evaluate_business_result.output.workflow_output.component_count}}",
+      "pending_withdrawal_component_count": "{{steps.evaluate_business_result.output.workflow_output.pending_withdrawal_component_count}}",
+      "material_movement_item_count": "{{steps.evaluate_business_result.output.workflow_output.material_movement_item_count}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.evidence_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "manufacturing_order",
+        "operation"
+      ],
+      "facts": [
+        "work_center",
+        "confirmed",
+        "partially_confirmed",
+        "confirmation_status",
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "planned_start",
+        "planned_end",
+        "business_status"
+      ],
+      "metrics": [
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "operation_count",
+        "unconfirmed_operation_count",
+        "component_count",
+        "pending_withdrawal_component_count",
+        "material_movement_item_count"
+      ],
+      "decimalFields": [],
+      "decimalMetricIds": [
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "operation_count",
+        "unconfirmed_operation_count",
+        "component_count",
+        "pending_withdrawal_component_count",
+        "material_movement_item_count"
+      ],
+      "currencyFields": [],
+      "unitFields": [],
+      "dateFields": [
+        "planned_start",
+        "planned_end"
+      ],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [
+        "confirmed",
+        "partially_confirmed"
+      ],
+      "inputDefaults": {
+        "manufacturing_order": "manufacturing_order"
+      },
+      "constantDefaults": {},
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {
+        "business_status": {
+          "attention_required": "attention"
+        },
+        "confirmation_status": {
+          "unconfirmed": "not_confirmed"
+        }
+      },
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {
+        "operation_count": "Count of complete-query production-operation rows for the requested manufacturing order.",
+        "unconfirmed_operation_count": "Count of operations whose OperationIsConfirmed value is not true; partially confirmed operations remain not fully confirmed.",
+        "component_count": "Count of complete-query production-component rows for the requested manufacturing order.",
+        "pending_withdrawal_component_count": "Count of components where both quantities are present and WithdrawnQuantity is lower than RequiredQuantity; this does not prove shortage.",
+        "material_movement_item_count": "Count of complete-query material-document item rows for the requested manufacturing order; exact zero is a valid complete result."
+      },
+      "businessStatusDefinition": "capability_blocked when required sources or order identity are incomplete; not_found for an exact complete zero-header query; attention when any operation is not fully confirmed; otherwise normal. Component withdrawal and REL absence remain observations and do not independently change the root status.",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-09-08T07:18:50.040305+08:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-app-direct-sap",
+      "codex-app-server",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "0.2.0 已通过独立 SAP、Codex 自由查询和固定 Agent 三阶段实机验收；2 道工序、9 个组件和完整空物料移动结果的业务语义一致，全部 SAP 请求均为 GET。",
+      "en": "Version 0.2.0 passed three-stage live acceptance across independent SAP, Codex free query, and the fixed Agent; the business semantics for 2 operations, 9 components, and the complete empty material-movement result matched, and every SAP request was GET-only."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "acceptanceMode": "three_stage",
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": [],
+    "codexDirectBaselineHash": "sha256:ed2c9d9f750998ac772f5ca9db63ad63fb602f88541014fc6a81907190f391a8",
+    "freeQueryHash": "sha256:7f8c6afedc8d082c75242862141f896c9821c2e75f2fc42b0cc8c9391d7665fd",
+    "adjudicatedResultHash": "sha256:ed2c9d9f750998ac772f5ca9db63ad63fb602f88541014fc6a81907190f391a8",
+    "fixedAgentHash": "sha256:302be3ff5259eccc7511f8a35305198ca8699c605f2f23d78e2d2a4284623c51",
+    "comparisonHash": "sha256:606afd717e27724b29f6b8a99ce43aefd61f4638d5e540e485f71d4684daa62f"
+  }
+}

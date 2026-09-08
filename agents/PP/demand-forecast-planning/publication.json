@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "demand-forecast-planning",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.3.1",
+  "latest_version": "0.3.1",
+  "active_digest": "sha256:22196139e2d69a6103583c8b4094dc30d4443caf8eedbfadef8345b330a54a36",
+  "published_at": "2026-09-08T05:52:49.896273+00:00",
+  "git_branch": "codex/agent-demand-forecast-planning-publish-v0.3.1-b6d896ac",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:52:49.904609+00:00",
+  "deactivated_at": null
+}

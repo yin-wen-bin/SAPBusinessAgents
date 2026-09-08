@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "gr-ir-clearing",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.2.1",
+  "latest_version": "0.2.1",
+  "active_digest": "sha256:06ad0de537cac82382d706c79124ccc5825bcb51404f21be89b9fcd4a0a9a0b7",
+  "published_at": "2026-09-08T05:52:40.159658+00:00",
+  "git_branch": "codex/agent-gr-ir-clearing-publish-v0.2.1-653f7a3b",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:52:40.206931+00:00",
+  "deactivated_at": null
+}

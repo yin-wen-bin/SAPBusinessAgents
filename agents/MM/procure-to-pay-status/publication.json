@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "procure-to-pay-status",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.3.2",
+  "latest_version": "0.3.2",
+  "active_digest": "sha256:7db4e81d42919da3c5cdd0dd35f925963abe7a4fe14c5516af0c780c2da395ae",
+  "published_at": "2026-09-08T05:52:46.697782+00:00",
+  "git_branch": "codex/agent-procure-to-pay-status-publish-v0.3.2-b88f7a13",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:52:46.736422+00:00",
+  "deactivated_at": null
+}

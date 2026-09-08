@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "mrp-exception-analysis",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.2.1",
+  "latest_version": "0.2.1",
+  "active_digest": "sha256:41eca3032a945a13f3423c692b1e025266713fb18eae82cb14b9b7f93b96da53",
+  "published_at": "2026-09-08T05:52:51.704699+00:00",
+  "git_branch": "codex/agent-mrp-exception-analysis-publish-v0.2.1-25eece8f",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:52:51.713370+00:00",
+  "deactivated_at": null
+}

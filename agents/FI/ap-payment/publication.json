@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "ap-payment",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.2.1",
+  "latest_version": "0.2.1",
+  "active_digest": "sha256:508fb7680f3b1094563d7c2f260afb1174bfb0057d768551a76f05b97114459d",
+  "published_at": "2026-09-08T05:52:37.484072+00:00",
+  "git_branch": "codex/agent-ap-payment-publish-v0.2.1-69c55ba1",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:52:37.524422+00:00",
+  "deactivated_at": null
+}

@@ -1,0 +1,731 @@
+{
+  "schemaVersion": 2,
+  "slug": "production-variance-analysis",
+  "module": "PP",
+  "title": {
+    "zh": "生产数量与物料差异根因分析助手",
+    "en": "Production Quantity and Material Variance Analysis Assistant"
+  },
+  "summary": {
+    "zh": "比较生产订单计划、最终工序确认、成品入库、组件领料和冲销，定位数量与物料差异的候选原因。",
+    "en": "Compares production-order plan, final-operation confirmation, finished-goods receipt, component issues, and reversals to identify candidate quantity and material variance causes."
+  },
+  "status": "Three-stage live acceptance passed",
+  "version": "0.2.0",
+  "owner": "PP-SFC / MM-IM",
+  "tags": [
+    "Variance",
+    "Consumption",
+    "Root Cause"
+  ],
+  "sapModules": [
+    "PP-SFC",
+    "MM-IM"
+  ],
+  "transactions": [],
+  "tables": [],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "生产订单号"
+    ],
+    "en": [
+      "Manufacturing order"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "生产订单号",
+      "物料",
+      "工厂",
+      "TECO状态",
+      "生产单位",
+      "计划数量",
+      "最终工序确认产量",
+      "成品入库数量",
+      "入库差异数量",
+      "入库差异百分比",
+      "数量状态",
+      "工序状态",
+      "组件状态",
+      "物料移动状态",
+      "成本状态",
+      "存在差异的组件数",
+      "冲销数量",
+      "候选原因",
+      "业务状态",
+      "查询源完整性",
+      "证据完整性",
+      "结构化业务报告"
+    ],
+    "en": [
+      "Manufacturing order",
+      "Material",
+      "Plant",
+      "TECO status",
+      "Production unit",
+      "Planned quantity",
+      "Final-operation confirmed yield",
+      "Finished-goods receipt quantity",
+      "Receipt variance quantity",
+      "Receipt variance percent",
+      "Quantity status",
+      "Operation status",
+      "Component status",
+      "Material movement status",
+      "Cost status",
+      "Components with variance",
+      "Reversal count",
+      "Candidate causes",
+      "Business status",
+      "Query-source completeness",
+      "Evidence completeness",
+      "Structured business report"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "相关性不得表述为确定因果",
+      "计划、确认、入库和组件数量必须分开核对",
+      "不同物料、项目或单位不得合计",
+      "成本由独立Agent分析",
+      "不自动确认、收发货、冲销或TECO"
+    ],
+    "en": [
+      "Do not present correlation as proven causation",
+      "Validate plan, confirmation, receipt, and component quantities separately",
+      "Do not aggregate different materials, items, or units",
+      "Analyze cost through the separate cost Agent",
+      "Never confirm, post goods movements, reverse, or TECO an order"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "execute-collect_production_variance",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `collect_production_variance`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_production_variance` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrder_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderItem_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderOperation_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderComponent_2",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem"
+        ],
+        "en": [
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrder_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderItem_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderOperation_2",
+          "GET API_PRODUCTION_ORDER_2_SRV@2.0/A_ProductionOrderComponent_2",
+          "GET API_MATERIAL_DOCUMENT_SRV@2.0/A_MaterialDocumentItem"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `collect_production_variance` / `execute_plan`",
+            "en": "Execute `collect_production_variance` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "collect_production_variance"
+      ]
+    },
+    {
+      "id": "execute-evaluate_business_result",
+      "title": {
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
+      },
+      "description": {
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.evaluate_business_agent"
+        ],
+        "en": [
+          "rule.evaluate_business_agent"
+        ]
+      },
+      "tools": [
+        {
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "manufacturing_order": {
+          "type": "string",
+          "title": {
+            "zh": "生产订单号",
+            "en": "Manufacturing order"
+          },
+          "description": {
+            "zh": "请输入生产订单号。",
+            "en": "Enter the manufacturing order."
+          },
+          "placeholder": {
+            "zh": "例如：1000000",
+            "en": "Example: 1000000"
+          },
+          "minLength": 1,
+          "maxLength": 12,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "manufacturing_order"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_production_variance",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_PRODUCTION_ORDER_2_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_ProductionOrder_2",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "production_order_header",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrder_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderType",
+                  "Material",
+                  "ProductionPlant",
+                  "CompanyCode",
+                  "ProductionUnit",
+                  "OrderIsConfirmed",
+                  "OrderIsPartiallyConfirmed",
+                  "OrderIsDelivered",
+                  "OrderIsTechnicallyCompleted",
+                  "OrderIsClosed"
+                ],
+                "rationale": "Load the exact production-order identity and completion state.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_order_items",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrderItem_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "MfgOrderItemPlannedTotalQty",
+                  "MfgOrderItemGoodsReceiptQty",
+                  "MfgOrderItemActualDeviationQty",
+                  "ProductionUnit"
+                ],
+                "rationale": "Load production-order items.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_operations",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrderOperation_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "ManufacturingOrderOperation",
+                  "WorkCenter",
+                  "OperationIsConfirmed",
+                  "OperationIsPartiallyConfirmed",
+                  "OpPlannedTotalQuantity",
+                  "OpTotalConfirmedYieldQty",
+                  "OperationUnit",
+                  "OpErlstSchedldExecStrtDte",
+                  "OpErlstSchedldExecEndDte"
+                ],
+                "rationale": "Load production operations, planned dates, and confirmations.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "production_components",
+                "service_name": "API_PRODUCTION_ORDER_2_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_ProductionOrderComponent_2",
+                "http_method": "GET",
+                "select_fields": [
+                  "ManufacturingOrder",
+                  "Reservation",
+                  "ReservationItem",
+                  "Material",
+                  "Plant",
+                  "RequiredQuantity",
+                  "WithdrawnQuantity",
+                  "ConfirmedAvailableQuantity",
+                  "BaseUnit"
+                ],
+                "rationale": "Load production-order components.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "material_documents",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "ManufacturingOrder",
+                  "Material",
+                  "Plant",
+                  "GoodsMovementType",
+                  "QuantityInBaseUnit",
+                  "MaterialBaseUnit",
+                  "DebitCreditCode",
+                  "ReversedMaterialDocument",
+                  "ReversedMaterialDocumentYear",
+                  "ReversedMaterialDocumentItem"
+                ],
+                "rationale": "Load material issues, receipts, and reversals.",
+                "filters": [
+                  {
+                    "field": "ManufacturingOrder",
+                    "operator": "eq",
+                    "value": "{{input.manufacturing_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect quantity and material variance evidence."
+          }
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "production-variance-analysis",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_production_variance": "{{steps.collect_production_variance.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "manufacturing_order": {
+          "type": "string",
+          "title": {
+            "zh": "生产订单号",
+            "en": "Manufacturing order"
+          },
+          "description": {
+            "zh": "请输入生产订单号。",
+            "en": "Enter the manufacturing order."
+          },
+          "placeholder": {
+            "zh": "例如：1000000",
+            "en": "Example: 1000000"
+          },
+          "minLength": 1,
+          "maxLength": 12,
+          "pattern": "^[0-9]+$"
+        },
+        "material": {
+          "type": "string",
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          }
+        },
+        "plant": {
+          "type": "string",
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          }
+        },
+        "teco_status": {
+          "type": "string",
+          "title": {
+            "zh": "TECO状态",
+            "en": "TECO status"
+          }
+        },
+        "production_unit": {
+          "type": "string",
+          "title": {
+            "zh": "生产单位",
+            "en": "Production unit"
+          }
+        },
+        "planned_quantity": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "计划数量",
+            "en": "Planned quantity"
+          }
+        },
+        "confirmed_yield_quantity": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "最终工序确认产量",
+            "en": "Final-operation confirmed yield"
+          }
+        },
+        "goods_receipt_quantity": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "成品入库数量",
+            "en": "Finished-goods receipt quantity"
+          }
+        },
+        "receipt_variance_quantity": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "入库差异数量",
+            "en": "Receipt variance quantity"
+          }
+        },
+        "receipt_variance_percent": {
+          "type": ["string", "null"],
+          "title": {
+            "zh": "入库差异百分比",
+            "en": "Receipt variance percent"
+          }
+        },
+        "quantity_status": {
+          "type": "string",
+          "title": {
+            "zh": "数量状态",
+            "en": "Quantity status"
+          }
+        },
+        "operation_status": {
+          "type": "string",
+          "title": {
+            "zh": "工序状态",
+            "en": "Operation status"
+          }
+        },
+        "component_status": {
+          "type": "string",
+          "title": {
+            "zh": "组件状态",
+            "en": "Component status"
+          }
+        },
+        "movement_status": {
+          "type": "string",
+          "title": {
+            "zh": "物料移动状态",
+            "en": "Material movement status"
+          }
+        },
+        "cost_status": {
+          "type": "string",
+          "title": {
+            "zh": "成本状态",
+            "en": "Cost status"
+          }
+        },
+        "component_variance_count": {
+          "type": "integer",
+          "title": {
+            "zh": "存在差异的组件数",
+            "en": "Components with variance"
+          }
+        },
+        "reversal_count": {
+          "type": "integer",
+          "title": {
+            "zh": "冲销数量",
+            "en": "Reversal count"
+          }
+        },
+        "root_cause_candidates": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "title": {
+            "zh": "候选原因",
+            "en": "Candidate causes"
+          }
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "证据完整性",
+            "en": "Evidence completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "manufacturing_order",
+        "material",
+        "plant",
+        "teco_status",
+        "production_unit",
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "goods_receipt_quantity",
+        "receipt_variance_quantity",
+        "receipt_variance_percent",
+        "quantity_status",
+        "operation_status",
+        "component_status",
+        "movement_status",
+        "cost_status",
+        "component_variance_count",
+        "reversal_count",
+        "root_cause_candidates",
+        "business_status",
+        "source_complete",
+        "evidence_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "manufacturing_order": "{{steps.evaluate_business_result.output.workflow_output.manufacturing_order}}",
+      "material": "{{steps.evaluate_business_result.output.workflow_output.material}}",
+      "plant": "{{steps.evaluate_business_result.output.workflow_output.plant}}",
+      "teco_status": "{{steps.evaluate_business_result.output.workflow_output.teco_status}}",
+      "production_unit": "{{steps.evaluate_business_result.output.workflow_output.production_unit}}",
+      "planned_quantity": "{{steps.evaluate_business_result.output.workflow_output.planned_quantity}}",
+      "confirmed_yield_quantity": "{{steps.evaluate_business_result.output.workflow_output.confirmed_yield_quantity}}",
+      "goods_receipt_quantity": "{{steps.evaluate_business_result.output.workflow_output.goods_receipt_quantity}}",
+      "receipt_variance_quantity": "{{steps.evaluate_business_result.output.workflow_output.receipt_variance_quantity}}",
+      "receipt_variance_percent": "{{steps.evaluate_business_result.output.workflow_output.receipt_variance_percent}}",
+      "quantity_status": "{{steps.evaluate_business_result.output.workflow_output.quantity_status}}",
+      "operation_status": "{{steps.evaluate_business_result.output.workflow_output.operation_status}}",
+      "component_status": "{{steps.evaluate_business_result.output.workflow_output.component_status}}",
+      "movement_status": "{{steps.evaluate_business_result.output.workflow_output.movement_status}}",
+      "cost_status": "{{steps.evaluate_business_result.output.workflow_output.cost_status}}",
+      "component_variance_count": "{{steps.evaluate_business_result.output.workflow_output.component_variance_count}}",
+      "reversal_count": "{{steps.evaluate_business_result.output.workflow_output.reversal_count}}",
+      "root_cause_candidates": "{{steps.evaluate_business_result.output.workflow_output.root_cause_candidates}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate_business_result.output.workflow_output.evidence_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "manufacturing_order"
+      ],
+      "facts": [
+        "teco_status",
+        "quantity_status",
+        "operation_status",
+        "component_status",
+        "movement_status",
+        "cost_status",
+        "evidence_complete",
+        "business_status"
+      ],
+      "metrics": [
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "goods_receipt_quantity",
+        "receipt_variance_quantity",
+        "component_variance_count",
+        "reversal_count"
+      ],
+      "decimalFields": [],
+      "decimalMetricIds": [
+        "planned_quantity",
+        "confirmed_yield_quantity",
+        "goods_receipt_quantity",
+        "receipt_variance_quantity",
+        "component_variance_count",
+        "reversal_count"
+      ],
+      "currencyFields": [],
+      "unitFields": [
+        "production_unit"
+      ],
+      "dateFields": [],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {
+        "manufacturing_order": "manufacturing_order"
+      },
+      "constantDefaults": {},
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "cost_not_assessed": [
+          "cost not assessed",
+          "not assessed by this agent",
+          "成本未评估",
+          "本agent未评估"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [],
+      "ignoredNoticeKeywords": [
+        "cost_status=not_assessed",
+        "成本状态=未评估"
+      ],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "one_summary_record_per_manufacturing_order",
+      "factDefinitions": {
+        "cost_status": "Always not_assessed; production cost analysis belongs to product-cost-variance",
+        "quantity_status": "Compares order item planned quantity, final-operation confirmed yield, and order item goods receipt without summing operation yields"
+      },
+      "metricDefinitions": {
+        "planned_quantity": "Manufacturing order item planned quantity",
+        "confirmed_yield_quantity": "Confirmed yield of the proven final operation only",
+        "goods_receipt_quantity": "Manufacturing order item goods receipt quantity",
+        "receipt_variance_quantity": "goods_receipt_quantity minus planned_quantity",
+        "component_variance_count": "Count of order components whose withdrawn quantity differs from required quantity",
+        "reversal_count": "Count of 102 and 262 reversal movement rows"
+      },
+      "businessStatusDefinition": "normal only for a TECO order with complete, unit-consistent evidence and no quantity, component, or movement variance; attention for a TECO order with a confirmed variance; in_progress for a non-TECO order; inconclusive for incomplete or contradictory evidence",
+      "businessStatusFromAnyPositiveMetric": {}
+    }
+  },
+  "validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-08-25T18:30:00+08:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-app-direct-sap",
+      "codex-app-server",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "订单1001233三级真机验收一致：计划及最终工序确认7 PC、成品入库6 PC、三个组件足额领料、无冲销；判定为完工确认后少入库1 PC。",
+      "en": "Three-stage live acceptance matched for order 1001233: 7 PC planned and finally confirmed, 6 PC received, all three components fully withdrawn, and no reversals; the deterministic finding is a 1 PC receipt shortfall after confirmation."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": []
+  }
+}

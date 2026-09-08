@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "supplier-performance-risk",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.2.3",
+  "latest_version": "0.2.3",
+  "active_digest": "sha256:221eaacef6bd89a5ceb4357725402da4f69e2a115957b6bb9cd787a147a54e96",
+  "published_at": "2026-09-08T05:52:48.395602+00:00",
+  "git_branch": "codex/agent-supplier-performance-risk-publish-v0.2.3-d9b4398c",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:52:48.420181+00:00",
+  "deactivated_at": null
+}

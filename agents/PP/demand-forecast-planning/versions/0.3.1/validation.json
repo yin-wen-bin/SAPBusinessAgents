@@ -1,0 +1,37 @@
+{
+  "revision": 2,
+  "risk_class": "metadata_only",
+  "checks": [
+    {
+      "code": "agent_schema_valid",
+      "status": "pass"
+    }
+  ],
+  "errors": [],
+  "sap_get_count": 0,
+  "validated_at": "2026-09-08T05:52:49.325280+00:00",
+  "verdict": "PASS",
+  "reused_validation": true,
+  "source_validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-09-01T14:15:30+08:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "0.3.0多物料版本已通过直接SAP、Codex自由查询、逐物料固定查询和批量固定查询验收；三种物料结果一致，全部请求均为GET。",
+      "en": "Version 0.3.0 passed direct SAP, Codex free-query, individual fixed-Agent, and batch fixed-Agent acceptance; all three material results matched and every request was GET-only."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": []
+  },
+  "source_version": "0.3.0",
+  "source_validation_digest": "sha256:6b1e08787beb27e4433d6cd1c831d484ec1356340bd643b668e9f7edd57eabbe",
+  "execution_digest": "sha256:33bffc9b78e278bb19504dd09141939c75422f4e72d0a08e206a03799a648a48"
+}

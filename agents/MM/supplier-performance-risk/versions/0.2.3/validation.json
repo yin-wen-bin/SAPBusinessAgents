@@ -1,0 +1,42 @@
+{
+  "revision": 2,
+  "risk_class": "metadata_only",
+  "checks": [
+    {
+      "code": "agent_schema_valid",
+      "status": "pass"
+    }
+  ],
+  "errors": [],
+  "sap_get_count": 0,
+  "validated_at": "2026-09-08T05:52:47.823856+00:00",
+  "verdict": "PASS",
+  "reused_validation": true,
+  "source_validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-08-20T08:36:27.815819+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "独立直连基线、自由查询和固定 Agent 的业务语义一致。",
+      "en": "The independent direct-SAP baseline, free query, and fixed Agent are semantically consistent."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "codexDirectBaselineHash": "sha256:93883ca9345e60f57f901e8c5ecd8e0910203f71830028e1c3db5fb43fb7854c",
+    "freeQueryHash": "sha256:628f79c06e9c401a1200590c81f96d8a04fea45ac5c09334944c0ece777e1087",
+    "adjudicatedResultHash": "sha256:93883ca9345e60f57f901e8c5ecd8e0910203f71830028e1c3db5fb43fb7854c",
+    "fixedAgentHash": "sha256:93883ca9345e60f57f901e8c5ecd8e0910203f71830028e1c3db5fb43fb7854c",
+    "comparisonHash": "sha256:0eed5ec024d41fa394283203a4c27b4f7cb774a5c7adabb7f539546394d243c0"
+  },
+  "source_version": "0.2.2",
+  "source_validation_digest": "sha256:02050f35519753509ef876a3ed553fcc1e99577a4a6a2df15f4f13750243abbf",
+  "execution_digest": "sha256:b33e06f12d86aae5866be1d21c2d13cc89eba7eea94f33427fbe4c37f6a84541"
+}

@@ -1,346 +1,225 @@
 # SAP Business Agents
 
-[中文](#中文) | [English](#english) | [在线目录 / Live catalog](https://yin-wen-bin.github.io/SAPBusinessAgents/)
-
-SAP Business Agents 是一个按 SAP 业务模块组织的可运行 Agent 目录。它参照 [SAPSkillhub](https://github.com/yin-wen-bin/SAPSkillhub) 的内容组织方式：站点自动扫描 `agents/` 下的清单，生成模块导航、搜索、双语详情页，以及工作流步骤与 Tool 的映射，无需维护手写中央索引。
+[中文](#中文) · [English](#english)
 
 ## 中文
 
-### 项目功能
+### 产品用途与适用用户
 
-- 按 Common、FI、CO、SD、MM、PP 组织 SAP 业务 Agent。
-- 每个 Agent 是独立、可运行、可测试的业务纵向切片。
-- 中英文目录支持按模块、事务码、表、Tool 和业务关键词搜索。
-- Agent 详情页展示输入、输出、SAP 范围、安全边界和完整工作流。
-- 工作流的每一步明确列出实际使用的 Tool、数据入口或控制组件。
-- 高风险 SAP 动作保持只读、人工确认和可审计边界。
-- 单机原型提供“固定 Agent”和“自由 SAP 查询”两种执行模式，并在同一运行详情页展示计划、证据、规则、完整性和模型解释。
-- 可视化工作流编排器可连接固定 Agent 的类型化输入输出端口，经 Codex 辅助真机验证后发布为不依赖 Codex 的确定性工作流。
-- “Agent 管理中心”支持确定性固定 Agent 的创建、多轮修改、Diff、GET-only真机验证、版本发布、启停、回滚和严格删除；发布自动创建本地Git分支及提交但不推送。
+SAP Business Agents 帮助财务、采购、销售、生产及业务支持人员，查询 SAP 业务状态、核对证据并形成可追踪的处理建议。固定 Agent 按已审核规则执行；自然语言功能负责理解和编排，不绕过平台的数据与安全检查。
 
-在线目录：[https://yin-wen-bin.github.io/SAPBusinessAgents/](https://yin-wen-bin.github.io/SAPBusinessAgents/)
+SAP 访问限于 OData GET 或已批准的语义只读 ADT 查询。查询、催收建议和清账核对都不代表已经完成付款、催收或 SAP 过账。邮件发送是独立外部动作，必须逐次确认。
 
-### 当前 Agent
+> 在线静态目录只能浏览能力说明，不能代表已连接你的 SAP。执行查询、管理 Agent 和保存运行记录需要启动下方的本地环境。
 
-| 模块 | Agent | 业务场景 |
+### 按任务选择入口
+
+| 你想做什么 | 选择哪个入口 | 是否需要 Agent Runtime |
 |---|---|---|
-| FI | [AP Payment Assistant](agents/FI/ap-payment/) | 供应商付款状态、未清项目与付款风险 |
-| FI | [AR Collection Assistant](agents/FI/ar-collection/) | 批量应收账龄、催收状态与催收工作清单 |
-| FI | [AR Cash Application Reconciliation Assistant](agents/FI/ar-cash-application/) | 银行来款、客户子分类账、清账凭证与发票关系核对（验收中） |
-| FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/) | GR/IR 未清原因、证据与清理建议 |
-| FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD 月结异常检查与关账待办 |
-| MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | PO → GR → IV → FI → Payment 全链路状态 |
-| MM | [Material Shortage Procurement Response](agents/MM/material-shortage-procurement-response/) | MRP 短缺、PR、PO 交期与货源响应 |
-| MM | [Inventory Health Check](agents/MM/inventory-health-balancing/) | 可选的慢动、呆滞与临期检查；只分析当前库存 |
-| MM | [Intelligent Sourcing and RFQ Evaluation](agents/MM/intelligent-sourcing-rfq/) | RFQ/报价固定权重评估 |
-| MM | [Supplier Performance and Delivery Risk](agents/MM/supplier-performance-risk/) | 计划行净收货 OTIF 与交付风险 |
-| SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/) | 已发货未开票识别与滞留分级 |
-| SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/) | 订单、项目与交货开票冻结诊断 |
-| SD | [Billing Completeness Check](agents/SD/billing-completeness-check/) | 数量、价格、币种与税务完整性检查 |
-| SD | [Billing Output Monitor](agents/SD/billing-output-monitor/) | 发票输出失败与客户送达监控 |
-| SD | [Delivery Delay Prediction](agents/SD/delivery-delay-prediction/) | 可解释交货延期风险评分 |
-| SD | [Due Delivery Prioritization](agents/SD/due-delivery-prioritization/) | 到期交货清单智能排序 |
-| SD | [Shortage Allocation Advisor](agents/SD/shortage-allocation-advisor/) | 缺货场景的只读库存分配建议 |
-| SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/) | 客户拒票与发票争议分类 |
-| SD | [Returns and Credit Anomaly Monitor](agents/SD/returns-credit-anomaly/) | 退货及贷项异常检测 |
-| SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/) | 从销售订单追踪交货、PGI、开票与FI清账状态 |
+| 重复检查应收、采购、库存或生产状态 | 按模块选择固定 Agent | 不需要；仍须验收与连接可用 |
+| 临时提出没有固定入口的问题 | 自由查询 | 需要 |
+| 把多个固定 Agent 串成流程 | 我的工作流 | 自然语言编写需要；确定性执行不需要 |
+| 根据岗位职责寻找现有能力 | 岗位匹配助理 | 需要；不访问 SAP |
+| 创建、修改、验证或停用固定 Agent | Agent 管理 | 对话编写需要；结构化管理不需要 |
+| 配置邮件、插件或外部连接 | 插件与连接 | 取决于所选能力 |
 
-### 仓库结构
+精选入口：[应收催收](agents/FI/ar-collection/README.md) · [银行来款核对](agents/FI/ar-cash-application/README.md) · [批量采购到付款](agents/MM/procure-to-pay-status/README.md) · [生产订单成本差异](agents/CO/product-cost-variance/README.md) · [MRP需求覆盖](agents/PP/demand-forecast-planning/README.md) · [新增销售需求模拟](agents/SD/new-sales-demand-coverage/README.md)。
 
-```text
-agents/
-  Common/
-  FI/
-  CO/
-  SD/
-  MM/
-  PP/
-site/                 # Astro 静态目录站点
-src/sap_business_agents_platform/ # FastAPI、SQLite、SSE 与双模式运行时
-config/plugins/   # 可信本机插件清单与版本化能力声明
-config/odata-services.json # 审核后的 OData V2/V4 内部服务注册表
-config/skills.json    # 允许自动执行的只读 Skill 白名单
-data/catalog-seed/    # 去敏、GET-only 的检索与规划 Seed（非执行权威）
-.codex/agents/        # 项目级 Custom Agent 配置
-.github/workflows/    # 校验与 GitHub Pages 部署
-```
+### 首次安装与启动
 
-每个 Agent 遵守以下目录契约：
+Windows 本地运行；Python 最低 **3.11**，推荐与 CI 一致的 **3.13**；Node.js **22.13.0 或以上**（CI 使用 Node 22）。先安装 Git、Python、Node.js，并准备有只读权限的 SAP 连接。
 
-```text
-agents/<模块>/<agent-slug>/
-  agent.json   # 目录、详情、工作流和 Tool 映射的数据源
-  README.md    # 实现、运行和 SAP 接入说明
-  src/         # Agent 实现
-  tests/       # 自动化测试
-  docs/        # 可选：数据契约或运行手册
-  tools/       # 可选：受控辅助工具
-```
-
-### Agent 清单契约
-
-`agent.json` 可使用目录展示用的 `schemaVersion: 1`，或使用增加了确定性执行定义的 `schemaVersion: 2`。其 `slug` 和 `module` 必须与目录一致，并提供：
-
-- 中英文标题与摘要；
-- 负责人、版本、状态、标签和适用系统；
-- SAP 模块、事务码和核心对象或表；
-- 中英文输入、输出和安全边界；
-- 至少一个工作流步骤；
-- 每个步骤至少一个 Tool，并描述 Tool 类型和中英文用途；
-- 可选的步骤级 `sapScope` 将业务模块、事务码和核心对象/表映射到实际工作流步骤；启用后必须覆盖 Agent 的完整 SAP 范围。
-
-站点在构建前校验全部清单。新增或修改 `agent.json` 后，目录页和详情页会自动更新。
-
-`schemaVersion: 2` 还必须声明 `execution.mode: deterministic` 以及顺序执行的 `sap_read`、`skill` 或 `rule` 步骤。`sap_read` 只能使用 `GET`，并且每个服务/实体引用必须显式声明 `odata_version: "2.0" | "4.0"`；运行时不会让 Codex 改写固定 Agent 的工具和步骤。Catalog Seed 只用于检索，目标系统实时 `$metadata` 始终是可执行 Schema 的唯一权威。版本注册、V2/V4 适配、一次性清洁迁移与 BAH 管理员同步流程见 [OData Catalog v2](docs/odata-catalog-v2.md)。
-
-### 单机双模式原型
-
-原型的 FastAPI 服务只监听 `127.0.0.1`。固定 Agent 由确定性工作流引擎运行；“直接询问 SAP”默认创建持久 Codex App Server thread，并通过 Native Web Search、仓库内 SAP Tool Broker MCP 和动态工具准入 Gateway 执行观察—修订循环。自由查询支持最多12轮不可变纠错迭代：反馈提交会立即返回可恢复的请求编号，业务范围或证据变化会重新执行GET-only查询，纯展示反馈只复用已验证证据。固定任务、自由查询和反馈预审使用独立本机调度通道，SAP GET全局并发默认不超过2。自由查询采用30分钟绝对预算：15分钟基础查询、最多10分钟基于有效进展的延长、最后5分钟强制整理结果；固定Agent和工作流仍默认10分钟。所有 SAP 请求仍需通过实时元数据、业务关系和 GET-only 校验。超限保持 `INCONCLUSIVE`，不自动回退旧 Planner。运行状态、SSE 事件和证据引用保存在 `.local-data/`，用户确认满意后只能生成隔离且待复核的 Agent 草稿，写入 `.prototype/authoring/`。完整契约见 [Codex Harness 自由查询原型](docs/codex-harness.md)。
-
-本机运行时采用不依赖 Cordis 的 Python/FastAPI 微内核。核心只负责运行状态、SSE、确定性工作流、证据完整性和只读策略；能力通过 `config/plugins/` 中的版本化清单注册。SAP 数据通道固定为进程内的 Embedded OData Provider，另有 SAPSkillhub、可切换 Agent Runtime 和业务 Agent 包。运行记录会保存实际 Runtime Provider、SDK版本、配置摘要、`plugin_id`、能力、调用编号和耗时。
-
-```mermaid
-flowchart LR
-    UI["Astro Web UI"] --> CORE["FastAPI 可信微内核"]
-    CORE --> FIXED["固定 Agent 引擎"]
-    CORE --> FREE["自由查询 Harness"]
-    CORE --> BROKER["能力注册表与路由"]
-    BROKER --> AGENT["business_agent.v1"]
-    BROKER --> SAPREAD["sap_read.v2"]
-    BROKER --> SKILL["skill_catalog.v1 / skill_execute.v1"]
-    BROKER --> RUNTIME["Agent Runtime Router / Codex / WorkBuddy"]
-    FIXED --> BROKER
-    FREE --> BROKER
-    CORE --> DB["SQLite / SSE / 本地制品"]
-    SAPREAD --> EMBEDDED["Embedded OData Provider"]
-    EMBEDDED --> SAP["SAP OData GET-only"]
-```
-
-首次启动：
+在 PowerShell 中：
 
 ```powershell
+git clone https://github.com/yin-wen-bin/SAPBusinessAgents.git
+cd SAPBusinessAgents
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+cd site
+npm ci
+cd ..
 Copy-Item .env.example .env
 ```
 
-完成首次安装和 `.env` 配置后，可直接双击仓库根目录的
-`start-sap-business-agents.cmd`。批处理每次运行都会向启动器传入 `-Restart`，先安全停止
-由本项目启动的现有服务，再启动 SAPBusinessAgents API 和
-Astro Web UI。Embedded SAP Read Provider是唯一OData执行通道；扩展证据仅使用
-批准的只读Skill。默认情况下，Web UI 使用内容指纹复用
-`.local-data/site-builds/` 中的静态构建并通过 Astro Preview 运行；首次启动或
-Agent、前端源码、依赖及本地 API 地址变化时才会重新构建。
-
-每次启动的分阶段耗时和服务日志写入 `.local-data/startup/<timestamp>/`。
-`.local-data/startup/latest.json` 表示最近一次成功启动，`last-attempt.json` 还会记录失败阶段。
-
-也可以从 PowerShell 启动而不自动打开浏览器：
+只在首次安装且不存在 `.env` 时执行最后一步。编辑本地 `.env`：填写 SAP 连接；需要已批准 Skill 时配置自己的 `SAPSKILLHUB_ROOT`。不要提交凭据，也不要把密码写入问题文本。
 
 ```powershell
-.\scripts\Start-SAPBusinessAgents.ps1 -NoBrowser
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-SAPBusinessAgents.ps1
 ```
 
-前端开发时使用 `-Dev` 启用 Astro 热更新，此模式不会读取或写入静态构建缓存：
+打开 [本地中文主页](http://127.0.0.1:4321/zh/)；本地 API 默认监听 `127.0.0.1:8765`。自然语言功能还需在“系统配置 → Agent Runtime与SDK”确认登录、刷新模型目录、检查兼容性、选择默认模型、启用并选择默认 Runtime。可选模型以当前 SDK 和账号返回的完整目录为准，不使用固定型号清单。
 
-```powershell
-.\scripts\Start-SAPBusinessAgents.ps1 -Dev
-```
+安装细节、端口和常见故障见 [首次使用指南](docs/getting-started.md)，模型与 SDK 更新见 [Runtime 设置](docs/runtime-settings.md)。
 
-如需忽略已有内容指纹并重新生成本地静态站点，可使用：
+### 第一次运行与结果解读
 
-```powershell
-.\scripts\Start-SAPBusinessAgents.ps1 -Restart -RebuildSite
-```
+1. 选择一个已启用且验收通过的 Agent，阅读它的适用范围和证据限制。
+2. 输入本系统有权限查看的业务编号、组织范围及日期。文档场景仅是示例，不保证存在对应 SAP 数据。
+3. 运行后先看业务结论、缺口和建议动作，再展开凭证与明细。
+4. 区分“读取完整”“业务证据充分”和“业务完成”。`inconclusive` 表示不能确认，不是业务成功；完整零结果不同于查询失败。
+5. 如需查看受限明细，主动揭示并使用受保护的下载入口；不要把原始银行参考号写入自由文本。
 
-直接调用PowerShell启动器时，如需显式重启由本项目启动、占用对应端口的本机服务，可使用
-`-Restart`；根目录批处理已经固定启用该参数。启动器不会停止路径不属于
-SAPBusinessAgents的端口占用进程。
+FI 清账不自动证明银行到账；MRP模拟不等于正式ATP；处理建议不等于已执行处理。
 
-如需手动启动，请在 `.env` 中填写 `SAP_BASE_URL`、`SAP_USERNAME`、`SAP_PASSWORD`、
-`SAP_CLIENT`，然后分别启动后端和站点：
+### 功能与完整目录
 
-```powershell
-.\.venv\Scripts\sap-business-agents.exe --port 8765
+[自由查询](docs/free-query.md) · [Agent 管理](docs/agent-lifecycle-management.md) · [我的工作流](docs/user-workflows.md) · [岗位匹配](docs/role-agent-matching.md) · [AR 业务指南](docs/ar-collection-cash-application.md) · [插件与连接](docs/runtime-integrations.md)。
 
-cd site
-npm ci
-npm run dev
-```
+下表由当前清单及生命周期记录生成；“使用中”与“通过验收”是不同条件。停用或受阻条目保留说明，不意味着可以运行。
 
-打开站点后可浏览 32 个 Agent 详情页，其中通过验收并启用的确定性业务 Agent 可直接执行；Common 模块的“岗位匹配助理”用于只读分析用户选择的本地业务材料，不进入固定执行或工作流节点目录。也可进入“直接询问 SAP”。固定 Agent 严格使用清单声明的 API、关系和规则，Codex 不参与工具选择。静态 GitHub Pages 仍然只是目录；执行按钮只连接本机的 `http://127.0.0.1:8765`。SAP 读取固定由 Embedded Provider 完成，不存在自动或手动 Provider 回退。
+<!-- generated:agents-zh:start -->
+| 模块 | Agent | 版本 | 生命周期 | 验收 |
+|---|---|---|---|---|
+| CO | [预算滚动预测助手](agents/CO/budget-rolling-forecast/README.md) | 0.1.1 | 使用中 | 因证据或验收缺口受阻 |
+| CO | [CO 月结分配与结算助手](agents/CO/co-month-end-allocation-settlement/README.md) | 0.1.1 | 使用中 | 因证据或验收缺口受阻 |
+| CO | [成本中心费用异常助手](agents/CO/cost-center-expense-anomaly/README.md) | 0.1.1 | 使用中 | 因证据或验收缺口受阻 |
+| CO | [内部订单与项目控制助手](agents/CO/internal-order-project-control/README.md) | 0.4.0 | 使用中 | 因证据或验收缺口受阻 |
+| CO | [生产订单成本差异分析助手](agents/CO/product-cost-variance/README.md) | 0.2.0 | 使用中 | 验收通过 |
+| Common | [岗位匹配助理](agents/Common/role-agent-matching/README.md) | 0.2.0 | 使用中 | 平台能力门禁 |
+| FI | [应付账款付款助手](agents/FI/ap-payment/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| FI | [银行来款与应收核销核对助手](agents/FI/ar-cash-application/README.md) | 0.1.0 | 使用中 | 验收通过 |
+| FI | [应收账款催收助手](agents/FI/ar-collection/README.md) | 1.2.0 | 使用中 | 验收通过 |
+| FI | [GR/IR 清账助手](agents/FI/gr-ir-clearing/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| FI | [月结助手](agents/FI/month-end-closing/README.md) | 0.2.0 | 使用中 | 尚未验收 |
+| MM | [智能寻源与 RFQ 评估助手](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.1 | 使用中 | 验收通过 |
+| MM | [库存健康检查](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | 使用中 | 验收通过 |
+| MM | [外购件短缺采购响应助手](agents/MM/material-shortage-procurement-response/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| MM | [采购到付款状态助手](agents/MM/procure-to-pay-status/README.md) | 0.3.2 | 使用中 | 验收通过 |
+| MM | [供应商绩效与交付风险助手](agents/MM/supplier-performance-risk/README.md) | 0.2.3 | 使用中 | 验收通过 |
+| PP | [计划订单与计划独立需求覆盖度助手](agents/PP/demand-forecast-planning/README.md) | 0.3.1 | 使用中 | 验收通过 |
+| PP | [MRP 异常分析助手](agents/PP/mrp-exception-analysis/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| PP | [生产订单执行监控助手](agents/PP/production-order-monitoring/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| PP | [生产排程与产能助手](agents/PP/production-scheduling-capacity/README.md) | 0.1.0 | 使用中 | 因证据或验收缺口受阻 |
+| PP | [生产数量与物料差异根因分析助手](agents/PP/production-variance-analysis/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| SD | [开票冻结诊断](agents/SD/billing-block-diagnosis/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| SD | [发票完整性检查](agents/SD/billing-completeness-check/README.md) | 0.1.1 | 使用中 | 验收通过 |
+| SD | [发票争议分类](agents/SD/billing-dispute-classification/README.md) | 0.1.0 | 已停用 | 因证据或验收缺口受阻 |
+| SD | [发票输出监控](agents/SD/billing-output-monitor/README.md) | 0.1.0 | 使用中 | 因证据或验收缺口受阻 |
+| SD | [已发货未开票监控](agents/SD/delivered-not-billed/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| SD | [交货延期预测](agents/SD/delivery-delay-prediction/README.md) | 0.1.1 | 使用中 | 验收通过 |
+| SD | [到期交货优先级排序](agents/SD/due-delivery-prioritization/README.md) | 0.1.1 | 使用中 | 验收通过 |
+| SD | [新增销售需求覆盖度检查助手](agents/SD/new-sales-demand-coverage/README.md) | 0.1.0 | 使用中 | 验收通过 |
+| SD | [订单到收款状态助手](agents/SD/order-to-cash-status/README.md) | 0.1.2 | 使用中 | 验收通过 |
+| SD | [退货及贷项异常监控](agents/SD/returns-credit-anomaly/README.md) | 0.1.0 | 使用中 | 因证据或验收缺口受阻 |
+| SD | [缺货分配建议](agents/SD/shortage-allocation-advisor/README.md) | 0.1.0 | 使用中 | 因证据或验收缺口受阻 |
+<!-- generated:agents-zh:end -->
 
-“岗位匹配助理”支持带来源定位的岗位、流程、SAP日常操作、单Agent匹配、compiler v4已验证的组合工作流建议和能力缺口，并可通过补充或排除材料进行最多12轮增量/全量修订。原始正文只保存在 `.local-data/role-matching/`，不会进入SQLite、SSE或Git。详见 [岗位匹配助理](docs/role-agent-matching.md)。
+### 开发、测试与部署
 
-顶部“Agent 管理”进入固定 Agent 全生命周期向导。每次运行保存不可变 Agent 版本快照；已发布工作流继续解析固定历史版本。`platform_assistant`不进入此管理链。完整门禁与接口见 [固定 Agent 全生命周期管理](docs/agent-lifecycle-management.md)。
-
-插件页已升级为“插件与连接”，在保留本机插件注册表的同时统一展示 Codex App、MCP Server、多 Runtime 能力矩阵、连接、认证、健康状态和工作流引用。Agent Runtime 与 Integration Backend 独立固定；平台不保存 Runtime 管理的 OAuth 或邮箱凭据。原有 `GET /api/plugins`、`GET /api/capabilities` 等接口保持兼容，新增统一目录和连接接口。详细契约见 [多运行时插件、连接器与工作流集成](docs/runtime-integrations.md) 和 [本机插件平台设计](docs/local-plugin-platform.md)。
-
-“我的工作流”现在以自然语言多轮对话为默认入口：Codex 自动匹配当前仓库中的可执行 Agent，用户可持续反馈步骤、映射、条件、输出或验证结果；服务端对每一轮建议固定版本与摘要、重新编译类型化 DAG，并保留不可变修订和验证报告。设计确认与验证报告确认是两个独立门禁，原可视化画布保留为高级编辑并记入同一时间线。正式工作流执行时不调用 Codex。完整边界与接口见 [用户自定义工作流](docs/user-workflows.md)。
-
-Skill 自动执行默认关闭。只有在 `config/skills.json` 中显式登记、同时声明 `read_only=true`、`validated=true` 并支持标准 JSON 输入输出入口的 Skill，才会进入工具目录。仅包含 `SKILL.md` 的 Skill 不能由运行时自动执行。
-
-### 运行依赖版本策略
-
-- GitHub Actions 的测试基线为 Python 3.13、Node.js 22 和锁文件中的 npm 依赖版本。
-- `site/package-lock.json` 是站点的可复现依赖基线，CI 使用 `npm ci`。
-- Agent 如有额外 Python 依赖，应在自己的目录中声明并固定测试版本。
-
-### 本地开发
-
-运行全部 Agent 测试：
-
-```powershell
-python -m pytest -q
-```
-
-在已启动 embedded GET-only 服务后，自动发现真机样本并验收 P2P/O2C 之外的 23 个固定 Agent：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\validate_deterministic_agents_live.py
-```
-
-脚本只执行 SAP GET，将脱敏汇总、逐 Agent 对比和能力缺口写入 `.local-data/live-tests/<timestamp>-deterministic-agents/`。有界候选发现只用于选样，不作为查询源完整性证据。
-
-运行站点校验、类型检查和静态构建测试：
-
-```powershell
-cd site
-npm ci
-npm run validate
-npm run check
-npm test
-```
-
-本地预览：
-
-```powershell
-npm run dev
-```
-
-开发服务器使用根路径 `/`；生产构建自动使用 GitHub Pages 基础路径 `/SAPBusinessAgents/`。
-
-### 添加新的 Agent
-
-1. 在正确模块下创建 `agents/<module>/<slug>/`。
-2. 添加符合契约的 `agent.json`、实现、测试和 README。
-3. 确保每个工作流步骤都列出实际使用的 Tool。
-4. 从仓库根目录运行 `python -m pytest -q`。
-5. 在 `site/` 下运行 `npm run validate`、`npm run check` 和 `npm test`。
-6. 提交变更；站点会自动发现新 Agent，无需修改主页索引。
-
-### 自动部署
-
-推送到 `main` 后，GitHub Actions 会测试所有 Agent、校验清单、检查 Astro 项目、构建静态站点并部署到 GitHub Pages。Pull Request 只执行校验和构建，不发布站点；工作流也支持手动触发。
+[开发指南](docs/developer-guide.md) 收录架构、Schema、接口、离线回归、目录校验、贡献及静态部署说明。历史验收报告按原日期和适用版本保留，不代表重新验证了当前环境。
 
 ## English
 
-SAP Business Agents is a runnable catalog organized by SAP business module. Following the repository conventions of [SAPSkillhub](https://github.com/yin-wen-bin/SAPSkillhub), the site discovers manifests under `agents/` and generates module navigation, search, localized detail pages, complete workflows, and step-level Tool mappings without a handwritten central index.
+### Purpose and audience
 
-### Features
+SAP Business Agents helps finance, procurement, sales, production and support teams inspect SAP status, reconcile evidence and produce traceable follow-up advice. Fixed Agents run reviewed deterministic rules; natural-language features interpret and compose requests without bypassing platform checks.
 
-- Organizes SAP business agents under Common, FI, CO, SD, MM, and PP.
-- Keeps every Agent as an isolated, runnable, and testable vertical slice.
-- Searches by module, transaction, table, Tool, or business keyword in Chinese and English.
-- Shows inputs, outputs, SAP scope, guardrails, and the complete workflow on every detail page; curated step-level SAP scope is rendered inside the corresponding workflow step.
-- Names the actual Tool, data surface, or control component used at every workflow step.
-- Preserves read-only, human-confirmation, and audit boundaries for high-risk SAP actions.
-- Provides a local dual-mode prototype: deterministic fixed Agents and Codex-planned free-form SAP queries.
-- Composes typed fixed-Agent ports in a visual workflow builder, validates them live with Codex assistance, and publishes deterministic workflows that do not depend on Codex at runtime.
+SAP access is limited to OData GET or approved semantically read-only ADT queries. Query results, collection advice and reconciliation do not execute payments, dunning or SAP postings. Email sending is a separate external action requiring confirmation each time.
 
-Live catalog: [https://yin-wen-bin.github.io/SAPBusinessAgents/](https://yin-wen-bin.github.io/SAPBusinessAgents/)
+> The hosted static catalog describes capabilities; it is not a connection to your SAP system. Query execution, Agent management and persisted runs require the local environment below.
 
-### Current Agents
+### Choose by task
 
-| Module | Agent | Business scenario |
+| Your task | Entry point | Agent Runtime required? |
 |---|---|---|
-| FI | [AP Payment Assistant](agents/FI/ap-payment/) | Vendor payment status, open items, and payment risk |
-| FI | [AR Collection Assistant](agents/FI/ar-collection/) | Batch AR aging, dunning status, and collection worklist |
-| FI | [AR Cash Application Reconciliation Assistant](agents/FI/ar-cash-application/) | Bank receipt, customer subledger, clearing-document, and invoice reconciliation (pending acceptance) |
-| FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/) | GR/IR open-item causes, evidence, and clearing advice |
-| FI | [Month-end Closing Assistant](agents/FI/month-end-closing/) | FI/CO/MM/SD close checks and traceable follow-up work |
-| MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/) | End-to-end PO → GR → IV → FI → Payment status |
-| MM | [Material Shortage Procurement Response](agents/MM/material-shortage-procurement-response/) | MRP shortage, PR, PO schedule, and source response |
-| MM | [Inventory Health Check](agents/MM/inventory-health-balancing/) | Optional slow-moving, obsolete, and expiry checks for current stock only |
-| MM | [Intelligent Sourcing and RFQ Evaluation](agents/MM/intelligent-sourcing-rfq/) | Fixed-weight RFQ and quotation evaluation |
-| MM | [Supplier Performance and Delivery Risk](agents/MM/supplier-performance-risk/) | Schedule-line net-receipt OTIF and delivery risk |
-| SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/) | Delivered-but-unbilled detection and ageing |
-| SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/) | Billing-block and incompletion diagnosis |
-| SD | [Billing Completeness Check](agents/SD/billing-completeness-check/) | Quantity, price, currency and tax validation |
-| SD | [Billing Output Monitor](agents/SD/billing-output-monitor/) | Invoice-output delivery monitoring |
-| SD | [Delivery Delay Prediction](agents/SD/delivery-delay-prediction/) | Explainable delivery-delay risk scoring |
-| SD | [Due Delivery Prioritization](agents/SD/due-delivery-prioritization/) | Due-delivery worklist prioritization |
-| SD | [Shortage Allocation Advisor](agents/SD/shortage-allocation-advisor/) | Read-only shortage allocation advice |
-| SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/) | Billing rejection and dispute classification |
-| SD | [Returns and Credit Anomaly Monitor](agents/SD/returns-credit-anomaly/) | Returns and credit anomaly detection |
-| SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/) | Sales order through FI clearing status |
+| Repeat an AR, purchasing, inventory or production check | A fixed Agent in its module | No; acceptance and connections still apply |
+| Ask an ad-hoc question without a fixed entry | Free query | Yes |
+| Combine fixed Agents into a process | My workflows | For natural-language authoring; not deterministic execution |
+| Match job responsibilities to capabilities | Role matching assistant | Yes; it does not access SAP |
+| Create, edit, validate or deactivate fixed Agents | Agent management | For conversational authoring; not structured management |
+| Configure mail, plugins or external connections | Plugins and connections | Depends on the capability |
 
-### Repository structure
+Selected tasks: [AR collection](agents/FI/ar-collection/README.md), [bank reconciliation](agents/FI/ar-cash-application/README.md), [batch P2P](agents/MM/procure-to-pay-status/README.md), [production-order costs](agents/CO/product-cost-variance/README.md), [MRP demand coverage](agents/PP/demand-forecast-planning/README.md), [new sales-demand simulation](agents/SD/new-sales-demand-coverage/README.md).
 
-```text
-agents/<module>/<agent-slug>/  # Manifest, implementation, tests, and docs
-site/                          # Astro static catalog and local runtime UI
-src/sap_business_agents_platform/ # FastAPI, SQLite, SSE, and runtime harness
-config/skills.json             # Explicit executable read-only Skill allowlist
-config/plugins/                # Trusted local plugin manifests and versioned capabilities
-config/odata-services.json     # Reviewed internal OData V2/V4 service registry
-data/catalog-seed/             # Sanitized GET-only search/planning Seed, not schema authority
-.codex/agents/                 # Project-scoped Custom Agent definitions
-.github/workflows/             # Validation and GitHub Pages deployment
-```
+### First installation and startup
 
-### Agent manifest contract
+Use Windows locally. Python **3.11** is the minimum; **3.13** is recommended to match CI. Node.js must be **22.13.0 or newer** (CI uses Node 22). Install Git, Python and Node.js, and obtain a read-only SAP connection.
 
-An `agent.json` may use catalog-only schema version 1 or executable schema version 2. Both provide localized metadata, SAP scope, inputs, outputs, guardrails, and workflow steps. Schema v2 additionally declares a deterministic execution graph whose `sap_read`, `skill`, and `rule` steps are validated before execution; SAP read steps are GET-only and every service/entity reference explicitly declares `odata_version: "2.0" | "4.0"`. The Catalog Seed is advisory while live target-system `$metadata` remains the sole executable schema authority. See [OData Catalog v2](docs/odata-catalog-v2.md) for the version registry, V2/V4 adapters, sanitized one-time migration, and administrator BAH sync flow. The build validates all manifests before generating the catalog.
-
-### Local dual-mode prototype
-
-Create the environment, copy `.env.example` to `.env`, and configure the embedded SAP connection without putting credentials in prompts or logs:
+In PowerShell:
 
 ```powershell
+git clone https://github.com/yin-wen-bin/SAPBusinessAgents.git
+cd SAPBusinessAgents
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-Copy-Item .env.example .env
-.\.venv\Scripts\sap-business-agents.exe --port 8765
-```
-
-In another terminal, run `npm run dev` under `site/`. Fixed Agents execute their declared steps without an Agent Runtime. Free queries use the globally selected Runtime: Codex remains the default persistent App Server Harness, while WorkBuddy uses the same live-schema validation and deterministic GET-only execution path after it passes acceptance. Every SAP request is revalidated and executed by the Embedded Provider. State and evidence references are stored under `.local-data/`; generated drafts remain isolated under `.prototype/authoring/`. Only read-only, validated Skills explicitly listed in `config/skills.json` can be executed. See [Codex Harness](docs/codex-harness.md).
-
-The local runtime is a Python/FastAPI microkernel without Cordis. It routes versioned capabilities from trusted manifests under `config/plugins/`: `business_agent.v1`, `sap_read.v2`, `skill_catalog.v1`, `skill_execute.v1`, `agent_runtime.v2`, and `authoring.v1`. Plugins can be inspected, health-checked, enabled, or disabled through the local plugin page and API; every evidence-producing call records plugin identity and duration. See [Local plugin platform](docs/local-plugin-platform.md).
-
-“My workflows” is natural-language-first: the selected Agent Runtime matches executable repository Agents, while a trusted server-side compiler pins versions and digests and builds the typed DAG. Uncertain capabilities become blocking gaps that can open a contract-prefilled free query and produce a review-only Agent draft. The visual DAG remains available as the advanced editor. Live validation is GET-only, and published deterministic workflow execution never calls an Agent Runtime. See [User-defined workflows](docs/user-workflows.md).
-
-### Agent Runtime selection
-
-The system settings page reads the versioned registry at `config/sdks.json`. Codex and WorkBuddy have implemented adapters; DeepSeek Harness and Claude Agent SDK are reserved and cannot be selected. A runtime becomes selectable only after installation, platform, existing-login, provider, safety, model compatibility, and live free-query gates pass. Model choices come from the installed SDK's non-hidden account-level catalog, not a platform-maintained allowlist. The current SDK and bundled CLI versions, catalog digest, model-check digest, explicit model ID, and runtime configuration revision are frozen into every new Runtime task. Runtime or model changes affect new sessions and drafts only; there is no automatic provider or model fallback. All Runtimes may be disabled while fixed Agents and deterministic workflows remain available.
-
-### Runtime dependency version policy
-
-- CI uses Python 3.13, Node.js 22, and the npm versions pinned by `site/package-lock.json`.
-- CI installs the site with `npm ci` for reproducible builds.
-- Agent-specific Python dependencies belong in the Agent directory with a pinned tested baseline.
-
-### Local development
-
-```powershell
-python -m pytest -q
 cd site
 npm ci
-npm run validate
-npm run check
-npm test
+cd ..
+Copy-Item .env.example .env
 ```
 
-Use `npm run dev` for the local site. Development uses `/`; production builds use `/SAPBusinessAgents/`.
+Run the final command only on first installation when `.env` does not exist. Edit the local `.env` with your SAP connection and, where approved Skills are needed, your own `SAPSKILLHUB_ROOT`. Never commit credentials or put passwords in questions.
 
-### Add a new Agent
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-SAPBusinessAgents.ps1
+```
 
-1. Create `agents/<module>/<slug>/` under the correct SAP module.
-2. Add a valid `agent.json`, implementation, tests, and README.
-3. Declare the actual Tools used by every workflow step.
-4. Run the Agent and site validation commands above.
-5. Commit the directory. The catalog discovers it automatically.
+Open the [local English home](http://127.0.0.1:4321/en/); the API listens on `127.0.0.1:8765` by default. For natural-language features, use System settings → Agent Runtime and SDK to confirm login, refresh the model catalog, check compatibility, choose a model, enable the Runtime and select the default Runtime. Model choices come from the installed SDK and account, not a fixed list.
 
-### Automated deployment
+See [Getting started](docs/getting-started.md) for installation, ports and troubleshooting, and [Runtime settings](docs/runtime-settings.md) for models and SDK updates.
 
-Pushes to `main` test all Agents, validate the manifests, check and build the Astro site, and deploy the static artifact to GitHub Pages. Pull requests validate and build without deployment, and the workflow can also be started manually.
+### First run and interpreting results
+
+1. Select an active Agent with passed acceptance, then read its scope and evidence limitations.
+2. Supply permitted business identifiers, organizational scope and dates. Documentation examples do not guarantee data exists in SAP.
+3. Read the business conclusion, gaps and actions before opening document detail.
+4. Distinguish complete source reads, sufficient business evidence and completed business processes. `inconclusive` is not success; complete empty results differ from failed queries.
+5. Explicitly reveal protected details and use guarded downloads. Do not put raw bank references in free text.
+
+FI clearing does not prove bank settlement; MRP simulation is not formal ATP; advice is not an executed action.
+
+### Guides and full catalog
+
+[Free query](docs/free-query.md) · [Agent management](docs/agent-lifecycle-management.md) · [My workflows](docs/user-workflows.md) · [Role matching](docs/role-agent-matching.md) · [AR guide](docs/ar-collection-cash-application.md) · [Plugins and connections](docs/runtime-integrations.md).
+
+This index is generated from current manifests and lifecycle records. Active lifecycle and passed acceptance are separate requirements. Inactive or blocked entries remain documented but are not necessarily runnable.
+
+<!-- generated:agents-en:start -->
+| Module | Agent | Version | Lifecycle | Acceptance |
+|---|---|---|---|---|
+| CO | [Budget Rolling Forecast Assistant](agents/CO/budget-rolling-forecast/README.md) | 0.1.1 | Active | Blocked |
+| CO | [CO Month-End Allocation and Settlement Assistant](agents/CO/co-month-end-allocation-settlement/README.md) | 0.1.1 | Active | Blocked |
+| CO | [Cost Center Expense Anomaly Assistant](agents/CO/cost-center-expense-anomaly/README.md) | 0.1.1 | Active | Blocked |
+| CO | [Internal Order and Project Control Assistant](agents/CO/internal-order-project-control/README.md) | 0.4.0 | Active | Blocked |
+| CO | [Production Order Cost Variance Analysis Assistant](agents/CO/product-cost-variance/README.md) | 0.2.0 | Active | Passed |
+| Common | [Role-to-Agent Matching Assistant](agents/Common/role-agent-matching/README.md) | 0.2.0 | Active | Platform gate |
+| FI | [AP Payment Assistant](agents/FI/ap-payment/README.md) | 0.2.1 | Active | Passed |
+| FI | [AR Cash Application Reconciliation Assistant](agents/FI/ar-cash-application/README.md) | 0.1.0 | Active | Passed |
+| FI | [AR Collection Assistant](agents/FI/ar-collection/README.md) | 1.2.0 | Active | Passed |
+| FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/README.md) | 0.2.1 | Active | Passed |
+| FI | [Month-end Closing Assistant](agents/FI/month-end-closing/README.md) | 0.2.0 | Active | Not tested |
+| MM | [Intelligent Sourcing and RFQ Evaluation Assistant](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.1 | Active | Passed |
+| MM | [Inventory Health Check](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | Active | Passed |
+| MM | [Material Shortage Procurement Response Assistant](agents/MM/material-shortage-procurement-response/README.md) | 0.2.1 | Active | Passed |
+| MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/README.md) | 0.3.2 | Active | Passed |
+| MM | [Supplier Performance and Delivery Risk Assistant](agents/MM/supplier-performance-risk/README.md) | 0.2.3 | Active | Passed |
+| PP | [Planned Order and PIR Coverage Assistant](agents/PP/demand-forecast-planning/README.md) | 0.3.1 | Active | Passed |
+| PP | [MRP Exception Analysis Assistant](agents/PP/mrp-exception-analysis/README.md) | 0.2.1 | Active | Passed |
+| PP | [Production Order Execution Monitoring Assistant](agents/PP/production-order-monitoring/README.md) | 0.2.1 | Active | Passed |
+| PP | [Production Scheduling & Capacity Assistant](agents/PP/production-scheduling-capacity/README.md) | 0.1.0 | Active | Blocked |
+| PP | [Production Quantity and Material Variance Analysis Assistant](agents/PP/production-variance-analysis/README.md) | 0.2.1 | Active | Passed |
+| SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/README.md) | 0.2.1 | Active | Passed |
+| SD | [Billing Completeness Check](agents/SD/billing-completeness-check/README.md) | 0.1.1 | Active | Passed |
+| SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/README.md) | 0.1.0 | Inactive | Blocked |
+| SD | [Billing Output Monitor](agents/SD/billing-output-monitor/README.md) | 0.1.0 | Active | Blocked |
+| SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/README.md) | 0.2.1 | Active | Passed |
+| SD | [Delivery Delay Prediction](agents/SD/delivery-delay-prediction/README.md) | 0.1.1 | Active | Passed |
+| SD | [Due Delivery Prioritization](agents/SD/due-delivery-prioritization/README.md) | 0.1.1 | Active | Passed |
+| SD | [New Sales Demand Coverage Check Assistant](agents/SD/new-sales-demand-coverage/README.md) | 0.1.0 | Active | Passed |
+| SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/README.md) | 0.1.2 | Active | Passed |
+| SD | [Returns and Credit Anomaly Monitor](agents/SD/returns-credit-anomaly/README.md) | 0.1.0 | Active | Blocked |
+| SD | [Shortage Allocation Advisor](agents/SD/shortage-allocation-advisor/README.md) | 0.1.0 | Active | Blocked |
+<!-- generated:agents-en:end -->
+
+### Development, testing and deployment
+
+The [Developer guide](docs/developer-guide.md) covers architecture, schemas, interfaces, offline regression, catalog checks, contribution and static deployment. Historical acceptance reports retain their original dates and applicable versions; they do not certify a new environment.
+
+<!-- Compatibility anchors retained for existing README links. -->
+<a id="项目功能"></a><a id="当前-agent"></a><a id="仓库结构"></a><a id="agent-清单契约"></a>
+<a id="单机双模式原型"></a><a id="运行依赖版本策略"></a><a id="本地开发"></a><a id="添加新的-agent"></a><a id="自动部署"></a>
+<a id="features"></a><a id="current-agents"></a><a id="repository-structure"></a><a id="agent-manifest-contract"></a>
+<a id="local-dual-mode-prototype"></a><a id="agent-runtime-selection"></a><a id="runtime-dependency-version-policy"></a><a id="local-development"></a><a id="add-a-new-agent"></a><a id="automated-deployment"></a>
+
+原章节已整理到[开发指南](docs/developer-guide.md)和[首次使用指南](docs/getting-started.md)。 Former sections are now in the [Developer guide](docs/developer-guide.md) and [Getting started](docs/getting-started.md).

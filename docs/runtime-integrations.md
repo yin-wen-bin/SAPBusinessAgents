@@ -122,3 +122,13 @@ SAP 严格只读链不继承外部集成。Harness Tool Broker 仍只暴露经�
 首期是单机、单操作系统用户、每个 Runtime Backend 下每个原生集成一个有效连接。
 不包含共享邮箱、多租户、邮件 webhook、定时收件、等待回复、自动回复和附件上传。
 `codex-runtime` 本地插件 ID 暂时保留兼容；页面将其解释为通用 Agent Runtime Router。
+
+## English user guide
+
+Open Plugins and connections to inspect enabled capabilities and set up external accounts. SAP access remains on the platform's approved read-only path; external integration permissions are separate. For mail, choose a supported Runtime mail App or the custom HTTP MCP setup flow, complete the provider's authentication, refresh discovery and bind each canonical operation to an exact compatible tool. Do not enter raw credentials into setup descriptions. The first version supports disabling connections rather than deleting them; disabled/missing workflow bindings return connection_required.
+
+Mail search and read obtain evidence. A local draft is a platform artifact, not a remote mailbox draft and not a sent message. Sending requires review and confirmation for each send; a successful SAP read does not authorize mail delivery. Tool schema/fingerprint drift blocks use and requires rebinding/review. SDK/model selection belongs in [Runtime settings](runtime-settings.md), not connection credentials.
+
+## 使用顺序
+
+先在“插件与连接”完成账号与精确能力绑定，再在业务工作流选择连接。邮件读取、本地草稿和发送是不同操作；草稿未发送，每次发送都需明确确认。连接问题不会放宽SAP只读规则。

@@ -1,0 +1,54 @@
+{
+  "revision": 2,
+  "risk_class": "metadata_only",
+  "checks": [
+    {
+      "code": "agent_schema_valid",
+      "status": "pass"
+    }
+  ],
+  "errors": [],
+  "sap_get_count": 0,
+  "validated_at": "2026-09-08T05:52:57.236504+00:00",
+  "verdict": "PASS",
+  "reused_validation": true,
+  "source_validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-08-23T04:39:40.907959+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata",
+      "sap-adt-table-export"
+    ],
+    "summary": {
+      "zh": "原三级验收保持通过；增量真机复测确认冻结、信用和不完整字段代码均保留原值并取得SAP权威文本。",
+      "en": "The original three-stage acceptance remains passed; the incremental live replay confirms that block, credit, and incompletion codes retain their raw values and resolve authoritative SAP texts."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "codexDirectBaselineHash": "sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13",
+    "freeQueryHash": "sha256:d949ff765d9a1d9e119d9d4212af717c1ce708c31eb13fa9e8ec054bf15055db",
+    "adjudicatedResultHash": "sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13",
+    "fixedAgentHash": "sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13",
+    "comparisonHash": "sha256:3c956466c5a78bb614bf289218daf36f165f68076b93fb0a17709570fd0e4019",
+    "focusedReplay": {
+      "runId": "acceptance_7b93a3c35b124e9d",
+      "testedAt": "2026-08-23T04:39:40.907959+00:00",
+      "technicalStatus": "completed",
+      "businessStatus": "blocked",
+      "sourceComplete": true,
+      "businessComplete": true,
+      "blockedFindings": 4,
+      "missingEvidence": [],
+      "resultHash": "sha256:d6b1600e0b59759b38402077d467c25555dcbd7ca1028b0f60635751270f709f"
+    }
+  },
+  "source_version": "0.2.0",
+  "source_validation_digest": "sha256:8c69114f0e0a59d1516330f55ad74e41178c6e3a98c9c90f1645c829b5f50bad",
+  "execution_digest": "sha256:4516261ce735eaa958aa160dafc58df351617cbe0f0e617501285834d839235c"
+}

@@ -1,0 +1,38 @@
+{
+  "revision": 2,
+  "risk_class": "metadata_only",
+  "checks": [
+    {
+      "code": "agent_schema_valid",
+      "status": "pass"
+    }
+  ],
+  "errors": [],
+  "sap_get_count": 0,
+  "validated_at": "2026-09-08T05:52:55.231938+00:00",
+  "verdict": "PASS",
+  "reused_validation": true,
+  "source_validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-08-25T18:30:00+08:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-app-direct-sap",
+      "codex-app-server",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "订单1001233三级真机验收一致：计划及最终工序确认7 PC、成品入库6 PC、三个组件足额领料、无冲销；判定为完工确认后少入库1 PC。",
+      "en": "Three-stage live acceptance matched for order 1001233: 7 PC planned and finally confirmed, 6 PC received, all three components fully withdrawn, and no reversals; the deterministic finding is a 1 PC receipt shortfall after confirmation."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "usedSapBusinessAgentsForBaseline": false,
+    "blockingLimitations": []
+  },
+  "source_version": "0.2.0",
+  "source_validation_digest": "sha256:c3342e13e7faff0a09f6feba59b1ae22fc672cc4d2939bd2f9d5a3c13019332a",
+  "execution_digest": "sha256:0cfacac2121374d84ac9a94f9ff95c23da6181f026c96d713aeee54e518dc87c"
+}

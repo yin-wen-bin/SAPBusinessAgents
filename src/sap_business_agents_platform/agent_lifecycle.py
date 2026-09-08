@@ -646,6 +646,8 @@ class AgentLifecycleService:
                     verdict="PASS",
                     reused_validation=True,
                     source_validation=copy.deepcopy(source.get("validation") or {}),
+                    source_version=source["version"],
+                    source_validation_digest=_json_digest(source.get("validation") or {}),
                     execution_digest=_execution_digest(manifest, package.get("rules")),
                 )
         if errors:
@@ -744,8 +746,10 @@ class AgentLifecycleService:
             raise AgentLifecycleError("The draft changed while validation was synchronizing.", code="agent_validation_revision_conflict")
         return {**report, "report_digest": digest}
 
-    def publish(self, draft_id: str, payload: Any) -> dict[str, Any]:
+    def publish(self, draft_id: str, payload: Any, *, schedule_refresh: bool = True) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
+        if int(payload.expected_revision) != int(draft["revision"]):
+            raise AgentLifecycleError("Agent draft revision changed.", code="agent_draft_conflict")
         package = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))["package"]
         manifest = package["manifest"]
         report = self.validation_report(draft_id)
@@ -763,17 +767,39 @@ class AgentLifecycleService:
                 detail={"minimum": minimum, "target_version": target_version},
             )
         manifest["version"] = target_version
-        manifest["validation"] = {
+        if draft["risk_class"] == "metadata_only":
+            source = self._assert_expected(draft["agent_id"], draft["source_version"], draft["source_hash"])
+            if (
+                self._risk_class(draft, package) != "metadata_only"
+                or not report.get("reused_validation")
+                or not is_agent_executable(source)
+                or report.get("source_validation_digest") != _json_digest(source.get("validation") or {})
+                or report.get("execution_digest") != _execution_digest(manifest, package.get("rules"))
+            ):
+                raise AgentLifecycleError("The reusable acceptance changed; validate again.", code="agent_validation_report_conflict")
+            # Preserve the original SAP date, acceptance mode and comparisons verbatim.
+            # A documentation review is not another live SAP acceptance.
+            manifest["validation"] = copy.deepcopy(report["source_validation"])
+            manifest["validation"]["documentationReuse"] = {
+                "sourceVersion": report["source_version"],
+                "executionDigest": report["execution_digest"],
+                "sourceValidationDigest": report["source_validation_digest"],
+                "reviewedAt": report["validated_at"],
+            }
+        else:
+            manifest["validation"] = {
             "verdict": "PASS",
             "executable": True,
             "acceptanceMode": "three_stage" if draft["risk_class"] == "behavior_change" else "deterministic_runtime",
             "fixedAgentComparison": "MATCH",
             "freeQueryComparison": (report.get("source_validation") or {}).get("freeQueryComparison", "MATCH"),
             "validated_at": report.get("completed_at") or report.get("validated_at") or utc_now(),
-        }
+            }
         if bool(payload.activate):
             self._require_skill_dependencies(manifest)
         package = self._publication_package(draft, package)
+        if draft["risk_class"] == "metadata_only":
+            self._validate_documentation_package(package)
         branch = self._prepare_branch(draft["agent_id"], "publish", target_version)
         agent_dir = self.settings.repository_root / "agents" / str(manifest.get("module") or "Common") / draft["agent_id"]
         existing_dir = self._existing_directory(draft["agent_id"])
@@ -816,8 +842,25 @@ class AgentLifecycleService:
         self._audit(draft["agent_id"], "published", draft.get("source_version"), target_version, agent_digest(manifest), branch, commit_sha, {"activated": bool(payload.activate)})
         draft.update(status="published", target_version=target_version, validation={**report, "branch": branch, "commit_sha": commit_sha}, updated_at=utc_now())
         self.store.save_agent_authoring_draft(draft)
-        reload_scheduled = self._schedule_service_refresh() if payload.activate else False
+        # Offline batch publishers refresh their isolated API/preview once after all releases.
+        reload_scheduled = self._schedule_service_refresh() if payload.activate and schedule_refresh else False
         return {"agent_id": draft["agent_id"], "version": target_version, "active": bool(payload.activate), "branch": branch, "commit_sha": commit_sha, "pushed": False, "reload_scheduled": reload_scheduled}
+
+    @staticmethod
+    def _validate_documentation_package(package: dict[str, Any]) -> None:
+        """Use the same complete manifest contract as the site, before any Git writes."""
+        validator = Path(__file__).resolve().parents[2] / "site" / "scripts" / "validate-agent-package.mjs"
+        try:
+            result = subprocess.run(
+                ["node", str(validator)], input=json.dumps(package, ensure_ascii=False),
+                encoding="utf-8", capture_output=True, timeout=20, check=False,
+                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AgentLifecycleError("Package validation is unavailable.", code="agent_package_validation_unavailable") from exc
+        if result.returncode:
+            # Do not expose package bodies through command or validation errors.
+            raise AgentLifecycleError("The complete Agent package failed catalog validation.", code="agent_package_invalid")
 
     def deactivate(self, agent_id: str, payload: Any) -> dict[str, Any]:
         manifest = self._assert_expected(agent_id, payload.expected_version, payload.expected_agent_hash)
@@ -1037,7 +1080,7 @@ class AgentLifecycleService:
     def _copy_current_package(directory: Path, target: Path) -> None:
         target.mkdir(parents=True, exist_ok=True)
         for source in directory.rglob("*"):
-            if source.is_dir() or "versions" in source.relative_to(directory).parts or source.name == "publication.json":
+            if source.is_dir() or _transient_package_file(source.relative_to(directory)) or "versions" in source.relative_to(directory).parts or source.name == "publication.json":
                 continue
             destination = target / source.relative_to(directory)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1116,7 +1159,7 @@ class AgentLifecycleService:
         files: dict[str, str] = {}
         binary_files: dict[str, str] = {}
         for path in paths:
-            if path.is_dir() or "versions" in path.relative_to(directory).parts or path.relative_to(directory).as_posix() in {"agent.json", "README.md", "rules.py", "publication.json", "validation.json"}:
+            if path.is_dir() or _transient_package_file(path.relative_to(directory)) or "versions" in path.relative_to(directory).parts or path.relative_to(directory).as_posix() in {"agent.json", "README.md", "rules.py", "publication.json", "validation.json"}:
                 continue
             try:
                 files[path.relative_to(directory).as_posix()] = path.read_text(encoding="utf-8")
@@ -1220,6 +1263,15 @@ class AgentLifecycleService:
 
 def _execution_digest(manifest: dict[str, Any], rules_source: str | None) -> str:
     return agent_execution_digest(manifest, rules_source)
+
+
+def _transient_package_file(path: Path) -> bool:
+    """Runtime caches and local environments are not immutable release artifacts."""
+    return (
+        bool(set(path.parts) & {"__pycache__", ".pytest_cache", ".local", ".local-data", ".venv", "node_modules"})
+        or path.suffix in {".pyc", ".pyo"}
+        or (path.name.startswith(".env") and path.name != ".env.example")
+    )
 
 
 _GENERATED_PUBLIC_FILES = {

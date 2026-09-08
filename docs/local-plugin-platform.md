@@ -86,3 +86,11 @@ PUT  /api/plugins/{plugin_id}/enabled
 - 热重载正在运行的任务。
 - 自动下载 Python、Node 或二进制依赖。
 - SAP 写操作或非只读 Skill。
+
+## 用户入口 / User entry point
+
+从“插件与连接”查看插件状态、健康与能力；从“系统配置”管理Agent Runtime与模型。插件已安装、已启用和对应能力已经验证是不同条件。配置缺失或依赖漂移时先处理阻塞，不把目录存在解释为可以运行。
+
+Use Plugins and connections for plugin status, health and capabilities, and System settings for Agent Runtime/models. Installed, enabled and accepted are separate conditions. Resolve missing configuration or dependency drift before running; catalog presence does not establish readiness. Mail operations require their own bindings and per-send confirmation, independently of SAP's read-only boundary.
+
+See [Runtime settings](runtime-settings.md) and [connection/mail guidance](runtime-integrations.md).

@@ -1,0 +1,44 @@
+{
+  "revision": 2,
+  "risk_class": "metadata_only",
+  "checks": [
+    {
+      "code": "agent_schema_valid",
+      "status": "pass"
+    }
+  ],
+  "errors": [],
+  "sap_get_count": 0,
+  "validated_at": "2026-09-08T05:52:36.567143+00:00",
+  "verdict": "PASS",
+  "reused_validation": true,
+  "source_validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-08-29T07:00:00+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "既有业务语义验收继续有效；活跃查询路径已迁移为 Embedded OData，历史报告不声明重新执行了架构验收。",
+      "en": "The existing business-semantic acceptance remains valid; the active query path is Embedded OData, while the historical report does not claim a rerun of architecture acceptance."
+    },
+    "reportPath": "docs/p2p-evidence-workflow-live-acceptance.md",
+    "executable": true,
+    "acceptanceMode": "deterministic_runtime",
+    "freeQueryComparison": "NOT_TESTED",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "embedded-odata",
+    "usedSapBusinessAgentsForBaseline": true,
+    "runtimeCaseIds": [
+      "899033a9-4183-45e0-8923-7133aece8f01"
+    ],
+    "workflowRunIds": [
+      "run_676139ae75814a04",
+      "run_2e167ea3921448ae"
+    ]
+  },
+  "source_version": "0.2.0",
+  "source_validation_digest": "sha256:7c6c921b023e8e2aeb3abeb4c898ec59a689007bb39ca786775182f6096e579b",
+  "execution_digest": "sha256:ad4cfc7f06d4337154a4bceccde3e3e4028205186a8fa3773f6ad886693057a5"
+}

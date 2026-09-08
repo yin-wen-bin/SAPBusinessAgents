@@ -1,6 +1,6 @@
 # 用户自定义工作流 / User-defined workflows
 
-本机平台允许业务用户先用自然语言描述目标，再由当前 Agent Runtime 从仓库的**可执行固定 Agent**中提出组合建议。服务端把建议视为不可信输入，重新固定 Agent 版本与摘要、校验类型、补齐工作流输入并编译成严格只读 DAG。高级用户仍可打开可视化画布手工调整。Schema v2 支持 `foreach` 和由上游非空集合驱动的 `runIf` 条件节点；compiler v4 要求条件终端节点通过 `onSkip` 返回显式的不确定终态，并自动剔除未被下游消费的输入回显字段，不允许把 `query_mode`、日期等执行上下文伪装成业务终态输出。不支持任意条件表达式、嵌套工作流或 SAP 写操作。
+本机平台允许业务用户先用自然语言描述目标，再由当前 Agent Runtime 从仓库的**可执行固定 Agent**中提出组合建议。服务端把建议视为不可信输入，重新固定 Agent 版本与摘要、校验类型、补齐工作流输入并编译成严格只读 DAG。高级用户仍可打开可视化画布手工调整。Schema v2 支持 `foreach` 和由上游非空集合驱动的 `runIf` 条件节点；平台编译器 要求条件终端节点通过 `onSkip` 返回显式的不确定终态，并自动剔除未被下游消费的输入回显字段，不允许把 `query_mode`、日期等执行上下文伪装成业务终态输出。不支持任意条件表达式、嵌套工作流或 SAP 写操作。
 
 ```mermaid
 flowchart LR
@@ -37,8 +37,8 @@ flowchart LR
 
 1. **生成草稿**：打开“我的工作流”，用一句话描述要完成的业务任务。订单号、公司代码和日期等具体值只作为真机验证预填值，不会固化成正式工作流常量。生成完成后页面会持久显示“草稿已生成”、业务步骤数量和“下一步：检查工作流”；刷新、切换语言或重新打开草稿后仍能看到该引导。
 2. Codex 读取当前仓库中状态为可执行且声明了输入、输出契约的 Agent。高置信匹配才会进入草稿；关键歧义会一次只追问一个问题。
-3. 服务端重新编译建议：固定每个 Agent 的版本与执行摘要，仅对同名且类型兼容的上下游端口自动连接；遇到 `oneOf` 时必须选择唯一分支并注入显式模式常量。上游数组可能为空、下游要求非空时，编译器增加 `runIf=non_empty`，不会把空数组交给下游 Agent；终端节点同时生成类型安全的 `onSkip` 输出，并把最终业务状态、报告和完整性字段保持为必需。Runtime误请求未消费的输入回显字段时，compiler v4会移除终态投影并在`output_normalization.dismissed_requested_outputs`中留痕；真实业务输出或下游消费字段无法安全跳过时仍阻止生成。
-4. **检查工作流**：如果能力齐全，检查自动编排结果。用户可以连续反馈业务目标、Agent/步骤、映射、条件分支、最终输出和完整性问题；每轮Runtime反馈都由compiler v4重新编译成新修订，旧轮次与旧修订不可变。需要精细控制时打开“高级编辑”，画布修改也作为`manual_edit`轮次进入同一时间线。只有用户明确确认当前设计后才能进入真机验证。
+3. 服务端重新编译建议：固定每个 Agent 的版本与执行摘要，仅对同名且类型兼容的上下游端口自动连接；遇到 `oneOf` 时必须选择唯一分支并注入显式模式常量。上游数组可能为空、下游要求非空时，编译器增加 `runIf=non_empty`，不会把空数组交给下游 Agent；终端节点同时生成类型安全的 `onSkip` 输出，并把最终业务状态、报告和完整性字段保持为必需。Runtime误请求未消费的输入回显字段时，平台编译器会移除终态投影并在`output_normalization.dismissed_requested_outputs`中留痕；真实业务输出或下游消费字段无法安全跳过时仍阻止生成。
+4. **检查工作流**：如果能力齐全，检查自动编排结果。用户可以连续反馈业务目标、Agent/步骤、映射、条件分支、最终输出和完整性问题；每轮Runtime反馈都由平台编译器重新编译成新修订，旧轮次与旧修订不可变。需要精细控制时打开“高级编辑”，画布修改也作为`manual_edit`轮次进入同一时间线。只有用户明确确认当前设计后才能进入真机验证。
 5. 如果存在缺口，页面列出缺口 Agent 的功能、输入、输出、只读护栏和验收要求。缺口未解决前，真机验证和发布均被服务端阻断。
 6. 点击“用自由查询创建此 Agent”。系统把缺口契约预填到自由查询；查询完成后点击“保存为 Agent 草稿”。该草稿保留来源工作流和缺口编号，默认进入 `needs_review`，不是可执行目录条目。
 7. 缺口 Agent 完成业务复核、契约复核和真实 SAP GET-only 验证并进入可执行目录后，返回原工作流页面。页面会根据新的目录摘要自动重新匹配；目录未变化时不会反复调用 Codex。
@@ -50,7 +50,7 @@ flowchart LR
 
 - Runtime交互轮次默认最多12轮，可通过`SAPBA_MAX_WORKFLOW_CONVERSATION_TURNS`调整；真机验证系统事件不占用该额度。
 - 正式工作流通过 `POST /api/runs` 使用 `mode=workflow` 和 `workflowId` 执行。
-- 发布和每次执行都会重新核对 Agent 版本与摘要；发生漂移时失败关闭并要求重新验证。
+- 已发布工作流固定历史Agent版本；Agent升级不会自动重绑定。执行时解析固定版本及摘要，无法解析或契约不匹配时失败关闭；新工作流默认选择当前活动版本。
 - Codex 的 Agent 选择和映射建议不能直接执行；服务端只接受当前可执行目录中的精确 Agent ID，并重新验证类型、必填端口、DAG、版本摘要与 GET-only 边界。
 - Runtime 预审结论会同时保存原始结论、有效结论、阻塞问题和被平台契约证明不适用的问题。只有 `review_contract` 确实要求且工作流确实缺少的条件输出才能阻塞；被驳回的模型误报仍保留在 `dismissed_issues` 中供审计。
 - Runtime组合建议在编译前保存为本地`proposal_snapshot`。可恢复的旧compiler失败草稿可以通过原草稿的“重新生成草稿”操作升级，不要求用户重新输入业务目标。
@@ -104,3 +104,21 @@ POST /api/runs/{run_id}/create-agent-draft
 ## English summary
 
 The natural-language-first builder asks Codex to match only currently executable repository Agents. A trusted server-side compiler pins each version and digest, validates ports and the DAG, and turns uncertain matches into explicit blocking gaps. A gap can open a prefilled read-only free query and preserve its contract in a review-only Agent draft. Live validation executes the real fixed Agents against GET-only SAP data. Published executions never invoke Codex and fail closed if a pinned Agent drifts.
+
+## English user guide
+
+Use My workflows to browse published definitions or create a new design. Describe the business goal, review the proposed steps and I/O, confirm the design, then run approved read-only validation and review its evidence before publication. The advanced canvas is optional; conversational feedback and manual edits both create immutable revisions. Gaps can open Free query with a capability contract, but a generated Agent remains a review-only draft until its own gates pass.
+
+A design-precheck result is not live acceptance. An inconclusive validation can be published only after the exact evidence gaps are acknowledged; acknowledgement does not turn it into PASS. Failed or blocked validations cannot be accepted. Workflow publication uses a local branch and does not automatically commit or push. Fixed execution does not call Runtime, while natural-language authoring/precheck requires an enabled compatible Runtime.
+
+Existing workflows retain pinned Agent versions; upgrades do not silently rebind them. Missing historical versions, digest mismatches or invalid contracts block new execution. Deactivation blocks new runs without rewriting running tasks or history. Empty conditional scopes use declared skips/onSkip outputs, not invented successful business conclusions.
+
+Mail reads, local drafts and individually confirmed sending are separate integration capabilities. They do not change SAP's read-only boundary. See [Plugins and connections](runtime-integrations.md) for bindings and confirmation rules.
+
+## 正式工作流说明 / Published workflow guides
+
+- [采购到付款准备度复核 / Payment readiness](../workflows/Common/workflow-ec0e3072/README.md)
+- [P2P批量付款复核（停用） / Batch payment review (inactive)](../workflows/Common/p2p-batch-payment-review/README.md)
+- [月结异常专项复核（停用） / Month-end follow-up (inactive)](../workflows/Common/month-end-exception-follow-up/README.md)
+
+编译器实现与回归入口见[开发指南](developer-guide.md)。 Compiler implementation and regression entry points are in the [Developer guide](developer-guide.md).
