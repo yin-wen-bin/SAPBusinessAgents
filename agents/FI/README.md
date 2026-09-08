@@ -13,9 +13,9 @@ The index below reflects current manifests. Active lifecycle does not automatica
 <!-- generated:agents:start -->
 | 模块 / Module | Agent | 版本 / Version | 生命周期 / Lifecycle | 验收 / Acceptance |
 |---|---|---|---|---|
-| FI | [应付账款付款助手 / AP Payment Assistant](ap-payment/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
+| FI | [应付账款付款助手 / AP Payment Assistant](ap-payment/README.md) | 0.2.1 | 使用中 / Active | 验收通过 / Passed |
 | FI | [银行来款与应收核销核对助手 / AR Cash Application Reconciliation Assistant](ar-cash-application/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
 | FI | [应收账款催收助手 / AR Collection Assistant](ar-collection/README.md) | 1.2.0 | 使用中 / Active | 验收通过 / Passed |
-| FI | [GR/IR 清账助手 / GR/IR Clearing Assistant](gr-ir-clearing/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
+| FI | [GR/IR 清账助手 / GR/IR Clearing Assistant](gr-ir-clearing/README.md) | 0.2.1 | 使用中 / Active | 验收通过 / Passed |
 | FI | [月结助手 / Month-end Closing Assistant](month-end-closing/README.md) | 0.2.0 | 使用中 / Active | 尚未验收 / Not tested |
 <!-- generated:agents:end -->

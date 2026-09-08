@@ -69,40 +69,40 @@ FI 清账不自动证明银行到账；MRP模拟不等于正式ATP；处理建�
 下表由当前清单及生命周期记录生成；“使用中”与“通过验收”是不同条件。停用或受阻条目保留说明，不意味着可以运行。
 
 <!-- generated:agents-zh:start -->
-| 模块 / Module | Agent | 版本 / Version | 生命周期 / Lifecycle | 验收 / Acceptance |
+| 模块 | Agent | 版本 | 生命周期 | 验收 |
 |---|---|---|---|---|
-| CO | [预算滚动预测助手](agents/CO/budget-rolling-forecast/README.md) | 0.1.1 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| CO | [CO 月结分配与结算助手](agents/CO/co-month-end-allocation-settlement/README.md) | 0.1.1 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| CO | [成本中心费用异常助手](agents/CO/cost-center-expense-anomaly/README.md) | 0.1.1 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| CO | [内部订单与项目控制助手](agents/CO/internal-order-project-control/README.md) | 0.4.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| CO | [生产订单成本差异分析助手](agents/CO/product-cost-variance/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| Common | [岗位匹配助理](agents/Common/role-agent-matching/README.md) | 0.2.0 | 使用中 / Active | 平台能力门禁 / Platform gate |
-| FI | [应付账款付款助手](agents/FI/ap-payment/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| FI | [银行来款与应收核销核对助手](agents/FI/ar-cash-application/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| FI | [应收账款催收助手](agents/FI/ar-collection/README.md) | 1.2.0 | 使用中 / Active | 验收通过 / Passed |
-| FI | [GR/IR 清账助手](agents/FI/gr-ir-clearing/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| FI | [月结助手](agents/FI/month-end-closing/README.md) | 0.2.0 | 使用中 / Active | 尚未验收 / Not tested |
-| MM | [智能寻源与 RFQ 评估助手](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| MM | [库存健康检查](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | 使用中 / Active | 验收通过 / Passed |
-| MM | [外购件短缺采购响应助手](agents/MM/material-shortage-procurement-response/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| MM | [采购到付款状态助手](agents/MM/procure-to-pay-status/README.md) | 0.3.1 | 使用中 / Active | 验收通过 / Passed |
-| MM | [供应商绩效与交付风险助手](agents/MM/supplier-performance-risk/README.md) | 0.2.2 | 使用中 / Active | 验收通过 / Passed |
-| PP | [计划订单与计划独立需求覆盖度助手](agents/PP/demand-forecast-planning/README.md) | 0.3.0 | 使用中 / Active | 验收通过 / Passed |
-| PP | [MRP 异常分析助手](agents/PP/mrp-exception-analysis/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| PP | [生产订单执行监控助手](agents/PP/production-order-monitoring/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| PP | [生产排程与产能助手](agents/PP/production-scheduling-capacity/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| PP | [生产数量与物料差异根因分析助手](agents/PP/production-variance-analysis/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [开票冻结诊断](agents/SD/billing-block-diagnosis/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [发票完整性检查](agents/SD/billing-completeness-check/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [发票争议分类](agents/SD/billing-dispute-classification/README.md) | 0.1.0 | 已停用 / Inactive | 因证据或验收缺口受阻 / Blocked |
-| SD | [发票输出监控](agents/SD/billing-output-monitor/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| SD | [已发货未开票监控](agents/SD/delivered-not-billed/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [交货延期预测](agents/SD/delivery-delay-prediction/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [到期交货优先级排序](agents/SD/due-delivery-prioritization/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [新增销售需求覆盖度检查助手](agents/SD/new-sales-demand-coverage/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [订单到收款状态助手](agents/SD/order-to-cash-status/README.md) | 0.1.1 | 使用中 / Active | 验收通过 / Passed |
-| SD | [退货及贷项异常监控](agents/SD/returns-credit-anomaly/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| SD | [缺货分配建议](agents/SD/shortage-allocation-advisor/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
+| CO | [预算滚动预测助手](agents/CO/budget-rolling-forecast/README.md) | 0.1.1 | 使用中 | 因证据或验收缺口受阻 |
+| CO | [CO 月结分配与结算助手](agents/CO/co-month-end-allocation-settlement/README.md) | 0.1.1 | 使用中 | 因证据或验收缺口受阻 |
+| CO | [成本中心费用异常助手](agents/CO/cost-center-expense-anomaly/README.md) | 0.1.1 | 使用中 | 因证据或验收缺口受阻 |
+| CO | [内部订单与项目控制助手](agents/CO/internal-order-project-control/README.md) | 0.4.0 | 使用中 | 因证据或验收缺口受阻 |
+| CO | [生产订单成本差异分析助手](agents/CO/product-cost-variance/README.md) | 0.2.0 | 使用中 | 验收通过 |
+| Common | [岗位匹配助理](agents/Common/role-agent-matching/README.md) | 0.2.0 | 使用中 | 平台能力门禁 |
+| FI | [应付账款付款助手](agents/FI/ap-payment/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| FI | [银行来款与应收核销核对助手](agents/FI/ar-cash-application/README.md) | 0.1.0 | 使用中 | 验收通过 |
+| FI | [应收账款催收助手](agents/FI/ar-collection/README.md) | 1.2.0 | 使用中 | 验收通过 |
+| FI | [GR/IR 清账助手](agents/FI/gr-ir-clearing/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| FI | [月结助手](agents/FI/month-end-closing/README.md) | 0.2.0 | 使用中 | 尚未验收 |
+| MM | [智能寻源与 RFQ 评估助手](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.1 | 使用中 | 验收通过 |
+| MM | [库存健康检查](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | 使用中 | 验收通过 |
+| MM | [外购件短缺采购响应助手](agents/MM/material-shortage-procurement-response/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| MM | [采购到付款状态助手](agents/MM/procure-to-pay-status/README.md) | 0.3.2 | 使用中 | 验收通过 |
+| MM | [供应商绩效与交付风险助手](agents/MM/supplier-performance-risk/README.md) | 0.2.3 | 使用中 | 验收通过 |
+| PP | [计划订单与计划独立需求覆盖度助手](agents/PP/demand-forecast-planning/README.md) | 0.3.1 | 使用中 | 验收通过 |
+| PP | [MRP 异常分析助手](agents/PP/mrp-exception-analysis/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| PP | [生产订单执行监控助手](agents/PP/production-order-monitoring/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| PP | [生产排程与产能助手](agents/PP/production-scheduling-capacity/README.md) | 0.1.0 | 使用中 | 因证据或验收缺口受阻 |
+| PP | [生产数量与物料差异根因分析助手](agents/PP/production-variance-analysis/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| SD | [开票冻结诊断](agents/SD/billing-block-diagnosis/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| SD | [发票完整性检查](agents/SD/billing-completeness-check/README.md) | 0.1.1 | 使用中 | 验收通过 |
+| SD | [发票争议分类](agents/SD/billing-dispute-classification/README.md) | 0.1.0 | 已停用 | 因证据或验收缺口受阻 |
+| SD | [发票输出监控](agents/SD/billing-output-monitor/README.md) | 0.1.0 | 使用中 | 因证据或验收缺口受阻 |
+| SD | [已发货未开票监控](agents/SD/delivered-not-billed/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| SD | [交货延期预测](agents/SD/delivery-delay-prediction/README.md) | 0.1.1 | 使用中 | 验收通过 |
+| SD | [到期交货优先级排序](agents/SD/due-delivery-prioritization/README.md) | 0.1.1 | 使用中 | 验收通过 |
+| SD | [新增销售需求覆盖度检查助手](agents/SD/new-sales-demand-coverage/README.md) | 0.1.0 | 使用中 | 验收通过 |
+| SD | [订单到收款状态助手](agents/SD/order-to-cash-status/README.md) | 0.1.2 | 使用中 | 验收通过 |
+| SD | [退货及贷项异常监控](agents/SD/returns-credit-anomaly/README.md) | 0.1.0 | 使用中 | 因证据或验收缺口受阻 |
+| SD | [缺货分配建议](agents/SD/shortage-allocation-advisor/README.md) | 0.1.0 | 使用中 | 因证据或验收缺口受阻 |
 <!-- generated:agents-zh:end -->
 
 ### 开发、测试与部署
@@ -176,40 +176,40 @@ FI clearing does not prove bank settlement; MRP simulation is not formal ATP; ad
 This index is generated from current manifests and lifecycle records. Active lifecycle and passed acceptance are separate requirements. Inactive or blocked entries remain documented but are not necessarily runnable.
 
 <!-- generated:agents-en:start -->
-| 模块 / Module | Agent | 版本 / Version | 生命周期 / Lifecycle | 验收 / Acceptance |
+| Module | Agent | Version | Lifecycle | Acceptance |
 |---|---|---|---|---|
-| CO | [Budget Rolling Forecast Assistant](agents/CO/budget-rolling-forecast/README.md) | 0.1.1 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| CO | [CO Month-End Allocation and Settlement Assistant](agents/CO/co-month-end-allocation-settlement/README.md) | 0.1.1 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| CO | [Cost Center Expense Anomaly Assistant](agents/CO/cost-center-expense-anomaly/README.md) | 0.1.1 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| CO | [Internal Order and Project Control Assistant](agents/CO/internal-order-project-control/README.md) | 0.4.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| CO | [Production Order Cost Variance Analysis Assistant](agents/CO/product-cost-variance/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| Common | [Role-to-Agent Matching Assistant](agents/Common/role-agent-matching/README.md) | 0.2.0 | 使用中 / Active | 平台能力门禁 / Platform gate |
-| FI | [AP Payment Assistant](agents/FI/ap-payment/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| FI | [AR Cash Application Reconciliation Assistant](agents/FI/ar-cash-application/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| FI | [AR Collection Assistant](agents/FI/ar-collection/README.md) | 1.2.0 | 使用中 / Active | 验收通过 / Passed |
-| FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| FI | [Month-end Closing Assistant](agents/FI/month-end-closing/README.md) | 0.2.0 | 使用中 / Active | 尚未验收 / Not tested |
-| MM | [Intelligent Sourcing and RFQ Evaluation Assistant](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| MM | [Inventory Health Check](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | 使用中 / Active | 验收通过 / Passed |
-| MM | [Material Shortage Procurement Response Assistant](agents/MM/material-shortage-procurement-response/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/README.md) | 0.3.1 | 使用中 / Active | 验收通过 / Passed |
-| MM | [Supplier Performance and Delivery Risk Assistant](agents/MM/supplier-performance-risk/README.md) | 0.2.2 | 使用中 / Active | 验收通过 / Passed |
-| PP | [Planned Order and PIR Coverage Assistant](agents/PP/demand-forecast-planning/README.md) | 0.3.0 | 使用中 / Active | 验收通过 / Passed |
-| PP | [MRP Exception Analysis Assistant](agents/PP/mrp-exception-analysis/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| PP | [Production Order Execution Monitoring Assistant](agents/PP/production-order-monitoring/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| PP | [Production Scheduling & Capacity Assistant](agents/PP/production-scheduling-capacity/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| PP | [Production Quantity and Material Variance Analysis Assistant](agents/PP/production-variance-analysis/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [Billing Completeness Check](agents/SD/billing-completeness-check/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/README.md) | 0.1.0 | 已停用 / Inactive | 因证据或验收缺口受阻 / Blocked |
-| SD | [Billing Output Monitor](agents/SD/billing-output-monitor/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [Delivery Delay Prediction](agents/SD/delivery-delay-prediction/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [Due Delivery Prioritization](agents/SD/due-delivery-prioritization/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [New Sales Demand Coverage Check Assistant](agents/SD/new-sales-demand-coverage/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
-| SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/README.md) | 0.1.1 | 使用中 / Active | 验收通过 / Passed |
-| SD | [Returns and Credit Anomaly Monitor](agents/SD/returns-credit-anomaly/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| SD | [Shortage Allocation Advisor](agents/SD/shortage-allocation-advisor/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
+| CO | [Budget Rolling Forecast Assistant](agents/CO/budget-rolling-forecast/README.md) | 0.1.1 | Active | Blocked |
+| CO | [CO Month-End Allocation and Settlement Assistant](agents/CO/co-month-end-allocation-settlement/README.md) | 0.1.1 | Active | Blocked |
+| CO | [Cost Center Expense Anomaly Assistant](agents/CO/cost-center-expense-anomaly/README.md) | 0.1.1 | Active | Blocked |
+| CO | [Internal Order and Project Control Assistant](agents/CO/internal-order-project-control/README.md) | 0.4.0 | Active | Blocked |
+| CO | [Production Order Cost Variance Analysis Assistant](agents/CO/product-cost-variance/README.md) | 0.2.0 | Active | Passed |
+| Common | [Role-to-Agent Matching Assistant](agents/Common/role-agent-matching/README.md) | 0.2.0 | Active | Platform gate |
+| FI | [AP Payment Assistant](agents/FI/ap-payment/README.md) | 0.2.1 | Active | Passed |
+| FI | [AR Cash Application Reconciliation Assistant](agents/FI/ar-cash-application/README.md) | 0.1.0 | Active | Passed |
+| FI | [AR Collection Assistant](agents/FI/ar-collection/README.md) | 1.2.0 | Active | Passed |
+| FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/README.md) | 0.2.1 | Active | Passed |
+| FI | [Month-end Closing Assistant](agents/FI/month-end-closing/README.md) | 0.2.0 | Active | Not tested |
+| MM | [Intelligent Sourcing and RFQ Evaluation Assistant](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.1 | Active | Passed |
+| MM | [Inventory Health Check](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | Active | Passed |
+| MM | [Material Shortage Procurement Response Assistant](agents/MM/material-shortage-procurement-response/README.md) | 0.2.1 | Active | Passed |
+| MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/README.md) | 0.3.2 | Active | Passed |
+| MM | [Supplier Performance and Delivery Risk Assistant](agents/MM/supplier-performance-risk/README.md) | 0.2.3 | Active | Passed |
+| PP | [Planned Order and PIR Coverage Assistant](agents/PP/demand-forecast-planning/README.md) | 0.3.1 | Active | Passed |
+| PP | [MRP Exception Analysis Assistant](agents/PP/mrp-exception-analysis/README.md) | 0.2.1 | Active | Passed |
+| PP | [Production Order Execution Monitoring Assistant](agents/PP/production-order-monitoring/README.md) | 0.2.1 | Active | Passed |
+| PP | [Production Scheduling & Capacity Assistant](agents/PP/production-scheduling-capacity/README.md) | 0.1.0 | Active | Blocked |
+| PP | [Production Quantity and Material Variance Analysis Assistant](agents/PP/production-variance-analysis/README.md) | 0.2.1 | Active | Passed |
+| SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/README.md) | 0.2.1 | Active | Passed |
+| SD | [Billing Completeness Check](agents/SD/billing-completeness-check/README.md) | 0.1.1 | Active | Passed |
+| SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/README.md) | 0.1.0 | Inactive | Blocked |
+| SD | [Billing Output Monitor](agents/SD/billing-output-monitor/README.md) | 0.1.0 | Active | Blocked |
+| SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/README.md) | 0.2.1 | Active | Passed |
+| SD | [Delivery Delay Prediction](agents/SD/delivery-delay-prediction/README.md) | 0.1.1 | Active | Passed |
+| SD | [Due Delivery Prioritization](agents/SD/due-delivery-prioritization/README.md) | 0.1.1 | Active | Passed |
+| SD | [New Sales Demand Coverage Check Assistant](agents/SD/new-sales-demand-coverage/README.md) | 0.1.0 | Active | Passed |
+| SD | [Order-to-Cash Status](agents/SD/order-to-cash-status/README.md) | 0.1.2 | Active | Passed |
+| SD | [Returns and Credit Anomaly Monitor](agents/SD/returns-credit-anomaly/README.md) | 0.1.0 | Active | Blocked |
+| SD | [Shortage Allocation Advisor](agents/SD/shortage-allocation-advisor/README.md) | 0.1.0 | Active | Blocked |
 <!-- generated:agents-en:end -->
 
 ### Development, testing and deployment

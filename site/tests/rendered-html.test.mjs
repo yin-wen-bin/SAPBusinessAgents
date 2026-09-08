@@ -182,7 +182,7 @@ test("supplier performance accepts punctuated SAP identifiers and localizes run 
   const panelSource = await readFile(path.join("src", "components", "AgentRunPanel.astro"), "utf8");
   const supplier = manifest.execution.inputSchema.properties.supplier;
 
-  assert.equal(manifest.version, "0.2.2");
+  assert.equal(manifest.version, "0.2.3");
   assert.equal(supplier.maxLength, 10);
   assert.equal(supplier["x-sapba-sap-identifier"], true);
   assert.equal(supplier.pattern, undefined);

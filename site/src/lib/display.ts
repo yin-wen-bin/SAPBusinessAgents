@@ -64,7 +64,7 @@ export const validationLabel = (value: string, locale: Locale): string => {
 };
 
 export const statusLabel = (status: string, locale: Locale, validation?: AgentValidation) => {
-  if (validation?.documentationReuse) return locale === "zh" ? "复用原版本验收" : "Original acceptance reused";
+  if (validation?.verdict === "PASS" && validation.documentationReuse) return locale === "zh" ? "复用原版本验收" : "Original acceptance reused";
   if (validation?.verdict === "PASS" && validation.acceptanceMode === "three_stage") {
     return locale === "zh" ? "三级验收通过" : "Three-stage acceptance passed";
   }

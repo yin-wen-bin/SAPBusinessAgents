@@ -13,9 +13,9 @@ The index below reflects current manifests. Active lifecycle does not automatica
 <!-- generated:agents:start -->
 | 模块 / Module | Agent | 版本 / Version | 生命周期 / Lifecycle | 验收 / Acceptance |
 |---|---|---|---|---|
-| PP | [计划订单与计划独立需求覆盖度助手 / Planned Order and PIR Coverage Assistant](demand-forecast-planning/README.md) | 0.3.0 | 使用中 / Active | 验收通过 / Passed |
-| PP | [MRP 异常分析助手 / MRP Exception Analysis Assistant](mrp-exception-analysis/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
-| PP | [生产订单执行监控助手 / Production Order Execution Monitoring Assistant](production-order-monitoring/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
+| PP | [计划订单与计划独立需求覆盖度助手 / Planned Order and PIR Coverage Assistant](demand-forecast-planning/README.md) | 0.3.1 | 使用中 / Active | 验收通过 / Passed |
+| PP | [MRP 异常分析助手 / MRP Exception Analysis Assistant](mrp-exception-analysis/README.md) | 0.2.1 | 使用中 / Active | 验收通过 / Passed |
+| PP | [生产订单执行监控助手 / Production Order Execution Monitoring Assistant](production-order-monitoring/README.md) | 0.2.1 | 使用中 / Active | 验收通过 / Passed |
 | PP | [生产排程与产能助手 / Production Scheduling & Capacity Assistant](production-scheduling-capacity/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| PP | [生产数量与物料差异根因分析助手 / Production Quantity and Material Variance Analysis Assistant](production-variance-analysis/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
+| PP | [生产数量与物料差异根因分析助手 / Production Quantity and Material Variance Analysis Assistant](production-variance-analysis/README.md) | 0.2.1 | 使用中 / Active | 验收通过 / Passed |
 <!-- generated:agents:end -->

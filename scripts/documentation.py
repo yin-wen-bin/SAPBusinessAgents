@@ -102,11 +102,21 @@ def agent_facts(repo: AgentRepository, a: dict, path: Path) -> str:
 
 
 def index(repo: AgentRepository, agents: list[dict], path: Path, lang: str | None = None) -> str:
-    lines = ["| 模块 / Module | Agent | 版本 / Version | 生命周期 / Lifecycle | 验收 / Acceptance |", "|---|---|---|---|---|"]
+    header = "| 模块 / Module | Agent | 版本 / Version | 生命周期 / Lifecycle | 验收 / Acceptance |"
+    if lang == "zh":
+        header = "| 模块 | Agent | 版本 | 生命周期 | 验收 |"
+    elif lang == "en":
+        header = "| Module | Agent | Version | Lifecycle | Acceptance |"
+    lines = [header, "|---|---|---|---|---|"]
     for a in agents:
         title = a["title"].get(lang) if lang else a["title"]["zh"] + " / " + a["title"]["en"]
         target = repo._path(a["slug"]).parent / "README.md"
-        lines.append(f"| {a['module']} | [{cell(title)}]({relative(path, target)}) | {a['version']} | {LABELS[repo.lifecycle(a['slug'])['state']]} | {LABELS.get((a.get('validation') or {}).get('verdict'), '平台能力门禁 / Platform gate')} |")
+        state = LABELS[repo.lifecycle(a['slug'])['state']]
+        acceptance = LABELS.get((a.get('validation') or {}).get('verdict'), '平台能力门禁 / Platform gate')
+        if lang:
+            offset = 0 if lang == "zh" else 1
+            state, acceptance = state.split(" / ")[offset], acceptance.split(" / ")[offset]
+        lines.append(f"| {a['module']} | [{cell(title)}]({relative(path, target)}) | {a['version']} | {state} | {acceptance} |")
     return "\n".join(lines)
 
 
@@ -160,11 +170,22 @@ def local_link_errors(paths: list[Path], root: Path = ROOT) -> list[str]:
         for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", text):
             target = target.strip("<>").split(' "')[0]
             url = urlsplit(target)
-            if url.scheme or url.netloc or not url.path:
+            if url.scheme or url.netloc:
                 continue
-            resolved = (path.parent / unquote(url.path)).resolve()
+            resolved = (path.parent / unquote(url.path)).resolve() if url.path else path.resolve()
             if not resolved.is_relative_to(root.resolve()) or not resolved.exists():
                 errors.append(f"{path.relative_to(root)}: broken local link {target}")
+            elif url.fragment and resolved.suffix == ".md":
+                linked = resolved.read_text(encoding="utf-8")
+                anchors = set(re.findall(r'<a\s+id="([^"]+)"', linked))
+                seen = {}
+                for heading in re.findall(r"^#{1,6}\s+(.+)$", linked, flags=re.M):
+                    slug = re.sub(r"[^\w\s-]", "", heading.lower()).replace(" ", "-")
+                    count = seen.get(slug, 0)
+                    seen[slug] = count + 1
+                    anchors.add(slug + (f"-{count}" if count else ""))
+                if unquote(url.fragment) not in anchors:
+                    errors.append(f"{path.relative_to(root)}: broken local anchor {target}")
     return errors
 
 
