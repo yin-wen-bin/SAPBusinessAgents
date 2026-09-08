@@ -1645,7 +1645,7 @@ class RunCoordinator:
             context["steps"][step_id] = {
                 # Preserve the validated business payload for deterministic downstream rules.
                 # Only the safe projection is copied into persisted evidence and events.
-                "output": public_output,
+                "output": output,
                 "execution": execution_envelope,
                 # Deliberately never copied into RunResult, SQLite, SSE, or Runtime input.
                 "private_refs": [item.get("artifact_id") for item in private_refs],

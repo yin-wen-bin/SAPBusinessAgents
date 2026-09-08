@@ -81,6 +81,10 @@ from .models import (
     WorkflowVersionDraftRequest,
     WorkflowUndoRequest,
 )
+from .month_end_profiles import (
+    MonthEndProfileError,
+    MonthEndProfileService,
+)
 from .plugins import (
     AgentRuntimeCapability,
     BusinessAgentCapability,
@@ -201,6 +205,36 @@ class IntegrationMailActionDecision(BaseModel):
     actor: str = "local-user"
 
 
+class MonthEndProfileValidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    profile: dict[str, Any]
+    online: bool = False
+    actor: str = "local-user"
+
+
+class MonthEndProfileCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    profile: dict[str, Any]
+    expected_registry_digest: str
+    actor: str = "local-user"
+
+
+class MonthEndProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    profile: dict[str, Any]
+    expected_registry_digest: str
+    expected_profile_digest: str
+    actor: str = "local-user"
+
+
+class MonthEndProfileEnabledRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    expected_registry_digest: str
+    expected_profile_digest: str
+    actor: str = "local-user"
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -279,6 +313,13 @@ def create_app(
         build_integration_adapters(settings.repository_root, sdk_registry),
     )
     sap_read = SapReadCapability(plugin_manager)
+    month_end_profiles = MonthEndProfileService(
+        repository_root=settings.repository_root,
+        data_root=settings.data_root,
+        database_path=settings.database_path,
+        sap_client=settings.sap_client,
+        sap_read=sap_read,
+    )
     skills = SkillCapability(plugin_manager)
     agent_runtime = AgentRuntimeCapability(plugin_manager)
     business_agents = BusinessAgentCapability(plugin_manager)
@@ -373,6 +414,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.store = store
+    app.state.month_end_profiles = month_end_profiles
     app.state.harness_broker = harness_broker
     app.state.agents = agents
     app.state.business_agents = business_agents
@@ -461,6 +503,69 @@ def create_app(
     @app.get("/api/plugins")
     def list_plugins() -> list[dict[str, Any]]:
         return plugin_manager.list()
+
+    @app.get("/api/month-end/profiles")
+    def list_month_end_profiles() -> dict[str, Any]:
+        return month_end_profiles.registry()
+
+    @app.post("/api/month-end/profiles/validate")
+    async def validate_month_end_profile(
+        payload: MonthEndProfileValidateRequest,
+    ) -> dict[str, Any]:
+        try:
+            return await month_end_profiles.validate(
+                payload.profile, online=payload.online, actor=payload.actor
+            )
+        except MonthEndProfileError as exc:
+            raise _month_end_profile_http_error(exc) from exc
+
+    @app.post("/api/month-end/profiles", status_code=201)
+    def create_month_end_profile(
+        payload: MonthEndProfileCreateRequest,
+    ) -> dict[str, Any]:
+        try:
+            return month_end_profiles.create(
+                payload.profile,
+                expected_registry_digest=payload.expected_registry_digest,
+                actor=payload.actor,
+            )
+        except MonthEndProfileError as exc:
+            raise _month_end_profile_http_error(exc) from exc
+
+    @app.put("/api/month-end/profiles/{profile_id}")
+    def update_month_end_profile(
+        profile_id: str, payload: MonthEndProfileUpdateRequest
+    ) -> dict[str, Any]:
+        try:
+            return month_end_profiles.update(
+                profile_id,
+                payload.profile,
+                expected_registry_digest=payload.expected_registry_digest,
+                expected_profile_digest=payload.expected_profile_digest,
+                actor=payload.actor,
+            )
+        except MonthEndProfileError as exc:
+            raise _month_end_profile_http_error(exc) from exc
+
+    @app.put("/api/month-end/profiles/{profile_id}/enabled")
+    def set_month_end_profile_enabled(
+        profile_id: str,
+        payload: MonthEndProfileEnabledRequest,
+        action_confirmation: str | None = Header(
+            default=None, alias="X-SAPBA-Action"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            return month_end_profiles.set_enabled(
+                profile_id,
+                payload.enabled,
+                expected_registry_digest=payload.expected_registry_digest,
+                expected_profile_digest=payload.expected_profile_digest,
+                actor=payload.actor,
+                confirmation=action_confirmation,
+            )
+        except MonthEndProfileError as exc:
+            raise _month_end_profile_http_error(exc) from exc
 
     @app.get("/api/plugins/setup-options")
     def list_plugin_setup_options(
@@ -2627,6 +2732,26 @@ def _integration_http_error(exc: IntegrationError) -> HTTPException:
         "permission_required",
         "integration_draft_tampered",
         "integration_action_run_mismatch",
+    }:
+        status = 403
+    return HTTPException(
+        status,
+        {"code": exc.code, "message": str(exc), "detail": exc.detail},
+    )
+
+
+def _month_end_profile_http_error(exc: MonthEndProfileError) -> HTTPException:
+    status = 409
+    if exc.code == "month_end_profile_not_found":
+        status = 404
+    elif exc.code in {
+        "month_end_profile_invalid",
+        "month_end_profile_registry_invalid",
+    }:
+        status = 422
+    elif exc.code in {
+        "month_end_profile_registry_external_read_only",
+        "month_end_profile_confirmation_required",
     }:
         status = 403
     return HTTPException(

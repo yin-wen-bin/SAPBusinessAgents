@@ -208,6 +208,20 @@ def test_month_end_manifest_uses_embedded_get_and_pending_acceptance() -> None:
         "maxPartitions": 366,
         "maxTotalResults": 50000,
     }
+    skill_steps = {
+        step["id"]: step
+        for step in manifest["execution"]["steps"]
+        if step["executor"] == "skill"
+    }
+    assert all(
+        "order_by" not in step["inputMapping"] for step in skill_steps.values()
+    )
+    assert skill_steps["adt_mm_period_status"]["inputMapping"]["fields"] == [
+        "BUKRS",
+        "LFGJA",
+        "LFMON",
+    ]
+    assert manifest["execution"]["acceptance"]["recordScope"] == "scope"
     text = MANIFEST.read_text(encoding="utf-8")
     assert "sapclaw_runtime" not in text
     assert "Thin Runtime" not in text
@@ -250,6 +264,31 @@ def test_missing_profile_fails_closed_without_discarding_metadata(
     assert scope["metadata_complete"] is True
     assert scope["profile_id"] == ""
     assert "month_end_profile_registry_missing" in scope["config_gaps"]
+
+
+def test_disabled_profile_is_ignored_and_explicit_request_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _profile_file(tmp_path, monkeypatch)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["profiles"][0]["enabled"] = False
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    evidence = {
+        "run_input": {
+            "company_code": "1710",
+            "fiscal_year": "2020",
+            "period": 1,
+            "as_of": "2020-01-31",
+            "profile_id": "example-1010",
+        },
+        "company_evidence": _payload(
+            [{"CompanyCode": "1710", "Currency": "USD", "FiscalYearVariant": "K4"}]
+        ),
+        "ledger_evidence": _payload([{"Ledger": "0L", "IsLeadingLedger": True}]),
+    }
+    scope = prepare_month_end_scope(evidence)
+    assert "month_end_profile_disabled" in scope["config_gaps"]
+    assert scope["profile_id"] == ""
 
 
 def test_future_as_of_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

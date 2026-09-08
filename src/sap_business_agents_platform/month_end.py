@@ -12,14 +12,13 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 
 from .grir import RuleConfig, evaluate_odata_grir
 
 
 JsonObject = dict[str, Any]
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_PROFILE_PATH = REPOSITORY_ROOT / ".local-data" / "config" / "month-end-closing" / "profiles.json"
 PROFILE_SCHEMA_PATH = REPOSITORY_ROOT / "config" / "month-end-closing-profiles.schema.json"
 CHECKLIST_PATH = REPOSITORY_ROOT / "agents" / "FI" / "month-end-closing" / "config" / "month_end_checklist.toml"
 
@@ -88,7 +87,10 @@ def _canonical_hash(value: Any) -> str:
 def _profile_path() -> Path:
     configured = os.getenv("SAPBA_MONTH_END_PROFILE_PATH", "").strip()
     if not configured:
-        return DEFAULT_PROFILE_PATH
+        data_root = Path(
+            os.getenv("SAPBA_DATA_ROOT", str(REPOSITORY_ROOT / ".local-data"))
+        ).resolve()
+        return data_root / "config" / "month-end-closing" / "profiles.json"
     path = Path(configured)
     return (path if path.is_absolute() else REPOSITORY_ROOT / path).resolve()
 
@@ -102,7 +104,10 @@ def _profile_registry() -> tuple[list[JsonObject], list[str]]:
         schema = json.loads(PROFILE_SCHEMA_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return [], [f"month_end_profile_registry_invalid:{type(exc).__name__}"]
-    errors = sorted(Draft202012Validator(schema).iter_errors(payload), key=lambda item: list(item.path))
+    errors = sorted(
+        Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(payload),
+        key=lambda item: list(item.path),
+    )
     if errors:
         locations = ["/".join(str(part) for part in error.path) or "$" for error in errors[:5]]
         return [], [f"month_end_profile_schema_invalid:{location}" for location in locations]
@@ -259,6 +264,7 @@ def _profile_for(run_input: JsonObject, as_of: date) -> tuple[JsonObject, list[s
     company_code = str(run_input.get("company_code") or "").strip()
     requested_id = str(run_input.get("profile_id") or "").strip()
     matches: list[JsonObject] = []
+    requested_disabled = False
     for profile in profiles:
         if requested_id and str(profile.get("profile_id") or "") != requested_id:
             continue
@@ -271,9 +277,14 @@ def _profile_for(run_input: JsonObject, as_of: date) -> tuple[JsonObject, list[s
             continue
         effective_from = _as_date(profile.get("effective_from")) or date.min
         effective_to = _as_date(profile.get("effective_to")) or date.max
+        if effective_from <= as_of <= effective_to and profile.get("enabled", True) is False:
+            requested_disabled = requested_disabled or bool(requested_id)
+            continue
         if effective_from <= as_of <= effective_to:
             matches.append(profile)
     if not matches:
+        if requested_disabled:
+            return {}, ["month_end_profile_disabled"]
         return {}, ["month_end_profile_not_found"]
     if len(matches) > 1:
         return {}, ["month_end_profile_ambiguous"]

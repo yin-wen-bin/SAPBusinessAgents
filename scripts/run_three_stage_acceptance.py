@@ -165,6 +165,28 @@ def _normalize_run(
         for code, keywords in (contract.get("limitation_keywords") or {}).items():
             if any(str(keyword).casefold() in overview_text.casefold() for keyword in keywords or []):
                 report_limitations.append(str(code))
+        raw_evidence_gap_codes = list(
+            dict.fromkeys(
+                str(item)
+                for item in [
+                    *(rule_result.get("evidence_gaps") or []),
+                    *(rule_result.get("missing_evidence") or []),
+                    *((report.get("missing_evidence") or []) if contract.get("schema_version") == "2.0" else []),
+                ]
+                if str(item)
+            )
+        )
+        declared_limitations = {
+            str(item) for item in contract.get("required_limitations") or [] if str(item)
+        }
+        # Deterministic fixed-Agent output has no model-authored acceptance
+        # projection. Classify its declared scope limitations exactly as the
+        # free-query projection path does so the two stages compare the same
+        # semantic contract instead of treating one code as an evidence gap in
+        # one stage and a non-blocking limitation in the other.
+        report_limitations.extend(
+            item for item in raw_evidence_gap_codes if item in declared_limitations
+        )
         normalized = {
             "records": report_records,
             "metrics": report_metrics,
@@ -173,17 +195,9 @@ def _normalize_run(
             "evidence_complete": completeness_value("evidence_complete"),
             "business_complete": completeness_value("business_complete"),
             "business_status": str(rule_result.get("business_status") or ""),
-            "evidence_gap_codes": list(
-                dict.fromkeys(
-                    str(item)
-                    for item in [
-                        *(rule_result.get("evidence_gaps") or []),
-                        *(rule_result.get("missing_evidence") or []),
-                        *((report.get("missing_evidence") or []) if contract.get("schema_version") == "2.0" else []),
-                    ]
-                    if str(item)
-                )
-            ),
+            "evidence_gap_codes": [
+                item for item in raw_evidence_gap_codes if item not in declared_limitations
+            ],
         }
         return _finalize_normalized(
             normalized,

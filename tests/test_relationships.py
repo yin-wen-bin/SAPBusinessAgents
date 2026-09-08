@@ -180,6 +180,21 @@ def test_relationship_catalog_accepts_p2p_business_key_semantics() -> None:
     assert _catalog().validate_plans(plans) == []
 
 
+def test_month_end_grir_chain_accepts_gl_purchase_order_item_bindings() -> None:
+    manifest = json.loads(
+        (ROOT / "agents" / "FI" / "month-end-closing" / "agent.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    plan = next(
+        step["request"]["plan"]
+        for step in manifest["execution"]["steps"]
+        if step["id"] == "read_grir_chain"
+    )
+
+    assert _catalog().validate_plans([("month_end_closing", plan)]) == []
+
+
 def test_p2p_fixed_agent_expands_full_accounting_documents_with_coherent_keys() -> None:
     agent = json.loads(
         (ROOT / "agents" / "MM" / "procure-to-pay-status" / "agent.json").read_text(

@@ -1646,6 +1646,7 @@ select {
 .guided-agent-question textarea,
 .runtime-field-grid input,
 .runtime-field-grid textarea,
+.runtime-field-grid select,
 .run-input-form textarea {
   width: 100%;
   box-sizing: border-box;
@@ -1665,6 +1666,7 @@ select {
 .guided-agent-question textarea:focus,
 .runtime-field-grid input:focus,
 .runtime-field-grid textarea:focus,
+.runtime-field-grid select:focus,
 .run-input-form textarea:focus {
   outline: 0;
   border-color: var(--color-primary);
@@ -1760,7 +1762,8 @@ button:disabled {
   }
 
 .runtime-field-grid input[aria-invalid="true"],
-.runtime-field-grid textarea[aria-invalid="true"] {
+.runtime-field-grid textarea[aria-invalid="true"],
+.runtime-field-grid select[aria-invalid="true"] {
     border-color: #bb2020;
     box-shadow: 0 0 0 3px rgba(187, 32, 32, 0.1);
   }
@@ -1817,6 +1820,274 @@ button:disabled {
 .runtime-field-grid .runtime-list-input {
   min-height: 82px;
   resize: vertical;
+}
+
+.runtime-field-grid select {
+  min-height: 46px;
+}
+
+.month-end-profile-manager {
+  display: grid;
+  gap: 18px;
+  margin-bottom: 30px;
+  border: 1px solid #b9cff7;
+  border-radius: 7px;
+  background: linear-gradient(180deg, #f7faff 0, #fff 180px);
+  padding: 20px;
+}
+
+.month-end-profile-manager button,
+.month-end-profile-manager input,
+.month-end-profile-manager select,
+.month-end-profile-manager textarea {
+  box-sizing: border-box;
+  font: inherit;
+}
+
+.month-end-profile-header,
+.month-end-editor > header,
+.month-end-profile-card > header,
+.month-end-editor-actions,
+.month-end-profile-card > footer,
+.month-end-profile-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.month-end-profile-header h2,
+.month-end-editor h3,
+.month-end-profile-card h3,
+.month-end-summary h4 {
+  margin: 0;
+}
+
+.month-end-profile-header > div > p:last-child,
+.month-end-editor > header p,
+.month-end-profile-card header p,
+.month-end-summary > p {
+  margin: 5px 0 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.month-end-profile-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.month-end-profile-manager button {
+  min-height: 36px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--color-text);
+  padding: 7px 11px;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.month-end-profile-manager button.primary-button {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.month-end-profile-manager button:disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.month-end-readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.month-end-readiness-grid article {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 12px;
+  border: 1px solid #abd1b6;
+  border-radius: 6px;
+  background: #f0faf3;
+  padding: 13px;
+}
+
+.month-end-readiness-grid article.is-gated {
+  border-color: #e6c37a;
+  background: #fff8e8;
+}
+
+.month-end-readiness-grid b {
+  color: #176936;
+  font-size: 18px;
+}
+
+.month-end-readiness-grid .is-gated b {
+  color: #8a5700;
+  font-size: 12px;
+}
+
+.month-end-readiness-grid p {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.month-end-notice,
+.month-end-empty {
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: #f8fafc;
+  padding: 11px 13px;
+  font-size: 12px;
+}
+
+.month-end-notice.is-success { border-color: #91c7a4; background: #effaf3; color: #176936; }
+.month-end-notice.is-warning { border-color: #e6c37a; background: #fff8e8; color: #7a4b00; }
+.month-end-notice.is-error { border-color: #e4a09b; background: #fff2f0; color: #8f251f; }
+.month-end-notice ul { margin: 7px 0 0; padding-left: 20px; }
+
+.month-end-profile-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.month-end-profile-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 14px;
+}
+
+.month-end-profile-card h3 { font-size: 16px; }
+.month-end-profile-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.month-end-profile-badges span { border: 1px solid var(--color-border); border-radius: 999px; background: #f5f7fa; padding: 2px 7px; color: var(--color-text-muted); font-size: 10px; font-weight: 700; }
+.month-end-profile-badges span.is-enabled,
+.month-end-profile-badges span.is-validated { border-color: #91c7a4; background: #effaf3; color: #176936; }
+
+.month-end-profile-card dl,
+.month-end-summary dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.month-end-profile-card dl > div,
+.month-end-summary dl > div {
+  display: grid;
+  grid-template-columns: minmax(105px, .32fr) minmax(0, 1fr);
+  gap: 10px;
+  border-bottom: 1px solid #edf0f4;
+  padding-bottom: 6px;
+}
+
+.month-end-profile-card dt,
+.month-end-summary dt { color: var(--color-text-muted); font-size: 11px; font-weight: 700; }
+.month-end-profile-card dd,
+.month-end-summary dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 11px; }
+.month-end-profile-card > footer { justify-content: flex-end; flex-wrap: wrap; }
+
+.month-end-editor {
+  display: grid;
+  gap: 16px;
+  border-top: 2px solid var(--color-primary);
+  padding-top: 18px;
+}
+
+.month-end-editor form {
+  display: grid;
+  gap: 14px;
+}
+
+.month-end-editor fieldset {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 13px;
+}
+
+.month-end-editor legend {
+  padding: 0 5px;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.month-end-editor fieldset > p {
+  margin: 0 0 10px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.month-end-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+}
+
+.month-end-threshold-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.month-end-editor label { display: grid; gap: 5px; color: var(--color-text-muted); font-size: 11px; font-weight: 700; }
+.month-end-editor label small { font-weight: 400; }
+.month-end-editor input:not([type="checkbox"]),
+.month-end-editor select,
+.month-end-editor textarea {
+  width: 100%;
+  min-height: 39px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  background: #fff;
+  padding: 8px 9px;
+  color: var(--color-text);
+}
+.month-end-editor textarea { min-height: 64px; resize: vertical; }
+.month-end-editor input:focus,
+.month-end-editor select:focus,
+.month-end-editor textarea:focus { border-color: var(--color-primary); outline: 3px solid rgba(7, 94, 232, .11); }
+.month-end-editor input[readonly] { background: #f4f6f8; color: var(--color-text-muted); }
+
+.month-end-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+.month-end-check-grid label { display: flex; align-items: center; gap: 7px; }
+
+.month-end-owner-list,
+.month-end-period-list { display: grid; gap: 7px; }
+.month-end-owner-row { display: grid; grid-template-columns: minmax(190px, .8fr) repeat(3, minmax(125px, 1fr)); gap: 7px; align-items: center; }
+.month-end-period-row { display: grid; grid-template-columns: minmax(100px, .5fr) repeat(2, minmax(140px, 1fr)) auto; gap: 7px; align-items: center; }
+.month-end-editor-actions { justify-content: flex-end; }
+
+.month-end-summary {
+  display: grid;
+  gap: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 16px;
+}
+.month-end-confirm { display: flex !important; align-items: flex-start; gap: 8px !important; border-left: 3px solid #c48218; background: #fff8e8; padding: 11px; color: #61430c !important; }
+
+@media (max-width: 820px) {
+  .month-end-profile-header,
+  .month-end-editor > header { flex-direction: column; }
+  .month-end-profile-actions { justify-content: flex-start; }
+  .month-end-readiness-grid,
+  .month-end-form-grid { grid-template-columns: 1fr; }
+  .month-end-owner-row,
+  .month-end-period-row { grid-template-columns: 1fr; }
+  .month-end-owner-row code { margin-top: 8px; }
 }
 
 .run-input-question {

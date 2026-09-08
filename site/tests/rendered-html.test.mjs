@@ -183,6 +183,20 @@ test("supplier performance accepts punctuated SAP identifiers and localizes run 
   assert.match(panelSource, /caught instanceof RunCreateHttpError/);
 });
 
+test("month-end detail renders profile management before the gated run form", async () => {
+  const zh = await readPage("zh", "agents", "FI", "month-end-closing");
+  const en = await readPage("en", "agents", "FI", "month-end-closing");
+  const other = await readPage("zh", "agents", "FI", "ap-payment");
+  assert.match(zh, /data-month-end-profile-manager/);
+  assert.match(zh, /公司配置状态/);
+  assert.match(zh, /Agent 验收状态/);
+  assert.match(zh, /NOT_TESTED/);
+  assert.match(en, /Company configuration/);
+  assert.ok(zh.indexOf("data-month-end-profile-manager") < zh.indexOf("data-agent-run"));
+  assert.match(zh, /data-month-end-profile-select/);
+  assert.doesNotMatch(other, /data-month-end-profile-manager/);
+});
+
 test("primitive array Agent inputs use the compact resizable list field", async () => {
   const forecast = await readPage("zh", "agents", "PP", "demand-forecast-planning");
   const collection = await readPage("zh", "agents", "FI", "ar-collection");

@@ -50,6 +50,8 @@ const labels = locale === "zh" ? {
   normalizationConflict: "该输入映射到相互冲突的 SAP 格式规则，请联系平台管理员。",
   validationRequired: "该 Agent 尚未通过真机三级验收，当前不可执行。",
   sensitiveHelp: "敏感业务参考号将通过安全参数通道提交，不会写入普通运行输入、日志或对话。",
+  profileAuto: "自动选择唯一匹配配置",
+  profileEmpty: "当前没有匹配公司代码与基准日的已启用配置",
 } : {
   title: "Run this Agent",
   deterministicLead: "The deterministic engine follows the declared steps exactly. The Agent Runtime does not choose or replace APIs or Skills.",
@@ -82,6 +84,8 @@ const labels = locale === "zh" ? {
   normalizationConflict: "This input maps to conflicting SAP formatting rules. Contact the platform administrator.",
   validationRequired: "This Agent has not passed three-stage live acceptance and cannot run yet.",
   sensitiveHelp: "This sensitive business reference is submitted through the secure parameter channel and is not stored in ordinary run input, logs, or chat.",
+  profileAuto: "Automatically select the unique matching profile",
+  profileEmpty: "No enabled profile matches the company code and as-of date",
 };
 const runtimeMessages = {
   networkError: labels.networkError,
@@ -105,6 +109,8 @@ const runtimeMessages = {
   normalizationConflict: labels.normalizationConflict,
   validationRequired: labels.validationRequired,
   sensitiveHelp: labels.sensitiveHelp,
+  profileAuto: labels.profileAuto,
+  profileEmpty: labels.profileEmpty,
 };
 ---
 
@@ -187,6 +193,15 @@ const runtimeMessages = {
                   data-max-items={property.maxItems}
                   required={execution.inputSchema.required?.includes(name)}
                 >{Array.isArray(property.default) ? property.default.join("\n") : ""}</textarea>
+              ) : agent.slug === "month-end-closing" && name === "profile_id" ? (
+                <select
+                  name={name}
+                  data-month-end-profile-select
+                  data-value-type="string"
+                  title={property.description?.[locale]}
+                >
+                  <option value="">{labels.profileAuto}</option>
+                </select>
               ) : (
                 <input
                   name={name}
@@ -264,7 +279,7 @@ const runtimeMessages = {
     );
 
   const fieldLabel = (form: HTMLFormElement, name: string) => {
-    const field = form.querySelector<HTMLInputElement>(`input[name="${CSS.escape(name)}"]`);
+    const field = form.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${CSS.escape(name)}"]`);
     const objectArray = form.querySelector<HTMLElement>(`[data-object-array-name="${CSS.escape(name)}"]`);
     return field?.closest("label")?.querySelector<HTMLElement>(":scope > span")?.textContent?.trim()
       || objectArray?.querySelector<HTMLElement>(":scope > legend")?.textContent?.trim()
@@ -280,7 +295,7 @@ const runtimeMessages = {
       item.hidden = true;
       item.textContent = "";
     });
-    form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[aria-invalid], textarea[aria-invalid]").forEach((field) => {
+    form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input[aria-invalid], textarea[aria-invalid], select[aria-invalid]").forEach((field) => {
       field.removeAttribute("aria-invalid");
     });
   };
@@ -292,7 +307,7 @@ const runtimeMessages = {
   };
 
   const showFieldError = (form: HTMLFormElement, name: string, message: string) => {
-    const field = form.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${CSS.escape(name)}"]`);
+    const field = form.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[name="${CSS.escape(name)}"]`);
     const target = form.querySelector<HTMLElement>(`[data-field-error="${CSS.escape(name)}"]`);
     field?.setAttribute("aria-invalid", "true");
     if (target) {
@@ -307,7 +322,7 @@ const runtimeMessages = {
     dateRangePairs: Array<{ from?: string; to?: string; maxDays?: number }>,
   ) => {
     let valid = true;
-    form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[name], textarea[name]").forEach((field) => {
+    form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input[name], textarea[name], select[name]").forEach((field) => {
       const value = field.value.trim();
       const label = fieldLabel(form, field.name);
       let message = "";
@@ -491,6 +506,47 @@ const runtimeMessages = {
     const error = panel.querySelector<HTMLElement>(".runtime-form-error");
     const messages = JSON.parse(panel.dataset.messages || "{}") as LocalizedMessages;
     const dateRangePairs = JSON.parse(panel.dataset.dateRangePairs || "[]") as Array<{ from?: string; to?: string; maxDays?: number }>;
+    let monthEndRegistry: { profiles?: Array<Record<string, any>>; runtime_scope?: Record<string, any> } | undefined;
+    const refreshMonthEndProfiles = async (provided?: unknown) => {
+      const select = form?.querySelector<HTMLSelectElement>("[data-month-end-profile-select]");
+      if (!select) return;
+      let registry = (provided as { profiles?: Array<Record<string, any>>; runtime_scope?: Record<string, any> } | undefined) || monthEndRegistry;
+      if (!registry) {
+        try {
+          const response = await fetch(`${panel.dataset.apiBase}/api/month-end/profiles`);
+          if (!response.ok) return;
+          registry = await response.json();
+        } catch { return; }
+      }
+      monthEndRegistry = registry;
+      const previous = select.value;
+      const company = form?.querySelector<HTMLInputElement>('[name="company_code"]')?.value.trim().toUpperCase() || "";
+      const asOf = form?.querySelector<HTMLInputElement>('[name="as_of"]')?.value || "";
+      const matches = (registry?.profiles || []).filter((item) => {
+        if (item.enabled !== true) return false;
+        if (registry?.runtime_scope?.system_alias && String(item.system_alias || "default") !== String(registry.runtime_scope.system_alias)) return false;
+        if (item.sap_client && String(item.sap_client) !== String(registry?.runtime_scope?.sap_client || "")) return false;
+        if (company && String(item.company_code || "").toUpperCase() !== company) return false;
+        if (asOf && String(item.effective_from || "") > asOf) return false;
+        if (asOf && item.effective_to && String(item.effective_to) < asOf) return false;
+        return true;
+      });
+      select.replaceChildren(new Option(messages.profileAuto, ""));
+      matches.forEach((item) => select.append(new Option(
+        `${item.profile_id} · ${item.company_code} · ${item.version} · ${item.effective_from}—${item.effective_to || "∞"}`,
+        String(item.profile_id),
+      )));
+      if (matches.some((item) => String(item.profile_id) === previous)) select.value = previous;
+      select.title = matches.length ? messages.profileAuto : messages.profileEmpty;
+    };
+    void refreshMonthEndProfiles();
+    window.addEventListener("month-end-profiles-changed", (event) => {
+      void refreshMonthEndProfiles((event as CustomEvent).detail);
+    });
+    form?.querySelectorAll('[name="company_code"], [name="as_of"]').forEach((field) => {
+      field.addEventListener("change", () => void refreshMonthEndProfiles());
+      field.addEventListener("input", () => void refreshMonthEndProfiles());
+    });
     form?.querySelectorAll<HTMLInputElement>('input[type="date"][data-server-default="business_date"]').forEach((field) => {
       if (field.value) return;
       const now = new Date();
@@ -546,7 +602,7 @@ const runtimeMessages = {
       const input: Record<string, unknown> = {};
       const sensitiveInputs: Record<string, string> = {};
       if (mode === "agent") {
-        form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[name], textarea[name]").forEach((field) => {
+        form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input[name], textarea[name], select[name]").forEach((field) => {
           const value = field.value.trim();
           if (!value) return;
           if (field.dataset.sensitive === "true") {

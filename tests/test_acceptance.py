@@ -305,6 +305,64 @@ def test_acceptance_projection_separates_required_scope_limitations_from_gaps() 
     assert normalized["evidence_gap_codes"] == ["real_evidence_gap"]
 
 
+def test_fixed_agent_report_separates_required_scope_limitations_from_gaps() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "2.0",
+            "case_id": "fixed-scope-limitation",
+            "agent_id": "month-end-closing",
+            "question": {"zh": "测试", "en": "Test"},
+            "input": {"company_code": "1010"},
+            "business_conditions": {"company_code": "1010"},
+            "expected_grain": ["company_code"],
+            "expected_output": {
+                "record_fields": ["company_code"],
+                "metric_ids": [],
+                "minimum_primary_evidence_rows": 0,
+                "allow_empty_result": True,
+                "evidence_scope": "complete",
+            },
+        }
+    )
+    contract = {
+        **CONTRACT,
+        "schema_version": "2.0",
+        "business_keys": ["company_code"],
+        "facts": [],
+        "metrics": [],
+        "decimal_fields": [],
+        "currency_fields": [],
+        "required_limitations": ["fx_status_unavailable"],
+        "record_scope": "scope",
+        "input_defaults": {"company_code": "company_code"},
+    }
+    run = {
+        "result": {
+            "rule_results": [
+                {
+                    "business_status": "inconclusive",
+                    "source_complete": True,
+                    "evidence_complete": False,
+                    "business_complete": False,
+                    "missing_evidence": ["fx_status_unavailable", "real_gap"],
+                    "business_report": {
+                        "overview": {"en": "Month-end readiness is incomplete."},
+                        "metrics": [],
+                        "missing_evidence": ["fx_status_unavailable", "real_gap"],
+                        "limitations": [],
+                    },
+                    "workflow_output": {"scope": {"company_code": "1010"}},
+                }
+            ]
+        }
+    }
+
+    normalized = _normalize_run(run, case, contract)
+
+    assert normalized["limitations"] == ["fx_status_unavailable"]
+    assert normalized["evidence_gap_codes"] == ["real_gap"]
+
+
 def test_acceptance_prompt_makes_record_scope_authoritative() -> None:
     case = CanonicalTestCase.from_dict(
         {
