@@ -18,6 +18,14 @@ Open the local page below and confirm lifecycle, acceptance and connection readi
 
 Inspect item-level conclusions and sources; missing fields are not zero tax or zero amount. This Agent neither creates nor changes invoices.
 
+来源引用按“开票凭证＋来源凭证＋来源项目”分组。引用同一张来源凭证的不同项目不会触发重复提示；多个开票项目引用同一来源项目时，只提示“同一来源项目多次引用（待复核）”，不能据此认定重复开票。请结合项目拆分、数量、单位和取消证据复核。明细逐项展示中文/英文结论、原因及建议，正常项目不继承其他项目的告警。相同开票项目证据去重；同键冲突、引用缺失或分页不完整时显示无法确认。
+
+Source references are grouped by billing document, source document and source item. Different items of one source document are not duplicates. Multiple billing items referencing the same source item require review, not a confirmed duplicate-billing conclusion. Check splits, quantities, units and cancellations. Each row has its own localized finding, reason and action; unaffected rows do not inherit another item's alert. Identical billing-item evidence is deduplicated; conflicting keys, missing references and incomplete pagination produce an inconclusive result.
+
+当前基础检查仅确认取消、财务过账状态及项目级引用，不承诺完整的跨凭证重复开票、数量、金额或税额勾稽核验。平台规则修复使用已有证据离线回放及回归测试，不代表重新执行了下方历史记录中的SAP真机验收。
+
+These basic checks cover cancellation, accounting-posting status and item references, not a complete cross-document duplicate-billing, quantity, amount or tax reconciliation. Platform rule fixes are checked by stored-evidence replay and regression tests; this is not a new SAP live acceptance under the historical record below.
+
 查询执行结束不等于业务完成。先看业务结论和证据缺口，再看数量、金额、币种与明细。缺证应补齐后复核，不以零值代替未知；不同币种不合计。建议由业务人员确认后在授权流程中处理，Agent不执行SAP写操作。
 
 A completed query is not a completed business process. Review conclusions and gaps, then counts, amounts, currencies and detail. Resolve gaps before acting; unknown is not zero and currencies are not aggregated. Business staff act through authorized processes; the Agent performs no SAP writes.

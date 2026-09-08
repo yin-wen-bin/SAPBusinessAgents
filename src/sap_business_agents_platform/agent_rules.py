@@ -1072,57 +1072,180 @@ def _billing_block(inputs: JsonObject) -> JsonObject:
 
 
 def _billing_completeness(inputs: JsonObject) -> JsonObject:
-    headers = _rows(inputs, "billing_headers")
-    items = _rows(inputs, "billing_items")
     sources = _rows(inputs, "source_sales_items", "source_delivery_items")
     findings: list[JsonObject] = []
-    for row in headers:
-        if _truthy(row.get("BillingDocumentIsCancelled")):
-            findings.append({"code": "CANCELLED_BILLING", "severity": "high"})
-        if str(row.get("AccountingPostingStatus") or "") not in {"", "C"}:
-            findings.append({"code": "ACCOUNTING_NOT_POSTED", "severity": "medium"})
-    referenced = {(str(row.get("BillingDocument")), str(row.get("ReferenceSDDocument"))) for row in items}
-    if len(referenced) < len(items):
-        findings.append({"code": "DUPLICATE_REFERENCE", "severity": "medium"})
-    attention = bool(findings) or not items
-    header_by_document = {_text(row, "BillingDocument"): row for row in headers}
-    records = [
-        {
-            "billing_document": _text(row, "BillingDocument"),
-            "billing_document_item": _text(row, "BillingDocumentItem"),
-            "reference_document": _text(row, "ReferenceSDDocument"),
-            "reference_document_item": _text(row, "ReferenceSDDocumentItem"),
-            "accounting_posting_status": _text(
-                header_by_document.get(_text(row, "BillingDocument"), {}),
-                "AccountingPostingStatus",
-            ),
-            "cancelled": _truthy(
-                header_by_document.get(_text(row, "BillingDocument"), {}).get(
-                    "BillingDocumentIsCancelled"
-                )
-            ),
+    gaps: set[str] = set()
+
+    def text(row: JsonObject, field: str) -> str:
+        return _text(row, field).strip()
+
+    def unique_rows(rows: list[JsonObject], fields: tuple[str, ...]):
+        unique: dict[tuple[str, ...], JsonObject] = {}
+        conflicts: set[tuple[str, ...]] = set()
+        unkeyed = []
+        for row in rows:
+            key = tuple(text(row, field) for field in fields)
+            if not all(key):
+                unkeyed.append(row)
+                continue
+            # OData transport metadata is not a business fact.
+            values = {k: v for k, v in row.items() if not k.startswith("__")}
+            if key in unique and values != unique[key]:
+                conflicts.add(key)
+            else:
+                unique[key] = values
+        # Never choose one of two conflicting versions as authoritative.
+        for key in conflicts:
+            unique[key] = dict(zip(fields, key))
+        return list(unique.values()) + unkeyed, conflicts
+
+    headers, header_conflicts = unique_rows(_rows(inputs, "billing_headers"), ("BillingDocument",))
+    items, item_conflicts = unique_rows(_rows(inputs, "billing_items"), ("BillingDocument", "BillingDocumentItem"))
+
+    def finding(code: str, document: str, item_ids: list[str], zh: str, en: str,
+                action_zh: str, action_en: str, *, unknown: bool = False, **extra: Any):
+        value = {
+            "code": code, "severity": "high" if unknown or code == "CANCELLED_BILLING" else "medium",
+            "billing_document": document, "billing_document_items": item_ids,
+            "detail": {"zh": zh, "en": en},
+            "recommended_action": {"zh": action_zh, "en": action_en},
+            "business_status": "inconclusive" if unknown else "attention", **extra,
         }
-        for row in items
-        if _text(row, "BillingDocument") and _text(row, "BillingDocumentItem")
-    ]
-    return _result(
+        findings.append(value)
+        if unknown:
+            gaps.add(code.lower())
+        return value
+
+    for row in headers:
+        document = text(row, "BillingDocument")
+        if (document,) in header_conflicts:
+            finding("BILLING_HEADER_CONFLICT", document, [],
+                    f"开票凭证 {document} 的抬头证据存在同键冲突。", f"Conflicting header evidence for billing document {document}.",
+                    "补齐一致的抬头证据后再复核。", "Resolve the conflicting header evidence before review.", unknown=True)
+            continue
+        if _truthy(row.get("BillingDocumentIsCancelled")):
+            finding("CANCELLED_BILLING", document, [],
+                    f"开票凭证 {document} 已取消。", f"Billing document {document} is cancelled.",
+                    "核对取消及后续开票凭证，不将已取消凭证视为有效开票。", "Review cancellation and subsequent billing; do not treat cancelled billing as active.")
+        if str(row.get("AccountingPostingStatus") or "") not in {"", "C"}:
+            finding("ACCOUNTING_NOT_POSTED", document, [],
+                    f"开票凭证 {document} 的财务过账尚未完成（状态 {row.get('AccountingPostingStatus')}）。",
+                    f"Accounting posting is not complete for billing document {document} (status {row.get('AccountingPostingStatus')}).",
+                    "检查财务过账状态及错误原因。", "Review the accounting posting status and error details.")
+
+    header_by_document = {text(row, "BillingDocument"): row for row in headers}
+    referenced: dict[tuple[str, str, str], list[str]] = {}
+    for row in items:
+        document, item = text(row, "BillingDocument"), text(row, "BillingDocumentItem")
+        reference, reference_item = text(row, "ReferenceSDDocument"), text(row, "ReferenceSDDocumentItem")
+        if not document or not item or (document, item) in item_conflicts:
+            finding("BILLING_ITEM_KEY_INVALID", document, [item],
+                    f"开票凭证 {document or '未知'} 项目 {item or '未知'} 的业务键缺失或同键内容冲突。",
+                    f"Missing or conflicting business-key evidence for billing document {document or 'unknown'}, item {item or 'unknown'}.",
+                    "补齐唯一、一致的开票项目证据，不据此判断重复开票。", "Obtain unique, consistent billing-item evidence; duplicate billing cannot be concluded.", unknown=True)
+            continue
+        if document not in header_by_document:
+            finding("BILLING_HEADER_MISSING", document, [item],
+                    f"开票凭证 {document} 项目 {item} 缺少对应抬头证据。", f"Header evidence is missing for billing document {document}, item {item}.",
+                    "补齐抬头及取消、过账状态后再复核。", "Obtain the header, cancellation and posting status before review.", unknown=True)
+        if not reference or not reference_item:
+            finding("SOURCE_REFERENCE_INCOMPLETE", document, [item],
+                    f"开票凭证 {document} 项目 {item} 的来源凭证或来源项目缺失，无法核对引用。",
+                    f"Billing document {document}, item {item}, lacks a source document or item; its reference cannot be checked.",
+                    "核实该项目是否需要来源引用并补齐证据，不将空引用判为重复。", "Check whether a source reference is applicable and obtain evidence; blank references are not duplicates.", unknown=True)
+            continue
+        if (document,) not in header_conflicts and document in header_by_document:
+            referenced.setdefault((document, reference, reference_item), []).append(item)
+
+    for (document, reference, reference_item), item_ids in sorted(referenced.items()):
+        if len(item_ids) < 2:
+            continue
+        item_ids = sorted(item_ids)
+        finding("DUPLICATE_REFERENCE", document, item_ids,
+                f"同一来源项目多次引用（待复核）：开票凭证 {document} 的项目 {'、'.join(item_ids)} 均引用 {reference}/{reference_item}。这不等于已确认重复开票。",
+                f"Repeated source-item reference (review required): billing document {document}, items {', '.join(item_ids)}, reference {reference}/{reference_item}. This does not establish duplicate billing.",
+                "核对项目拆分、开票数量、计量单位和取消记录，确认是否存在重复开票；勿仅凭引用重复冲销凭证。",
+                "Review item splits, billed quantities, units and cancellations before deciding whether billing is duplicated; do not reverse billing solely for repeated references.",
+                reference_document=reference, reference_document_item=reference_item)
+
+    source_complete = _source_complete(inputs) and not any(
+        payload.get("source_truncated") is True or payload.get("ok") is False
+        or (payload.get("pagination") or {}).get("has_next") is True
+        for payload in _all_payloads(inputs)
+    )
+    if not source_complete:
+        finding("BILLING_EVIDENCE_INCOMPLETE", "", [],
+                "查询或分页证据不完整，不能确认开票完整性。", "Query or pagination evidence is incomplete; billing completeness cannot be confirmed.",
+                "取得完整查询结果后再复核。", "Obtain complete query results before review.", unknown=True)
+    if not items:
+        finding("NO_BILLING_ITEMS", "", [],
+                "本次未取得开票项目，无法完成项目级检查。", "No billing items were returned for item-level review.",
+                "核对开票凭证号和查询范围。", "Check the billing document number and query scope.")
+
+    records = []
+    for row in items:
+        document, item = text(row, "BillingDocument"), text(row, "BillingDocumentItem")
+        related = [f for f in findings if f["billing_document"] in {"", document}
+                   and (not f["billing_document_items"] or item in f["billing_document_items"])]
+        header = header_by_document.get(document, {})
+        records.append({
+            "billing_document": document,
+            "billing_document_item": item,
+            "reference_document": text(row, "ReferenceSDDocument"),
+            "reference_document_item": text(row, "ReferenceSDDocumentItem"),
+            "accounting_posting_status": text(header, "AccountingPostingStatus"),
+            "cancelled": _truthy(header["BillingDocumentIsCancelled"]) if header.get("BillingDocumentIsCancelled") is not None else None,
+            "business_status": "inconclusive" if any(f["business_status"] == "inconclusive" for f in related) else "attention" if related else "normal",
+            "finding_codes": [f["code"] for f in related],
+            "finding_reason": {lang: "\n".join(f["detail"][lang] for f in related) or ({"zh": "未发现本次检查范围内的异常。", "en": "No exception found within these checks."}[lang]) for lang in ("zh", "en")},
+            "recommended_action": {lang: "\n".join(dict.fromkeys(f["recommended_action"][lang] for f in related)) or ({"zh": "无需因来源引用而处理该项目。", "en": "No source-reference follow-up is required."}[lang]) for lang in ("zh", "en")},
+        })
+    status = "inconclusive" if gaps else "attention" if findings else "normal"
+    result = _result(
         inputs,
-        business_status="attention" if attention else "normal",
-        headline_zh="开票完整性需要复核" if attention else "开票凭证基础完整性检查通过",
-        headline_en="Billing completeness requires review" if attention else "Basic billing completeness checks passed",
-        overview_zh="已核对开票状态、取消标志、来源引用及财务过账状态。",
-        overview_en="Billing status, cancellation, source references, and accounting posting were checked.",
+        business_status=status,
+        headline_zh="开票完整性证据不足" if gaps else "开票完整性需要复核" if findings else "开票凭证基础完整性检查通过",
+        headline_en="Insufficient billing-completeness evidence" if gaps else "Billing completeness requires review" if findings else "Basic billing completeness checks passed",
+        overview_zh="按开票项目核对取消标志、来源凭证及来源项目引用和财务过账状态。同一来源凭证的不同项目不视为重复引用；本检查不构成跨凭证重复开票或数量、金额、税额一致性的完整确认。",
+        overview_en="Checked cancellation, source document/item references and accounting posting per billing item. Different items of one source document are not duplicate references; this is not a full cross-document duplicate-billing or quantity, amount and tax reconciliation.",
         stages=[_stage("billing", "开票凭证", "Billing document", len(headers) + len(items)), _stage("source", "来源订单或交货", "Source order or delivery", len(sources))],
         findings=findings,
         metrics=[
-            {"id": "billing_items", "value": len(items)},
-            {"id": "source_rows", "value": len(sources)},
-            {"id": "finding_count", "value": len(findings)},
+            {"id": "billing_items", "label": {"zh": "开票项目数", "en": "Billing items"}, "value": len(items)},
+            {"id": "source_rows", "label": {"zh": "来源证据条数", "en": "Source evidence rows"}, "value": len(sources)},
+            {"id": "finding_count", "label": {"zh": "需复核发现数", "en": "Findings requiring review"}, "value": len(findings)},
         ],
         records=records,
-        actions_zh=["复核取消、重复引用或尚未过账的开票项目。"] if attention else [],
-        actions_en=["Review cancelled, duplicate, or unposted billing items."] if attention else [],
+        record_columns=[
+            {"key": key, "label": {"zh": zh, "en": en}, "format": "status" if key == "business_status" else "text"}
+            for key, zh, en in (
+                ("billing_document", "开票凭证号", "Billing document"),
+                ("billing_document_item", "开票项目", "Billing item"),
+                ("reference_document", "来源凭证", "Source document"),
+                ("reference_document_item", "来源项目", "Source item"),
+                ("accounting_posting_status", "财务过账状态代码", "Accounting posting status code"),
+                ("cancelled", "是否取消", "Cancelled"),
+                ("business_status", "业务状态", "Business status"),
+                ("finding_reason", "检查结论及原因", "Finding and reason"),
+                ("recommended_action", "建议动作", "Recommended action"),
+            )
+        ],
+        gaps=sorted(gaps), source_complete_override=source_complete,
+        preserve_business_status_on_gap=True, allow_empty_records=True,
+        actions_zh=list(dict.fromkeys(f["recommended_action"]["zh"] for f in findings)),
+        actions_en=list(dict.fromkeys(f["recommended_action"]["en"] for f in findings)),
     )
+    result["rule_id"] = "billing_completeness_check_deterministic_v2"
+    # Use the existing evidence-table renderer in both the page and Markdown.
+    # Keep records unchanged for acceptance and workflow consumers.
+    report = result["business_report"]
+    report["display_records"] = False
+    report["evidence_tables"] = [{
+        "id": "billing_item_checks",
+        "title": {"zh": "开票项目核对明细", "en": "Billing item checks"},
+        "columns": report["record_columns"], "rows": records,
+    }] if records else []
+    return result
 
 
 def _delivered_not_billed(inputs: JsonObject) -> JsonObject:
