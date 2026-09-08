@@ -441,6 +441,7 @@ def _stage(
     actual_state = state or ("confirmed" if count else "not_confirmed")
     labels = {
         "confirmed": {"zh": "已取得证据", "en": "Evidence found"},
+        "complete_empty": {"zh": "查询完整，无记录", "en": "Complete query, no records"},
         "not_confirmed": {"zh": "未取得证据", "en": "No evidence found"},
         "attention": {"zh": "需要关注", "en": "Attention required"},
         "unknown": {"zh": "无法确认", "en": "Unknown"},
@@ -5094,42 +5095,521 @@ def _mrp_exception(inputs: JsonObject) -> JsonObject:
 
 
 def _production_monitor(inputs: JsonObject) -> JsonObject:
-    orders = _rows(inputs, "production_order", "production_order_items")
+    run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
+    requested_order = str(run_input.get("manufacturing_order") or "").strip()
+    headers = _rows(inputs, "production_order")
+    items = _rows(inputs, "production_order_items")
     statuses = _rows(inputs, "production_statuses")
     operations = _rows(inputs, "production_operations")
     components = _rows(inputs, "production_components")
     movements = _rows(inputs, "material_documents")
-    attention = any(not _truthy(row.get("OperationIsConfirmed")) for row in operations)
-    records = [
-        {
-            "manufacturing_order": _text(row, "ManufacturingOrder", "ProductionOrder"),
-            "operation": _text(row, "ManufacturingOrderOperation", "Operation"),
-            "work_center": _text(row, "WorkCenter", "WorkCenterInternalID"),
-            "confirmed": _truthy(row.get("OperationIsConfirmed")),
-            "planned_start": _date_text(row, "OpErlstSchedldExecStrtDte", "OpPlannedStartDate", "OperationPlannedStartDate"),
-            "planned_end": _date_text(row, "OpErlstSchedldExecEndDte", "OpPlannedEndDate", "OperationPlannedEndDate"),
-        }
-        for row in operations
-        if _text(row, "ManufacturingOrder", "ProductionOrder")
-        and _text(row, "ManufacturingOrderOperation", "Operation")
-    ]
-    return _result(
-        inputs,
-        business_status="attention" if attention else "normal",
-        headline_zh="生产订单仍有未确认工序" if attention else "生产订单执行证据已完整取得",
-        headline_en="The production order has unconfirmed operations" if attention else "Production-order execution evidence was collected",
-        overview_zh="已核对订单状态、工序确认、组件领料和物料凭证，不执行确认、发料、收货或 TECO。",
-        overview_en="Order status, operation confirmation, component withdrawal, and material documents were checked without confirmation, issue, receipt, or TECO actions.",
-        stages=[_stage("order", "生产订单", "Production order", len(orders)), _stage("status", "订单状态", "Order status", len(statuses)), _stage("operations", "生产工序", "Operations", len(operations)), _stage("components", "组件", "Components", len(components)), _stage("movements", "物料凭证", "Material documents", len(movements))],
-        metrics=[
-            {"id": "operation_rows", "value": len(operations)},
-            {"id": "unconfirmed_operations", "value": sum(1 for row in operations if not _truthy(row.get("OperationIsConfirmed")))},
-            {"id": "movement_rows", "value": len(movements)},
-        ],
-        records=records,
-        actions_zh=["由生产人员复核未确认工序、缺料和待收货状态。"] if attention else [],
-        actions_en=["Have production review unconfirmed operations, shortages, and pending receipts."] if attention else [],
+
+    step_ids = (
+        "production_order",
+        "production_order_items",
+        "production_statuses",
+        "production_operations",
+        "production_components",
+        "material_documents",
     )
+    step_complete = {step_id: _step_source_complete(inputs, step_id) for step_id in step_ids}
+    source_complete = _source_complete(inputs) and all(step_complete.values())
+    gaps = set(_gaps(inputs))
+    gaps.update(
+        f"{step_id}_source_incomplete"
+        for step_id, complete in step_complete.items()
+        if not complete
+    )
+
+    def scoped(rows: list[JsonObject]) -> list[JsonObject]:
+        scoped_rows: list[JsonObject] = []
+        for row in rows:
+            row_order = _text(row, "ManufacturingOrder", "ProductionOrder")
+            if requested_order and row_order and row_order != requested_order:
+                gaps.add("production_order_scope_mismatch")
+                continue
+            scoped_rows.append(row)
+        return scoped_rows
+
+    headers = scoped(headers)
+    items = scoped(items)
+    statuses = scoped(statuses)
+    operations = scoped(operations)
+    components = scoped(components)
+    movements = scoped(movements)
+
+    header = headers[0] if len(headers) == 1 else None
+    if len(headers) > 1:
+        gaps.add("production_order_header_conflict")
+    child_evidence_present = bool(items or statuses or operations or components or movements)
+    if child_evidence_present and header is None:
+        gaps.add("production_order_header_missing")
+    order_found = header is not None
+
+    def decimal_text(row: JsonObject, field: str) -> str | None:
+        value = _strict_decimal(row.get(field))
+        return str(value) if value is not None else None
+
+    def sequence_key(value: Any) -> tuple[int, int | str]:
+        text = str(value or "").strip()
+        return (0, int(text)) if text.isdigit() else (1, text)
+
+    order_header = (
+        {
+            "manufacturing_order": _text(header, "ManufacturingOrder"),
+            "order_type": _text(header, "ManufacturingOrderType") or None,
+            "material": _text(header, "Material") or None,
+            "plant": _text(header, "ProductionPlant", "Plant") or None,
+            "planned_start": _date_text(header, "MfgOrderPlannedStartDate") or None,
+            "planned_end": _date_text(header, "MfgOrderPlannedEndDate") or None,
+            "planned_quantity": decimal_text(header, "TotalQuantity"),
+            "confirmed_yield_quantity": decimal_text(header, "MfgOrderConfirmedYieldQty"),
+        }
+        if header
+        else None
+    )
+    order_items = [
+        {
+            "manufacturing_order": _text(row, "ManufacturingOrder") or requested_order,
+            "item": _text(row, "ManufacturingOrderItem") or None,
+            "material": _text(row, "Material") or None,
+            "plant": _text(row, "ProductionPlant", "Plant") or None,
+            "planned_quantity": decimal_text(row, "MfgOrderItemPlannedTotalQty"),
+            "goods_receipt_quantity": decimal_text(row, "MfgOrderItemGoodsReceiptQty"),
+            "actual_deviation_quantity": decimal_text(row, "MfgOrderItemActualDeviationQty"),
+        }
+        for row in sorted(items, key=lambda item: sequence_key(item.get("ManufacturingOrderItem")))
+    ]
+    status_details = [
+        {
+            "manufacturing_order": _text(row, "ManufacturingOrder") or requested_order,
+            "status_code": _text(row, "StatusCode") or None,
+            "status_short_name": _text(row, "StatusShortName") or None,
+            "status_name": _text(row, "StatusName") or None,
+        }
+        for row in sorted(
+            statuses,
+            key=lambda item: (_text(item, "StatusCode"), _text(item, "StatusShortName")),
+        )
+    ]
+    release_observation = (
+        "unknown"
+        if not order_found or not step_complete["production_statuses"]
+        else "released"
+        if any(_text(row, "StatusShortName").upper() == "REL" for row in statuses)
+        else "rel_not_observed"
+    )
+
+    operation_details: list[JsonObject] = []
+    for row in sorted(
+        operations,
+        key=lambda item: sequence_key(
+            item.get("ManufacturingOrderOperation") or item.get("Operation")
+        ),
+    ):
+        confirmed = _truthy(row.get("OperationIsConfirmed"))
+        partially_confirmed = _truthy(row.get("OperationIsPartiallyConfirmed"))
+        operation_details.append(
+            {
+                "manufacturing_order": _text(row, "ManufacturingOrder", "ProductionOrder") or requested_order,
+                "operation": _text(row, "ManufacturingOrderOperation", "Operation") or None,
+                "work_center": _text(row, "WorkCenter", "WorkCenterInternalID") or None,
+                "confirmed": confirmed,
+                "partially_confirmed": partially_confirmed,
+                "confirmation_status": (
+                    "confirmed" if confirmed else "partial" if partially_confirmed else "not_confirmed"
+                ),
+                "planned_quantity": decimal_text(row, "OpPlannedTotalQuantity"),
+                "confirmed_yield_quantity": decimal_text(row, "OpTotalConfirmedYieldQty"),
+                "planned_start": _date_text(
+                    row,
+                    "OpErlstSchedldExecStrtDte",
+                    "OpPlannedStartDate",
+                    "OperationPlannedStartDate",
+                ) or None,
+                "planned_end": _date_text(
+                    row,
+                    "OpErlstSchedldExecEndDte",
+                    "OpPlannedEndDate",
+                    "OperationPlannedEndDate",
+                ) or None,
+            }
+        )
+    unconfirmed_operation_count = sum(
+        1 for item in operation_details if item["confirmation_status"] != "confirmed"
+    )
+
+    component_details: list[JsonObject] = []
+    for row in sorted(
+        components,
+        key=lambda item: (
+            _text(item, "Reservation"),
+            sequence_key(item.get("ReservationItem")),
+            _text(item, "Material"),
+        ),
+    ):
+        required = _strict_decimal(row.get("RequiredQuantity"))
+        withdrawn = _strict_decimal(row.get("WithdrawnQuantity"))
+        withdrawal_status = (
+            "unknown"
+            if required is None or withdrawn is None
+            else "pending"
+            if withdrawn < required
+            else "over_withdrawn"
+            if withdrawn > required
+            else "complete"
+        )
+        component_details.append(
+            {
+                "manufacturing_order": _text(row, "ManufacturingOrder") or requested_order,
+                "reservation": _text(row, "Reservation") or None,
+                "reservation_item": _text(row, "ReservationItem") or None,
+                "material": _text(row, "Material") or None,
+                "plant": _text(row, "Plant") or None,
+                "required_quantity": str(required) if required is not None else None,
+                "withdrawn_quantity": str(withdrawn) if withdrawn is not None else None,
+                "confirmed_available_quantity": decimal_text(row, "ConfirmedAvailableQuantity"),
+                "withdrawal_status": withdrawal_status,
+            }
+        )
+    pending_withdrawal_component_count = sum(
+        1 for item in component_details if item["withdrawal_status"] == "pending"
+    )
+
+    movement_details = [
+        {
+            "manufacturing_order": _text(row, "ManufacturingOrder") or requested_order,
+            "material_document_year": _text(row, "MaterialDocumentYear") or None,
+            "material_document": _text(row, "MaterialDocument") or None,
+            "material_document_item": _text(row, "MaterialDocumentItem") or None,
+            "material": _text(row, "Material") or None,
+            "plant": _text(row, "Plant") or None,
+            "quantity_in_base_unit": decimal_text(row, "QuantityInBaseUnit"),
+            "debit_credit_code": _text(row, "DebitCreditCode") or None,
+            "reversed_material_document": _text(row, "ReversedMaterialDocument") or None,
+        }
+        for row in sorted(
+            movements,
+            key=lambda item: (
+                _text(item, "MaterialDocumentYear"),
+                _text(item, "MaterialDocument"),
+                sequence_key(item.get("MaterialDocumentItem")),
+            ),
+        )
+    ]
+
+    evidence_complete = bool(source_complete and not gaps)
+    business_status = (
+        "capability_blocked"
+        if not evidence_complete
+        else "not_found"
+        if not order_found
+        else "attention"
+        if unconfirmed_operation_count
+        else "normal"
+    )
+    headline_zh = (
+        "生产订单证据不完整，暂时无法形成结论"
+        if business_status == "capability_blocked"
+        else f"未找到生产订单 {requested_order}"
+        if business_status == "not_found"
+        else f"生产订单 {requested_order} 有 {unconfirmed_operation_count} 道工序尚未完全确认"
+        if business_status == "attention"
+        else f"生产订单 {requested_order} 的工序均已确认"
+    )
+    headline_en = (
+        "Production-order evidence is incomplete, so no conclusion can be made"
+        if business_status == "capability_blocked"
+        else f"Production order {requested_order} was not found"
+        if business_status == "not_found"
+        else f"Production order {requested_order} has {unconfirmed_operation_count} operation(s) not fully confirmed"
+        if business_status == "attention"
+        else f"All operations for production order {requested_order} are confirmed"
+    )
+
+    findings: list[JsonObject] = []
+    for item in operation_details:
+        if item["confirmation_status"] == "confirmed":
+            continue
+        operation = item.get("operation") or "—"
+        work_center = item.get("work_center") or "—"
+        findings.append(
+            {
+                "code": "operation_not_fully_confirmed",
+                "detail": {
+                    "zh": f"工序 {operation}（工作中心 {work_center}）尚未完全确认；计划数量 {item.get('planned_quantity') or '未返回'}，确认产量 {item.get('confirmed_yield_quantity') or '未返回'}。",
+                    "en": f"Operation {operation} (work center {work_center}) is not fully confirmed; planned quantity {item.get('planned_quantity') or 'not returned'}, confirmed yield {item.get('confirmed_yield_quantity') or 'not returned'}.",
+                },
+            }
+        )
+    for item in component_details:
+        if item["withdrawal_status"] != "pending":
+            continue
+        findings.append(
+            {
+                "code": "component_withdrawal_pending",
+                "detail": {
+                    "zh": f"组件 {item.get('material') or '—'} 尚未完全领料：需求量 {item.get('required_quantity') or '未返回'}，已领料 {item.get('withdrawn_quantity') or '未返回'}，SAP 返回确认可用量 {item.get('confirmed_available_quantity') or '未返回'}；该信息不等同于缺料判断。",
+                    "en": f"Component {item.get('material') or '—'} is not fully withdrawn: required {item.get('required_quantity') or 'not returned'}, withdrawn {item.get('withdrawn_quantity') or 'not returned'}, SAP confirmed available quantity {item.get('confirmed_available_quantity') or 'not returned'}; this does not by itself prove a shortage.",
+                },
+            }
+        )
+    if release_observation == "rel_not_observed":
+        findings.append(
+            {
+                "code": "rel_status_not_observed",
+                "detail": {
+                    "zh": "完整返回的活动状态列表中未观察到 REL；请在 SAP 中复核释放状态，不将状态缺失直接解释为未释放。",
+                    "en": "REL was not observed in the complete active-status list; review release status in SAP rather than treating the absence alone as proof that the order is unreleased.",
+                },
+            }
+        )
+    if step_complete["material_documents"] and not movement_details:
+        findings.append(
+            {
+                "code": "no_material_movement_items",
+                "detail": {
+                    "zh": "物料凭证查询已完整完成，未发现该订单的物料移动行项目。",
+                    "en": "The material-document query completed in full and returned no movement items for this order.",
+                },
+            }
+        )
+
+    actions_zh: list[str] = []
+    actions_en: list[str] = []
+    if release_observation == "rel_not_observed":
+        actions_zh.append("由生产计划人员在 SAP 中复核订单释放和现场就绪状态。")
+        actions_en.append("Have production planning review order release and shop-floor readiness in SAP.")
+    if unconfirmed_operation_count:
+        actions_zh.append("由生产人员复核明细中的未完全确认工序；本平台不会执行工序确认。")
+        actions_en.append("Have production review the listed operations that are not fully confirmed; this platform will not post confirmations.")
+    if pending_withdrawal_component_count:
+        actions_zh.append("结合现场进度确认组件领料是否已到期；本平台不会发料，也不把未领料自动判断为缺料。")
+        actions_en.append("Confirm against shop-floor progress whether component withdrawal is due; this platform will not issue goods or treat pending withdrawal as a shortage automatically.")
+    if step_complete["material_documents"] and not movement_details:
+        actions_zh.append("如该阶段应已发生发料或收货，请由业务人员在 SAP 中核对并按授权流程处理。")
+        actions_en.append("If goods issue or receipt should already have occurred, have an authorized business user review and process it in SAP.")
+
+    result = _result(
+        inputs,
+        business_status=business_status,
+        headline_zh=headline_zh,
+        headline_en=headline_en,
+        overview_zh=f"已按生产订单核对抬头、{len(status_details)} 个活动状态、{len(operation_details)} 道工序、{len(component_details)} 个组件和 {len(movement_details)} 条物料移动；全程只读。",
+        overview_en=f"Checked the order header, {len(status_details)} active status(es), {len(operation_details)} operation(s), {len(component_details)} component(s), and {len(movement_details)} material movement item(s) in read-only mode.",
+        stages=[
+            _stage(
+                "order",
+                "生产订单",
+                "Production order",
+                len(headers),
+                state="unknown" if not step_complete["production_order"] else "confirmed" if header else "complete_empty",
+                detail_zh="已取得唯一订单抬头。" if header else "查询完整，未找到订单抬头。" if step_complete["production_order"] else "订单抬头来源不完整。",
+                detail_en="A unique order header was returned." if header else "The complete query returned no order header." if step_complete["production_order"] else "The order-header source is incomplete.",
+            ),
+            _stage(
+                "status",
+                "订单状态",
+                "Order status",
+                len(status_details),
+                state="unknown" if not step_complete["production_statuses"] else "confirmed" if status_details else "complete_empty",
+                detail_zh=f"完整返回 {len(status_details)} 个活动状态。" if step_complete["production_statuses"] else "状态来源不完整。",
+                detail_en=f"The complete query returned {len(status_details)} active status(es)." if step_complete["production_statuses"] else "The status source is incomplete.",
+            ),
+            _stage(
+                "operations",
+                "生产工序",
+                "Operations",
+                len(operation_details),
+                state="unknown" if not step_complete["production_operations"] else "attention" if unconfirmed_operation_count else "confirmed" if operation_details else "complete_empty",
+                detail_zh=f"共 {len(operation_details)} 道工序，其中 {unconfirmed_operation_count} 道尚未完全确认。" if step_complete["production_operations"] else "工序来源不完整。",
+                detail_en=f"{len(operation_details)} operation(s) were returned; {unconfirmed_operation_count} are not fully confirmed." if step_complete["production_operations"] else "The operation source is incomplete.",
+            ),
+            _stage(
+                "components",
+                "组件领料",
+                "Component withdrawal",
+                len(component_details),
+                state="unknown" if not step_complete["production_components"] else "attention" if pending_withdrawal_component_count else "confirmed" if component_details else "complete_empty",
+                detail_zh=f"共 {len(component_details)} 个组件，其中 {pending_withdrawal_component_count} 个尚未完全领料；不据此推断缺料。" if step_complete["production_components"] else "组件来源不完整。",
+                detail_en=f"{len(component_details)} component(s) were returned; {pending_withdrawal_component_count} are not fully withdrawn. This does not establish a shortage." if step_complete["production_components"] else "The component source is incomplete.",
+            ),
+            _stage(
+                "movements",
+                "物料移动",
+                "Material movements",
+                len(movement_details),
+                state="unknown" if not step_complete["material_documents"] else "confirmed" if movement_details else "complete_empty",
+                detail_zh=f"完整返回 {len(movement_details)} 条物料移动行项目。" if step_complete["material_documents"] else "物料凭证来源不完整。",
+                detail_en=f"The complete query returned {len(movement_details)} material movement item(s)." if step_complete["material_documents"] else "The material-document source is incomplete.",
+            ),
+        ],
+        findings=findings,
+        metrics=[
+            {"id": "planned_quantity", "label": {"zh": "计划数量", "en": "Planned quantity"}, "value": (order_header or {}).get("planned_quantity")},
+            {"id": "confirmed_yield_quantity", "label": {"zh": "确认产量", "en": "Confirmed yield"}, "value": (order_header or {}).get("confirmed_yield_quantity")},
+            {"id": "operation_count", "label": {"zh": "工序数", "en": "Operation count"}, "value": len(operation_details)},
+            {"id": "unconfirmed_operation_count", "label": {"zh": "未完全确认工序", "en": "Operations not fully confirmed"}, "value": unconfirmed_operation_count},
+            {"id": "component_count", "label": {"zh": "组件数", "en": "Component count"}, "value": len(component_details)},
+            {"id": "pending_withdrawal_component_count", "label": {"zh": "待领料组件", "en": "Components pending withdrawal"}, "value": pending_withdrawal_component_count},
+            {"id": "material_movement_item_count", "label": {"zh": "物料移动行项目", "en": "Material movement items"}, "value": len(movement_details)},
+        ],
+        gaps=sorted(gaps),
+        records=operation_details,
+        record_columns=[
+            {"key": "manufacturing_order", "label": {"zh": "生产订单", "en": "Manufacturing order"}},
+            {"key": "operation", "label": {"zh": "工序", "en": "Operation"}},
+            {"key": "work_center", "label": {"zh": "工作中心", "en": "Work center"}},
+            {"key": "confirmation_status", "label": {"zh": "确认状态", "en": "Confirmation status"}, "format": "status"},
+            {"key": "planned_quantity", "label": {"zh": "计划数量", "en": "Planned quantity"}, "format": "decimal"},
+            {"key": "confirmed_yield_quantity", "label": {"zh": "确认产量", "en": "Confirmed yield"}, "format": "decimal"},
+            {"key": "planned_start", "label": {"zh": "计划开始", "en": "Planned start"}, "format": "date"},
+            {"key": "planned_end", "label": {"zh": "计划结束", "en": "Planned end"}, "format": "date"},
+        ],
+        allow_empty_records=True,
+        actions_zh=actions_zh,
+        actions_en=actions_en,
+        source_complete_override=source_complete,
+    )
+    report = result["business_report"]
+    report.update(
+        {
+            "display_records": False,
+            "stages_after_summary": True,
+            "source_complete": source_complete,
+            "evidence_complete": evidence_complete,
+            "summary_sections": ([
+                {
+                    "id": "order_overview",
+                    "title": {"zh": "订单概览", "en": "Order overview"},
+                    "source_complete": step_complete["production_order"],
+                    "entries": [
+                        {"key": "manufacturing_order", "label": {"zh": "生产订单", "en": "Manufacturing order"}, "value": order_header["manufacturing_order"]},
+                        {"key": "order_type", "label": {"zh": "订单类型", "en": "Order type"}, "value": order_header["order_type"]},
+                        {"key": "material", "label": {"zh": "物料", "en": "Material"}, "value": order_header["material"]},
+                        {"key": "plant", "label": {"zh": "工厂", "en": "Plant"}, "value": order_header["plant"]},
+                        {"key": "planned_start", "label": {"zh": "计划开始日期", "en": "Planned start date"}, "value": order_header["planned_start"], "format": "date"},
+                        {"key": "planned_end", "label": {"zh": "计划结束日期", "en": "Planned end date"}, "value": order_header["planned_end"], "format": "date"},
+                        {"key": "planned_quantity", "label": {"zh": "计划数量", "en": "Planned quantity"}, "value": order_header["planned_quantity"], "format": "decimal"},
+                        {"key": "confirmed_yield_quantity", "label": {"zh": "确认产量", "en": "Confirmed yield"}, "value": order_header["confirmed_yield_quantity"], "format": "decimal"},
+                    ],
+                }
+            ] if order_header else []),
+            "action_tables": [
+                {
+                    "id": "order_items",
+                    "artifact_name": "production-order-items.csv",
+                    "title": {"zh": "订单行项目", "en": "Order items"},
+                    "source_complete": step_complete["production_order_items"],
+                    "empty_state": {"zh": "查询完整，未发现订单行项目。", "en": "The complete query returned no order items."} if step_complete["production_order_items"] else {"zh": "订单行项目来源不完整，无法确认。", "en": "The order-item source is incomplete."},
+                    "columns": [
+                        {"key": "item", "label": {"zh": "行项目", "en": "Item"}},
+                        {"key": "material", "label": {"zh": "物料", "en": "Material"}},
+                        {"key": "plant", "label": {"zh": "工厂", "en": "Plant"}},
+                        {"key": "planned_quantity", "label": {"zh": "计划数量", "en": "Planned quantity"}, "format": "decimal"},
+                        {"key": "goods_receipt_quantity", "label": {"zh": "收货数量", "en": "Goods receipt quantity"}, "format": "decimal"},
+                        {"key": "actual_deviation_quantity", "label": {"zh": "实际偏差数量", "en": "Actual deviation quantity"}, "format": "decimal"},
+                    ],
+                    "rows": order_items,
+                },
+                {
+                    "id": "statuses",
+                    "artifact_name": "production-order-statuses.csv",
+                    "title": {"zh": "SAP 活动状态", "en": "SAP active statuses"},
+                    "source_complete": step_complete["production_statuses"],
+                    "empty_state": {"zh": "查询完整，未返回活动状态。", "en": "The complete query returned no active statuses."} if step_complete["production_statuses"] else {"zh": "状态来源不完整，无法确认。", "en": "The status source is incomplete."},
+                    "columns": [
+                        {"key": "status_code", "label": {"zh": "状态代码", "en": "Status code"}},
+                        {"key": "status_short_name", "label": {"zh": "状态简称", "en": "Short name"}},
+                        {"key": "status_name", "label": {"zh": "状态名称", "en": "Status name"}},
+                    ],
+                    "rows": status_details,
+                },
+                {
+                    "id": "operations",
+                    "artifact_name": "production-order-operations.csv",
+                    "title": {"zh": "工序执行明细", "en": "Operation execution details"},
+                    "source_complete": step_complete["production_operations"],
+                    "empty_state": {"zh": "查询完整，未发现工序。", "en": "The complete query returned no operations."} if step_complete["production_operations"] else {"zh": "工序来源不完整，无法确认。", "en": "The operation source is incomplete."},
+                    "columns": [
+                        {"key": "operation", "label": {"zh": "工序", "en": "Operation"}},
+                        {"key": "work_center", "label": {"zh": "工作中心", "en": "Work center"}},
+                        {"key": "confirmation_status", "label": {"zh": "确认状态", "en": "Confirmation status"}, "format": "status"},
+                        {"key": "planned_quantity", "label": {"zh": "计划数量", "en": "Planned quantity"}, "format": "decimal"},
+                        {"key": "confirmed_yield_quantity", "label": {"zh": "确认产量", "en": "Confirmed yield"}, "format": "decimal"},
+                        {"key": "planned_start", "label": {"zh": "计划开始", "en": "Planned start"}, "format": "date"},
+                        {"key": "planned_end", "label": {"zh": "计划结束", "en": "Planned end"}, "format": "date"},
+                    ],
+                    "rows": operation_details,
+                },
+                {
+                    "id": "components",
+                    "artifact_name": "production-order-components.csv",
+                    "title": {"zh": "组件领料与可用量", "en": "Component withdrawal and availability"},
+                    "source_complete": step_complete["production_components"],
+                    "empty_state": {"zh": "查询完整，未发现组件。", "en": "The complete query returned no components."} if step_complete["production_components"] else {"zh": "组件来源不完整，无法确认。", "en": "The component source is incomplete."},
+                    "columns": [
+                        {"key": "material", "label": {"zh": "组件", "en": "Component"}},
+                        {"key": "plant", "label": {"zh": "工厂", "en": "Plant"}},
+                        {"key": "reservation", "label": {"zh": "预留号", "en": "Reservation"}},
+                        {"key": "reservation_item", "label": {"zh": "预留行项目", "en": "Reservation item"}},
+                        {"key": "required_quantity", "label": {"zh": "需求量", "en": "Required quantity"}, "format": "decimal"},
+                        {"key": "withdrawn_quantity", "label": {"zh": "已领料", "en": "Withdrawn quantity"}, "format": "decimal"},
+                        {"key": "confirmed_available_quantity", "label": {"zh": "确认可用量", "en": "Confirmed available quantity"}, "format": "decimal"},
+                        {"key": "withdrawal_status", "label": {"zh": "领料状态", "en": "Withdrawal status"}, "format": "status"},
+                    ],
+                    "rows": component_details,
+                },
+                {
+                    "id": "movements",
+                    "artifact_name": "production-order-movements.csv",
+                    "title": {"zh": "物料移动", "en": "Material movements"},
+                    "source_complete": step_complete["material_documents"],
+                    "empty_state": {"zh": "查询完整，未发现该订单的物料移动行项目。", "en": "The complete query returned no material movement items for this order."} if step_complete["material_documents"] else {"zh": "物料凭证来源不完整，无法确认。", "en": "The material-document source is incomplete."},
+                    "columns": [
+                        {"key": "material_document_year", "label": {"zh": "凭证年度", "en": "Document year"}},
+                        {"key": "material_document", "label": {"zh": "物料凭证", "en": "Material document"}},
+                        {"key": "material_document_item", "label": {"zh": "行项目", "en": "Item"}},
+                        {"key": "material", "label": {"zh": "物料", "en": "Material"}},
+                        {"key": "plant", "label": {"zh": "工厂", "en": "Plant"}},
+                        {"key": "quantity_in_base_unit", "label": {"zh": "基本单位数量", "en": "Quantity in base unit"}, "format": "decimal"},
+                        {"key": "debit_credit_code", "label": {"zh": "借贷标识", "en": "Debit/credit code"}},
+                        {"key": "reversed_material_document", "label": {"zh": "冲销凭证", "en": "Reversed document"}},
+                    ],
+                    "rows": movement_details,
+                },
+            ],
+        }
+    )
+    result["rule_id"] = "production_order_monitoring_deterministic_v2"
+    result["business_status"] = business_status
+    result["business_complete"] = evidence_complete
+    result["source_complete"] = source_complete
+    result["evidence_complete"] = evidence_complete
+    result["workflow_output"].update(
+        {
+            "manufacturing_order": requested_order,
+            "order_header": order_header,
+            "order_items": order_items,
+            "status_details": status_details,
+            "release_observation": release_observation,
+            "operation_details": operation_details,
+            "component_details": component_details,
+            "movement_details": movement_details,
+            "planned_quantity": (order_header or {}).get("planned_quantity"),
+            "confirmed_yield_quantity": (order_header or {}).get("confirmed_yield_quantity"),
+            "operation_count": len(operation_details),
+            "unconfirmed_operation_count": unconfirmed_operation_count,
+            "component_count": len(component_details),
+            "pending_withdrawal_component_count": pending_withdrawal_component_count,
+            "material_movement_item_count": len(movement_details),
+            "business_status": business_status,
+            "source_complete": source_complete,
+            "evidence_complete": evidence_complete,
+            "business_report": report,
+        }
+    )
+    return result
 
 
 def _production_schedule(inputs: JsonObject) -> JsonObject:

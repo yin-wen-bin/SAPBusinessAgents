@@ -5501,6 +5501,7 @@ def _default_presentation(
     title = summary
     blocks: list[PresentationBlock] = []
     if report:
+        deferred_stage_block: PresentationBlock | None = None
         title = _text_pair(report.get("headline"), summary.zh)
         overview = _text_pair(report.get("overview"))
         if overview.zh or overview.en:
@@ -5535,16 +5536,18 @@ def _default_presentation(
                 )
                 for item in stages
             ]
-            blocks.append(
-                PresentationBlock(
-                    type="table",
-                    title=LocalizedText(zh="各阶段结果", en="Results by stage"),
-                    claim_scope="customer_business_fact",
-                    columns=columns,
-                    rows=rows,
-                    total_rows=len(rows),
-                )
+            stage_block = PresentationBlock(
+                type="table",
+                title=LocalizedText(zh="各阶段结果", en="Results by stage"),
+                claim_scope="customer_business_fact",
+                columns=columns,
+                rows=rows,
+                total_rows=len(rows),
             )
+            if report.get("stages_after_summary") is True:
+                deferred_stage_block = stage_block
+            else:
+                blocks.append(stage_block)
         metrics = [item for item in report.get("metrics") or [] if isinstance(item, dict)]
         if metrics:
             presentation_metrics: list[PresentationMetric] = []
@@ -5581,6 +5584,51 @@ def _default_presentation(
                     metrics=presentation_metrics,
                 )
             )
+        summary_sections = [
+            item
+            for item in report.get("summary_sections") or []
+            if isinstance(item, dict) and item.get("display") is not False
+        ]
+        for section_index, section in enumerate(summary_sections):
+            entries: list[PresentationEntry] = []
+            for item in section.get("entries") or []:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("value")
+                rendered_value = (
+                    LocalizedText(zh="未返回", en="Not returned")
+                    if value is None
+                    else _presentation_value(value, str(item.get("format") or "text"))
+                )
+                entries.append(
+                    PresentationEntry(
+                        label=_text_pair(item.get("label") or item.get("key")),
+                        value=rendered_value,
+                        evidence_refs=[
+                            str(ref) for ref in item.get("evidence_refs") or [] if str(ref)
+                        ],
+                    )
+                )
+            if entries:
+                section_source_complete = section.get("source_complete")
+                blocks.append(
+                    PresentationBlock(
+                        type="key_value",
+                        title=_text_pair(
+                            section.get("title"),
+                            str(section.get("id") or f"Summary {section_index + 1}"),
+                        ),
+                        claim_scope="customer_business_fact",
+                        entries=entries,
+                        source_complete=(
+                            section_source_complete
+                            if isinstance(section_source_complete, bool)
+                            else None
+                        ),
+                    )
+                )
+        if deferred_stage_block is not None:
+            blocks.append(deferred_stage_block)
         action_tables = [
             item
             for item in report.get("action_tables") or []
@@ -5657,7 +5705,11 @@ def _default_presentation(
         record_columns = [
             item for item in report.get("record_columns") or [] if isinstance(item, dict)
         ]
-        records = [item for item in report.get("records") or [] if isinstance(item, dict)]
+        records = (
+            []
+            if report.get("display_records") is False
+            else [item for item in report.get("records") or [] if isinstance(item, dict)]
+        )
         if record_columns and records:
             columns: list[PresentationColumn] = []
             column_schemas: list[dict[str, Any]] = []
