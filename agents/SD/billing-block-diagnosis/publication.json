@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "billing-block-diagnosis",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.2.1",
+  "latest_version": "0.2.1",
+  "active_digest": "sha256:5cf17d51a3cdbe376a628dc52d8e9cfcfc559a43fef900a1a0a121acdfce86e5",
+  "published_at": "2026-09-08T05:52:58.029271+00:00",
+  "git_branch": "codex/agent-billing-block-diagnosis-publish-v0.2.1-37241ff9",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:52:58.065101+00:00",
+  "deactivated_at": null
+}

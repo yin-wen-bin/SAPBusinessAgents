@@ -1,0 +1,25 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "billing-block-diagnosis-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "SO-DEMO-01",
+      "header_billing_block": "01",
+      "credit_status": "B"
+    }
+  ]
+}
