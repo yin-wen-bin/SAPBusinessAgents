@@ -1,0 +1,4 @@
+read_only = true
+selected_provider = "embedded"
+adt_skill = "sap-adt-table-export"
+max_rows = 30000

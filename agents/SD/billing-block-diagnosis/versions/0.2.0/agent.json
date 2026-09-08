@@ -1,0 +1,1358 @@
+{
+  "schemaVersion": 2,
+  "slug": "billing-block-diagnosis",
+  "module": "SD",
+  "title": {
+    "zh": "开票冻结诊断",
+    "en": "Billing Block Diagnosis"
+  },
+  "summary": {
+    "zh": "诊断销售订单、项目与交货层的开票冻结、信用检查及不完整状态。",
+    "en": "Diagnoses billing blocks, credit checks and incompletion statuses at sales-order header, item and delivery levels."
+  },
+  "status": "Three-stage live acceptance passed",
+  "version": "0.2.0",
+  "owner": "SD / FI-AR",
+  "tags": [
+    "Order-to-Cash",
+    "SAP SD",
+    "Read-only",
+    "Explainable AI"
+  ],
+  "sapModules": [
+    "SD"
+  ],
+  "transactions": [],
+  "tables": [
+    "VBUV",
+    "TVFST",
+    "TVLST",
+    "DD07T",
+    "DD03T",
+    "DD03L",
+    "DD04T"
+  ],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "销售订单号"
+    ],
+    "en": [
+      "Sales order"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "销售订单号",
+      "业务状态",
+      "查询源完整性",
+      "结构化业务报告"
+    ],
+    "en": [
+      "Sales order",
+      "Business status",
+      "Query-source completeness",
+      "Structured business report"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "严格只读，不创建或修改SAP凭证",
+      "Fixture不得冒充真机证据",
+      "凭据和敏感业务数据不得写入报告"
+    ],
+    "en": [
+      "Strictly read-only; never creates or changes SAP documents",
+      "Fixtures never masquerade as live evidence",
+      "Credentials and sensitive business data are excluded from reports"
+    ]
+  },
+  "workflow": [
+    {
+      "id": "execute-collect_billing_block_evidence",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `collect_billing_block_evidence`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `collect_billing_block_evidence` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrder",
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderItem",
+          "GET API_OUTBOUND_DELIVERY_SRV@2.0/A_OutbDeliveryItem",
+          "GET API_OUTBOUND_DELIVERY_SRV@2.0/A_OutbDeliveryHeader",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocument"
+        ],
+        "en": [
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrder",
+          "GET API_SALES_ORDER_SRV@2.0/A_SalesOrderItem",
+          "GET API_OUTBOUND_DELIVERY_SRV@2.0/A_OutbDeliveryItem",
+          "GET API_OUTBOUND_DELIVERY_SRV@2.0/A_OutbDeliveryHeader",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocumentItem",
+          "GET API_BILLING_DOCUMENT_SRV@2.0/A_BillingDocument"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `collect_billing_block_evidence` / `execute_plan`",
+            "en": "Execute `collect_billing_block_evidence` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "collect_billing_block_evidence"
+      ]
+    },
+    {
+      "id": "execute-assess_item_incompletion",
+      "title": {
+        "zh": "判断项目不完整证据缺口",
+        "en": "Assess the item-incompletion evidence gap"
+      },
+      "description": {
+        "zh": "只有Embedded查询完整、订单项目存在且实时Schema未提供项目不完整状态时，才申请ADT补证。",
+        "en": "Request ADT evidence only when Embedded is complete, items exist, and live schema does not expose item incompletion status."
+      },
+      "operations": {
+        "zh": ["rule.assess_billing_block_incompletion"],
+        "en": ["rule.assess_billing_block_incompletion"]
+      },
+      "tools": [
+        {
+          "name": "assess_billing_block_incompletion",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行OData优先门控并生成精确订单与预检项目键。",
+            "en": "Apply the OData-first gate and produce exact order and preflight item keys."
+          }
+        }
+      ],
+      "executionStepIds": ["assess_item_incompletion"]
+    },
+    {
+      "id": "execute-preflight_item_incompletion_fallback",
+      "title": {
+        "zh": "预检VBUV读取能力",
+        "en": "Preflight VBUV read capability"
+      },
+      "description": {
+        "zh": "按精确订单和项目读取最多2行，验证实时DDIC、TLS、只读契约、分页和Hash链。",
+        "en": "Read at most two rows for one exact order item to validate live DDIC, TLS, read-only policy, paging, and hash chain."
+      },
+      "operations": {
+        "zh": ["skill.sap-adt-table-export: VBUV精确预检(max_rows=2)"],
+        "en": ["skill.sap-adt-table-export: exact VBUV preflight (max_rows=2)"]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Conditional read-only ADT evidence skill",
+          "purpose": {
+            "zh": "不接受调用方连接配置，按实时DDIC解析稳定键。",
+            "en": "Reject caller connection settings and resolve the stable key from live DDIC."
+          }
+        }
+      ],
+      "executionStepIds": ["preflight_item_incompletion_fallback"]
+    },
+    {
+      "id": "execute-assess_item_incompletion_preflight",
+      "title": {
+        "zh": "评估ADT预检结果",
+        "en": "Assess the ADT preflight result"
+      },
+      "description": {
+        "zh": "仅当预检完整、只读、已验证且Hash有效时允许正式查询。",
+        "en": "Allow the formal query only when the preflight is complete, read-only, validated, and hash verified."
+      },
+      "operations": {
+        "zh": ["rule.assess_adt_preflight"],
+        "en": ["rule.assess_adt_preflight"]
+      },
+      "tools": [
+        {
+          "name": "assess_adt_preflight",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "失败闭合地决定是否继续正式ADT读取。",
+            "en": "Fail closed when deciding whether the formal ADT read may proceed."
+          }
+        }
+      ],
+      "executionStepIds": ["assess_item_incompletion_preflight"]
+    },
+    {
+      "id": "execute-read_item_incompletion_fallback",
+      "title": {
+        "zh": "读取VBUV不完整日志",
+        "en": "Read the VBUV incompletion log"
+      },
+      "description": {
+        "zh": "按精确订单读取最多200行缺失字段日志；完整零行表示该范围未记录缺失字段。",
+        "en": "Read at most 200 missing-field rows for the exact order; a complete zero-row result means no missing field is logged in scope."
+      },
+      "operations": {
+        "zh": ["skill.sap-adt-table-export: VBUV有界读取(max_rows=200)"],
+        "en": ["skill.sap-adt-table-export: bounded VBUV read (max_rows=200)"]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Conditional read-only ADT evidence skill",
+          "purpose": {
+            "zh": "按销售订单精确读取VBUV缺失字段日志，不接受调用方连接配置。",
+            "en": "Read the exact VBUV missing-field log by sales order without caller-supplied connection settings."
+          }
+        }
+      ],
+      "executionStepIds": ["read_item_incompletion_fallback"]
+    },
+    {
+      "id": "execute-resolve_code_texts",
+      "title": {"zh": "提取本次SAP代码", "en": "Extract observed SAP codes"},
+      "description": {
+        "zh": "从Embedded和VBUV证据中提取本次实际出现的去重代码。",
+        "en": "Extract distinct codes actually observed in Embedded and VBUV evidence."
+      },
+      "operations": {
+        "zh": ["rule.prepare_billing_block_code_text_lookups"],
+        "en": ["rule.prepare_billing_block_code_text_lookups"]
+      },
+      "tools": [
+        {
+          "name": "prepare_billing_block_code_text_lookups",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "生成有界文本查询所需的代码和精确字段范围。",
+            "en": "Produce the code and exact-field bounds required by text lookups."
+          }
+        }
+      ],
+      "executionStepIds": [
+        "prepare_code_text_lookups"
+      ]
+    },
+    {
+      "id": "execute-preflight_billing_block_texts",
+      "title": {"zh": "预检开票冻结文本", "en": "Preflight billing-block texts"},
+      "description": {"zh": "对一个实际代码执行TVFST精确预检。", "en": "Run an exact TVFST preflight for one observed code."},
+      "operations": {"zh": ["skill.sap-adt-table-export: TVFST max_rows=2"], "en": ["skill.sap-adt-table-export: TVFST max_rows=2"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "验证TVFST元数据和读取契约。", "en": "Validate TVFST metadata and the read contract."}}],
+      "executionStepIds": ["preflight_billing_block_texts"]
+    },
+    {
+      "id": "execute-assess_billing_block_texts_preflight",
+      "title": {"zh": "评估开票文本预检", "en": "Assess billing-text preflight"},
+      "description": {"zh": "失败闭合地判断是否允许正式读取。", "en": "Fail closed before the formal read."},
+      "operations": {"zh": ["rule.assess_adt_preflight"], "en": ["rule.assess_adt_preflight"]},
+      "tools": [{"name": "assess_adt_preflight", "kind": "Local deterministic rule", "purpose": {"zh": "验证完整性和只读证明。", "en": "Validate completeness and read-only attestations."}}],
+      "executionStepIds": ["assess_billing_block_texts_preflight"]
+    },
+    {
+      "id": "execute-read_billing_block_texts",
+      "title": {"zh": "读取开票冻结文本", "en": "Read billing-block texts"},
+      "description": {"zh": "仅按本次FAKSP代码有界读取TVFST。", "en": "Read TVFST only for observed FAKSP codes."},
+      "operations": {"zh": ["skill.sap-adt-table-export: TVFST max_rows=200"], "en": ["skill.sap-adt-table-export: TVFST max_rows=200"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "解析客户化开票冻结文本。", "en": "Resolve customizing billing-block texts."}}],
+      "executionStepIds": ["read_billing_block_texts"]
+    },
+    {
+      "id": "execute-preflight_delivery_block_texts",
+      "title": {"zh": "预检交货冻结文本", "en": "Preflight delivery-block texts"},
+      "description": {"zh": "对一个实际代码执行TVLST精确预检。", "en": "Run an exact TVLST preflight for one observed code."},
+      "operations": {"zh": ["skill.sap-adt-table-export: TVLST max_rows=2"], "en": ["skill.sap-adt-table-export: TVLST max_rows=2"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "验证TVLST元数据和读取契约。", "en": "Validate TVLST metadata and the read contract."}}],
+      "executionStepIds": ["preflight_delivery_block_texts"]
+    },
+    {
+      "id": "execute-assess_delivery_block_texts_preflight",
+      "title": {"zh": "评估交货文本预检", "en": "Assess delivery-text preflight"},
+      "description": {"zh": "失败闭合地判断是否允许正式读取。", "en": "Fail closed before the formal read."},
+      "operations": {"zh": ["rule.assess_adt_preflight"], "en": ["rule.assess_adt_preflight"]},
+      "tools": [{"name": "assess_adt_preflight", "kind": "Local deterministic rule", "purpose": {"zh": "验证完整性和只读证明。", "en": "Validate completeness and read-only attestations."}}],
+      "executionStepIds": ["assess_delivery_block_texts_preflight"]
+    },
+    {
+      "id": "execute-read_delivery_block_texts",
+      "title": {"zh": "读取交货冻结文本", "en": "Read delivery-block texts"},
+      "description": {"zh": "仅按本次LIFSP代码有界读取TVLST。", "en": "Read TVLST only for observed LIFSP codes."},
+      "operations": {"zh": ["skill.sap-adt-table-export: TVLST max_rows=200"], "en": ["skill.sap-adt-table-export: TVLST max_rows=200"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "解析客户化交货冻结文本。", "en": "Resolve customizing delivery-block texts."}}],
+      "executionStepIds": ["read_delivery_block_texts"]
+    },
+    {
+      "id": "execute-preflight_credit_status_texts",
+      "title": {"zh": "预检信用状态文本", "en": "Preflight credit-status texts"},
+      "description": {"zh": "对CMGST的一个实际代码执行DD07T精确预检。", "en": "Run an exact DD07T preflight for one observed CMGST code."},
+      "operations": {"zh": ["skill.sap-adt-table-export: DD07T max_rows=2"], "en": ["skill.sap-adt-table-export: DD07T max_rows=2"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "验证DD07T元数据和读取契约。", "en": "Validate DD07T metadata and the read contract."}}],
+      "executionStepIds": ["preflight_credit_status_texts"]
+    },
+    {
+      "id": "execute-assess_credit_status_texts_preflight",
+      "title": {"zh": "评估信用文本预检", "en": "Assess credit-text preflight"},
+      "description": {"zh": "失败闭合地判断是否允许正式读取。", "en": "Fail closed before the formal read."},
+      "operations": {"zh": ["rule.assess_adt_preflight"], "en": ["rule.assess_adt_preflight"]},
+      "tools": [{"name": "assess_adt_preflight", "kind": "Local deterministic rule", "purpose": {"zh": "验证完整性和只读证明。", "en": "Validate completeness and read-only attestations."}}],
+      "executionStepIds": ["assess_credit_status_texts_preflight"]
+    },
+    {
+      "id": "execute-read_credit_status_texts",
+      "title": {"zh": "读取信用状态文本", "en": "Read credit-status texts"},
+      "description": {"zh": "仅按本次CMGST代码有界读取DD07T。", "en": "Read DD07T only for observed CMGST codes."},
+      "operations": {"zh": ["skill.sap-adt-table-export: DD07T max_rows=200"], "en": ["skill.sap-adt-table-export: DD07T max_rows=200"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "解析信用状态固定值文本。", "en": "Resolve credit-status fixed-value texts."}}],
+      "executionStepIds": ["read_credit_status_texts"]
+    },
+    {
+      "id": "execute-preflight_incompletion_field_texts",
+      "title": {"zh": "预检字段文本", "en": "Preflight field texts"},
+      "description": {"zh": "对一个实际表字段执行DD03T精确预检。", "en": "Run an exact DD03T preflight for one observed table field."},
+      "operations": {"zh": ["skill.sap-adt-table-export: DD03T max_rows=2"], "en": ["skill.sap-adt-table-export: DD03T max_rows=2"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "验证DD03T元数据和读取契约。", "en": "Validate DD03T metadata and the read contract."}}],
+      "executionStepIds": ["preflight_incompletion_field_texts"]
+    },
+    {
+      "id": "execute-assess_incompletion_field_texts_preflight",
+      "title": {"zh": "评估字段文本预检", "en": "Assess field-text preflight"},
+      "description": {"zh": "失败闭合地判断是否允许正式读取。", "en": "Fail closed before the formal read."},
+      "operations": {"zh": ["rule.assess_adt_preflight"], "en": ["rule.assess_adt_preflight"]},
+      "tools": [{"name": "assess_adt_preflight", "kind": "Local deterministic rule", "purpose": {"zh": "验证完整性和只读证明。", "en": "Validate completeness and read-only attestations."}}],
+      "executionStepIds": ["assess_incompletion_field_texts_preflight"]
+    },
+    {
+      "id": "execute-read_incompletion_field_texts",
+      "title": {"zh": "读取字段文本", "en": "Read field texts"},
+      "description": {"zh": "仅按本次表字段组合有界读取DD03T。", "en": "Read DD03T only for observed table-field combinations."},
+      "operations": {"zh": ["skill.sap-adt-table-export: DD03T max_rows=200"], "en": ["skill.sap-adt-table-export: DD03T max_rows=200"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "读取字段级文本。", "en": "Read field-level texts."}}],
+      "executionStepIds": ["read_incompletion_field_texts"]
+    },
+    {
+      "id": "execute-preflight_incompletion_field_definitions",
+      "title": {"zh": "预检字段定义", "en": "Preflight field definitions"},
+      "description": {"zh": "对一个实际表字段执行DD03L精确预检。", "en": "Run an exact DD03L preflight for one observed table field."},
+      "operations": {"zh": ["skill.sap-adt-table-export: DD03L max_rows=2"], "en": ["skill.sap-adt-table-export: DD03L max_rows=2"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "验证字段到数据元素的映射。", "en": "Validate the field-to-data-element mapping."}}],
+      "executionStepIds": ["preflight_incompletion_field_definitions"]
+    },
+    {
+      "id": "execute-assess_incompletion_field_definitions_preflight",
+      "title": {"zh": "评估字段定义预检", "en": "Assess field-definition preflight"},
+      "description": {"zh": "失败闭合地判断是否允许正式读取。", "en": "Fail closed before the formal read."},
+      "operations": {"zh": ["rule.assess_adt_preflight"], "en": ["rule.assess_adt_preflight"]},
+      "tools": [{"name": "assess_adt_preflight", "kind": "Local deterministic rule", "purpose": {"zh": "验证完整性和只读证明。", "en": "Validate completeness and read-only attestations."}}],
+      "executionStepIds": ["assess_incompletion_field_definitions_preflight"]
+    },
+    {
+      "id": "execute-read_incompletion_field_definitions",
+      "title": {"zh": "读取字段定义", "en": "Read field definitions"},
+      "description": {"zh": "读取本次表字段对应的数据元素。", "en": "Read data elements for the observed table fields."},
+      "operations": {"zh": ["skill.sap-adt-table-export: DD03L max_rows=200"], "en": ["skill.sap-adt-table-export: DD03L max_rows=200"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "取得ROLLNAME用于标准文本回退。", "en": "Obtain ROLLNAME for the standard-text fallback."}}],
+      "executionStepIds": ["read_incompletion_field_definitions"]
+    },
+    {
+      "id": "execute-extract_incompletion_data_elements",
+      "title": {"zh": "提取数据元素", "en": "Extract data elements"},
+      "description": {"zh": "从完整DD03L结果提取去重ROLLNAME。", "en": "Extract distinct ROLLNAME values from complete DD03L evidence."},
+      "operations": {"zh": ["rule.extract_bounded_values"], "en": ["rule.extract_bounded_values"]},
+      "tools": [{"name": "extract_bounded_values", "kind": "Local deterministic rule", "purpose": {"zh": "生成DD04T有界查询范围。", "en": "Produce the bounded DD04T query scope."}}],
+      "executionStepIds": ["extract_incompletion_data_elements"]
+    },
+    {
+      "id": "execute-preflight_data_element_texts",
+      "title": {"zh": "预检数据元素文本", "en": "Preflight data-element texts"},
+      "description": {"zh": "对一个实际数据元素执行DD04T精确预检。", "en": "Run an exact DD04T preflight for one observed data element."},
+      "operations": {"zh": ["skill.sap-adt-table-export: DD04T max_rows=2"], "en": ["skill.sap-adt-table-export: DD04T max_rows=2"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "验证DD04T元数据和读取契约。", "en": "Validate DD04T metadata and the read contract."}}],
+      "executionStepIds": ["preflight_data_element_texts"]
+    },
+    {
+      "id": "execute-assess_data_element_texts_preflight",
+      "title": {"zh": "评估数据元素文本预检", "en": "Assess data-element-text preflight"},
+      "description": {"zh": "失败闭合地判断是否允许正式读取。", "en": "Fail closed before the formal read."},
+      "operations": {"zh": ["rule.assess_adt_preflight"], "en": ["rule.assess_adt_preflight"]},
+      "tools": [{"name": "assess_adt_preflight", "kind": "Local deterministic rule", "purpose": {"zh": "验证完整性和只读证明。", "en": "Validate completeness and read-only attestations."}}],
+      "executionStepIds": ["assess_data_element_texts_preflight"]
+    },
+    {
+      "id": "execute-read_data_element_texts",
+      "title": {"zh": "读取数据元素文本", "en": "Read data-element texts"},
+      "description": {"zh": "仅按本次ROLLNAME有界读取DD04T。", "en": "Read DD04T only for observed ROLLNAME values."},
+      "operations": {"zh": ["skill.sap-adt-table-export: DD04T max_rows=200"], "en": ["skill.sap-adt-table-export: DD04T max_rows=200"]},
+      "tools": [{"name": "sap-adt-table-export", "kind": "Read-only ADT skill", "purpose": {"zh": "解析标准数据元素文本。", "en": "Resolve standard data-element texts."}}],
+      "executionStepIds": ["read_data_element_texts"]
+    },
+    {
+      "id": "execute-evaluate_business_result",
+      "title": {
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
+      },
+      "description": {
+        "zh": "执行清单步骤 `evaluate_business_result`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate_business_result` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.evaluate_business_agent"
+        ],
+        "en": [
+          "rule.evaluate_business_agent"
+        ]
+      },
+      "tools": [
+        {
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `evaluate_business_result` / `evaluate_business_agent`",
+            "en": "Execute `evaluate_business_result` / `evaluate_business_agent`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "evaluate_business_result"
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 300,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_order": {
+          "type": "string",
+          "title": {
+            "zh": "销售订单号",
+            "en": "Sales order"
+          },
+          "description": {
+            "zh": "请输入销售订单号。",
+            "en": "Enter the sales order."
+          },
+          "placeholder": {
+            "zh": "例如：5814",
+            "en": "Example: 5814"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "sales_order"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "collect_billing_block_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_SALES_ORDER_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_SalesOrder",
+            "http_method": "GET",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "sales_orders",
+                "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_SalesOrder",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrganization",
+                  "RequestedDeliveryDate",
+                  "TotalBlockStatus",
+                  "TotalCreditCheckStatus",
+                  "HeaderBillingBlockReason",
+                  "DeliveryBlockReason",
+                  "OverallDeliveryStatus",
+                  "OverallOrdReltdBillgStatus"
+                ],
+                "rationale": "Load the requested sales order.",
+                "filters": [
+                  {
+                    "field": "SalesOrder",
+                    "operator": "eq",
+                    "value": "{{input.sales_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "sales_order_items",
+                "service_name": "API_SALES_ORDER_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_SalesOrderItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "SalesOrder",
+                  "SalesOrderItem",
+                  "Material",
+                  "ProductionPlant",
+                  "RequestedQuantity",
+                  "ConfdDelivQtyInOrderQtyUnit",
+                  "DeliveryPriority",
+                  "ItemBillingBlockReason",
+                  "DeliveryStatus"
+                ],
+                "rationale": "Load sales-order items.",
+                "filters": [
+                  {
+                    "field": "SalesOrder",
+                    "operator": "eq",
+                    "value": "{{input.sales_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "delivery_items",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OutbDeliveryItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "DeliveryDocument",
+                  "DeliveryDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "Plant",
+                  "Material",
+                  "ActualDeliveryQuantity",
+                  "GoodsMovementStatus",
+                  "DeliveryRelatedBillingStatus",
+                  "ItemBillingBlockReason"
+                ],
+                "rationale": "Load deliveries referencing the sales order.",
+                "filters": [
+                  {
+                    "field": "ReferenceSDDocument",
+                    "operator": "eq",
+                    "value": "{{input.sales_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "delivery_headers",
+                "service_name": "API_OUTBOUND_DELIVERY_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OutbDeliveryHeader",
+                "http_method": "GET",
+                "select_fields": [
+                  "DeliveryDocument",
+                  "ActualGoodsMovementDate",
+                  "OverallGoodsMovementStatus",
+                  "OverallDelivReltdBillgStatus",
+                  "DeliveryBlockReason",
+                  "HeaderBillingBlockReason",
+                  "TotalCreditCheckStatus"
+                ],
+                "rationale": "Load delivery header status.",
+                "filter_from_previous": [
+                  {
+                    "field": "DeliveryDocument",
+                    "source_step_id": "delivery_items",
+                    "source_field": "DeliveryDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_items",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_BillingDocumentItem",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentItem",
+                  "ReferenceSDDocument",
+                  "ReferenceSDDocumentItem",
+                  "SalesDocument",
+                  "SalesDocumentItem",
+                  "BillingQuantity",
+                  "NetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load billing items associated with the sales order.",
+                "filters": [
+                  {
+                    "field": "SalesDocument",
+                    "operator": "eq",
+                    "value": "{{input.sales_order}}",
+                    "value_type": "string"
+                  }
+                ]
+              },
+              {
+                "step_id": "billing_headers",
+                "service_name": "API_BILLING_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_BillingDocument",
+                "http_method": "GET",
+                "select_fields": [
+                  "BillingDocument",
+                  "BillingDocumentDate",
+                  "BillingDocumentIsCancelled",
+                  "AccountingPostingStatus",
+                  "OverallBillingStatus",
+                  "TotalNetAmount",
+                  "TransactionCurrency"
+                ],
+                "rationale": "Load billing headers.",
+                "filter_from_previous": [
+                  {
+                    "field": "BillingDocument",
+                    "source_step_id": "billing_items",
+                    "source_field": "BillingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ]
+              }
+            ],
+            "rationale": "Collect sales-order and delivery block evidence."
+          }
+        }
+      },
+      {
+        "id": "assess_item_incompletion",
+        "executor": "rule",
+        "operation": "assess_billing_block_incompletion",
+        "inputMapping": {
+          "run_input": "{{input}}",
+          "sap_read": "{{steps.collect_billing_block_evidence.output}}"
+        }
+      },
+      {
+        "id": "preflight_item_incompletion_fallback",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_item_incompletion.output.needs_adt.item_incompletion}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "VBUV",
+          "fields": [
+            "VBELN",
+            "POSNR",
+            "ETENR",
+            "TBNAM",
+            "FDNAM",
+            "FEHGR",
+            "STATG"
+          ],
+          "filters": [
+            {
+              "field": "VBELN",
+              "operator": "eq",
+              "value": "{{steps.assess_item_incompletion.output.adt_sales_order}}"
+            },
+            {
+              "field": "POSNR",
+              "operator": "eq",
+              "value": "{{steps.assess_item_incompletion.output.adt_preflight_item}}"
+            }
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_item_incompletion_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {
+          "payload": "{{steps.preflight_item_incompletion_fallback.output}}"
+        }
+      },
+      {
+        "id": "read_item_incompletion_fallback",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_item_incompletion_preflight.output.proceed}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "VBUV",
+          "fields": [
+            "VBELN",
+            "POSNR",
+            "ETENR",
+            "TBNAM",
+            "FDNAM",
+            "FEHGR",
+            "STATG"
+          ],
+          "filters": [
+            {
+              "field": "VBELN",
+              "operator": "eq",
+              "value": "{{steps.assess_item_incompletion.output.adt_sales_order}}"
+            }
+          ],
+          "max_rows": 200
+        }
+      },
+      {
+        "id": "prepare_code_text_lookups",
+        "executor": "rule",
+        "operation": "prepare_billing_block_code_text_lookups",
+        "inputMapping": {
+          "sap_read": "{{steps.collect_billing_block_evidence.output}}",
+          "item_incompletion": "{{steps.read_item_incompletion_fallback.output}}"
+        }
+      },
+      {
+        "id": "preflight_billing_block_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.prepare_code_text_lookups.output.has_billing_block_codes}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "TVFST",
+          "fields": ["SPRAS", "FAKSP", "VTEXT"],
+          "filters": [
+            {"field": "FAKSP", "operator": "eq", "value": "{{steps.prepare_code_text_lookups.output.first_billing_block_code}}"},
+            {"field": "SPRAS", "operator": "eq", "value": "E"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_billing_block_texts_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_billing_block_texts.output}}"}
+      },
+      {
+        "id": "read_billing_block_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_billing_block_texts_preflight.output.proceed}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "TVFST",
+          "fields": ["SPRAS", "FAKSP", "VTEXT"],
+          "filters": [
+            {"field": "FAKSP", "operator": "in", "values": "{{steps.prepare_code_text_lookups.output.billing_block_codes}}"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
+        "id": "preflight_delivery_block_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.prepare_code_text_lookups.output.has_delivery_block_codes}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "TVLST",
+          "fields": ["SPRAS", "LIFSP", "VTEXT"],
+          "filters": [
+            {"field": "LIFSP", "operator": "eq", "value": "{{steps.prepare_code_text_lookups.output.first_delivery_block_code}}"},
+            {"field": "SPRAS", "operator": "eq", "value": "E"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_delivery_block_texts_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_delivery_block_texts.output}}"}
+      },
+      {
+        "id": "read_delivery_block_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_delivery_block_texts_preflight.output.proceed}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "TVLST",
+          "fields": ["SPRAS", "LIFSP", "VTEXT"],
+          "filters": [
+            {"field": "LIFSP", "operator": "in", "values": "{{steps.prepare_code_text_lookups.output.delivery_block_codes}}"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
+        "id": "preflight_credit_status_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.prepare_code_text_lookups.output.has_credit_status_codes}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "DD07T",
+          "fields": ["DDLANGUAGE", "DOMVALUE_L", "DDTEXT"],
+          "filters": [
+            {"field": "DOMNAME", "operator": "eq", "value": "CMGST"},
+            {"field": "DOMVALUE_L", "operator": "eq", "value": "{{steps.prepare_code_text_lookups.output.first_credit_status_code}}"},
+            {"field": "DDLANGUAGE", "operator": "eq", "value": "E"},
+            {"field": "AS4LOCAL", "operator": "eq", "value": "A"},
+            {"field": "AS4VERS", "operator": "eq", "value": "0000"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_credit_status_texts_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_credit_status_texts.output}}"}
+      },
+      {
+        "id": "read_credit_status_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_credit_status_texts_preflight.output.proceed}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "DD07T",
+          "fields": ["DDLANGUAGE", "DOMVALUE_L", "DDTEXT"],
+          "filters": [
+            {"field": "DOMNAME", "operator": "eq", "value": "CMGST"},
+            {"field": "DOMVALUE_L", "operator": "in", "values": "{{steps.prepare_code_text_lookups.output.credit_status_codes}}"},
+            {"field": "AS4LOCAL", "operator": "eq", "value": "A"},
+            {"field": "AS4VERS", "operator": "eq", "value": "0000"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
+        "id": "preflight_incompletion_field_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.prepare_code_text_lookups.output.has_incompletion_fields}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "DD03T",
+          "fields": ["TABNAME", "DDLANGUAGE", "FIELDNAME", "DDTEXT"],
+          "filters": [
+            {"field": "TABNAME", "operator": "eq", "value": "{{steps.prepare_code_text_lookups.output.first_incompletion_table}}"},
+            {"field": "FIELDNAME", "operator": "eq", "value": "{{steps.prepare_code_text_lookups.output.first_incompletion_field}}"},
+            {"field": "DDLANGUAGE", "operator": "eq", "value": "E"},
+            {"field": "AS4LOCAL", "operator": "eq", "value": "A"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_incompletion_field_texts_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_incompletion_field_texts.output}}"}
+      },
+      {
+        "id": "read_incompletion_field_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_incompletion_field_texts_preflight.output.proceed}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "DD03T",
+          "fields": ["TABNAME", "DDLANGUAGE", "FIELDNAME", "DDTEXT"],
+          "filters": [
+            {"field": "TABNAME", "operator": "in", "values": "{{steps.prepare_code_text_lookups.output.incompletion_tables}}"},
+            {"field": "FIELDNAME", "operator": "in", "values": "{{steps.prepare_code_text_lookups.output.incompletion_fields}}"},
+            {"field": "AS4LOCAL", "operator": "eq", "value": "A"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
+        "id": "preflight_incompletion_field_definitions",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.prepare_code_text_lookups.output.has_incompletion_fields}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "DD03L",
+          "fields": ["TABNAME", "FIELDNAME", "ROLLNAME"],
+          "filters": [
+            {"field": "TABNAME", "operator": "eq", "value": "{{steps.prepare_code_text_lookups.output.first_incompletion_table}}"},
+            {"field": "FIELDNAME", "operator": "eq", "value": "{{steps.prepare_code_text_lookups.output.first_incompletion_field}}"},
+            {"field": "AS4LOCAL", "operator": "eq", "value": "A"},
+            {"field": "AS4VERS", "operator": "eq", "value": "0000"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_incompletion_field_definitions_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_incompletion_field_definitions.output}}"}
+      },
+      {
+        "id": "read_incompletion_field_definitions",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_incompletion_field_definitions_preflight.output.proceed}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "DD03L",
+          "fields": ["TABNAME", "FIELDNAME", "ROLLNAME"],
+          "filters": [
+            {"field": "TABNAME", "operator": "in", "values": "{{steps.prepare_code_text_lookups.output.incompletion_tables}}"},
+            {"field": "FIELDNAME", "operator": "in", "values": "{{steps.prepare_code_text_lookups.output.incompletion_fields}}"},
+            {"field": "AS4LOCAL", "operator": "eq", "value": "A"},
+            {"field": "AS4VERS", "operator": "eq", "value": "0000"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
+        "id": "extract_incompletion_data_elements",
+        "executor": "rule",
+        "operation": "extract_bounded_values",
+        "inputMapping": {
+          "payload": "{{steps.read_incompletion_field_definitions.output}}",
+          "field": "ROLLNAME",
+          "max_values": 100
+        }
+      },
+      {
+        "id": "preflight_data_element_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.extract_incompletion_data_elements.output.has_values}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "DD04T",
+          "fields": ["ROLLNAME", "DDLANGUAGE", "DDTEXT"],
+          "filters": [
+            {"field": "ROLLNAME", "operator": "eq", "value": "{{steps.extract_incompletion_data_elements.output.first_value}}"},
+            {"field": "DDLANGUAGE", "operator": "eq", "value": "E"},
+            {"field": "AS4LOCAL", "operator": "eq", "value": "A"},
+            {"field": "AS4VERS", "operator": "eq", "value": "0000"}
+          ],
+          "max_rows": 2
+        }
+      },
+      {
+        "id": "assess_data_element_texts_preflight",
+        "executor": "rule",
+        "operation": "assess_adt_preflight",
+        "inputMapping": {"payload": "{{steps.preflight_data_element_texts.output}}"}
+      },
+      {
+        "id": "read_data_element_texts",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess_data_element_texts_preflight.output.proceed}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "DD04T",
+          "fields": ["ROLLNAME", "DDLANGUAGE", "DDTEXT"],
+          "filters": [
+            {"field": "ROLLNAME", "operator": "in", "values": "{{steps.extract_incompletion_data_elements.output.values}}"},
+            {"field": "AS4LOCAL", "operator": "eq", "value": "A"},
+            {"field": "AS4VERS", "operator": "eq", "value": "0000"}
+          ],
+          "max_rows": 200
+        }
+      },
+      {
+        "id": "evaluate_business_result",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "billing-block-diagnosis",
+          "run_input": "{{input}}",
+          "evidence": {
+            "collect_billing_block_evidence": "{{steps.collect_billing_block_evidence.output}}"
+          },
+          "assessment": "{{steps.assess_item_incompletion.output}}",
+          "fallbacks": {
+            "sales_order_item_incompletion": "{{steps.read_item_incompletion_fallback.output}}",
+            "billing_block_code_texts": "{{steps.read_billing_block_texts.output}}",
+            "delivery_block_code_texts": "{{steps.read_delivery_block_texts.output}}",
+            "credit_status_code_texts": "{{steps.read_credit_status_texts.output}}",
+            "incompletion_field_texts": "{{steps.read_incompletion_field_texts.output}}",
+            "incompletion_field_definitions": "{{steps.read_incompletion_field_definitions.output}}",
+            "data_element_texts": "{{steps.read_data_element_texts.output}}"
+          },
+          "known_gaps": []
+        }
+      }
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "sales_order": {
+          "type": "string",
+          "title": {
+            "zh": "销售订单号",
+            "en": "Sales order"
+          },
+          "description": {
+            "zh": "请输入销售订单号。",
+            "en": "Enter the sales order."
+          },
+          "placeholder": {
+            "zh": "例如：5814",
+            "en": "Example: 5814"
+          },
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]+$"
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "sales_order",
+        "business_status",
+        "source_complete",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "sales_order": "{{steps.evaluate_business_result.output.workflow_output.sales_order}}",
+      "business_status": "{{steps.evaluate_business_result.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_business_result.output.workflow_output.source_complete}}",
+      "business_report": "{{steps.evaluate_business_result.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "sales_order",
+        "sales_order_item"
+      ],
+      "facts": [
+        "billing_block_reason",
+        "delivery_block_reason",
+        "credit_status",
+        "incompletion_status",
+        "business_status"
+      ],
+      "metrics": [
+        "blocked_findings"
+      ],
+      "decimalFields": [],
+      "decimalMetricIds": [],
+      "currencyFields": [],
+      "unitFields": [],
+      "dateFields": [],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {},
+      "constantDefaults": {},
+      "fieldAliases": {
+        "sales_order": [
+          "Sales Order",
+          "销售订单"
+        ],
+        "sales_order_item": [
+          "Sales Order Item",
+          "Item",
+          "项目",
+          "订单项目"
+        ],
+        "billing_block_reason": [
+          "Billing Block Reason",
+          "Billing Block",
+          "开票冻结原因",
+          "项目开票冻结"
+        ],
+        "billing_block_reason_text": ["Billing Block Reason Text", "开票冻结原因文本"],
+        "billing_block_scope": ["Billing Block Scope", "开票冻结来源"],
+        "delivery_block_reason": [
+          "Delivery Block Reason",
+          "Delivery Block",
+          "交货冻结原因"
+        ],
+        "delivery_block_reason_text": ["Delivery Block Reason Text", "交货冻结原因文本"],
+        "delivery_block_scope": ["Delivery Block Scope", "交货冻结来源"],
+        "credit_status": [
+          "Credit Status",
+          "Credit Check Status",
+          "信用状态",
+          "信用检查状态"
+        ],
+        "credit_status_text": ["Credit Status Text", "信用状态文本"],
+        "credit_status_scope": ["Credit Status Scope", "信用状态来源"],
+        "incompletion_status": [
+          "Incompletion Status",
+          "Incompletion",
+          "不完整状态"
+        ],
+        "incompletion_field_text": ["Incompletion Field Text", "不完整字段文本"],
+        "blocked_findings": [
+          "Blocked Findings",
+          "Block Findings",
+          "冻结发现数"
+        ]
+      },
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {
+        "incompletion_status": {
+          "complete (vbuv logs no missing field)": "complete_or_not_relevant"
+        }
+      },
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "sales_order_item_incompletion_evidence": [
+          "item-level incompletion",
+          "dedicated item incompletion",
+          "VBUV unavailable",
+          "VBUV incomplete",
+          "项目级不完整",
+          "订单项目不完整"
+        ],
+        "code_text_evidence": [
+          "code text evidence",
+          "SAP text unavailable",
+          "代码文本证据",
+          "未取得SAP文本"
+        ]
+      },
+      "summaryRecord": false,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {
+        "billing_block_reason": [
+          "none:",
+          "blank",
+          "未设置",
+          "空白"
+        ],
+        "delivery_block_reason": [
+          "none:",
+          "blank",
+          "未设置",
+          "空白"
+        ],
+        "credit_status": [
+          "blank",
+          "no status code",
+          "未返回",
+          "空白"
+        ],
+        "incompletion_status": [
+          "not evidenced",
+          "not exposed",
+          "无法证明",
+          "未提供"
+        ]
+      },
+      "blockingLimitations": [
+        "sales_order_item_incompletion_evidence",
+        "code_text_evidence"
+      ],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "",
+      "metricDefinitions": {
+        "blocked_findings": "Count all detected order, item, delivery, credit, and VBUV missing-field findings; return 0 when every exact source is complete and no finding exists."
+      },
+      "businessStatusDefinition": "Return normal when blocked_findings is 0 and blocked when it is positive. Missing code text keeps the raw blocked business conclusion but makes the technical run inconclusive; other blocking evidence gaps return capability_blocked.",
+      "businessStatusFromAnyPositiveMetric": {
+        "metrics": [
+          "blocked_findings"
+        ],
+        "zero": "normal",
+        "positive": "blocked"
+      }
+    }
+  },
+  "validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-08-23T04:39:40.907959+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-app-direct-sap",
+      "embedded-sap-odata",
+      "sap-adt-table-export"
+    ],
+    "summary": {
+      "zh": "原三级验收保持通过；增量真机复测确认冻结、信用和不完整字段代码均保留原值并取得SAP权威文本。",
+      "en": "The original three-stage acceptance remains passed; the incremental live replay confirms that block, credit, and incompletion codes retain their raw values and resolve authoritative SAP texts."
+    },
+    "reportPath": "docs/three-stage-live-acceptance.md",
+    "executable": true,
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "baselineRuntime": "codex_app_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "codexDirectBaselineHash": "sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13",
+    "freeQueryHash": "sha256:d949ff765d9a1d9e119d9d4212af717c1ce708c31eb13fa9e8ec054bf15055db",
+    "adjudicatedResultHash": "sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13",
+    "fixedAgentHash": "sha256:54fec876c8844eb9cd4edf4e71ac7a5afdee0aa5dd5e055ef765d638aecadb13",
+    "comparisonHash": "sha256:3c956466c5a78bb614bf289218daf36f165f68076b93fb0a17709570fd0e4019",
+    "focusedReplay": {
+      "runId": "acceptance_7b93a3c35b124e9d",
+      "testedAt": "2026-08-23T04:39:40.907959+00:00",
+      "technicalStatus": "completed",
+      "businessStatus": "blocked",
+      "sourceComplete": true,
+      "businessComplete": true,
+      "blockedFindings": 4,
+      "missingEvidence": [],
+      "resultHash": "sha256:d6b1600e0b59759b38402077d467c25555dcbd7ca1028b0f60635751270f709f"
+    }
+  }
+}
