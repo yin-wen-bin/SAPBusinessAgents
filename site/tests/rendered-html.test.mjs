@@ -208,7 +208,9 @@ test("month-end detail renders profile management before the gated run form", as
   assert.match(zh, /data-month-end-profile-manager/);
   assert.match(zh, /公司配置状态/);
   assert.match(zh, /Agent 验收状态/);
-  assert.match(zh, /NOT_TESTED/);
+  assert.match(zh, /PASS/);
+  assert.match(zh, /已通过三阶段真机验收/);
+  assert.doesNotMatch(zh, /NOT_TESTED/);
   assert.match(en, /Company configuration/);
   assert.ok(zh.indexOf("data-month-end-profile-manager") < zh.indexOf("data-agent-run"));
   assert.match(zh, /data-month-end-profile-select/);

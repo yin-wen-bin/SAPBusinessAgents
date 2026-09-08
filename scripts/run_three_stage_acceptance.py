@@ -295,7 +295,7 @@ def _normalize_run(
                 # remain auditable even when no code is configured yet.
                 if warning_notice or codes != [text.strip()]:
                     limitations.extend(codes)
-    if key_value_record and (
+    if not records and key_value_record and (
         not expected_grain or expected_grain.issubset(set(key_value_record))
     ):
         records.append(key_value_record)
@@ -894,12 +894,28 @@ def _projection_spec(contract: JsonObject) -> JsonObject:
     fields = list(dict.fromkeys(str(item) for key in (
         "business_keys", "facts", "decimal_fields", "currency_fields", "unit_fields", "date_fields"
     ) for item in contract.get(key) or []))
+    checklist_metrics = {
+        "checks_total",
+        "checks_passed",
+        "checks_attention",
+        "checks_not_assessed",
+        "checks_error",
+    }
+    metric_fields = list(contract.get("metrics") or [])
+    semantic_profile = (
+        "checklist_readiness"
+        if checklist_metrics <= set(metric_fields)
+        and "checklist_complete" in set(contract.get("facts") or [])
+        else "none"
+    )
     return AcceptanceProjectionSpec(
         record_fields=fields,
-        metric_fields=list(contract.get("metrics") or []),
+        metric_fields=metric_fields,
         decimal_fields=list(contract.get("decimal_fields") or []),
         decimal_metrics=list(contract.get("decimal_metrics") or []),
         boolean_fields=list(contract.get("boolean_fields") or []),
+        semantic_profile=semantic_profile,
+        required_limitation_codes=list(contract.get("required_limitations") or []),
     ).model_dump(mode="json")
 
 

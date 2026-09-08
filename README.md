@@ -81,7 +81,7 @@ FI 清账不自动证明银行到账；MRP模拟不等于正式ATP；处理建�
 | FI | [银行来款与应收核销核对助手](agents/FI/ar-cash-application/README.md) | 0.1.0 | 使用中 | 验收通过 |
 | FI | [应收账款催收助手](agents/FI/ar-collection/README.md) | 1.2.0 | 使用中 | 验收通过 |
 | FI | [GR/IR 清账助手](agents/FI/gr-ir-clearing/README.md) | 0.2.1 | 使用中 | 验收通过 |
-| FI | [月结助手](agents/FI/month-end-closing/README.md) | 0.2.0 | 使用中 | 尚未验收 |
+| FI | [月结助手](agents/FI/month-end-closing/README.md) | 0.2.1 | 使用中 | 验收通过 |
 | MM | [智能寻源与 RFQ 评估助手](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.1 | 使用中 | 验收通过 |
 | MM | [库存健康检查](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | 使用中 | 验收通过 |
 | MM | [外购件短缺采购响应助手](agents/MM/material-shortage-procurement-response/README.md) | 0.2.1 | 使用中 | 验收通过 |
@@ -188,7 +188,7 @@ This index is generated from current manifests and lifecycle records. Active lif
 | FI | [AR Cash Application Reconciliation Assistant](agents/FI/ar-cash-application/README.md) | 0.1.0 | Active | Passed |
 | FI | [AR Collection Assistant](agents/FI/ar-collection/README.md) | 1.2.0 | Active | Passed |
 | FI | [GR/IR Clearing Assistant](agents/FI/gr-ir-clearing/README.md) | 0.2.1 | Active | Passed |
-| FI | [Month-end Closing Assistant](agents/FI/month-end-closing/README.md) | 0.2.0 | Active | Not tested |
+| FI | [Month-end Closing Assistant](agents/FI/month-end-closing/README.md) | 0.2.1 | Active | Passed |
 | MM | [Intelligent Sourcing and RFQ Evaluation Assistant](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.1 | Active | Passed |
 | MM | [Inventory Health Check](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | Active | Passed |
 | MM | [Material Shortage Procurement Response Assistant](agents/MM/material-shortage-procurement-response/README.md) | 0.2.1 | Active | Passed |

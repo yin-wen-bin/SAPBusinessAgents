@@ -22,6 +22,8 @@ class AcceptanceProjectionSpec(BaseModel):
     decimal_fields: list[str] = Field(default_factory=list, max_length=100)
     decimal_metrics: list[str] = Field(default_factory=list, max_length=100)
     boolean_fields: list[str] = Field(default_factory=list, max_length=100)
+    semantic_profile: Literal["none", "checklist_readiness"] = "none"
+    required_limitation_codes: list[str] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")
     def check_fields(self) -> "AcceptanceProjectionSpec":
@@ -38,6 +40,19 @@ class AcceptanceProjectionSpec(BaseModel):
             raise ValueError("decimal metrics must be declared metrics")
         if set(self.decimal_fields) & set(self.boolean_fields):
             raise ValueError("acceptance field types conflict")
+        if len(self.required_limitation_codes) != len(set(self.required_limitation_codes)) or any(
+            not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,99}", name)
+            for name in self.required_limitation_codes
+        ):
+            raise ValueError("required limitation codes must be unique canonical identifiers")
+        if self.semantic_profile == "checklist_readiness" and not {
+            "checks_total",
+            "checks_passed",
+            "checks_attention",
+            "checks_not_assessed",
+            "checks_error",
+        } <= set(self.metric_fields):
+            raise ValueError("checklist_readiness requires the canonical checklist metrics")
         return self
 
 
@@ -104,6 +119,47 @@ def validate_projection(raw_spec: Any, value: Any, known: dict[str, Any]) -> lis
     if value["source_complete"] and any(known[ref].get("source_complete") is not True
                                         for ref in references):
         return [{"code": "acceptance_projection_source_completeness_overstated"}]
+    required_limitations = set(spec.required_limitation_codes)
+    projected_codes = set(value["evidence_gap_codes"])
+    if not required_limitations <= projected_codes:
+        return [{"code": "acceptance_projection_required_limitation_missing"}]
+    if spec.semantic_profile == "checklist_readiness":
+        metrics = value["metrics"]
+        metric_names = (
+            "checks_total",
+            "checks_passed",
+            "checks_attention",
+            "checks_not_assessed",
+            "checks_error",
+        )
+        if any(not isinstance(metrics[name], int) or isinstance(metrics[name], bool)
+               or metrics[name] < 0 for name in metric_names):
+            return [{"code": "acceptance_projection_checklist_metrics_invalid"}]
+        if metrics["checks_total"] != sum(metrics[name] for name in metric_names[1:]):
+            return [{"code": "acceptance_projection_checklist_metrics_inconsistent"}]
+        incomplete = metrics["checks_not_assessed"] > 0 or metrics["checks_error"] > 0
+        if incomplete and (
+            value["business_status"] != "inconclusive"
+            or value["business_complete"] is not False
+            or value["evidence_complete"] is not False
+        ):
+            return [{"code": "acceptance_projection_checklist_root_inconsistent"}]
+        if (
+            not (projected_codes - required_limitations)
+            and all(known[ref].get("source_complete") is True for ref in references)
+            and value["source_complete"] is not True
+        ):
+            return [{"code": "acceptance_projection_source_completeness_understated"}]
+        for record in value["records"]:
+            if record.get("business_status") != value["business_status"]:
+                return [{"code": "acceptance_projection_record_status_inconsistent"}]
+            if "source_complete" in record and record["source_complete"] != value["source_complete"]:
+                return [{"code": "acceptance_projection_record_source_completeness_inconsistent"}]
+            if incomplete and (
+                record.get("checklist_complete") is not False
+                or record.get("evidence_complete") is not False
+            ):
+                return [{"code": "acceptance_projection_record_checklist_inconsistent"}]
     return []
 
 

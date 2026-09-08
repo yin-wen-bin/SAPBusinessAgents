@@ -42,7 +42,7 @@ SAP access is read-only: no payment, clearing or posting. This definition contai
 
 ### 固定节点 / Pinned nodes
 
-- `month_end` → `month-end-closing` **0.2.0**
+- `month_end` → `month-end-closing` **0.2.1**
 - `gr_ir_follow_up` → `gr-ir-clearing` **0.2.0**
 - `ap_follow_up` → `ap-payment` **0.2.0**
 

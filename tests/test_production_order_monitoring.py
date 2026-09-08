@@ -245,7 +245,7 @@ def test_monitor_manifest_exposes_live_accepted_v2_contract() -> None:
         )
     )
 
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.2.1"
     assert manifest["validation"]["verdict"] == "PASS"
     assert manifest["validation"]["executable"] is True
     assert manifest["validation"]["freeQueryComparison"] == "MATCH"

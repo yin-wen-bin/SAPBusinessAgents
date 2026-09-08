@@ -22,6 +22,7 @@ from .agent_rules import evaluate_business_agent
 from .acceptance_projection import output_schema, validate_projection, visible_projection_issues
 from .database import RunStore
 from .models import RunPresentation, RunStatus, TERMINAL_STATUSES
+from .month_end import assess_current_month_end_status_evidence
 from .normalization import SapInputNormalizationError, SapValueNormalizer
 from .restricted_artifacts import RestrictedArtifactStore
 from .tool_gateway import ToolAdmissionError, ToolAdmissionGateway
@@ -531,6 +532,7 @@ class HarnessToolBroker:
             "sap_evidence_read",
             "sap_evidence_assess",
             "sap_inventory_fifo_assess",
+            "sap_month_end_status_assess",
             "sap_final_report_validate",
             "safe_compute",
         }:
@@ -741,6 +743,7 @@ class HarnessToolBroker:
             current_tool = "sap_read" if tool_name == "sap_query_execute" else "skill"
         elif tool_name in {
             "sap_evidence_read", "sap_evidence_assess", "sap_inventory_fifo_assess",
+            "sap_month_end_status_assess",
             "sap_final_report_validate", "safe_compute", "external_tool_execute",
         }:
             phase = "validating_evidence"
@@ -854,6 +857,8 @@ class HarnessToolBroker:
             return self._assess_evidence(run_id, arguments)
         if tool_name == "sap_inventory_fifo_assess":
             return self._assess_inventory_fifo(run_id, arguments)
+        if tool_name == "sap_month_end_status_assess":
+            return self._assess_month_end_status(run_id, arguments)
         if tool_name == "sap_skill_execute":
             return await self._execute_skill(run_id, arguments)
         if tool_name == "sap_final_report_validate":
@@ -1088,6 +1093,124 @@ class HarnessToolBroker:
                 code="skill_not_approved",
             )
         return skill
+
+    def _assess_month_end_status(
+        self, run_id: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        company_code = str(arguments.get("company_code") or "").strip()
+        try:
+            fiscal_year = int(arguments.get("fiscal_year"))
+            period = int(arguments.get("period"))
+            as_of = date.fromisoformat(str(arguments.get("as_of") or ""))
+        except (TypeError, ValueError):
+            return {"ok": False, "code": "month_end_status_input_invalid"}
+
+        reference_names = {
+            "company": "company_evidence_ref",
+            "T001": "t001_evidence_ref",
+            "T001B": "t001b_evidence_ref",
+            "TABA": "taba_evidence_ref",
+            "MARV": "marv_evidence_ref",
+        }
+        raw_by_source: dict[str, dict[str, Any]] = {}
+        rows_by_source: dict[str, list[dict[str, Any]]] = {}
+        evidence_refs: list[str] = []
+        try:
+            for source, argument_name in reference_names.items():
+                reference = str(arguments.get(argument_name) or "")
+                raw, meta = self._read_evidence(run_id, reference)
+                if meta.get("source_complete") is not True or _source_complete(raw) is not True:
+                    return {
+                        "ok": False,
+                        "code": "month_end_status_source_incomplete",
+                        "source": source,
+                    }
+                raw_by_source[source] = raw
+                rows_by_source[source] = self._internal_evidence_rows(run_id, raw)
+                evidence_refs.append(reference)
+        except ToolAdmissionError as exc:
+            return {"ok": False, "code": exc.code, "message": str(exc)}
+
+        company_rows = [
+            row
+            for row in rows_by_source["company"]
+            if str(row.get("CompanyCode") or "").strip() == company_code
+        ]
+        variants = {
+            str(row.get("FiscalYearVariant") or "").strip().upper()
+            for row in company_rows
+            if str(row.get("FiscalYearVariant") or "").strip()
+        }
+        if len(company_rows) != 1 or len(variants) != 1:
+            return {"ok": False, "code": "month_end_company_metadata_unresolved"}
+        fiscal_year_variant = next(iter(variants))
+
+        for object_name in ("T001", "T001B", "TABA", "MARV"):
+            payload = raw_by_source[object_name]
+            if (
+                payload.get("skill_id") != "sap-adt-table-export"
+                or payload.get("read_only") is not True
+                or payload.get("validated") is not True
+                or str(payload.get("status") or "") != "complete"
+                or str((payload.get("scope") or {}).get("object") or "").upper()
+                != object_name
+            ):
+                return {
+                    "ok": False,
+                    "code": "month_end_status_adt_contract_invalid",
+                    "source": object_name,
+                }
+        if not all(
+            _adt_scope_has_exact_value(raw_by_source[name], "BUKRS", company_code)
+            for name in ("T001", "TABA", "MARV")
+        ):
+            return {"ok": False, "code": "month_end_status_company_scope_invalid"}
+
+        try:
+            assessed = assess_current_month_end_status_evidence(
+                company_code=company_code,
+                fiscal_year=fiscal_year,
+                period=period,
+                as_of=as_of,
+                fiscal_year_variant=fiscal_year_variant,
+                t001_rows=rows_by_source["T001"],
+                t001b_rows=rows_by_source["T001B"],
+                taba_rows=rows_by_source["TABA"],
+                marv_rows=rows_by_source["MARV"],
+            )
+        except ValueError as exc:
+            return {"ok": False, "code": str(exc)}
+        period_variant = str(assessed.get("posting_period_variant") or "")
+        if not _adt_scope_has_exact_value(
+            raw_by_source["T001B"], "BUKRS", period_variant
+        ):
+            return {"ok": False, "code": "month_end_status_period_scope_invalid"}
+        return {
+            **assessed,
+            "evidence_refs": evidence_refs,
+            "privacy_projection": "derived_status_only",
+        }
+
+    def _internal_evidence_rows(
+        self, run_id: str, raw: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        explicit_rows = raw.get("rows")
+        if isinstance(explicit_rows, list):
+            return [dict(row) for row in explicit_rows if isinstance(row, dict)]
+        restricted = raw.get("restricted_artifact_ref")
+        if isinstance(restricted, dict) and restricted.get("artifact_id"):
+            return self.restricted_artifacts.rows(
+                run_id, str(restricted["artifact_id"])
+            )
+        rows = _extract_rows(raw)
+        if rows:
+            return [dict(row) for row in rows if isinstance(row, dict)]
+        if _row_count(raw) == 0:
+            return []
+        raise ToolAdmissionError(
+            "Restricted ADT rows are unavailable for deterministic assessment.",
+            code="month_end_status_restricted_rows_unavailable",
+        )
 
     def _assess_inventory_fifo(
         self, run_id: str, arguments: dict[str, Any]
@@ -2421,6 +2544,11 @@ input-bound gap token. Never expose SAP
 URLs, credentials, clients, local paths, raw rows, connection profiles, or hidden reasoning.
 For sap-adt-table-export, order_by is optional. Omit it unless a trusted live-DDIC result supplied
 the exact complete stable key; never infer a stable key from familiar table names or selected fields.
+For a current-date K4 month-end readiness assessment, ADT rows with business status values remain
+encrypted restricted artifacts. After obtaining complete T001, T001B, TABA, and MARV Skill evidence,
+call sap_month_end_status_assess with those four evidence references plus the complete company metadata
+evidence reference. Use only its derived AA depreciation, FI posting-period, and MM period statuses;
+never treat redacted rows as a value gap and never ask sap_evidence_read to reveal restricted rows.
 For sap-production-order-cost-analysis, preserve the exact metric ids plan_cost_total,
 target_cost_total, actual_cost_total, and actual_target_variance. When its complete preview contains
 cost-element details, include one evidence-backed table row per cost element with the exact keys
@@ -3371,6 +3499,25 @@ def _looks_public_mojibake(value: str) -> bool:
     return any(marker in value for marker in ("Ã", "Â", "â€", "ï¿½"))
 
 
+def _adt_scope_has_exact_value(
+    payload: dict[str, Any], field: str, expected: str
+) -> bool:
+    scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+    for item in scope.get("filters") or []:
+        if not isinstance(item, dict) or str(item.get("field") or "").upper() != field.upper():
+            continue
+        if str(item.get("sign") or "I").upper() != "I":
+            continue
+        operator = str(item.get("operator") or item.get("option") or "").upper()
+        if operator == "EQ" and str(item.get("value") or "").strip() == expected:
+            return True
+        if operator == "IN":
+            values = [str(value).strip() for value in item.get("values") or []]
+            if values == [expected]:
+                return True
+    return False
+
+
 def _source_complete(value: Any) -> bool:
     flags: list[bool] = []
 
@@ -3397,7 +3544,20 @@ def _extract_rows(value: Any) -> list[dict[str, Any]]:
             candidate = value.get(key)
             if isinstance(candidate, list) and all(isinstance(item, dict) for item in candidate):
                 return candidate
-        for child in value.values():
+        # Provider envelopes also contain lists of transport diagnostics such as
+        # chunk_results, requests, artifacts, and filters.  Those are not SAP
+        # business rows.  Recurse only through object containers; named row
+        # arrays above remain the sole list-to-row boundary.
+        preferred = [value.get(key) for key in ("data", "step_results", "payload", "output")]
+        remaining = [
+            child
+            for key, child in value.items()
+            if key not in {"data", "step_results", "payload", "output"}
+            and isinstance(child, dict)
+        ]
+        for child in [*preferred, *remaining]:
+            if not isinstance(child, dict):
+                continue
             rows = _extract_rows(child)
             if rows:
                 return rows
@@ -3412,13 +3572,13 @@ def _extract_rows(value: Any) -> list[dict[str, Any]]:
 
 
 def _row_count(value: Any) -> int:
+    if isinstance(value, dict):
+        for key in ("result_count", "row_count", "returned_row_count", "count"):
+            if isinstance(value.get(key), int):
+                return int(value[key])
     rows = _extract_rows(value)
     if rows:
         return len(rows)
-    if isinstance(value, dict):
-        for key in ("result_count", "row_count", "count"):
-            if isinstance(value.get(key), int):
-                return int(value[key])
     return 0
 
 

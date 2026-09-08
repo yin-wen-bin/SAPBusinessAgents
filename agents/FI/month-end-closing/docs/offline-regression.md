@@ -64,4 +64,4 @@ month-end-closing --platform-evidence .local-data/runs/month-end/evidence.json
 
 Agent 永不执行或批准 OB52、MMPV、AFAB、F.05、F.13、MR11、结算、过账或清账。所有 SAP 请求必须是 GET。
 
-当前版本在完成 12 项真实 SAP 验收前保持 `validation.verdict=NOT_TESTED` 和 `executable=false`。实施后的验收门槛见 [`docs/embedded-odata-live-acceptance.md`](../docs/embedded-odata-live-acceptance.md)；旧验收记录只保留为历史证据。
+版本 0.2.1 已完成 12 项三阶段真实 SAP 对照，`validation.verdict=PASS` 且 `executable=true`。验收范围、业务限制和证据 hash 见 [`docs/embedded-odata-live-acceptance.md`](../docs/embedded-odata-live-acceptance.md)；本文件中的 fixture 与离线回归仍不替代真机证据。

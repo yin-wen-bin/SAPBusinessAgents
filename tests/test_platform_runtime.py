@@ -1180,6 +1180,7 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "ar-cash-application",
         "ar-collection",
         "gr-ir-clearing",
+        "month-end-closing",
         "intelligent-sourcing-rfq",
         "inventory-health-balancing",
         "material-shortage-procurement-response",

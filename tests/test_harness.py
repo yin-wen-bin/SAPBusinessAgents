@@ -23,6 +23,7 @@ from sap_business_agents_platform.harness import (
     _best_effort_interrupt,
     _evidence_sources_complete,
     _effective_missing_evidence,
+    _extract_rows,
     _executed_plans_from_calls,
     _latest_assessed_missing_evidence,
     _latest_validated_presentation,
@@ -32,6 +33,7 @@ from sap_business_agents_platform.harness import (
     _plan_business_contract_issue,
     _persistent_harness_counts,
     _public_https_citations,
+    _row_count,
     _sanitized_codex_env,
     _validated_presentation_snapshot,
     _validated_payload_from_store,
@@ -56,6 +58,139 @@ def test_harness_does_not_guess_adt_stable_keys_and_knows_vbuv_sparse_semantics(
     assert "omit order_by so the Skill resolves the live key" in instructions
     assert "InventoryStockType='01'" in instructions
     assert "sap_inventory_fifo_assess" in instructions
+    assert "sap_month_end_status_assess" in instructions
+
+
+def test_business_row_extraction_ignores_transport_diagnostic_arrays() -> None:
+    payload = {
+        "chunk_results": [{"chunk_index": 0, "source_complete": True}],
+        "data": {"results": [], "source_complete": True},
+        "result_count": 0,
+        "artifacts": [{"type": "metadata", "sha256": "a" * 64}],
+    }
+
+    assert _extract_rows(payload) == []
+    assert _row_count(payload) == 0
+
+
+def test_broker_month_end_status_assessment_uses_restricted_rows_privately(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        store = RunStore(settings.database_path)
+        run_id = "run_month_end_private_status"
+        store.create_run(
+            run_id,
+            RunCreate(mode=RunMode.free_query, query="current month-end readiness"),
+        )
+        broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+        token = broker.open_session(run_id)
+        today = datetime.now().date()
+
+        company_ref = broker._save_evidence(
+            run_id,
+            "sap_live",
+            {
+                "ok": True,
+                "source_complete": True,
+                "paging_complete": True,
+                "results": [
+                    {
+                        "CompanyCode": "1010",
+                        "FiscalYearVariant": "K4",
+                        "Currency": "EUR",
+                    }
+                ],
+            },
+        )
+
+        def save_adt(object_name: str, rows: list[dict[str, object]]) -> str:
+            output = {
+                "ok": True,
+                "status": "complete",
+                "read_only": True,
+                "validated": True,
+                "source_complete": True,
+                "paging_complete": True,
+                "row_count": len(rows),
+                "rows": rows,
+                "skill_id": "sap-adt-table-export",
+                "scope": {
+                    "source_type": "table",
+                    "object": object_name,
+                    "fields": sorted({str(key) for row in rows for key in row}),
+                    "filters": [
+                        {
+                            "field": "BUKRS",
+                            "operator": "EQ",
+                            "sign": "I",
+                            "value": "1010",
+                        }
+                    ],
+                },
+            }
+            public, _private = broker.restricted_artifacts.materialize_skill_output(
+                run_id=run_id,
+                skill_id="sap-adt-table-export",
+                output=output,
+                skill_contract=FakeSkills().get("sap-adt-table-export"),
+            )
+            return broker._save_evidence(run_id, "sap_skill", public)
+
+        t001_ref = save_adt("T001", [{"BUKRS": "1010", "OPVAR": "1010"}])
+        t001b_ref = save_adt(
+            "T001B",
+            [
+                {
+                    "BUKRS": "1010",
+                    "FRYE1": str(today.year),
+                    "FRPE1": str(today.month),
+                    "TOYE1": str(today.year),
+                    "TOPE1": str(today.month),
+                }
+            ],
+        )
+        taba_ref = save_adt("TABA", [])
+        marv_ref = save_adt("MARV", [])
+        result = await broker.handle(
+            run_id,
+            token,
+            "sap_month_end_status_assess",
+            {
+                "company_code": "1010",
+                "fiscal_year": today.year,
+                "period": today.month,
+                "as_of": today.isoformat(),
+                "company_evidence_ref": company_ref,
+                "t001_evidence_ref": t001_ref,
+                "t001b_evidence_ref": t001b_ref,
+                "taba_evidence_ref": taba_ref,
+                "marv_evidence_ref": marv_ref,
+            },
+        )
+
+        assert result["ok"] is True, result
+        assert result["privacy_projection"] == "derived_status_only"
+        assert result["checks"]["fi_posting_period"]["target_period_open"] is True
+        assert result["checks"]["aa_depreciation"]["status"] == "attention"
+        assert result["checks"]["mm_period"]["status"] == "attention"
+        assert "FRYE1" not in json.dumps(result)
+        assert result["evidence_refs"] == [
+            company_ref,
+            t001_ref,
+            t001b_ref,
+            taba_ref,
+            marv_ref,
+        ]
+        # Empty Skill rows stay empty even though the public envelope contains
+        # metadata-artifact descriptors.
+        taba_evidence, _taba_meta = broker._read_evidence(run_id, taba_ref)
+        marv_evidence, _marv_meta = broker._read_evidence(run_id, marv_ref)
+        assert _row_count(taba_evidence) == 0
+        assert _row_count(marv_evidence) == 0
+
+    asyncio.run(scenario())
 
 
 def test_inventory_health_plan_contract_requires_unrestricted_complete_history() -> None:

@@ -7,8 +7,8 @@
     "zh": "通过 Embedded OData 和条件只读 SAPSkillhub 证据执行 12 项跨模块月结准备度检查。",
     "en": "Runs twelve cross-module month-end readiness checks using Embedded OData and conditional read-only SAPSkillhub evidence."
   },
-  "status": "Three-stage live acceptance passed",
-  "version": "0.2.1",
+  "status": "Three-stage live acceptance not_tested",
+  "version": "0.2.0",
   "owner": "Financial Closing",
   "tags": ["Month End", "Closing Readiness", "Cross Module", "Read Only", "Embedded OData"],
   "sapModules": ["FI-GL", "FI-AP", "FI-AR", "FI-AA", "CO", "MM", "SD"],
@@ -121,7 +121,7 @@
       {
         "id": "read_due_items", "executor": "sap_read", "operation": "execute_plan", "readOnly": true, "failurePolicy": "record_gap",
         "when": { "source": "{{steps.prepare_scope.output.query_ready}}", "equals": true },
-        "request": { "plan": { "service_name": "API_OPLACCTGDOCITEMCUBE_SRV", "odata_version": "2.0", "entity_set": "A_OperationalAcctgDocItemCube", "http_method": "GET", "plan_kind": "direct", "step_id": "due_items", "select_fields": ["CompanyCode", "FiscalYear", "FiscalPeriod", "AccountingDocument", "AccountingDocumentItem", "AccountingDocumentType", "PostingDate", "NetDueDate", "ClearingDate", "IsCleared", "Supplier", "PaymentBlockingReason", "GLAccount", "DebitCreditCode", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"], "filters": [{ "field": "CompanyCode", "operator": "eq", "value": "{{input.company_code}}", "value_type": "string" }, { "field": "FinancialAccountType", "operator": "eq", "value": "K", "value_type": "string" }], "order_by": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem"], "partition": { "field": "PostingDate", "strategy": "adaptive_date", "from": "1900-01-01", "to": "{{input.as_of}}", "maxPartitions": 366, "maxTotalResults": 50000 }, "rationale": "Read all supplier-account items posted through the assessment date at company-code scope. Do not filter the operational accounting-document cube by ledger; use SAP-computed net due dates without deriving due dates locally." } }
+        "request": { "plan": { "service_name": "API_OPLACCTGDOCITEMCUBE_SRV", "odata_version": "2.0", "entity_set": "A_OperationalAcctgDocItemCube", "http_method": "GET", "plan_kind": "direct", "step_id": "due_items", "select_fields": ["Ledger", "CompanyCode", "FiscalYear", "FiscalPeriod", "AccountingDocument", "AccountingDocumentItem", "AccountingDocumentType", "PostingDate", "NetDueDate", "ClearingDate", "IsCleared", "Supplier", "PaymentBlockingReason", "GLAccount", "DebitCreditCode", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"], "filters": [{ "field": "CompanyCode", "operator": "eq", "value": "{{input.company_code}}", "value_type": "string" }, { "field": "Ledger", "operator": "eq", "value": "{{steps.prepare_scope.output.ledger}}", "value_type": "string" }, { "field": "FinancialAccountType", "operator": "eq", "value": "K", "value_type": "string" }], "order_by": ["Ledger", "CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem"], "partition": { "field": "PostingDate", "strategy": "adaptive_date", "from": "1900-01-01", "to": "{{input.as_of}}", "maxPartitions": 366, "maxTotalResults": 50000 }, "rationale": "Read all supplier-account items posted through the assessment date, including prior-period carryforward items, and use SAP-computed net due dates without deriving due dates locally." } }
       },
       {
         "id": "read_billing_documents", "executor": "sap_read", "operation": "execute_plan", "readOnly": true, "failurePolicy": "record_gap",
@@ -143,11 +143,11 @@
       },
       { "id": "assess_evidence", "executor": "rule", "operation": "assess_api_evidence", "inputMapping": { "checks": { "gl_line_items": "{{steps.read_gl_line_items.output}}", "due_items": "{{steps.read_due_items.output}}", "billing_documents": "{{steps.read_billing_documents.output}}", "grir_chain": "{{steps.read_grir_chain.output}}" }, "capability_gaps": ["asset_depreciation", "fi_period_control", "mm_period_status"] } },
       { "id": "resolve_skill_requirements", "executor": "rule", "operation": "resolve_month_end_skill_requirements", "inputMapping": { "scope": "{{steps.prepare_scope.output}}", "assessment": "{{steps.assess_evidence.output}}" } },
-      { "id": "adt_asset_depreciation", "executor": "skill", "skillId": "sap-adt-table-export", "operation": "execute", "readOnly": true, "failurePolicy": "record_gap", "when": { "source": "{{steps.resolve_skill_requirements.output.asset_depreciation}}", "equals": true }, "inputMapping": { "schema_version": 1, "source_type": "table", "object": "TABA", "fields": ["BUKRS", "AFBLGJ", "AFBLPE"], "filters": [{ "field": "BUKRS", "operator": "eq", "value": "{{input.company_code}}" }], "max_rows": 200 } },
-      { "id": "adt_company_period_variant", "executor": "skill", "skillId": "sap-adt-table-export", "operation": "execute", "readOnly": true, "failurePolicy": "record_gap", "when": { "source": "{{steps.resolve_skill_requirements.output.fi_period_control}}", "equals": true }, "inputMapping": { "schema_version": 1, "source_type": "table", "object": "T001", "fields": ["BUKRS", "OPVAR"], "filters": [{ "field": "BUKRS", "operator": "eq", "value": "{{input.company_code}}" }], "max_rows": 2 } },
+      { "id": "adt_asset_depreciation", "executor": "skill", "skillId": "sap-adt-table-export", "operation": "execute", "readOnly": true, "failurePolicy": "record_gap", "when": { "source": "{{steps.resolve_skill_requirements.output.asset_depreciation}}", "equals": true }, "inputMapping": { "schema_version": 1, "source_type": "table", "object": "TABA", "fields": ["BUKRS", "AFBLGJ", "AFBLPE"], "filters": [{ "field": "BUKRS", "operator": "eq", "value": "{{input.company_code}}" }], "order_by": ["BUKRS", "AFBLGJ", "AFBLPE"], "max_rows": 200 } },
+      { "id": "adt_company_period_variant", "executor": "skill", "skillId": "sap-adt-table-export", "operation": "execute", "readOnly": true, "failurePolicy": "record_gap", "when": { "source": "{{steps.resolve_skill_requirements.output.fi_period_control}}", "equals": true }, "inputMapping": { "schema_version": 1, "source_type": "table", "object": "T001", "fields": ["BUKRS", "OPVAR"], "filters": [{ "field": "BUKRS", "operator": "eq", "value": "{{input.company_code}}" }], "order_by": ["BUKRS"], "max_rows": 2 } },
       { "id": "extract_period_variants", "executor": "rule", "operation": "extract_bounded_values", "inputMapping": { "payload": "{{steps.adt_company_period_variant.output}}", "field": "OPVAR", "max_values": 2 } },
-      { "id": "adt_fi_period_control", "executor": "skill", "skillId": "sap-adt-table-export", "operation": "execute", "readOnly": true, "failurePolicy": "record_gap", "when": { "source": "{{steps.extract_period_variants.output.has_values}}", "equals": true }, "inputMapping": { "schema_version": 1, "source_type": "table", "object": "T001B", "fields": ["BUKRS", "MKOAR", "FRYE1", "FRPE1", "TOYE1", "TOPE1", "FRYE2", "FRPE2", "TOYE2", "TOPE2"], "filters": [{ "field": "BUKRS", "operator": "in", "values": "{{steps.extract_period_variants.output.values}}" }], "max_rows": 200 } },
-      { "id": "adt_mm_period_status", "executor": "skill", "skillId": "sap-adt-table-export", "operation": "execute", "readOnly": true, "failurePolicy": "record_gap", "when": { "source": "{{steps.resolve_skill_requirements.output.mm_period_status}}", "equals": true }, "inputMapping": { "schema_version": 1, "source_type": "table", "object": "MARV", "fields": ["BUKRS", "LFGJA", "LFMON"], "filters": [{ "field": "BUKRS", "operator": "eq", "value": "{{input.company_code}}" }], "max_rows": 10 } },
+      { "id": "adt_fi_period_control", "executor": "skill", "skillId": "sap-adt-table-export", "operation": "execute", "readOnly": true, "failurePolicy": "record_gap", "when": { "source": "{{steps.extract_period_variants.output.has_values}}", "equals": true }, "inputMapping": { "schema_version": 1, "source_type": "table", "object": "T001B", "fields": ["BUKRS", "MKOAR", "KOART", "FRYE1", "FRPE1", "TOYE1", "TOPE1", "FRYE2", "FRPE2", "TOYE2", "TOPE2"], "filters": [{ "field": "BUKRS", "operator": "in", "values": "{{steps.extract_period_variants.output.values}}" }], "order_by": ["BUKRS", "MKOAR", "KOART"], "max_rows": 200 } },
+      { "id": "adt_mm_period_status", "executor": "skill", "skillId": "sap-adt-table-export", "operation": "execute", "readOnly": true, "failurePolicy": "record_gap", "when": { "source": "{{steps.resolve_skill_requirements.output.mm_period_status}}", "equals": true }, "inputMapping": { "schema_version": 1, "source_type": "table", "object": "MARV", "fields": ["BUKRS", "LFGJA", "LFMON", "VJGJA", "VMONA"], "filters": [{ "field": "BUKRS", "operator": "eq", "value": "{{input.company_code}}" }], "order_by": ["BUKRS"], "max_rows": 10 } },
       { "id": "evaluate_month_end", "executor": "rule", "operation": "evaluate_month_end_closing", "inputMapping": { "run_input": "{{input}}", "scope": "{{steps.prepare_scope.output}}", "assessment": "{{steps.assess_evidence.output}}", "evidence": { "gl_line_items": "{{steps.read_gl_line_items.output}}", "due_items": "{{steps.read_due_items.output}}", "billing_documents": "{{steps.read_billing_documents.output}}", "grir_chain": "{{steps.read_grir_chain.output}}" }, "fallbacks": { "asset_depreciation": "{{steps.adt_asset_depreciation.output}}", "fi_period_control": "{{steps.adt_fi_period_control.output}}", "mm_period_status": "{{steps.adt_mm_period_status.output}}" } } }
     ],
     "outputSchema": {
@@ -234,35 +234,20 @@
     },
     "acceptance": {
       "schemaVersion": "2.0", "comparisonMode": "business_semantic",
-      "businessKeys": ["company_code", "fiscal_year", "period", "as_of", "ledger"],
+      "businessKeys": ["scope.company_code", "scope.fiscal_year", "scope.period", "scope.as_of", "scope.ledger"],
       "facts": ["business_status", "source_complete", "checklist_complete", "evidence_complete"],
       "metrics": ["checks_total", "checks_passed", "checks_attention", "checks_not_assessed", "checks_error"],
-      "decimalFields": [], "decimalMetricIds": [], "currencyFields": [], "unitFields": [], "dateFields": ["as_of"], "codeSetFields": [], "zeroPadFields": {}, "booleanFields": ["source_complete", "checklist_complete", "evidence_complete"],
-      "inputDefaults": { "company_code": "company_code", "fiscal_year": "fiscal_year", "period": "period", "as_of": "as_of", "ledger": "ledger" },
+      "decimalFields": [], "decimalMetricIds": [], "currencyFields": [], "unitFields": [], "dateFields": ["scope.as_of"], "codeSetFields": [], "zeroPadFields": {}, "booleanFields": ["source_complete", "checklist_complete", "evidence_complete"],
+      "inputDefaults": { "company_code": "company_code", "fiscal_year": "fiscal_year", "period": "period", "as_of": "as_of" },
       "constantDefaults": {}, "fieldAliases": {}, "fieldExtractors": {}, "currencyFromDecimal": {}, "valueMappings": {}, "limitationKeywords": {}, "summaryRecord": true,
-      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated", "requiredLimitations": ["fx_valuation_run_status_source_unavailable"], "businessStatusFromMetric": {}, "limitationsFromMetrics": {}, "blankValueKeywords": {}, "blockingLimitations": [], "ignoredNoticeKeywords": [], "zeroFactWhenMetricZero": {}, "recordScope": "scope", "metricDefinitions": {}, "businessStatusDefinition": "Use inconclusive when checks_not_assessed or checks_error is positive; otherwise use action_required when checks_attention is positive, and ready_for_review only when every check passed. checklist_complete is false whenever checks_not_assessed or checks_error is positive. source_complete describes completeness of the executed SAP source queries only and remains true when all cited sources are complete; a required non-blocking limitation must not lower source_complete. This is readiness status, never an executed or approved close.", "businessStatusFromAnyPositiveMetric": {}
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated", "requiredLimitations": ["fx_valuation_run_status_source_unavailable"], "businessStatusFromMetric": {}, "limitationsFromMetrics": {}, "blankValueKeywords": {}, "blockingLimitations": [], "ignoredNoticeKeywords": [], "zeroFactWhenMetricZero": {}, "recordScope": "", "metricDefinitions": {}, "businessStatusDefinition": "readiness status, never an executed or approved close", "businessStatusFromAnyPositiveMetric": {}
     }
   },
   "validation": {
-    "verdict": "PASS",
-    "testedAt": "2026-09-08T09:01:54.436474+00:00",
-    "evidenceScope": "complete",
-    "providers": ["codex-app-direct-sap", "codex-app-server", "embedded-sap-odata", "sap-adt-table-export", "sap-gui-se16n"],
-    "summary": {
-      "zh": "公司代码 1010、2026 年第 9 期的直连基线、自由查询和固定 Agent 已逐项匹配。12 项检查为 8 项通过、3 项需关注、1 项未评估；Agent 契约通过，但因外币评估运行状态缺少已审核来源，本次业务结论仍为 inconclusive。",
-      "en": "For company code 1010, fiscal year 2026 period 9, the direct baseline, free query, and fixed Agent match check by check. Eight checks passed, three require attention, and one was not assessed. The Agent contract passed, while the business conclusion remains inconclusive because no reviewed FX valuation run-status source is available."
-    },
-    "reportPath": "docs/embedded-odata-live-acceptance.md",
-    "executable": true,
-    "freeQueryComparison": "MATCH",
-    "fixedAgentComparison": "MATCH",
-    "baselineRuntime": "codex_app_direct_sap",
-    "usedSapBusinessAgentsForBaseline": false,
-    "blockingLimitations": [],
-    "codexDirectBaselineHash": "sha256:3eaf628494f782a595ec649aab0a2c77b92dc88d21dfe6b5c10434bce19615b0",
-    "freeQueryHash": "sha256:71e83d1168eba44e7490fec2d15d54c0cebba12b0498fad105ccb14881396f72",
-    "fixedAgentHash": "sha256:fa1c444452ae524b1f7963b82037ad6ddaa3b9ed974c4b2dc4c3d48db2255912",
-    "adjudicatedResultHash": "sha256:3eaf628494f782a595ec649aab0a2c77b92dc88d21dfe6b5c10434bce19615b0",
-    "comparisonHash": "sha256:7814bf9ed688d1e50fdf3ba91154998521df3053b08255c1b96b232e3e53852e"
+    "verdict": "NOT_TESTED", "testedAt": "2026-09-04T06:59:17+08:00", "evidenceScope": "bounded",
+    "providers": ["embedded-sap-odata", "sap-adt-table-export"],
+    "summary": { "zh": "Embedded OData v0.2.0 已实现；必须完成 12 项真实 SAP 对照后才可更新为 PASS。", "en": "Embedded OData v0.2.0 is implemented; PASS requires live SAP comparison of all twelve checks." },
+    "reportPath": "docs/embedded-odata-live-acceptance.md", "executable": false,
+    "freeQueryComparison": "NOT_TESTED", "fixedAgentComparison": "NOT_TESTED", "baselineRuntime": "embedded-odata", "usedSapBusinessAgentsForBaseline": true
   }
 }

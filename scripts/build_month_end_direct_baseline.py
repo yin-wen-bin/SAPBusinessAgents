@@ -4,9 +4,11 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 import sys
 import urllib.parse
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,44 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().casefold() in {"1", "true", "x", "yes"}
+
+
+def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if text.startswith("/Date("):
+        match = re.match(r"^/Date\((-?\d+)", text)
+        if match is None:
+            return None
+        try:
+            return datetime.fromtimestamp(
+                int(match.group(1)) / 1000, tz=timezone.utc
+            ).date()
+        except (ValueError, OverflowError):
+            return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if value in {None, ""}:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _open_at(row: JsonObject, as_of: date) -> bool:
+    posting = _as_date(row.get("PostingDate"))
+    clearing = _as_date(row.get("ClearingDate"))
+    return posting is not None and posting <= as_of and (clearing is None or clearing > as_of)
 
 
 def _request(
@@ -391,7 +431,7 @@ def build(
             "A_OperationalAcctgDocItemCube",
             due_fields,
             (
-                "CompanyCode eq '1010' and Ledger eq '0L' and FinancialAccountType eq 'K' and "
+                "CompanyCode eq '1010' and FinancialAccountType eq 'K' and "
                 f"PostingDate ge datetime'1900-01-01T00:00:00' and "
                 f"PostingDate le datetime'{as_of.isoformat()}T23:59:59'"
             ),
@@ -446,10 +486,25 @@ def build(
         artifacts,
     )
     sources.append(grir_source)
-    if gl_rows or due_rows or billing_rows or grir_rows:
+    if gl_rows or billing_rows or grir_rows:
         raise RuntimeError(
             "the canonical direct evaluator is intentionally fail-closed for non-empty operational evidence"
         )
+
+    supplier_rows = [row for row in due_rows if _text(row, "Supplier")]
+    open_supplier_rows = [row for row in supplier_rows if _open_at(row, as_of)]
+    missing_due_dates = [
+        row for row in open_supplier_rows if _as_date(row.get("NetDueDate")) is None
+    ]
+    if missing_due_dates:
+        raise RuntimeError("open supplier evidence is missing SAP NetDueDate")
+    overdue_supplier_rows = [
+        row
+        for row in open_supplier_rows
+        if (_as_date(row.get("NetDueDate")) or date.max) <= as_of
+    ]
+    if any(_decimal(row.get("AmountInCompanyCodeCurrency")) is None for row in overdue_supplier_rows):
+        raise RuntimeError("overdue supplier evidence has a non-numeric company-code amount")
 
     adt = _load_adt_module(skillhub_root.resolve())
     adt_tasks = [
@@ -516,7 +571,7 @@ def build(
     mm_complete = _mm_period_complete(adt_rows["MARV"], fiscal_year, period)
 
     statuses = [
-        "passed",  # AP_OVERDUE_ITEMS
+        "attention" if overdue_supplier_rows else "passed",  # AP_OVERDUE_ITEMS
         "passed",  # AR_UNAPPLIED_RECEIPTS
         "passed",  # GL_UNRECONCILED_ITEMS
         "passed",  # MM_GRIR_AGED_ITEMS
@@ -539,13 +594,11 @@ def build(
     normalized = {
         "records": [
             {
-                "scope": {
-                    "company_code": company,
-                    "fiscal_year": str(fiscal_year),
-                    "period": period,
-                    "as_of": as_of.isoformat(),
-                    "ledger": ledger,
-                },
+                "company_code": company,
+                "fiscal_year": str(fiscal_year),
+                "period": period,
+                "as_of": as_of.isoformat(),
+                "ledger": ledger,
                 "business_status": "inconclusive",
                 "source_complete": True,
                 "checklist_complete": False,

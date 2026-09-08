@@ -618,6 +618,14 @@ async def _main(args: argparse.Namespace) -> int:
         ):
             manifests.append((str(manifest.get("module") or ""), str(manifest["slug"])))
     manifests.sort()
+    expected_executable_agents = sum(
+        1
+        for path in root.glob("agents/*/*/agent.json")
+        if (json.loads(path.read_text(encoding="utf-8")).get("validation") or {}).get(
+            "executable"
+        )
+        is True
+    )
     cases: list[dict[str, Any]] = []
     async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10)) as client:
         platform = await client.get(f"{validator.api_url}/api/health")
@@ -627,7 +635,7 @@ async def _main(args: argparse.Namespace) -> int:
             platform_health.get("ok") is not True
             or (platform_health.get("sap_read") or {}).get("selected_provider") != "embedded"
             or ((platform_health.get("sap_read") or {}).get("data") or {}).get("read_only") is not True
-            or int(platform_health.get("executable_agents") or 0) != 30
+            or int(platform_health.get("executable_agents") or 0) != expected_executable_agents
         ):
             raise RuntimeError("SAPBusinessAgents is not ready with every embedded GET-only Agent.")
         for _module, agent in manifests:

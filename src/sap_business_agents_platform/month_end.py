@@ -571,6 +571,92 @@ def _period_control_open(rows: Sequence[JsonObject], fiscal_year: int, period: i
     return False if understood else None
 
 
+def assess_current_month_end_status_evidence(
+    *,
+    company_code: str,
+    fiscal_year: int,
+    period: int,
+    as_of: date,
+    fiscal_year_variant: str,
+    t001_rows: Sequence[JsonObject],
+    t001b_rows: Sequence[JsonObject],
+    taba_rows: Sequence[JsonObject],
+    marv_rows: Sequence[JsonObject],
+) -> JsonObject:
+    """Return a privacy-safe interpretation of current-state ADT evidence.
+
+    The Harness uses this deterministic projection when ADT table rows are kept in
+    encrypted restricted artifacts.  It deliberately emits only the three status
+    conclusions needed by month-end readiness and never returns source rows.
+    """
+
+    normalized_company = str(company_code or "").strip()
+    if not re.fullmatch(r"[0-9A-Za-z]{1,4}", normalized_company):
+        raise ValueError("month_end_company_code_invalid")
+    if not (1 <= int(period) <= 12):
+        raise ValueError("month_end_regular_period_required")
+    if str(fiscal_year_variant or "").strip().upper() != "K4":
+        raise ValueError("month_end_fiscal_year_variant_unsupported")
+    if as_of != date.today():
+        raise ValueError("month_end_current_state_historical_date_rejected")
+
+    period_variants = {
+        _text(row, "OPVAR")
+        for row in t001_rows
+        if _text(row, "BUKRS") == normalized_company and _text(row, "OPVAR")
+    }
+    if len(period_variants) != 1:
+        raise ValueError("month_end_posting_period_variant_unresolved")
+    period_variant = next(iter(period_variants))
+    if any(
+        _text(row, "BUKRS") not in {"", period_variant}
+        for row in t001b_rows
+    ):
+        raise ValueError("month_end_posting_period_scope_mismatch")
+
+    fi_open = _period_control_open(t001b_rows, fiscal_year, period)
+    if fi_open is None:
+        raise ValueError("month_end_posting_period_status_unresolved")
+    period_end = date(
+        fiscal_year,
+        period,
+        calendar.monthrange(fiscal_year, period)[1],
+    )
+    should_be_closed = as_of >= period_end
+    fi_issue = should_be_closed and fi_open
+    depreciation_complete = _taba_complete(taba_rows, fiscal_year, period)
+    mm_complete = _mm_period_complete(marv_rows, fiscal_year, period)
+
+    return {
+        "ok": True,
+        "company_code": normalized_company,
+        "fiscal_year": fiscal_year,
+        "period": period,
+        "as_of": as_of.isoformat(),
+        "fiscal_year_variant": "K4",
+        "posting_period_variant": period_variant,
+        "source_complete": True,
+        "checks": {
+            "aa_depreciation": {
+                "status": "passed" if depreciation_complete else "attention",
+                "actual_value": 0 if depreciation_complete else 1,
+                "completed_through_target_period": depreciation_complete,
+            },
+            "fi_posting_period": {
+                "status": "attention" if fi_issue else "passed",
+                "actual_value": 1 if fi_issue else 0,
+                "target_period_open": fi_open,
+                "should_be_closed": should_be_closed,
+            },
+            "mm_period": {
+                "status": "passed" if mm_complete else "attention",
+                "actual_value": 0 if mm_complete else 1,
+                "advanced_beyond_target_period": mm_complete,
+            },
+        },
+    }
+
+
 def evaluate_month_end_closing(inputs: JsonObject) -> JsonObject:
     run_input = inputs.get("run_input") if isinstance(inputs.get("run_input"), dict) else {}
     scope = inputs.get("scope") if isinstance(inputs.get("scope"), dict) else {}

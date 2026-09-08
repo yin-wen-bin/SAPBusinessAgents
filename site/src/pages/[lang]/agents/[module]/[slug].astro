@@ -154,7 +154,13 @@ const labels = locale === "zh" ? {
 
           <div class="markdown-body agent-document-body">
             {agent.slug === "month-end-closing" && (
-              <MonthEndProfileManager apiBase={apiBase} locale={locale} client:load />
+              <MonthEndProfileManager
+                apiBase={apiBase}
+                locale={locale}
+                validationVerdict={agent.validation?.verdict || "NOT_TESTED"}
+                executable={agent.validation?.executable === true}
+                client:load
+              />
             )}
             {agent.kind === "platform_assistant" && agent.assistant?.type === "role_matching"
               ? <RoleMatchingAssistant apiBase={apiBase} locale={locale} workflowsPath={`${base}${locale}/workflows/`} client:load />

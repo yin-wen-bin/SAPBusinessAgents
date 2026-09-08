@@ -42,8 +42,8 @@
     {
       "id": "month_end",
       "agentId": "month-end-closing",
-      "agentVersion": "0.2.0",
-      "agentDigest": "sha256:720cc27cd0171a6f5aa7848cdd08845de209f400b1a3121d626923e9a3b649d1",
+      "agentVersion": "0.2.1",
+      "agentDigest": "sha256:fd7ed14ee8e01c28739dbeedd964c6428a644f7fb10393afbfb638d9053b9a18",
       "position": { "x": 80, "y": 140 }
     },
     {

@@ -188,6 +188,40 @@ _SAP_TOOLS = [
         ),
     },
     {
+        "name": "sap_month_end_status_assess",
+        "description": (
+            "Deterministically derive privacy-safe AA depreciation, FI posting-period, and "
+            "MM period readiness statuses from complete company metadata plus T001, T001B, "
+            "TABA, and MARV evidence. Restricted ADT rows remain encrypted and are never "
+            "returned. Use this after the four sap-adt-table-export calls for a current-date "
+            "K4 month-end assessment."
+        ),
+        "inputSchema": _schema(
+            {
+                "company_code": {"type": "string", "pattern": "^[0-9A-Za-z]{1,4}$"},
+                "fiscal_year": {"type": "integer", "minimum": 1900, "maximum": 9999},
+                "period": {"type": "integer", "minimum": 1, "maximum": 12},
+                "as_of": {"type": "string", "format": "date"},
+                "company_evidence_ref": {"type": "string"},
+                "t001_evidence_ref": {"type": "string"},
+                "t001b_evidence_ref": {"type": "string"},
+                "taba_evidence_ref": {"type": "string"},
+                "marv_evidence_ref": {"type": "string"},
+            },
+            [
+                "company_code",
+                "fiscal_year",
+                "period",
+                "as_of",
+                "company_evidence_ref",
+                "t001_evidence_ref",
+                "t001b_evidence_ref",
+                "taba_evidence_ref",
+                "marv_evidence_ref",
+            ],
+        ),
+    },
+    {
         "name": "sap_skill_execute",
         "description": "Execute one registered, available, read-only, validated SAPSkillhub Skill with the matching single-use evidence-gap token. The backend revalidates the Skill-specific input contract. For sap-adt-table-export, omit order_by unless trusted live DDIC supplied the exact stable key.",
         "inputSchema": _schema(

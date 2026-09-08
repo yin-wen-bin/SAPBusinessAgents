@@ -336,7 +336,7 @@ def test_mrp_manifest_v2_pins_get_only_evidence_and_public_output_contract() -> 
         )
     )
     steps = {item["id"]: item for item in manifest["execution"]["steps"]}
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.2.1"
     assert steps["resolve_analysis_context"]["operation"] == "resolve_mrp_analysis_context"
     for step in steps.values():
         if step["executor"] == "sap_read":

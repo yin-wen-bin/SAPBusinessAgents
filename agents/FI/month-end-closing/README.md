@@ -25,15 +25,14 @@ A completed query is not a completed business process. Review conclusions and ga
 ## 当前范围与输入输出 / Current scope and I/O
 
 <!-- generated:facts:start -->
-版本 / Version: **0.2.0** · 使用中 / Active · 尚未验收 / Not tested
+版本 / Version: **0.2.1** · 使用中 / Active · 验收通过 / Passed
 
 网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/FI/month-end-closing/) · [en](http://127.0.0.1:4321/en/agents/FI/month-end-closing/)
 
-当前不能执行；完成证据与验收门禁后才可启用执行。 / Execution is blocked until evidence and acceptance gates pass.
-验收模式 / Acceptance mode: `not_recorded` · 原记录日期 / Recorded date: 2026-09-04T06:59:17+08:00
-证据范围 / Evidence scope: `bounded`
-Embedded OData v0.2.0 已实现；必须完成 12 项真实 SAP 对照后才可更新为 PASS。
-Embedded OData v0.2.0 is implemented; PASS requires live SAP comparison of all twelve checks.
+验收模式 / Acceptance mode: `not_recorded` · 原记录日期 / Recorded date: 2026-09-08T09:01:54.436474+00:00
+证据范围 / Evidence scope: `complete`
+公司代码 1010、2026 年第 9 期的直连基线、自由查询和固定 Agent 已逐项匹配。12 项检查为 8 项通过、3 项需关注、1 项未评估；Agent 契约通过，但因外币评估运行状态缺少已审核来源，本次业务结论仍为 inconclusive。
+For company code 1010, fiscal year 2026 period 9, the direct baseline, free query, and fixed Agent match check by check. Eight checks passed, three require attention, and one was not assessed. The Agent contract passed, while the business conclusion remains inconclusive because no reviewed FX valuation run-status source is available.
 
 ### 输入 / Inputs
 

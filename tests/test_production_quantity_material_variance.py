@@ -240,7 +240,7 @@ def test_manifest_is_quantity_material_only_and_passed_live_acceptance() -> None
     manifest = json.loads(
         (ROOT / "agents/PP/production-variance-analysis/agent.json").read_text(encoding="utf-8")
     )
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.2.1"
     assert manifest["validation"]["verdict"] == "PASS"
     assert manifest["validation"]["executable"] is True
     assert manifest["validation"]["blockingLimitations"] == []

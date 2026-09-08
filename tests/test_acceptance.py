@@ -656,6 +656,67 @@ def test_single_object_key_value_presentation_participates_in_acceptance() -> No
     assert normalized["metrics"] == {"posting_rows": "2"}
 
 
+def test_canonical_table_takes_precedence_over_duplicate_scope_key_values() -> None:
+    case = CanonicalTestCase.from_dict(
+        {
+            "schema_version": "2.0",
+            "case_id": "summary-live-002",
+            "agent_id": "summary-agent",
+            "question": {"zh": "检查期间", "en": "Check period"},
+            "input": {"company_code": "1010", "period": 9},
+            "business_conditions": {"company_code": "1010", "period": 9},
+            "expected_grain": ["company_code", "period"],
+            "expected_output": {
+                "record_fields": ["company_code", "period", "business_status"],
+                "metric_ids": [],
+                "minimum_primary_evidence_rows": 1,
+                "allow_empty_result": False,
+                "evidence_scope": "complete",
+            },
+        }
+    )
+    contract = {
+        "business_keys": ["company_code", "period"],
+        "facts": ["business_status"],
+        "metrics": [],
+        "required_limitations": [],
+        "field_aliases": {},
+        "input_defaults": {},
+        "constant_defaults": {},
+    }
+    run = {
+        "result": {
+            "completeness": {"source_complete": True},
+            "presentation": {
+                "blocks": [
+                    {
+                        "type": "key_value",
+                        "entries": [
+                            {"label": {"en": "company_code"}, "value": {"en": "1010"}},
+                            {"label": {"en": "period"}, "value": {"en": "9"}},
+                        ],
+                    },
+                    {
+                        "type": "table",
+                        "columns": [
+                            {"key": "company_code"},
+                            {"key": "period"},
+                            {"key": "business_status"},
+                        ],
+                        "rows": [{"values": ["1010", "9", "inconclusive"]}],
+                    },
+                ]
+            },
+        }
+    }
+
+    normalized = _normalize_run(run, case, contract)
+
+    assert normalized["records"] == [
+        {"company_code": "1010", "period": "9", "business_status": "inconclusive"}
+    ]
+
+
 def test_table_aliases_are_applied_once_when_source_names_overlap_canonical_fields() -> None:
     case = CanonicalTestCase.from_dict(
         {

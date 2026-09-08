@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 
 type Locale = "zh" | "en";
-type Props = { apiBase: string; locale: Locale };
+type Props = {
+  apiBase: string;
+  locale: Locale;
+  validationVerdict: string;
+  executable: boolean;
+};
 type Json = Record<string, any>;
 
 const EVIDENCE_SOURCES = [
@@ -36,7 +41,7 @@ const copy = {
     registryInvalid: "现有 profiles.json 无效。为保护原文件，前台已停止写入。", external: "当前使用外部 profiles.json，前台仅可查看。",
     company: "公司", system: "系统", client: "Client", version: "版本", effective: "生效期", ledger: "分类账", currency: "币种", fiscalVariant: "会计年度变式", leadingLedger: "Leading ledger", enabled: "已启用", disabled: "未启用",
     validated: "SAP 已验证", notValidated: "未完成 SAP 验证", edit: "编辑", duplicate: "复制", validateOnline: "在线校验", enable: "启用", disable: "停用",
-    readyTitle: "公司配置状态", readyBody: "已启用且在线验证通过的配置可供运行表单选择。", gateTitle: "Agent 验收状态", gateBody: "月结助手仍为 NOT_TESTED / executable=false；配置成功不会解除执行门禁。",
+    readyTitle: "公司配置状态", readyBody: "已启用且在线验证通过的配置可供运行表单选择。", gateTitle: "Agent 验收状态", gateReadyBody: "月结助手已通过三阶段真机验收，可以使用已启用配置运行。公司配置变更不会改变 Agent 验收状态。", gateBlockedBody: "月结助手尚未通过三阶段真机验收；配置成功不会解除执行门禁。",
     editorNew: "新增公司配置", editorEdit: "编辑公司配置", editorCopy: "复制公司配置", cancel: "取消", staticValidate: "检查配置", review: "检查摘要", back: "返回修改", save: "确认并保存", saving: "正在保存…",
     offlineNotice: "SAP 不可达时仍可保存，但配置保持未启用。只有当前内容完成在线元数据校验后才能启用。",
     groupIdentity: "1. 配置标识与生效范围", profileId: "Profile ID", effectiveFrom: "生效开始", effectiveTo: "生效结束（可选）",
@@ -59,7 +64,7 @@ const copy = {
     registryInvalid: "The existing profiles.json is invalid. UI writes are blocked to protect the file.", external: "An external profiles.json is active and is read-only in this UI.",
     company: "Company", system: "System", client: "Client", version: "Version", effective: "Effective dates", ledger: "Ledger", currency: "Currency", fiscalVariant: "Fiscal year variant", leadingLedger: "Leading ledger", enabled: "Enabled", disabled: "Disabled",
     validated: "SAP validated", notValidated: "Not SAP validated", edit: "Edit", duplicate: "Copy", validateOnline: "Validate online", enable: "Enable", disable: "Disable",
-    readyTitle: "Company configuration", readyBody: "Enabled profiles with current online validation are offered in the run form.", gateTitle: "Agent acceptance", gateBody: "The month-end Agent remains NOT_TESTED / executable=false. Configuration does not release its execution gate.",
+    readyTitle: "Company configuration", readyBody: "Enabled profiles with current online validation are offered in the run form.", gateTitle: "Agent acceptance", gateReadyBody: "The month-end Agent passed three-stage live acceptance and can run with an enabled profile. Profile changes do not alter the Agent acceptance state.", gateBlockedBody: "The month-end Agent has not passed three-stage live acceptance. Configuration does not release its execution gate.",
     editorNew: "Add company profile", editorEdit: "Edit company profile", editorCopy: "Copy company profile", cancel: "Cancel", staticValidate: "Check profile", review: "Review summary", back: "Back to edit", save: "Confirm and save", saving: "Saving…",
     offlineNotice: "If SAP is unavailable, the profile can still be saved but remains disabled. The current content must pass online metadata validation before enablement.",
     groupIdentity: "1. Identity and effective range", profileId: "Profile ID", effectiveFrom: "Effective from", effectiveTo: "Effective to (optional)",
@@ -143,7 +148,7 @@ function ListField({ label, value, onChange, help }: { label: string; value: unk
   return <label><span>{label}</span><textarea rows={2} value={joinList(value)} onChange={(event) => onChange(splitList(event.target.value))} />{help && <small>{help}</small>}</label>;
 }
 
-export default function MonthEndProfileManager({ apiBase, locale }: Props) {
+export default function MonthEndProfileManager({ apiBase, locale, validationVerdict, executable }: Props) {
   const t = copy[locale];
   const [registry, setRegistry] = useState<Json | null>(null);
   const [loading, setLoading] = useState(true);
@@ -260,7 +265,7 @@ export default function MonthEndProfileManager({ apiBase, locale }: Props) {
     </header>
     <div className="month-end-readiness-grid">
       <article><strong>{t.readyTitle}</strong><b>{readyCount}</b><p>{t.readyBody}</p></article>
-      <article className="is-gated"><strong>{t.gateTitle}</strong><b>NOT_TESTED</b><p>{t.gateBody}</p></article>
+      <article className={executable ? "" : "is-gated"}><strong>{t.gateTitle}</strong><b>{validationVerdict}</b><p>{executable ? t.gateReadyBody : t.gateBlockedBody}</p></article>
     </div>
     {loading && <div className="month-end-notice">{t.loading}</div>}
     {registry && !registry.registry_valid && <div className="month-end-notice is-error"><strong>{t.registryInvalid}</strong><ul>{(registry.errors || []).map((item: Json, index: number) => <li key={index}>{item.field}: {item.message}</li>)}</ul></div>}

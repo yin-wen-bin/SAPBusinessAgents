@@ -70,6 +70,107 @@ def test_projection_zero_requires_live_empty_evidence():
     assert validate_projection(SPEC, {**value, "evidence_refs": []}, KNOWN)
 
 
+def test_checklist_readiness_projection_enforces_conservative_root_and_complete_sources():
+    spec = {
+        "record_fields": [
+            "company_code",
+            "business_status",
+            "source_complete",
+            "checklist_complete",
+            "evidence_complete",
+        ],
+        "metric_fields": [
+            "checks_total",
+            "checks_passed",
+            "checks_attention",
+            "checks_not_assessed",
+            "checks_error",
+        ],
+        "boolean_fields": ["source_complete", "checklist_complete", "evidence_complete"],
+        "semantic_profile": "checklist_readiness",
+        "required_limitation_codes": ["fx_status_unavailable"],
+    }
+    value = {
+        "records": [
+            {
+                "company_code": "1010",
+                "business_status": "inconclusive",
+                "source_complete": True,
+                "checklist_complete": False,
+                "evidence_complete": False,
+                "evidence_refs": ["e1"],
+            }
+        ],
+        "metrics": {
+            "checks_total": 12,
+            "checks_passed": 8,
+            "checks_attention": 3,
+            "checks_not_assessed": 1,
+            "checks_error": 0,
+        },
+        "business_status": "inconclusive",
+        "source_complete": True,
+        "evidence_complete": False,
+        "business_complete": False,
+        "evidence_gap_codes": ["fx_status_unavailable"],
+        "evidence_refs": ["e1"],
+    }
+
+    assert validate_projection(spec, value, KNOWN) == []
+    assert validate_projection(
+        spec,
+        {
+            **value,
+            "business_status": "attention",
+            "source_complete": False,
+            "records": [
+                {
+                    **value["records"][0],
+                    "business_status": "attention",
+                    "source_complete": False,
+                    "checklist_complete": True,
+                }
+            ],
+        },
+        KNOWN,
+    ) == [{"code": "acceptance_projection_checklist_root_inconsistent"}]
+
+
+def test_checklist_readiness_projection_rejects_missing_required_limitation():
+    spec = {
+        "record_fields": ["company_code"],
+        "metric_fields": [
+            "checks_total",
+            "checks_passed",
+            "checks_attention",
+            "checks_not_assessed",
+            "checks_error",
+        ],
+        "semantic_profile": "checklist_readiness",
+        "required_limitation_codes": ["fx_status_unavailable"],
+    }
+    value = {
+        "records": [{"company_code": "1010", "evidence_refs": ["e1"]}],
+        "metrics": {
+            "checks_total": 12,
+            "checks_passed": 8,
+            "checks_attention": 3,
+            "checks_not_assessed": 1,
+            "checks_error": 0,
+        },
+        "business_status": "inconclusive",
+        "source_complete": True,
+        "evidence_complete": False,
+        "business_complete": False,
+        "evidence_gap_codes": [],
+        "evidence_refs": ["e1"],
+    }
+
+    assert validate_projection(spec, value, KNOWN) == [
+        {"code": "acceptance_projection_required_limitation_missing"}
+    ]
+
+
 def test_visible_comparison_checks_both_locales_records_metrics_and_gaps():
     text = lambda value: {"zh": value, "en": value}
     report = {"blocks": [{"columns": [{"key": "document"}, {"key": "amount"}],

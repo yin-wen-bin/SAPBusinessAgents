@@ -10,6 +10,7 @@ import pytest
 from sap_business_agents_platform.agent_rules import evaluate_business_agent
 from sap_business_agents_platform.manifests import validate_manifest
 from sap_business_agents_platform.month_end import (
+    assess_current_month_end_status_evidence,
     prepare_month_end_scope,
     resolve_month_end_skill_requirements,
 )
@@ -20,6 +21,51 @@ from sap_business_agents_platform.workflows import validate_workflow
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "agents" / "FI" / "month-end-closing" / "agent.json"
 EXAMPLE_PROFILE = ROOT / "agents" / "FI" / "month-end-closing" / "config" / "profiles.example.json"
+
+
+def test_current_month_end_status_projection_interprets_adt_rows_without_exposing_them() -> None:
+    today = date.today()
+    result = assess_current_month_end_status_evidence(
+        company_code="1010",
+        fiscal_year=today.year,
+        period=today.month,
+        as_of=today,
+        fiscal_year_variant="K4",
+        t001_rows=[{"BUKRS": "1010", "OPVAR": "1010"}],
+        t001b_rows=[
+            {
+                "BUKRS": "1010",
+                "FRYE1": str(today.year),
+                "FRPE1": str(today.month),
+                "TOYE1": str(today.year),
+                "TOPE1": str(today.month),
+            }
+        ],
+        taba_rows=[],
+        marv_rows=[],
+    )
+
+    assert result["source_complete"] is True
+    assert result["posting_period_variant"] == "1010"
+    assert result["checks"]["aa_depreciation"]["status"] == "attention"
+    assert result["checks"]["fi_posting_period"]["target_period_open"] is True
+    assert result["checks"]["mm_period"]["status"] == "attention"
+
+
+def test_current_month_end_status_projection_rejects_historical_current_state_claim() -> None:
+    today = date.today()
+    with pytest.raises(ValueError, match="month_end_current_state_historical_date_rejected"):
+        assess_current_month_end_status_evidence(
+            company_code="1010",
+            fiscal_year=today.year,
+            period=today.month,
+            as_of=today - timedelta(days=1),
+            fiscal_year_variant="K4",
+            t001_rows=[{"BUKRS": "1010", "OPVAR": "1010"}],
+            t001b_rows=[],
+            taba_rows=[],
+            marv_rows=[],
+        )
 
 
 def _payload(rows: list[dict[str, object]], *, step_id: str = "rows", complete: bool = True) -> dict[str, object]:
@@ -171,13 +217,17 @@ def _evaluation_payload(scope: dict[str, object]) -> dict[str, object]:
     }
 
 
-def test_month_end_manifest_uses_embedded_get_and_pending_acceptance() -> None:
+def test_month_end_manifest_uses_embedded_get_and_passed_acceptance() -> None:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     validate_manifest(manifest, MANIFEST)
 
-    assert manifest["version"] == "0.2.0"
-    assert manifest["validation"]["verdict"] == "NOT_TESTED"
-    assert manifest["validation"]["baselineRuntime"] == "embedded-odata"
+    assert manifest["version"] == "0.2.1"
+    assert manifest["validation"]["verdict"] == "PASS"
+    assert manifest["validation"]["executable"] is True
+    assert manifest["validation"]["freeQueryComparison"] == "MATCH"
+    assert manifest["validation"]["fixedAgentComparison"] == "MATCH"
+    assert manifest["validation"]["baselineRuntime"] == "codex_app_direct_sap"
+    assert manifest["validation"]["usedSapBusinessAgentsForBaseline"] is False
     assert manifest["execution"]["inputSchema"]["properties"]["period"] == {
         "type": "integer",
         "title": {"zh": "会计期间", "en": "Fiscal period"},
@@ -194,7 +244,6 @@ def test_month_end_manifest_uses_embedded_get_and_pending_acceptance() -> None:
     )
     assert {item["field"] for item in due_plan["filters"]} == {
         "CompanyCode",
-        "Ledger",
         "FinancialAccountType",
     }
     assert next(
@@ -222,6 +271,20 @@ def test_month_end_manifest_uses_embedded_get_and_pending_acceptance() -> None:
         "LFMON",
     ]
     assert manifest["execution"]["acceptance"]["recordScope"] == "scope"
+    assert manifest["execution"]["acceptance"]["businessKeys"] == [
+        "company_code",
+        "fiscal_year",
+        "period",
+        "as_of",
+        "ledger",
+    ]
+    assert manifest["execution"]["acceptance"]["inputDefaults"] == {
+        "company_code": "company_code",
+        "fiscal_year": "fiscal_year",
+        "period": "period",
+        "as_of": "as_of",
+        "ledger": "ledger",
+    }
     text = MANIFEST.read_text(encoding="utf-8")
     assert "sapclaw_runtime" not in text
     assert "Thin Runtime" not in text
