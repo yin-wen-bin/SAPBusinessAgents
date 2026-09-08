@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "run_id": "due-delivery-prioritization-fixture",
+    "source": "fixture",
+    "data_sources": [
+      "fixture"
+    ],
+    "read_only": true,
+    "completeness": "complete",
+    "pagination": {
+      "complete": true
+    }
+  },
+  "scope": {
+    "demo": true
+  },
+  "records": [
+    {
+      "id": "SO-DEMO-01",
+      "sales_order": "SO-DEMO-01",
+      "item": "10",
+      "requested_delivery_date": "2026-08-01",
+      "delivery_priority": 1,
+      "block_releasable": true,
+      "stock_coverage": 1
+    },
+    {
+      "id": "SO-DEMO-02",
+      "sales_order": "SO-DEMO-02",
+      "item": "10",
+      "requested_delivery_date": "2026-08-12",
+      "delivery_priority": 5,
+      "block_releasable": false,
+      "stock_coverage": 0.2
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "due-delivery-prioritization",
+  "state": "active",
+  "lifecycle_state": "active",
+  "active_version": "0.1.1",
+  "latest_version": "0.1.1",
+  "active_digest": "sha256:8fff4ac38e17f5b60e5c2c49b6bb703369cae194680ff7012cc784de9ea356d4",
+  "published_at": "2026-09-08T05:53:05.911669+00:00",
+  "git_branch": "codex/agent-due-delivery-prioritization-publish-v0.1.1-cf64cbad",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-08T05:53:05.936825+00:00",
+  "deactivated_at": null
+}
