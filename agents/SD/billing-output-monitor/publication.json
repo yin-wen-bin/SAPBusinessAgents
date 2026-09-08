@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "billing-output-monitor",
+  "state": "inactive",
+  "lifecycle_state": "inactive",
+  "active_version": "0.1.0",
+  "latest_version": "0.1.0",
+  "active_digest": "sha256:3a37654f4afc66f4d3380326582278a841cee55528030c11bfb2bc4b07600882",
+  "deactivated_at": "2026-09-08T13:53:27.906087+00:00",
+  "deactivation_reason": "",
+  "git_branch": "codex/agent-billing-output-monitor-deactivate-v0.1.0-8aa39e05"
+}
