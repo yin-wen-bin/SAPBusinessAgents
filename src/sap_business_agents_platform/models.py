@@ -484,9 +484,9 @@ class AgentDraftUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     expected_revision: int = Field(alias="expectedRevision", ge=1)
-    manifest: dict[str, Any]
-    readme: str = Field(default="", max_length=200_000)
-    rules: str = Field(default="", max_length=500_000)
+    manifest: dict[str, Any] | None = None
+    readme: str | None = Field(default=None, max_length=200_000)
+    rules: str | None = Field(default=None, max_length=500_000)
 
 
 class AgentDraftDeleteRequest(BaseModel):
@@ -499,10 +499,11 @@ class AgentDraftDeleteRequest(BaseModel):
 class AgentFeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    base_turn: int = Field(alias="baseTurn", ge=1)
+    base_turn: int = Field(alias="baseTurn", ge=0)
     base_revision: int = Field(alias="baseRevision", ge=1)
     feedback: str = Field(min_length=1, max_length=12_000)
     locale: Literal["zh", "en"] = "zh"
+    request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def strip_feedback(self) -> "AgentFeedbackRequest":
@@ -524,6 +525,22 @@ class AgentLiveValidationRequest(BaseModel):
 
     input: dict[str, Any] = Field(default_factory=dict)
     auto_discover: bool = Field(default=False, alias="autoDiscover")
+    expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=1)
+    sensitive_inputs: dict[str, str] = Field(default_factory=dict, alias="sensitiveInputs", repr=False)
+    request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
+
+
+class AgentSampleDiscoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+    input: dict[str, Any] = Field(default_factory=dict)
+    request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
+
+
+class AgentStaticValidationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=1)
 
 
 class AgentPublishRequest(BaseModel):

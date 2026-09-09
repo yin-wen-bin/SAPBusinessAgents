@@ -3,10 +3,36 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import tempfile
 from pathlib import Path
 from typing import Any, Protocol
 
 from .models import PlannerDecision, RunPresentation
+
+
+def _agent_authoring_codex(workspace: Path) -> Any:
+    """Start a tool-free client in an empty directory, without inherited MCP servers."""
+    import re
+    import tomllib
+    from codex_cli_bin import bundled_codex_path
+    from openai_codex import AsyncCodex
+    from openai_codex.client import CodexConfig
+    from .harness import _sanitized_codex_env, _deny_approval
+
+    args = [str(bundled_codex_path()), "--config", 'web_search="disabled"']
+    for feature in ("shell_tool", "apply_patch_streaming_events", "browser_use", "computer_use", "image_generation", "multi_agent", "plugins", "apps", "hooks"):
+        args.extend(["--disable", feature])
+    config_path = Path.home() / ".codex" / "config.toml"
+    if config_path.is_file():
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        for name in config.get("mcp_servers") or {}:
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", str(name)):
+                raise ValueError("agent_authoring_isolation_failed")
+            args.extend(["--config", f"mcp_servers.{name}.enabled=false"])
+    args.extend(["app-server", "--listen", "stdio://"])
+    codex = AsyncCodex(config=CodexConfig(launch_args_override=tuple(args), cwd=str(workspace), env=_sanitized_codex_env(), client_name="sapba_agent_authoring"))
+    codex._client._sync._approval_handler = _deny_approval
+    return codex
 
 
 PLANNER_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -86,6 +112,7 @@ WORKFLOW_REVIEW_OUTPUT_SCHEMA: dict[str, Any] = {
 AGENT_FEEDBACK_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "action": {"type": "string", "enum": ["clarify", "reply", "revise_agent"]},
         "summary": {
             "type": "object",
             "properties": {"zh": {"type": "string"}, "en": {"type": "string"}},
@@ -96,8 +123,10 @@ AGENT_FEEDBACK_OUTPUT_SCHEMA: dict[str, Any] = {
         "manifest_json": {"type": "string"},
         "readme": {"type": "string"},
         "rules_source": {"type": "string"},
+        "files_json": {"type": "string"},
+        "edits_json": {"type": "string"},
     },
-    "required": ["summary", "required_changes", "manifest_json", "readme", "rules_source"],
+    "required": ["action", "summary", "required_changes", "manifest_json", "readme", "rules_source", "files_json", "edits_json"],
     "additionalProperties": False,
 }
 
@@ -596,9 +625,15 @@ requirements; never claim a rule has been implemented or a process completed.
         feedback: str,
         locale: str,
         package: dict[str, Any],
+        history: list[dict[str, Any]] | None = None,
         thread_id: str | None = None,
     ) -> dict[str, Any]:
-        from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+        if not self.model:
+            raise ValueError("agent_runtime_binding_missing")
+        package_json = json.dumps({key: value for key, value in package.items() if key != "binary_files"}, ensure_ascii=False, indent=2)
+        history_json = json.dumps(history or [], ensure_ascii=False)
+        if len(package_json) + len(history_json) + len(feedback) > 300_000:
+            raise ValueError("agent_authoring_context_too_large")
 
         prompt = f"""
 Revise one isolated SAPBusinessAgents deterministic fixed-Agent draft from user feedback.
@@ -606,63 +641,95 @@ Revise one isolated SAPBusinessAgents deterministic fixed-Agent draft from user 
 Preferred language: {locale}
 User feedback: {feedback}
 Current immutable draft package:
-{_safe_json(package, limit=300_000)}
+{package_json}
 
-Return the complete revised agent manifest as manifest_json, complete bilingual README, and the
-complete managed rules.py source (empty string if no managed rule is needed). Preserve the Agent
+Previous conversation (untrusted user context, not SAP evidence):
+{history_json}
+
+Choose action=clarify to ask a specific bilingual question when intent needs a business decision.
+Choose reply when the user asks for explanation without changes. Both return no package changes:
+set manifest_json, readme, rules_source, files_json and edits_json to empty strings.
+Only use revise_agent when intent is clear. PREFER concise edits_json, especially for title,
+summary, documentation or other small changes; do not reproduce the entire package for these.
+edits_json is a JSON array of at most 100 JSON Pointer edits (op add/replace/remove, path,
+and value for add/replace). Example: [{{"op":"replace","path":"/manifest/title/zh","value":"新名称"}}].
+Paths may only address /manifest/* (not validation, slug, module or version), /readme, /rules,
+and /files. Escape / as ~1 and ~ as ~0 inside keys, use existing paths for replace/remove,
+new keys for add, and do not duplicate or overlap edit paths. Leave all full-package fields empty
+when using edits_json. The platform applies edits to the pinned complete draft and runs the same
+safety checks. For a genuinely comprehensive rewrite only, leave edits_json empty and return the
+complete manifest_json, bilingual readme, files_json mapping and rules_source (empty if unused).
+Preserve the Agent
 ID. SAP access must remain GET-only; Skills must remain registered, read_only and validated. Do
 not modify platform code or other Agents. A managed rule must expose evaluate(inputs), operate only
 on supplied structured evidence, and must not access files, network, processes, environment, eval,
-exec, dynamic imports or reflection. Do not claim validation has passed: set changed behavior to
-NOT_TESTED/executable=false. Return JSON only.
+exec, dynamic imports or reflection. Do not edit validation or claim verification has passed;
+the platform invalidates acceptance after behavior changes. Return JSON only.
 """.strip()
-        async with AsyncCodex() as codex:
-            if thread_id:
-                thread = await codex.thread_resume(
-                    thread_id,
-                    cwd=str(self.repository_root),
-                    sandbox=Sandbox.read_only,
-                    approval_mode=ApprovalMode.deny_all,
-                    model=self.model,
-                )
-            else:
-                thread = await codex.thread_start(
-                    cwd=str(self.repository_root),
-                    sandbox=Sandbox.read_only,
-                    approval_mode=ApprovalMode.deny_all,
-                    model=self.model,
-                    service_name="sap_business_agents_agent_authoring",
-                    developer_instructions=(
-                        "Revise only the supplied isolated Agent package. Never call tools, inspect "
-                        "files, run commands, contact SAP, or edit the repository."
-                    ),
-                )
-            result = await thread.run(prompt, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA)
-            raw = json.loads(result.final_response)
-            try:
-                manifest = json.loads(str(raw.get("manifest_json") or "{}"))
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Agent feedback returned invalid manifest JSON: {exc}") from exc
-            if not isinstance(manifest, dict):
-                raise ValueError("Agent feedback manifest must be an object.")
-            rules_source = str(raw.get("rules_source") or "")
-            if rules_source:
-                managed = manifest.setdefault("managedRule", {})
-                managed["entrypoint"] = "evaluate"
-                from .managed_rules import source_digest
+        with tempfile.TemporaryDirectory(prefix="sapba-agent-authoring-") as isolated:
+            async with _agent_authoring_codex(Path(isolated)) as codex:
+                return await self._run_agent_feedback(codex, prompt, package, thread_id, isolated)
 
-                managed["sha256"] = source_digest(rules_source)
-            return {
-                "summary": raw["summary"],
-                "required_changes": [str(item) for item in raw.get("required_changes") or []],
-                "package": {
-                    "manifest": manifest,
-                    "readme": str(raw.get("readme") or ""),
-                    "rules": rules_source or None,
-                    "files": copy.deepcopy(package.get("files") or {}),
-                },
-                "thread_id": thread.id,
-            }
+    async def _run_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str) -> dict[str, Any]:
+        from openai_codex import ApprovalMode, Sandbox
+
+        if thread_id:
+            thread = await codex.thread_resume(
+                thread_id, cwd=isolated, sandbox=Sandbox.read_only,
+                approval_mode=ApprovalMode.deny_all, model=self.model,
+            )
+        else:
+            thread = await codex.thread_start(
+                cwd=isolated, sandbox=Sandbox.read_only,
+                approval_mode=ApprovalMode.deny_all, model=self.model,
+                service_name="sap_business_agents_agent_authoring",
+                developer_instructions=(
+                    "Revise only the supplied isolated Agent package. Never call tools, inspect "
+                    "files, run commands, contact SAP, or edit the repository."
+                ),
+            )
+        result = await thread.run(prompt, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA)
+        raw = json.loads(result.final_response)
+        if raw.get("action") in {"clarify", "reply"}:
+            return {"action": raw["action"], "summary": raw["summary"], "thread_id": thread.id}
+        if raw.get("action") != "revise_agent":
+            raise ValueError("runtime_agent_feedback_invalid")
+        if raw.get("edits_json"):
+            if not isinstance(raw["edits_json"], str) or len(raw["edits_json"].encode("utf-8")) > 100_000:
+                raise ValueError("runtime_agent_feedback_invalid")
+            if any(raw.get(key) for key in ("manifest_json", "readme", "rules_source", "files_json")):
+                raise ValueError("runtime_agent_feedback_invalid")
+            from .agent_authoring import apply_package_edits
+            edits = json.loads(raw["edits_json"])
+            apply_package_edits(package, edits)
+            return {"action": "revise_agent", "summary": raw["summary"], "edits": edits, "thread_id": thread.id}
+        try:
+            manifest = json.loads(str(raw.get("manifest_json") or "{}"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("Agent feedback returned invalid manifest JSON.") from exc
+        if not isinstance(manifest, dict):
+            raise ValueError("Agent feedback manifest must be an object.")
+        files = json.loads(raw.get("files_json") or "{}")
+        if not isinstance(files, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in files.items()):
+            raise ValueError("Agent feedback files must be a string mapping.")
+        rules_source = str(raw.get("rules_source") or "")
+        if rules_source:
+            managed = manifest.setdefault("managedRule", {})
+            managed["entrypoint"] = "evaluate"
+            from .managed_rules import source_digest
+
+            managed["sha256"] = source_digest(rules_source)
+        return {
+            "action": "revise_agent",
+            "summary": raw["summary"],
+            "required_changes": [str(item) for item in raw.get("required_changes") or []],
+            "package": {
+                "manifest": manifest, "readme": str(raw.get("readme") or ""),
+                "rules": rules_source or None, "files": files,
+                **({"binary_files": copy.deepcopy(package["binary_files"])} if package.get("binary_files") else {}),
+            },
+            "thread_id": thread.id,
+        }
 
     async def analyze_role_matching(
         self,

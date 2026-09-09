@@ -2,10 +2,12 @@
 import { Play, ShieldCheck } from "@lucide/astro";
 import type { AgentDefinition, Locale } from "../lib/types";
 import { runPath } from "../lib/urls";
+import { publicBranchRequirements, publicInput } from "../lib/agentDraft";
 
 interface Props { locale: Locale; agent: AgentDefinition }
 const { locale, agent } = Astro.props;
 const execution = agent.execution;
+const publicRequired = execution ? publicBranchRequirements(execution.inputSchema).required : [];
 const deterministicRuntimeAccepted = agent.validation?.acceptanceMode === "deterministic_runtime"
   && agent.validation?.freeQueryComparison === "NOT_TESTED";
 const executable = Boolean(
@@ -135,7 +137,7 @@ const runtimeMessages = {
     <form class="agent-run-form" novalidate>
       {execution ? (
         <div class="runtime-field-grid">
-          {Object.entries(execution.inputSchema.properties).filter(([, property]) => property["x-sapba-workflow-only"] !== true && property["x-sapba-internal"] !== true).map(([name, property]) => (
+          {Object.entries(execution.inputSchema.properties).filter(([, property]) => publicInput(property)).map(([name, property]) => (
             <label>
               <span>{property.title?.[locale] || name}</span>
               {property.description && <small class="runtime-field-help">{property.description[locale]}</small>}
@@ -153,7 +155,7 @@ const runtimeMessages = {
                   <template data-object-array-template>
                     <div class="runtime-object-array-row" data-object-array-row>
                       <div class="runtime-object-array-fields">
-                        {Object.entries(property.items.properties || {}).map(([childName, child]) => (
+                        {Object.entries(property.items.properties || {}).filter(([, child]) => publicInput(child)).map(([childName, child]) => (
                           <label>
                             <span>{child.title?.[locale] || childName}</span>
                             <input
@@ -191,7 +193,7 @@ const runtimeMessages = {
                   data-item-pattern={property.items?.pattern}
                   data-min-items={property.minItems}
                   data-max-items={property.maxItems}
-                  required={execution.inputSchema.required?.includes(name)}
+                  required={publicRequired.includes(name)}
                 >{Array.isArray(property.default) ? property.default.join("\n") : ""}</textarea>
               ) : agent.slug === "month-end-closing" && name === "profile_id" ? (
                 <select
@@ -217,7 +219,7 @@ const runtimeMessages = {
                   pattern={property.pattern}
                   inputmode={property.pattern === "^[0-9]+$" ? "numeric" : undefined}
                   title={property.description?.[locale]}
-                  required={execution.inputSchema.required?.includes(name)}
+                  required={publicRequired.includes(name)}
                   data-sensitive={property["x-sapba-sensitive"] === true ? "true" : undefined}
                   data-server-default={property["x-sapba-server-default"] === "business_date" ? "business_date" : undefined}
                   autocomplete={property["x-sapba-sensitive"] === true ? "off" : undefined}

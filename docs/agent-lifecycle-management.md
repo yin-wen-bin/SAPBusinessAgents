@@ -2,12 +2,19 @@
 
 “Agent 管理中心”只管理具有确定性 `execution` 定义的固定 Agent。`platform_assistant`（例如“岗位匹配助理”）继续由平台代码维护，不进入此管理链。
 
-管理流程分为四步：
+管理流程分为三步：
 
-1. **定义与修改**：页面“创建 Agent”进入当前语言的自由查询，已生成草稿接入管理中心后再复核；正式 Agent 仍可“创建新版本”。结构化编辑与 Codex Runtime 多轮反馈都会生成不可变修订。后端共享的空白、复制和工作流缺口能力保留，管理页不再提供旧创建表单。
-2. **检查 Diff**：比较 Agent 清单、输入输出、固定步骤、SAP 工具、完整性规则、双语说明及受控规则代码。撤销通过新修订实现，不删除历史。
-3. **验证**：静态检查拒绝写操作、未注册工具和危险 Python；行为变化必须执行 GET-only 真机验证。纯文案变化只有在执行摘要完全相同时才能复用原 PASS 验收。
-4. **发布与启用**：平台判断最低语义版本等级，创建 `codex/agent-...` 本地分支并提交；不会推送。未启用版本不会进入普通业务 Agent 目录。
+1. **定义与修改**：按业务详情页呈现基础信息、输入输出、处理步骤及安全边界。可直接修改双语名称、说明和负责人；复杂定义放在“高级技术编辑”。参数输入、自动检查和只读试运行位于同一页，结果原位展示。页面最下方“您的修改意见是？”支持澄清、解释和多轮修改；只有内容实际变化才保存新修订，不自动发布。页面“创建 Agent”仍进入自由查询，已有草稿和正式 Agent 新版本沿用现有入口。
+2. **检查修改内容**：选择两个已保存修订，直接查看修改前、修改后内容，文档与规则提供逐行差异。不是只显示路径或摘要，也不把草稿比较冒充与当前活动版本比较。恢复通过创建一个新修订实现，不删除历史。
+3. **发布与启用**：自动检查、试运行、正式验收分别展示。试运行成功不生成独立基线或自由查询 `MATCH`，不取得发布资格。行为变化仍须满足正式验收门禁；纯文案仅在执行摘要不变且原验收有效时复用。平台判断最低语义版本等级，发布创建本地分支和提交，不自动推送。
+
+### 先找样本，再确认试运行
+
+勾选“自动查找验证数据”后，先输入公司代码、工厂等必要范围，再点击查找。平台使用已通过兼容检查的 `gpt-5.6-sol` 和受控只读能力，在草稿声明的数据源内有界选样（最多300秒、10次数据读取、每次最多100行）。候选值必须来自本次已校验的公开证据；用户已填写的范围不会被覆盖。未能证明完整输入组合、分支不明确或需要敏感参考号时，提示手工补充，不猜测数据。
+
+候选参数先回填并显示来源，确认后才能试运行。选样不代表数据源查询完整，也不是正式验收；试运行重新执行草稿快照。修改定义或参数后，旧选样确认失效。查找和对话可取消，刷新后恢复持久化状态；服务器重启中断的非可重放任务不会自动扩大查询或再次执行。
+
+同一草稿同时只允许一个修改、选样或验证操作；修订冲突要求刷新核对。敏感参数只通过专用字段传递，不能放入修改对话。模型、SDK和默认Runtime设置不由编辑页面静默更改。
 
 ## 运行一致性
 
@@ -51,8 +58,15 @@ POST   /api/authoring/drafts/{draft_id}/import-to-management
 POST   /api/authoring/agents
 PUT    /api/authoring/agents/{draft_id}
 POST   /api/authoring/agents/{draft_id}/feedback
+GET    /api/authoring/agents/{draft_id}/conversation
+POST   /api/authoring/agents/{draft_id}/feedback/{turn_number}/cancel
+GET    /api/authoring/agents/{draft_id}/diff?fromRevision=1&toRevision=2
 POST   /api/authoring/agents/{draft_id}/validate
 POST   /api/authoring/agents/{draft_id}/live-validate
+GET    /api/authoring/agents/{draft_id}/validation-report
+POST   /api/authoring/agents/{draft_id}/sample-discovery
+GET    /api/authoring/agents/{draft_id}/sample-discovery/{run_id}
+POST   /api/authoring/agents/{draft_id}/sample-discovery/{run_id}/cancel
 POST   /api/authoring/agents/{draft_id}/publish
 POST   /api/agents/{agent_id}/activate
 POST   /api/agents/{agent_id}/deactivate
@@ -82,6 +96,10 @@ README-only or shared-translation changes do not bump Agent versions. Manifest s
 
 ## English user guide
 
-Use Agent management for deterministic fixed Agents, not platform assistants. Create or import a draft, edit structurally or through Runtime, review the Diff, validate, then publish/activate through the lifecycle gates. Draft deletion requires exact Agent ID confirmation and revision checks; published versions use the separate stricter permanent-deletion gate. Validation runs and their evidence survive draft deletion.
+Use Agent management for deterministic fixed Agents, not platform assistants. The three stages are **Define and edit**, **Review changes**, and **Publish and activate**. The business-oriented editor includes typed inputs, static checks, read-only trials and inline results; technical JSON and rules are collapsed. The bottom feedback conversation can clarify, reply without editing, or create an immutable revision. Compare actual before/after values and text differences between saved revisions.
+
+Optional sample discovery uses compatible `gpt-5.6-sol`, scoped to the draft's approved read-only sources and your supplied company/plant filters. It is bounded to 300 seconds, 10 data reads and 100 rows per read, and every proposed value needs verified public evidence. Confirm proposed inputs before trial execution. Ambiguous input branches, unproven relationships and sensitive references require manual entry. Discovery is not exhaustive evidence or formal acceptance. A successful trial cannot manufacture independent comparison results or unlock publication. Refresh restores saved task state; edits invalidate stale sample confirmations. No SDK upgrade or global model setting is changed.
+
+Draft deletion requires exact Agent ID confirmation and revision checks; published versions use the separate stricter permanent-deletion gate. Validation runs and their evidence survive draft deletion.
 
 An active Agent and an accepted Agent are distinct states. Local publication creates a branch and commit but never pushes. Running tasks retain snapshots, and published workflows retain pinned historical versions. Deactivation blocks new work; it does not cancel running tasks. See the Chinese technical sections above for interface IDs and regression entry points.

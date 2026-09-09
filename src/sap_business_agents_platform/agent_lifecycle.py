@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import copy
 import hashlib
 import json
@@ -8,7 +9,6 @@ import re
 import shutil
 import subprocess
 import uuid
-from contextlib import nullcontext
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -19,9 +19,10 @@ from .managed_rules import ManagedRuleError, validate_managed_rule
 from .manifests import AgentRepository, ManifestError, is_agent_executable, validate_execution
 from .models import RunStatus, TERMINAL_STATUSES, utc_now
 from .acceptance import agent_execution_digest
+from .agent_authoring import AgentAuthoringMixin, package_changes
 from .plugins import PluginError
 from .skills import SkillError, validate_agent_skill_dependencies
-from .workflows import WorkflowRepository, agent_digest
+from .workflows import WorkflowRepository, WorkflowError, agent_digest, validate_value
 
 
 class AgentLifecycleError(RuntimeError):
@@ -31,7 +32,7 @@ class AgentLifecycleError(RuntimeError):
         self.detail = detail
 
 
-class AgentLifecycleService:
+class AgentLifecycleService(AgentAuthoringMixin):
     """Author, validate and publish immutable deterministic Agent packages."""
 
     def __init__(
@@ -55,6 +56,8 @@ class AgentLifecycleService:
         self.skills = skills
         self.draft_root = (settings.draft_root / "agents").resolve()
         self._import_lock = RLock()
+        self._feedback_tasks: dict[str, asyncio.Task[Any]] = {}
+        self.feedback_timeout_seconds = 180
 
     def _require_skill_dependencies(self, manifest: dict[str, Any]) -> list[str]:
         if self.skills is None:
@@ -335,12 +338,18 @@ class AgentLifecycleService:
     def get_draft(self, draft_id: str) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
         revision = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))
+        assessment = self._validation_summary(draft, revision["package"])
+        sample_operation = self.store.latest_agent_operation(draft_id, "sample_discovery")
+        sample = ({**(sample_operation.get("detail") or {}), "run_id": sample_operation["operation_id"], "status": sample_operation["status"], "revision": sample_operation["revision"]} if sample_operation and int(sample_operation["revision"]) == int(draft["revision"]) else None)
         return {
             **draft,
             "package": revision["package"],
             "diff": revision["diff"],
             "revisions": self.store.list_agent_authoring_revisions(draft_id),
             "conversation": self.store.list_agent_conversation_turns(draft_id),
+            "active_operation": self.store.get_agent_operation(draft_id),
+            "sample_discovery": sample,
+            **assessment,
         }
 
     def list_drafts(self, state: str = "all") -> list[dict[str, Any]]:
@@ -384,6 +393,13 @@ class AgentLifecycleService:
         return items
 
     def delete_draft(self, draft_id: str, payload: Any) -> dict[str, Any]:
+        operation = self._reserve_operation(draft_id, int(payload.expected_revision), "delete")
+        try:
+            return self._delete_draft_owned(draft_id, payload, operation_id=operation["operation_id"])
+        finally:
+            self._finish_operation(draft_id, operation["operation_id"])
+
+    def _delete_draft_owned(self, draft_id: str, payload: Any, *, operation_id: str) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
         if int(payload.expected_revision) != int(draft["revision"]):
             raise AgentLifecycleError(
@@ -436,6 +452,7 @@ class AgentLifecycleService:
         try:
             retained_run_ids = self.store.delete_agent_authoring_draft(
                 draft_id,
+                operation_id=operation_id,
                 expected_revision=int(payload.expected_revision),
                 audit_event_id=audit_event_id,
                 agent_id=str(draft["agent_id"]),
@@ -465,107 +482,22 @@ class AgentLifecycleService:
         }
 
     def update(self, draft_id: str, payload: Any) -> dict[str, Any]:
-        draft = self.store.get_agent_authoring_draft(draft_id)
-        self._assert_editable(draft)
-        if int(payload.expected_revision) != int(draft["revision"]):
-            raise AgentLifecycleError("Agent draft revision changed.", code="agent_draft_conflict")
-        previous = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))["package"]
-        package = copy.deepcopy(previous)
-        if payload.manifest is not None:
-            package["manifest"] = copy.deepcopy(payload.manifest)
-        if payload.readme is not None:
-            package["readme"] = str(payload.readme)
-        if payload.rules is not None:
-            package["rules"] = str(payload.rules) or None
-        if str(package["manifest"].get("slug") or "") != draft["agent_id"]:
-            raise AgentLifecycleError("Agent ID cannot change inside a version draft.", code="agent_id_immutable")
-        self._assert_manageable(package["manifest"])
-        new_revision = int(draft["revision"]) + 1
-        diff = _package_diff(previous, package)
-        risk = self._risk_class(draft, package)
-        package["manifest"]["version"] = draft.get("target_version") or package["manifest"].get("version")
-        self._write_package(Path(draft["path"]), package)
-        draft.update(
-            status="draft",
-            revision=new_revision,
-            risk_class=risk,
-            validation_run_id=None,
-            validation={},
-            updated_at=utc_now(),
-        )
-        self.store.save_agent_authoring_draft(draft, package=package, diff=diff)
-        self.store.save_agent_conversation_turn(
-            {
-                "draft_id": draft_id,
-                "turn": len(self.store.list_agent_conversation_turns(draft_id)) + 1,
-                "parent_turn": None,
-                "kind": "manual_edit",
-                "status": "completed",
-                "decision": {"risk_class": risk},
-                "base_revision": new_revision - 1,
-                "result_revision": new_revision,
-                "diff": diff,
-                "completed_at": utc_now(),
-            }
-        )
-        return self.get_draft(draft_id)
+        operation = self._reserve_operation(draft_id, int(payload.expected_revision), "edit")
+        try:
+            package = copy.deepcopy(self.store.get_agent_authoring_revision(draft_id, int(payload.expected_revision))["package"])
+            if payload.manifest is not None:
+                package["manifest"] = copy.deepcopy(payload.manifest)
+            if payload.readme is not None:
+                package["readme"] = str(payload.readme)
+            supplied = getattr(payload, "model_fields_set", set())
+            if payload.rules is not None or "rules" in supplied:
+                package["rules"] = str(payload.rules) if payload.rules else None
+            return self._apply_package(draft_id, int(payload.expected_revision), package, kind="manual_edit", operation_id=operation["operation_id"])
+        finally:
+            self._finish_operation(draft_id, operation["operation_id"])
 
     async def feedback(self, draft_id: str, payload: Any) -> dict[str, Any]:
-        draft = self.store.get_agent_authoring_draft(draft_id)
-        self._assert_editable(draft)
-        if int(payload.base_revision) != int(draft["revision"]):
-            raise AgentLifecycleError("Agent draft revision changed.", code="agent_draft_conflict")
-        current = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))["package"]
-        runtime_snapshot = (draft.get("metadata") or {}).get("runtime_snapshot") or {}
-        provider_id = runtime_snapshot.get("provider_id")
-        model_id = runtime_snapshot.get("model")
-        try:
-            pin = getattr(self.runtime, "pin", None)
-            context = (
-                pin(provider_id, model_id)
-                if callable(pin) and provider_id
-                else nullcontext()
-            )
-            with context:
-                supports = getattr(self.runtime, "supports", None)
-                if callable(supports) and not supports("review_agent_feedback"):
-                    raise AgentLifecycleError(
-                        "The selected Agent Runtime does not support Agent revision conversations.",
-                        code="runtime_agent_feedback_unavailable",
-                    )
-                decision = await self.runtime.review_agent_feedback(
-                    feedback=str(payload.feedback),
-                    locale=str(payload.locale),
-                    package=current,
-                    thread_id=draft.get("thread_id"),
-                )
-        except Exception as exc:
-            raise AgentLifecycleError(
-                "Agent Runtime could not produce a safe Agent revision.",
-                code="runtime_agent_feedback_failed",
-                detail={"message": str(exc)},
-            ) from exc
-        package = decision.get("package")
-        if not isinstance(package, dict) or not isinstance(package.get("manifest"), dict):
-            raise AgentLifecycleError("Runtime returned an invalid Agent package.", code="runtime_agent_feedback_invalid")
-        update = type("Update", (), {
-            "expected_revision": draft["revision"],
-            "manifest": package["manifest"],
-            "readme": package.get("readme", current.get("readme")),
-            "rules": package.get("rules", current.get("rules")),
-        })()
-        result = self.update(draft_id, update)
-        refreshed = self.store.get_agent_authoring_draft(draft_id)
-        refreshed["thread_id"] = decision.get("thread_id") or draft.get("thread_id")
-        refreshed["metadata"] = {
-            **(refreshed.get("metadata") or {}),
-            "last_runtime_decision": {
-                "summary": decision.get("summary"),
-                "required_changes": decision.get("required_changes") or [],
-            },
-        }
-        self.store.save_agent_authoring_draft(refreshed)
-        return self.get_draft(draft_id)
+        return await self.submit_feedback(draft_id, payload)
 
     def _new_runtime_snapshot(self) -> dict[str, Any] | None:
         snapshot = getattr(self.runtime, "snapshot", None)
@@ -578,35 +510,28 @@ class AgentLifecycleService:
         return copy.deepcopy(value) if isinstance(value, dict) else None
 
     def undo(self, draft_id: str, *, expected_revision: int, target_revision: int) -> dict[str, Any]:
-        draft = self.store.get_agent_authoring_draft(draft_id)
-        if int(draft["revision"]) != expected_revision:
-            raise AgentLifecycleError("Agent draft revision changed.", code="agent_draft_conflict")
-        package = self.store.get_agent_authoring_revision(draft_id, target_revision)["package"]
-        update = type("Update", (), {
-            "expected_revision": expected_revision,
-            "manifest": package["manifest"],
-            "readme": package.get("readme"),
-            "rules": package.get("rules"),
-        })()
-        result = self.update(draft_id, update)
-        turns = self.store.list_agent_conversation_turns(draft_id)
-        self.store.save_agent_conversation_turn(
-            {
-                "draft_id": draft_id,
-                "turn": len(turns) + 1,
-                "kind": "undo",
-                "status": "completed",
-                "decision": {"target_revision": target_revision},
-                "base_revision": expected_revision,
-                "result_revision": result["revision"],
-                "diff": result["diff"],
-                "completed_at": utc_now(),
-            }
-        )
-        return self.get_draft(draft_id)
+        operation = self._reserve_operation(draft_id, expected_revision, "undo")
+        try:
+            package = self.store.get_agent_authoring_revision(draft_id, target_revision)["package"]
+            return self._apply_package(draft_id, expected_revision, package, kind="undo", operation_id=operation["operation_id"], decision={"target_revision": target_revision})
+        finally:
+            self._finish_operation(draft_id, operation["operation_id"])
 
-    def validate(self, draft_id: str) -> dict[str, Any]:
+    def validate(self, draft_id: str, *, operation_id: str | None = None, expected_revision: int | None = None) -> dict[str, Any]:
+        own_operation = None
+        if operation_id is None:
+            current = self.store.get_agent_authoring_draft(draft_id)
+            own_operation = self._reserve_operation(draft_id, int(expected_revision if expected_revision is not None else current["revision"]), "static_validation")
+            operation_id = own_operation["operation_id"]
+        try:
+            return self._validate_owned(draft_id, operation_id)
+        finally:
+            if own_operation:
+                self._finish_operation(draft_id, operation_id)
+
+    def _validate_owned(self, draft_id: str, operation_id: str) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
+        self._assert_editable(draft)
         revision = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))
         package = revision["package"]
         manifest = package["manifest"]
@@ -616,6 +541,8 @@ class AgentLifecycleService:
             self._assert_manageable(manifest)
             validate_execution(manifest, f"agent-draft:{draft_id}")
             checks.append({"code": "agent_schema_valid", "status": "pass"})
+            self._require_skill_dependencies(manifest)
+            checks.append({"code": "agent_skill_dependencies_valid", "status": "pass"})
         except (ManifestError, AgentLifecycleError) as exc:
             errors.append({"code": "agent_schema_invalid", "message": str(exc)})
         rules_source = package.get("rules")
@@ -659,101 +586,182 @@ class AgentLifecycleService:
             status = "validated"
         else:
             status = "validated"
-        draft.update(status=status, risk_class=risk, validation=report, updated_at=utc_now())
-        self.store.save_agent_authoring_draft(draft)
+        draft["metadata"] = {**(draft.get("metadata") or {}), "static_checks": copy.deepcopy(report)}
+        existing = self._formal_acceptance(draft, package)
+        if existing and not report.get("reused_validation") and not errors:
+            draft.update(status=status, risk_class=risk, updated_at=utc_now())
+        else:
+            draft.update(status=status, risk_class=risk, validation=report, updated_at=utc_now())
+        self.store.save_agent_authoring_draft(draft, expected_revision=int(draft["revision"]), operation_id=operation_id)
         return self.get_draft(draft_id)
 
-    async def live_validate(self, draft_id: str, *, input_value: dict[str, Any], auto_discover: bool) -> dict[str, Any]:
-        validated = self.validate(draft_id)
-        if validated["status"] == "invalid":
-            raise AgentLifecycleError("Static Agent validation failed.", code="agent_static_validation_failed")
+    async def live_validate(self, draft_id: str, *, input_value: dict[str, Any], auto_discover: bool = False, expected_revision: int | None = None, sensitive_inputs: dict[str, Any] | None = None, request_id: str | None = None) -> dict[str, Any]:
+        if auto_discover:
+            raise AgentLifecycleError("Find and confirm a real sample before trial execution.", code="agent_sample_confirmation_required")
         draft = self.store.get_agent_authoring_draft(draft_id)
-        package = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))["package"]
-        effective_input = copy.deepcopy(input_value)
-        if auto_discover and not effective_input:
-            effective_input = copy.deepcopy(
-                ((package["manifest"].get("execution") or {}).get("acceptance") or {}).get("inputDefaults")
-                or {}
-            )
-        run_id = await self.coordinator.submit_agent_snapshot(
-            package["manifest"],
-            effective_input,
-            rules_source=package.get("rules"),
-            draft_id=draft_id,
-            revision=int(draft["revision"]),
-        )
-        report = {
-            "run_id": run_id,
-            "revision": draft["revision"],
-            "status": "running",
-            "verdict": "pending",
-            "automatic_checks": (draft.get("validation") or {}).get("checks") or [],
-            "sample_source": "auto_discovered" if auto_discover else "user",
-            "normalized_input": effective_input,
-            "started_at": utc_now(),
-        }
-        self.store.save_agent_validation_attempt(
-            draft_id=draft_id,
-            run_id=run_id,
-            revision=int(draft["revision"]),
-            report=report,
-            report_digest=None,
-        )
-        draft.update(status="validating", validation_run_id=run_id, validation=report, updated_at=utc_now())
-        self.store.save_agent_authoring_draft(draft)
-        return report
+        revision = int(expected_revision if expected_revision is not None else draft["revision"])
+        secret_fingerprints: dict[str, Any] = {}
+        if sensitive_inputs:
+            descriptor = getattr(getattr(self.coordinator, "secret_protector", None), "hmac_descriptor", None)
+            if not callable(descriptor):
+                raise AgentLifecycleError("Secure input protection is unavailable.", code="agent_secure_input_unsupported")
+            try:
+                secret_fingerprints = {str(field): descriptor(str(value).strip(), domain=f"agent-trial:{draft_id}:{field}") for field, value in sensitive_inputs.items()}
+            except Exception as exc:
+                raise AgentLifecycleError("Secure input protection failed.", code="agent_secure_input_unsupported") from exc
+        fingerprint = _json_digest({"revision": revision, "input": input_value, "sensitive_inputs": secret_fingerprints})
+        operation = self._reserve_operation(draft_id, revision, "trial", request_id, fingerprint)
+        if operation.get("reused"):
+            return copy.deepcopy((operation.get("detail") or {}).get("trial") or {"operation_id": operation["operation_id"], "status": operation["status"]})
+        operation_id = operation["operation_id"]
+        try:
+            validated = self.validate(draft_id, operation_id=operation_id)
+            if validated["status"] == "invalid":
+                raise AgentLifecycleError("Static Agent validation failed.", code="agent_static_validation_failed")
+            draft = self.store.get_agent_authoring_draft(draft_id)
+            package = self.store.get_agent_authoring_revision(draft_id, revision)["package"]
+            run_id = await self.coordinator.submit_agent_snapshot(package["manifest"], copy.deepcopy(input_value), rules_source=package.get("rules"), draft_id=draft_id, revision=revision, sensitive_inputs=sensitive_inputs or {})
+            self._assert_operation(draft_id, operation_id, revision)
+            report = {"type": "trial", "run_id": run_id, "revision": revision, "operation_id": operation_id, "execution_digest": _execution_digest(package["manifest"], package.get("rules")), "status": "running", "verdict": "pending", "automatic_checks": (draft.get("metadata", {}).get("static_checks") or {}).get("checks") or [], "sample_source": "user_confirmed", "started_at": utc_now()}
+            self.store.save_agent_validation_attempt(draft_id=draft_id, run_id=run_id, revision=revision, report=report, report_digest=None)
+            draft["metadata"] = {**(draft.get("metadata") or {}), "trial": report}
+            draft.update(status="validating", validation_run_id=run_id, updated_at=utc_now())
+            self.store.save_agent_authoring_draft(draft, expected_revision=revision, operation_id=operation_id)
+            self.store.update_agent_operation(draft_id, operation_id, detail={"trial": report})
+            return report
+        except BaseException:
+            self._finish_operation(draft_id, operation_id, "failed")
+            raise
 
     def validation_report(self, draft_id: str) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
         run_id = draft.get("validation_run_id")
         if not run_id:
-            return copy.deepcopy(draft.get("validation") or {})
+            return self._validation_response(draft)
         attempt = self.store.get_agent_validation_attempt(draft_id, run_id)
         if int(attempt["revision"]) != int(draft["revision"]):
             raise AgentLifecycleError("Validation belongs to an older draft revision.", code="agent_validation_revision_conflict")
         run = self.store.get_run(run_id)
         if run.status not in TERMINAL_STATUSES:
-            return {**attempt["report"], "status": "running", "progress": run.progress.model_dump(mode="json")}
+            response = self._validation_response(draft)
+            response["trial"] = {**attempt["report"], "type": "trial", "status": str(run.status.value if hasattr(run.status, "value") else run.status), "progress": run.progress.model_dump(mode="json")}
+            return response
         if attempt["completed_at"]:
-            return attempt["report"]
+            response = self._validation_response(draft)
+            # Legacy attempts remain immutable and explicitly non-certifying.
+            response["trial"] = {key: value for key, value in attempt["report"].items() if key not in {"fixedAgentComparison", "freeQueryComparison", "acceptanceMode"}}
+            response["trial"]["type"] = "trial"
+            return response
         result = run.result
-        tool_read_only = bool(result) and all(
-            str(call.get("http_method") or "GET").upper() == "GET"
-            for call in (result.tool_calls or [])
-        )
-        schema_complete = bool(result and result.workflow_output is not None)
+        from .workflow_factory import _read_only_audit
+
+        tool_read_only = bool(result) and _read_only_audit({"readOnly": True}, result.tool_calls or [])[0]
+        # The platform audit admits only Broker-owned approved Skill transport; an
+        # arbitrary POST with no approved capability must not be accepted as ADT.
+        for call in (result.tool_calls if result else []) or []:
+            method = str(call.get("http_method") or call.get("httpMethod") or "GET").upper()
+            if method != "GET" and not (str(call.get("capability") or "") == "skill_execute.v1" and method == "POST" and call.get("read_only") is not False):
+                tool_read_only = False
+        package = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))["package"]
+        schema_complete = False
+        if result and result.workflow_output is not None:
+            try:
+                validate_value(result.workflow_output, package["manifest"]["execution"]["outputSchema"], label="Candidate trial output")
+                schema_complete = True
+            except WorkflowError:
+                schema_complete = False
         complete = bool(
             result
             and result.completeness.source_complete
             and result.completeness.business_complete
         )
-        verdict = "PASS" if run.status == RunStatus.completed and tool_read_only and schema_complete and complete else "INCONCLUSIVE" if run.status == RunStatus.inconclusive else "FAIL"
+        # A completed execution with incomplete SAP evidence is an
+        # inconclusive trial, not a failed Agent implementation.  Keep safety
+        # or output-contract violations as FAIL so they cannot be mistaken for
+        # a merely data-bounded result.
+        if run.status == RunStatus.completed:
+            verdict = "FAIL" if not tool_read_only or not schema_complete else "PASS" if complete else "INCONCLUSIVE"
+        elif run.status == RunStatus.inconclusive:
+            verdict = "INCONCLUSIVE"
+        else:
+            verdict = "FAIL"
         report = {
             **attempt["report"],
-            "status": "completed",
+            "type": "trial",
+            "status": str(run.status.value if hasattr(run.status, "value") else run.status),
             "verdict": verdict,
             "completed_at": run.completed_at or utc_now(),
-            "fixedAgentComparison": "MATCH" if verdict == "PASS" else "BLOCKED",
             "read_only_audit": tool_read_only,
             "output_schema_valid": schema_complete,
             "source_complete": bool(result and result.completeness.source_complete),
-            "evidence_complete": bool(result and result.completeness.business_complete),
+            "evidence_complete": bool(result and isinstance(result.workflow_output, dict) and result.workflow_output.get("evidence_complete", result.completeness.business_complete)),
+            "business_complete": bool(result and result.completeness.business_complete),
             "errors": copy.deepcopy(run.error or (result.errors if result else [])),
         }
         digest = _json_digest(report)
         report["report_digest"] = digest
         if not self.store.finish_agent_validation(draft_id, run_id, int(draft["revision"]), report, digest):
             raise AgentLifecycleError("The draft changed while validation was synchronizing.", code="agent_validation_revision_conflict")
-        return {**report, "report_digest": digest}
+        if report.get("operation_id"):
+            self._finish_operation(draft_id, report["operation_id"])
+        refreshed = self.store.get_agent_authoring_draft(draft_id)
+        return self._validation_response(refreshed)
+
+    def _formal_acceptance(self, draft: dict[str, Any], package: dict[str, Any]) -> dict[str, Any] | None:
+        report = draft.get("validation") or {}
+        digest = _execution_digest(package["manifest"], package.get("rules"))
+        if report.get("verdict") != "PASS" or report.get("type") == "trial" or report.get("execution_digest", report.get("agent_execution_digest")) != digest:
+            return None
+        if report.get("reused_validation"):
+            if self._risk_class(draft, package) != "metadata_only":
+                return None
+            return copy.deepcopy(report)
+        # A locally executed run is not an independent comparison certificate.
+        if report.get("run_id") == draft.get("validation_run_id") and report.get("run_id"):
+            return None
+        validation = report.get("agent_validation") or report
+        if validation.get("executable") is not True or validation.get("fixedAgentComparison") != "MATCH" or not validation.get("acceptanceMode") or validation.get("blockingLimitations"):
+            return None
+        if validation.get("acceptanceMode") == "three_stage" and validation.get("freeQueryComparison") != "MATCH":
+            return None
+        return copy.deepcopy(report)
+
+    def _validation_summary(self, draft: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+        acceptance = self._formal_acceptance(draft, package)
+        trial = copy.deepcopy((draft.get("metadata") or {}).get("trial"))
+        static = copy.deepcopy((draft.get("metadata") or {}).get("static_checks") or {})
+        blockers = [] if acceptance else ["agent_formal_acceptance_required"]
+        if static.get("errors"):
+            blockers.append("agent_static_validation_failed")
+        if draft.get("status") == "published":
+            blockers.append("agent_draft_published")
+        active = self.store.get_agent_operation(draft["draft_id"])
+        if active and active.get("kind") not in {"publish", "static_validation"}:
+            blockers.append("agent_draft_operation_active")
+        return {"static_checks": static, "trial": trial, "acceptance": acceptance or {"verdict": "NOT_TESTED", "requires_formal_acceptance": True}, "publishability": {"can_publish": not blockers, "blockers": blockers}}
+
+    def _validation_response(self, draft: dict[str, Any]) -> dict[str, Any]:
+        package = self.store.get_agent_authoring_revision(draft["draft_id"], int(draft["revision"]))["package"]
+        summary = self._validation_summary(draft, package)
+        return {**copy.deepcopy(draft.get("validation") or {}), **summary, "verdict": summary["acceptance"]["verdict"], "revision": draft["revision"]}
 
     def publish(self, draft_id: str, payload: Any, *, schedule_refresh: bool = True) -> dict[str, Any]:
+        operation = self._reserve_operation(draft_id, int(payload.expected_revision), "publish")
+        try:
+            with self._import_lock:
+                return self._publish_owned(draft_id, payload, schedule_refresh=schedule_refresh, operation_id=operation["operation_id"])
+        finally:
+            self._finish_operation(draft_id, operation["operation_id"])
+
+    def _publish_owned(self, draft_id: str, payload: Any, *, schedule_refresh: bool, operation_id: str) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
         if int(payload.expected_revision) != int(draft["revision"]):
             raise AgentLifecycleError("Agent draft revision changed.", code="agent_draft_conflict")
         package = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))["package"]
         manifest = package["manifest"]
-        report = self.validation_report(draft_id)
-        if report.get("verdict") != "PASS":
+        summary = self._validation_summary(draft, package)
+        report = self._formal_acceptance(draft, package)
+        if not report or not summary["publishability"]["can_publish"]:
             raise AgentLifecycleError("Only a PASS Agent version can be published.", code="agent_validation_pass_required")
         if payload.validation_report_digest and report.get("report_digest") != payload.validation_report_digest:
             raise AgentLifecycleError("Agent validation report changed.", code="agent_validation_report_conflict")
@@ -787,14 +795,7 @@ class AgentLifecycleService:
                 "reviewedAt": report["validated_at"],
             }
         else:
-            manifest["validation"] = {
-            "verdict": "PASS",
-            "executable": True,
-            "acceptanceMode": "three_stage" if draft["risk_class"] == "behavior_change" else "deterministic_runtime",
-            "fixedAgentComparison": "MATCH",
-            "freeQueryComparison": (report.get("source_validation") or {}).get("freeQueryComparison", "MATCH"),
-            "validated_at": report.get("completed_at") or report.get("validated_at") or utc_now(),
-            }
+            manifest["validation"] = copy.deepcopy(report.get("agent_validation") or report)
         if bool(payload.activate):
             self._require_skill_dependencies(manifest)
         package = self._publication_package(draft, package)
@@ -841,7 +842,7 @@ class AgentLifecycleService:
         commit_sha = self._commit_agent_change(agent_dir, f"Publish {draft['agent_id']} v{target_version}")
         self._audit(draft["agent_id"], "published", draft.get("source_version"), target_version, agent_digest(manifest), branch, commit_sha, {"activated": bool(payload.activate)})
         draft.update(status="published", target_version=target_version, validation={**report, "branch": branch, "commit_sha": commit_sha}, updated_at=utc_now())
-        self.store.save_agent_authoring_draft(draft)
+        self.store.save_agent_authoring_draft(draft, expected_revision=int(payload.expected_revision), operation_id=operation_id)
         # Offline batch publishers refresh their isolated API/preview once after all releases.
         reload_scheduled = self._schedule_service_refresh() if payload.activate and schedule_refresh else False
         return {"agent_id": draft["agent_id"], "version": target_version, "active": bool(payload.activate), "branch": branch, "commit_sha": commit_sha, "pushed": False, "reload_scheduled": reload_scheduled}
@@ -1001,6 +1002,9 @@ class AgentLifecycleService:
     def _draft_delete_blockers(self, draft: dict[str, Any]) -> list[str]:
         if draft["status"] in {"published", "cancelled"}:
             return [f"agent_draft_{draft['status']}"]
+        operation = self.store.get_agent_operation(draft["draft_id"])
+        if operation and operation["kind"] != "delete":
+            return ["agent_draft_operation_active"]
         run_id = draft.get("validation_run_id")
         if not run_id:
             return []
@@ -1286,31 +1290,6 @@ def _json_digest(value: Any) -> str:
 
 def _not_tested_validation() -> dict[str, Any]:
     return {"verdict": "NOT_TESTED", "executable": False, "acceptanceMode": "three_stage", "fixedAgentComparison": "NOT_TESTED", "freeQueryComparison": "NOT_TESTED"}
-
-
-def _package_diff(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
-    changes: list[dict[str, Any]] = []
-    _diff_value(before.get("manifest"), after.get("manifest"), "/manifest", changes)
-    for name in ("readme", "rules", "files", "binary_files"):
-        if before.get(name) != after.get(name):
-            changes.append({"path": f"/{name}", "change": "modified", "before_digest": _json_digest(before.get(name)), "after_digest": _json_digest(after.get(name))})
-    return changes
-
-
-def _diff_value(before: Any, after: Any, path: str, changes: list[dict[str, Any]]) -> None:
-    if type(before) is not type(after):
-        changes.append({"path": path, "change": "type_changed", "before": before, "after": after})
-    elif isinstance(before, dict):
-        for key in sorted(set(before) | set(after)):
-            child = f"{path}/{key}"
-            if key not in before:
-                changes.append({"path": child, "change": "added", "after": after[key]})
-            elif key not in after:
-                changes.append({"path": child, "change": "removed", "before": before[key]})
-            else:
-                _diff_value(before[key], after[key], child, changes)
-    elif before != after:
-        changes.append({"path": path, "change": "modified", "before": before, "after": after})
 
 
 def _breaking_schema_change(before: dict[str, Any], after: dict[str, Any]) -> bool:

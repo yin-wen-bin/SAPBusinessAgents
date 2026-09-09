@@ -131,14 +131,18 @@ def test_list_synchronizes_validation_terminal_without_sap(tmp_path: Path, monke
     store.save_agent_authoring_draft(draft)
     store.save_agent_validation_attempt(draft_id=draft["draft_id"], run_id="validation_current", revision=1, report={"verdict": "pending"}, report_digest=None)
     run = SimpleNamespace(status=status, completed_at="2026-09-06T00:00:00Z", error=None,
-                          result=SimpleNamespace(tool_calls=[], workflow_output={}, errors=[],
+                          result=SimpleNamespace(tool_calls=[], workflow_output={"business_status": "inconclusive", "source_complete": True, "evidence_complete": True}, errors=[],
                               completeness=SimpleNamespace(source_complete=True, business_complete=True)))
     monkeypatch.setattr(store, "get_run", lambda _: run)
     listed = service.list_drafts("unpublished")[0]
-    assert listed["validation"]["verdict"] == verdict
-    assert listed["status"] == ("validated" if verdict == "PASS" else "needs_review")
+    assert listed["validation"]["verdict"] == "pending"  # trial never upgrades formal acceptance
+    assert listed["metadata"]["trial"]["verdict"] == verdict
+    assert listed["status"] == ("validated" if status in {RunStatus.completed, RunStatus.inconclusive} else "needs_review")
     assert listed["sync_error"] is None
-    assert service.validation_report(draft["draft_id"])["report_digest"]
+    report = service.validation_report(draft["draft_id"])
+    assert report["trial"]["report_digest"]
+    assert report["acceptance"]["verdict"] == "NOT_TESTED"
+    assert not report["publishability"]["can_publish"]
 
 
 def test_list_keeps_sync_gap_and_stale_run_cannot_update_revision(tmp_path: Path) -> None:

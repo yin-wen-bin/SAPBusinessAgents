@@ -632,6 +632,38 @@ class SDKManager:
             "selected_at": _timestamp(),
         }
 
+    def runtime_snapshot_for_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+        """Bind a checked task model without mutating the user's system default."""
+        definition = self._get_provider(provider_id)
+        snapshot = self._snapshot(definition)
+        blockers = [str(value) for value in snapshot["blockers"]
+                    if not str(value).startswith("runtime_model_")
+                    and str(value) != "legacy_model_unsupported"]
+        if blockers or not snapshot.get("enabled") or not definition.declared_selectable:
+            raise SDKManagerError("The Agent Runtime is not ready for new tasks.",
+                                  code="runtime_not_selectable", detail={"blockers": blockers})
+        self._catalog_model(definition, model_id)
+        check = self._current_model_check(definition, model_id)
+        if not check or check.get("compatible") is not True:
+            raise SDKManagerError("Check this model's compatibility in system settings first.",
+                                  code="runtime_model_check_required")
+        binding = {
+            "provider_id": provider_id, "sdk_id": definition.sdk_id,
+            "version": snapshot["current_version"], "cli_version": snapshot["cli_version"],
+            "model": model_id, "model_source": "agent_sample_discovery",
+            "model_catalog_digest": snapshot.get("model_catalog_digest"),
+            "model_check_digest": check.get("check_digest"),
+            "runtime_configuration_revision": self.configuration_revision,
+            "capabilities": list(definition.capabilities),
+            "selected_at": _timestamp(),
+        }
+        binding["configuration_digest"] = hashlib.sha256(json.dumps(
+            {"provider": _definition_digest(definition), "model": model_id,
+             "catalog": binding["model_catalog_digest"], "check": binding["model_check_digest"]},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        return binding
+
     async def _check_unlocked(self, definition: SDKDefinition) -> None:
         state = self._state[definition.sdk_id]
         try:

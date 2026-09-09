@@ -389,6 +389,31 @@ def test_runtime_selection_is_gated_and_persisted(tmp_path: Path) -> None:
         raise AssertionError("A reserved runtime must not become the default")
 
 
+def test_explicit_checked_model_binding_does_not_change_default(tmp_path: Path) -> None:
+    import pytest
+    from sap_business_agents_platform.sdk_manager import SDKManagerError
+    registry = tmp_path / "sdks.json"
+    _write_runtime_registry(registry)
+    manager = SDKManager(registry, tmp_path, adapters={"python": FakeAdapter()},
+        runtime_probes={"codex": FakeRuntimeProbe()}, selection_path=tmp_path / "default.json")
+    asyncio.run(manager.check_provider("codex"))
+    asyncio.run(manager.refresh_models("codex"))
+    with pytest.raises(SDKManagerError, match="compatibility"):
+        manager.runtime_snapshot_for_model("codex", "test-model")
+    asyncio.run(manager.set_default_model("codex", "test-model"))
+    before = (tmp_path / "default.json").read_bytes()
+    snapshot = manager.runtime_snapshot_for_model("codex", "test-model")
+    assert snapshot["model"] == "test-model"
+    assert snapshot["model_source"] == "agent_sample_discovery"
+    assert snapshot["model_catalog_digest"] and snapshot["model_check_digest"]
+    assert (tmp_path / "default.json").read_bytes() == before
+    with pytest.raises(SDKManagerError):
+        manager.runtime_snapshot_for_model("codex", "hidden-model")
+    manager.set_enabled("codex", False)
+    with pytest.raises(SDKManagerError):
+        manager.runtime_snapshot_for_model("codex", "test-model")
+
+
 def test_sdk_registry_v2_defaults_integrations_to_unavailable(tmp_path: Path) -> None:
     registry = tmp_path / "sdks.json"
     _write_runtime_registry(registry)

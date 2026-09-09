@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import AgentDraftWorkspace from "./AgentDraftWorkspace";
 import { ListResource, managementRows, filterManagementRows, pollingDelay } from "../lib/agentManagement";
 
 type Locale = "zh" | "en";
@@ -122,14 +123,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [manifestText, setManifestText] = useState("");
-  const [readme, setReadme] = useState("");
-  const [rules, setRules] = useState("");
-  const [feedback, setFeedback] = useState("");
-  const [validationInput, setValidationInput] = useState("{}");
-  const [validationReport, setValidationReport] = useState<any>(null);
   const [bump, setBump] = useState<"patch" | "minor" | "major">("patch");
-  const [targetVersion, setTargetVersion] = useState("");
   const [confirmId, setConfirmId] = useState("");
   const [reason, setReason] = useState("");
   const [deleteCandidate, setDeleteCandidate] = useState<any>(null);
@@ -205,10 +199,6 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     try {
       const value = await request(`${apiBase}/api/authoring/agents/${encodeURIComponent(draftId)}`);
       setDraft(value); setSelected(null); setStep(["compose", "review", "validate", "publish"].includes(requestedStep) ? requestedStep : "compose");
-      setManifestText(JSON.stringify(value.package.manifest, null, 2));
-      setReadme(value.package.readme || ""); setRules(value.package.rules || "");
-      setTargetVersion(value.target_version || value.package.manifest.version || "0.1.0");
-      setValidationReport(value.validation || null);
       history.replaceState({}, "", `${window.location.pathname}?draft=${encodeURIComponent(draftId)}&step=${requestedStep}`);
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
@@ -221,58 +211,6 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
         method: "POST", body: JSON.stringify({ bump, expectedVersion: selected.version, expectedAgentHash: selected.digest }),
       });
       await openDraft(value.draft_id || value.draft?.draft_id);
-    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
-  };
-
-  const saveRevision = async () => {
-    if (!draft) return;
-    setBusy(true); setError("");
-    try {
-      const manifest = JSON.parse(manifestText);
-      const value = await request(`${apiBase}/api/authoring/agents/${encodeURIComponent(draft.draft_id)}`, {
-        method: "PUT", body: JSON.stringify({ expectedRevision: draft.revision, manifest, readme, rules }),
-      });
-      await openDraft(value.draft_id, "review"); setNotice(locale === "zh" ? "新修订已保存，请检查 Diff。" : "Revision saved. Review the Diff.");
-    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
-  };
-
-  const submitFeedback = async () => {
-    if (!draft || !feedback.trim()) return;
-    setBusy(true); setError("");
-    try {
-      const value = await request(`${apiBase}/api/authoring/agents/${encodeURIComponent(draft.draft_id)}/feedback`, {
-        method: "POST", body: JSON.stringify({ baseTurn: (draft.conversation || []).length, baseRevision: draft.revision, feedback, locale }),
-      });
-      setFeedback(""); await openDraft(value.draft_id, "review");
-    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
-  };
-
-  const runStatic = async () => {
-    if (!draft) return; setBusy(true); setError("");
-    try { const value = await request(`${apiBase}/api/authoring/agents/${draft.draft_id}/validate`, { method: "POST" }); await openDraft(value.draft_id, "validate"); }
-    catch (e: any) { setError(e.message); } finally { setBusy(false); }
-  };
-
-  const runLive = async () => {
-    if (!draft) return; setBusy(true); setError("");
-    try {
-      const input = JSON.parse(validationInput || "{}");
-      const report = await request(`${apiBase}/api/authoring/agents/${draft.draft_id}/live-validate`, { method: "POST", body: JSON.stringify({ input, autoDiscover: Object.keys(input).length === 0 }) });
-      setValidationReport(report); setNotice(locale === "zh" ? "真机验证已启动。完成后请刷新验证报告。" : "Live validation started. Refresh the report when it completes.");
-    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
-  };
-
-  const refreshReport = async () => {
-    if (!draft) return; setBusy(true);
-    try { const report = await request(`${apiBase}/api/authoring/agents/${draft.draft_id}/validation-report`); setValidationReport(report); await openDraft(draft.draft_id, "validate"); }
-    catch (e: any) { setError(e.message); } finally { setBusy(false); }
-  };
-
-  const publish = async (activate: boolean) => {
-    if (!draft) return; setBusy(true); setError("");
-    try {
-      const result = await request(`${apiBase}/api/authoring/agents/${draft.draft_id}/publish`, { method: "POST", body: JSON.stringify({ expectedRevision: draft.revision, targetVersion, activate, validationReportDigest: validationReport?.report_digest || null }) });
-      setNotice(`${result.branch} · ${result.commit_sha} · ${locale === "zh" ? "未推送" : "not pushed"}`); setDraft(null); history.replaceState({}, "", window.location.pathname); await load();
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
@@ -299,14 +237,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
-  if (draft) return <main className="agent-management"><header><button onClick={backToList}>{t.back}</button><p className="eyebrow">{t.eyebrow}</p><h1>{localized(draft.package.manifest.title, locale)}</h1><p><code>{draft.agent_id}</code> · {t.version} {draft.package.manifest.version}</p></header>
-    <nav className="agent-steps">{(["compose", "review", "validate", "publish"] as const).map((name, index) => <button className={step === name ? "active" : ""} onClick={() => setStep(name)}>{index + 1}. {t[name]}</button>)}</nav>
-    {error && <p className="agent-alert error">{error}</p>}{notice && <p className="agent-alert" aria-live="polite">{notice}</p>}
-    {step === "compose" && <section className="agent-panel"><label>{t.manifest}<textarea rows={22} value={manifestText} onChange={(e) => setManifestText(e.target.value)} /></label><label>{t.readme}<textarea rows={8} value={readme} onChange={(e) => setReadme(e.target.value)} /></label><label>{t.rules}<textarea rows={12} value={rules} onChange={(e) => setRules(e.target.value)} /></label><div className="agent-actions"><button disabled={busy} onClick={saveRevision}>{t.save}</button></div><label>{t.feedback}<textarea rows={4} value={feedback} onChange={(e) => setFeedback(e.target.value)} /></label><button disabled={busy || !feedback.trim()} onClick={submitFeedback}>{t.sendFeedback}</button></section>}
-    {step === "review" && <section className="agent-panel"><h2>{t.diff}</h2>{(draft.diff || []).length ? <table><thead><tr><th>Path</th><th>Change</th></tr></thead><tbody>{draft.diff.map((item: any, i: number) => <tr key={i}><td><code>{item.path}</code></td><td>{item.change}</td></tr>)}</tbody></table> : <p>{t.noDiff}</p>}<button onClick={() => setStep("validate")}>{t.validate}</button></section>}
-    {step === "validate" && <section className="agent-panel"><p>{t.passRequired}</p><button disabled={busy} onClick={runStatic}>{t.staticCheck}</button><label>{t.input}<textarea rows={8} value={validationInput} onChange={(e) => setValidationInput(e.target.value)} /></label><p>{t.autoDiscover}</p><div className="agent-actions"><button disabled={busy} onClick={runLive}>{t.liveCheck}</button><button disabled={busy} onClick={refreshReport}>{t.refresh}</button></div>{validationReport && <><h2>{t.report}</h2><dl><dt>Status</dt><dd>{validationReport.status || validationReport.verdict}</dd><dt>Verdict</dt><dd>{validationReport.verdict}</dd><dt>Source complete</dt><dd>{String(validationReport.source_complete ?? "-")}</dd><dt>Evidence complete</dt><dd>{String(validationReport.evidence_complete ?? "-")}</dd></dl>{validationReport.run_id && <a href={`${runPath}?run=${encodeURIComponent(validationReport.run_id)}`}>{t.openRun}</a>}</>}</section>}
-    {step === "publish" && <section className="agent-panel"><p>{t.gitNote}</p><label>{t.targetVersion}<input value={targetVersion} onChange={(e) => setTargetVersion(e.target.value)} /></label><div className="agent-actions"><button disabled={busy || validationReport?.verdict !== "PASS"} onClick={() => publish(false)}>{t.publishInactive}</button><button disabled={busy || validationReport?.verdict !== "PASS"} onClick={() => publish(true)}>{t.publishActive}</button></div></section>}
-  </main>;
+  if (draft) return <AgentDraftWorkspace key={draft.draft_id} initialDraft={draft} apiBase={apiBase} locale={locale} runPath={runPath} initialStep={step} onBack={backToList} onPublished={(result) => { setNotice(`${result.branch || ""} · ${result.commit_sha || ""} · ${locale === "zh" ? "未推送" : "not pushed"}`); backToList(); }} />;
 
   if (selected) return <main className="agent-management"><button onClick={backToList}>{t.back}</button><p className="eyebrow">{t.eyebrow}</p><h1>{localized(selected.title, locale)}</h1><p>{localized(selected.summary, locale)}</p><dl><dt>ID</dt><dd><code>{selected.id}</code></dd><dt>{t.version}</dt><dd>{selected.version}</dd><dt>{t.validation}</dt><dd>{selected.validation?.verdict || "-"}</dd><dt>{t.dependencies}</dt><dd>{selected.workflow_dependencies?.length || 0}</dd></dl>
     {error && <p className="agent-alert error">{error}</p>}{notice && <p className="agent-alert">{notice}</p>}

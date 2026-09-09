@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -323,6 +324,24 @@ class RunStore:
                     completed_at TEXT,
                     PRIMARY KEY(draft_id, run_id)
                 );
+                CREATE TABLE IF NOT EXISTS agent_draft_operations (
+                    operation_id TEXT PRIMARY KEY,
+                    draft_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    request_id TEXT,
+                    input_hash TEXT,
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS agent_draft_active_operation
+                    ON agent_draft_operations(draft_id)
+                    WHERE status IN ('queued', 'running', 'cancelling');
+                CREATE UNIQUE INDEX IF NOT EXISTS agent_draft_operation_request
+                    ON agent_draft_operations(draft_id, request_id)
+                    WHERE request_id IS NOT NULL;
                 CREATE TABLE IF NOT EXISTS agent_management_events (
                     event_id TEXT PRIMARY KEY,
                     agent_id TEXT NOT NULL,
@@ -2048,6 +2067,33 @@ class RunStore:
     ) -> bool:
         """Commit the report only while this run still owns the draft revision."""
         with self._lock, self._connect() as connection:
+            if report.get("type") == "trial":
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    """SELECT metadata_json FROM agent_authoring_drafts
+                    WHERE draft_id = ? AND revision = ? AND validation_run_id = ?
+                    AND status = 'validating'""", (draft_id, revision, run_id),
+                ).fetchone()
+                attempt = connection.execute(
+                    "SELECT 1 FROM agent_validation_attempts WHERE draft_id = ? AND run_id = ? AND revision = ?",
+                    (draft_id, run_id, revision),
+                ).fetchone()
+                if row is None or attempt is None:
+                    return False
+                metadata = _load(row["metadata_json"], {})
+                metadata["trial"] = report
+                connection.execute(
+                    """UPDATE agent_authoring_drafts SET status = ?, metadata_json = ?, updated_at = ?
+                    WHERE draft_id = ? AND revision = ? AND validation_run_id = ?""",
+                    ("validated" if report.get("status") in {"completed", "inconclusive"} else "needs_review",
+                     _dump(metadata), utc_now(), draft_id, revision, run_id),
+                )
+                connection.execute(
+                    """UPDATE agent_validation_attempts SET report_json = ?, report_digest = ?, completed_at = ?
+                    WHERE draft_id = ? AND run_id = ? AND revision = ?""",
+                    (_dump(report), digest, report["completed_at"], draft_id, run_id, revision),
+                )
+                return True
             cursor = connection.execute(
                 """UPDATE agent_authoring_drafts SET status = ?, validation_json = ?, updated_at = ?
                 WHERE draft_id = ? AND revision = ? AND validation_run_id = ?
@@ -2069,9 +2115,28 @@ class RunStore:
     def save_agent_authoring_draft(
         self, item: dict[str, Any], *, package: dict[str, Any] | None = None,
         diff: list[dict[str, Any]] | None = None,
+        expected_revision: int | None = None, operation_id: str | None = None,
     ) -> None:
         now = item.get("updated_at") or utc_now()
         with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if expected_revision is not None:
+                current = connection.execute(
+                    "SELECT revision, status FROM agent_authoring_drafts WHERE draft_id = ?",
+                    (item["draft_id"],),
+                ).fetchone()
+                if current is None or int(current["revision"]) != int(expected_revision):
+                    raise ValueError("agent_draft_conflict")
+                if current["status"] == "published":
+                    raise ValueError("agent_draft_published")
+            active = connection.execute(
+                """SELECT operation_id FROM agent_draft_operations WHERE draft_id = ?
+                AND status IN ('queued', 'running', 'cancelling')""", (item["draft_id"],),
+            ).fetchone()
+            if active is not None and active["operation_id"] != operation_id:
+                raise ValueError("agent_draft_operation_active")
+            if operation_id is not None and active is None:
+                raise ValueError("agent_draft_operation_stale")
             connection.execute(
                 """INSERT OR REPLACE INTO agent_authoring_drafts
                 (draft_id, agent_id, source_type, status, revision, path, thread_id,
@@ -2088,14 +2153,251 @@ class RunStore:
                 ),
             )
             if package is not None:
+                existing = connection.execute(
+                    "SELECT package_json FROM agent_authoring_revisions WHERE draft_id = ? AND revision = ?",
+                    (item["draft_id"], int(item["revision"])),
+                ).fetchone()
+                if existing is not None:
+                    if _load(existing["package_json"], {}) != package:
+                        raise ValueError("agent_revision_immutable")
+                    return
                 connection.execute(
-                    """INSERT OR REPLACE INTO agent_authoring_revisions
+                    """INSERT INTO agent_authoring_revisions
                     (draft_id, revision, package_json, diff_json, created_at)
                     VALUES (?, ?, ?, ?, ?)""",
                     (
                         item["draft_id"], int(item["revision"]), _dump(package),
                         _dump(diff or []), now,
                     ),
+                )
+
+    def reserve_agent_operation(
+        self, draft_id: str, expected_revision: int, kind: str,
+        request_id: str | None = None, input_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically claim one draft; request IDs cannot be reused for different inputs."""
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if request_id:
+                prior = connection.execute(
+                    "SELECT * FROM agent_draft_operations WHERE draft_id = ? AND request_id = ?",
+                    (draft_id, request_id),
+                ).fetchone()
+                if prior is not None:
+                    if (prior["kind"] != kind or int(prior["revision"]) != int(expected_revision)
+                            or prior["input_hash"] != input_hash):
+                        raise ValueError("agent_request_conflict")
+                    return {**_agent_operation_from_row(prior), "reused": True}
+            draft = connection.execute(
+                "SELECT revision, status FROM agent_authoring_drafts WHERE draft_id = ?", (draft_id,),
+            ).fetchone()
+            if draft is None:
+                raise KeyError(draft_id)
+            if draft["status"] == "published":
+                raise ValueError("agent_draft_published")
+            if int(draft["revision"]) != int(expected_revision):
+                raise ValueError("agent_draft_conflict")
+            active = connection.execute(
+                """SELECT 1 FROM agent_draft_operations WHERE draft_id = ?
+                AND status IN ('queued', 'running', 'cancelling')""", (draft_id,),
+            ).fetchone()
+            if active:
+                raise ValueError("agent_draft_operation_active")
+            now = utc_now()
+            operation_id = f"agent_op_{uuid.uuid4().hex[:20]}"
+            connection.execute(
+                """INSERT INTO agent_draft_operations
+                (operation_id, draft_id, revision, kind, status, request_id, input_hash, detail_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'running', ?, ?, '{}', ?, ?)""",
+                (operation_id, draft_id, expected_revision, kind, request_id, input_hash, now, now),
+            )
+            return {"operation_id": operation_id, "draft_id": draft_id, "revision": expected_revision,
+                    "kind": kind, "status": "running", "request_id": request_id, "input_hash": input_hash,
+                    "detail": {}, "created_at": now, "updated_at": now, "reused": False}
+
+    def get_agent_operation(self, draft_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM agent_draft_operations WHERE draft_id = ?
+                AND status IN ('queued', 'running', 'cancelling')""", (draft_id,),
+            ).fetchone()
+        return _agent_operation_from_row(row) if row else None
+
+    def latest_agent_operation(self, draft_id: str, kind: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM agent_draft_operations WHERE draft_id = ? AND kind = ?
+                ORDER BY created_at DESC, rowid DESC LIMIT 1""", (draft_id, kind),
+            ).fetchone()
+        return _agent_operation_from_row(row) if row else None
+
+    def get_agent_operation_by_id(self, draft_id: str, operation_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_draft_operations WHERE draft_id = ? AND operation_id = ?",
+                (draft_id, operation_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(operation_id)
+        return _agent_operation_from_row(row)
+
+    def assert_agent_operation(self, draft_id: str, operation_id: str, expected_revision: int) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM agent_draft_operations o JOIN agent_authoring_drafts d ON d.draft_id = o.draft_id
+                WHERE o.draft_id = ? AND o.operation_id = ? AND o.revision = ? AND d.revision = ?
+                AND o.status IN ('queued', 'running') AND d.status != 'published'""",
+                (draft_id, operation_id, expected_revision, expected_revision),
+            ).fetchone()
+        return row is not None
+
+    def update_agent_operation(
+        self, draft_id: str, operation_id: str, *, detail: dict[str, Any] | None = None,
+        status: str | None = None,
+    ) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE agent_draft_operations SET detail_json = COALESCE(?, detail_json),
+                status = COALESCE(?, status), updated_at = ? WHERE draft_id = ? AND operation_id = ?
+                AND status IN ('queued', 'running', 'cancelling')""",
+                (_dump(detail) if detail is not None else None, status, utc_now(), draft_id, operation_id),
+            )
+            return cursor.rowcount == 1
+
+    def finish_agent_operation(self, draft_id: str, operation_id: str, status: str = "completed") -> bool:
+        if status in {"queued", "running", "cancelling"}:
+            raise ValueError("agent_operation_terminal_status_required")
+        return self.update_agent_operation(draft_id, operation_id, status=status)
+
+    def recover_agent_operations(self) -> None:
+        """Recover only fully persisted trial jobs; release orphan reservations.
+
+        A process can die between reserving a trial operation and persisting the
+        run/attempt owner.  Leaving that reservation active would permanently
+        lock the draft, while allowing the scheduler to replay it would grant a
+        draft-only execution exception without a persisted proof.  Keep a trial
+        reservation only when its run, attempt, current draft revision and
+        operation detail form one complete ownership chain; interrupt every
+        other trial just like a non-replayable authoring operation.
+        """
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """SELECT * FROM agent_draft_operations
+                WHERE status IN ('queued', 'running', 'cancelling')"""
+            ).fetchall()
+            for row in rows:
+                if row["kind"] == "trial":
+                    # Operation detail is platform-owned state.  Treat a
+                    # malformed value as an orphan reservation and recover it
+                    # below instead of allowing startup to fail closed at the
+                    # whole API process boundary.
+                    try:
+                        detail = _load(row["detail_json"], {})
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        detail = {}
+                    trial = detail.get("trial") if isinstance(detail, dict) else None
+                    trial_run_id = trial.get("run_id") if isinstance(trial, dict) else None
+                    draft_row = connection.execute(
+                        "SELECT * FROM agent_authoring_drafts WHERE draft_id = ?",
+                        (row["draft_id"],),
+                    ).fetchone()
+                    attempt_row = None
+                    run_row = None
+                    if isinstance(trial_run_id, str) and trial_run_id:
+                        attempt_row = connection.execute(
+                            "SELECT * FROM agent_validation_attempts WHERE draft_id = ? AND run_id = ?",
+                            (row["draft_id"], trial_run_id),
+                        ).fetchone()
+                        run_row = connection.execute(
+                            "SELECT * FROM runs WHERE run_id = ?", (trial_run_id,)
+                        ).fetchone()
+                    attempt_report = _load(attempt_row["report_json"], {}) if attempt_row else {}
+                    complete_owner = bool(
+                        draft_row is not None
+                        and draft_row["status"] == "validating"
+                        and int(draft_row["revision"]) == int(row["revision"])
+                        and draft_row["validation_run_id"] == trial_run_id
+                        and attempt_row is not None
+                        and int(attempt_row["revision"]) == int(row["revision"])
+                        and attempt_row["completed_at"] is None
+                        and run_row is not None
+                        and isinstance(trial, dict)
+                        and attempt_report.get("type") == "trial"
+                        and attempt_report.get("status") == "running"
+                        and attempt_report.get("run_id") == trial_run_id
+                        and attempt_report.get("operation_id") == row["operation_id"]
+                    )
+                    if complete_owner:
+                        continue
+
+                    # Fail a matching orphan run so the general coordinator
+                    # cannot replay it as a normal public Agent execution.
+                    if run_row is not None and str(run_row["status"]) not in {
+                        "completed", "failed", "cancelled", "inconclusive"
+                    }:
+                        connection.execute(
+                            """UPDATE runs SET status = 'failed', completed_at = ?, error_json = ?
+                            WHERE run_id = ?""",
+                            (now, _dump({"code": "agent_trial_operation_interrupted"}), trial_run_id),
+                        )
+                    if attempt_row is not None and attempt_row["completed_at"] is None:
+                        interrupted_report = dict(attempt_report) if isinstance(attempt_report, dict) else {}
+                        interrupted_report.update(
+                            status="interrupted",
+                            verdict="INCONCLUSIVE",
+                            completed_at=now,
+                            errors=[{"code": "agent_trial_operation_interrupted"}],
+                        )
+                        connection.execute(
+                            """UPDATE agent_validation_attempts
+                            SET report_json = ?, completed_at = ?
+                            WHERE draft_id = ? AND run_id = ?""",
+                            (_dump(interrupted_report), now, row["draft_id"], trial_run_id),
+                        )
+                    if draft_row is not None and draft_row["status"] == "validating" and int(draft_row["revision"]) == int(row["revision"]):
+                        metadata = _load(draft_row["metadata_json"], {})
+                        if not isinstance(metadata, dict):
+                            metadata = {}
+                        previous_trial = metadata.get("trial")
+                        if isinstance(previous_trial, dict):
+                            previous_trial = dict(previous_trial)
+                            previous_trial.update(status="interrupted", verdict="INCONCLUSIVE", completed_at=now)
+                            previous_trial["errors"] = [{"code": "agent_trial_operation_interrupted"}]
+                            metadata["trial"] = previous_trial
+                        connection.execute(
+                            """UPDATE agent_authoring_drafts SET status = 'draft', validation_run_id = NULL,
+                            metadata_json = ?, updated_at = ? WHERE draft_id = ? AND revision = ?""",
+                            (_dump(metadata), now, row["draft_id"], row["revision"]),
+                        )
+                    connection.execute(
+                        """UPDATE agent_draft_operations SET status = 'interrupted', detail_json = ?, updated_at = ?
+                        WHERE operation_id = ?""",
+                        (_dump({"status": "interrupted", "codes": ["agent_trial_operation_interrupted"], "revision": row["revision"], "completed_at": now}), now, row["operation_id"]),
+                    )
+                    continue
+
+                detail = {"status": "interrupted", "codes": ["agent_operation_interrupted"],
+                          "revision": row["revision"], "completed_at": now}
+                if row["kind"] == "sample_discovery":
+                    detail.update(run_id=row["operation_id"], bounded_discovery=True)
+                    # Do not let the general scheduler replay discovery as an unrestricted query.
+                    connection.execute(
+                        """UPDATE runs SET status = 'failed', completed_at = ?, error_json = ?
+                        WHERE run_id = ? AND status NOT IN ('completed','failed','cancelled','inconclusive')""",
+                        (now, _dump({"code": "agent_operation_interrupted"}), row["operation_id"]),
+                    )
+                connection.execute(
+                    "UPDATE agent_draft_operations SET status = 'interrupted', detail_json = ?, updated_at = ? WHERE operation_id = ?",
+                    (_dump(detail), now, row["operation_id"]),
+                )
+                connection.execute(
+                    """UPDATE agent_conversation_turns SET status = 'failed', completed_at = ?, decision_json = ?
+                    WHERE draft_id = ? AND status IN ('queued','running')
+                    AND json_extract(decision_json, '$.task_id') = ?""",
+                    (now, _dump({"task_id": row["operation_id"], "error_code": "agent_operation_interrupted"}),
+                     row["draft_id"], row["operation_id"]),
                 )
 
     def get_agent_authoring_draft(self, draft_id: str) -> dict[str, Any]:
@@ -2122,9 +2424,11 @@ class RunStore:
         audit_event_id: str,
         agent_id: str,
         detail: dict[str, Any],
+        operation_id: str | None = None,
     ) -> list[str]:
         """Delete authoring-only state while preserving immutable validation runs."""
         with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT revision FROM agent_authoring_drafts WHERE draft_id = ?",
                 (draft_id,),
@@ -2133,6 +2437,12 @@ class RunStore:
                 raise KeyError(draft_id)
             if int(row["revision"]) != int(expected_revision):
                 raise ValueError("agent_draft_conflict")
+            active = connection.execute(
+                """SELECT operation_id FROM agent_draft_operations WHERE draft_id = ?
+                AND status IN ('queued','running','cancelling')""", (draft_id,),
+            ).fetchone()
+            if active and active["operation_id"] != operation_id:
+                raise ValueError("agent_draft_operation_active")
             validation_rows = connection.execute(
                 "SELECT run_id FROM agent_validation_attempts WHERE draft_id = ? ORDER BY created_at",
                 (draft_id,),
@@ -2150,6 +2460,7 @@ class RunStore:
             connection.execute(
                 "DELETE FROM agent_authoring_drafts WHERE draft_id = ?", (draft_id,)
             )
+            connection.execute("DELETE FROM agent_draft_operations WHERE draft_id = ?", (draft_id,))
             connection.execute(
                 """INSERT INTO agent_management_events
                 (event_id, agent_id, action, from_version, to_version, agent_hash,
@@ -2356,6 +2667,20 @@ def _free_query_session_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _agent_operation_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    value = dict(row)
+    raw_detail = value.pop("detail_json", "{}")
+    try:
+        detail = _load(raw_detail, {})
+    except (TypeError, ValueError, json.JSONDecodeError):
+        # Operation details are diagnostics, never execution authority.  A
+        # malformed detail must not prevent the draft list or status endpoint
+        # from loading; recovery will interrupt the orphan reservation.
+        detail = {}
+    value["detail"] = detail if isinstance(detail, dict) else {}
+    return value
 
 
 def _agent_authoring_draft_from_row(row: sqlite3.Row) -> dict[str, Any]:

@@ -25,6 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .codex_planner import CodexPlanner, Planner
 from .agent_lifecycle import AgentLifecycleError, AgentLifecycleService
+from .agent_discovery_jobs import AgentDiscoveryJobs
+from .sample_discovery import SampleDiscoveryService
 from .config import Settings
 from .database import RunStore
 from .engine import RunCoordinator, RunExecutionError, presentation_table_page
@@ -47,6 +49,8 @@ from .models import (
     AgentLifecycleRequest,
     AgentLiveValidationRequest,
     AgentPublishRequest,
+    AgentSampleDiscoveryRequest,
+    AgentStaticValidationRequest,
     AgentUndoRequest,
     AgentVersionDraftRequest,
     ArtifactDeleteRequest,
@@ -374,6 +378,10 @@ def create_app(
         drafts,
         skills=skills,
     )
+    sample_discovery = AgentDiscoveryJobs(
+        settings, store, agent_lifecycle, sdk_registry,
+        SampleDiscoveryService(settings, store, harness_broker),
+    )
     role_matching = RoleMatchingService(
         settings, store, business_agents, agent_runtime, workflow_drafts
     )
@@ -385,6 +393,7 @@ def create_app(
     artifact_csrf_token = secrets.token_urlsafe(32)
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        store.recover_agent_operations()
         await plugin_manager.start()
         health_catalog_counts.update(
             executable_agents=len(agents.executable()),
@@ -396,6 +405,8 @@ def create_app(
         try:
             yield
         finally:
+            await sample_discovery.stop()
+            await agent_lifecycle.stop()
             await role_matching.stop()
             await coordinator.stop()
             await integrations.close()
@@ -429,6 +440,7 @@ def create_app(
     app.state.workflow_drafts = workflow_drafts
     app.state.workflow_management = workflow_management
     app.state.agent_lifecycle = agent_lifecycle
+    app.state.agent_sample_discovery = sample_discovery
     app.state.role_matching = role_matching
     app.state.restricted_artifacts = restricted_artifacts
     app.state.sdk_manager = sdk_registry
@@ -438,7 +450,7 @@ def create_app(
     async def safe_role_matching_validation_error(
         request: Request, exc: RequestValidationError
     ) -> Response:
-        if not request.url.path.startswith("/api/role-matching/"):
+        if not request.url.path.startswith(("/api/role-matching/", "/api/authoring/agents")):
             return await request_validation_exception_handler(request, exc)
         return JSONResponse(
             status_code=422,
@@ -2089,18 +2101,37 @@ def create_app(
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
-    @app.post("/api/authoring/agents/{draft_id}/feedback")
+    @app.get("/api/authoring/agents/{draft_id}/diff")
+    def managed_agent_diff(
+        draft_id: str,
+        from_revision: int | None = Query(default=None, alias="fromRevision", ge=1),
+        to_revision: int | None = Query(default=None, alias="toRevision", ge=1),
+    ) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.get_diff(draft_id, from_revision, to_revision)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.get("/api/authoring/agents/{draft_id}/conversation")
+    def managed_agent_conversation(draft_id: str) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.conversation(draft_id)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/feedback/{turn_number}/cancel")
+    async def cancel_managed_agent_feedback(draft_id: str, turn_number: int) -> dict[str, Any]:
+        try:
+            return await agent_lifecycle.cancel_feedback(draft_id, turn_number)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/feedback", status_code=202)
     async def revise_managed_agent_with_runtime(
         draft_id: str, payload: AgentFeedbackRequest
     ) -> dict[str, Any]:
         try:
-            draft = agent_lifecycle.get_draft(draft_id)
-            turns = draft.get("conversation") or []
-            if payload.base_turn != len(turns):
-                raise AgentLifecycleError(
-                    "Agent conversation changed.", code="agent_conversation_conflict"
-                )
-            return await agent_lifecycle.feedback(draft_id, payload)
+            return await agent_lifecycle.submit_feedback(draft_id, payload)
         except (AgentLifecycleError, KeyError, PluginError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
@@ -2116,9 +2147,11 @@ def create_app(
             raise _agent_lifecycle_http_error(exc) from exc
 
     @app.post("/api/authoring/agents/{draft_id}/validate")
-    def validate_managed_agent_draft(draft_id: str) -> dict[str, Any]:
+    def validate_managed_agent_draft(
+        draft_id: str, payload: AgentStaticValidationRequest | None = None,
+    ) -> dict[str, Any]:
         try:
-            return agent_lifecycle.validate(draft_id)
+            return agent_lifecycle.validate(draft_id, expected_revision=payload.expected_revision if payload else None)
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
@@ -2131,8 +2164,34 @@ def create_app(
                 draft_id,
                 input_value=payload.input,
                 auto_discover=payload.auto_discover,
+                expected_revision=payload.expected_revision,
+                sensitive_inputs=payload.sensitive_inputs,
+                request_id=payload.request_id,
             )
         except (AgentLifecycleError, RunExecutionError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/sample-discovery", status_code=202)
+    async def start_managed_agent_sample_discovery(
+        draft_id: str, payload: AgentSampleDiscoveryRequest,
+    ) -> dict[str, Any]:
+        try:
+            return sample_discovery.start(draft_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.get("/api/authoring/agents/{draft_id}/sample-discovery/{run_id}")
+    def get_managed_agent_sample_discovery(draft_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            return sample_discovery.get(draft_id, run_id)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/sample-discovery/{run_id}/cancel")
+    async def cancel_managed_agent_sample_discovery(draft_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            return await sample_discovery.cancel(draft_id, run_id)
+        except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
     @app.get("/api/authoring/agents/{draft_id}/validation-report")

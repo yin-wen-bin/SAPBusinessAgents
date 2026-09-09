@@ -278,6 +278,9 @@ class HarnessToolBroker:
         )
         self._tokens: dict[str, str] = {}
         self._gap_tokens: dict[str, dict[str, Any]] = {}
+        # Run-purpose constraints are separate from the platform-wide approved
+        # Skill catalogue. Ordinary free queries keep their existing behavior.
+        self._sample_contexts: dict[str, Any] = {}
 
     def open_session(self, run_id: str) -> str:
         self.tool_gateway.restore(
@@ -521,6 +524,13 @@ class HarnessToolBroker:
     ) -> dict[str, Any]:
         if not self.authenticate(run_id, token):
             return {"ok": False, "code": "harness_capability_denied", "message": "Invalid capability."}
+        sample_context = self._sample_contexts.get(run_id)
+        if sample_context is not None:
+            try:
+                sample_context.allow_tool(tool_name, arguments)
+            except ValueError as exc:
+                return {"ok": False, "code": getattr(exc, "code", "sample_request_denied"),
+                        "message": "The sample request is outside the verified draft scope or budget."}
         budget = self.review_deadline(run_id)
         if budget["deadline_phase"] == "deadline_exceeded":
             return {
@@ -644,7 +654,11 @@ class HarnessToolBroker:
                     "reason": str(arguments.get("query") or "")[:500],
                 },
             )
+        sample_read_started = False
         try:
+            if sample_context is not None and tool_name in {"sap_query_execute", "sap_skill_execute"}:
+                sample_context.begin_read()
+                sample_read_started = True
             output = await self._dispatch(run_id, tool_name, arguments)
             output = _safe_public(output, preserve_rows=True)
             status = "completed" if output.get("ok") is not False else "failed"
@@ -652,12 +666,15 @@ class HarnessToolBroker:
             output = {
                 "ok": False,
                 "code": getattr(exc, "code", "tool_execution_failed"),
-                "message": str(exc),
+                "message": "Sample evidence read failed." if sample_context is not None else str(exc),
             }
             detail = getattr(exc, "detail", None)
-            if isinstance(detail, dict):
+            if isinstance(detail, dict) and sample_context is None:
                 output["detail"] = _safe_public(detail)
             status = "failed"
+        finally:
+            if sample_read_started:
+                sample_context.calls_in_flight = max(0, sample_context.calls_in_flight - 1)
         evidence_ref = str(output.get("evidence_ref") or "") or None
         self.store.complete_harness_tool_call(
             call_id,
@@ -775,7 +792,7 @@ class HarnessToolBroker:
             )
             return _compact_catalog_result(result)
         if tool_name == "sap_schema_get":
-            return await self.sap_read.schema(
+            result = await self.sap_read.schema(
                 str(arguments.get("service_name") or ""),
                 arguments.get("entity_sets") or [],
                 str(arguments.get("query") or ""),
@@ -783,6 +800,10 @@ class HarnessToolBroker:
                 include_fields=True,
                 max_fields=min(max(int(arguments.get("max_fields") or 5000), 1), 5000),
             )
+            sample_context = self._sample_contexts.get(run_id)
+            if sample_context is not None:
+                sample_context.record_schema(result)
+            return result
         if tool_name == "sap_query_validate":
             plan = self.normalizer.normalize_plan(
                 _require_object(arguments.get("plan"), "plan")
@@ -815,12 +836,21 @@ class HarnessToolBroker:
             normalized_plan = validation.get("normalized_plan")
             if isinstance(normalized_plan, dict):
                 plan = normalized_plan
+            sample_context = self._sample_contexts.get(run_id)
+            if sample_context is not None:
+                # Recheck the Provider-normalized plan, not only Runtime input.
+                sample_context.check_plan(plan)
+                sample_context.check_stable_keys(plan)
             raw = await self.sap_read.execute_plan(
                 plan,
                 str(arguments.get("query") or ""),
                 conversation_id=self.store.get_run(run_id).thread_id,
             )
+            if sample_context is not None:
+                raw = sample_context.project_evidence(raw, plan=plan)
             evidence_ref = self._save_evidence(run_id, "sap_live", raw)
+            if sample_context is not None:
+                sample_context.remember(evidence_ref, plan=plan)
             return {
                 "ok": raw.get("ok", True),
                 "source_type": "sap_live",
@@ -1601,7 +1631,12 @@ class HarnessToolBroker:
             output=output,
             skill_contract=self.skills.get(skill_id),
         )
+        sample_context = self._sample_contexts.get(run_id)
+        if sample_context is not None:
+            public_output = sample_context.project_evidence(public_output)
         evidence_ref = self._save_evidence(run_id, "sap_skill", public_output)
+        if sample_context is not None:
+            sample_context.remember(evidence_ref, skill_id=skill_id)
         return {
             "ok": public_output.get("ok", public_output.get("status") == "complete"),
             "source_type": "sap_skill",
@@ -2371,7 +2406,7 @@ def _budgeted_tool_call_count(calls: list[dict[str, Any]]) -> int:
 
 
 def _safe_codex(
-    settings: Settings, run_id: str, capability: str, workspace: Path
+    settings: Settings, run_id: str, capability: str, workspace: Path, *, allow_web: bool = True
 ) -> Any:
     from codex_cli_bin import bundled_codex_path
     from openai_codex import AsyncCodex
@@ -2379,7 +2414,11 @@ def _safe_codex(
 
     _validate_internal_api_url(settings.internal_api_url)
     python = sys.executable
-    args = [str(bundled_codex_path()), "--search"]
+    args = [str(bundled_codex_path())]
+    if allow_web:
+        args.append("--search")
+    else:
+        args.extend(["--config", 'web_search="disabled"'])
     for feature in (
         "shell_tool",
         "apply_patch_streaming_events",
@@ -2392,7 +2431,7 @@ def _safe_codex(
         "hooks",
     ):
         args.extend(["--disable", feature])
-    overrides = _mcp_overrides(settings, run_id, capability, python)
+    overrides = _mcp_overrides(settings, run_id, capability, python, allow_discovery=allow_web)
     for item in overrides:
         args.extend(["--config", item])
     args.extend(["app-server", "--listen", "stdio://"])
@@ -2412,7 +2451,7 @@ def _safe_codex(
 
 
 def _mcp_overrides(
-    settings: Settings, run_id: str, capability: str, python: str
+    settings: Settings, run_id: str, capability: str, python: str, *, allow_discovery: bool = True
 ) -> list[str]:
     overrides: list[str] = []
     config_path = Path.home() / ".codex" / "config.toml"
@@ -2439,6 +2478,8 @@ def _mcp_overrides(
         ("sap_business_agents", "sap"),
         ("sap_tool_discovery", "tools"),
     ):
+        if mode == "tools" and not allow_discovery:
+            continue
         overrides.extend(
             [
                 f"mcp_servers.{server_name}.command={json.dumps(python)}",

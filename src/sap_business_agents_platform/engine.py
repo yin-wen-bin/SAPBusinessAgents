@@ -1332,11 +1332,61 @@ class RunCoordinator:
         else:
             await self._execute_workflow(run_id)
 
+    def _is_persisted_draft_trial(self, run_id: str, snapshot: dict[str, Any] | None) -> bool:
+        """Recover draft-only execution authority, not a publication certificate.
+
+        The in-memory acceptance set is intentionally insufficient after restart.
+        A snapshot or run-name prefix alone never grants this exception: require
+        the current immutable revision and its still-owned persisted trial.
+        """
+        from .acceptance import agent_execution_digest
+        from .workflows import agent_digest
+
+        if not isinstance(snapshot, dict):
+            return False
+        draft_id, revision = snapshot.get("validation_draft_id"), snapshot.get("validation_revision")
+        if not isinstance(draft_id, str) or not draft_id or not isinstance(revision, int):
+            return False
+        try:
+            run = self.store.get_run(run_id)
+            draft = self.store.get_agent_authoring_draft(draft_id)
+            attempt = self.store.get_agent_validation_attempt(draft_id, run_id)
+            package = self.store.get_agent_authoring_revision(draft_id, revision)["package"]
+            report = attempt["report"]
+            manifest = snapshot["manifest"]
+            operation_id = report.get("operation_id")
+            if not isinstance(operation_id, str) or not operation_id:
+                return False
+            operation = self.store.get_agent_operation_by_id(draft_id, operation_id)
+            return bool(
+                run.mode == RunMode.agent
+                and run.agent_id == draft["agent_id"] == snapshot["agent_id"] == manifest.get("slug")
+                and snapshot["run_id"] == run_id
+                and snapshot["agent_version"] == manifest.get("version")
+                and snapshot["agent_digest"] == agent_digest(manifest)
+                and draft["status"] == "validating"
+                and draft["revision"] == revision == attempt["revision"] == report.get("revision") == operation["revision"]
+                and draft.get("validation_run_id") == run_id == attempt["run_id"] == report.get("run_id")
+                and report.get("type") == "trial"
+                and not attempt.get("completed_at")
+                and report.get("status") == "running"
+                and (draft.get("metadata") or {}).get("trial") == report
+                and operation["kind"] == "trial"
+                and operation["status"] in {"queued", "running"}
+                and (operation.get("detail") or {}).get("trial") == report
+                and package["manifest"] == manifest
+                and package.get("rules") == snapshot.get("rules_source")
+                and report.get("execution_digest") == agent_execution_digest(manifest, snapshot.get("rules_source"))
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+
     async def _execute_agent(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
         self.store.update_run(run_id, status=RunStatus.validating)
         self.store.append_event(run_id, "validation_started", {"agent_id": record.agent_id})
         try:
+            snapshot = None
             try:
                 snapshot = self.store.get_agent_run_snapshot(run_id)
                 agent = snapshot["manifest"]
@@ -1347,6 +1397,7 @@ class RunCoordinator:
             if (
                 self.settings.enforce_agent_acceptance
                 and run_id not in self._acceptance_runs
+                and not self._is_persisted_draft_trial(run_id, snapshot)
                 and not is_agent_executable(agent)
             ):
                 raise RunExecutionError(

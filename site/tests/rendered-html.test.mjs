@@ -128,6 +128,7 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   const zh = await readPage("zh", "agent-management");
   const en = await readPage("en", "agent-management");
   const component = await readFile(path.join("src", "components", "AgentManagementCenter.tsx"), "utf8");
+  const workbench = await readFile(path.join("src", "components", "AgentDraftWorkspace.tsx"), "utf8");
   const globalStyles = await readFile(path.join("src", "styles", "global.css"), "utf8");
   assert.match(zh, /Agent 管理中心/);
   assert.match(en, /Agent management center/);
@@ -140,9 +141,12 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   assert.match(component, /GET-only 真机验证/);
   assert.match(component, /发布并启用/);
   assert.match(component, /永久删除/);
-  assert.match(component, /validation-report/);
+  assert.match(workbench, /validation-report/);
   assert.match(component, /expectedAgentHash/);
-  assert.match(component, /validationReportDigest/);
+  assert.match(workbench, /validationReportDigest/);
+  assert.match(workbench, /检查修改内容/);
+  assert.match(workbench, /您的修改意见是？/);
+  assert.match(workbench, /sampleConfirmed/);
   assert.match(component, /agent-management-list/);
   assert.match(component, /state=unpublished/);
   assert.match(component, /method: "DELETE"/);
