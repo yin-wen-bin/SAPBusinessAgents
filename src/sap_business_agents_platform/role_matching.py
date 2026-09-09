@@ -561,8 +561,12 @@ class RoleMatchingService:
             if self.get(session_id)["status"] == "cancelled":
                 return
             runtime_snapshot = session.get("runtime") or {}
+            resolve = getattr(self.runtime, "resolve_legacy_snapshot", None)
+            if runtime_snapshot.get("reasoning_effort") is None and callable(resolve):
+                runtime_snapshot = resolve(runtime_snapshot)
+                self.store.update_role_matching_session(session_id, runtime=runtime_snapshot)
             provider_id = str(runtime_snapshot.get("provider_id") or "codex")
-            with self.runtime.pin(provider_id, runtime_snapshot.get("model")):
+            with self.runtime.pin(provider_id, runtime_snapshot.get("model"), runtime_snapshot.get("reasoning_effort")):
                 method = self.runtime.review_role_matching_feedback if previous else self.runtime.analyze_role_matching
                 raw = await method(
                     documents=runtime_documents,

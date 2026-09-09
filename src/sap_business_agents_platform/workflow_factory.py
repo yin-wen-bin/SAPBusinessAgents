@@ -187,15 +187,20 @@ class WorkflowDraftService:
         value = draft.composition.get("conversation")
         return value if isinstance(value, dict) else {}
 
-    def _runtime_binding(self, draft: WorkflowDraftRecord) -> tuple[str, str | None]:
+    def _runtime_binding(self, draft: WorkflowDraftRecord) -> tuple[str, str | None, str | None]:
         snapshot = self._conversation_state(draft).get("runtime_snapshot") or {}
         provider_id = str(
             snapshot.get("provider_id")
             or draft.composition.get("runtime_provider_id")
             or "codex"
         )
+        resolve = getattr(self.author, "resolve_legacy_snapshot", None)
+        if snapshot.get("reasoning_effort") is None and callable(resolve):
+            snapshot = resolve(snapshot)
+            self._conversation_state(draft)["runtime_snapshot"] = snapshot
+            self.store.save_workflow_draft(draft)
         model_id = snapshot.get("model")
-        return provider_id, str(model_id) if model_id else None
+        return provider_id, str(model_id) if model_id else None, snapshot.get("reasoning_effort")
 
     def _initialize_conversation(
         self,
@@ -527,9 +532,9 @@ class WorkflowDraftService:
                     "The selected Agent Runtime does not support workflow feedback.",
                     code="workflow_feedback_unavailable",
                 )
-            provider_id, model_id = self._runtime_binding(draft)
+            provider_id, model_id, reasoning_effort = self._runtime_binding(draft)
             pin = getattr(self.author, "pin", None)
-            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id, reasoning_effort) if callable(pin) else nullcontext()
             validation_report = None
             if pending.get("validation_run_id"):
                 try:
@@ -1134,9 +1139,9 @@ class WorkflowDraftService:
                 error_type="UnsupportedCapability",
             )
         try:
-            provider_id, model_id = self._runtime_binding(draft)
+            provider_id, model_id, reasoning_effort = self._runtime_binding(draft)
             pin = getattr(self.author, "pin", None)
-            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id, reasoning_effort) if callable(pin) else nullcontext()
             with context:
                 raw_review = await asyncio.wait_for(
                     review_workflow(
@@ -1402,10 +1407,10 @@ class WorkflowDraftService:
                 )
             catalog = compact_agent_catalog(self.agents)
             integration_catalog = await self._workflow_integration_catalog()
-            provider_id, model_id = self._runtime_binding(draft)
+            provider_id, model_id, reasoning_effort = self._runtime_binding(draft)
             draft.composition["runtime_provider_id"] = provider_id
             pin = getattr(self.author, "pin", None)
-            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id, reasoning_effort) if callable(pin) else nullcontext()
             with context:
                 result = await compose(
                     requirement=requirement,
@@ -2101,9 +2106,9 @@ class WorkflowDraftService:
             self._finalize_validation_report(draft, record)
             return
         try:
-            provider_id, model_id = self._runtime_binding(draft)
+            provider_id, model_id, reasoning_effort = self._runtime_binding(draft)
             pin = getattr(self.author, "pin", None)
-            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id, reasoning_effort) if callable(pin) else nullcontext()
             with context:
                 proposal = await repair(
                     workflow=draft.workflow,

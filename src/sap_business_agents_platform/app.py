@@ -46,6 +46,8 @@ from .models import (
     AgentDraftDeleteRequest,
     AgentDraftUpdate,
     AgentFeedbackRequest,
+    AgentTechnicalIdCheck,
+    AgentTechnicalIdUpdate,
     AgentLifecycleRequest,
     AgentLiveValidationRequest,
     AgentPublishRequest,
@@ -161,6 +163,15 @@ class RuntimeDefaultUpdate(BaseModel):
 class RuntimeModelUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model_id: str
+
+
+class RuntimeModelCheck(RuntimeModelUpdate):
+    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=40)
+
+
+class RuntimeReasoningUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reasoning_effort: str = Field(min_length=1, max_length=40)
 
 
 class RuntimeDisableUpdate(BaseModel):
@@ -291,7 +302,7 @@ def create_app(
             sdk_registry,
             {},
             provider_factories={
-                "codex": lambda model: CodexPlanner(settings.repository_root, model=model),
+                "codex": lambda model, reasoning_effort=None: CodexPlanner(settings.repository_root, model=model, reasoning_effort=reasoning_effort),
                 "workbuddy": lambda model: WorkBuddyPlanner(settings.repository_root, model=model),
             },
         )
@@ -2059,11 +2070,14 @@ def create_app(
     def apply_draft(draft_id: str) -> dict[str, Any]:
         guard_source_draft_write(draft_id)
         try:
-            return drafts.apply(draft_id).model_dump(mode="json")
+            store.get_draft(draft_id)
         except KeyError as exc:
             raise HTTPException(404, "Draft not found") from exc
-        except (DraftError, subprocess.CalledProcessError) as exc:
-            raise HTTPException(409, str(exc)) from exc
+        raise HTTPException(409, {
+            "code": "agent_managed_publication_required",
+            "message": "Import this draft into Agent management, confirm its technical ID and complete acceptance before publication.",
+            "import_url": f"/api/authoring/drafts/{draft_id}/import-to-management",
+        })
 
     @app.post("/api/authoring/agents", status_code=201)
     async def create_managed_agent_draft(payload: AgentAuthoringCreate) -> dict[str, Any]:
@@ -2089,6 +2103,20 @@ def create_app(
     def update_managed_agent_draft(draft_id: str, payload: AgentDraftUpdate) -> dict[str, Any]:
         try:
             return agent_lifecycle.update(draft_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/technical-id/check")
+    def check_agent_technical_id(draft_id: str, payload: AgentTechnicalIdCheck) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.check_technical_id(draft_id, payload.agent_id)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.put("/api/authoring/agents/{draft_id}/technical-id")
+    def update_agent_technical_id(draft_id: str, payload: AgentTechnicalIdUpdate) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.set_technical_id(draft_id, payload)
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
@@ -2666,7 +2694,7 @@ def create_app(
 
     @app.post("/api/system/sdk-runtimes/{provider_id}/models/check")
     async def check_runtime_model(
-        provider_id: str, payload: RuntimeModelUpdate
+        provider_id: str, payload: RuntimeModelCheck
     ) -> dict[str, Any]:
         try:
             method = getattr(sdk_registry, "check_model", None)
@@ -2675,6 +2703,8 @@ def create_app(
                     "Runtime model checks are unavailable.",
                     code="runtime_model_check_unavailable",
                 )
+            if payload.reasoning_effort is not None:
+                return await method(provider_id, payload.model_id, reasoning_effort=payload.reasoning_effort)
             return await method(provider_id, payload.model_id)
         except SDKManagerError as exc:
             status_code = 404 if exc.code == "runtime_not_found" else 409
@@ -2682,6 +2712,14 @@ def create_app(
                 status_code,
                 {"code": exc.code, "message": str(exc), "detail": exc.detail},
             ) from exc
+
+    @app.put("/api/system/sdk-runtimes/{provider_id}/models/{model_id}/reasoning-effort")
+    async def set_runtime_reasoning_effort(provider_id: str, model_id: str, payload: RuntimeReasoningUpdate) -> dict[str, Any]:
+        try:
+            return {"item": await sdk_registry.set_reasoning_effort(provider_id, model_id, payload.reasoning_effort)}
+        except SDKManagerError as exc:
+            raise HTTPException(404 if exc.code == "runtime_not_found" else 409,
+                                {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
 
     @app.put("/api/system/sdk-runtimes/{provider_id}/default-model")
     async def set_runtime_default_model(

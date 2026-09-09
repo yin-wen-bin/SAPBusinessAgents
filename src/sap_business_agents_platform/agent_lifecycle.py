@@ -20,6 +20,7 @@ from .manifests import AgentRepository, ManifestError, is_agent_executable, vali
 from .models import RunStatus, TERMINAL_STATUSES, utc_now
 from .acceptance import agent_execution_digest
 from .agent_authoring import AgentAuthoringMixin, package_changes
+from .agent_identity import AgentIdentityMixin, draft_identity_kind
 from .plugins import PluginError
 from .skills import SkillError, validate_agent_skill_dependencies
 from .workflows import WorkflowRepository, WorkflowError, agent_digest, validate_value
@@ -32,7 +33,7 @@ class AgentLifecycleError(RuntimeError):
         self.detail = detail
 
 
-class AgentLifecycleService(AgentAuthoringMixin):
+class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
     """Author, validate and publish immutable deterministic Agent packages."""
 
     def __init__(
@@ -56,8 +57,9 @@ class AgentLifecycleService(AgentAuthoringMixin):
         self.skills = skills
         self.draft_root = (settings.draft_root / "agents").resolve()
         self._import_lock = RLock()
+        self.store.register_published_agent_identities(self._registered_agent_ids())
         self._feedback_tasks: dict[str, asyncio.Task[Any]] = {}
-        self.feedback_timeout_seconds = 180
+        self.feedback_timeout_seconds = settings.agent_feedback_budget_seconds
 
     def _require_skill_dependencies(self, manifest: dict[str, Any]) -> list[str]:
         if self.skills is None:
@@ -159,6 +161,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
                     "gapId": payload.gap_id,
                 }
         self._assert_manageable(package["manifest"])
+        package["manifest"]["slug"] = self._assert_identity_available(package["manifest"]["slug"])
         draft_id = f"agent_draft_{uuid.uuid4().hex[:16]}"
         path = self._draft_path(draft_id)
         path.mkdir(parents=True, exist_ok=False)
@@ -180,6 +183,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
             "validation_run_id": None,
             "validation": {},
             "metadata": {
+                "identity": {"kind": "new_agent"},
                 "origin": {
                     "sourceAgentId": payload.source_agent_id,
                     "runId": payload.run_id,
@@ -191,7 +195,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
             "created_at": now,
             "updated_at": now,
         }
-        self.store.save_agent_authoring_draft(draft, package=package, diff=[])
+        self._save_initial_identity(draft, package)
         self.store.save_agent_conversation_turn(
             {
                 "draft_id": draft_id,
@@ -240,6 +244,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
                     raise AgentLifecycleError("Draft import identity conflict.", code="agent_draft_conflict")
                 source_hash = previous["metadata"]["source_package_hash"]
             else:
+                package["manifest"]["slug"] = self._assert_identity_available(package["manifest"]["slug"])
                 package["manifest"]["validation"] = _not_tested_validation()
                 try:
                     source_run = self.store.get_run(source.run_id)
@@ -257,7 +262,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
                     "target_version": package["manifest"].get("version", "0.1.0"),
                     "risk_class": "behavior_change", "validation_run_id": None,
                     "validation": _not_tested_validation(),
-                    "metadata": {"source_draft_id": source_id, "source_run_id": source.run_id,
+                    "metadata": {"identity": {"kind": "new_agent"}, "source_draft_id": source_id, "source_run_id": source.run_id,
                                  "source_package_hash": source_hash, "source_validation": source.validation,
                                  "source_result_available": source_result is not None,
                                  "source_summary": copy.deepcopy(source_result.summary) if source_result else None,
@@ -277,7 +282,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
                                  "origin": copy.deepcopy(source.origin)},
                     "created_at": now, "updated_at": now,
                 }
-                self.store.save_agent_authoring_draft(draft, package=package, diff=[])
+                self._save_initial_identity(draft, package)
             if not self.store.list_agent_conversation_turns(managed_id):
                 self.store.save_agent_conversation_turn({
                     "draft_id": managed_id, "turn": 1, "parent_turn": None, "kind": "initial",
@@ -326,13 +331,14 @@ class AgentLifecycleService(AgentAuthoringMixin):
             "validation_run_id": None,
             "validation": {},
             "metadata": {
+                "identity": {"kind": "version_upgrade", "confirmed_agent_id": agent_id, "confirmed_at": now},
                 "version_origin": {"bump": bump},
                 "runtime_snapshot": self._new_runtime_snapshot(),
             },
             "created_at": now,
             "updated_at": now,
         }
-        self.store.save_agent_authoring_draft(draft, package=package, diff=[])
+        self._save_initial_identity(draft, package)
         return self.get_draft(draft_id)
 
     def get_draft(self, draft_id: str) -> dict[str, Any]:
@@ -343,10 +349,11 @@ class AgentLifecycleService(AgentAuthoringMixin):
         sample = ({**(sample_operation.get("detail") or {}), "run_id": sample_operation["operation_id"], "status": sample_operation["status"], "revision": sample_operation["revision"]} if sample_operation and int(sample_operation["revision"]) == int(draft["revision"]) else None)
         return {
             **draft,
+            "technical_identity": self.technical_identity(draft),
             "package": revision["package"],
             "diff": revision["diff"],
             "revisions": self.store.list_agent_authoring_revisions(draft_id),
-            "conversation": self.store.list_agent_conversation_turns(draft_id),
+            "conversation": [self._public_feedback_turn(turn) for turn in self.store.list_agent_conversation_turns(draft_id)],
             "active_operation": self.store.get_agent_operation(draft_id),
             "sample_discovery": sample,
             **assessment,
@@ -382,6 +389,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
                 {
                     **draft,
                     "sync_error": sync_error,
+                    "technical_identity": self.technical_identity(draft),
                     "title": copy.deepcopy((manifest or {}).get("title") or {}),
                     "module": (manifest or {}).get("module"),
                     "management": {
@@ -600,6 +608,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
             raise AgentLifecycleError("Find and confirm a real sample before trial execution.", code="agent_sample_confirmation_required")
         draft = self.store.get_agent_authoring_draft(draft_id)
         revision = int(expected_revision if expected_revision is not None else draft["revision"])
+        self.require_technical_identity(draft)
         secret_fingerprints: dict[str, Any] = {}
         if sensitive_inputs:
             descriptor = getattr(getattr(self.coordinator, "secret_protector", None), "hmac_descriptor", None)
@@ -709,6 +718,11 @@ class AgentLifecycleService(AgentAuthoringMixin):
 
     def _formal_acceptance(self, draft: dict[str, Any], package: dict[str, Any]) -> dict[str, Any] | None:
         report = draft.get("validation") or {}
+        identity = (draft.get("metadata") or {}).get("identity") or {}
+        if identity.get("validation_invalidated_revision") and (
+            report.get("agent_id") != draft["agent_id"] or report.get("revision") != draft["revision"]
+        ):
+            return None
         digest = _execution_digest(package["manifest"], package.get("rules"))
         if report.get("verdict") != "PASS" or report.get("type") == "trial" or report.get("execution_digest", report.get("agent_execution_digest")) != digest:
             return None
@@ -731,6 +745,11 @@ class AgentLifecycleService(AgentAuthoringMixin):
         trial = copy.deepcopy((draft.get("metadata") or {}).get("trial"))
         static = copy.deepcopy((draft.get("metadata") or {}).get("static_checks") or {})
         blockers = [] if acceptance else ["agent_formal_acceptance_required"]
+        identity = self.technical_identity(draft)
+        if identity["kind"] == "unknown":
+            blockers.append("agent_identity_unknown")
+        elif not identity["confirmed"]:
+            blockers.append("agent_technical_id_confirmation_required")
         if static.get("errors"):
             blockers.append("agent_static_validation_failed")
         if draft.get("status") == "published":
@@ -757,6 +776,8 @@ class AgentLifecycleService(AgentAuthoringMixin):
         draft = self.store.get_agent_authoring_draft(draft_id)
         if int(payload.expected_revision) != int(draft["revision"]):
             raise AgentLifecycleError("Agent draft revision changed.", code="agent_draft_conflict")
+        self.require_technical_identity(draft)
+        self._assert_identity_available(draft["agent_id"], draft=draft)
         package = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))["package"]
         manifest = package["manifest"]
         summary = self._validation_summary(draft, package)
@@ -767,7 +788,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
             raise AgentLifecycleError("Agent validation report changed.", code="agent_validation_report_conflict")
         minimum = self._minimum_bump(draft, package)
         target_version = str(payload.target_version or draft.get("target_version") or manifest.get("version") or "0.1.0")
-        base_version = draft.get("source_version")
+        base_version = draft.get("source_version") if draft_identity_kind(draft) == "version_upgrade" else None
         if base_version and _bump_rank(_bump_kind(base_version, target_version)) < _bump_rank(minimum):
             raise AgentLifecycleError(
                 f"This change requires at least a {minimum} version bump.",
@@ -840,7 +861,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
                 lifecycle.update(active_version=None, active_digest=None, lifecycle_state="inactive", state="inactive")
         self._write_json(agent_dir / "publication.json", lifecycle)
         commit_sha = self._commit_agent_change(agent_dir, f"Publish {draft['agent_id']} v{target_version}")
-        self._audit(draft["agent_id"], "published", draft.get("source_version"), target_version, agent_digest(manifest), branch, commit_sha, {"activated": bool(payload.activate)})
+        self._audit(draft["agent_id"], "published", base_version, target_version, agent_digest(manifest), branch, commit_sha, {"activated": bool(payload.activate)})
         draft.update(status="published", target_version=target_version, validation={**report, "branch": branch, "commit_sha": commit_sha}, updated_at=utc_now())
         self.store.save_agent_authoring_draft(draft, expected_revision=int(payload.expected_revision), operation_id=operation_id)
         # Offline batch publishers refresh their isolated API/preview once after all releases.
@@ -958,7 +979,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
         return dependencies
 
     def _risk_class(self, draft: dict[str, Any], package: dict[str, Any]) -> str:
-        if not draft.get("source_version"):
+        if draft_identity_kind(draft) != "version_upgrade" or not draft.get("source_version"):
             return "behavior_change"
         try:
             source = self.agents.package(draft["agent_id"], draft["source_version"], draft.get("source_hash"))
@@ -967,7 +988,7 @@ class AgentLifecycleService(AgentAuthoringMixin):
         return "metadata_only" if _execution_digest(source["manifest"], source.get("rules_source")) == _execution_digest(package["manifest"], package.get("rules")) else "behavior_change"
 
     def _minimum_bump(self, draft: dict[str, Any], package: dict[str, Any]) -> str:
-        if not draft.get("source_version"):
+        if draft_identity_kind(draft) != "version_upgrade" or not draft.get("source_version"):
             return "minor"
         try:
             source = self.agents.get_version(draft["agent_id"], draft["source_version"], draft.get("source_hash"))

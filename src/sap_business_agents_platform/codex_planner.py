@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
+import subprocess
 import tempfile
+from collections import deque
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -346,9 +349,12 @@ class Planner(Protocol):
 
 
 class CodexPlanner:
-    def __init__(self, repository_root: Path, model: str | None = None) -> None:
+    def __init__(self, repository_root: Path, model: str | None = None, reasoning_effort: str | None = None) -> None:
         self.repository_root = repository_root
         self.model = model
+        self.reasoning_effort = reasoning_effort
+        self._authoring_clients: dict[str, dict[str, Any]] = {}
+        self._closed_authoring_operations: deque[str] = deque(maxlen=1024)
 
     async def plan(
         self,
@@ -387,7 +393,7 @@ class CodexPlanner:
                         "or invent SAP services. Return only the requested structured output."
                     ),
                 )
-            raw, plan = await _run_plan_turn(thread, prompt, phase="initial planning")
+            raw, plan = await _run_plan_turn(thread, prompt, phase="initial planning", reasoning_effort=self.reasoning_effort)
             return PlannerDecision(
                 intent=str(raw.get("intent") or query),
                 needs_clarification=bool(raw.get("needs_clarification")),
@@ -426,7 +432,7 @@ class CodexPlanner:
                 approval_mode=ApprovalMode.deny_all,
                 model=self.model,
             )
-            raw, plan = await _run_plan_turn(thread, prompt, phase="schema grounding")
+            raw, plan = await _run_plan_turn(thread, prompt, phase="schema grounding", reasoning_effort=self.reasoning_effort)
             return PlannerDecision(
                 intent=str(raw.get("intent") or decision.intent or query),
                 needs_clarification=bool(raw.get("needs_clarification")),
@@ -468,7 +474,7 @@ Rules:
                 approval_mode=ApprovalMode.deny_all,
                 model=self.model,
             )
-            result = await thread.run(prompt, output_schema=SUMMARY_OUTPUT_SCHEMA)
+            result = await thread.run(prompt, output_schema=SUMMARY_OUTPUT_SCHEMA, effort=self.reasoning_effort)
             raw = json.loads(result.final_response)
             return {"zh": str(raw["zh"]), "en": str(raw["en"])}
 
@@ -525,7 +531,7 @@ Return only the required structured object.
                 approval_mode=ApprovalMode.deny_all,
                 model=self.model,
             )
-            result = await thread.run(prompt, output_schema=FREE_QUERY_FEEDBACK_REVIEW_SCHEMA)
+            result = await thread.run(prompt, output_schema=FREE_QUERY_FEEDBACK_REVIEW_SCHEMA, effort=self.reasoning_effort)
             return json.loads(result.final_response)
 
     async def revise_free_query_presentation(
@@ -565,7 +571,7 @@ allowed list. Change only wording, language, ordering, or table layout. Return J
                 model=self.model,
             )
             result = await thread.run(
-                prompt, output_schema=FREE_QUERY_PRESENTATION_REVISION_SCHEMA
+                prompt, output_schema=FREE_QUERY_PRESENTATION_REVISION_SCHEMA, effort=self.reasoning_effort
             )
             raw = json.loads(result.final_response)
             presentation = RunPresentation.model_validate(raw["presentation"])
@@ -611,7 +617,7 @@ requirements; never claim a rule has been implemented or a process completed.
                 approval_mode=ApprovalMode.deny_all,
                 model=self.model,
             )
-            result = await thread.run(prompt, output_schema=AUTHOR_OUTPUT_SCHEMA)
+            result = await thread.run(prompt, output_schema=AUTHOR_OUTPUT_SCHEMA, effort=self.reasoning_effort)
             raw = json.loads(result.final_response)
             return {
                 "content_zh": str(raw["content_zh"]),
@@ -627,6 +633,7 @@ requirements; never claim a rule has been implemented or a process completed.
         package: dict[str, Any],
         history: list[dict[str, Any]] | None = None,
         thread_id: str | None = None,
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
         if not self.model:
             raise ValueError("agent_runtime_binding_missing")
@@ -667,8 +674,83 @@ exec, dynamic imports or reflection. Do not edit validation or claim verificatio
 the platform invalidates acceptance after behavior changes. Return JSON only.
 """.strip()
         with tempfile.TemporaryDirectory(prefix="sapba-agent-authoring-") as isolated:
-            async with _agent_authoring_codex(Path(isolated)) as codex:
+            client = _agent_authoring_codex(Path(isolated))
+            key = operation_id or f"local-{id(client)}"
+            # SDK startup uses to_thread. Shield it: cancelling the await must not lose
+            # ownership of a process that the worker thread may still create later.
+            start = asyncio.create_task(client.__aenter__())
+            state: dict[str, Any] = {"client": client, "start": start, "proc": None, "cleanup": None}
+            self._authoring_clients[key] = state
+            try:
+                codex = await asyncio.shield(start)
+                state["proc"] = self._authoring_process(client)
                 return await self._run_agent_feedback(codex, prompt, package, thread_id, isolated)
+            finally:
+                cleanup = asyncio.create_task(self._close_authoring_client(key, state))
+                state["cleanup"] = cleanup
+                # A second cancellation can end this coroutine, but not cleanup. Keep
+                # the state registered until shutdown is actually confirmed.
+                await asyncio.shield(cleanup)
+
+    @staticmethod
+    def _authoring_process(client: Any) -> Any:
+        return getattr(getattr(getattr(client, "_client", None), "_sync", None), "_proc", None)
+
+    async def _close_authoring_client(self, key: str, state: dict[str, Any]) -> None:
+        try:
+            try:
+                await asyncio.shield(state["start"])
+            except asyncio.CancelledError:
+                # A cancelled cleanup must not mistake an in-flight worker-thread
+                # startup for "no process" and release ownership prematurely.
+                if not state["start"].done() or state["start"].cancelled():
+                    raise
+            except Exception:
+                pass
+            client = state["client"]
+            state["proc"] = state.get("proc") or self._authoring_process(client)
+            close = getattr(client, "close", None)
+            if callable(close):
+                await close()
+            else:
+                await client.__aexit__(None, None, None)
+            proc = state.get("proc")
+            if proc is not None and proc.poll() is None:
+                await asyncio.to_thread(proc.wait, timeout=1)
+            if proc is None or proc.poll() is not None:
+                self._closed_authoring_operations.append(key)
+                self._authoring_clients.pop(key, None)
+        except Exception:
+            # The operation remains owned and cannot be declared safe to retry.
+            return
+
+    async def abort_agent_feedback(self, operation_id: str) -> bool:
+        """Emergency cleanup is restricted to the exact process owned by this operation."""
+        if operation_id in self._closed_authoring_operations:
+            return True
+        state = self._authoring_clients.get(operation_id)
+        if state is None:
+            return False
+        proc = state.get("proc") or self._authoring_process(state["client"])
+        state["proc"] = proc
+        if proc is None:
+            return False
+        if proc is not None and proc.poll() is None:
+            if os.name == "nt":
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                await asyncio.wait_for(killer.wait(), timeout=8)
+            else:
+                proc.kill()
+            await asyncio.to_thread(proc.wait, timeout=1)
+        # Startup may still be creating/initializing resources in a worker thread.
+        # An exited PID alone does not prove that startup and its cleanup are done.
+        start, cleanup = state.get("start"), state.get("cleanup")
+        return bool(proc.poll() is not None and start is not None and start.done() and not start.cancelled()
+                    and cleanup is not None and cleanup.done())
 
     async def _run_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str) -> dict[str, Any]:
         from openai_codex import ApprovalMode, Sandbox
@@ -688,7 +770,7 @@ the platform invalidates acceptance after behavior changes. Return JSON only.
                     "files, run commands, contact SAP, or edit the repository."
                 ),
             )
-        result = await thread.run(prompt, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA)
+        result = await thread.run(prompt, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA, effort=self.reasoning_effort)
         raw = json.loads(result.final_response)
         if raw.get("action") in {"clarify", "reply"}:
             return {"action": raw["action"], "summary": raw["summary"], "thread_id": thread.id}
@@ -834,7 +916,7 @@ return non_sap_operation_count. Do not call tools, inspect files, execute SAP or
             else:
                 understanding = _decode_role_matching_output(
                     await _await_with_hard_timeout(
-                        thread.run(understanding_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA),
+                        thread.run(understanding_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort),
                         timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
                     )
                 )
@@ -913,7 +995,7 @@ files.
                         page_analysis = _decode_role_matching_output(
                             await _await_with_hard_timeout(
                                 page_thread.run(
-                                    page_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA
+                                    page_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort
                                 ),
                                 timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
                             )
@@ -1015,7 +1097,7 @@ execute SAP, edit files or invent Agents.
 """.strip()
                     final_analysis = _decode_role_matching_output(
                         await _await_with_hard_timeout(
-                            thread.run(final_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA),
+                            thread.run(final_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort),
                             timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
                         )
                     )
@@ -1110,7 +1192,7 @@ are not workflow terminal outputs.
                         "edit files, execute SAP, or create write-capable steps."
                     ),
                 )
-            result = await thread.run(prompt, output_schema=WORKFLOW_REVIEW_OUTPUT_SCHEMA)
+            result = await thread.run(prompt, output_schema=WORKFLOW_REVIEW_OUTPUT_SCHEMA, effort=self.reasoning_effort)
             raw = json.loads(result.final_response)
             return {
                 "verdict": str(raw["verdict"]),
@@ -1153,7 +1235,7 @@ Rules:
                 approval_mode=ApprovalMode.deny_all,
                 model=self.model,
             )
-            result = await thread.run(prompt, output_schema=WORKFLOW_REPAIR_OUTPUT_SCHEMA)
+            result = await thread.run(prompt, output_schema=WORKFLOW_REPAIR_OUTPUT_SCHEMA, effort=self.reasoning_effort)
             raw = json.loads(result.final_response)
             connections = json.loads(str(raw["connections_json"]))
             if not isinstance(connections, list):
@@ -1207,7 +1289,7 @@ Rules:
                         "execute SAP, edit files, invent catalog IDs, or directly perform an external action."
                     ),
                 )
-            result = await thread.run(prompt, output_schema=WORKFLOW_COMPOSITION_OUTPUT_SCHEMA)
+            result = await thread.run(prompt, output_schema=WORKFLOW_COMPOSITION_OUTPUT_SCHEMA, effort=self.reasoning_effort)
             raw = json.loads(result.final_response)
             try:
                 proposal = json.loads(str(raw.get("proposal_json") or "{}"))
@@ -1220,6 +1302,7 @@ Rules:
                         "defaults, gaps, scope, or safety boundaries."
                     ),
                     output_schema=WORKFLOW_COMPOSITION_OUTPUT_SCHEMA,
+                    effort=self.reasoning_effort,
                 )
                 raw = json.loads(repair.final_response)
                 proposal = json.loads(str(raw.get("proposal_json") or "{}"))
@@ -1281,7 +1364,7 @@ Rules:
                         "or weaken deterministic safety and completeness contracts."
                     ),
                 )
-            result = await thread.run(prompt, output_schema=WORKFLOW_FEEDBACK_OUTPUT_SCHEMA)
+            result = await thread.run(prompt, output_schema=WORKFLOW_FEEDBACK_OUTPUT_SCHEMA, effort=self.reasoning_effort)
             raw = json.loads(result.final_response)
             try:
                 proposal = json.loads(str(raw.get("proposal_json") or "null"))
@@ -1542,8 +1625,9 @@ async def _run_plan_turn(
     prompt: str,
     *,
     phase: str,
+    reasoning_effort: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    result = await thread.run(prompt, output_schema=PLANNER_OUTPUT_SCHEMA)
+    result = await thread.run(prompt, output_schema=PLANNER_OUTPUT_SCHEMA, effort=reasoning_effort)
     raw = json.loads(result.final_response)
     try:
         plan = _decode_plan_json(raw)
@@ -1556,7 +1640,7 @@ Re-emit the same intent, scope, GET-only methods, filters, bounds, services, ent
 Change only the JSON syntax needed for plan_json to decode as one object. Do not add tools, calls,
 fields, assumptions, or broader filters. Return only the requested structured output.
 """.strip()
-        result = await thread.run(repair_prompt, output_schema=PLANNER_OUTPUT_SCHEMA)
+        result = await thread.run(repair_prompt, output_schema=PLANNER_OUTPUT_SCHEMA, effort=reasoning_effort)
         raw = json.loads(result.final_response)
         plan = _decode_plan_json(raw)
     return raw, plan

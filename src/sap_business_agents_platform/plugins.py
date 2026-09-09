@@ -772,13 +772,32 @@ class AgentRuntimeCapability:
             }
         return method(provider_id)
 
-    def pin(self, provider_id: str | None, model_id: str | None = None) -> Any:
+    def snapshot_for_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+        # This capability owns a PluginManager, not an SDKManager. Resolve model
+        # settings through the same router that will execute the feedback turn.
+        method = getattr(self._planner(), "snapshot_for_model", None)
+        if not callable(method):
+            raise PluginError(
+                "The Runtime cannot resolve the bound model configuration.",
+                code="agent_runtime_snapshot_failed",
+            )
+        return method(provider_id, model_id)
+
+    def pin(self, provider_id: str | None, model_id: str | None = None, reasoning_effort: str | None = None) -> Any:
         method = getattr(self._planner(), "pin", None)
         if not callable(method):
             from contextlib import nullcontext
 
             return nullcontext()
-        return method(provider_id, model_id)
+        return method(provider_id, model_id, reasoning_effort)
+
+    def resolve_legacy_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        method = getattr(self._planner(), "resolve_legacy_snapshot", None)
+        return method(snapshot) if callable(method) else snapshot
+
+    async def abort_agent_feedback(self, operation_id: str) -> bool:
+        method = getattr(self._planner(), "abort_agent_feedback", None)
+        return bool(await method(operation_id)) if callable(method) else False
 
     def bind_events(self, sink: Any) -> Any:
         method = getattr(self._planner(), "bind_events", None)

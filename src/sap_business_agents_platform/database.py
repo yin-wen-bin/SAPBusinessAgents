@@ -356,6 +356,13 @@ class RunStore:
                 );
                 CREATE INDEX IF NOT EXISTS agent_management_events_agent
                     ON agent_management_events(agent_id, created_at);
+                CREATE TABLE IF NOT EXISTS agent_published_identities (
+                    agent_id TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL
+                );
+                INSERT OR IGNORE INTO agent_published_identities(agent_id, registered_at)
+                    SELECT agent_id, MIN(created_at) FROM agent_management_events
+                    WHERE action IN ('published', 'deleted') GROUP BY agent_id;
                 CREATE TABLE IF NOT EXISTS agent_run_snapshots (
                     run_id TEXT PRIMARY KEY,
                     agent_id TEXT NOT NULL,
@@ -925,6 +932,9 @@ class RunStore:
         }
         encoded: dict[str, Any] = {}
         for key, value in values.items():
+            if key == "runtime":
+                encoded["runtime_json"] = _dump(value.model_dump(mode="json") if hasattr(value, "model_dump") else value)
+                continue
             if key not in allowed:
                 raise ValueError(f"Unsupported free-query session field: {key}")
             if key == "pending_feedback_json" and value is not None and not isinstance(value, str):
@@ -2116,10 +2126,13 @@ class RunStore:
         self, item: dict[str, Any], *, package: dict[str, Any] | None = None,
         diff: list[dict[str, Any]] | None = None,
         expected_revision: int | None = None, operation_id: str | None = None,
+        deadline_check: Any = None,
     ) -> None:
         now = item.get("updated_at") or utc_now()
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if callable(deadline_check):
+                deadline_check()
             if expected_revision is not None:
                 current = connection.execute(
                     "SELECT revision, status FROM agent_authoring_drafts WHERE draft_id = ?",
@@ -2137,6 +2150,23 @@ class RunStore:
                 raise ValueError("agent_draft_operation_active")
             if operation_id is not None and active is None:
                 raise ValueError("agent_draft_operation_stale")
+            from .agent_identity import draft_identity_kind, validate_agent_id
+            identity_kind = draft_identity_kind(item)
+            if identity_kind in {"new_agent", "version_upgrade"}:
+                validate_agent_id(item["agent_id"])
+                conflict = connection.execute(
+                    """SELECT 1 FROM agent_authoring_drafts WHERE agent_id = ? AND draft_id != ?
+                    AND status NOT IN ('published', 'cancelled') LIMIT 1""",
+                    (item["agent_id"], item["draft_id"]),
+                ).fetchone()
+                permanent = connection.execute(
+                    "SELECT 1 FROM agent_published_identities WHERE agent_id = ?", (item["agent_id"],),
+                ).fetchone()
+                if conflict or (permanent and identity_kind == "new_agent" and item["status"] != "published"):
+                    raise ValueError("agent_technical_id_taken")
+                if item["status"] == "published":
+                    connection.execute("INSERT OR IGNORE INTO agent_published_identities VALUES (?, ?)",
+                                       (item["agent_id"], now))
             connection.execute(
                 """INSERT OR REPLACE INTO agent_authoring_drafts
                 (draft_id, agent_id, source_type, status, revision, path, thread_id,
@@ -2160,6 +2190,8 @@ class RunStore:
                 if existing is not None:
                     if _load(existing["package_json"], {}) != package:
                         raise ValueError("agent_revision_immutable")
+                    if callable(deadline_check):
+                        deadline_check()
                     return
                 connection.execute(
                     """INSERT INTO agent_authoring_revisions
@@ -2170,6 +2202,26 @@ class RunStore:
                         _dump(diff or []), now,
                     ),
                 )
+            if callable(deadline_check):
+                deadline_check()
+
+    def register_published_agent_identities(self, agent_ids: set[str]) -> None:
+        """Reserve formal IDs permanently, including inactive and residual published packages."""
+        with self._lock, self._connect() as connection:
+            connection.executemany("INSERT OR IGNORE INTO agent_published_identities VALUES (?, ?)",
+                                   [(agent_id, utc_now()) for agent_id in sorted(agent_ids)])
+
+    def agent_identity_taken(self, agent_id: str, *, draft_id: str | None = None, allow_published: bool = False) -> bool:
+        """Read-only hint. The saving transaction repeats the check before assigning the name."""
+        with self._connect() as connection:
+            if not allow_published and connection.execute(
+                "SELECT 1 FROM agent_published_identities WHERE agent_id = ?", (agent_id,),
+            ).fetchone():
+                return True
+            return connection.execute(
+                """SELECT 1 FROM agent_authoring_drafts WHERE agent_id = ? AND draft_id != ?
+                AND status NOT IN ('published', 'cancelled') LIMIT 1""", (agent_id, draft_id or ""),
+            ).fetchone() is not None
 
     def reserve_agent_operation(
         self, draft_id: str, expected_revision: int, kind: str,
@@ -2378,7 +2430,7 @@ class RunStore:
                     )
                     continue
 
-                detail = {"status": "interrupted", "codes": ["agent_operation_interrupted"],
+                detail = {**(_load(row["detail_json"], {}) or {}), "status": "interrupted", "codes": ["agent_operation_interrupted"],
                           "revision": row["revision"], "completed_at": now}
                 if row["kind"] == "sample_discovery":
                     detail.update(run_id=row["operation_id"], bounded_discovery=True)
@@ -2392,13 +2444,27 @@ class RunStore:
                     "UPDATE agent_draft_operations SET status = 'interrupted', detail_json = ?, updated_at = ? WHERE operation_id = ?",
                     (_dump(detail), now, row["operation_id"]),
                 )
-                connection.execute(
-                    """UPDATE agent_conversation_turns SET status = 'failed', completed_at = ?, decision_json = ?
-                    WHERE draft_id = ? AND status IN ('queued','running')
-                    AND json_extract(decision_json, '$.task_id') = ?""",
-                    (now, _dump({"task_id": row["operation_id"], "error_code": "agent_operation_interrupted"}),
-                     row["draft_id"], row["operation_id"]),
-                )
+                turns = connection.execute(
+                    """SELECT turn, decision_json FROM agent_conversation_turns WHERE draft_id = ?
+                    AND status IN ('queued','running') AND json_extract(decision_json, '$.task_id') = ?""",
+                    (row["draft_id"], row["operation_id"]),
+                ).fetchall()
+                for turn in turns:
+                    decision = _load(turn["decision_json"], {}) or {}
+                    decision.update(error_code="agent_operation_interrupted")
+                    execution = decision.get("execution")
+                    if isinstance(execution, dict):
+                        execution["completed_at"] = now
+                        if execution.get("started_at"):
+                            from datetime import datetime
+                            try:
+                                execution["elapsed_seconds"] = max(0, (datetime.fromisoformat(now) - datetime.fromisoformat(execution["started_at"])).total_seconds())
+                            except (TypeError, ValueError):
+                                pass
+                    connection.execute(
+                        """UPDATE agent_conversation_turns SET status = 'failed', completed_at = ?, decision_json = ?
+                        WHERE draft_id = ? AND turn = ?""", (now, _dump(decision), row["draft_id"], turn["turn"]),
+                    )
 
     def get_agent_authoring_draft(self, draft_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -2605,6 +2671,9 @@ class RunStore:
         commit_sha: str | None = None, detail: dict[str, Any] | None = None,
     ) -> None:
         with self._lock, self._connect() as connection:
+            if action in {"published", "deleted"}:
+                connection.execute("INSERT OR IGNORE INTO agent_published_identities VALUES (?, ?)",
+                                   (agent_id, utc_now()))
             connection.execute(
                 """INSERT INTO agent_management_events
                 (event_id, agent_id, action, from_version, to_version, agent_hash,

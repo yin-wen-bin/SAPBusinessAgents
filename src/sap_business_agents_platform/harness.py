@@ -1771,6 +1771,7 @@ class CodexHarnessController:
         query: str,
         thread_id: str | None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> HarnessOutcome:
         run_started = time.monotonic()
         deadline_monitor: asyncio.Task[None] | None = None
@@ -1842,6 +1843,7 @@ class CodexHarnessController:
                     )
                 turn = await thread.turn(
                     prompt,
+                    effort=reasoning_effort,
                     approval_mode=_approval_mode(),
                     model=model,
                     output_schema=output_schema(_HARNESS_OUTPUT_SCHEMA, state.get("acceptance_spec")),

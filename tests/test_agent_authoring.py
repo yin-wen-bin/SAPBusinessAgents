@@ -55,7 +55,8 @@ class Runtime:
 
 
 def create(service):
-    return asyncio.run(service.create(AgentAuthoringCreate(source="blank", agentId="author-test", module="SD")))
+    draft = asyncio.run(service.create(AgentAuthoringCreate(source="blank", agentId="author-test", module="SD")))
+    return service.set_technical_id(draft["draft_id"], SimpleNamespace(expected_revision=1, agent_id=draft["agent_id"]))
 
 
 def feedback_payload(draft, text="请说明并调整", request="req-1"):

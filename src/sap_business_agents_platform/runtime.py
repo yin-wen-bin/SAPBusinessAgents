@@ -50,7 +50,7 @@ class CodexRuntimeProbe:
         }
 
     async def check_model(
-        self, definition: SDKDefinition, model_id: str, workspace: Path
+        self, definition: SDKDefinition, model_id: str, workspace: Path, *, reasoning_effort: str
     ) -> dict[str, Any]:
         del definition
         try:
@@ -61,7 +61,8 @@ class CodexRuntimeProbe:
             ) from exc
 
         async def execute() -> None:
-            async with AsyncCodex() as codex:
+            from .codex_planner import _agent_authoring_codex
+            async with _agent_authoring_codex(workspace) as codex:
                 thread = await codex.thread_start(
                     cwd=str(workspace),
                     ephemeral=True,
@@ -75,6 +76,7 @@ class CodexRuntimeProbe:
                 )
                 result = await thread.run(
                     'Return exactly {"status":"ok"}.',
+                    effort=reasoning_effort,
                     output_schema={
                         "type": "object",
                         "properties": {"status": {"type": "string", "const": "ok"}},
@@ -254,8 +256,8 @@ class RuntimeRouter:
         self.manager = manager
         self.providers = dict(providers)
         self.provider_factories = dict(provider_factories or {})
-        self._provider_cache: dict[tuple[str, str | None], Any] = {}
-        self._pinned_binding: ContextVar[tuple[str, str | None] | None] = ContextVar(
+        self._provider_cache: dict[tuple[str, str | None, str | None], Any] = {}
+        self._pinned_binding: ContextVar[tuple[str, str | None, str | None] | None] = ContextVar(
             "sapba_runtime_binding", default=None
         )
 
@@ -298,12 +300,13 @@ class RuntimeRouter:
             )
         snapshot = self.manager.runtime_snapshot(selected)
         model = snapshot.get("model")
-        self._provider(selected, str(model) if model else None)
+        self._provider(selected, str(model) if model else None, snapshot.get("reasoning_effort"))
         snapshot["configuration_digest"] = hashlib.sha256(
             json.dumps(
                 {
                     "sdk_configuration_digest": snapshot["configuration_digest"],
                     "model": snapshot["model"],
+                    "reasoning_effort": snapshot.get("reasoning_effort"),
                     "model_catalog_digest": snapshot.get("model_catalog_digest"),
                     "model_check_digest": snapshot.get("model_check_digest"),
                     "runtime_configuration_revision": snapshot.get(
@@ -317,8 +320,12 @@ class RuntimeRouter:
         ).hexdigest()
         return snapshot
 
+    def snapshot_for_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+        """Read the latest checked settings for a bound model, not the default model."""
+        return dict(self.manager.runtime_snapshot_for_model(provider_id, model_id))
+
     @contextmanager
-    def pin(self, provider_id: str | None, model_id: str | None = None) -> Iterator[None]:
+    def pin(self, provider_id: str | None, model_id: str | None = None, reasoning_effort: str | None = None) -> Iterator[None]:
         selected = provider_id or self.manager.default_provider_id
         if not selected:
             raise RuntimeUnavailableError(
@@ -326,10 +333,15 @@ class RuntimeRouter:
                 code="runtime_default_not_configured",
             )
         if model_id is None:
-            model = self.manager.runtime_snapshot(selected).get("model")
+            snapshot = self.manager.runtime_snapshot(selected)
+            model = snapshot.get("model")
             model_id = str(model) if model else None
-        self._provider(selected, model_id)
-        token = self._pinned_binding.set((selected, model_id))
+            reasoning_effort = reasoning_effort if reasoning_effort is not None else snapshot.get("reasoning_effort")
+        if reasoning_effort is None and model_id:
+            snapshot = self.manager.runtime_snapshot_for_model(selected, model_id)
+            reasoning_effort = snapshot.get("reasoning_effort")
+        self._provider(selected, model_id, reasoning_effort)
+        token = self._pinned_binding.set((selected, model_id, reasoning_effort))
         try:
             yield
         finally:
@@ -358,6 +370,23 @@ class RuntimeRouter:
 
     async def review_agent_feedback(self, *args: Any, **kwargs: Any) -> Any:
         return await self._invoke("review_agent_feedback", *args, **kwargs)
+
+    async def abort_agent_feedback(self, operation_id: str) -> bool:
+        return bool(await self._invoke("abort_agent_feedback", operation_id))
+
+    def resolve_legacy_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Bind future turns once; callers persist separately from immutable run history."""
+        if snapshot.get("reasoning_effort") is not None:
+            return snapshot
+        provider_id = str(snapshot.get("provider_id") or "codex")
+        model_id = snapshot.get("model")
+        if not model_id:
+            raise RuntimeUnavailableError("The historical model was not recorded; create a new session.", code="runtime_binding_incomplete")
+        current = self.manager.runtime_snapshot_for_model(provider_id, str(model_id))
+        current["model_source"] = snapshot.get("model_source") or "historical_session"
+        current["reasoning_effort_source"] = "legacy_future_binding"
+        current["legacy_configuration_digest"] = snapshot.get("configuration_digest")
+        return current
 
     async def compose_workflow(self, *args: Any, **kwargs: Any) -> Any:
         return await self._invoke("compose_workflow", *args, **kwargs)
@@ -411,12 +440,19 @@ class RuntimeRouter:
             )
         return await method(*args, **kwargs)
 
-    def _provider(self, provider_id: str, model_id: str | None = None) -> Any:
+    @property
+    def current_reasoning_effort(self) -> str | None:
+        pinned = self._pinned_binding.get()
+        return pinned[2] if pinned else self.manager.runtime_snapshot(self.current_provider_id).get("reasoning_effort")
+
+    def _provider(self, provider_id: str, model_id: str | None = None, reasoning_effort: str | None = None) -> Any:
         factory = self.provider_factories.get(provider_id)
         if callable(factory):
-            key = (provider_id, model_id)
+            if reasoning_effort is None:
+                reasoning_effort = self.current_reasoning_effort
+            key = (provider_id, model_id, reasoning_effort)
             if key not in self._provider_cache:
-                self._provider_cache[key] = factory(model_id)
+                self._provider_cache[key] = factory(model_id, reasoning_effort)
             return self._provider_cache[key]
         provider = self.providers.get(provider_id)
         if provider is None:
@@ -441,14 +477,24 @@ class StaticRuntimeRouter:
             "sdk_id": "codex-python-sdk",
             "version": None,
             "model": getattr(self.planner, "model", None),
+            "reasoning_effort": getattr(self.planner, "reasoning_effort", None),
             "configuration_digest": "injected-planner",
             "capabilities": ["planning"],
             "selected_at": None,
         }
 
+    def snapshot_for_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+        snapshot = self.snapshot(provider_id)
+        if snapshot["provider_id"] != provider_id or snapshot["model"] != model_id:
+            raise RuntimeUnavailableError(
+                "The injected Runtime does not match the bound draft model.",
+                code="agent_runtime_binding_missing",
+            )
+        return snapshot
+
     @contextmanager
-    def pin(self, provider_id: str | None, model_id: str | None = None) -> Iterator[None]:
-        del provider_id, model_id
+    def pin(self, provider_id: str | None, model_id: str | None = None, reasoning_effort: str | None = None) -> Iterator[None]:
+        del provider_id, model_id, reasoning_effort
         yield
 
     def supports(self, operation: str) -> bool:

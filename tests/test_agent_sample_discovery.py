@@ -241,7 +241,10 @@ def test_returned_scope_is_reverified_before_field_acceptance():
 def setup_broker(tmp_path):
     settings = Settings(repository_root=Path(__file__).resolve().parents[1], data_root=tmp_path / "data", draft_root=tmp_path / "drafts")
     store = RunStore(settings.database_path)
-    store.create_run("run_sample", RunCreate(mode=RunMode.free_query, query="Find sample"))
+    store.create_run("run_sample", RunCreate(mode=RunMode.free_query, query="Find sample"), runtime={
+        "provider_id": "codex", "sdk_id": "openai-codex", "version": "0.147.0", "model": SAMPLE_MODEL,
+        "reasoning_effort": "medium", "reasoning_effort_source": "sdk_default", "configuration_digest": "checked-sol-medium",
+    })
     sap = SimpleNamespace(validate_plan=AsyncMock(return_value={"ok": True}),
                           execute_plan=AsyncMock(return_value={"ok": True, "results": [{"CompanyCode": "1710", "Customer": "C1", "Item": "1", "FinancialAccountType": "D", "PayerName": "PRIVATE"}]}))
     skills = SimpleNamespace(list_all_approved_skills=lambda: [])
@@ -325,5 +328,6 @@ def test_isolated_runtime_projects_only_validated_public_cells(tmp_path):
     assert result["input"]["customer"] == "C1"
     assert result["query_count"] == 1
     assert thread.turn.call_args.kwargs["model"] == SAMPLE_MODEL
+    assert thread.turn.call_args.kwargs["effort"] == "medium"
     assert store.get_harness_state("run_sample")["time_budget"]["hard_limit_seconds"] == 300
     assert not broker._tokens and not broker._sample_contexts

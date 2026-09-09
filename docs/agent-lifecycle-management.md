@@ -8,6 +8,18 @@
 2. **检查修改内容**：选择两个已保存修订，直接查看修改前、修改后内容，文档与规则提供逐行差异。不是只显示路径或摘要，也不把草稿比较冒充与当前活动版本比较。恢复通过创建一个新修订实现，不删除历史。
 3. **发布与启用**：自动检查、试运行、正式验收分别展示。试运行成功不生成独立基线或自由查询 `MATCH`，不取得发布资格。行为变化仍须满足正式验收门禁；纯文案仅在执行摘要不变且原验收有效时复用。平台判断最低语义版本等级，发布创建本地分支和提交，不自动推送。
 
+### 首次发布前确认技术 ID
+
+“定义与修改”顶部的“Agent 身份”区支持检查重名及确认保存，例如 `customer-receivables-check`。新建、克隆、自由查询或工作流缺口生成的草稿首次发布前均可改名；已有Agent的新版本只读沿用原ID。ID须为3–80字符的小写字母、数字和单连字符分段，不可使用Windows保留名称；跨模块、停用版本、其他未结束草稿及曾发布后删除的ID都参与重名检查。检查不预留名称，保存与发布时再次核对。
+
+尚未确认时仍可编辑、静态检查和提出修改意见，但不能自动选样、试运行、正式验收或发布。仅确认原ID不创建内容修订。实际改名创建不可变修订，并使当前选样、试运行和验收失效；旧证据仍可追溯但不适用于当前ID。新SDK对话以当前包重建，不改历史对话或源导入映射。首次发布成功后ID永久固定，即使尚未启用也不能改名。
+
+### 修改对话耗时与重试
+
+每轮修改意见默认最多3600秒，从后台开始处理计时；排队时间单独显示。此时限不改变自由查询、选样、SAP、Skill或真机验收预算。页面显示实际模型、推理强度、已耗时与时限；历史缺值标为未记录。超时不应用迟到修改，清理最多等待10秒；不能确认SDK停止时保持草稿操作锁，需重启API后恢复，不允许立即重试。不要在重启前终止其他运行中的任务。
+
+失败、超时或中断后的“重试本轮”仅回填原意见，确认发送才创建新轮次。重试以当前ID、修订和绑定模型最新已验证强度为准；不覆盖后续修改或原失败记录。网络重发复用原请求ID，主动重试使用新请求ID。活动操作或未保存编辑必须先处理，重试不会自动循环。认证、连接、配置、响应校验、主动取消和平台超时分别显示安全说明，不暴露原始日志。
+
 ### 先找样本，再确认试运行
 
 勾选“自动查找验证数据”后，先输入公司代码、工厂等必要范围，再点击查找。平台使用已通过兼容检查的 `gpt-5.6-sol` 和受控只读能力，在草稿声明的数据源内有界选样（最多300秒、10次数据读取、每次最多100行）。候选值必须来自本次已校验的公开证据；用户已填写的范围不会被覆盖。未能证明完整输入组合、分支不明确或需要敏感参考号时，提示手工补充，不猜测数据。
@@ -57,6 +69,8 @@ GET    /api/authoring/agents?state=unpublished
 POST   /api/authoring/drafts/{draft_id}/import-to-management
 POST   /api/authoring/agents
 PUT    /api/authoring/agents/{draft_id}
+POST   /api/authoring/agents/{draft_id}/technical-id/check
+PUT    /api/authoring/agents/{draft_id}/technical-id
 POST   /api/authoring/agents/{draft_id}/feedback
 GET    /api/authoring/agents/{draft_id}/conversation
 POST   /api/authoring/agents/{draft_id}/feedback/{turn_number}/cancel
@@ -75,6 +89,12 @@ DELETE /api/agents/{agent_id}
 ```
 
 ## 回归验证
+
+### 输入展示与修改反馈校验
+
+草稿对话修改与表单保存时，平台从 `execution.inputSchema` 的公开字段双语标题生成 `inputs.zh/en`，不修改字段ID、必填条件、默认值或查询逻辑。必填、可选及服务端默认标记独立显示，不添加到字段名称中。手工编辑可保留尚未完善的定义，后续静态检查仍必须通过；Runtime 返回缺失标题、错误语言或无效 Schema 时失败关闭，页面显示本地化原因及结构位置，不显示原始响应、业务值或异常日志。正式目录校验保持严格。历史失败轮次和旧修订不回写、不自动重试。
+
+Draft feedback and form saves derive `inputs.zh/en` from public input Schema titles without changing field IDs, requirements, defaults or queries. Required, optional and server-default indicators are separate from names. Manual editing may retain incomplete definitions for later static validation; invalid Runtime proposals are rejected with localized reasons and structural paths, never raw responses, business values or exception logs. Catalog validation stays strict. Historical turns and revisions are not rewritten or automatically retried.
 
 - `tests/test_agent_lifecycle.py`、`tests/test_platform_runtime.py`：真实平台服务配合隔离的假 SAP Provider，覆盖持久化幂等、并发导入、失败恢复、完整包、路径门禁、旧接口、来源链及三类验证终态。不会执行真实 SAP 查询。
 - `site/tests/agent-management.test.mjs`：筛选交集、独立身份、验收语义、分源缓存、请求合并、乱序响应和退避。
@@ -97,6 +117,10 @@ README-only or shared-translation changes do not bump Agent versions. Manifest s
 ## English user guide
 
 Use Agent management for deterministic fixed Agents, not platform assistants. The three stages are **Define and edit**, **Review changes**, and **Publish and activate**. The business-oriented editor includes typed inputs, static checks, read-only trials and inline results; technical JSON and rules are collapsed. The bottom feedback conversation can clarify, reply without editing, or create an immutable revision. Compare actual before/after values and text differences between saved revisions.
+
+Confirm the technical ID before sample discovery, trials, acceptance or first publication. New drafts (including clones and generated drafts) may be renamed; existing Agent upgrades keep the original ID. IDs use 3–80 lowercase letters/digits separated by single hyphens, excluding Windows reserved names. Availability checks do not reserve names. Renaming creates a revision, invalidates current acceptance and starts a new SDK thread while preserving history. First publication permanently fixes the ID, including inactive publications; previously published deleted IDs cannot be reused.
+
+Each modification turn has a default 3600-second processing budget, separate from queue time and other query/Skill/acceptance limits. The UI records elapsed time, model, effort and safe failure details; missing historical limits are not invented. Shutdown cleanup is bounded to 10 seconds and retains the operation lock if termination cannot be confirmed. Retry prefills the failed message and requires another confirmation, using the current ID/revision and the bound model's latest verified effort. It never overwrites later edits or old failed turns. Only network resends reuse a request ID; a deliberate retry creates a new turn. No automatic retry loop is used.
 
 Optional sample discovery uses compatible `gpt-5.6-sol`, scoped to the draft's approved read-only sources and your supplied company/plant filters. It is bounded to 300 seconds, 10 data reads and 100 rows per read, and every proposed value needs verified public evidence. Confirm proposed inputs before trial execution. Ambiguous input branches, unproven relationships and sensitive references require manual entry. Discovery is not exhaustive evidence or formal acceptance. A successful trial cannot manufacture independent comparison results or unlock publication. Refresh restores saved task state; edits invalidate stale sample confirmations. No SDK upgrade or global model setting is changed.
 

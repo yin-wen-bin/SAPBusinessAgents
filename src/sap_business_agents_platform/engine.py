@@ -159,6 +159,35 @@ class RunCoordinator:
             lease_seconds=settings.scheduler_lease_seconds,
         )
 
+    def _future_session_binding(self, session: dict[str, Any]) -> dict[str, Any]:
+        snapshot = session.get("runtime") or {}
+        resolve = getattr(self.planner, "resolve_legacy_snapshot", None)
+        if snapshot.get("reasoning_effort") is None and callable(resolve):
+            snapshot = resolve(snapshot)
+            self.store.update_free_query_session(str(session["session_id"]), runtime=snapshot)
+            session["runtime"] = snapshot
+        return snapshot
+
+    def _future_runtime_binding(self, record: Any) -> dict[str, Any]:
+        original = record.runtime.model_dump(mode="json") if record.runtime else {}
+        if original.get("reasoning_effort") is not None:
+            return original
+        state = self.store.get_harness_state(record.run_id)
+        if state.get("future_runtime_binding"):
+            return state["future_runtime_binding"]
+        resolve = getattr(self.planner, "resolve_legacy_snapshot", None)
+        if not callable(resolve):
+            return original
+        session = self.store.get_free_query_session_by_run(record.run_id)
+        binding = self._future_session_binding(session) if session else resolve(original)
+        self.store.update_harness_state(record.run_id, {"future_runtime_binding": binding})
+        self.store.append_event(record.run_id, "runtime_future_binding_created", {
+            "provider_id": binding.get("provider_id"), "model": binding.get("model"),
+            "reasoning_effort": binding.get("reasoning_effort"),
+            "configuration_digest": binding.get("configuration_digest"),
+        })
+        return binding
+
     async def start(self) -> None:
         await self.scheduler.start()
         for record in self.store.list_recoverable_runs():
@@ -982,7 +1011,7 @@ class RunCoordinator:
             feedback_request["session_id"], int(feedback_request["base_iteration"])
         )
         session_id = str(session["session_id"])
-        runtime_snapshot = session.get("runtime") or {}
+        runtime_snapshot = self._future_session_binding(session)
         provider_id = str(runtime_snapshot.get("provider_id") or "codex")
         model_id = runtime_snapshot.get("model")
         feedback_reviewer = getattr(self.planner, "review_free_query_feedback", None)
@@ -995,7 +1024,7 @@ class RunCoordinator:
         )
         try:
             pin = getattr(self.planner, "pin", None)
-            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id, runtime_snapshot.get("reasoning_effort")) if callable(pin) else nullcontext()
             with context:
                 decision = await feedback_reviewer(
                     thread_id=previous.thread_id,
@@ -1206,11 +1235,11 @@ class RunCoordinator:
         if job is not None:
             await self.scheduler.cancel(str(job["job_id"]))
         session = self.store.get_free_query_session(session_id)
-        runtime_snapshot = session.get("runtime") or {}
+        runtime_snapshot = self._future_session_binding(session)
         provider_id = str(runtime_snapshot.get("provider_id") or "codex")
         model_id = runtime_snapshot.get("model")
         pin = getattr(self.planner, "pin", None)
-        context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+        context = pin(provider_id, model_id, runtime_snapshot.get("reasoning_effort")) if callable(pin) else nullcontext()
         with context:
             cancel = getattr(self.planner, "cancel", None)
             if callable(cancel):
@@ -1278,7 +1307,7 @@ class RunCoordinator:
             else:
                 pin = getattr(self.planner, "pin", None)
                 model_id = record.runtime.model if record.runtime else None
-                context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+                context = pin(provider_id, model_id, self._future_runtime_binding(record).get("reasoning_effort")) if callable(pin) else nullcontext()
                 with context:
                     cancel = getattr(self.planner, "cancel", None)
                     if callable(cancel):
@@ -2832,7 +2861,7 @@ class RunCoordinator:
         provider_id = record.runtime.provider_id if record.runtime else "codex"
         model_id = record.runtime.model if record.runtime else None
         pin = getattr(self.planner, "pin", None)
-        context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+        context = pin(provider_id, model_id, self._future_runtime_binding(record).get("reasoning_effort")) if callable(pin) else nullcontext()
         bind_events = getattr(self.planner, "bind_events", None)
         event_context = (
             bind_events(
@@ -2905,7 +2934,7 @@ class RunCoordinator:
         try:
             pin = getattr(self.planner, "pin", None)
             model_id = record.runtime.model if record.runtime else None
-            context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+            context = pin(provider_id, model_id, self._future_runtime_binding(record).get("reasoning_effort")) if callable(pin) else nullcontext()
             with context:
                 revised = await presentation_reviser(
                     thread_id=str(record.thread_id or source.thread_id or ""),
@@ -3035,6 +3064,7 @@ class RunCoordinator:
             harness_query,
             record.thread_id,
             record.runtime.model if record.runtime else None,
+            reasoning_effort=self._future_runtime_binding(record).get("reasoning_effort"),
         )
         self.store.update_run(run_id, thread_id=outcome.thread_id)
         if outcome.status == "waiting_input":

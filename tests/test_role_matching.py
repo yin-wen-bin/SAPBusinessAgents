@@ -103,7 +103,7 @@ class _FakeRuntime:
         return {"provider_id": provider_id or "codex", "sdk_id": "codex-python-sdk", "version": "test", "configuration_digest": "test", "capabilities": ["role_matching"]}
 
     @contextmanager
-    def pin(self, provider_id: str | None, model_id: str | None = None):
+    def pin(self, provider_id: str | None, model_id: str | None = None, reasoning_effort: str | None = None):
         del provider_id, model_id
         yield
 

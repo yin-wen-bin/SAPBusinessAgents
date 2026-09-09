@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const MODULES = ["Common", "FI", "CO", "SD", "MM", "PP"];
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const WINDOWS_RESERVED_SLUG = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..", "..");
 const agentsRoot = path.join(repositoryRoot, "agents");
@@ -96,7 +97,7 @@ function validateOutputDisplay(properties, location) {
 
 export function validateAgent(agent, expectedModule, expectedSlug, source) {
   if (![1, 2].includes(agent.schemaVersion)) throw new Error(`${source}: unsupported schemaVersion`);
-  if (!SLUG_PATTERN.test(expectedSlug)) throw new Error(`${source}: directory must use a lowercase kebab-case slug`);
+  if (expectedSlug.length < 3 || expectedSlug.length > 80 || !SLUG_PATTERN.test(expectedSlug) || WINDOWS_RESERVED_SLUG.test(expectedSlug)) throw new Error(`${source}: directory must use a 3-80 character lowercase kebab-case slug, excluding reserved Windows names`);
   if (agent.slug !== expectedSlug) throw new Error(`${source}: slug must match directory '${expectedSlug}'`);
   if (agent.module !== expectedModule) throw new Error(`${source}: module must match directory '${expectedModule}'`);
   requireLocalized(agent.title, `${source}.title`);

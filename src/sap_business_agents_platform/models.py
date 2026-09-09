@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from .acceptance_projection import AcceptanceProjectionSpec
 
 
@@ -326,6 +326,8 @@ class RuntimeSnapshot(BaseModel):
     cli_version: str | None = None
     model: str | None = None
     model_source: str | None = None
+    reasoning_effort: str | None = None
+    reasoning_effort_source: str | None = None
     model_catalog_digest: str | None = None
     model_check_digest: str | None = None
     runtime_configuration_revision: int | None = None
@@ -467,6 +469,12 @@ class AgentAuthoringCreate(BaseModel):
     bump: Literal["patch", "minor", "major"] = "patch"
     locale: Literal["zh", "en"] = "zh"
 
+    @field_validator("agent_id", mode="before")
+    @classmethod
+    def canonical_agent_id(cls, value: Any) -> Any:
+        from .agent_identity import validate_agent_id
+        return None if value is None else validate_agent_id(value)
+
     @model_validator(mode="after")
     def validate_source(self) -> "AgentAuthoringCreate":
         if self.source == "blank" and (not self.agent_id or not self.module):
@@ -504,6 +512,7 @@ class AgentFeedbackRequest(BaseModel):
     feedback: str = Field(min_length=1, max_length=12_000)
     locale: Literal["zh", "en"] = "zh"
     request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
+    retry_of_turn: int | None = Field(default=None, alias="retryOfTurn", ge=1)
 
     @model_validator(mode="after")
     def strip_feedback(self) -> "AgentFeedbackRequest":
@@ -511,6 +520,15 @@ class AgentFeedbackRequest(BaseModel):
         if not self.feedback:
             raise ValueError("feedback must not be blank")
         return self
+
+
+class AgentTechnicalIdCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    agent_id: str = Field(alias="agentId", min_length=1, max_length=100)
+
+
+class AgentTechnicalIdUpdate(AgentTechnicalIdCheck):
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
 
 
 class AgentUndoRequest(BaseModel):

@@ -512,6 +512,7 @@ class SampleDiscoveryService:
                     self.store.update_run(run_id, thread_id=thread.id)
                     turn = await thread.turn("Find a verifiable real input sample within the declared scope.",
                                              approval_mode=_approval_mode(), model=SAMPLE_MODEL,
+                                             effort=self.store.get_run(run_id).runtime.reasoning_effort,
                                              output_schema=sample_output_schema(), sandbox=_sandbox())
                     self._turns[run_id] = turn
                     async for event in turn.stream():

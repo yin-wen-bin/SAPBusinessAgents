@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import platform
 import re
@@ -90,7 +91,7 @@ class RuntimeProbe(Protocol):
     async def list_models(self, definition: SDKDefinition) -> dict[str, Any]: ...
 
     async def check_model(
-        self, definition: SDKDefinition, model_id: str, workspace: Path
+        self, definition: SDKDefinition, model_id: str, workspace: Path, *, reasoning_effort: str
     ) -> dict[str, Any]: ...
 
     def client_version(self, definition: SDKDefinition) -> str | None: ...
@@ -435,11 +436,12 @@ class SDKManager:
             self._persist_runtime_config()
             return self.models(provider_id)
 
-    async def check_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+    async def check_model(self, provider_id: str, model_id: str, reasoning_effort: str | None = None) -> dict[str, Any]:
         definition = self._get_provider(provider_id)
         model_id = _validate_model_id(model_id)
         async with self._locks[definition.sdk_id]:
             model = self._catalog_model(definition, model_id)
+            effort, _ = self.reasoning_configuration(provider_id, model_id, reasoning_effort)
             probe = self.runtime_probes.get(provider_id)
             check_model = getattr(probe, "check_model", None)
             if not callable(check_model):
@@ -447,6 +449,9 @@ class SDKManager:
                     "This Agent Runtime cannot check model compatibility.",
                     code="runtime_model_check_unavailable",
                 )
+            parameters = inspect.signature(check_model).parameters
+            if "reasoning_effort" not in parameters and not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+                raise SDKManagerError("This Runtime adapter cannot send explicit reasoning effort.", code="runtime_reasoning_effort_unsupported")
             workspace = (
                 self.selection_path.parent
                 / "probes"
@@ -457,7 +462,7 @@ class SDKManager:
             installed = self.adapters[definition.ecosystem].installed_version(definition)
             catalog = self._catalog(definition)
             try:
-                result = await check_model(definition, model_id, workspace)
+                result = await check_model(definition, model_id, workspace, reasoning_effort=effort)
             except Exception as exc:
                 result = {
                     "compatible": False,
@@ -487,6 +492,7 @@ class SDKManager:
             record = {
                 "provider_id": provider_id,
                 "model_id": model_id,
+                "reasoning_effort": effort,
                 "status": str(result.get("status") or "runtime_model_probe_failed"),
                 "compatible": result.get("compatible") is True,
                 "sdk_version": installed,
@@ -507,11 +513,49 @@ class SDKManager:
                 {key: value for key, value in record.items() if key != "checked_at"}
             )
             self._runtime_config.setdefault("model_checks", {})[
-                self._model_check_key(provider_id, model_id)
+                self._model_check_key(provider_id, model_id, effort)
             ] = record
             self._persist_runtime_config()
             decorated = self._decorate_model(definition, model)
             return {"provider_id": provider_id, "item": decorated, "check": record}
+
+    def reasoning_configuration(
+        self, provider_id: str, model_id: str, requested: str | None = None,
+    ) -> tuple[str, str]:
+        """Resolve an explicit SDK-supported value; never inherit a CLI global default."""
+        definition = self._get_provider(provider_id)
+        model = self._catalog_model(definition, model_id)
+        saved = self._provider_runtime_state(definition).get("model_reasoning_efforts", {}).get(model_id)
+        value = requested if requested is not None else saved
+        source = "system_settings" if value is not None else "sdk_default"
+        if value is None:
+            value = model.get("default_reasoning_effort")
+        if not isinstance(value, str) or value not in model.get("supported_reasoning_efforts", []):
+            raise SDKManagerError("Select a supported reasoning effort from the current model catalog.",
+                                  code="runtime_reasoning_effort_invalid")
+        return value, source
+
+    async def set_reasoning_effort(self, provider_id: str, model_id: str, reasoning_effort: str) -> dict[str, Any]:
+        definition = self._get_provider(provider_id)
+        model_id = _validate_model_id(model_id)
+        effort, _ = self.reasoning_configuration(provider_id, model_id, reasoning_effort)
+        check = self._current_model_check(definition, model_id, effort)
+        if not check or check.get("compatible") is not True:
+            check = (await self.check_model(provider_id, model_id, effort))["check"]
+        if check.get("compatible") is not True:
+            raise SDKManagerError("The selected model and reasoning effort did not pass compatibility checks.",
+                                  code=str(check.get("status") or "runtime_model_incompatible"))
+        with self._config_lock:
+            # Revalidate after the asynchronous probe: catalog/authentication may have changed.
+            self.reasoning_configuration(provider_id, model_id, effort)
+            current_check = self._current_model_check(definition, model_id, effort)
+            if not current_check or current_check.get("compatible") is not True:
+                raise SDKManagerError("Repeat the compatibility check.", code="runtime_model_check_required")
+            state = self._provider_runtime_state(definition)
+            state.setdefault("model_reasoning_efforts", {})[model_id] = effort
+            state["updated_at"] = _timestamp()
+            self._persist_runtime_config()
+        return self.models(provider_id)
 
     async def set_default_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
         definition = self._get_provider(provider_id)
@@ -616,6 +660,7 @@ class SDKManager:
             )
         runtime_state = self._provider_runtime_state(definition)
         check = self._current_model_check(definition)
+        effort, effort_source = self.reasoning_configuration(selected, str(runtime_state.get("default_model_id")))
         return {
             "provider_id": definition.provider_id,
             "sdk_id": definition.sdk_id,
@@ -623,10 +668,12 @@ class SDKManager:
             "cli_version": snapshot["cli_version"],
             "model": runtime_state.get("default_model_id"),
             "model_source": runtime_state.get("model_source"),
+            "reasoning_effort": effort,
+            "reasoning_effort_source": effort_source,
             "model_catalog_digest": snapshot.get("model_catalog_digest"),
             "model_check_digest": check.get("check_digest") if check else None,
             "runtime_configuration_revision": self.configuration_revision,
-            "configuration_digest": _definition_digest(definition),
+            "configuration_digest": _stable_digest({"provider": _definition_digest(definition), "model": runtime_state.get("default_model_id"), "reasoning_effort": effort}),
             "capabilities": list(definition.capabilities),
             "integration_runtime": _copy_json(definition.integration_runtime),
             "selected_at": _timestamp(),
@@ -643,6 +690,7 @@ class SDKManager:
             raise SDKManagerError("The Agent Runtime is not ready for new tasks.",
                                   code="runtime_not_selectable", detail={"blockers": blockers})
         self._catalog_model(definition, model_id)
+        effort, effort_source = self.reasoning_configuration(provider_id, model_id)
         check = self._current_model_check(definition, model_id)
         if not check or check.get("compatible") is not True:
             raise SDKManagerError("Check this model's compatibility in system settings first.",
@@ -651,6 +699,7 @@ class SDKManager:
             "provider_id": provider_id, "sdk_id": definition.sdk_id,
             "version": snapshot["current_version"], "cli_version": snapshot["cli_version"],
             "model": model_id, "model_source": "agent_sample_discovery",
+            "reasoning_effort": effort, "reasoning_effort_source": effort_source,
             "model_catalog_digest": snapshot.get("model_catalog_digest"),
             "model_check_digest": check.get("check_digest"),
             "runtime_configuration_revision": self.configuration_revision,
@@ -659,6 +708,7 @@ class SDKManager:
         }
         binding["configuration_digest"] = hashlib.sha256(json.dumps(
             {"provider": _definition_digest(definition), "model": model_id,
+             "reasoning_effort": effort,
              "catalog": binding["model_catalog_digest"], "check": binding["model_check_digest"]},
             sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
@@ -921,6 +971,7 @@ class SDKManager:
                         enabled=value.get("enabled") is True,
                         default_model_id=(str(value.get("default_model_id")) if value.get("default_model_id") else None),
                         model_source=(str(value.get("model_source")) if value.get("model_source") else None),
+                        model_reasoning_efforts=(dict(value.get("model_reasoning_efforts")) if isinstance(value.get("model_reasoning_efforts"), dict) else {}),
                         legacy_model_error=(str(value.get("legacy_model_error")) if value.get("legacy_model_error") else None),
                         authentication_revision=max(
                             0, int(value.get("authentication_revision") or 0)
@@ -1021,22 +1072,27 @@ class SDKManager:
             if isinstance(item, dict)
         )
 
-    def _model_check_key(self, provider_id: str, model_id: str) -> str:
-        return f"{provider_id}:{model_id}"
+    def _model_check_key(self, provider_id: str, model_id: str, reasoning_effort: str) -> str:
+        return f"{provider_id}:{model_id}:{reasoning_effort}"
 
     def _current_model_check(
-        self, definition: SDKDefinition, model_id: str | None = None
+        self, definition: SDKDefinition, model_id: str | None = None, reasoning_effort: str | None = None
     ) -> dict[str, Any] | None:
         selected = model_id or self._provider_runtime_state(definition).get("default_model_id")
         if not selected:
             return None
+        try:
+            effort, _ = self.reasoning_configuration(definition.provider_id, str(selected), reasoning_effort)
+        except SDKManagerError:
+            return None
         value = self._runtime_config.setdefault("model_checks", {}).get(
-            self._model_check_key(definition.provider_id, str(selected))
+            self._model_check_key(definition.provider_id, str(selected), effort)
         )
         if not isinstance(value, dict):
             return None
         catalog = self._catalog(definition)
         expected = {
+            "reasoning_effort": effort,
             "sdk_version": self.adapters[definition.ecosystem].installed_version(definition),
             "cli_version": self._client_version(definition),
             "platform": _platform_key(),
@@ -1056,6 +1112,11 @@ class SDKManager:
 
     def _decorate_model(self, definition: SDKDefinition, item: dict[str, Any]) -> dict[str, Any]:
         model_id = str(item.get("model_id") or "")
+        try:
+            effort, effort_source = self.reasoning_configuration(definition.provider_id, model_id)
+            effort_error = None
+        except SDKManagerError as exc:
+            effort, effort_source, effort_error = None, None, exc.code
         check = self._current_model_check(definition, model_id)
         check_status = (
             str(check.get("status") or "incompatible")
@@ -1064,6 +1125,10 @@ class SDKManager:
         )
         return {
             **item,
+            "reasoning_effort": effort,
+            "reasoning_effort_source": effort_source,
+            "reasoning_effort_error": effort_error,
+            "saved_reasoning_effort": self._provider_runtime_state(definition).get("model_reasoning_efforts", {}).get(model_id),
             "catalog_sdk_version": self._catalog(definition).get("sdk_version"),
             "catalog_cli_version": self._catalog(definition).get("cli_version"),
             "retired": False,
@@ -1390,7 +1455,7 @@ def _normalize_model(raw: Any) -> dict[str, Any] | None:
         return None
     model_id = _validate_model_id(str(raw.get("id") or raw.get("model") or ""))
     efforts: list[str] = []
-    for value in raw.get("supported_reasoning_efforts") or []:
+    for value in raw.get("supported_reasoning_efforts") or raw.get("supportedReasoningEfforts") or []:
         if isinstance(value, dict):
             effort = value.get("reasoning_effort") or value.get("reasoningEffort")
         else:
@@ -1398,7 +1463,7 @@ def _normalize_model(raw: Any) -> dict[str, Any] | None:
         if effort and str(effort) not in efforts:
             efforts.append(str(effort))
     tiers: list[str] = []
-    for value in raw.get("service_tiers") or []:
+    for value in raw.get("service_tiers") or raw.get("serviceTiers") or []:
         tier = value.get("id") if isinstance(value, dict) else value
         if tier and str(tier) not in tiers:
             tiers.append(str(tier))

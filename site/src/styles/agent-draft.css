@@ -31,6 +31,23 @@
 .draft-audit-entry { color: var(--color-text-muted); font-size: .875rem; }
 .draft-audit-entry h3 { font-size: 1rem; }
 .draft-user-message { padding: 14px; border-radius: 8px; background: var(--color-bg-muted, #f0f5ff); }
+.draft-identity-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.draft-identity-heading h2 { margin: 0; }
+.draft-identity-heading > span { padding: 5px 10px; border-radius: 6px; font-size: .875rem; font-weight: 600; }
+.draft-identity-confirmed { background: #e7f5ec; color: #205d38; }
+.draft-identity-pending { background: #fff2d9; color: #72500b; }
+.draft-technical-identity :is(input, code) { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.draft-technical-identity label { display: grid; gap: 8px; }
+.draft-identity-warning, .draft-retry-context { border-inline-start: 3px solid var(--color-primary); padding: 12px 16px; background: var(--color-bg-muted, #f0f5ff); }
+.draft-retry-context { display: grid; gap: 12px; }
+.draft-retry-context button { justify-self: start; }
+.draft-feedback-metrics { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-block: 12px; color: var(--color-text-muted); font-size: .875rem; font-variant-numeric: tabular-nums; }
+.draft-feedback-metrics span { overflow-wrap: anywhere; }
+.draft-feedback-deadline { font-size: .875rem; color: var(--color-text-muted); }
+.draft-feedback-failure { border-inline-start: 3px solid #a93d32; padding-inline-start: 12px; }
+.draft-field-requirement { display: inline-block; margin-inline-start: 8px; font-size: .8rem; font-weight: 500; color: var(--color-text-muted); }
+.draft-feedback-validation { border-inline-start: 3px solid #a93d32; padding-inline-start: 12px; }
+.draft-feedback-validation code { display: block; overflow-wrap: anywhere; font-size: .8rem; margin-block: 4px 12px; }
 .draft-diff-change { border-block-start: 1px solid var(--color-border); padding-block: 18px; }
 .draft-diff-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .draft-diff-values > div { min-width: 0; border: 1px solid var(--color-border); padding: 14px; border-radius: 8px; }

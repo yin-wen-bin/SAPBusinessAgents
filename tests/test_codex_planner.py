@@ -23,7 +23,7 @@ class FakeThread:
         self.responses = list(responses)
         self.prompts: list[str] = []
 
-    async def run(self, prompt: str, *, output_schema: dict[str, object]):
+    async def run(self, prompt: str, *, output_schema: dict[str, object], effort: str | None = None):
         assert output_schema["type"] == "object"
         self.prompts.append(prompt)
         return SimpleNamespace(final_response=json.dumps(self.responses.pop(0)))

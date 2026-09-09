@@ -52,6 +52,8 @@ class Settings:
     local_deterministic_workers: int = 1
     local_free_query_workers: int = 1
     local_feedback_workers: int = 1
+    agent_feedback_timeout_seconds: float = 3600
+    agent_feedback_cleanup_seconds: float = 10
     max_concurrent_sap_gets: int = 2
     scheduler_lease_seconds: int = 60
     restricted_artifact_retention_days: int = 30
@@ -66,6 +68,10 @@ class Settings:
     @property
     def database_path(self) -> Path:
         return self.data_root / "platform.sqlite3"
+
+    @property
+    def agent_feedback_budget_seconds(self) -> float:
+        return max(0.001, min(3600.0, float(self.agent_feedback_timeout_seconds)))
 
     @property
     def deterministic_run_seconds(self) -> int:
@@ -184,6 +190,7 @@ class Settings:
             ),
             max_tool_calls=_env_optional_limit("SAPBA_MAX_TOOL_CALLS", 40),
             max_run_seconds=max(10, int(os.getenv("SAPBA_MAX_RUN_SECONDS", "600"))),
+            agent_feedback_timeout_seconds=max(1, min(3600, int(os.getenv("SAPBA_AGENT_FEEDBACK_TIMEOUT_SECONDS", "3600")))),
             max_deterministic_run_seconds=max(
                 10,
                 int(

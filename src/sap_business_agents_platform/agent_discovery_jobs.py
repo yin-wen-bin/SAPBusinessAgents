@@ -20,6 +20,7 @@ class AgentDiscoveryJobs:
 
     def start(self, draft_id: str, payload: Any) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
+        self.lifecycle.require_technical_identity(draft)
         revision = int(payload.expected_revision)
         if int(draft["revision"]) != revision:
             raise AgentLifecycleError("The draft has changed. Reload it before finding samples.", code="agent_draft_conflict")

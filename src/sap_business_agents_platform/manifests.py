@@ -47,7 +47,23 @@ _HAN_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 class ManifestError(ValueError):
-    pass
+    def __init__(self, message: str, *, issue_code: str = "definition_invalid", path: str = "/manifest") -> None:
+        super().__init__(message)
+        # Only structural diagnostics leave authoring. Never persist exception
+        # messages, Schema values, defaults or SDK output in conversation errors.
+        self.issue_code = issue_code
+        self.path = path
+
+    def public_issue(self) -> dict[str, str]:
+        allowed = {
+            "definition_invalid", "input_schema_invalid", "json_schema_invalid",
+            "input_title_missing", "input_title_zh_invalid", "input_title_en_invalid",
+            "input_display_mismatch", "output_display_mismatch", "execution_mode_invalid",
+        }
+        path = self.path if isinstance(self.path, str) and len(self.path) <= 512 and re.fullmatch(
+            r"/manifest(?:/(?:[A-Za-z_][A-Za-z0-9_-]{0,79}|[0-9]+))*", self.path
+        ) else "/manifest"
+        return {"code": self.issue_code if self.issue_code in allowed else "definition_invalid", "path": path}
 
 
 class AgentRepository:
@@ -161,6 +177,12 @@ class AgentRepository:
 
 
 def validate_manifest(agent: dict[str, Any], source: str = "agent.json") -> None:
+    from .agent_identity import validate_agent_id
+    try:
+        if validate_agent_id(agent.get("slug")) != agent.get("slug"):
+            raise ValueError("agent_technical_id_invalid")
+    except ValueError as exc:
+        raise ManifestError(f"{source}.slug must be a 3-80 character lowercase kebab-case technical ID, excluding Windows reserved names") from exc
     if agent.get("kind") == "platform_assistant":
         assistant = agent.get("assistant")
         if not isinstance(assistant, dict):
@@ -187,7 +209,7 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
     if not isinstance(execution, dict):
         raise ManifestError(f"{source}.execution must be an object")
     if execution.get("mode") != "deterministic":
-        raise ManifestError(f"{source}.execution.mode must be deterministic")
+        raise ManifestError(f"{source}.execution.mode must be deterministic", issue_code="execution_mode_invalid", path="/manifest/execution/mode")
     managed_steps = [
         step for step in execution.get("steps") or []
         if isinstance(step, dict) and step.get("executor") == "rule"
@@ -358,13 +380,25 @@ def _localized_titles(
     return values
 
 
-def _validate_public_input_title_languages(properties: Any, source: str) -> None:
+def derive_input_display(schema: Any) -> dict[str, list[str]]:
+    """Derive draft display labels without changing the Schema or requirements.
+
+    Catalog validation stays strict: only authoring calls this normalizer.
+    """
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        raise ManifestError("Input Schema must be an object", issue_code="input_schema_invalid", path="/manifest/execution/inputSchema")
+    _validate_public_input_title_languages(schema.get("properties"), "execution.inputSchema")
+    return _localized_titles(schema.get("properties"), "execution.inputSchema", exclude_workflow_only=True)
+
+
+def _validate_public_input_title_languages(properties: Any, source: str, *, pointer: str = "/manifest/execution/inputSchema") -> None:
     if not isinstance(properties, dict):
-        raise ManifestError(f"{source}.properties must be an object")
+        raise ManifestError(f"{source}.properties must be an object", issue_code="input_schema_invalid", path=pointer + "/properties")
     for name, schema in properties.items():
         location = f"{source}.properties.{name}"
+        field_pointer = pointer + "/properties/" + str(name).replace("~", "~0").replace("/", "~1")
         if not isinstance(schema, dict):
-            raise ManifestError(f"{location} must be an object")
+            raise ManifestError(f"{location} must be an object", issue_code="input_schema_invalid", path=field_pointer)
         if (
             schema.get("x-sapba-workflow-only") is True
             or schema.get("x-sapba-internal") is True
@@ -374,24 +408,24 @@ def _validate_public_input_title_languages(properties: Any, source: str) -> None
         if not isinstance(title, dict) or not all(
             str(title.get(locale) or "").strip() for locale in ("zh", "en")
         ):
-            raise ManifestError(f"{location}.title must be bilingual")
+            raise ManifestError(f"{location}.title must be bilingual", issue_code="input_title_missing", path=field_pointer + "/title")
         zh_title = str(title["zh"]).strip()
         en_title = str(title["en"]).strip()
         if _HAN_CHARACTER.search(zh_title) is None:
             raise ManifestError(
-                f"{location}.title.zh must contain a Chinese business label"
+                f"{location}.title.zh must contain a Chinese business label", issue_code="input_title_zh_invalid", path=field_pointer + "/title/zh"
             )
         if _HAN_CHARACTER.search(en_title) is not None:
             raise ManifestError(
-                f"{location}.title.en must not contain Chinese characters"
+                f"{location}.title.en must not contain Chinese characters", issue_code="input_title_en_invalid", path=field_pointer + "/title/en"
             )
         nested_properties = schema.get("properties")
         if nested_properties is not None:
-            _validate_public_input_title_languages(nested_properties, location)
+            _validate_public_input_title_languages(nested_properties, location, pointer=field_pointer)
         items = schema.get("items")
         if isinstance(items, dict) and items.get("properties") is not None:
             _validate_public_input_title_languages(
-                items.get("properties"), f"{location}.items"
+                items.get("properties"), f"{location}.items", pointer=field_pointer + "/items"
             )
 
 
@@ -516,7 +550,12 @@ def _validate_json_schema(schema: dict[str, Any], source: str) -> None:
     try:
         Draft202012Validator.check_schema(validator_schema(schema))
     except SchemaError as exc:
-        raise ManifestError(f"{source} is not a valid JSON Schema") from exc
+        # The jsonschema exception contains the offending value; expose only a
+        # bounded structural path, never its message or instance.
+        section = "inputSchema" if source.endswith(".inputSchema") else "outputSchema"
+        pointer = "/manifest/execution/" + section
+        pointer += "".join("/" + str(part).replace("~", "~0").replace("/", "~1") for part in exc.absolute_path)
+        raise ManifestError(f"{source} is not a valid JSON Schema", issue_code="json_schema_invalid", path=pointer) from exc
 
 
 def validator_schema(value: Any) -> Any:
@@ -598,7 +637,7 @@ def _validate_page_contract(agent: dict[str, Any], inputs: dict[str, Any], sourc
         exclude_workflow_only=True,
     )
     if agent.get("inputs") != expected_inputs:
-        raise ManifestError(f"{source}.inputs must mirror execution.inputSchema titles")
+        raise ManifestError(f"{source}.inputs must mirror execution.inputSchema titles", issue_code="input_display_mismatch", path="/manifest/inputs")
     outputs = (agent.get("execution") or {}).get("outputSchema")
     if not isinstance(outputs, dict):
         raise ManifestError(f"{source}.execution.outputSchema is required")
@@ -606,7 +645,7 @@ def _validate_page_contract(agent: dict[str, Any], inputs: dict[str, Any], sourc
         outputs.get("properties"), f"{source}.execution.outputSchema"
     )
     if agent.get("outputs") != expected_outputs:
-        raise ManifestError(f"{source}.outputs must mirror execution.outputSchema titles")
+        raise ManifestError(f"{source}.outputs must mirror execution.outputSchema titles", issue_code="output_display_mismatch", path="/manifest/outputs")
 
 
 def _validate_workflow_mapping(agent: dict[str, Any], step_ids: set[str], source: str) -> None:

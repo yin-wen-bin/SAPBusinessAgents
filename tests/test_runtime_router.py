@@ -33,6 +33,7 @@ class FakeManager:
             "sdk_id": f"{provider_id}-sdk",
             "version": "1.0.0",
             "model": self.models[provider_id],
+            "reasoning_effort": "medium",
             "model_catalog_digest": "catalog",
             "model_check_digest": "check",
             "runtime_configuration_revision": 7,
@@ -40,6 +41,9 @@ class FakeManager:
             "capabilities": ["planning"],
             "selected_at": "2026-08-29T00:00:00Z",
         }
+
+    def runtime_snapshot_for_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+        return {**self.runtime_snapshot(provider_id), "model": model_id}
 
 
 class FakePlanner:
@@ -65,6 +69,7 @@ def test_runtime_router_pins_existing_task_when_default_changes() -> None:
             {
                 "sdk_configuration_digest": "codex",
                 "model": "codex-model",
+                "reasoning_effort": "medium",
                 "model_catalog_digest": "catalog",
                 "model_check_digest": "check",
                 "runtime_configuration_revision": 7,
@@ -86,7 +91,8 @@ def test_runtime_router_uses_isolated_provider_instances_per_model() -> None:
     manager = FakeManager()
     created: dict[str, FakePlanner] = {}
 
-    def factory(model: str | None) -> FakePlanner:
+    def factory(model: str | None, reasoning_effort: str | None) -> FakePlanner:
+        assert reasoning_effort == "medium"
         planner = FakePlanner(f"codex:{model}")
         created[str(model)] = planner
         return planner

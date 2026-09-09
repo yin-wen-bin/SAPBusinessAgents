@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from sap_business_agents_platform.agent_discovery_jobs import AgentDiscoveryJobs
+from sap_business_agents_platform.agent_identity import AgentIdentityMixin
 from sap_business_agents_platform.agent_lifecycle import AgentLifecycleError
 from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.database import RunStore
@@ -28,9 +29,21 @@ def package():
                                                    {"field": "Customer", "value": "{{input.customer}}", "operator": "eq"}]}}}]}}, "rules": None}
 
 
-def save_draft(store, settings, draft_id="draft_sample", status="draft"):
-    store.save_agent_authoring_draft({"draft_id": draft_id, "agent_id": "sample-agent", "source_type": "blank", "status": status,
-                                     "revision": 1, "path": str(settings.draft_root / draft_id)}, package=package())
+def save_draft(store, settings, draft_id="draft_sample", status="draft", *, confirmed=True, agent_id="sample-agent"):
+    draft_package = package()
+    draft_package["manifest"]["slug"] = agent_id
+    store.save_agent_authoring_draft({"draft_id": draft_id, "agent_id": agent_id, "source_type": "blank", "status": status,
+                                     "revision": 1, "path": str(settings.draft_root / draft_id),
+                                     "metadata": {"identity": {"kind": "new_agent", **({"confirmed_agent_id": agent_id} if confirmed else {})}}},
+                                    package=draft_package)
+
+
+class IdentityGate(AgentIdentityMixin):
+    """Use the production identity gate without starting unrelated lifecycle services."""
+
+    @staticmethod
+    def _authoring_error(message, code):
+        return AgentLifecycleError(message, code=code)
 
 
 def setup_jobs(tmp_path):
@@ -38,9 +51,10 @@ def setup_jobs(tmp_path):
     store = RunStore(settings.database_path)
     save_draft(store, settings)
     sdk = SimpleNamespace(runtime_snapshot_for_model=Mock(return_value={"provider_id": "codex", "sdk_id": "openai-codex",
-        "model": "gpt-5.6-sol", "version": "0.147.0", "configuration_digest": "checked-sol", "model_check_digest": "model-check"}))
+        "model": "gpt-5.6-sol", "reasoning_effort": "medium", "reasoning_effort_source": "sdk_default",
+        "version": "0.147.0", "configuration_digest": "checked-sol-medium", "model_check_digest": "model-check-medium"}))
     service = SimpleNamespace(discover=AsyncMock(return_value={"status": "ready", "input": {"company_code": "1710", "customer": "C1"}}))
-    return AgentDiscoveryJobs(settings, store, SimpleNamespace(), sdk, service), store, sdk, service, settings
+    return AgentDiscoveryJobs(settings, store, IdentityGate(), sdk, service), store, sdk, service, settings
 
 
 def request(**kwargs):
@@ -82,6 +96,7 @@ def test_success_binds_sol_and_immutable_draft_without_normal_session(tmp_path):
         sdk.runtime_snapshot_for_model.assert_called_once_with("codex", "gpt-5.6-sol")
         assert service.discover.call_args.kwargs["model"] == "gpt-5.6-sol"
         assert store.get_run(run_id).runtime.model == "gpt-5.6-sol"
+        assert store.get_run(run_id).runtime.reasoning_effort == "medium"
         assert store.get_agent_run_snapshot(run_id)["validation_revision"] == 1
         assert store.get_free_query_session_by_run(run_id) is None
         assert store.get_agent_operation("draft_sample") is None
@@ -160,6 +175,18 @@ def test_private_input_rejected_before_runtime_or_sql_operation(tmp_path):
     sdk.runtime_snapshot_for_model.assert_not_called()
 
 
+def test_unconfirmed_identity_is_rejected_before_sdk_or_operation(tmp_path):
+    jobs, store, sdk, service, settings = setup_jobs(tmp_path)
+    save_draft(store, settings, confirmed=False)
+    with pytest.raises(AgentLifecycleError) as error:
+        jobs.start("draft_sample", request())
+    assert error.value.code == "agent_technical_id_confirmation_required"
+    sdk.runtime_snapshot_for_model.assert_not_called()
+    service.discover.assert_not_called()
+    assert store.latest_agent_operation("draft_sample", "sample_discovery") is None
+    assert jobs.tasks == {}
+
+
 def test_missing_organisational_scope_prevents_broad_sample_read():
     ctx = SampleDiscoveryContext(package()["manifest"], {}, 1)
     assert "company_code" in ctx.preflight_gaps()
@@ -171,7 +198,7 @@ def test_revision_published_and_cross_draft_guards(tmp_path):
         with pytest.raises(AgentLifecycleError) as stale:
             jobs.start("draft_sample", AgentSampleDiscoveryRequest(expectedRevision=2))
         assert stale.value.code == "agent_draft_conflict"
-        save_draft(store, settings, "draft_published", status="published")
+        save_draft(store, settings, "draft_published", status="published", agent_id="published-sample")
         with pytest.raises(AgentLifecycleError) as published:
             jobs.start("draft_published", request())
         assert published.value.code == "agent_draft_published"

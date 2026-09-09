@@ -72,11 +72,12 @@ class FakeRuntimeProbe:
         }
 
     async def check_model(
-        self, definition: SDKDefinition, model_id: str, workspace: Path
+        self, definition: SDKDefinition, model_id: str, workspace: Path, *, reasoning_effort: str
     ) -> dict[str, Any]:
         del definition
         assert model_id == "test-model"
         assert workspace.is_dir()
+        assert reasoning_effort == "medium"
         return {
             "compatible": self.compatible,
             "status": "compatible" if self.compatible else "runtime_model_incompatible",
@@ -183,10 +184,16 @@ class FakeSDKManager:
     async def refresh_models(self, provider_id: str) -> dict[str, Any]:
         return self.models(provider_id)
 
-    async def check_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+    async def check_model(self, provider_id: str, model_id: str, reasoning_effort: str | None = None) -> dict[str, Any]:
         assert provider_id == "codex"
         assert model_id == "test-model"
-        return {"provider_id": provider_id, "item": dict(self.model), "check": {"compatible": True}}
+        return {"provider_id": provider_id, "item": dict(self.model), "check": {"compatible": True, "reasoning_effort": reasoning_effort}}
+
+    async def set_reasoning_effort(self, provider_id: str, model_id: str, reasoning_effort: str) -> dict[str, Any]:
+        assert provider_id == "codex" and model_id == "test-model"
+        assert reasoning_effort == "medium"
+        self.model.update(reasoning_effort=reasoning_effort, saved_reasoning_effort=reasoning_effort)
+        return self.models(provider_id)
 
     async def set_default_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
         assert provider_id == "codex"
@@ -621,6 +628,16 @@ def test_sdk_api_requires_explicit_update_header(tmp_path: Path) -> None:
             "/api/system/sdk-runtimes/codex/models/check", json={"model_id": "test-model"}
         )
         assert checked_model.status_code == 200
+        checked_effort = client.post(
+            "/api/system/sdk-runtimes/codex/models/check", json={"model_id": "test-model", "reasoning_effort": "medium"}
+        )
+        assert checked_effort.status_code == 200
+        assert checked_effort.json()["check"]["reasoning_effort"] == "medium"
+        saved_effort = client.put(
+            "/api/system/sdk-runtimes/codex/models/test-model/reasoning-effort", json={"reasoning_effort": "medium"}
+        )
+        assert saved_effort.status_code == 200
+        assert saved_effort.json()["item"]["items"][0]["saved_reasoning_effort"] == "medium"
         selected_model = client.put(
             "/api/system/sdk-runtimes/codex/default-model", json={"model_id": "test-model"}
         )

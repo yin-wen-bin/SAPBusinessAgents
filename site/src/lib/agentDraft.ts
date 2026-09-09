@@ -6,12 +6,132 @@ export const localText = (value: any, locale: Locale): string => typeof value ==
 export const publicInput = (property: ExecutionInputProperty) => property["x-sapba-internal"] !== true && property["x-sapba-workflow-only"] !== true;
 export const inputType = (property: ExecutionInputProperty) => Array.isArray(property.type) ? property.type.find((value) => value !== "null") : property.type;
 export const parseList = (value: string) => value.split(/[\n,;，；]+/u).map((item) => item.trim()).filter(Boolean);
+
+export function technicalIdentity(draft: any) {
+  const identity = draft?.technical_identity || {};
+  const kind = ["new_agent", "version_upgrade"].includes(identity.kind) ? identity.kind : "unknown";
+  const locked = identity.locked === true || kind !== "new_agent" || draft?.status === "published";
+  return { ...identity, kind, agent_id: String(identity.agent_id || draft?.agent_id || ""), locked, confirmed: identity.confirmed === true && kind !== "unknown", can_rename: identity.can_rename === true && !locked, blockers: Array.isArray(identity.blockers) ? identity.blockers : [] };
+}
+
+export function technicalIdError(value: string, locale: Locale): string {
+  if (value.length < 3 || value.length > 80 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) return locale === "zh" ? "使用3–80个小写字母、数字或单个连字符分段；不能含空格或首尾、连续连字符。" : "Use 3–80 lowercase letters or digits, with single hyphens between segments; no spaces, leading, trailing or repeated hyphens.";
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(value)) return locale === "zh" ? "该名称是系统保留名，请换一个技术 ID。" : "This is a reserved system name. Choose another technical ID.";
+  return "";
+}
+
+const nonnegativeSeconds = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+const timestamp = (value: unknown): number | null => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
+export function feedbackTiming(turn: any, now = Date.now()) {
+  const execution = turn?.decision?.execution || {};
+  const active = ["queued", "running", "waiting_input", "cancelling"].includes(turn?.status);
+  const started = timestamp(execution.started_at);
+  const deadline = timestamp(execution.deadline_at);
+  const completed = timestamp(turn?.completed_at);
+  const recorded = nonnegativeSeconds(execution.elapsed_seconds);
+  const elapsed = active && started !== null ? Math.max(recorded ?? 0, (now - started) / 1000, 0) : recorded ?? (started !== null && completed !== null ? Math.max(0, (completed - started) / 1000) : null);
+  const limit = nonnegativeSeconds(execution.timeout_seconds);
+  return { active, elapsed_seconds: elapsed, timeout_seconds: limit !== null && limit > 0 ? limit : null, deadline_at: deadline === null ? null : execution.deadline_at as string, deadline_reached: active && deadline !== null && now >= deadline };
+}
+
+export function feedbackDuration(seconds: number | null, locale: Locale): string {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return locale === "zh" ? "未记录" : "Not recorded";
+  const total = Math.floor(seconds);
+  const hours = Math.floor(total / 3600), minutes = Math.floor(total % 3600 / 60), remainder = total % 60;
+  return locale === "zh" ? `${hours ? `${hours}小时` : ""}${hours || minutes ? `${minutes}分` : ""}${remainder}秒` : `${hours ? `${hours}h ` : ""}${hours || minutes ? `${minutes}m ` : ""}${remainder}s`;
+}
+
+export function feedbackFailureText(code: unknown, locale: Locale): string {
+  const labels: Record<string, [string, string]> = {
+    agent_feedback_timeout: ["本轮超过记录的处理时限，未应用修改。请核对当前修订后重试。", "This turn exceeded its recorded processing limit; no changes were applied. Review the current revision before retrying."],
+    runtime_model_authentication_failed: ["Runtime 登录已失效或认证失败，请在系统配置中重新登录。", "Runtime authentication failed or expired. Sign in again in system settings."],
+    runtime_model_incompatible: ["草稿绑定模型与当前 SDK 不兼容，请检查模型目录；不会自动切换模型。", "The draft model is incompatible with the installed SDK. Check the model catalog; no automatic fallback is used."],
+    runtime_model_access_unavailable: ["当前账号无权使用草稿绑定模型，请核对账号与模型权限。", "The current account cannot access this draft's model. Check account and model permissions."],
+    runtime_agent_feedback_connection_failed: ["Runtime 连接中断，请检查网络后重试。", "The Runtime connection was interrupted. Check your connection and retry."],
+    runtime_agent_feedback_invalid: ["Runtime 返回的修改未通过响应校验，未应用修改；可缩小修改范围后重试。", "The Runtime response failed validation; no changes were applied. Narrow the requested changes and retry."],
+    agent_definition_invalid: ["生成的 Agent 定义未通过平台校验，未应用修改。请根据下方原因调整修改意见后重试。", "The generated Agent definition failed platform validation; no changes were applied. Review the details below and revise your feedback before retrying."],
+    agent_feedback_cancelled: ["本轮已取消。您可以核对原意见后重新发送。", "This turn was cancelled. You can review the original request and send it again."],
+    agent_feedback_interrupted: ["本轮因服务中断而结束。请核对当前修订后重试。", "This turn ended after a service interruption. Review the current revision before retrying."],
+    agent_feedback_cleanup_failed: ["本轮后台清理未完成，草稿仍被锁定。请重启 API 服务并确认清理完成后再重试。", "Background cleanup did not finish and the draft remains locked. Restart the API service and confirm cleanup before retrying."],
+    agent_feedback_retry_invalid: ["原对话不符合重试条件，请核对历史记录后重新填写意见。", "The original turn cannot be retried. Review the history and enter a new request."],
+    runtime_agent_feedback_connection_timeout: ["本轮 Runtime 连接超时，并非本轮总时限已用完。请检查连接后重试。", "The Runtime connection timed out; this does not mean the full turn time limit was reached. Check the connection before retrying."],
+    agent_runtime_binding_missing: ["本轮缺少可用的模型绑定，请先检查系统中的 Runtime 配置。", "This turn has no available model binding. Check the system Runtime configuration first."],
+    agent_runtime_snapshot_failed: ["平台读取本轮模型配置失败，尚未调用模型或应用修改。这不是推理强度未设置；请更新并重启 API 服务后重试。", "The platform could not load this turn's model configuration; no model call or changes were made. This is not an unset reasoning effort. Update and restart the API service before retrying."],
+    runtime_agent_feedback_unavailable: ["当前 Runtime 不支持修改对话，请检查系统配置。", "The current Runtime does not support feedback conversations. Check system settings."],
+    runtime_not_selectable: ["本轮使用的 Runtime 暂不可用，请检查系统配置后重试。", "The Runtime for this turn is unavailable. Check system settings before retrying."],
+    runtime_model_check_required: ["本轮模型与推理强度尚未通过兼容检查，请在系统配置中完成检查。", "The model and reasoning effort require a compatibility check in system settings."],
+    runtime_reasoning_effort_unsupported: ["本轮推理强度不受支持，请检查该模型的配置。", "The reasoning effort for this turn is unsupported. Check this model's settings."],
+    runtime_reasoning_effort_invalid: ["本轮推理强度不在该模型的支持列表中，请重新选择并检查兼容性。", "This reasoning effort is not supported by the model. Select another value and check compatibility."],
+    runtime_model_catalog_required: ["本轮模型目录尚不可用，请在系统配置中刷新目录并检查兼容性。", "The model catalog is unavailable. Refresh it in system settings and check compatibility."],
+    runtime_model_not_registered: ["草稿绑定的模型不在当前目录中。请检查系统配置，不会自动切换模型。", "The draft's bound model is not in the current catalog. Check system settings; the model will not be switched automatically."],
+    agent_draft_conflict: ["草稿修订已变化。请核对最新内容后重试。", "The draft revision changed. Review the latest content before retrying."],
+    agent_draft_operation_active: ["另一项草稿操作尚未结束，请等待或取消后重试。", "Another draft operation is still active. Wait or cancel it before retrying."],
+    agent_authoring_context_too_large: ["当前定义与对话内容过长，请缩小本轮修改范围后重试。", "The definition and conversation are too large. Narrow the requested change before retrying."],
+  };
+  return labels[String(code)]?.[locale === "zh" ? 0 : 1] || (locale === "zh" ? "本轮未完成。请核对当前修订和系统配置后重试。" : "This turn did not complete. Review the current revision and system settings before retrying.");
+}
+
+export function feedbackEffort(value: unknown, locale: Locale): string {
+  if (value === undefined || value === null || value === "") return locale === "zh" ? "未记录" : "Not recorded";
+  const labels: Record<string, [string, string]> = { none: ["无", "None"], minimal: ["最低", "Minimal"], low: ["低", "Low"], medium: ["中", "Medium"], high: ["高", "High"], xhigh: ["超高", "Extra high"], max: ["最高", "Maximum"], ultra: ["极高", "Ultra"] };
+  return labels[String(value)] ? `${labels[String(value)][locale === "zh" ? 0 : 1]} (${value})` : String(value);
+}
+
+export function canRetryFeedback(turn: any): boolean {
+  return turn?.kind === "feedback" && ["failed", "cancelled", "interrupted", "timed_out", "expired"].includes(turn.status) && Number.isInteger(turn.turn ?? turn.turn_number) && (turn.turn ?? turn.turn_number) > 0 && typeof (turn.user_message ?? turn.feedback) === "string" && Boolean((turn.user_message ?? turn.feedback).trim());
+}
+
+export type FeedbackRequest = { baseTurn: number; baseRevision: number; feedback: string; locale: Locale; retryOfTurn?: number; requestId: string };
+/** An uncertain network response is a retransmission, not a new logical conversation. */
+export function prepareFeedbackRequest(previous: FeedbackRequest | null, next: Omit<FeedbackRequest, "requestId">, createId: () => string): FeedbackRequest {
+  if (previous && previous.feedback === next.feedback && previous.locale === next.locale && previous.retryOfTurn === next.retryOfTurn) return previous;
+  return { ...next, requestId: createId() };
+}
 export function presentationCell(row: any, index: number, key: string): any {
   if (Array.isArray(row?.values)) return row.values[index];
   if (Array.isArray(row)) return row[index];
   return row?.[key];
 }
 const supplied = (value: any) => value !== undefined && value !== null && value !== "";
+
+/** Display only platform-authored codes and structural paths, never error payloads. */
+export function feedbackValidationIssues(turn: any, locale: Locale): { text: string; path: string }[] {
+  const labels: Record<string, [string, string]> = {
+    definition_invalid: ["Agent 定义不符合执行契约，请检查定义与静态检查结果。", "The Agent definition does not satisfy its execution contract. Review the definition and static checks."],
+    input_schema_invalid: ["输入定义必须是包含字段列表的对象 Schema。", "Inputs must be an object Schema with a properties list."],
+    json_schema_invalid: ["字段类型或约束不符合 JSON Schema 格式。", "A field type or constraint is not valid JSON Schema."],
+    input_title_missing: ["此输入字段缺少中文或英文名称。", "This input field is missing a Chinese or English name."],
+    input_title_zh_invalid: ["此输入字段的中文名称必须包含中文业务名称。", "This input field needs a Chinese business name in its Chinese title."],
+    input_title_en_invalid: ["此输入字段的英文名称不能包含中文字符。", "This input field's English title must not contain Chinese characters."],
+    input_display_mismatch: ["输入展示清单与输入字段名称不一致。", "The input display list does not match the input field titles."],
+    output_display_mismatch: ["输出展示清单与输出字段名称不一致。", "The output display list does not match the output field titles."],
+    execution_mode_invalid: ["固定 Agent 的执行模式必须为确定性执行。", "A fixed Agent must use deterministic execution."],
+  };
+  const issues = turn?.decision?.validation_issues;
+  if (!Array.isArray(issues)) return [];
+  return issues.slice(0, 20).map((issue) => ({
+    text: (labels[issue?.code] || labels.definition_invalid)[locale === "zh" ? 0 : 1],
+    path: typeof issue?.path === "string" && issue.path.length <= 512 && /^\/manifest(?:\/(?:[A-Za-z_][A-Za-z0-9_-]{0,79}|[0-9]+))*$/.test(issue.path) ? issue.path : "/manifest",
+  }));
+}
+
+export function inputRequirement(schema: ExecutionInputSchema | ExecutionInputProperty, key: string, values: Record<string, any>, locale: Locale): string {
+  const definition = schema as ExecutionInputSchema;
+  const property = definition.properties?.[key];
+  if (property?.["x-sapba-server-default"]) return locale === "zh" ? "可留空 · 服务端默认" : "May be empty · server default";
+  const branch = publicBranchRequirements(definition, values);
+  if (branch.required.includes(key)) return locale === "zh" ? "必填" : "Required";
+  const conditional = ((branch.ambiguous || branch.unavailable) && definition.oneOf?.some((item) => item.required?.includes(key))) || Object.values(definition.dependentRequired || {}).some((names) => names.includes(key));
+  if (conditional) return locale === "zh" ? "按条件必填" : "Conditionally required";
+  return locale === "zh" ? "可选" : "Optional";
+}
+
+/** Read Schema titles, never the redundant manifest.inputs display list. */
+export function draftInputLabels(schema: ExecutionInputSchema, locale: Locale, values: Record<string, any> = {}) {
+  return Object.entries(schema.properties || {}).filter(([, property]) => property && typeof property === "object" && publicInput(property)).map(([key, property]) => ({
+    key, label: localText(property.title, locale) || key, requirement: inputRequirement(schema, key, values, locale),
+  }));
+}
 
 /** Resolve only branches reachable from public form input; never invent an implicit mode. */
 export function publicBranchRequirements(schema: ExecutionInputSchema, values: Record<string, any> = {}): { required: string[]; ambiguous: boolean; unavailable: boolean } {
@@ -165,7 +285,7 @@ export function diffBusinessLabel(change: any, manifest: any, locale: Locale): s
 
 export function draftStatus(value: unknown, locale: Locale): string {
   const labels: Record<string, [string, string]> = {
-    draft: ["编辑中", "Editing"], queued: ["等待执行", "Queued"], running: ["执行中", "Running"], finalizing: ["生成结果", "Finalizing"], waiting_input: ["等待补充", "Waiting for input"],
+    draft: ["编辑中", "Editing"], queued: ["等待执行", "Queued"], running: ["执行中", "Running"], cancelling: ["正在取消并清理", "Cancelling and cleaning up"], finalizing: ["生成结果", "Finalizing"], waiting_input: ["等待补充", "Waiting for input"],
     received: ["已接收请求", "Request received"], preparing: ["准备查询", "Preparing query"], reading_sap: ["读取SAP证据", "Reading SAP evidence"], validating_evidence: ["核验证据", "Checking evidence"], preparing_result: ["生成业务结果", "Preparing business result"],
     completed: ["执行完成", "Completed"], interrupted: ["任务已中断", "Interrupted"], ready: ["样本已找到，请核对", "Sample ready for review"], needs_input: ["需要补充参数", "More input needed"], timed_out: ["任务超时", "Timed out"], unavailable: ["暂不可用", "Unavailable"], inconclusive: ["证据不足", "Inconclusive"], failed: ["执行失败", "Failed"], cancelled: ["已取消", "Cancelled"], expired: ["已过期", "Expired"],
     normal: ["正常", "Normal"], attention: ["需要处理", "Needs attention"], unknown: ["无法确认", "Unknown"], PASS: ["验收通过", "Passed"], FAIL: ["验收失败", "Failed"], BLOCKED: ["受阻", "Blocked"], NOT_TESTED: ["尚未验收", "Not tested"],

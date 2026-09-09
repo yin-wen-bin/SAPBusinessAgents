@@ -25,9 +25,12 @@ const copy = locale === "zh" ? {
   refreshModels: "刷新模型目录", refreshingModels: "正在刷新模型…", catalogUnavailable: "此 Runtime 不支持从当前 SDK 发现模型。",
   catalogNotLoaded: "尚未读取当前 SDK 的模型目录。", catalogIncomplete: "模型目录不完整，暂时不能检查或保存模型。", catalogStale: "这是过期缓存。请刷新后再修改模型。", catalogFailed: "模型目录读取失败。",
   sdkDefault: "SDK 默认", currentModel: "当前系统默认", modalities: "输入模态", reasoning: "推理强度", tiers: "服务等级",
+  reasoningDefault: "SDK 建议默认", reasoningSaved: "用户已保存", saveReasoning: "保存推理强度", reasoningSavedDone: "推理强度已保存；新会话和该模型草稿的下一轮修改生效，正在运行的轮次不变。", reasoningUnavailable: "当前目录未提供有效推理强度，请刷新目录。", chooseReasoning: "选择推理强度", effortNone: "无", effortMinimal: "最低", effortLow: "低", effortMedium: "中", effortHigh: "高", effortXhigh: "超高", effortMax: "最大", effortUltra: "极高", effortUnconfigured: "未保存",
   checkModel: "检查兼容性", checkingModel: "正在检查…", modelCompatible: "兼容性检查通过", modelCheckRequired: "需要兼容性检查", modelIncompatible: "兼容性检查未通过", modelRetired: "当前 SDK 已不再提供",
   setModel: "设为默认模型", settingModel: "正在设置…", modelSet: "系统默认模型已更新，只影响新会话和新草稿。", upgradeTo: "建议迁移到", emptyModels: "当前完整目录中没有可显示的非隐藏模型。",
   blockerLabels: {
+    runtime_reasoning_effort_invalid: "当前模型未提供所选推理强度，请刷新目录并重新选择", runtime_reasoning_effort_unsupported: "当前 Runtime 适配器尚不能明确传递推理强度",
+    runtime_model_probe_timeout: "兼容性检查超时，尚不能确认是否兼容，请重试", runtime_model_authentication_failed: "登录验证失败，请重新登录后检查", runtime_model_access_unavailable: "当前账号无法使用该模型", runtime_model_incompatible: "模型与当前 SDK 或 CLI 不兼容", runtime_model_probe_failed: "模型检查执行失败，请重试", runtime_model_probe_invalid_response: "模型未返回预期的验证响应",
     native_windows_runtime_unavailable: "官方 Runtime 暂不支持原生 Windows", sdk_not_installed: "SDK 尚未安装", platform_not_supported: "当前操作系统不受支持",
     provider_not_implemented: "Runtime Provider 尚未实现", authentication_not_configured: "认证方式尚未配置", authentication_not_checked: "尚未检查本机登录状态",
     authentication_unavailable: "本机登录不可用", free_query_live_acceptance_required: "自由查询真机验收尚未通过", runtime_disabled: "Runtime 已由用户停用",
@@ -53,10 +56,13 @@ const copy = locale === "zh" ? {
   switchConfirm: "Only new tasks will switch. Running and waiting tasks remain pinned to their original Runtime. Continue?", switched: "The default Agent Runtime was updated for new tasks.",
   refreshModels: "Refresh model catalog", refreshingModels: "Refreshing models…", catalogUnavailable: "This Runtime cannot discover models from its current SDK.",
   catalogNotLoaded: "The current SDK model catalog has not been loaded.", catalogIncomplete: "The model catalog is incomplete. Models cannot be checked or saved.", catalogStale: "This is a stale cache. Refresh it before changing the model.", catalogFailed: "The model catalog could not be loaded.",
-  sdkDefault: "SDK default", currentModel: "Current system default", modalities: "Input modalities", reasoning: "Reasoning efforts", tiers: "Service tiers",
+  sdkDefault: "SDK default", currentModel: "Current system default", modalities: "Input modalities", reasoning: "Reasoning effort", tiers: "Service tiers",
+  reasoningDefault: "SDK recommended default", reasoningSaved: "User selection", saveReasoning: "Save reasoning effort", reasoningSavedDone: "Reasoning effort saved for new sessions and the next Agent editing turn using this model; running turns are unchanged.", reasoningUnavailable: "The current catalog does not provide valid reasoning efforts. Refresh it first.", chooseReasoning: "Choose reasoning effort", effortNone: "None", effortMinimal: "Minimal", effortLow: "Low", effortMedium: "Medium", effortHigh: "High", effortXhigh: "Extra high", effortMax: "Maximum", effortUltra: "Ultra", effortUnconfigured: "Not saved",
   checkModel: "Check compatibility", checkingModel: "Checking…", modelCompatible: "Compatibility check passed", modelCheckRequired: "Compatibility check required", modelIncompatible: "Compatibility check failed", modelRetired: "No longer offered by the current SDK",
   setModel: "Set as default model", settingModel: "Setting…", modelSet: "The system-default model was updated for new sessions and drafts only.", upgradeTo: "Recommended upgrade", emptyModels: "The complete catalog contains no visible models.",
   blockerLabels: {
+    runtime_reasoning_effort_invalid: "The current model does not offer this reasoning effort. Refresh the catalog and choose again.", runtime_reasoning_effort_unsupported: "This Runtime adapter cannot explicitly send reasoning effort.",
+    runtime_model_probe_timeout: "Compatibility check timed out; compatibility remains unconfirmed. Retry the check.", runtime_model_authentication_failed: "Authentication failed. Sign in again before checking.", runtime_model_access_unavailable: "This account cannot access the model.", runtime_model_incompatible: "The model is incompatible with the current SDK or CLI.", runtime_model_probe_failed: "The model check failed. Retry the check.", runtime_model_probe_invalid_response: "The model did not return the expected verification response.",
     native_windows_runtime_unavailable: "The official Runtime does not support native Windows", sdk_not_installed: "The SDK is not installed", platform_not_supported: "The current operating system is unsupported",
     provider_not_implemented: "The Runtime Provider is not implemented", authentication_not_configured: "Authentication is not configured", authentication_not_checked: "The local login has not been checked",
     authentication_unavailable: "The local login is unavailable", free_query_live_acceptance_required: "Live free-query acceptance has not passed", runtime_disabled: "The Runtime was disabled by the user",
@@ -87,7 +93,7 @@ const copy = locale === "zh" ? {
   const checkedTime = (value) => value ? new Date(value).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") : copy.notChecked;
   const blockerText = (value) => copy.blockerLabels?.[value] || value;
   const showMessage = (message, tone = "") => { alert.hidden = false; alert.dataset.tone = tone; alert.textContent = message; };
-  const responseError = async (response) => { try { const payload = await response.json(); return payload?.detail?.message || payload?.detail?.detail?.message || payload?.detail || response.statusText; } catch { return response.statusText; } };
+  const responseError = async (response) => { try { const payload = await response.json(); return copy.blockerLabels?.[payload?.detail?.code] || payload?.detail?.message || payload?.detail?.detail?.message || payload?.detail || response.statusText; } catch { return response.statusText; } };
   const request = async (url, options = {}) => { const response = await fetch(url, options); if (!response.ok) throw new Error(await responseError(response)); return await response.json(); };
 
   const stateFor = (sdk) => {
@@ -104,7 +110,7 @@ const copy = locale === "zh" ? {
     if (model.retired) return { key: "failed", text: copy.modelRetired };
     if (model.check_status === "compatible") return { key: "ready", text: copy.modelCompatible };
     if (model.check_status === "check_required") return { key: "pending", text: copy.modelCheckRequired };
-    return { key: "failed", text: copy.modelIncompatible };
+    return { key: "failed", text: copy.blockerLabels?.[model.check_status] || copy.modelIncompatible };
   };
 
   const renderModels = (sdk, section, payload) => {
@@ -129,13 +135,40 @@ const copy = locale === "zh" ? {
       const facts = element("dl", "sdk-model-facts"); facts.append(element("dt", "", copy.modalities), element("dd", "", (model.input_modalities || []).join(", ") || "—"), element("dt", "", copy.reasoning), element("dd", "", (model.supported_reasoning_efforts || []).join(", ") || "—"), element("dt", "", copy.tiers), element("dd", "", (model.service_tiers || []).join(", ") || "—"));
       row.append(identity, facts); if (model.upgrade_target) row.append(element("p", "sdk-model-upgrade", `${copy.upgradeTo}: ${model.upgrade_target}`));
       const actions = element("div", "sdk-model-actions");
+      let modelBusy = false; let previousDisabled = [];
+      const setModelBusy = (busy) => {
+        if (busy) { previousDisabled = [...row.querySelectorAll("button, select")].map((control) => [control, control.disabled]); for (const [control] of previousDisabled) control.disabled = true; }
+        else { for (const [control, disabled] of previousDisabled) control.disabled = disabled; }
+        modelBusy = busy; row.setAttribute("aria-busy", String(busy));
+      };
+      const effortLabel = (value) => { const label = ({ none: copy.effortNone, minimal: copy.effortMinimal, low: copy.effortLow, medium: copy.effortMedium, high: copy.effortHigh, xhigh: copy.effortXhigh, max: copy.effortMax, ultra: copy.effortUltra })[value]; return label ? `${label} (${value})` : value; };
+      const efforts = model.supported_reasoning_efforts || [];
+      const effortField = element("label", "sdk-reasoning-field");
+      effortField.append(element("span", "", copy.reasoning));
+      const effortSelect = element("select"); effortSelect.setAttribute("aria-label", `${model.model_id} · ${copy.reasoning}`);
+      if (!model.reasoning_effort) { const empty = element("option", "", copy.chooseReasoning); empty.value = ""; effortSelect.append(empty); }
+      for (const value of efforts) { const option = element("option", "", effortLabel(value)); option.value = value; effortSelect.append(option); }
+      effortSelect.value = model.reasoning_effort || "";
+      effortSelect.disabled = model.retired || payload.catalog_status !== "ready" || !efforts.length;
+      effortField.append(effortSelect);
+      row.append(effortField, element("p", "sdk-update-note", `${copy.reasoningDefault}: ${model.default_reasoning_effort ? effortLabel(model.default_reasoning_effort) : "—"} · ${copy.reasoningSaved}: ${model.saved_reasoning_effort ? effortLabel(model.saved_reasoning_effort) : copy.effortUnconfigured}`));
+      if (!efforts.length) row.append(element("p", "sdk-error", copy.reasoningUnavailable));
+      if (!effortSelect.disabled) {
+        const save = element("button", "secondary-button", copy.saveReasoning); save.type = "button";
+        save.disabled = !effortSelect.value;
+        effortSelect.addEventListener("change", () => { save.disabled = !effortSelect.value; });
+        save.addEventListener("click", async () => { if (modelBusy) return; setModelBusy(true); save.disabled = true; save.textContent = copy.checkingModel; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/${encodeURIComponent(model.model_id)}/reasoning-effort`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reasoning_effort: effortSelect.value }) }); await load(false); showMessage(copy.reasoningSavedDone, "success"); } catch (error) { showMessage(String(error.message || error), "error"); save.disabled = false; save.textContent = copy.saveReasoning; } finally { setModelBusy(false); } }); actions.append(save);
+      }
       if (!model.retired && payload.model_catalog_complete) {
         const check = element("button", "secondary-button", copy.checkModel); check.type = "button";
-        check.addEventListener("click", async () => { check.disabled = true; check.textContent = copy.checkingModel; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/check`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id }) }); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); await load(false); } }); actions.append(check);
+        check.disabled = !effortSelect.value || effortSelect.disabled;
+        effortSelect.addEventListener("change", () => { check.disabled = !effortSelect.value || effortSelect.disabled; });
+        check.addEventListener("click", async () => { if (modelBusy) return; const testedEffort = effortSelect.value; setModelBusy(true); check.disabled = true; check.textContent = copy.checkingModel; try { const result = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/check`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id, reasoning_effort: effortSelect.value }) }); if (testedEffort === model.reasoning_effort) await load(false); showMessage(`${effortLabel(testedEffort)} · ${result.check?.compatible ? copy.modelCompatible : (copy.blockerLabels?.[result.check?.status] || copy.modelIncompatible)}`, result.check?.compatible ? "success" : "error"); check.disabled = false; check.textContent = copy.checkModel; } catch (error) { showMessage(String(error.message || error), "error"); check.disabled = false; check.textContent = copy.checkModel; } finally { setModelBusy(false); } }); actions.append(check);
       }
       if (model.selectable && !model.selected && payload.model_catalog_complete) {
         const select = element("button", "sdk-update-button", copy.setModel); select.type = "button";
-        select.addEventListener("click", async () => { select.disabled = true; select.textContent = copy.settingModel; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/default-model`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id }) }); showMessage(copy.modelSet, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); select.disabled = false; } }); actions.append(select);
+        effortSelect.addEventListener("change", () => { select.disabled = effortSelect.value !== model.reasoning_effort; });
+        select.addEventListener("click", async () => { if (modelBusy) return; setModelBusy(true); select.disabled = true; select.textContent = copy.settingModel; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/default-model`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id }) }); showMessage(copy.modelSet, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); select.disabled = false; } finally { setModelBusy(false); } }); actions.append(select);
       }
       row.append(actions); list.append(row);
     }

@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import shutil
-import subprocess
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
@@ -90,7 +88,7 @@ class AgentDraftService:
                 pin = getattr(self.author, "pin", None)
                 provider_id = run.runtime.provider_id if run.runtime else "codex"
                 model_id = run.runtime.model if run.runtime else None
-                context = pin(provider_id, model_id) if callable(pin) else nullcontext()
+                context = pin(provider_id, model_id, getattr(run.runtime, "reasoning_effort", None) if run.runtime else None) if callable(pin) else nullcontext()
                 with context:
                     authored = await author_draft(
                         thread_id=run.thread_id,
@@ -413,36 +411,7 @@ class AgentDraftService:
 
     def apply(self, draft_id: str) -> DraftRecord:
         self._assert_not_imported(draft_id)
-        draft = self.validate(draft_id)
-        if draft.status != "validated":
-            raise DraftError("Draft validation failed and cannot be applied.")
-        manifest = json.loads((Path(draft.path) / "agent.json").read_text(encoding="utf-8"))
-        target = self.settings.repository_root / "agents" / "Common" / manifest["slug"]
-        if target.exists():
-            raise DraftError(f"Agent target already exists: {target}")
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=self.settings.repository_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if status.stdout.strip():
-            raise DraftError("Apply requires a clean Git worktree.")
-        branch = f"codex/agent-{manifest['slug']}"
-        subprocess.run(
-            ["git", "switch", "-c", branch],
-            cwd=self.settings.repository_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        shutil.copytree(draft.path, target)
-        draft.status = "applied"
-        draft.validation["branch"] = branch
-        draft.validation["target"] = str(target)
-        self.store.save_draft(draft)
-        return draft
+        raise DraftError("agent_managed_publication_required: Publish through Agent management after confirming the technical ID and completing acceptance.")
 
 
 def _manifest_from_run(

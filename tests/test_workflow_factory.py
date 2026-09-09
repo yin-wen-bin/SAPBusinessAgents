@@ -467,7 +467,9 @@ def _o2c_ar_workflow() -> dict[str, Any]:
 
 
 def _wait(client: TestClient, run_id: str) -> dict[str, Any]:
-    deadline = time.monotonic() + 8
+    # Managed-rule subprocess startup can exceed eight seconds on a busy Windows CI host.
+    # This only bounds the test poll; it does not change any production run deadline.
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         value = client.get(f"/api/runs/{run_id}").json()
         if value["status"] in {"completed", "inconclusive", "failed", "cancelled"}:
