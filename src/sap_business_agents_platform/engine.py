@@ -4796,11 +4796,22 @@ def _json_pointer(value: Any, pointer: str) -> Any:
     return current
 
 
-def _render_template(value: Any, context: dict[str, Any]) -> Any:
+def _render_template(value: Any, context: dict[str, Any], *, _filter_list: bool = False) -> Any:
     if isinstance(value, dict):
-        return {key: _render_template(child, context) for key, child in value.items()}
+        return {key: _render_template(child, context, _filter_list=key == "filters") for key, child in value.items()}
     if isinstance(value, list):
-        return [_render_template(child, context) for child in value]
+        from .authoring_checks import is_empty_filter_value, validate_filter_omission
+        rendered = []
+        for child in value:
+            if isinstance(child, dict) and "omitIfEmpty" in child:
+                if not _filter_list:
+                    raise ValueError("agent_optional_filter_invalid")
+                field = validate_filter_omission(child)
+                if is_empty_filter_value(_lookup_optional(context, f"input.{field}")):
+                    continue
+                child = {key: item for key, item in child.items() if key != "omitIfEmpty"}
+            rendered.append(_render_template(child, context))
+        return rendered
     if not isinstance(value, str):
         return value
     exact = _TEMPLATE.fullmatch(value)

@@ -7,6 +7,17 @@ export const publicInput = (property: ExecutionInputProperty) => property["x-sap
 export const inputType = (property: ExecutionInputProperty) => Array.isArray(property.type) ? property.type.find((value) => value !== "null") : property.type;
 export const parseList = (value: string) => value.split(/[\n,;，；]+/u).map((item) => item.trim()).filter(Boolean);
 
+/** Error details are not trusted business presentation. Render only recognized structure. */
+export function trialFailureText(run: any, locale: Locale): string {
+  if (run?.status !== "failed") return "";
+  const missing = /^Template path is unavailable: input\.([A-Za-z_][A-Za-z0-9_]{0,79})$/.exec(String(run?.error?.message || ""));
+  if (missing) return locale === "zh"
+    ? `执行定义引用了未提供的输入字段 ${missing[1]}。请修正字段的必填约束或可选条件后重试；本错误不是查询无数据。`
+    : `The execution references missing input ${missing[1]}. Correct its required constraint or optional condition and retry; this does not mean the query found no data.`;
+  return locale === "zh" ? "本次试运行失败。请查看完整运行记录中的错误与执行阶段，修正后重试。未返回结果不代表没有业务数据。"
+    : "The trial failed. Review its error and execution stage in the full run, then correct and retry. A missing result does not mean there is no business data.";
+}
+
 export function technicalIdentity(draft: any) {
   const identity = draft?.technical_identity || {};
   const kind = ["new_agent", "version_upgrade"].includes(identity.kind) ? identity.kind : "unknown";
@@ -67,6 +78,15 @@ export function feedbackFailureText(code: unknown, locale: Locale): string {
     agent_draft_conflict: ["草稿修订已变化。请核对最新内容后重试。", "The draft revision changed. Review the latest content before retrying."],
     agent_draft_operation_active: ["另一项草稿操作尚未结束，请等待或取消后重试。", "Another draft operation is still active. Wait or cancel it before retrying."],
     agent_authoring_context_too_large: ["当前定义与对话内容过长，请缩小本轮修改范围后重试。", "The definition and conversation are too large. Narrow the requested change before retrying."],
+    agent_harness_sandbox_preflight_failed: ["隔离工作区预检未通过，本轮未开放工具执行。已接受的回环限制不会绕过文件权限检查。", "Workspace isolation preflight failed; tools were not started. The accepted loopback limitation does not waive filesystem checks."],
+    agent_harness_sandbox_preflight_timeout: ["隔离命令启动预检超时，尚未进入模型修改阶段，未应用修改。请检查本机 SDK 沙盒状态后重试。", "Sandbox command startup preflight timed out before model editing. No changes were applied. Check the local SDK sandbox and retry."],
+    agent_harness_platform_approval_required: ["本轮涉及平台源码修改，不能通过 Agent 包修订直接应用。隔离工作区已保留，需单独审查平台变更。", "This turn changed platform source, which cannot be applied as an Agent package revision. The isolated workspace is retained for separate review."],
+    agent_harness_ambiguous_changes: ["本轮同时返回文件修改和 JSON 修改，未应用歧义结果。请重试并采用一种修改方式。", "This turn mixed file edits and JSON edits. Ambiguous changes were not applied; retry using one editing method."],
+    agent_harness_policy_invalid: ["本轮编写工具策略无效，未开放工具。", "The authoring tool policy is invalid; tools were not enabled."],
+    runtime_sdk_initialization_timeout: ["SDK 初始化超时，尚未执行修改。请检查客户端连接后重试。", "SDK initialization timed out before editing. Check the client connection and retry."],
+    runtime_command_preflight_timeout: ["SDK 命令启动预检超时，尚未执行模型修改。", "SDK command startup preflight timed out before model editing."],
+    runtime_command_preflight_failed: ["SDK 固定命令预检失败，未应用修改。", "The SDK fixed-command preflight failed. No changes were applied."],
+    runtime_changeset_integration_verification_required: ["平台变更集尚未完成独立集成验证与应用，不能发布依赖它的 Agent。", "The platform changeset requires independent integration verification and application before a dependent Agent can be published."],
   };
   return labels[String(code)]?.[locale === "zh" ? 0 : 1] || (locale === "zh" ? "本轮未完成。请核对当前修订和系统配置后重试。" : "This turn did not complete. Review the current revision and system settings before retrying.");
 }
@@ -98,6 +118,10 @@ const supplied = (value: any) => value !== undefined && value !== null && value 
 export function feedbackValidationIssues(turn: any, locale: Locale): { text: string; path: string }[] {
   const labels: Record<string, [string, string]> = {
     definition_invalid: ["Agent 定义不符合执行契约，请检查定义与静态检查结果。", "The Agent definition does not satisfy its execution contract. Review the definition and static checks."],
+    agent_optional_input_unguarded: ["可选输入被执行步骤无条件引用。请添加条件处理，不能只修改前台字段。", "An optional input is referenced unconditionally. Add conditional execution, not just an optional form field."],
+    agent_optional_filter_unguarded: ["可选筛选缺少整条条件的省略规则；空值不能作为查询条件发送。", "An optional filter needs whole-filter omission; do not send an empty query condition."],
+    agent_optional_filter_invalid: ["可选筛选的省略规则无效，必须引用该筛选值对应的输入字段。", "The filter omission rule must reference the same input as its filter value."],
+    agent_input_reference_unknown: ["执行步骤引用了未声明的输入字段。", "An execution step references an undeclared input."],
     input_schema_invalid: ["输入定义必须是包含字段列表的对象 Schema。", "Inputs must be an object Schema with a properties list."],
     json_schema_invalid: ["字段类型或约束不符合 JSON Schema 格式。", "A field type or constraint is not valid JSON Schema."],
     input_title_missing: ["此输入字段缺少中文或英文名称。", "This input field is missing a Chinese or English name."],

@@ -302,7 +302,7 @@ def create_app(
             sdk_registry,
             {},
             provider_factories={
-                "codex": lambda model, reasoning_effort=None: CodexPlanner(settings.repository_root, model=model, reasoning_effort=reasoning_effort),
+                "codex": lambda model, reasoning_effort=None: CodexPlanner(settings.repository_root, model=model, reasoning_effort=reasoning_effort, data_root=settings.data_root),
                 "workbuddy": lambda model: WorkBuddyPlanner(settings.repository_root, model=model),
             },
         )
@@ -1977,6 +1977,27 @@ def create_app(
         if result.get("code") == "harness_capability_denied":
             raise HTTPException(403, "Harness capability denied")
         return result
+
+    @app.get("/api/runtime-change-sets/{change_set_id}")
+    def runtime_change_set(change_set_id: str) -> dict[str, Any]:
+        from .runtime_changesets import RuntimeChangeSets
+        from .runtime_execution import RuntimeExecutionError
+        try:
+            return RuntimeChangeSets(settings.data_root / "runtime-change-sets").get(change_set_id)
+        except RuntimeExecutionError as exc:
+            raise HTTPException(404 if exc.code.endswith("not_found") else 409, {"code": exc.code}) from exc
+
+    @app.post("/api/runtime-change-sets/{change_set_id}/confirm-and-apply")
+    def confirm_runtime_change_set(change_set_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from .runtime_changesets import RuntimeChangeSets
+        from .runtime_execution import RuntimeExecutionError
+        if type(payload.get("expectedRevision")) is not int or not isinstance(payload.get("digest"), str):
+            raise HTTPException(422, {"code": "runtime_changeset_confirmation_invalid"})
+        try:
+            return RuntimeChangeSets(settings.data_root / "runtime-change-sets").require_applicable(
+                change_set_id, revision=payload["expectedRevision"], digest=payload["digest"])
+        except RuntimeExecutionError as exc:
+            raise HTTPException(404 if exc.code.endswith("not_found") else 409, {"code": exc.code}) from exc
 
     @app.get("/api/tools/sap-read")
     async def sap_read_tools(query: str = "") -> dict[str, Any]:

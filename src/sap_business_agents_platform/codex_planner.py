@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Protocol
@@ -36,6 +37,57 @@ def _agent_authoring_codex(workspace: Path) -> Any:
     codex = AsyncCodex(config=CodexConfig(launch_args_override=tuple(args), cwd=str(workspace), env=_sanitized_codex_env(), client_name="sapba_agent_authoring"))
     codex._client._sync._approval_handler = _deny_approval
     return codex
+
+
+def _tool_authoring_codex(workspace: Any, *, full_access: bool = False) -> Any:
+    """Tool-capable authoring client; scope is the copy, never the live checkout."""
+    from dataclasses import replace
+    from .authoring_workspace import isolated_environment, sandbox_overrides
+
+    client = _agent_authoring_codex(workspace.source)
+    if full_access:
+        from .runtime_execution import configure_client
+        return configure_client(client)
+    config = client._client._sync.config
+    args = list(config.launch_args_override)
+    for feature in ("shell_tool", "apply_patch_streaming_events"):
+        for index in range(len(args) - 1, 0, -1):
+            if args[index] == feature and args[index - 1] == "--disable":
+                del args[index - 1:index + 1]
+    # Override the two disabled built-ins; unrelated app/plugin/MCP features stay off.
+    overrides = sandbox_overrides(workspace)[2:] + [
+        "--enable", "shell_tool", "--enable", "apply_patch_streaming_events",
+        "-c", "default_permissions='sapba-authoring'",
+        "-c", "shell_environment_policy.inherit='none'",
+    ]
+    environment = isolated_environment()
+    environment_table = ",".join(json.dumps(key) + "=" + json.dumps(value) for key, value in environment.items())
+    overrides += ["-c", "shell_environment_policy.set={" + environment_table + "}"]
+    args[args.index("app-server"):args.index("app-server")] = overrides
+    # SDK env is merged with the trusted host. Do not blank Codex's transport
+    # identity variables (an empty originator breaks SDK initialization).
+    # Tool children use inherit=none above, so they receive only the allowlist.
+    cleared = {key: "" for key in os.environ if key.upper().startswith(("SAP_", "SAPBA_SAP", "SAP_ADT_"))
+               or any(word in key.upper() for word in ("PASSWORD", "SECRET", "API_KEY", "TOKEN"))
+               or key.upper() in {"PYTHONPATH", "NODE_OPTIONS", "SSH_AUTH_SOCK"}}
+    client._client._sync.config = replace(config, launch_args_override=tuple(args),
+        env={**cleared, **environment})
+    return client
+
+
+async def _authoring_preflight_command(codex: Any, workspace: Any, command: list[str], *, timeout: float = 30) -> tuple[int, bytes, bytes]:
+    """Bound the SDK request too: timeoutMs alone does not bound sandbox setup."""
+    from openai_codex.generated.v2_all import CommandExecResponse
+    from .authoring_harness import AuthoringHarnessError
+    try:
+        response = await asyncio.wait_for(codex._client.request("command/exec", {
+            "command": command, "cwd": str(workspace.source),
+            "permissionProfile": "sapba-authoring", "timeoutMs": int(timeout * 1000),
+        }, response_model=CommandExecResponse), timeout=timeout + 30)
+    except TimeoutError:
+        # The caller's finally owns and terminates the entire client/process tree.
+        raise AuthoringHarnessError("agent_harness_sandbox_preflight_timeout") from None
+    return response.exit_code, response.stdout.encode(), response.stderr.encode()
 
 
 PLANNER_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -349,7 +401,8 @@ class Planner(Protocol):
 
 
 class CodexPlanner:
-    def __init__(self, repository_root: Path, model: str | None = None, reasoning_effort: str | None = None) -> None:
+    def __init__(self, repository_root: Path, model: str | None = None, reasoning_effort: str | None = None, *, data_root: Path | None = None) -> None:
+        self.data_root = data_root or repository_root / ".local-data"
         self.repository_root = repository_root
         self.model = model
         self.reasoning_effort = reasoning_effort
@@ -634,6 +687,7 @@ requirements; never claim a rule has been implemented or a process completed.
         history: list[dict[str, Any]] | None = None,
         thread_id: str | None = None,
         operation_id: str | None = None,
+        tool_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.model:
             raise ValueError("agent_runtime_binding_missing")
@@ -641,6 +695,26 @@ requirements; never claim a rule has been implemented or a process completed.
         history_json = json.dumps(history or [], ensure_ascii=False)
         if len(package_json) + len(history_json) + len(feedback) > 300_000:
             raise ValueError("agent_authoring_context_too_large")
+
+        tool_workspace = None
+        preflight = None
+        full_access = False
+        if tool_policy is not None:
+            from .authoring_workspace import AuthoringWorkspace, sandbox_preflight
+            from .authoring_harness import AuthoringHarnessError
+            from .runtime_execution import FULL_ACCESS_POLICY, LEGACY_TOOL_POLICY
+            if tool_policy not in (FULL_ACCESS_POLICY, LEGACY_TOOL_POLICY):
+                raise AuthoringHarnessError("agent_harness_policy_invalid")
+            full_access = tool_policy == FULL_ACCESS_POLICY
+            tool_workspace = AuthoringWorkspace(self.repository_root,
+                self.data_root / "authoring-harness" / uuid.uuid4().hex)
+            # Snapshot from a pinned commit. Ignored data and credentials are not copied.
+            tool_workspace.prepare(package, current_source=full_access)
+            tool_workspace.full_access = full_access
+            (tool_workspace.source / ".authoring-tmp").mkdir()
+            # Until platform changeset approval is connected, platform source is
+            # readable for investigation but not editable through this entry point.
+            tool_workspace.read_only_source = not full_access
 
         prompt = f"""
 Revise one isolated SAPBusinessAgents deterministic fixed-Agent draft from user feedback.
@@ -671,19 +745,115 @@ ID. SAP access must remain GET-only; Skills must remain registered, read_only an
 not modify platform code or other Agents. A managed rule must expose evaluate(inputs), operate only
 on supplied structured evidence, and must not access files, network, processes, environment, eval,
 exec, dynamic imports or reflection. Do not edit validation or claim verification has passed;
-the platform invalidates acceptance after behavior changes. Return JSON only.
+the platform invalidates acceptance after behavior changes.
+An input declared optional must not be referenced unconditionally as {{{{input.field}}}}.
+For an optional OData filter, declare omitIfEmpty="{{{{input.field?}}}}" on that filter
+and use the same input as its value. The engine removes the WHOLE filter when that input
+is absent, null, whitespace or an empty array; never emit empty or eq-null filters.
+This directive belongs only to entries in a filters array, not arbitrary mappings.
+Return JSON only.
 """.strip()
+        if tool_workspace:
+            prompt += """
+
+Tool-enabled authoring: the current draft is in agent-package/manifest.json,
+agent-package/README.md, optional agent-package/rules.py and agent-package/files/.
+The surrounding source snapshot is available to investigate actual contracts.
+You may inspect source, edit ONLY agent-package files and run local commands/tests.
+Use .authoring-tmp/ for temporary tests and cache output. Never contact any HTTP
+endpoint, localhost service, SAP, external host or inherited plugin. SAP tests are
+not available through this shell entry point; do not claim they ran. Do not modify
+platform source, identity/validation/version fields or publication/approval gates.
+If editing files directly, return revise_agent with all JSON/package fields empty;
+the controller reads the actual package files. Do not combine file edits and JSON
+edits. For explanation-only requests leave the package unchanged and return reply.
+Test failures are evidence, not permission to weaken tests or acceptance controls.
+"""
+            if full_access:
+                prompt = prompt.replace("not modify platform code or other Agents.", "not modify other Agents or approval controls.")
+                prompt = prompt.replace("You may inspect source, edit ONLY agent-package files and run local commands/tests.",
+                    "You may inspect source, edit the Agent package and task-related platform source, and run local commands/tests.")
+                prompt = prompt.replace("Do not modify\nplatform source, identity/validation/version fields or publication/approval gates.",
+                    "Do not modify identity/validation/version fields or publication/approval gates.")
+                prompt = prompt.replace(
+                    "Use .authoring-tmp/ for temporary tests and cache output. Never contact any HTTP\n"
+                    "endpoint, localhost service, SAP, external host or inherited plugin. SAP tests are\n"
+                    "not available through this shell entry point; do not claim they ran.",
+                    "Use .authoring-tmp/ for temporary test outputs. Web search is available for documentation. "
+                    "SAP testing requires connected Broker tools, not direct shell or browser requests. "
+                    "If these tools are not connected, report that live testing was not performed.")
+                prompt += """
+Full-access execution update: the work copy is NOT an OS sandbox. You may use
+files, shell and web search for investigation and local tests. Never write the
+production checkout, publish, approve changes, change system settings, or access
+SAP directly from shell/browser. SAP business evidence requires approved Broker
+tools; if unavailable, report the missing connection, never claim live testing.
+Agent-package changes become an unpublished draft revision. Platform source changes
+become a pending changeset requiring independent verification and user approval.
+Never claim that a platform changeset was applied or that a dependent draft is ready.
+"""
         with tempfile.TemporaryDirectory(prefix="sapba-agent-authoring-") as isolated:
-            client = _agent_authoring_codex(Path(isolated))
+            client = _tool_authoring_codex(tool_workspace, full_access=full_access) if tool_workspace else _agent_authoring_codex(Path(isolated))
             key = operation_id or f"local-{id(client)}"
             # SDK startup uses to_thread. Shield it: cancelling the await must not lose
             # ownership of a process that the worker thread may still create later.
             start = asyncio.create_task(client.__aenter__())
-            state: dict[str, Any] = {"client": client, "start": start, "proc": None, "cleanup": None}
+            state: dict[str, Any] = {"client": client, "start": start, "proc": None, "cleanup": None,
+                                     "tool_mode": tool_workspace is not None}
             self._authoring_clients[key] = state
             try:
-                codex = await asyncio.shield(start)
+                if full_access:
+                    from .runtime_execution import RuntimeExecutionError
+                    try:
+                        codex = await asyncio.wait_for(asyncio.shield(start), timeout=30)
+                    except TimeoutError:
+                        raise RuntimeExecutionError("runtime_sdk_initialization_timeout") from None
+                else:
+                    codex = await asyncio.shield(start)
                 state["proc"] = self._authoring_process(client)
+                if tool_workspace:
+                    async def probe_command(workspace: Any, command: list[str], *, timeout: float = 30) -> Any:
+                        # Probe the same client/profile that will own tool calls.
+                        return await _authoring_preflight_command(codex, workspace, command, timeout=timeout)
+                    if full_access:
+                        from .runtime_execution import command_preflight, execution_snapshot
+                        preflight = await command_preflight(codex, tool_workspace.source)
+                    else:
+                        preflight = await sandbox_preflight(tool_workspace, accept_loopback_access=True, command_runner=probe_command)
+                    checks = []
+                    if full_access:
+                        from .authoring_harness import RepairLoop, check_candidate
+                        async def revise(candidate: dict, issues: tuple, remaining: float) -> dict:
+                            tool_workspace.write_package(candidate)
+                            result = await self._run_agent_feedback(codex,
+                                prompt + ("\nController check failures: " + json.dumps(issues) if issues else ""),
+                                candidate, None, str(tool_workspace.source), tool_workspace=tool_workspace)
+                            if result.get("action") == "revise_agent" and "edits" in result:
+                                from .agent_authoring import apply_package_edits
+                                result = {**result, "package": apply_package_edits(candidate, result.pop("edits"))}
+                                result.pop("edits", None)
+                            return result
+                        async def check(candidate: dict, remaining: float) -> Any:
+                            return check_candidate(candidate, package)
+                        decision = await RepairLoop().run(package, revise=revise, check=check,
+                                                          checkpoint=checks.append, assert_current=lambda: None)
+                    else:
+                        decision = await self._run_agent_feedback(codex, prompt, package, None,
+                            str(tool_workspace.source), tool_workspace=tool_workspace)
+                    decision["harness"] = {"mode": "full_access" if full_access else "isolated_tools", "workspace_id": tool_workspace.root.name,
+                        "base_commit": tool_workspace.base_commit, "preflight": preflight,
+                        "live_testing": "not_performed", "platform_apply": "not_performed"}
+                    if full_access:
+                        decision["harness"].update(execution_snapshot(model=self.model, effort=self.reasoning_effort),
+                                                   base_digest=tool_workspace.base_digest, checks=checks)
+                        from .runtime_changesets import RuntimeChangeSets
+                        from .authoring_harness import content_digest
+                        change_set = RuntimeChangeSets(self.data_root / "runtime-change-sets").create(
+                            tool_workspace, source_id=key, candidate_digest=content_digest(decision.get("package", package)))
+                        if change_set:
+                            decision["harness"]["change_set_id"] = change_set["change_set_id"]
+                            decision["harness"]["platform_dependency_status"] = "awaiting_verification"
+                    return decision
                 return await self._run_agent_feedback(codex, prompt, package, thread_id, isolated)
             finally:
                 cleanup = asyncio.create_task(self._close_authoring_client(key, state))
@@ -698,8 +868,28 @@ the platform invalidates acceptance after behavior changes. Return JSON only.
 
     async def _close_authoring_client(self, key: str, state: dict[str, Any]) -> None:
         try:
+            client = state["client"]
+            state["proc"] = state.get("proc") or self._authoring_process(client)
+            if state.get("tool_mode") and not state["start"].done() and state["proc"] is not None and state["proc"].poll() is None:
+                # Initialization can wait forever on a transport response. Kill its
+                # owned process before waiting for the background startup thread.
+                proc = state["proc"]
+                if os.name == "nt":
+                    killer = await asyncio.create_subprocess_exec("taskkill", "/PID", str(proc.pid), "/T", "/F",
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+                    await asyncio.wait_for(killer.wait(), timeout=8)
+                else:
+                    proc.kill()
             try:
-                await asyncio.shield(state["start"])
+                await asyncio.wait_for(asyncio.shield(state["start"]), timeout=2)
+            except TimeoutError:
+                # Keep ownership until a late worker-thread startup resolves.
+                if not state.get("late_cleanup_registered"):
+                    state["late_cleanup_registered"] = True
+                    def close_late(_task: Any) -> None:
+                        state["cleanup"] = asyncio.create_task(self._close_authoring_client(key, state))
+                    state["start"].add_done_callback(close_late)
+                return
             except asyncio.CancelledError:
                 # A cancelled cleanup must not mistake an in-flight worker-thread
                 # startup for "no process" and release ownership prematurely.
@@ -707,8 +897,14 @@ the platform invalidates acceptance after behavior changes. Return JSON only.
                     raise
             except Exception:
                 pass
-            client = state["client"]
             state["proc"] = state.get("proc") or self._authoring_process(client)
+            if state.get("tool_mode") and state["proc"] is not None and state["proc"].poll() is None:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(state["proc"].pid), "/T", "/F",
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                await asyncio.wait_for(killer.wait(), timeout=8)
             close = getattr(client, "close", None)
             if callable(close):
                 await close()
@@ -752,10 +948,28 @@ the platform invalidates acceptance after behavior changes. Return JSON only.
         return bool(proc.poll() is not None and start is not None and start.done() and not start.cancelled()
                     and cleanup is not None and cleanup.done())
 
-    async def _run_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str) -> dict[str, Any]:
+    async def _run_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str, *, tool_workspace: Any = None) -> dict[str, Any]:
         from openai_codex import ApprovalMode, Sandbox
 
-        if thread_id:
+        full_access = bool(tool_workspace and getattr(tool_workspace, "full_access", False))
+        if full_access:
+            thread = await codex.thread_start(
+                cwd=isolated, sandbox=Sandbox.full_access, approval_mode=ApprovalMode.deny_all,
+                model=self.model, service_name="sap_business_agents_agent_authoring",
+                developer_instructions="Investigate and test the working copy. Preserve identity and acceptance. Never apply production changes or approve/publish. Return structured results; do not invent test evidence.",
+            )
+        elif tool_workspace:
+            # High-level SDK 0.147.0 has no permissions argument. Send the real
+            # named profile on the low-level request, not the legacy broad sandbox.
+            from openai_codex.api import AsyncThread
+            from openai_codex.generated.v2_all import ThreadStartResponse
+            started = await codex._client.request("thread/start", {
+                "cwd": isolated, "permissions": "sapba-authoring", "approvalPolicy": "never",
+                "model": self.model, "ephemeral": True,
+                "developerInstructions": "Inspect the isolated snapshot and edit only agent-package. Use local tests; no network, SAP, publication or approvals. Return the required structured result.",
+            }, response_model=ThreadStartResponse)
+            thread = AsyncThread(codex, started.thread.id)
+        elif thread_id:
             thread = await codex.thread_resume(
                 thread_id, cwd=isolated, sandbox=Sandbox.read_only,
                 approval_mode=ApprovalMode.deny_all, model=self.model,
@@ -770,8 +984,23 @@ the platform invalidates acceptance after behavior changes. Return JSON only.
                     "files, run commands, contact SAP, or edit the repository."
                 ),
             )
-        result = await thread.run(prompt, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA, effort=self.reasoning_effort)
+        turn_options = {"sandbox": Sandbox.full_access, "model": self.model,
+                        "approval_mode": ApprovalMode.deny_all, "cwd": isolated} if full_access else {}
+        result = await thread.run(prompt, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA, effort=self.reasoning_effort, **turn_options)
         raw = json.loads(result.final_response)
+        if tool_workspace:
+            from .authoring_harness import AuthoringHarnessError
+            if tool_workspace.platform_changes() and not full_access:
+                raise AuthoringHarnessError("agent_harness_platform_approval_required")
+            file_package = tool_workspace.read_package()
+            original = {key: package.get(key) for key in ("manifest", "readme", "rules", "files")}
+            if file_package != original:
+                if raw.get("action") != "revise_agent" or any(raw.get(key) for key in ("edits_json", "manifest_json", "readme", "rules_source", "files_json")):
+                    raise AuthoringHarnessError("agent_harness_ambiguous_changes")
+                if file_package.get("rules") and isinstance(file_package["manifest"].get("managedRule"), dict):
+                    from .managed_rules import source_digest
+                    file_package["manifest"]["managedRule"]["sha256"] = source_digest(file_package["rules"])
+                return {"action": "revise_agent", "summary": raw["summary"], "package": {**copy.deepcopy(package), **file_package}, "thread_id": thread.id}
         if raw.get("action") in {"clarify", "reply"}:
             return {"action": raw["action"], "summary": raw["summary"], "thread_id": thread.id}
         if raw.get("action") != "revise_agent":

@@ -6,6 +6,62 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as draftHelpers from "../src/lib/agentDraft.ts";
+
+test("full access feedback separates execution permission from live acceptance and application", async () => {
+  const Conversation = await component("AgentDraftConversation");
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Conversation, { locale, turns: [{
+      turn: 1, kind: "feedback", status: "failed", user_message: "Check this draft",
+      decision: { authoring_policy: { version: 2, mode: "full_access" },
+        error_code: "runtime_command_preflight_timeout",
+        harness: { live_testing: "not_performed", change_set_id: "rcs_example" } },
+    }] }));
+    assert.match(html, /full access/);
+    assert.match(html, /rcs_example/);
+    assert.ok(html.includes(locale === "zh" ? "不是安全沙盒" : "not a security sandbox"));
+    assert.ok(html.includes(locale === "zh" ? "尚未应用" : "not applied"));
+    assert.ok(html.includes(locale === "zh" ? "命令启动预检超时" : "command startup preflight timed out"));
+    assert.ok(html.includes(locale === "zh" ? "不等于 SAP 真机验收" : "not SAP live acceptance"));
+  }
+});
+
+test("trial failure is bilingual and never renders arbitrary exception text", () => {
+  const failed = { status: "failed", error: { message: "Template path is unavailable: input.purchase_order" } };
+  assert.match(draftHelpers.trialFailureText(failed, "zh"), /purchase_order/);
+  assert.match(draftHelpers.trialFailureText(failed, "en"), /missing input/);
+  assert.equal(draftHelpers.trialFailureText({ status: "completed" }, "zh"), "");
+  const secret = "RAW_BANK_REFERENCE_123";
+  assert.ok(!draftHelpers.trialFailureText({ status: "failed", error: { message: secret } }, "zh").includes(secret));
+});
+
+test("actual trial result shows the actionable failure next to the result", async () => {
+  const Result = await component("AgentDraftResult");
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Result, {
+      locale, runPath: "/run/", apiBase: "http://127.0.0.1:8765",
+      run: { run_id: "test-run", status: "failed", error: { message: "Template path is unavailable: input.purchase_order" } },
+    }));
+    assert.match(html, /role="alert"/);
+    assert.match(html, /purchase_order/);
+    assert.ok(html.includes(locale === "zh" ? "试运行失败原因" : "Why the trial failed"));
+  }
+});
+
+test("tool policy is conditional on preflight and is not SAP acceptance", async () => {
+  const Conversation = await component("AgentDraftConversation");
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Conversation, {locale, turns: [{
+      turn: 1, status: "failed", feedback: "Test", decision: {
+        authoring_policy: {mode: "isolated_tools"},
+        error_code: "agent_harness_sandbox_preflight_timeout",
+        harness: {live_testing: "not_performed"},
+      },
+    }]}));
+    assert.ok(html.includes(locale === "zh" ? "预检通过后" : "require successful preflight"));
+    assert.ok(html.includes(locale === "zh" ? "启动预检超时" : "startup preflight timed out"));
+    assert.ok(html.includes(locale === "zh" ? "不等于 SAP 真机验收" : "not SAP live acceptance"));
+  }
+});
 import { publicValues, validateDraftInput, changedDefinition, clearDiscoveredInput, discoveryFingerprint, diffBusinessLabel, draftStepNames, draftTerminal, localText, presentationCell, publicInput, publicBranchRequirements, restoreDiscoveredInput, retainCompatibleInput, technicalIdentity, technicalIdError, feedbackTiming, feedbackDuration, feedbackFailureText, canRetryFeedback, prepareFeedbackRequest } from "../src/lib/agentDraft.ts";
 
 // Render the actual TSX without building the catalog or starting a browser/API.

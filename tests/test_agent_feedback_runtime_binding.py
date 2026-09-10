@@ -38,8 +38,9 @@ def wired_app(tmp_path, monkeypatch):
     release.set()
 
     class RecordingPlanner:
-        def __init__(self, _root, *, model, reasoning_effort):
+        def __init__(self, _root, *, model, reasoning_effort, data_root=None):
             self.model, self.reasoning_effort = model, reasoning_effort
+            self.data_root = data_root
 
         async def review_agent_feedback(self, **kwargs):
             calls.append({"model": self.model, "effort": self.reasoning_effort, **kwargs})

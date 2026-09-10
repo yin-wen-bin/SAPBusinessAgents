@@ -207,6 +207,11 @@ class AgentAuthoringMixin:
                     raise
         if safe_runtime:
             validate_execution(manifest, f"agent-draft:{draft_id}")
+            from .authoring_checks import candidate_input_issues
+            input_issues = candidate_input_issues(manifest)
+            if input_issues:
+                raise ManifestError("Candidate input references require conditional execution.",
+                                    issue_code=input_issues[0]["code"], path=input_issues[0]["path"])
             if package.get("rules"):
                 validate_managed_rule(package["rules"], expected_digest=(manifest.get("managedRule") or {}).get("sha256"))
             elif manifest.get("managedRule"):
@@ -390,6 +395,12 @@ class AgentAuthoringMixin:
         decision = {"task_id": operation["operation_id"], "runtime_snapshot": snapshot,
                     "agent_id": draft["agent_id"], "retry_of_turn": retry_of_turn,
                     "execution": {"timeout_seconds": float(self.feedback_timeout_seconds), "elapsed_seconds": 0}}
+        if snapshot.get("provider_id") == "codex":
+            # New submissions only. Existing persisted/offline operations retain
+            # their original permissions. The user accepted loopback reachability;
+            # do not translate that into a successful network-isolation claim.
+            from .runtime_execution import FULL_ACCESS_POLICY
+            decision["authoring_policy"] = copy.deepcopy(FULL_ACCESS_POLICY)
         if binding_error:
             decision["binding_error"] = binding_error
         turn = {"draft_id": draft_id, "turn": latest_turn + 1, "parent_turn": latest_turn or None, "kind": "feedback", "status": "queued", "user_message": str(payload.feedback), "decision": decision, "base_revision": revision, "result_revision": None, "diff": [], "created_at": utc_now()}
@@ -437,9 +448,12 @@ class AgentAuthoringMixin:
                 supports = getattr(self.runtime, "supports", None)
                 if callable(supports) and not supports("review_agent_feedback"):
                     raise self._authoring_error("The Runtime does not support Agent authoring.", "runtime_agent_feedback_unavailable")
-                decision = await self._await_feedback_runtime(self.runtime.review_agent_feedback(feedback=str(payload.feedback), locale=str(payload.locale), package=runtime_package, history=history, thread_id=None if turn["decision"].get("retry_of_turn") else draft.get("thread_id"), operation_id=operation_id), draft_id=draft_id, operation_id=operation_id, timeout=budget - (monotonic() - started))
+                tool_options = {"tool_policy": copy.deepcopy(turn["decision"]["authoring_policy"])} if turn["decision"].get("authoring_policy") else {}
+                decision = await self._await_feedback_runtime(self.runtime.review_agent_feedback(feedback=str(payload.feedback), locale=str(payload.locale), package=runtime_package, history=history, thread_id=None if turn["decision"].get("retry_of_turn") else draft.get("thread_id"), operation_id=operation_id, **tool_options), draft_id=draft_id, operation_id=operation_id, timeout=budget - (monotonic() - started))
             check_deadline()
             self._assert_operation(draft_id, operation_id, int(turn["base_revision"]))
+            if isinstance(decision.get("harness"), dict):
+                turn["decision"]["harness"] = copy.deepcopy(decision["harness"])
             action = decision.get("action")
             if action not in {"clarify", "reply", "revise_agent"} or not isinstance(decision.get("summary"), dict) or not all(isinstance(decision["summary"].get(lang), str) for lang in ("zh", "en")):
                 raise self._authoring_error("The Runtime response is invalid.", "runtime_agent_feedback_invalid")

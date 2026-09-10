@@ -59,6 +59,8 @@ class ManifestError(ValueError):
             "definition_invalid", "input_schema_invalid", "json_schema_invalid",
             "input_title_missing", "input_title_zh_invalid", "input_title_en_invalid",
             "input_display_mismatch", "output_display_mismatch", "execution_mode_invalid",
+            "agent_optional_input_unguarded", "agent_optional_filter_invalid",
+            "agent_optional_filter_unguarded", "agent_input_reference_unknown",
         }
         path = self.path if isinstance(self.path, str) and len(self.path) <= 512 and re.fullmatch(
             r"/manifest(?:/(?:[A-Za-z_][A-Za-z0-9_-]{0,79}|[0-9]+))*", self.path

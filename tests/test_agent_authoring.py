@@ -63,10 +63,38 @@ def feedback_payload(draft, text="请说明并调整", request="req-1"):
     return AgentFeedbackRequest(baseTurn=max((item["turn"] for item in draft["conversation"]), default=0), baseRevision=draft["revision"], feedback=text, requestId=request)
 
 
+def test_runtime_optional_input_dependency_is_rejected_before_revision(tmp_path):
+    service, _, _ = _service(tmp_path)
+    draft = create(service)
+    def mutate(package):
+        execution = package["manifest"]["execution"]
+        execution["inputSchema"]["properties"]["optional_filter"] = {
+            "type": "string", "title": {"zh": "可选筛选", "en": "Optional filter"}}
+        execution["steps"][0].setdefault("request", {})["optional_probe"] = "{{input.optional_filter}}"
+    service.runtime = Runtime("revise_agent", mutate)
+    _, result = asyncio.run(send_and_wait(service, draft, feedback_payload(draft)))
+    assert result["revision"] == draft["revision"]
+    failure = result["conversation"][-1]
+    assert failure["status"] == "failed"
+    assert failure["decision"]["validation_issues"][0]["code"] == "agent_optional_input_unguarded"
+
+
 async def send_and_wait(service, draft, payload):
     submitted = await service.submit_feedback(draft["draft_id"], payload)
     await service._feedback_tasks[submitted["task_id"]]
     return submitted, service.get_draft(draft["draft_id"])
+
+
+def test_new_codex_turn_pins_tool_policy_without_changing_past_turns(tmp_path):
+    service, _, _ = _service(tmp_path)
+    draft = create(service)
+    service.runtime = Runtime('reply')
+    before = copy.deepcopy(draft['conversation'])
+    _, result = asyncio.run(send_and_wait(service, draft, feedback_payload(draft)))
+    policy = {'version': 2, 'mode': 'full_access'}
+    assert service.runtime.calls[-1]['tool_policy'] == policy
+    assert result['conversation'][-1]['decision']['authoring_policy'] == policy
+    assert result['conversation'][:-1] == before
 
 
 def test_diff_preserves_values_text_binary_and_stable_step_identity():

@@ -549,6 +549,10 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             self._assert_manageable(manifest)
             validate_execution(manifest, f"agent-draft:{draft_id}")
             checks.append({"code": "agent_schema_valid", "status": "pass"})
+            from .authoring_checks import candidate_input_issues
+            input_issues = candidate_input_issues(manifest)
+            errors.extend(input_issues)
+            checks.append({"code": "agent_input_contract", "status": "fail" if input_issues else "pass"})
             self._require_skill_dependencies(manifest)
             checks.append({"code": "agent_skill_dependencies_valid", "status": "pass"})
         except (ManifestError, AgentLifecycleError) as exc:
@@ -745,6 +749,8 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         trial = copy.deepcopy((draft.get("metadata") or {}).get("trial"))
         static = copy.deepcopy((draft.get("metadata") or {}).get("static_checks") or {})
         blockers = [] if acceptance else ["agent_formal_acceptance_required"]
+        if self._platform_changes_pending(draft["draft_id"]):
+            blockers.append("runtime_changeset_integration_verification_required")
         identity = self.technical_identity(draft)
         if identity["kind"] == "unknown":
             blockers.append("agent_identity_unknown")
@@ -758,6 +764,10 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         if active and active.get("kind") not in {"publish", "static_validation"}:
             blockers.append("agent_draft_operation_active")
         return {"static_checks": static, "trial": trial, "acceptance": acceptance or {"verdict": "NOT_TESTED", "requires_formal_acceptance": True}, "publishability": {"can_publish": not blockers, "blockers": blockers}}
+
+    def _platform_changes_pending(self, draft_id: str) -> bool:
+        return any((turn.get("decision") or {}).get("harness", {}).get("platform_dependency_status") == "awaiting_verification"
+                   for turn in self.store.list_agent_conversation_turns(draft_id))
 
     def _validation_response(self, draft: dict[str, Any]) -> dict[str, Any]:
         package = self.store.get_agent_authoring_revision(draft["draft_id"], int(draft["revision"]))["package"]
@@ -774,6 +784,9 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
 
     def _publish_owned(self, draft_id: str, payload: Any, *, schedule_refresh: bool, operation_id: str) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
+        if self._platform_changes_pending(draft_id):
+            raise AgentLifecycleError("The platform changeset requires independent verification and application.",
+                                      code="runtime_changeset_integration_verification_required")
         if int(payload.expected_revision) != int(draft["revision"]):
             raise AgentLifecycleError("Agent draft revision changed.", code="agent_draft_conflict")
         self.require_technical_identity(draft)

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Locale } from "../lib/types";
-import { draftStatus, localText, presentationCell } from "../lib/agentDraft";
+import { draftStatus, localText, presentationCell, trialFailureText } from "../lib/agentDraft";
 
 const display = (value: any, locale: Locale) => typeof value === "boolean" ? (locale === "zh" ? value ? "是" : "否" : value ? "Yes" : "No") : value == null ? "—" : typeof value === "object" ? localText(value, locale) || "—" : String(value);
 
@@ -20,7 +20,9 @@ export default function AgentDraftResult({ run, locale, runPath, apiBase }: { ru
   const presentation = result.presentation;
   const gaps = rule?.evidence_gaps || result.evidence_gaps || [];
   const blocks = presentation?.blocks || [];
+  const failure = trialFailureText(run, locale);
   return <div className="draft-trial-result"><h3>{localText(presentation?.title || report.headline || report.summary || result.summary, locale) || (locale === "zh" ? "本次试运行结果" : "Trial result")}</h3><dl><dt>{locale === "zh" ? "业务状态" : "Business status"}</dt><dd>{draftStatus(rule?.business_status || result.business_status || run.status, locale)}</dd><dt>{locale === "zh" ? "查询源完整" : "Source complete"}</dt><dd>{display(rule?.source_complete ?? result.completeness?.source_complete, locale)}</dd><dt>{locale === "zh" ? "业务证据完整" : "Evidence complete"}</dt><dd>{display(rule?.evidence_complete ?? result.completeness?.business_complete, locale)}</dd></dl>
+    {failure && <section className="agent-alert" role="alert"><h4>{locale === "zh" ? "试运行失败原因" : "Why the trial failed"}</h4><p>{failure}</p></section>}
     {gaps.length > 0 && <section className="agent-alert"><h4>{locale === "zh" ? "证据缺口" : "Evidence gaps"}</h4><ul>{gaps.map((gap: any, index: number) => <li key={index}>{localText(gap.message || gap.description || gap.reason || gap, locale) || gap.code}</li>)}</ul></section>}
     {blocks.map((block: any, index: number) => <section className={`presentation-block presentation-block-${block.type}`} key={index}>{block.title && <h4>{localText(block.title, locale)}</h4>}
       {block.type === "table" ? <ResultTable block={block} locale={locale} /> : block.type === "metrics" ? <div className="presentation-metrics">{(block.metrics || block.items || []).map((metric: any, number: number) => <div className="presentation-metric" key={number}><span>{localText(metric.label, locale)}</span><strong>{display(metric.value, locale)}</strong></div>)}</div> : block.type === "key_value" ? <dl>{(block.entries || []).map((item: any, number: number) => <div key={number}><dt>{localText(item.label, locale)}</dt><dd>{display(item.value, locale)}</dd></div>)}</dl> : block.type === "bullet_list" ? <ul>{block.items.map((item: any, number: number) => <li key={number}>{localText(item.text || item, locale)}</li>)}</ul> : <p>{localText(block.text || block.content || block.body, locale)}</p>}

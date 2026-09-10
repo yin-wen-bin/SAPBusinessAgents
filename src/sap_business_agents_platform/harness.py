@@ -1794,7 +1794,23 @@ class CodexHarnessController:
         workspace_key = str(session["session_id"]) if session else run_id
         workspace = self.settings.data_root / "harness" / workspace_key / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
-        codex = _safe_codex(self.settings, run_id, capability, workspace)
+        from .authoring_workspace import AuthoringWorkspace
+        from .runtime_execution import execution_snapshot, owned_client, command_preflight, public_tool_event
+        # A new run owns a distinct copy; previous runs and their files stay intact.
+        engineering = AuthoringWorkspace(self.settings.repository_root,
+            self.settings.data_root / "harness" / run_id / ("engineering-" + secrets.token_hex(8)))
+        try:
+            if not model or not reasoning_effort:
+                raise RuntimeError("runtime_execution_binding_missing")
+            engineering.prepare(None, current_source=True)
+            workspace = engineering.source
+            self.store.update_harness_state(run_id, {"execution_snapshot": execution_snapshot(model=model, effort=reasoning_effort),
+                "workspace_id": engineering.root.name, "base_commit": engineering.base_commit,
+                "base_digest": engineering.base_digest})
+        except BaseException:
+            self.broker.close_session(run_id)
+            raise
+        codex = _safe_codex(self.settings, run_id, capability, workspace, full_access=True)
         web_search_count = 0
         self.store.append_event(
             run_id,
@@ -1807,23 +1823,25 @@ class CodexHarnessController:
             },
         )
         try:
-            async with codex:
+            async with owned_client(codex):
+                preflight = await command_preflight(codex, workspace)
+                self.store.append_event(run_id, "runtime_command_preflight", preflight)
                 if thread_id:
                     thread = await codex.thread_resume(
                         thread_id,
                         approval_mode=_approval_mode(),
-                        developer_instructions=_developer_instructions(),
+                        developer_instructions=_developer_instructions(full_access=True),
                         cwd=str(workspace),
                         model=model,
-                        sandbox=_sandbox(),
+                        sandbox=_sandbox(full_access=True),
                     )
                 else:
                     thread = await codex.thread_start(
                         approval_mode=_approval_mode(),
-                        developer_instructions=_developer_instructions(),
+                        developer_instructions=_developer_instructions(full_access=True),
                         cwd=str(workspace),
                         model=model,
-                        sandbox=_sandbox(),
+                        sandbox=_sandbox(full_access=True),
                     )
                     thread_id = thread.id
                 self.store.update_run(run_id, thread_id=thread_id)
@@ -1847,7 +1865,7 @@ class CodexHarnessController:
                     approval_mode=_approval_mode(),
                     model=model,
                     output_schema=output_schema(_HARNESS_OUTPUT_SCHEMA, state.get("acceptance_spec")),
-                    sandbox=_sandbox(),
+                    sandbox=_sandbox(full_access=True),
                 )
                 self._active_turns[run_id] = turn
                 self.store.update_harness_state(
@@ -1876,11 +1894,13 @@ class CodexHarnessController:
                                 {"turn_id": turn.id, "code": turn_error[0], "message": turn_error[1]},
                             )
                             raise RuntimeError(f"{turn_error[0]}:{turn_error[1]}")
-                    custom_kind, custom_topic = _custom_tool_kind(item)
+                    custom_kind, custom_topic = _custom_tool_kind(item, full_access=True)
                     if custom_kind == "forbidden":
                         await _best_effort_interrupt(turn)
                         raise RuntimeError("capability_isolation_failed:custom_tool")
-                    if custom_kind == "web_search":
+                    if custom_kind == "engineering":
+                        self.store.append_event(run_id, "runtime_engineering_tool", public_tool_event(item))
+                    elif custom_kind == "web_search":
                         if event.method == "item/started":
                             self.store.append_event(
                                 run_id, "web_search_started", {"query": custom_topic}
@@ -1948,6 +1968,8 @@ class CodexHarnessController:
                         self.store.append_event(
                             run_id, "assistant_message", {"message": final_response[:4000]}
                         )
+                    elif item_type in {"commandExecution", "fileChange"}:
+                        self.store.append_event(run_id, "runtime_engineering_tool", public_tool_event(item))
                     elif item_type in {
                         "commandExecution",
                         "fileChange",
@@ -2215,6 +2237,16 @@ class CodexHarnessController:
                 await asyncio.gather(deadline_monitor, return_exceptions=True)
             self._active_turns.pop(run_id, None)
             self.broker.close_session(run_id)
+            from .runtime_changesets import RuntimeChangeSets
+            try:
+                change_set = RuntimeChangeSets(self.settings.data_root / "runtime-change-sets").create(engineering, source_id=run_id)
+                if change_set:
+                    self.store.update_harness_state(run_id, {"change_set_id": change_set["change_set_id"]})
+                    self.store.append_event(run_id, "runtime_changeset_created", {
+                        "change_set_id": change_set["change_set_id"], "status": change_set["status"], "can_apply": False})
+            except Exception as error:
+                self.store.append_event(run_id, "runtime_changeset_blocked", {
+                    "code": getattr(error, "code", "runtime_changeset_collection_failed")})
         if not final_response and self.store.get_run(run_id).cancel_requested:
             calls, evidence = self.broker.snapshot(run_id)
             web_search_count, discovered, activated = _persistent_harness_counts(
@@ -2408,7 +2440,7 @@ def _budgeted_tool_call_count(calls: list[dict[str, Any]]) -> int:
 
 
 def _safe_codex(
-    settings: Settings, run_id: str, capability: str, workspace: Path, *, allow_web: bool = True
+    settings: Settings, run_id: str, capability: str, workspace: Path, *, allow_web: bool = True, full_access: bool = False
 ) -> Any:
     from codex_cli_bin import bundled_codex_path
     from openai_codex import AsyncCodex
@@ -2449,6 +2481,9 @@ def _safe_codex(
     # The pinned SDK high-level wrapper does not yet surface an approval handler.
     # Install the deny handler before initialization on its wrapped low-level client.
     codex._client._sync._approval_handler = _deny_approval  # type: ignore[attr-defined]
+    if full_access:
+        from .runtime_execution import configure_client
+        return configure_client(codex)
     return codex
 
 
@@ -2544,14 +2579,14 @@ def _approval_mode() -> Any:
     return ApprovalMode.deny_all
 
 
-def _sandbox() -> Any:
+def _sandbox(*, full_access: bool = False) -> Any:
     from openai_codex import Sandbox
 
-    return Sandbox.read_only
+    return Sandbox.full_access if full_access else Sandbox.read_only
 
 
-def _developer_instructions() -> str:
-    return """
+def _developer_instructions(*, full_access: bool = False) -> str:
+    instructions = """
 You are the read-only SAP research and evidence agent inside SAPBusinessAgents.
 Use iterative tool calls: search the public web when documentation or tool discovery can improve
 the answer, search the SAP catalog, validate live metadata, execute only GET-only platform plans,
@@ -2653,6 +2688,15 @@ final presentation without changing any other presentation content. Prioritize t
 validation over optional document expansion after the core business result is supported. Return exactly the requested
 structured output.
 """.strip()
+    if full_access:
+        instructions = instructions.replace(
+            "The only executable tools are the two provided MCP servers plus native Web Search. Never use shell,\nfiles, browser automation, computer use, subagents, or write-capable actions.",
+            "Use the provided MCP servers, native Web Search, shell and file editing to investigate, compute and test in the work copy. "
+            "The work copy is not an OS sandbox. Never modify the production checkout, publish, approve changes or change machine settings. "
+            "Platform edits become a pending changeset, not an applied fix. Browser and subagent bridges must be connected before use. "
+            "Do not fetch SAP directly from shell or browser. SAP facts require Broker evidence. "
+            "Scripts must cite input evidence and must not claim new SAP evidence identifiers.")
+    return instructions
 
 
 def _turn_prompt(query: str, *, continuing: bool) -> str:
@@ -2703,10 +2747,12 @@ def _event_item(event: Any) -> tuple[str, dict[str, Any]]:
     return str(data.get("type") or ""), data
 
 
-def _custom_tool_kind(item: dict[str, Any]) -> tuple[str, str]:
+def _custom_tool_kind(item: dict[str, Any], *, full_access: bool = False) -> tuple[str, str]:
     if str(item.get("type") or "") != "customToolCall":
         return "", ""
     source = str(item.get("input") or "")
+    if full_access and any(marker in source for marker in ("tools.exec_command", "tools.apply_patch", "tools.write_stdin", "tools.view_image")):
+        return "engineering", ""
     if any(
         marker in source
         for marker in (
