@@ -529,9 +529,16 @@ class HarnessToolBroker:
             try:
                 sample_context.allow_tool(tool_name, arguments)
             except ValueError as exc:
+                if getattr(exc, "code", "") == "invalid_order_by_expression":
+                    sample_context.validation_issues = [{"code": "invalid_order_by_expression"}]
+                    sample_context.progress("validating_query")
+                    return {"ok": False, "code": "invalid_order_by_expression",
+                            "validation_issues": sample_context.validation_issues,
+                            "message": "order_by must contain bare field names, e.g. [\"PurchasingDocument\"]. Do not append asc or desc."}
                 return {"ok": False, "code": getattr(exc, "code", "sample_request_denied"),
                         "message": "The sample request is outside the verified draft scope or budget."}
-        budget = self.review_deadline(run_id)
+        budget = ({"deadline_phase": "querying" if sample_context.remaining(external=True) else "finalizing"}
+                  if sample_context is not None else self.review_deadline(run_id))
         if budget["deadline_phase"] == "deadline_exceeded":
             return {
                 "ok": False,
@@ -656,10 +663,21 @@ class HarnessToolBroker:
             )
         sample_read_started = False
         try:
+            if sample_context is not None:
+                sample_context.tool_tasks.add(asyncio.current_task())
+                sample_context.progress({"sap_catalog_search": "preparing", "sap_schema_get": "reading_metadata",
+                    "sap_query_validate": "validating_query", "sap_query_execute": "reading_candidates",
+                    "sap_skill_execute": "reading_candidates"}.get(tool_name, "checking_sample"))
             if sample_context is not None and tool_name in {"sap_query_execute", "sap_skill_execute"}:
                 sample_context.begin_read()
                 sample_read_started = True
-            output = await self._dispatch(run_id, tool_name, arguments)
+            if sample_context is not None:
+                async with asyncio.timeout(sample_context.remaining(external=tool_name not in {"sap_evidence_read", "sap_evidence_assess"})):
+                    output = await self._dispatch(run_id, tool_name, arguments)
+                if sample_context.closed:
+                    raise ValueError("sample_discovery_closed")
+            else:
+                output = await self._dispatch(run_id, tool_name, arguments)
             output = _safe_public(output, preserve_rows=True)
             status = "completed" if output.get("ok") is not False else "failed"
         except Exception as exc:  # tool errors are observations for the same Codex turn
@@ -673,6 +691,8 @@ class HarnessToolBroker:
                 output["detail"] = _safe_public(detail)
             status = "failed"
         finally:
+            if sample_context is not None:
+                sample_context.tool_tasks.discard(asyncio.current_task())
             if sample_read_started:
                 sample_context.calls_in_flight = max(0, sample_context.calls_in_flight - 1)
         evidence_ref = str(output.get("evidence_ref") or "") or None
@@ -694,6 +714,8 @@ class HarnessToolBroker:
                 "code": output.get("code"),
             },
         )
+        if sample_context is not None:
+            sample_context.tool_completed(tool_name, output, lambda ref: self._read_evidence(run_id, ref))
         return _client_tool_output(output)
 
     def _completed_tool_replay(
@@ -803,6 +825,9 @@ class HarnessToolBroker:
             sample_context = self._sample_contexts.get(run_id)
             if sample_context is not None:
                 sample_context.record_schema(result)
+                result = {**result, "sample_query_contract": {"order_by": "bare field names only; ascending is implicit",
+                    "stable_keys": [{"service_name": key[0], "odata_version": key[1], "entity_set": key[2],
+                                     "order_by": fields} for key, fields in sample_context.live_keys.items()]}}
             return result
         if tool_name == "sap_query_validate":
             plan = self.normalizer.normalize_plan(

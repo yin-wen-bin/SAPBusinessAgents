@@ -553,6 +553,7 @@ class AgentSampleDiscoveryRequest(BaseModel):
 
     expected_revision: int = Field(alias="expectedRevision", ge=1)
     input: dict[str, Any] = Field(default_factory=dict)
+    selected_fields: list[str] | None = Field(default=None, alias="selectedFields", min_length=1, max_length=50)
     request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
 
 

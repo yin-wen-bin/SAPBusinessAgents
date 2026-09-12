@@ -70,6 +70,101 @@ def test_context_accepts_bounded_declared_source_and_preserves_explicit_input():
     assert result["model"] == SAMPLE_MODEL
 
 
+@pytest.mark.parametrize('order', [['CompanyCode asc'], ['Item desc'], ['Item;drop'], [None]])
+def test_sample_sort_contract_matches_provider(order):
+    from sap_business_agents_platform.sap_read.embedded_odata import _IDENTIFIER
+    assert not all(isinstance(item, str) and _IDENTIFIER.fullmatch(item) for item in order)
+    with pytest.raises(SampleDiscoveryError, match='invalid_order_by_expression'):
+        context().check_plan({**plan(), 'order_by': order})
+
+
+@pytest.mark.parametrize('typed_schema', [True, False])
+def test_sap_date_sample_is_iso_after_evidence_validation(typed_schema):
+    m = manifest()
+    m['execution']['inputSchema']['properties']['customer'] = {'type': 'string', **({'format': 'date'} if typed_schema else {})}
+    ctx = SampleDiscoveryContext(m, {'company_code': '1710'}, 2, selected_fields=['customer'])
+    ctx.record_schema({'ok': True, 'data': {'schema_authority': True, 'entities': [
+        {**{key: plan()[key] for key in ('service_name', 'odata_version', 'entity_set')}, 'key_fields': ['Item']}],
+        'fields': [{**{key: plan()[key] for key in ('service_name', 'odata_version', 'entity_set')},
+                    'field_name': 'Customer', 'data_type': 'Edm.DateTime'}]}})
+    ctx.remember('ev_a', plan=plan())
+    def dates(ref):
+        raw, meta = reader(ref)
+        raw['rows'][0]['Customer'] = '/Date(1507420800000)/'
+        return raw, meta
+    result = ctx.deterministic_result('ev_a', dates)
+    assert result['input']['customer'] == '2017-10-08'
+    assert result['field_sources']['customer']['normalization'] == 'sap_date_to_iso_date'
+    assert dates('ev_a')[0]['rows'][0]['Customer'] == '/Date(1507420800000)/'
+    with pytest.raises(SampleDiscoveryError, match='sample_value_not_in_evidence'):
+        ctx.validate_result({'suggestions': [proof(value='2026-01-01')]}, dates)
+
+
+def test_selected_optional_and_partial_inputs_do_not_fill_unselected_fields():
+    m = manifest()
+    m['execution']['inputSchema']['properties']['item'] = {'type': 'string'}
+    m['execution']['steps'][0]['inputMapping']['plan']['filters'].append({'field': 'Item', 'operator': 'eq', 'value': '{{input.item}}'})
+    ctx = SampleDiscoveryContext(m, {'company_code': '1710'}, 2, selected_fields=['item'])
+    ctx.live_keys[('API_TEST', '2.0', 'Items')] = ['Item']
+    ctx.remember('ev_a', plan=plan())
+    result = ctx.deterministic_result('ev_a', reader)
+    assert result['status'] == 'needs_input'
+    assert result['input'] == {'company_code': '1710', 'item': '1'}
+    assert result['missing_fields'] == ['customer']
+    with pytest.raises(SampleDiscoveryError, match='sample_field_not_selected'):
+        ctx.validate_result({'suggestions': [proof()]}, reader)
+
+
+@pytest.mark.parametrize('selected', [[], ['customer', 'customer'], ['receipt_reference'], ['unknown'], ['company_code']])
+def test_invalid_sample_selection_rejected(selected):
+    with pytest.raises(SampleDiscoveryError, match='sample_selected_fields_invalid'):
+        SampleDiscoveryContext(manifest(), {'company_code': '1710'}, 2, selected_fields=selected)
+
+
+def test_independent_deadline_and_finalization(monkeypatch):
+    ctx = context()
+    monkeypatch.setattr('sap_business_agents_platform.sample_discovery.time.monotonic', lambda: ctx.started + 540)
+    with pytest.raises(SampleDiscoveryError, match='sample_finalization_only'):
+        ctx.allow_tool('sap_schema_get', {})
+    assert ctx.remaining() == 60
+    assert ctx.phase == 'finalizing'
+    monkeypatch.setattr('sap_business_agents_platform.sample_discovery.time.monotonic', lambda: ctx.started + 600)
+    with pytest.raises(SampleDiscoveryError, match='sample_discovery_timeout'):
+        ctx.allow_tool('sap_evidence_assess', {})
+
+
+def test_deterministic_selection_requires_verified_coherent_public_row():
+    ctx = context()
+    ctx.live_keys[('API_TEST', '2.0', 'Items')] = ['CompanyCode', 'Item']
+    ctx.remember('ev_a', plan=plan())
+    result = ctx.deterministic_result('ev_a', reader)
+    assert result['status'] == 'ready' and result['selection_method'] == 'deterministic'
+    assert result['input'] == {'company_code': '1710', 'customer': 'C1'}
+    assert result['field_sources']['customer']['row_indices'] == [0]
+    def incomplete(ref):
+        raw, meta = reader(ref)
+        return {**raw, 'upstream_incomplete': True}, meta
+    assert ctx.deterministic_result('ev_a', incomplete) is None
+    ctx.properties['customer']['type'] = 'array'
+    assert ctx.deterministic_result('ev_a', reader) is None
+
+
+def test_deterministic_selection_skips_bad_values_and_never_overwrites_scope():
+    ctx = context()
+    ctx.live_keys[('API_TEST', '2.0', 'Items')] = ['CompanyCode', 'Item']
+    ctx.remember('ev_a', plan=plan())
+    def bad_first(ref):
+        raw, meta = reader(ref)
+        raw['rows'][0]['Customer'] = None
+        return raw, meta
+    assert ctx.deterministic_result('ev_a', bad_first)['input']['customer'] == 'C2'
+    def wrong_scope(ref):
+        raw, meta = reader(ref)
+        for row in raw['rows']: row['CompanyCode'] = 'OTHER'
+        return raw, meta
+    assert ctx.deterministic_result('ev_a', wrong_scope) is None
+
+
 @pytest.mark.parametrize(("change", "code"), [
     ({"http_method": "POST"}, "sample_bounded_get_required"),
     ({"steps": [plan()]}, "sample_bounded_get_required"),
@@ -292,6 +387,7 @@ def test_discovery_mcp_does_not_launch_external_tool_server(tmp_path):
 def test_runtime_receives_exact_sol_and_no_web_and_errors_do_not_leak_text(tmp_path):
     settings, store, broker, _ = setup_broker(tmp_path)
     runtime = AsyncMock()
+    runtime._client = None
     runtime.__aenter__.return_value = runtime
     runtime.thread_start.side_effect = RuntimeError("PRIVATE BANK VALUE")
     with patch("sap_business_agents_platform.harness._safe_codex", return_value=runtime) as factory:
@@ -306,6 +402,7 @@ def test_runtime_receives_exact_sol_and_no_web_and_errors_do_not_leak_text(tmp_p
 def test_isolated_runtime_projects_only_validated_public_cells(tmp_path):
     settings, store, broker, sap = setup_broker(tmp_path)
     runtime = AsyncMock()
+    runtime._client = None
     runtime.__aenter__.return_value = runtime
     thread = AsyncMock()
     thread.id = "sample_thread"
@@ -327,7 +424,39 @@ def test_isolated_runtime_projects_only_validated_public_cells(tmp_path):
     assert result["status"] == "ready"
     assert result["input"]["customer"] == "C1"
     assert result["query_count"] == 1
+    assert result['selection_method'] == 'deterministic'
     assert thread.turn.call_args.kwargs["model"] == SAMPLE_MODEL
     assert thread.turn.call_args.kwargs["effort"] == "medium"
-    assert store.get_harness_state("run_sample")["time_budget"]["hard_limit_seconds"] == 300
+    assert store.get_harness_state("run_sample")["time_budget"]["hard_limit_seconds"] == 600
     assert not broker._tokens and not broker._sample_contexts
+
+
+def test_deterministic_result_closes_sdk_queue_before_unregister(tmp_path):
+    from openai_codex._message_router import MessageRouter
+    settings, store, broker, sap = setup_broker(tmp_path)
+    runtime = AsyncMock()
+    router = MessageRouter()
+    runtime._client = SimpleNamespace(_sync=SimpleNamespace(_proc=None, _router=router))
+    runtime.__aenter__.return_value = runtime
+    thread = AsyncMock()
+    thread.id = 'thread-owned'
+    runtime.thread_start.return_value = thread
+    turn = SimpleNamespace(interrupt=AsyncMock())
+    unregistered = []
+    async def stream():
+        router.register_turn('owned-turn')
+        ctx = broker._sample_contexts['run_sample']
+        ctx.live_keys[('API_TEST', '2.0', 'Items')] = ['CompanyCode', 'Item']
+        await broker.handle('run_sample', broker._tokens['run_sample'], 'sap_query_execute', {'plan': plan()})
+        try:
+            yield await asyncio.to_thread(router.next_turn_notification, 'owned-turn')
+        finally:
+            unregistered.append(True)
+            router.unregister_turn('owned-turn')
+    turn.stream = stream
+    thread.turn.return_value = turn
+    with patch('sap_business_agents_platform.harness._safe_codex', return_value=runtime):
+        result = asyncio.run(SampleDiscoveryService(settings, store, broker).discover('run_sample', manifest(), {'company_code': '1710'}, revision=1))
+    assert result['status'] == 'ready'
+    assert unregistered == [True]
+    assert not broker._tokens

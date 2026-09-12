@@ -7,6 +7,53 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as draftHelpers from "../src/lib/agentDraft.ts";
 
+test("sample field selection lists visible optional inputs and preserves entered scope", async () => {
+  const schema = { type: "object", required: ["date"], properties: {
+    date: { type: "string", format: "date", title: { zh: "收货日期", en: "Receipt date" } },
+    plant: { type: "string", title: { zh: "工厂", en: "Plant" } },
+    company: { type: "string", title: { zh: "公司", en: "Company" } },
+    secret: { type: "string", "x-sapba-sensitive": true }, hidden: { type: "string", "x-sapba-internal": true },
+  } };
+  const fields = draftHelpers.sampleFieldOptions(schema, "zh", { company: "1710" });
+  assert.deepEqual(fields.map(x => x.key), ["date", "plant", "company", "secret"]);
+  assert.equal(fields[0].required, true);
+  assert.equal(fields[1].disabled, false);
+  assert.equal(fields[2].disabled, true);
+  assert.equal(fields[3].disabled, true);
+  const Modal = await component("AgentSampleProgress");
+  const html = renderToStaticMarkup(createElement(Modal, { fields, selectedFields: [], open: true, locale: "zh", canRetry: true }));
+  assert.match(html, /选择需要查找测试数据的参数/);
+  assert.match(html, /disabled="">开始查找/);
+  assert.ok(!html.includes("正在查找测试样本数据"));
+});
+
+test("sample modal exposes bilingual progress, background and cancellation separately", async () => {
+  const Modal = await component("AgentSampleProgress");
+  for (const locale of ["zh", "en"]) {
+    const props = { open: true, locale, canRetry: true, onClose() {}, onCancel() {}, onRetry() {}, onReview() {} };
+    const html = renderToStaticMarkup(createElement(Modal, { ...props, value: {
+      status: "running", phase: "reading_candidates", timeout_seconds: 600, elapsed_seconds: 32,
+      model: "gpt-5.6-sol", reasoning_effort: "max", run_id: "sample-test",
+    }}));
+    assert.match(html, /<dialog/);
+    assert.match(html, /aria-labelledby="sample-progress-title"/);
+    assert.ok(html.includes(locale === "zh" ? "正在查找测试样本数据" : "Finding test sample data"));
+    assert.ok(html.includes(locale === "zh" ? "后台继续" : "Continue in background"));
+    assert.ok(html.includes(locale === "zh" ? "取消查找" : "Cancel discovery"));
+    assert.match(html, /10:00/);
+    assert.match(html, /gpt-5.6-sol/);
+    const failed = renderToStaticMarkup(createElement(Modal, { ...props, value: {
+      status: "timed_out", failed_stage: "checking_sample", timeout_seconds: 300, elapsed_seconds: 305, candidate_count: 100,
+    }}));
+    assert.match(failed, /05:00/);
+    assert.ok(failed.includes(locale === "zh" ? "尚未启动试运行" : "No trial was started"));
+    assert.ok(failed.includes(locale === "zh" ? "重新查找" : "Retry discovery"));
+    const ready = renderToStaticMarkup(createElement(Modal, { ...props, value: { status: "ready", field_sources: { date: {} } } }));
+    assert.ok(ready.includes(locale === "zh" ? "查看并确认参数" : "Review and confirm inputs"));
+    assert.ok(!ready.includes(locale === "zh" ? "取消查找" : "Cancel discovery"));
+  }
+});
+
 test("full access feedback separates execution permission from live acceptance and application", async () => {
   const Conversation = await component("AgentDraftConversation");
   for (const locale of ["zh", "en"]) {
@@ -67,11 +114,12 @@ import { publicValues, validateDraftInput, changedDefinition, clearDiscoveredInp
 // Render the actual TSX without building the catalog or starting a browser/API.
 const require = createRequire(import.meta.url);
 async function component(name, dependencies = {}) {
+  if (name === "AgentDraftWorkspace") dependencies["./AgentSampleProgress"] = await component("AgentSampleProgress");
   const source = await readFile(new URL(`../src/components/${name}.tsx`, import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } });
   const exports = {};
   new Function("require", "exports", compiled.outputText)((id) => id === "../lib/agentDraft" ? draftHelpers : id.endsWith(".css") ? {} : dependencies[id] || require(id), exports);
-  return exports.default;
+  return Object.assign(exports.default, exports);
 }
 
 const title = (zh, en) => ({ zh, en });

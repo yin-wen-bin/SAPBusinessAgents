@@ -5,6 +5,8 @@ import type { FeedbackRequest } from "../lib/agentDraft";
 import AgentDraftInputs from "./AgentDraftInputs";
 import AgentDraftResult from "./AgentDraftResult";
 import AgentDraftConversation from "./AgentDraftConversation";
+import AgentSampleProgress, { SampleProgressSummary } from "./AgentSampleProgress";
+import { sampleFieldOptions } from "../lib/agentDraft";
 import "../styles/agent-draft.css";
 
 type Props = { initialDraft: any; apiBase: string; locale: Locale; runPath: string; initialStep?: string; onBack: () => void; onPublished: (result: any) => void };
@@ -45,6 +47,13 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const [autoFilled, setAutoFilled] = useState<Record<string, any>>({});
   const autoFilledRef = useRef(autoFilled); autoFilledRef.current = autoFilled;
   const [discovery, setDiscovery] = useState<any>(null);
+  const [sampleDialogOpen, setSampleDialogOpen] = useState(false);
+  const [selectingSampleFields, setSelectingSampleFields] = useState(false);
+  const [selectedSampleFields, setSelectedSampleFields] = useState<string[]>([]);
+  const sampleSubmitting = useRef(false);
+  const pendingSampleRequest = useRef<any>(null);
+  const sampleInputsRef = useRef<HTMLDivElement>(null);
+  const sampleReviewFocus = useRef(false);
   const [confirmedSample, setConfirmedSample] = useState("");
   const [discoveryInputHash, setDiscoveryInputHash] = useState("");
   const [trial, setTrial] = useState<any>(initialDraft.trial || null);
@@ -66,6 +75,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   let manifest: any;
   try { manifest = JSON.parse(manifestText); } catch { manifest = draft.package.manifest; }
   const schema = draft.package.manifest.execution?.inputSchema || { type: "object", properties: {} };
+  const sampleFields = sampleFieldOptions(schema, locale, input);
   const active = Boolean(operation && !draftTerminal.has(operation.status)) || (draft.conversation || []).some((turn: any) => turn.kind === "feedback" && ["queued", "running", "cancelling"].includes(turn.status));
   const locked = busy || active || draft.status === "published";
   const actionable = !locked && !dirty && !remoteConflict;
@@ -82,7 +92,8 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const publishability = report?.publishability || draft.publishability;
   const canPublish = identityReady && (publishability?.can_publish === true || publishability?.allowed === true);
   const sampleFingerprint = discoveryFingerprint(draft.revision, input);
-  const sampleConfirmed = Boolean(discovery && ["ready", "completed"].includes(discovery.status) && confirmedSample === sampleFingerprint && discoveryInputHash === sampleFingerprint);
+  const hasVerifiedSample = Boolean(discovery && ["ready", "completed", "needs_input"].includes(discovery.status) && Object.keys(discovery.field_sources || {}).length);
+  const sampleConfirmed = Boolean(hasVerifiedSample && confirmedSample === sampleFingerprint && discoveryInputHash === sampleFingerprint);
   const requiresSampleConfirmation = autoDiscover || Object.keys(autoFilled).length > 0;
   const conversation = draft.conversation || [];
   const latestTurn = conversation[conversation.length - 1];
@@ -150,7 +161,10 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         if (stopped) return;
         replace(value, !dirtyRef.current);
         const sample = value.sample_discovery || value.metadata?.sample_discovery || (value.active_operation?.kind === "sample_discovery" ? value.active_operation.detail : null);
-        if (sample?.run_id && sample.revision === value.revision) setDiscovery(sample);
+        if (sample?.run_id && sample.revision === value.revision && !sampleSubmitting.current) {
+          setDiscovery((current: any) => current?.run_id && current.run_id !== sample.run_id && current.created_at > sample.created_at ? current : sample);
+          if (["queued", "running", "cancelling"].includes(sample.status)) setAutoDiscover(true);
+        }
         const id = value.trial?.run_id;
         if (id) {
           const latestRun = await call(`${apiBase}/api/runs/${encodeURIComponent(id)}`, undefined, "GET", controller.signal);
@@ -191,7 +205,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
           void refresh(false); return;
         }
         if (draftTerminal.has(value.status)) { void refresh(false); return; }
-      } catch (failure: any) { if (!stopped && failure.name !== "AbortError") setError(tr("无法读取选样进度，请刷新重试。", "Cannot load discovery progress. Refresh to retry.")); }
+      } catch (failure: any) { if (!stopped && failure.name !== "AbortError") setDiscovery((current: any) => ({ ...current, connection_error: true })); }
       if (!stopped) timer = setTimeout(poll, 3000);
     };
     void poll(); return () => { stopped = true; controller.abort(); clearTimeout(timer); };
@@ -217,12 +231,61 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     if (lang) current[key] = { ...current[key], [lang]: value }; else current[key] = value;
     setManifestText(JSON.stringify(current, null, 2));
   };
-  const discover = () => action(async () => {
-    if (!validationActionable) return;
+  const chooseSampleFields = () => {
+    if (!validationActionable || sampleSubmitting.current) return;
+    if (pendingSampleRequest.current) { void discover(); return; }
+    setSelectedSampleFields(sampleFields.filter((field) => !field.disabled && field.required).map((field) => field.key));
+    setSelectingSampleFields(true); setSampleDialogOpen(true);
+  };
+  const discover = () => {
+    if (!validationActionable || sampleSubmitting.current) return;
+    const selected = selectedSampleFields.filter((key) => sampleFields.some((field) => field.key === key && !field.disabled));
+    if (!pendingSampleRequest.current && !selected.length) return;
+    sampleSubmitting.current = true;
+    setSelectingSampleFields(false);
+    setSampleDialogOpen(true);
+    setDiscovery({ status: "starting", phase: "starting", timeout_seconds: 600 });
+    return action(async () => {
     setConfirmedSample(""); setDiscoveryInputHash("");
-    const value = await call(`${base}/sample-discovery`, { expectedRevision: draft.revision, input: publicValues(schema, input), requestId: crypto.randomUUID() });
-    setDiscovery(value); setOperation({ ...value, kind: "sample_discovery", status: value.status || "queued" });
-  });
+    const fingerprint = discoveryFingerprint(draft.revision, { input: publicValues(schema, input), selectedFields: selected.sort() });
+    const pending = pendingSampleRequest.current;
+    if (pending && pending.fingerprint !== fingerprint) {
+      setDiscovery({ status: "start_uncertain", codes: ["sample_request_scope_changed"] });
+      sampleSubmitting.current = false;
+      return;
+    }
+    const payload = pending?.payload || { expectedRevision: draft.revision, input: publicValues(schema, input), selectedFields: selected, requestId: crypto.randomUUID() };
+    pendingSampleRequest.current = { fingerprint, payload };
+    try {
+      if (pending) {
+        const current = await call(base);
+        const restored = current.sample_discovery;
+        if (restored?.request_id === payload.requestId) {
+          setDiscovery(restored); setOperation(current.active_operation || null); pendingSampleRequest.current = null; return;
+        }
+      }
+      const value = await call(`${base}/sample-discovery`, payload);
+      setDiscovery(value); setOperation({ ...value, kind: "sample_discovery", status: value.status || "queued" });
+      pendingSampleRequest.current = null;
+    } catch (failure: any) {
+      const uncertain = failure.uncertain || !failure.status;
+      if (!uncertain) pendingSampleRequest.current = null;
+      setDiscovery({ status: uncertain ? "start_uncertain" : "start_failed", codes: [uncertain ? "sample_start_unconfirmed" : "sample_discovery_start_failed"] });
+    } finally { sampleSubmitting.current = false; }
+    });
+  };
+  const reviewSample = () => {
+    sampleReviewFocus.current = true;
+    setSampleDialogOpen(false);
+  };
+  const cancelSample = async () => {
+    if (!discovery?.run_id || discovery.status === "cancelling") return;
+    setDiscovery((current: any) => ({ ...current, status: "cancelling", phase: "cleaning_up" }));
+    try {
+      setDiscovery(await call(`${base}/sample-discovery/${encodeURIComponent(discovery.run_id)}/cancel`, {}));
+      await refresh(false);
+    } catch { setDiscovery((current: any) => ({ ...current, connection_error: true })); }
+  };
   const runTrial = () => action(async () => {
     if (!validationActionable) return;
     const errors = validateDraftInput(schema, input, secrets, locale); setFieldErrors(errors);
@@ -308,22 +371,24 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       </section>
       <section className="agent-panel"><h2>{tr("基础信息", "Basic information")}</h2><div className="draft-basic-grid">{(["zh", "en"] as const).map((lang) => <div key={lang}><label>{tr(lang === "zh" ? "中文名称" : "英文名称", lang === "zh" ? "Chinese name" : "English name")}<input disabled={locked} value={manifest.title?.[lang] || ""} onChange={(event) => updateBasic("title", event.target.value, lang)} /></label><label>{tr(lang === "zh" ? "中文说明" : "英文说明", lang === "zh" ? "Chinese summary" : "English summary")}<textarea disabled={locked} rows={3} value={manifest.summary?.[lang] || ""} onChange={(event) => updateBasic("summary", event.target.value, lang)} /></label></div>)}</div><label>{tr("负责人或负责团队", "Owner or responsible team")}<input disabled={locked} value={manifest.owner || ""} onChange={(event) => updateBasic("owner", event.target.value)} /></label><p>{tr("模块及来源版本保持不变。技术 ID 仅可通过上方确认区域修改；复杂结构可通过页面底部对话修改。", "Module and source version are unchanged. Change the technical ID only in the confirmation section above; use the conversation below for complex definitions.")}</p><div className="agent-actions"><button disabled={locked || remoteConflict || !dirty} onClick={save}>{tr("保存新修订", "Save revision")}</button></div></section>
       <section className="agent-run-panel"><h2>{tr("试运行这个Agent", "Try this Agent")}</h2><p>{tr("填写业务参数，使用已保存的草稿执行只读查询。试运行不会修改Agent默认值，也不代表正式验收通过。", "Enter business parameters to run the saved draft read-only. Trial input does not change Agent defaults or establish formal acceptance.")}</p>
-        <form onSubmit={(event) => { event.preventDefault(); void runTrial(); }} noValidate><AgentDraftInputs schema={schema} values={input} onChange={(next) => { setInput(next); setFieldErrors({}); setConfirmedSample(""); }} secrets={secrets} onSecrets={setSecrets} locale={locale} errors={fieldErrors} disabled={locked || dirty} />
-          <div className="draft-discovery">
-            <label className="draft-checkbox"><input type="checkbox" checked={autoDiscover} disabled={!validationActionable} onChange={(event) => { const enabled = event.target.checked; setAutoDiscover(enabled); setConfirmedSample(""); if (enabled) { void discover(); } else { setInput((current) => clearDiscoveredInput(current, autoFilledRef.current)); setAutoFilled({}); setDiscoveryInputHash(""); setFieldErrors({}); } }} />{tr("自动查找验证数据", "Find validation data automatically")}</label>
+        <form onSubmit={(event) => { event.preventDefault(); void runTrial(); }} noValidate><AgentDraftInputs schema={schema} values={input} onChange={(next) => { setInput(next); setFieldErrors({}); setConfirmedSample(""); if (hasVerifiedSample && Object.entries(discovery.input || {}).every(([key, value]) => discoveryFingerprint(0, { value }) === discoveryFingerprint(0, { value: next[key] }))) setDiscoveryInputHash(discoveryFingerprint(draft.revision, next)); }} secrets={secrets} onSecrets={setSecrets} locale={locale} errors={fieldErrors} disabled={locked || dirty} />
+          <div className="draft-discovery" ref={sampleInputsRef} tabIndex={-1}>
+            <label className="draft-checkbox"><input type="checkbox" checked={autoDiscover} disabled={!validationActionable} onChange={(event) => { const enabled = event.target.checked; setAutoDiscover(enabled); setConfirmedSample(""); if (enabled) { chooseSampleFields(); } else { setInput((current) => clearDiscoveredInput(current, autoFilledRef.current)); setAutoFilled({}); setDiscoveryInputHash(""); setFieldErrors({}); } }} />{tr("自动查找验证数据", "Find validation data automatically")}</label>
             {autoDiscover && <>
               <p>{tr("保留已填范围，有界读取真实SAP样本；回填后请确认。Runtime使用 gpt-5.6-sol。敏感参考号请手工填写。", "Keep the entered scope and read bounded live SAP samples. Confirm before trial. Runtime: gpt-5.6-sol. Enter sensitive references manually.")}</p>
-              <button type="button" className="agent-secondary-action" disabled={!validationActionable} onClick={discover}>{tr(discovery ? "重新查找样本" : "查找样本", discovery ? "Find another sample" : "Find sample")}</button>
-              {discovery && <div role="status">
-                <p>{draftStatus(discovery.status, locale)}</p>
+              <button type="button" className="agent-secondary-action" disabled={!validationActionable} onClick={chooseSampleFields}>{tr(discovery ? "重新查找样本" : "查找样本", discovery ? "Find another sample" : "Find sample")}</button>
+              {discovery && <div>
+                <SampleProgressSummary value={discovery} locale={locale} />
+                <button type="button" className="agent-secondary-action" onClick={() => { setSelectingSampleFields(false); setSampleDialogOpen(true); }}>{tr("查看查找进度", "View discovery progress")}</button>
                 <p>{localText(discovery.selection_reason || discovery.result?.selection_reason, locale)}</p>
                 {Object.keys(discovery.field_sources || {}).length > 0 && <><p>{tr(`来源：本次SAP只读查询；已核对${Object.keys(discovery.field_sources).length}个参数。`, `Source: this read-only SAP query; ${Object.keys(discovery.field_sources).length} parameters verified.`)}</p><details><summary>{tr("样本来源详情", "Sample source details")}</summary>{discovery.query_count !== undefined && <p>{tr("数据读取次数：", "Data reads: ")}{discovery.query_count}</p>}<dl>{Object.entries(discovery.field_sources).map(([field, source]: [string, any]) => <div key={field}><dt>{localText(schema.properties?.[field]?.title, locale) || field}</dt><dd><code>{source.source_field}</code> · <code>{source.evidence_ref}</code></dd></div>)}</dl></details></>}
                 {(discovery.missing_fields || []).length > 0 && <p>{tr("仍需补充：", "Still required: ")}{discovery.missing_fields.map((field: string) => localText(schema.properties?.[field]?.title, locale) || field).join("、")}</p>}
-                {["ready", "completed"].includes(discovery.status) && <label className="draft-checkbox"><input type="checkbox" disabled={!validationActionable || discoveryInputHash !== sampleFingerprint} checked={sampleConfirmed} onChange={(event) => setConfirmedSample(event.target.checked ? sampleFingerprint : "")} />{tr("已核对回填参数，确认用于本次试运行", "I reviewed the proposed parameters and confirm this trial")}</label>}
+                {hasVerifiedSample && <label className="draft-checkbox"><input type="checkbox" disabled={!validationActionable || discoveryInputHash !== sampleFingerprint} checked={sampleConfirmed} onChange={(event) => setConfirmedSample(event.target.checked ? sampleFingerprint : "")} />{tr("已核对回填参数，确认用于本次试运行", "I reviewed the proposed parameters and confirm this trial")}</label>}
               </div>}
             </>}
           </div>
           <div className="agent-actions"><button type="button" className="agent-secondary-action" disabled={!actionable} onClick={check}>{tr("自动检查定义", "Check definition")}</button><button type="submit" disabled={!validationActionable || (requiresSampleConfirmation && !sampleConfirmed)}>{tr("执行只读试运行", "Run read-only trial")}</button></div></form>
+        <AgentSampleProgress open={sampleDialogOpen} value={discovery} locale={locale} canRetry={validationActionable} fields={selectingSampleFields ? sampleFields : undefined} selectedFields={selectedSampleFields} onSelection={setSelectedSampleFields} onStart={discover} onClose={() => setSampleDialogOpen(false)} onCancel={cancelSample} onRetry={chooseSampleFields} onReview={reviewSample} onAfterClose={() => { if (sampleReviewFocus.current) { sampleReviewFocus.current = false; sampleInputsRef.current?.focus(); } }} />
       </section>
       <section className="agent-panel"><h2>{tr("试运行与验收", "Trial and acceptance")}</h2><p>{tr("自动检查、试运行和正式验收分别记录，不相互替代。", "Automatic checks, trials and formal acceptance are recorded separately.")}</p><dl><dt>{tr("自动检查", "Automatic checks")}</dt><dd>{staticLabel}</dd><dt>{tr("正式验收", "Formal acceptance")}</dt><dd>{draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</dd></dl>{(acceptance?.source_version || acceptance?.reused_from_version) && <p>{tr("复用原版本验收：", "Acceptance reused from version: ")}{acceptance.source_version || acceptance.reused_from_version}</p>}{publishability?.blockers?.length > 0 && <ul className="draft-blockers">{publishability.blockers.map((item: any, index: number) => <li key={index}>{localText(item.message || item.description, locale) || tr("正式验收或发布条件尚未满足。", "Formal acceptance or publication conditions remain unmet.")}<details><summary>{tr("技术原因", "Technical reason")}</summary><code>{typeof item === "string" ? item : item.code}</code></details></li>)}</ul>}
         {trialRunId ? <><p>{tr("试运行修订", "Trial revision")}: {trial?.revision ?? trial?.draft_revision ?? "—"} · {draftStatus(run?.status || trial?.status, locale)}{(trial?.revision ?? trial?.draft_revision) !== undefined && (trial?.revision ?? trial?.draft_revision) !== draft.revision && <strong> · {tr("历史修订结果，不适用于当前定义", "Historical result; not acceptance for this revision")}</strong>}</p>{run && !draftTerminal.has(run.status) && <p role="status">{tr("当前阶段", "Current stage")}: {localText(run.current_stage?.title || run.progress?.current_activity, locale) || draftStatus(run.progress?.phase || run.status, locale)} · {tr("耗时", "Elapsed")}: {run.elapsed_seconds ?? run.progress?.elapsed_seconds ?? "—"} {tr("秒", "s")}<button disabled={busy} className="agent-secondary-action" onClick={cancel}>{tr("取消试运行", "Cancel trial")}</button></p>}{run && draftTerminal.has(run.status) && <AgentDraftResult run={run} locale={locale} runPath={runPath} apiBase={apiBase} />}{!run && <a href={`${runPath}?run=${encodeURIComponent(trialRunId)}`} target="_blank" rel="noreferrer">{tr("查看试运行记录", "Open trial run")}</a>}</> : <p>{tr("当前没有试运行记录。", "No trial has been run yet.")}</p>}<button className="agent-secondary-action" disabled={busy} onClick={() => action(async () => { setReport(await call(`${base}/validation-report`)); await refresh(false); })}>{tr("刷新验证状态", "Refresh validation status")}</button>

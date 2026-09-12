@@ -33,6 +33,22 @@ def test_package_roundtrip_and_protected_diff(tmp_path):
         workspace.platform_changes()
 
 
+def test_crlf_protected_file_is_not_misclassified_as_changed(tmp_path):
+    workspace = AuthoringWorkspace(tmp_path / "repo", tmp_path / "job")
+    workspace.source.mkdir(parents=True)
+    protected = workspace.source / "src/acceptance.py"
+    protected.parent.mkdir()
+    original = b"first = True\r\nsecond = True\r\n"
+    protected.write_bytes(original)
+    workspace.base_files["src/acceptance.py"] = original.decode("utf-8")
+
+    assert workspace.platform_changes() == []
+
+    protected.write_bytes(b"first = True\r\nsecond = False\r\n")
+    with pytest.raises(AuthoringHarnessError, match="protected_file_changed"):
+        workspace.platform_changes()
+
+
 @pytest.mark.parametrize("failed", ["outside_read_error", "outside_write_error", "network_error", "workspace_write"])
 def test_any_failed_isolation_check_blocks_start(tmp_path, monkeypatch, failed):
     workspace = AuthoringWorkspace(tmp_path / "repo", tmp_path / "job")

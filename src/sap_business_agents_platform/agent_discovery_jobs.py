@@ -5,11 +5,14 @@ import asyncio
 import copy
 import hashlib
 import json
+import time
+from datetime import datetime, timedelta
 from typing import Any
 
 from .agent_lifecycle import AgentLifecycleError
 from .models import RunCreate, RunMode, RunResult, RunStatus, RuntimeSnapshot, utc_now
-from .sample_discovery import SAMPLE_MODEL, SampleDiscoveryContext, SampleDiscoveryError
+from .sample_discovery import (SAMPLE_MODEL, SAMPLE_SECONDS, SAMPLE_QUERY_SECONDS,
+                               SAMPLE_CLEANUP_SECONDS, SampleDiscoveryContext, SampleDiscoveryError)
 
 
 class AgentDiscoveryJobs:
@@ -29,10 +32,11 @@ class AgentDiscoveryJobs:
         supplied = copy.deepcopy(payload.input)
         _check_public_input(supplied, manifest.get("execution", {}).get("inputSchema", {}))
         try:
-            SampleDiscoveryContext(manifest, supplied, revision)
+            SampleDiscoveryContext(manifest, supplied, revision, selected_fields=payload.selected_fields)
         except SampleDiscoveryError as exc:
             raise AgentLifecycleError("Invalid or private sample input. Use the secure trial form instead.", code=exc.code) from exc
-        fingerprint = hashlib.sha256(json.dumps(supplied, ensure_ascii=False, sort_keys=True,
+        fingerprint_input = supplied if payload.selected_fields is None else {"input": supplied, "selected_fields": sorted(payload.selected_fields)}
+        fingerprint = hashlib.sha256(json.dumps(fingerprint_input, ensure_ascii=False, sort_keys=True,
                                                 separators=(",", ":")).encode()).hexdigest()
         try:
             operation = self.store.reserve_agent_operation(
@@ -56,10 +60,14 @@ class AgentDiscoveryJobs:
                                                draft_id=draft_id, revision=revision)
             self.store.update_agent_operation(draft_id, run_id, detail={
                 "run_id": run_id, "revision": revision, "model": "gpt-5.6-sol",
-                "input": supplied, "status": "running", "bounded_discovery": True,
+                "input": supplied, "status": "queued", "bounded_discovery": True,
+                "timeout_seconds": SAMPLE_SECONDS, "phase": "queued",
+                "reasoning_effort": runtime.get("reasoning_effort"), "created_at": utc_now(),
+                "request_id": payload.request_id,
+                "selected_fields": payload.selected_fields,
             })
-            self.store.set_progress(run_id, phase="preparing", hard_limit_seconds=300)
-            self.tasks[run_id] = asyncio.create_task(self._run(draft_id, run_id, revision, manifest, supplied))
+            self.store.set_progress(run_id, phase="preparing", hard_limit_seconds=SAMPLE_SECONDS)
+            self.tasks[run_id] = asyncio.create_task(self._run(draft_id, run_id, revision, manifest, supplied, payload.selected_fields))
             self.tasks[run_id].add_done_callback(lambda _task: self.tasks.pop(run_id, None))
         except Exception as exc:
             if created_run:
@@ -78,14 +86,28 @@ class AgentDiscoveryJobs:
             ) from exc
         return self.get(draft_id, run_id)
 
-    async def _run(self, draft_id: str, run_id: str, revision: int, manifest: dict, supplied: dict) -> None:
+    async def _run(self, draft_id: str, run_id: str, revision: int, manifest: dict, supplied: dict, selected_fields: list[str] | None = None) -> None:
         outcome: dict[str, Any]
+        started = time.monotonic()
+        started_at = utc_now()
+        deadline_at = (datetime.fromisoformat(started_at) + timedelta(seconds=SAMPLE_SECONDS)).isoformat()
+        self.store.update_agent_operation(draft_id, run_id, detail={
+            **self.store.get_agent_operation_by_id(draft_id, run_id)["detail"],
+            "started_at": started_at, "deadline_at": deadline_at, "phase": "preparing", "status": "running"})
+        worker = None
         try:
-            self.store.update_run(run_id, status=RunStatus.running, started_at=utc_now())
+            self.store.update_run(run_id, status=RunStatus.running, started_at=started_at)
             self.store.append_event(run_id, "sample_discovery_started", {"draft_id": draft_id, "revision": revision, "model": "gpt-5.6-sol"})
-            outcome = await asyncio.wait_for(self.service.discover(
+            worker = asyncio.create_task(self.service.discover(
                 run_id, manifest, supplied, revision=revision, model="gpt-5.6-sol",
-            ), timeout=300)
+                started=started, selected_fields=selected_fields,
+            ))
+            done, _ = await asyncio.wait({worker}, timeout=max(0, started + SAMPLE_SECONDS - time.monotonic()))
+            if not done:
+                raise TimeoutError()
+            outcome = worker.result()
+            if time.monotonic() >= started + SAMPLE_SECONDS:
+                outcome = {"status": "timed_out", "codes": ["sample_discovery_timeout"]}
             if self.store.get_run(run_id).cancel_requested:
                 outcome = {"status": "cancelled", "codes": ["sample_discovery_cancelled"]}
             elif not self.store.assert_agent_operation(draft_id, run_id, revision):
@@ -97,15 +119,46 @@ class AgentDiscoveryJobs:
         except Exception:
             # Runtime and SAP exceptions can contain business values: never persist their text.
             outcome = {"status": "unavailable", "codes": ["sample_discovery_failed"]}
+        if worker is not None and not worker.done():
+            if hasattr(self.service, "quiesce"):
+                self.service.quiesce(run_id)
+            self.store.update_agent_operation(draft_id, run_id, status="cancelling", detail={
+                **self.store.get_agent_operation_by_id(draft_id, run_id)["detail"],
+                "phase": "cleaning_up", "codes": outcome.get("codes", [])})
+            worker.cancel()
+            done, _ = await asyncio.wait({worker}, timeout=SAMPLE_CLEANUP_SECONDS)
+            if not done:
+                self.store.update_agent_operation(draft_id, run_id, detail={
+                    **self.store.get_agent_operation_by_id(draft_id, run_id)["detail"],
+                    "codes": [*outcome.get("codes", []), "sample_cleanup_incomplete"]})
+                def finish_after_cleanup(task):
+                    if not task.cancelled():
+                        task.exception()
+                    self._finish(draft_id, run_id, revision, supplied, outcome)
+                worker.add_done_callback(finish_after_cleanup)
+                return  # Keep the SQL operation lock until cleanup actually finishes.
+            if not worker.cancelled():
+                worker.exception()
+        if "runtime_cleanup_incomplete" in outcome.get("codes", []):
+            self.store.update_agent_operation(draft_id, run_id, status="cancelling", detail={
+                **self.store.get_agent_operation_by_id(draft_id, run_id)["detail"],
+                "phase": "cleaning_up", "codes": ["sample_cleanup_incomplete"]})
+            return
         self._finish(draft_id, run_id, revision, supplied, outcome)
 
     def _finish(self, draft_id: str, run_id: str, revision: int, supplied: dict, outcome: dict) -> None:
         current = self.store.get_agent_operation_by_id(draft_id, run_id)
         if current["status"] not in {"queued", "running", "cancelling"}:
             return
-        outcome = {**outcome, "run_id": run_id, "draft_id": draft_id, "revision": revision,
+        execution = self.store.get_harness_state(run_id).get("sample_execution", {})
+        outcome = {**current["detail"], **execution, **outcome, "run_id": run_id, "draft_id": draft_id, "revision": revision,
                    "model": "gpt-5.6-sol", "bounded_discovery": True, "completed_at": utc_now()}
         status = str(outcome.get("status") or "inconclusive")
+        if outcome.get("started_at"):
+            outcome["elapsed_seconds"] = round((datetime.fromisoformat(outcome["completed_at"]) - datetime.fromisoformat(outcome["started_at"])).total_seconds(), 1)
+        if status not in {"ready", "found"}:
+            outcome.setdefault("failed_stage", execution.get("phase", outcome.get("phase")))
+        outcome["phase"] = "completed"
         terminal = (RunStatus.completed if status in {"ready", "found"}
                     else RunStatus.cancelled if status == "cancelled" else RunStatus.inconclusive)
         summary = ({"zh": "已找到并核对验证样本，请确认参数后试运行。", "en": "A sample was found and verified. Confirm inputs before trying it."}
@@ -117,7 +170,8 @@ class AgentDiscoveryJobs:
                            summary=summary,
                            completed_at=outcome["completed_at"])
         self.store.update_run(run_id, status=terminal, result_json=result.model_dump(mode="json"), completed_at=outcome["completed_at"])
-        self.store.set_progress(run_id, phase="preparing_result", state=terminal.value)
+        self.store.set_progress(run_id, phase="preparing_result", state=terminal.value,
+                                elapsed_seconds=int(outcome.get("elapsed_seconds", 0)))
         self.store.append_event(run_id, "sample_discovery_finished", {"status": status, "revision": revision, "codes": outcome.get("codes", [])})
         self.store.update_agent_operation(draft_id, run_id, detail=outcome)
         self.store.finish_agent_operation(draft_id, run_id, status)
@@ -126,7 +180,16 @@ class AgentDiscoveryJobs:
         operation = self.store.get_agent_operation_by_id(draft_id, run_id)
         if operation["kind"] != "sample_discovery":
             raise KeyError(run_id)
-        return {**operation["detail"], "run_id": run_id, "draft_id": draft_id,
+        value = {**operation["detail"]}
+        if operation["status"] in {"queued", "running", "cancelling"}:
+            execution = self.store.get_harness_state(run_id).get("sample_execution", {})
+            if value.get("phase") != "cleaning_up":
+                value.update(execution)
+            if value.get("started_at"):
+                value["elapsed_seconds"] = max(0, (datetime.fromisoformat(utc_now()) - datetime.fromisoformat(value["started_at"])).total_seconds())
+                if value["elapsed_seconds"] >= SAMPLE_QUERY_SECONDS and value.get("phase") != "cleaning_up":
+                    value["phase"] = "finalizing"
+        return {**value, "run_id": run_id, "draft_id": draft_id,
                 "revision": operation["revision"], "status": operation["status"]}
 
     async def cancel(self, draft_id: str, run_id: str) -> dict[str, Any]:
@@ -141,6 +204,8 @@ class AgentDiscoveryJobs:
             await asyncio.gather(task, return_exceptions=True)
         # A task cancelled before its first instruction never enters _run's
         # exception handler; complete its run and release the SQL lock here.
+        if self.store.get_agent_operation_by_id(draft_id, run_id)["detail"].get("phase") == "cleaning_up":
+            return self.get(draft_id, run_id)
         self._finish(draft_id, run_id, current["revision"], current.get("input") or {}, {
             "status": "cancelled", "codes": ["sample_discovery_cancelled"],
         })

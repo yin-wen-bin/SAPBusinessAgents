@@ -347,6 +347,8 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         assessment = self._validation_summary(draft, revision["package"])
         sample_operation = self.store.latest_agent_operation(draft_id, "sample_discovery")
         sample = ({**(sample_operation.get("detail") or {}), "run_id": sample_operation["operation_id"], "status": sample_operation["status"], "revision": sample_operation["revision"]} if sample_operation and int(sample_operation["revision"]) == int(draft["revision"]) else None)
+        if sample and sample["status"] in {"queued", "running", "cancelling"} and sample.get("phase") != "cleaning_up":
+            sample.update(self.store.get_harness_state(sample["run_id"]).get("sample_execution", {}))
         return {
             **draft,
             "technical_identity": self.technical_identity(draft),

@@ -61,6 +61,19 @@ def request(**kwargs):
     return AgentSampleDiscoveryRequest(expectedRevision=1, input={"company_code": "1710"}, **kwargs)
 
 
+def test_selected_fields_are_frozen_and_part_of_idempotency(tmp_path):
+    async def scenario():
+        jobs, store, sdk, service, _ = setup_jobs(tmp_path)
+        started = jobs.start('draft_sample', request(requestId='selected', selectedFields=['customer']))
+        await jobs.tasks[started['run_id']]
+        assert service.discover.call_args.kwargs['selected_fields'] == ['customer']
+        assert jobs.get('draft_sample', started['run_id'])['selected_fields'] == ['customer']
+        assert jobs.start('draft_sample', request(requestId='selected', selectedFields=['customer']))['run_id'] == started['run_id']
+        with pytest.raises(AgentLifecycleError):
+            jobs.start('draft_sample', request(requestId='selected'))
+    asyncio.run(scenario())
+
+
 def test_immediate_cancel_before_task_starts_releases_lock_and_finishes_run(tmp_path):
     async def scenario():
         jobs, store, sdk, service, _ = setup_jobs(tmp_path)
@@ -101,6 +114,11 @@ def test_success_binds_sol_and_immutable_draft_without_normal_session(tmp_path):
         assert store.get_free_query_session_by_run(run_id) is None
         assert store.get_agent_operation("draft_sample") is None
         assert jobs.get("draft_sample", run_id)["status"] == "ready"
+        result = jobs.get("draft_sample", run_id)
+        assert result['timeout_seconds'] == 600
+        assert result['reasoning_effort'] == 'medium'
+        assert result['started_at'] and result['deadline_at'] and result['elapsed_seconds'] >= 0
+        assert result['request_id'] == 'same-input'
         assert store.get_agent_authoring_draft("draft_sample")["revision"] == 1
     asyncio.run(scenario())
 
@@ -137,6 +155,33 @@ def test_cancel_after_start_does_not_accept_late_ready_result(tmp_path):
         assert result["status"] == "cancelled"
         assert "LATE" not in json.dumps(result)
         assert store.get_run(started["run_id"]).status == RunStatus.cancelled
+    asyncio.run(scenario())
+
+
+def test_deadline_retains_lock_until_stubborn_worker_is_actually_done(tmp_path, monkeypatch):
+    import sap_business_agents_platform.agent_discovery_jobs as module
+    monkeypatch.setattr(module, 'SAMPLE_SECONDS', 1)
+    monkeypatch.setattr(module, 'SAMPLE_CLEANUP_SECONDS', .01)
+    async def scenario():
+        jobs, store, _, service, _ = setup_jobs(tmp_path)
+        release = asyncio.Event()
+        async def worker(*args, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+                return {'status': 'ready', 'input': {'customer': 'LATE'}}
+        service.discover.side_effect = worker
+        result = jobs.start('draft_sample', request())
+        await jobs.tasks[result['run_id']]
+        assert store.get_agent_operation('draft_sample')['status'] == 'cancelling'
+        assert 'sample_cleanup_incomplete' in jobs.get('draft_sample', result['run_id'])['codes']
+        release.set()
+        for _ in range(10):
+            await asyncio.sleep(0)
+        result = jobs.get('draft_sample', result['run_id'])
+        assert result['status'] == 'timed_out' and 'LATE' not in json.dumps(result)
+        assert store.get_agent_operation('draft_sample') is None
     asyncio.run(scenario())
 
 

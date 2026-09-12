@@ -78,3 +78,17 @@
   .agent-draft-workspace dl { grid-template-columns: 1fr; gap: 4px; }
   .agent-draft-workspace dd { margin: 0 0 10px; }
 }
+.sample-progress-dialog { width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow: auto; box-sizing: border-box; border: 1px solid #b8c9e3; border-radius: 12px; padding: 24px; color: #12304e; background: white; }
+.sample-progress-dialog::backdrop { background: rgb(10 25 45 / 45%); }
+.sample-progress-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.sample-progress-dialog h2 { font-size: 1.3rem; margin: 0; }
+.sample-progress-dialog p { overflow-wrap: anywhere; }
+.sample-progress-dialog footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+.sample-progress-dialog button { min-height: 44px; padding: 8px 16px; cursor: pointer; }
+.sample-progress-dialog button:disabled { cursor: not-allowed; opacity: .6; }
+.sample-parameter-selection { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid #b8c9e3; }
+.sample-parameter-selection label { min-height: 44px; overflow-wrap: anywhere; }
+.sample-spinner { display: inline-block; width: 16px; height: 16px; margin-inline-end: 10px; border: 2px solid #bfd3f0; border-top-color: #0057d9; border-radius: 50%; animation: sample-spin 1s linear infinite; }
+@keyframes sample-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sample-spinner { animation: none; } }
+@media (max-width: 480px) { .sample-progress-dialog { padding: 16px; } .sample-progress-dialog footer { flex-direction: column; } }

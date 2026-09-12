@@ -157,6 +157,20 @@ export function draftInputLabels(schema: ExecutionInputSchema, locale: Locale, v
   }));
 }
 
+/** List the same visible inputs as the trial form; unsafe/complex fields stay manual. */
+export function sampleFieldOptions(schema: ExecutionInputSchema, locale: Locale, values: Record<string, any> = {}) {
+  const privateName = /password|secret|token|payer|bank.*(?:reference|account)|receipt.?reference|iban|account.?number|address|contact|email|phone|name|text|description|note|assignment.?reference|payment.?reference|remittance/i;
+  const required = publicBranchRequirements(schema, values).required;
+  return draftInputLabels(schema, locale, values).map((item) => {
+    const property = schema.properties![item.key];
+    const complex = inputType(property) === "object" || (inputType(property) === "array" && inputType(property.items!) === "object");
+    const manual = complex || property["x-sapba-sensitive"] || property["x-sapba-secret-kind"] || privateName.test(item.key);
+    const filled = supplied(values[item.key]);
+    return { ...item, disabled: Boolean(manual || filled), required: required.includes(item.key),
+      reason: manual ? (locale === "zh" ? "请手工填写" : "Enter manually") : filled ? (locale === "zh" ? "已填写，保留为查询条件" : "Already entered; kept as query scope") : "" };
+  });
+}
+
 /** Resolve only branches reachable from public form input; never invent an implicit mode. */
 export function publicBranchRequirements(schema: ExecutionInputSchema, values: Record<string, any> = {}): { required: string[]; ambiguous: boolean; unavailable: boolean } {
   const base = (schema.required || []).filter((name) => schema.properties?.[name] && publicInput(schema.properties[name]));

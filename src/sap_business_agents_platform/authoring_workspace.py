@@ -190,7 +190,11 @@ class AuthoringWorkspace:
         changes = []
         for name in sorted(set(self.base_files) | set(current)):
             before = self.base_files.get(name)
-            after = current[name].read_text(encoding="utf-8") if name in current else None
+            # Compare the exact UTF-8 text that was captured in ``prepare``.
+            # Path.read_text() uses universal-newline translation, so on Windows a
+            # byte-identical CRLF file would otherwise be read back with LF and be
+            # misclassified as an SDK edit (including for protected files).
+            after = current[name].read_bytes().decode("utf-8") if name in current else None
             if before == after:
                 continue
             if not _allowed_source(name) or Path(name).name in _PROTECTED:
