@@ -9,7 +9,7 @@ test("Astro React development runtime stays on supported Vite 7", () => {
   assert.match(packageJson.overrides?.vite ?? "", /^\^?7\./);
 });
 
-test("catalog discovers thirty-one deterministic agents and one platform assistant", () => {
+test("complete management catalog validates thirty-one deterministic agents and one platform assistant", () => {
   const records = loadAgentCatalog(path.resolve("..", "agents"));
   assert.equal(records.length, 32);
   assert.deepEqual(
@@ -158,6 +158,13 @@ test("catalog discovers thirty-one deterministic agents and one platform assista
   assert.ok(ppAgents.every((agent) => agent.schemaVersion === 2));
   assert.ok(ppAgents.every((agent) => agent.execution.mode === "deterministic"));
   assert.ok(ppAgents.every((agent) => agent.execution.steps.every((step) => step.executor === "rule" || step.readOnly === true)));
+});
+
+test("runnable catalog excludes both inactive SD Agents", () => {
+  const records = loadAgentCatalog(path.resolve("..", "agents"), { includeInactive: false });
+  assert.equal(records.length, 30);
+  assert.equal(records.filter((agent) => agent.module === "SD").length, 9);
+  assert.ok(!records.some((agent) => ["billing-dispute-classification", "billing-output-monitor"].includes(agent.slug)));
 });
 
 test("manifest validation rejects a workflow step without tools", () => {

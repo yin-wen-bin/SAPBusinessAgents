@@ -97,11 +97,13 @@ def test_clone_is_new_and_upgrade_is_locked(tmp_path):
     source = _write_active_agent(service, tmp_path)
     clone = asyncio.run(service.create(AgentAuthoringCreate(source="clone", sourceAgentId=source["slug"], agentId="business-clone")))
     assert clone["technical_identity"]["kind"] == "new_agent"
+    assert clone["package"]["manifest"]["execution"]["relationshipPolicy"] == "advisory"
     assert service._risk_class(clone, clone["package"]) == "behavior_change"
     clone = _confirm(service, clone, "customer-clone")
     assert clone["agent_id"] == "customer-clone"
     upgrade = service.create_version_draft(source["slug"], bump="patch", expected_version=source["version"], expected_hash=agent_digest(source))
     assert upgrade["technical_identity"]["kind"] == "version_upgrade"
+    assert upgrade["package"]["manifest"]["execution"]["relationshipPolicy"] == "advisory"
     assert upgrade["technical_identity"]["confirmed"] and upgrade["technical_identity"]["locked"]
     with pytest.raises(AgentLifecycleError, match="technical identity"):
         _confirm(service, upgrade, "renamed-upgrade")

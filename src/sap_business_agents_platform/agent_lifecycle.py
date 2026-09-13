@@ -22,6 +22,7 @@ from .acceptance import agent_execution_digest
 from .agent_authoring import AgentAuthoringMixin, package_changes
 from .agent_identity import AgentIdentityMixin, draft_identity_kind
 from .plugins import PluginError
+from .relationships import apply_advisory_relationship_policy
 from .skills import SkillError, validate_agent_skill_dependencies
 from .workflows import WorkflowRepository, WorkflowError, agent_digest, validate_value
 
@@ -161,6 +162,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                     "gapId": payload.gap_id,
                 }
         self._assert_manageable(package["manifest"])
+        apply_advisory_relationship_policy(package["manifest"])
         package["manifest"]["slug"] = self._assert_identity_available(package["manifest"]["slug"])
         draft_id = f"agent_draft_{uuid.uuid4().hex[:16]}"
         path = self._draft_path(draft_id)
@@ -246,6 +248,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             else:
                 package["manifest"]["slug"] = self._assert_identity_available(package["manifest"]["slug"])
                 package["manifest"]["validation"] = _not_tested_validation()
+                apply_advisory_relationship_policy(package["manifest"])
                 try:
                     source_run = self.store.get_run(source.run_id)
                     source_result = source_run.result
@@ -311,6 +314,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             raise AgentLifecycleError("Agent version already exists.", code="agent_version_exists")
         package = self._capture_package(Path(self.agents.package(agent_id)["directory"]))
         package["manifest"]["version"] = target
+        apply_advisory_relationship_policy(package["manifest"])
         draft_id = f"agent_draft_{uuid.uuid4().hex[:16]}"
         path = self._draft_path(draft_id)
         path.mkdir(parents=True, exist_ok=False)
@@ -956,10 +960,28 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
 
     def _management_capabilities(self, agent_id: str, lifecycle: dict[str, Any], dependencies: list[dict[str, Any]]) -> dict[str, Any]:
         blockers = self._delete_blockers(agent_id, dependencies=dependencies)
+        activation_blockers: list[str] = []
+        if lifecycle["state"] != "inactive":
+            activation_blockers.append("agent_must_be_inactive")
+        else:
+            target_version = str(lifecycle.get("latest_version") or "")
+            try:
+                candidate = self.agents.get_version(agent_id, target_version)
+            except KeyError:
+                activation_blockers.append("agent_version_not_found")
+            else:
+                if not is_agent_executable(candidate):
+                    activation_blockers.append("agent_validation_pass_required")
+                else:
+                    try:
+                        self._require_skill_dependencies(candidate)
+                    except AgentLifecycleError as exc:
+                        activation_blockers.append(exc.code)
         return {
             "can_create_version": not self._open_drafts(agent_id),
             "can_deactivate": lifecycle["state"] == "active",
-            "can_activate": lifecycle["state"] == "inactive",
+            "can_activate": lifecycle["state"] == "inactive" and not activation_blockers,
+            "activate_blockers": activation_blockers,
             "can_rollback": len(self.versions(agent_id)) > 1,
             "can_delete": not blockers,
             "delete_blockers": blockers,
@@ -1257,6 +1279,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             "workflow": [{"id": "evaluate", "title": {"zh": "确定性判断", "en": "Deterministic evaluation"}, "description": {"zh": "根据结构化输入形成初始结果。", "en": "Produces an initial result from structured input."}, "tools": [{"name": "evidence_summary", "kind": "Local deterministic rule", "purpose": {"zh": "草稿规则入口", "en": "Draft rule entrypoint"}}], "executionStepIds": ["evaluate"]}],
             "execution": {
                 "mode": "deterministic",
+                "relationshipPolicy": "advisory",
                 "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
                 "outputSchema": {"type": "object", "additionalProperties": False, "required": ["business_status", "source_complete", "evidence_complete"], "properties": {"business_status": {"type": "string", "const": "inconclusive", "title": {"zh": "业务状态", "en": "Business status"}}, "source_complete": {"type": "boolean", "title": {"zh": "查询源完整性", "en": "Query-source completeness"}}, "evidence_complete": {"type": "boolean", "title": {"zh": "业务证据完整性", "en": "Business-evidence completeness"}}}},
                 "steps": [{"id": "evaluate", "executor": "rule", "operation": "evidence_summary", "inputMapping": {}}],

@@ -210,6 +210,7 @@ export interface AgentAcceptance {
 
 export interface AgentExecution {
   mode: "deterministic";
+  relationshipPolicy?: "legacy_enforced" | "advisory";
   timeoutSeconds?: number;
   inputSchema: ExecutionInputSchema;
   outputSchema?: ExecutionInputSchema;

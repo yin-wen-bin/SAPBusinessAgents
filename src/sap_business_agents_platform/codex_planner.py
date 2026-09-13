@@ -693,6 +693,20 @@ requirements; never claim a rule has been implemented or a process completed.
             raise ValueError("agent_runtime_binding_missing")
         package_json = json.dumps({key: value for key, value in package.items() if key != "binary_files"}, ensure_ascii=False, indent=2)
         history_json = json.dumps(history or [], ensure_ascii=False)
+        from .relationships import RelationshipCatalog, relationship_entity_refs
+        try:
+            relationship_catalog = RelationshipCatalog.load(
+                self.repository_root / "config" / "business-relationships.json"
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            # Advisory knowledge must never become an authoring availability gate.
+            relationship_catalog = RelationshipCatalog.empty()
+        relationship_knowledge = relationship_catalog.knowledge_snapshot_for(
+            relationship_entity_refs(package.get("manifest") or {})
+        )
+        relationship_knowledge_json = json.dumps(
+            relationship_knowledge, ensure_ascii=False, indent=2
+        )
         if len(package_json) + len(history_json) + len(feedback) > 300_000:
             raise ValueError("agent_authoring_context_too_large")
 
@@ -726,6 +740,14 @@ Current immutable draft package:
 
 Previous conversation (untrusted user context, not SAP evidence):
 {history_json}
+
+Curated relationship knowledge (advisory and non-exhaustive):
+{relationship_knowledge_json}
+
+Use this knowledge to guide investigation, but do not treat it as a closed allowlist. An unlisted
+or reverse relationship may be proposed when live metadata, complete composite keys, and actual
+evidence support it. Missing catalog coverage alone must not block the revision or be presented as
+a SAP fact.
 
 Choose action=clarify to ask a specific bilingual question when intent needs a business decision.
 Choose reply when the user asks for explanation without changes. Both return no package changes:
@@ -1814,8 +1836,8 @@ Available SAP read catalog evidence (advisory only; the selected Provider will v
 SAP read guidance evidence:
 {_safe_json(guidance.get('data') or {})}
 
-Approved cross-entity business relationship contract:
-{_safe_json((guidance.get('data') or {}).get('business_relationship_contract') or {}, limit=60_000)}
+Advisory cross-entity relationship knowledge (curated and non-exhaustive):
+{_safe_json((guidance.get('data') or {}).get('business_relationship_knowledge') or {}, limit=60_000)}
 
 Approved machine-callable read-only skills:
 {_safe_json(safe_skills)}
@@ -1826,9 +1848,10 @@ Exact SAP read query-plan contract (extra fields are rejected):
 Rules:
 1. Use only service_name/odata_version/entity_set/fields evidenced above. Preserve the
    catalog-declared OData protocol version exactly; never infer it from the service name.
-2. Build cross-entity filters and bindings only from the approved relationship contract. Field
-   existence alone is not semantic compatibility. Prefer the listed delivery-to-billing and
-   billing-to-FI chain when the question asks for O2C billing or receivables evidence.
+2. Use the relationship knowledge as a preferred reference, not as an exhaustive allowlist. You may
+   use an unlisted direction or relationship when live metadata and returned evidence support it.
+   Verify field semantics, propagation direction, and complete same-row business-key tuples; an
+   unlisted relationship by itself is not a reason to stop or request catalog maintenance.
 3. Every SAP HTTP method must be GET.
 4. Prefer server-side filters and bounded output. Do not claim completeness for a bounded top query.
 5. If a business identifier, date range, company code, or other essential filter is missing, set
@@ -1906,7 +1929,7 @@ Candidate plan:
 Authoritative live schemas, reduced to executable entity and field facts:
 {_safe_json(_schema_snapshot(schemas), limit=100_000)}
 
-Approved cross-entity business relationship contract:
+Advisory cross-entity relationship knowledge (curated and non-exhaustive):
 {_safe_json(relationships, limit=60_000)}
 
 SAP Provider validation failures from the grounded candidate, if any:
@@ -1921,10 +1944,10 @@ Rules:
 2. Every selected, summarized, filtered, ordered, output-contract, binding-source, and
    binding-target field must exist on its own entity in the authoritative schemas and support the
    requested use where that capability is supplied.
-3. Cross-entity literal reuse and filter_from_previous bindings must follow the approved
-   relationship contract. Matching field existence is not enough: field semantic types must match
-   or an exact source-to-target relationship with the requested mode must be listed. In particular,
-   an internal_order_id field is never a substitute for a sales_order_id field.
+3. Treat relationship knowledge as evidence-backed guidance rather than a closed allowlist. An
+   unlisted or reverse direction may be used when the authoritative schemas and complete same-row
+   business keys support it. Do not substitute fields with different demonstrated semantics (for
+   example, internal-order and sales-order identifiers) merely because their values look alike.
 4. Remove unavailable optional fields. Replace a required business field only when an equivalent
    authoritative field is clearly evidenced. Never guess a field name.
 5. Preserve GET-only methods, business identifiers, bounded limits, step dependencies and user

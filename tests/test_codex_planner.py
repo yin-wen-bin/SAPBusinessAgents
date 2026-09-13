@@ -98,13 +98,15 @@ def test_order_by_desc_fails_closed_instead_of_changing_semantics() -> None:
         _canonicalize_plan_order_by(decision)
 
 
-def test_initial_planner_receives_business_relationship_contract() -> None:
+def test_initial_planner_receives_non_exhaustive_relationship_knowledge() -> None:
     prompt = _planner_prompt(
         "fixture",
         {"data": {"items": []}},
         {
             "data": {
-                "business_relationship_contract": {
+                "business_relationship_knowledge": {
+                    "role": "advisory",
+                    "exhaustive": False,
                     "field_semantics": [
                         {
                             "entity_set": "A_OperationalAcctgDocItemCube",
@@ -120,4 +122,5 @@ def test_initial_planner_receives_business_relationship_contract() -> None:
         continuing=False,
     )
     assert "o2c-billing-operational-fi" in prompt
-    assert "semantic compatibility" in prompt
+    assert "non-exhaustive" in prompt
+    assert "not as an exhaustive allowlist" in prompt

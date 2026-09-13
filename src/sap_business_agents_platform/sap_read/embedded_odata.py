@@ -298,11 +298,24 @@ class EmbeddedODataProvider:
                 "items": page,
                 "total_count": len(items),
                 "provider_id": self.provider_id,
-                "catalog_scope": "sanitized_seed_and_approved_relationship_entities",
+                "catalog_scope": "sanitized_seed_and_advisory_relationship_entities",
             },
         }
 
     async def guidance(self, query: str) -> dict[str, Any]:
+        matches = [
+            item
+            for item in (await self.catalog(query=query, limit=20)).get("data", {}).get("items", [])
+        ]
+        refs = {
+            (
+                str(item.get("service_name") or ""),
+                str(item.get("odata_version") or ""),
+                str(item.get("entity_set") or ""),
+            )
+            for item in matches
+            if isinstance(item, dict)
+        }
         return {
             "ok": True,
             "data": {
@@ -313,10 +326,8 @@ class EmbeddedODataProvider:
                     "Every service reference must declare 2.0 or 4.0 and match the "
                     "registered binding plus live metadata."
                 ),
-                "catalog_matches": [
-                    item
-                    for item in (await self.catalog(query=query, limit=20)).get("data", {}).get("items", [])
-                ],
+                "catalog_matches": matches,
+                "business_relationship_knowledge": self._relationship_knowledge(refs),
                 "source_complete_policy": (
                     "Explicit top bounds are incomplete; unbounded plans page until the source "
                     "ends or the configured result ceiling is reached."
@@ -463,6 +474,9 @@ class EmbeddedODataProvider:
                 "compatibility_status": "compatible" if not issues else "incompatible",
                 "metadata_timestamp": datetime.now(timezone.utc).isoformat(),
                 "provider_id": self.provider_id,
+                "business_relationship_knowledge": self._relationship_knowledge(
+                    {(service, version, entity) for entity in requested}
+                ),
                 "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
             },
             "validation_issues": issues,
@@ -2305,6 +2319,55 @@ class EmbeddedODataProvider:
         except (OSError, ValueError, json.JSONDecodeError):
             return {}
         return payload if isinstance(payload, dict) else {}
+
+    def _relationship_knowledge(
+        self,
+        refs: set[tuple[str, str, str]],
+    ) -> dict[str, Any]:
+        """Expose only scoped field semantics and relations as non-blocking guidance."""
+
+        payload = self._relationship_payload()
+        fields = []
+        for item in payload.get("field_semantics") or []:
+            if not isinstance(item, dict):
+                continue
+            ref = (
+                str(item.get("service_name") or ""),
+                str(item.get("odata_version") or ""),
+                str(item.get("entity_set") or ""),
+            )
+            if ref in refs:
+                fields.append(dict(item))
+        relationships = []
+        for item in payload.get("relationships") or []:
+            if not isinstance(item, dict):
+                continue
+            source = item.get("source") if isinstance(item.get("source"), dict) else {}
+            target = item.get("target") if isinstance(item.get("target"), dict) else {}
+            source_ref = (
+                str(source.get("service_name") or ""),
+                str(source.get("odata_version") or ""),
+                str(source.get("entity_set") or ""),
+            )
+            target_ref = (
+                str(target.get("service_name") or ""),
+                str(target.get("odata_version") or ""),
+                str(target.get("entity_set") or ""),
+            )
+            if source_ref in refs and target_ref in refs:
+                relationships.append(dict(item))
+        return {
+            "schema_version": str(payload.get("schema_version") or "2.0"),
+            "role": "advisory",
+            "exhaustive": False,
+            "knowledge_ref": "config/business-relationships.json",
+            "field_semantics": fields,
+            "relationships": relationships,
+            "limitations": {
+                "zh": "关系资料不是完整准入清单；请以实时元数据、完整组合键和执行证据为准。",
+                "en": "Relationship knowledge is not an exhaustive allowlist; rely on live metadata, complete composite keys, and execution evidence.",
+            },
+        }
 
     @staticmethod
     def _load_catalog_seed(path: Path | None) -> dict[str, Any]:

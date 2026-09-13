@@ -41,7 +41,7 @@ test("static catalog contains all agents and the GitHub Pages base path", async 
   assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 1);
   assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
-  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 10);
+  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 9);
   assert.match(html, /class="odata-version-tag">V2</);
   assert.doesNotMatch(html, /href="\/zh\//);
 });
@@ -238,7 +238,7 @@ test("primitive array Agent inputs use the compact resizable list field", async 
 test("SD detail pages render nine execution-mapped workflows", async () => {
   const slugs = [
     "delivered-not-billed", "billing-block-diagnosis", "billing-completeness-check",
-    "billing-output-monitor", "delivery-delay-prediction", "due-delivery-prioritization",
+    "delivery-delay-prediction", "due-delivery-prioritization",
     "shortage-allocation-advisor", "returns-credit-anomaly",
     "order-to-cash-status",
   ];
@@ -261,11 +261,13 @@ test("retired O2C anomaly monitor no longer has a runnable page", async () => {
   );
 });
 
-test("inactive billing dispute classification no longer has a runnable page", async () => {
-  await assert.rejects(
-    () => readPage("zh", "agents", "SD", "billing-dispute-classification"),
-    (error) => error?.code === "ENOENT",
-  );
+test("inactive SD Agents no longer have runnable pages", async () => {
+  for (const slug of ["billing-dispute-classification", "billing-output-monitor"]) {
+    await assert.rejects(
+      () => readPage("zh", "agents", "SD", slug),
+      (error) => error?.code === "ENOENT",
+    );
+  }
 });
 
 test("delivered-not-billed renders an editable business-date default marker", async () => {

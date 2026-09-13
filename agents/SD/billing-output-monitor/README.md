@@ -25,11 +25,11 @@ A completed query is not a completed business process. Review conclusions and ga
 ## 当前范围与输入输出 / Current scope and I/O
 
 <!-- generated:facts:start -->
-版本 / Version: **0.1.0** · 使用中 / Active · 因证据或验收缺口受阻 / Blocked
+版本 / Version: **0.1.0** · 已停用 / Inactive · 因证据或验收缺口受阻 / Blocked
 
-网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/SD/billing-output-monitor/) · [en](http://127.0.0.1:4321/en/agents/SD/billing-output-monitor/)
+Agent 管理 / Agent management: [zh](http://127.0.0.1:4321/zh/agent-management/?agent=billing-output-monitor) · [en](http://127.0.0.1:4321/en/agent-management/?agent=billing-output-monitor)
 
-当前不能执行；完成证据与验收门禁后才可启用执行。 / Execution is blocked until evidence and acceptance gates pass.
+已停用：只在 Agent 管理中维护，不接受新运行。 / Inactive: manage it in Agent management; new runs are blocked.
 验收模式 / Acceptance mode: `not_recorded` · 原记录日期 / Recorded date: 2026-08-20T05:19:33.967556+00:00
 证据范围 / Evidence scope: `bounded`
 三级结果语义一致，但真实能力或证据缺口阻止执行。

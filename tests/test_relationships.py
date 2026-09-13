@@ -145,6 +145,74 @@ def test_relationship_catalog_rejects_unregistered_cross_entity_binding() -> Non
     assert issues[0]["validation_issues"][0]["code"] == "relationship_binding_unapproved"
 
 
+def test_relationship_catalog_can_partition_unregistered_mapping_as_advisory() -> None:
+    findings = _catalog().validate_plans(
+        _plan(
+            [
+                _literal_step("sales_order", "API_SALES_ORDER_SRV", "A_SalesOrder", "SalesOrder"),
+                {
+                    "step_id": "billing",
+                    "service_name": "API_BILLING_DOCUMENT_SRV",
+                    "odata_version": "2.0",
+                    "entity_set": "A_BillingDocumentItem",
+                    "filter_from_previous": [
+                        {
+                            "field": "OrderID",
+                            "source_step_id": "sales_order",
+                            "source_field": "SalesOrder",
+                        }
+                    ],
+                },
+            ]
+        )
+    )
+
+    failures, advisories = _catalog().partition_findings(findings)
+
+    assert failures == []
+    assert advisories[0]["code"] == "relationship_binding_unapproved"
+    assert advisories[0]["related_steps"] == ["o2c/billing"]
+    assert advisories[0]["knowledge_refs"] == ["config/business-relationships.json"]
+
+
+def test_complete_relationship_knowledge_is_explicitly_non_exhaustive() -> None:
+    catalog = _catalog()
+
+    knowledge = catalog.knowledge_snapshot()
+
+    assert knowledge["role"] == "advisory"
+    assert knowledge["exhaustive"] is False
+    assert knowledge["knowledge_ref"] == "config/business-relationships.json"
+    assert knowledge["relationships"] == catalog.snapshot()["relationships"]
+
+
+def test_relationship_catalog_keeps_invalid_step_dependency_blocking() -> None:
+    findings = _catalog().validate_plans(
+        _plan(
+            [
+                {
+                    "step_id": "billing",
+                    "service_name": "API_BILLING_DOCUMENT_SRV",
+                    "odata_version": "2.0",
+                    "entity_set": "A_BillingDocumentItem",
+                    "filter_from_previous": [
+                        {
+                            "field": "ReferenceSDDocument",
+                            "source_step_id": "missing_step",
+                            "source_field": "DeliveryDocument",
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+
+    failures, advisories = _catalog().partition_findings(findings)
+
+    assert failures[0]["validation_issues"][0]["code"] == "relationship_source_step_unavailable"
+    assert advisories == []
+
+
 def test_relationship_catalog_accepts_p2p_business_key_semantics() -> None:
     plans = [
         (

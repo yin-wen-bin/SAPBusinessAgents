@@ -18,6 +18,7 @@ from typing import Any
 from .managed_rules import validate_managed_rule
 from .manifests import ManifestError, derive_input_display, validate_execution
 from .models import utc_now
+from .relationships import apply_advisory_relationship_policy
 
 
 class _FeedbackDeadlineExceeded(TimeoutError):
@@ -192,6 +193,9 @@ class AgentAuthoringMixin:
             raise self._authoring_error("Agent module cannot change inside a draft.", "agent_module_immutable")
         self._assert_manageable(manifest)
         manifest["version"] = draft.get("target_version") or manifest.get("version")
+        # Any explicit edit adopts the current controlled relationship policy.
+        # Existing persisted drafts are not rewritten until such a revision occurs.
+        apply_advisory_relationship_policy(manifest)
         # A user/Runtime must never author its own PASS certificate.
         manifest["validation"] = copy.deepcopy(previous["manifest"].get("validation") or {})
         if identity_changed:

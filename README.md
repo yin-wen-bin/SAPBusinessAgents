@@ -95,7 +95,7 @@ FI 清账不自动证明银行到账；MRP模拟不等于正式ATP；处理建�
 | SD | [开票冻结诊断](agents/SD/billing-block-diagnosis/README.md) | 0.2.1 | 使用中 | 验收通过 |
 | SD | [发票完整性检查](agents/SD/billing-completeness-check/README.md) | 0.1.1 | 使用中 | 验收通过 |
 | SD | [发票争议分类](agents/SD/billing-dispute-classification/README.md) | 0.1.0 | 已停用 | 因证据或验收缺口受阻 |
-| SD | [发票输出监控](agents/SD/billing-output-monitor/README.md) | 0.1.0 | 使用中 | 因证据或验收缺口受阻 |
+| SD | [发票输出监控](agents/SD/billing-output-monitor/README.md) | 0.1.0 | 已停用 | 因证据或验收缺口受阻 |
 | SD | [已发货未开票监控](agents/SD/delivered-not-billed/README.md) | 0.2.1 | 使用中 | 验收通过 |
 | SD | [交货延期预测](agents/SD/delivery-delay-prediction/README.md) | 0.1.1 | 使用中 | 验收通过 |
 | SD | [到期交货优先级排序](agents/SD/due-delivery-prioritization/README.md) | 0.1.1 | 使用中 | 验收通过 |
@@ -202,7 +202,7 @@ This index is generated from current manifests and lifecycle records. Active lif
 | SD | [Billing Block Diagnosis](agents/SD/billing-block-diagnosis/README.md) | 0.2.1 | Active | Passed |
 | SD | [Billing Completeness Check](agents/SD/billing-completeness-check/README.md) | 0.1.1 | Active | Passed |
 | SD | [Billing Dispute Classification](agents/SD/billing-dispute-classification/README.md) | 0.1.0 | Inactive | Blocked |
-| SD | [Billing Output Monitor](agents/SD/billing-output-monitor/README.md) | 0.1.0 | Active | Blocked |
+| SD | [Billing Output Monitor](agents/SD/billing-output-monitor/README.md) | 0.1.0 | Inactive | Blocked |
 | SD | [Delivered-not-Billed Monitor](agents/SD/delivered-not-billed/README.md) | 0.2.1 | Active | Passed |
 | SD | [Delivery Delay Prediction](agents/SD/delivery-delay-prediction/README.md) | 0.1.1 | Active | Passed |
 | SD | [Due Delivery Prioritization](agents/SD/due-delivery-prioritization/README.md) | 0.1.1 | Active | Passed |

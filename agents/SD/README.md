@@ -16,7 +16,7 @@ The index below reflects current manifests. Active lifecycle does not automatica
 | SD | [开票冻结诊断 / Billing Block Diagnosis](billing-block-diagnosis/README.md) | 0.2.1 | 使用中 / Active | 验收通过 / Passed |
 | SD | [发票完整性检查 / Billing Completeness Check](billing-completeness-check/README.md) | 0.1.1 | 使用中 / Active | 验收通过 / Passed |
 | SD | [发票争议分类 / Billing Dispute Classification](billing-dispute-classification/README.md) | 0.1.0 | 已停用 / Inactive | 因证据或验收缺口受阻 / Blocked |
-| SD | [发票输出监控 / Billing Output Monitor](billing-output-monitor/README.md) | 0.1.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
+| SD | [发票输出监控 / Billing Output Monitor](billing-output-monitor/README.md) | 0.1.0 | 已停用 / Inactive | 因证据或验收缺口受阻 / Blocked |
 | SD | [已发货未开票监控 / Delivered-not-Billed Monitor](delivered-not-billed/README.md) | 0.2.1 | 使用中 / Active | 验收通过 / Passed |
 | SD | [交货延期预测 / Delivery Delay Prediction](delivery-delay-prediction/README.md) | 0.1.1 | 使用中 / Active | 验收通过 / Passed |
 | SD | [到期交货优先级排序 / Due Delivery Prioritization](due-delivery-prioritization/README.md) | 0.1.1 | 使用中 / Active | 验收通过 / Passed |

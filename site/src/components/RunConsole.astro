@@ -26,6 +26,9 @@ const labels = locale === "zh" ? {
   completeness: "数据范围说明",
   evidenceDetails: "查询与证据详情",
   evidenceDetailsHelp: "查看处理记录、完整性、查询范围和证据明细",
+  advisories: "参考提示",
+  advisoriesHelp: "这些资料用于辅助核对，不会阻止查询，也不代表SAP业务事实。",
+  suggestedCheck: "建议核对",
   technical: "技术详情（供 IT 支持和审计使用）",
   rawPlan: "原始执行计划",
   rawRules: "原始规则结果",
@@ -68,6 +71,7 @@ const labels = locale === "zh" ? {
     planning_started: "正在理解问题并准备查询步骤", plan_created: "查询步骤已经准备好", run_phase_changed: "查询阶段已更新",
     validation_started: "正在检查 API、字段和只读限制", schema_received: "已读取 SAP 数据结构",
     plan_grounded: "查询步骤已与 SAP 数据结构核对", plan_canonicalized: "查询参数已规范化",
+    relationship_advisories_recorded: "已记录非阻断式关系参考提示",
     plan_repaired: "已在安全范围内调整查询步骤", waiting_input: "需要补充查询条件",
     input_received: "已收到补充信息", step_started: "开始新的业务检查步骤",
     workflow_started: "组合工作流开始执行", node_started: "开始执行工作流节点",
@@ -191,6 +195,9 @@ const labels = locale === "zh" ? {
   completeness: "Data scope",
   evidenceDetails: "Query and evidence details",
   evidenceDetailsHelp: "View processing history, completeness, query scope, and evidence",
+  advisories: "Advisory guidance",
+  advisoriesHelp: "This knowledge assists review; it does not block the query or constitute an SAP business fact.",
+  suggestedCheck: "Suggested check",
   technical: "Technical details (for IT support and audit)",
   rawPlan: "Raw execution plan",
   rawRules: "Raw rule results",
@@ -233,6 +240,7 @@ const labels = locale === "zh" ? {
     planning_started: "Understanding the request and preparing steps", plan_created: "Query steps prepared", run_phase_changed: "Query phase updated",
     validation_started: "Checking APIs, fields, and read-only restrictions", schema_received: "SAP schema received",
     plan_grounded: "Query steps checked against the SAP schema", plan_canonicalized: "Query parameters normalized",
+    relationship_advisories_recorded: "Non-blocking relationship guidance recorded",
     plan_repaired: "Query steps adjusted within the safe scope", waiting_input: "More query details are required",
     input_received: "Additional information received", step_started: "A new business check started",
     workflow_started: "Composite workflow started", node_started: "Workflow node started",
@@ -459,6 +467,11 @@ const labels = locale === "zh" ? {
       <ol data-next-actions></ol>
     </div>
   </section>
+
+  <details class="run-evidence-details run-advisories" data-advisories hidden>
+    <summary><span><strong>{labels.advisories}</strong><small>{labels.advisoriesHelp}</small></span><ChevronDown class="disclosure-chevron" size={18} aria-hidden="true" /></summary>
+    <ul class="run-advisory-list" data-advisory-list></ul>
+  </details>
 
   <section class="run-panel run-integration-actions" data-integration-actions hidden>
     <h2>{labels.mailActions.title}</h2>
@@ -1289,6 +1302,46 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-next-actions-wrap]").hidden = actions.length === 0;
   };
 
+  const collectAdvisories = (run) => {
+    const collected = []; const seen = new Set();
+    const visit = (node) => {
+      if (Array.isArray(node)) { node.forEach(visit); return; }
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node.advisories)) {
+        node.advisories.forEach((item) => {
+          if (!item || typeof item !== "object") return;
+          const signature = `${item.code || ""}|${JSON.stringify(item.message || "")}|${JSON.stringify(item.related_steps || [])}`;
+          if (!seen.has(signature)) { seen.add(signature); collected.push(item); }
+        });
+      }
+      Object.values(node).forEach(visit);
+    };
+    visit(run.plan); visit(run.result?.plan); visit(run.result?.steps); visit(run.result?.tool_calls);
+    return collected;
+  };
+
+  const renderAdvisories = (run) => {
+    const panel = root.querySelector("[data-advisories]");
+    const list = root.querySelector("[data-advisory-list]");
+    const advisories = collectAdvisories(run);
+    list.replaceChildren();
+    advisories.forEach((advisory) => {
+      const item = document.createElement("li");
+      const heading = document.createElement("p");
+      const code = document.createElement("code"); code.textContent = String(advisory.code || "advisory");
+      const message = document.createElement("span"); message.textContent = localized(advisory.message) || labels.advisoriesHelp;
+      heading.append(code, document.createTextNode(" "), message); item.append(heading);
+      const checks = Array.isArray(advisory.suggested_checks) ? advisory.suggested_checks : [];
+      if (checks.length) {
+        const checkList = document.createElement("ul");
+        checks.forEach((check) => { const row = document.createElement("li"); row.textContent = `${labels.suggestedCheck}: ${localized(check) || String(check)}`; checkList.append(row); });
+        item.append(checkList);
+      }
+      list.append(item);
+    });
+    panel.hidden = advisories.length === 0;
+  };
+
   const collectPlanSteps = (value) => {
     const rows = []; const seen = new Set();
     const visit = (node) => {
@@ -1735,7 +1788,7 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-rules]").textContent = format(run.result?.rule_results);
     root.querySelector("[data-tool-calls]").textContent = format(run.result?.tool_calls);
     root.querySelector("[data-evidence]").textContent = format(run.result?.evidence);
-    renderProgress(run); renderLimits(run); renderBusinessReport(run); renderRestrictedArtifact(run); renderPlanTable(run); renderEvidenceTable(run); renderCompleteness(run); void renderIntegrationActions(run);
+    renderProgress(run); renderLimits(run); renderBusinessReport(run); renderAdvisories(run); renderRestrictedArtifact(run); renderPlanTable(run); renderEvidenceTable(run); renderCompleteness(run); void renderIntegrationActions(run);
     const inputForm = root.querySelector("[data-input-form]");
     const disclosure = root.querySelector("[data-input-disclosure]");
     const waitingForInput = run.status === "waiting_input";

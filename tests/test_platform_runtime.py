@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sap_business_agents_platform.app import create_app
@@ -1170,7 +1171,7 @@ def test_local_scheduler_runs_deterministic_and_free_query_lanes_in_parallel(
     asyncio.run(scenario())
 
 
-def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
+def test_repository_separates_active_and_inactive_schema_v2_agents() -> None:
     root = Path(__file__).resolve().parents[1]
     repository = AgentRepository(root / "agents")
     records = repository.list()
@@ -1204,7 +1205,6 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "ar-collection",
         "billing-block-diagnosis",
         "billing-completeness-check",
-        "billing-output-monitor",
         "budget-rolling-forecast",
         "co-month-end-allocation-settlement",
         "cost-center-expense-anomaly",
@@ -1231,6 +1231,12 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         "shortage-allocation-advisor",
         "supplier-performance-risk",
     }
+    inactive = {
+        record["slug"]
+        for record in repository.list_all()
+        if repository.lifecycle(record["slug"])["state"] == "inactive"
+    }
+    assert inactive == {"billing-dispute-classification", "billing-output-monitor"}
     for record in records:
         assert record["schemaVersion"] == 2
         if record.get("kind") == "platform_assistant":
@@ -1245,7 +1251,8 @@ def test_repository_exposes_all_schema_v2_deterministic_agents() -> None:
         )
 
 
-def test_public_runtime_rejects_agent_without_three_stage_acceptance(tmp_path: Path) -> None:
+@pytest.mark.parametrize("agent_id", ["billing-dispute-classification", "billing-output-monitor"])
+def test_public_runtime_rejects_inactive_agent(tmp_path: Path, agent_id: str) -> None:
     settings = replace(_settings(tmp_path), enforce_agent_acceptance=True)
     app = create_app(
         settings,
@@ -1257,15 +1264,13 @@ def test_public_runtime_rejects_agent_without_three_stage_acceptance(tmp_path: P
             "/api/runs",
             json={
                 "mode": "agent",
-                "agentId": "billing-output-monitor",
-                "input": {
-                    "billing_document": "1",
-                },
+                "agentId": agent_id,
+                "input": {},
             },
         )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "agent_live_validation_required"
+    assert response.json()["detail"]["code"] == "agent_inactive"
 
 
 def test_manifest_rejects_non_get_plan() -> None:
@@ -2107,7 +2112,7 @@ def test_free_query_rejects_after_only_one_bounded_schema_repair(tmp_path: Path)
         assert "plan_repaired" in event_types
 
 
-def test_free_query_repairs_schema_valid_but_semantically_wrong_o2c_relation(
+def test_free_query_records_unlisted_o2c_relation_as_non_blocking_guidance(
     tmp_path: Path,
 ) -> None:
     embedded = O2CRelationshipEmbeddedProvider()
@@ -2119,15 +2124,17 @@ def test_free_query_repairs_schema_valid_but_semantically_wrong_o2c_relation(
         )
         run = _wait(client, response.json()["run_id"])
         assert run["status"] == "completed"
-        assert planner.ground_calls == [1]
-        assert planner.relationship_snapshots[0]["relationships"]
+        assert planner.ground_calls == []
         assert len(embedded.executed_plans) == 1
         encoded = json.dumps(embedded.executed_plans[0])
-        assert "SalesDocument" in encoded
-        assert "OrderID" not in encoded
+        assert "OrderID" in encoded
+        assert "SalesDocument" not in encoded
+        assert run["result"]["plan"]["advisories"][0]["code"] == "relationship_literal_semantic_mismatch"
+        event_types = {event.type for event in app.state.store.events_after(run["run_id"])}
+        assert "relationship_advisories_recorded" in event_types
 
 
-def test_free_query_rejects_unrepaired_o2c_relation_before_sap_get(tmp_path: Path) -> None:
+def test_free_query_does_not_require_relationship_repair_before_sap_get(tmp_path: Path) -> None:
     embedded = O2CRelationshipEmbeddedProvider()
     planner = O2CRelationshipPlanner(repair=False)
     app = create_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
@@ -2136,13 +2143,12 @@ def test_free_query_rejects_unrepaired_o2c_relation_before_sap_get(tmp_path: Pat
             "/api/runs", json={"mode": "free_query", "query": "追踪销售订单的开票和清账"}
         )
         run = _wait(client, response.json()["run_id"])
-        assert run["status"] == "failed"
-        assert run["error"]["code"] == "free_query_relationship_rejected"
-        assert planner.ground_calls == [1]
-        assert embedded.executed_plans == []
-        details = json.dumps(run["error"]["detail"])
-        assert "relationship_literal_semantic_mismatch" in details
-        assert "SO_FIXTURE" not in details
+        assert run["status"] == "completed"
+        assert planner.ground_calls == []
+        assert len(embedded.executed_plans) == 1
+        advisories = run["result"]["plan"]["advisories"]
+        assert advisories[0]["code"] == "relationship_literal_semantic_mismatch"
+        assert "SO_FIXTURE" not in json.dumps(advisories)
 
 
 def test_free_query_can_pause_for_clarification_and_resume_thread(tmp_path: Path) -> None:

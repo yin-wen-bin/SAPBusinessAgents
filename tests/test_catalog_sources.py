@@ -241,6 +241,31 @@ def test_curated_bilingual_inventory_document_and_mrp_search_rank_expected_candi
     assert empty["data"]["items"] == []  # type: ignore[index]
 
 
+def test_relationship_catalog_is_exposed_as_scoped_non_exhaustive_knowledge() -> None:
+    provider = EmbeddedODataProvider(
+        base_url="",
+        username="",
+        password="",
+        relationship_catalog_path=ROOT / "config" / "business-relationships.json",
+        service_registry_path=ROOT / "config" / "odata-services.json",
+        catalog_seed_path=ROOT / "data" / "catalog-seed" / "catalog.json",
+    )
+    refs = {
+        ("API_SALES_ORDER_SRV", "2.0", "A_SalesOrder"),
+        ("API_OPLACCTGDOCITEMCUBE_SRV", "2.0", "A_OperationalAcctgDocItemCube"),
+    }
+
+    knowledge = provider._relationship_knowledge(refs)
+
+    assert knowledge["role"] == "advisory"
+    assert knowledge["exhaustive"] is False
+    assert knowledge["knowledge_ref"] == "config/business-relationships.json"
+    assert all(
+        (item["service_name"], item["odata_version"], item["entity_set"]) in refs
+        for item in knowledge["field_semantics"]
+    )
+
+
 def test_committed_catalog_sha256_manifest_matches_every_generated_output() -> None:
     manifest = json.loads(
         (ROOT / "data" / "catalog-seed" / "sha256-manifest.json").read_text(

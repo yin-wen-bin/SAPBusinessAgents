@@ -58,8 +58,14 @@ def agent_facts(repo: AgentRepository, a: dict, path: Path) -> str:
     state = repo.lifecycle(a["slug"])["state"]
     v = a.get("validation") or {}
     assistant = a.get("kind") == "platform_assistant"
+    entry_label = "Agent 管理 / Agent management" if state == "inactive" else "网页 / Web"
+    entry_path = (
+        lambda lang: f"http://127.0.0.1:4321/{lang}/agent-management/?agent={a['slug']}"
+        if state == "inactive"
+        else f"http://127.0.0.1:4321/{lang}/agents/{a['module']}/{a['slug']}/"
+    )
     lines = [f"版本 / Version: **{a['version']}** · {LABELS[state]} · {LABELS.get(v.get('verdict'), '平台助理：由 Runtime 能力门禁控制 / Platform assistant: Runtime capability gate')}", "",
-             "网页 / Web: " + " · ".join(f"[{lang}](http://127.0.0.1:4321/{lang}/agents/{a['module']}/{a['slug']}/)" for lang in ("zh", "en")), ""]
+             entry_label + ": " + " · ".join(f"[{lang}]({entry_path(lang)})" for lang in ("zh", "en")), ""]
     if state == "inactive":
         lines.append("已停用：只在 Agent 管理中维护，不接受新运行。 / Inactive: manage it in Agent management; new runs are blocked.")
     elif not assistant and not is_agent_executable(a):

@@ -3327,6 +3327,22 @@ details[open] > summary .disclosure-chevron {
   padding: 16px;
 }
 
+.run-advisory-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 16px 16px 16px 38px;
+}
+
+.run-advisory-list > li > p {
+  margin: 0;
+}
+
+.run-advisory-list ul {
+  margin: 8px 0 0;
+  color: var(--color-text-muted);
+}
+
 .run-panel {
   min-width: 0;
   border: 1px solid var(--color-border);

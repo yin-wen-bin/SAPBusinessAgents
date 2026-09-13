@@ -530,13 +530,41 @@ def test_inactive_agent_is_hidden_from_business_catalog_but_available_to_managem
     )
 
     assert service.agents.list() == []
-    assert service.catalog("inactive")[0]["id"] == "managed-test-agent"
+    managed = service.catalog("inactive")[0]
+    assert managed["id"] == "managed-test-agent"
+    assert managed["management"]["can_activate"] is True
+    assert managed["management"]["activate_blockers"] == []
+
+
+def test_inactive_blocked_agent_cannot_be_offered_for_activation(tmp_path: Path) -> None:
+    service, _store, _settings = _service(tmp_path)
+    manifest = _write_active_agent(service, tmp_path)
+    manifest["validation"].update(verdict="BLOCKED", executable=False)
+    directory = tmp_path / "agents" / "Common" / "managed-test-agent"
+    service._write_json(directory / "agent.json", manifest)
+    service._write_json(
+        directory / "publication.json",
+        {
+            "schemaVersion": 1,
+            "agent_id": "managed-test-agent",
+            "lifecycle_state": "inactive",
+            "state": "inactive",
+            "active_version": "1.0.0",
+            "latest_version": "1.0.0",
+            "active_digest": agent_digest(manifest),
+        },
+    )
+
+    managed = service.catalog("inactive")[0]["management"]
+    assert managed["can_activate"] is False
+    assert managed["activate_blockers"] == ["agent_validation_pass_required"]
 
 
 @pytest.mark.parametrize("mode", ["deterministic_runtime", "three_stage"])
 def test_metadata_only_version_reuses_pass_acceptance_and_publishes_local_commit(tmp_path: Path, mode: str) -> None:
     service, _store, _settings = _service(tmp_path)
     current = _write_active_agent(service, tmp_path)
+    current["execution"]["relationshipPolicy"] = "advisory"
     current["validation"]["acceptanceMode"] = mode
     if mode == "three_stage":
         current["validation"]["freeQueryComparison"] = "MATCH"

@@ -289,6 +289,9 @@ function validateExecution(execution, source) {
     throw new Error(`${source}.execution must be an object for schemaVersion 2`);
   }
   if (execution.mode !== "deterministic") throw new Error(`${source}.execution.mode must be deterministic`);
+  if (execution.relationshipPolicy !== undefined && !["legacy_enforced", "advisory"].includes(execution.relationshipPolicy)) {
+    throw new Error(`${source}.execution.relationshipPolicy must be legacy_enforced or advisory`);
+  }
   if (!execution.inputSchema || execution.inputSchema.type !== "object") {
     throw new Error(`${source}.execution.inputSchema must be an object JSON Schema`);
   }

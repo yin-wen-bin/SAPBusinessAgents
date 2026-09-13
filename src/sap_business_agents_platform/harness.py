@@ -833,28 +833,27 @@ class HarnessToolBroker:
             plan = self.normalizer.normalize_plan(
                 _require_object(arguments.get("plan"), "plan")
             )
-            business_issue = _plan_business_contract_issue(
+            business_advisories = _plan_business_contract_advisories(
                 str(self.store.get_run(run_id).query or ""), plan
             )
-            if business_issue:
-                return {"ok": False, **business_issue, "validated_plan": None}
             result = await self.sap_read.validate_plan(plan, str(arguments.get("query") or ""))
             normalized_plan = result.get("normalized_plan")
-            return {
+            response = {
                 **result,
                 "validated_plan": (
                     normalized_plan if isinstance(normalized_plan, dict) else plan
                 ) if result.get("ok") else None,
             }
+            if business_advisories:
+                response["advisories"] = business_advisories
+            return response
         if tool_name == "sap_query_execute":
             plan = self.normalizer.normalize_plan(
                 _require_object(arguments.get("plan"), "plan")
             )
-            business_issue = _plan_business_contract_issue(
+            business_advisories = _plan_business_contract_advisories(
                 str(self.store.get_run(run_id).query or ""), plan
             )
-            if business_issue:
-                return {"ok": False, **business_issue}
             validation = await self.sap_read.validate_plan(plan, str(arguments.get("query") or ""))
             if validation.get("ok") is not True:
                 return {"ok": False, "code": "free_query_plan_rejected", "validation": validation}
@@ -876,7 +875,7 @@ class HarnessToolBroker:
             evidence_ref = self._save_evidence(run_id, "sap_live", raw)
             if sample_context is not None:
                 sample_context.remember(evidence_ref, plan=plan)
-            return {
+            response = {
                 "ok": raw.get("ok", True),
                 "source_type": "sap_live",
                 "claim_scope": "customer_business_fact",
@@ -886,6 +885,9 @@ class HarnessToolBroker:
                 "preview": _bounded_preview(raw),
                 "odata_version": plan.get("odata_version"),
             }
+            if business_advisories:
+                response["advisories"] = business_advisories
+            return response
         if tool_name == "sap_evidence_read":
             raw, meta = self._read_evidence(run_id, str(arguments.get("evidence_ref") or ""))
             offset = max(int(arguments.get("offset") or 0), 0)
@@ -3430,7 +3432,7 @@ def _deadline_presentation(evidence: list[dict[str, Any]]) -> RunPresentation:
 
 
 def _plan_business_contract_issue(query: str, plan: dict[str, Any]) -> dict[str, Any] | None:
-    """Enforce question-declared accounting grain without choosing a SAP API for Codex."""
+    """Describe a question-derived business concern without choosing a SAP API."""
 
     lowered = query.casefold()
     needs_transaction_amount = any(
@@ -3491,6 +3493,45 @@ def _plan_business_contract_issue(query: str, plan: dict[str, Any]) -> dict[str,
                 ),
             }
     return None
+
+
+def _plan_business_contract_advisories(query: str, plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Translate legacy question heuristics into non-blocking planning guidance."""
+
+    issue = _plan_business_contract_issue(query, plan)
+    if not issue:
+        return []
+    code = str(issue.get("code") or "business_semantic_check_suggested")
+    english = str(issue.get("message") or "Review the inferred business scope against live evidence.")
+    chinese = {
+        "paired_transaction_amount_required": "问题涉及交易币金额，建议同时读取交易币金额及币种字段并核对完整行项目。",
+        "unverified_ledger_scope_rejected": "问题未指定台账，建议确认额外台账过滤不会遗漏客户或供应商子分类账项目。",
+    }.get(code, "当前计划可能需要额外的业务范围核对；该提示不会阻止查询继续执行。")
+    related_steps = [
+        str(item.get("step_id") or item.get("id") or "")
+        for item in _plan_candidates(plan)
+        if isinstance(item, dict) and (item.get("step_id") or item.get("id"))
+    ]
+    detail = {
+        key: value
+        for key, value in issue.items()
+        if key not in {"code", "message"}
+    }
+    return [
+        {
+            "code": code,
+            "message": {"zh": chinese, "en": english},
+            "related_steps": list(dict.fromkeys(related_steps)),
+            "knowledge_refs": ["runtime-question-business-heuristics"],
+            "suggested_checks": [
+                {
+                    "zh": "结合实时Schema、返回记录及完整业务键复核该提示。",
+                    "en": "Review this guidance against live schemas, returned records, and complete business keys.",
+                }
+            ],
+            **({"detail": detail} if detail else {}),
+        }
+    ]
 
 
 def _inventory_health_requested(query: str) -> bool:

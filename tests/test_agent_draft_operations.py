@@ -85,14 +85,20 @@ class Runtime:
                 "configuration_digest": "frozen-test"}
 
 
+class ConfirmedIdentityLifecycle:
+    def require_technical_identity(self, draft):
+        assert draft["agent_id"] == "sample-test"
+
+
 def test_discovery_persists_result_and_reuses_request_without_new_calls(tmp_path):
     async def scenario():
         store, draft = seed(tmp_path)
         calls = []
-        async def discover(run_id, manifest, supplied, *, revision, model):
+        async def discover(run_id, manifest, supplied, *, revision, model, started, selected_fields):
             calls.append(run_id)
+            assert started > 0 and selected_fields is None
             return {"status": "ready", "input": supplied, "field_sources": {}, "source_complete": None}
-        jobs = AgentDiscoveryJobs(None, store, None, Runtime(), SimpleNamespace(discover=discover))
+        jobs = AgentDiscoveryJobs(None, store, ConfirmedIdentityLifecycle(), Runtime(), SimpleNamespace(discover=discover))
         request = AgentSampleDiscoveryRequest(expectedRevision=1, input={"company_code": "1710"}, requestId="one")
         started = jobs.start(draft["draft_id"], request)
         await asyncio.gather(*list(jobs.tasks.values()))
@@ -108,7 +114,7 @@ def test_discovery_persists_result_and_reuses_request_without_new_calls(tmp_path
 
 def test_discovery_rejects_private_input_before_persistence(tmp_path):
     store, draft = seed(tmp_path)
-    jobs = AgentDiscoveryJobs(None, store, None, Runtime(), None)
+    jobs = AgentDiscoveryJobs(None, store, ConfirmedIdentityLifecycle(), Runtime(), None)
     with pytest.raises(AgentLifecycleError, match="cannot be sent"):
         jobs.start(draft["draft_id"], AgentSampleDiscoveryRequest(expectedRevision=1,
             input={"receipt_reference": "do-not-save"}))
@@ -122,7 +128,7 @@ def test_discovery_cancel_releases_operation(tmp_path):
         store, draft = seed(tmp_path)
         async def discover(*args, **kwargs):
             await asyncio.Event().wait()
-        jobs = AgentDiscoveryJobs(None, store, None, Runtime(), SimpleNamespace(discover=discover))
+        jobs = AgentDiscoveryJobs(None, store, ConfirmedIdentityLifecycle(), Runtime(), SimpleNamespace(discover=discover))
         result = jobs.start(draft["draft_id"], AgentSampleDiscoveryRequest(expectedRevision=1, input={}))
         await asyncio.sleep(0)
         cancelled = await jobs.cancel(draft["draft_id"], result["run_id"])

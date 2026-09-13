@@ -27,7 +27,7 @@ A completed query is not a completed business process. Review conclusions and ga
 <!-- generated:facts:start -->
 版本 / Version: **0.1.0** · 已停用 / Inactive · 因证据或验收缺口受阻 / Blocked
 
-网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/SD/billing-dispute-classification/) · [en](http://127.0.0.1:4321/en/agents/SD/billing-dispute-classification/)
+Agent 管理 / Agent management: [zh](http://127.0.0.1:4321/zh/agent-management/?agent=billing-dispute-classification) · [en](http://127.0.0.1:4321/en/agent-management/?agent=billing-dispute-classification)
 
 已停用：只在 Agent 管理中维护，不接受新运行。 / Inactive: manage it in Agent management; new runs are blocked.
 验收模式 / Acceptance mode: `not_recorded` · 原记录日期 / Recorded date: 2026-08-20T05:19:32.404578+00:00

@@ -9,6 +9,17 @@ from typing import Any, Iterable
 
 EndpointKey = tuple[str, str, str, str]
 
+LEGACY_RELATIONSHIP_POLICY = "legacy_enforced"
+ADVISORY_RELATIONSHIP_POLICY = "advisory"
+ALLOWED_RELATIONSHIP_POLICIES = {
+    LEGACY_RELATIONSHIP_POLICY,
+    ADVISORY_RELATIONSHIP_POLICY,
+}
+_ADVISORY_ISSUE_CODES = {
+    "relationship_binding_unapproved",
+    "relationship_literal_semantic_mismatch",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class RelationshipEndpoint:
@@ -129,6 +140,36 @@ class RelationshipCatalog:
             "relationships": relationships,
         }
 
+    def knowledge_snapshot_for(self, refs: set[tuple[str, str, str]]) -> dict[str, Any]:
+        """Return scoped, non-exhaustive relationship knowledge for Runtime planning."""
+
+        return self._as_knowledge(self.snapshot_for(refs))
+
+    def knowledge_snapshot(self) -> dict[str, Any]:
+        """Return the complete curated catalog while preserving advisory semantics."""
+
+        return self._as_knowledge(self.snapshot())
+
+    @staticmethod
+    def _as_knowledge(snapshot: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **snapshot,
+            "role": "advisory",
+            "exhaustive": False,
+            "knowledge_ref": "config/business-relationships.json",
+            "limitations": {
+                "zh": (
+                    "这是经过整理的关系参考，不是完整SAP语义图。未登记、方向不同或与历史案例不同，"
+                    "本身不构成拒绝；请用实时元数据、组合键和返回证据核对实际关系。"
+                ),
+                "en": (
+                    "This curated relationship knowledge is not a complete SAP semantic graph. "
+                    "An unlisted direction or a difference from historical examples is not by itself "
+                    "a rejection; verify the relationship with live metadata, composite keys, and evidence."
+                ),
+            },
+        }
+
     def snapshot(self) -> dict[str, Any]:
         refs = {
             (service_name, odata_version, entity_set)
@@ -241,6 +282,45 @@ class RelationshipCatalog:
             for step_id, issues in issues_by_step.items()
         ]
 
+    def partition_findings(
+        self,
+        findings: Iterable[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Split structural failures from non-exhaustive relationship guidance.
+
+        ``validate_plans`` intentionally retains its legacy rejecting contract. New
+        callers opt in to this partition so frozen Agent versions keep byte-for-byte
+        compatible validation behavior.
+        """
+
+        failures: list[dict[str, Any]] = []
+        advisories: list[dict[str, Any]] = []
+        for finding in findings:
+            issues = finding.get("validation_issues")
+            if not isinstance(issues, list):
+                failures.append(finding)
+                continue
+            hard_issues = [
+                issue
+                for issue in issues
+                if not isinstance(issue, dict)
+                or str(issue.get("code") or "") not in _ADVISORY_ISSUE_CODES
+            ]
+            advisory_issues = [
+                issue
+                for issue in issues
+                if isinstance(issue, dict)
+                and str(issue.get("code") or "") in _ADVISORY_ISSUE_CODES
+            ]
+            if hard_issues:
+                failures.append({**finding, "validation_issues": hard_issues})
+            step_id = str(finding.get("step_id") or "").strip()
+            advisories.extend(
+                self._advisory_from_issue(issue, step_id=step_id)
+                for issue in advisory_issues
+            )
+        return failures, advisories
+
     def _is_allowed(self, mode: str, source: EndpointKey, target: EndpointKey) -> bool:
         return (mode, source, target) in self._allowed
 
@@ -264,6 +344,76 @@ class RelationshipCatalog:
                 "relationship contract."
             ),
         }
+
+    @staticmethod
+    def _advisory_from_issue(issue: dict[str, Any], *, step_id: str) -> dict[str, Any]:
+        code = str(issue.get("code") or "relationship_knowledge_note")
+        if code == "relationship_literal_semantic_mismatch":
+            zh = "当前关系资料未证明跨实体复用该常量具有相同业务语义。"
+            en = "Current relationship knowledge does not prove that this literal has the same business meaning across entities."
+        else:
+            zh = "当前关系资料未登记该跨实体字段传递；这不是阻断条件。"
+            en = "Current relationship knowledge does not list this cross-entity field propagation; this is not a blocking condition."
+        return {
+            "code": code,
+            "message": {"zh": zh, "en": en},
+            "related_steps": [step_id] if step_id else [],
+            "knowledge_refs": ["config/business-relationships.json"],
+            "suggested_checks": [
+                {
+                    "zh": "用实时Schema确认字段，并按同一来源行的完整业务组合键核对传递方向。",
+                    "en": "Confirm fields from live schemas and verify direction using the complete business-key tuple from the same source row.",
+                }
+            ],
+            "detail": {
+                key: issue.get(key)
+                for key in ("mode", "source", "source_semantic", "target", "target_semantic")
+                if key in issue
+            },
+        }
+
+
+def apply_advisory_relationship_policy(manifest: dict[str, Any]) -> bool:
+    """Apply the controlled policy to a new or newly revised fixed-Agent package."""
+
+    execution = manifest.get("execution")
+    if not isinstance(execution, dict):
+        return False
+    changed = execution.get("relationshipPolicy") != ADVISORY_RELATIONSHIP_POLICY
+    execution["relationshipPolicy"] = ADVISORY_RELATIONSHIP_POLICY
+    return changed
+
+
+def relationship_policy(manifest: dict[str, Any]) -> str:
+    execution = manifest.get("execution")
+    if not isinstance(execution, dict):
+        return LEGACY_RELATIONSHIP_POLICY
+    value = execution.get("relationshipPolicy")
+    return str(value) if value in ALLOWED_RELATIONSHIP_POLICIES else LEGACY_RELATIONSHIP_POLICY
+
+
+def relationship_entity_refs(value: Any) -> set[tuple[str, str, str]]:
+    """Collect declared SAP entity triples without interpreting plan semantics."""
+
+    refs: set[tuple[str, str, str]] = set()
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        service = str(node.get("service_name") or "").strip()
+        version = str(node.get("odata_version") or "").strip()
+        entity = str(node.get("entity_set") or "").strip()
+        if service and version and entity:
+            refs.add((service, version, entity))
+        for item in node.values():
+            visit(item)
+
+    visit(value)
+    return refs
 
 
 def _endpoint(value: Any, label: str) -> RelationshipEndpoint:

@@ -85,6 +85,21 @@ def test_manual_save_derives_display_and_undo_preserves_original_package(tmp_pat
     assert store.get_agent_authoring_revision(draft["draft_id"], 2)["package"] == result["package"]
 
 
+def test_manual_revision_cannot_drop_controlled_advisory_relationship_policy(tmp_path):
+    service, _, _ = _service(tmp_path)
+    draft = create(service)
+    package = copy.deepcopy(draft["package"])
+    package["manifest"]["execution"].pop("relationshipPolicy", None)
+    package["manifest"]["summary"]["en"] = "Revised summary"
+
+    result = service.update(
+        draft["draft_id"],
+        AgentDraftUpdate(expectedRevision=1, manifest=package["manifest"]),
+    )
+
+    assert result["package"]["manifest"]["execution"]["relationshipPolicy"] == "advisory"
+
+
 def test_redundant_display_only_proposal_does_not_create_revision(tmp_path):
     service, _, _ = _service(tmp_path)
     draft = create(service)
@@ -160,6 +175,20 @@ def test_official_manifest_gate_stays_strict(tmp_path):
     with pytest.raises(ManifestError, match="outputs must mirror") as error:
         validate_execution(manifest)
     assert error.value.public_issue()["code"] == "output_display_mismatch"
+
+
+def test_official_manifest_rejects_unknown_relationship_policy(tmp_path):
+    service, _, _ = _service(tmp_path)
+    manifest = copy.deepcopy(create(service)["package"]["manifest"])
+    manifest["execution"]["relationshipPolicy"] = "model_decides"
+
+    with pytest.raises(ManifestError, match="relationshipPolicy") as error:
+        validate_execution(manifest)
+
+    assert error.value.public_issue() == {
+        "code": "execution_relationship_policy_invalid",
+        "path": "/manifest/execution/relationshipPolicy",
+    }
 
 
 def test_definition_errors_never_become_model_errors_or_echo_exception_values():

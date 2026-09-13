@@ -103,6 +103,19 @@ def test_agent_execution_digest_changes_with_managed_rule_source() -> None:
     assert first != second
 
 
+def test_agent_execution_digest_binds_explicit_relationship_policy() -> None:
+    legacy = {"execution": {"mode": "deterministic", "steps": []}}
+    advisory = {
+        "execution": {
+            "mode": "deterministic",
+            "steps": [],
+            "relationshipPolicy": "advisory",
+        }
+    }
+
+    assert agent_execution_digest(legacy) != agent_execution_digest(advisory)
+
+
 def test_complete_zero_case_may_declare_zero_primary_evidence_rows() -> None:
     value = {
         "schema_version": "2.0",

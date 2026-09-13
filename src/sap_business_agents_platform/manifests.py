@@ -9,6 +9,8 @@ from typing import Any
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError, ValidationError
 
+from .relationships import ALLOWED_RELATIONSHIP_POLICIES
+
 
 ALLOWED_EXECUTORS = {"sap_read", "skill", "rule"}
 ALLOWED_SAP_READ_OPERATIONS = {"execute_plan", "execute_get"}
@@ -59,6 +61,7 @@ class ManifestError(ValueError):
             "definition_invalid", "input_schema_invalid", "json_schema_invalid",
             "input_title_missing", "input_title_zh_invalid", "input_title_en_invalid",
             "input_display_mismatch", "output_display_mismatch", "execution_mode_invalid",
+            "execution_relationship_policy_invalid",
             "agent_optional_input_unguarded", "agent_optional_filter_invalid",
             "agent_optional_filter_unguarded", "agent_input_reference_unknown",
         }
@@ -212,6 +215,13 @@ def validate_execution(agent: dict[str, Any], source: str = "agent.json") -> Non
         raise ManifestError(f"{source}.execution must be an object")
     if execution.get("mode") != "deterministic":
         raise ManifestError(f"{source}.execution.mode must be deterministic", issue_code="execution_mode_invalid", path="/manifest/execution/mode")
+    relationship_policy = execution.get("relationshipPolicy")
+    if relationship_policy is not None and relationship_policy not in ALLOWED_RELATIONSHIP_POLICIES:
+        raise ManifestError(
+            f"{source}.execution.relationshipPolicy must be legacy_enforced or advisory",
+            issue_code="execution_relationship_policy_invalid",
+            path="/manifest/execution/relationshipPolicy",
+        )
     managed_steps = [
         step for step in execution.get("steps") or []
         if isinstance(step, dict) and step.get("executor") == "rule"

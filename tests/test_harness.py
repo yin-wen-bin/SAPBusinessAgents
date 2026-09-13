@@ -30,6 +30,7 @@ from sap_business_agents_platform.harness import (
     _custom_tool_kind,
     _developer_instructions,
     _mcp_overrides,
+    _plan_business_contract_advisories,
     _plan_business_contract_issue,
     _persistent_harness_counts,
     _public_https_citations,
@@ -1158,6 +1159,55 @@ def test_account_item_plan_requires_declared_transaction_pair_and_rejects_guesse
     )
     assert guessed_ledger is not None
     assert guessed_ledger["code"] == "unverified_ledger_scope_rejected"
+
+
+def test_question_derived_business_checks_are_non_blocking_advisories(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        store = RunStore(settings.database_path)
+        run_id = "run_advisory_business_check"
+        store.create_run(
+            run_id,
+            RunCreate(
+                mode=RunMode.free_query,
+                query="List customer transaction-currency amount as of the cutoff",
+            ),
+        )
+        sap = FakeSapRead()
+        broker = HarnessToolBroker(settings, store, sap, FakeSkills())
+        token = broker.open_session(run_id)
+        plan = {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "select_fields": ["TransactionCurrency"],
+        }
+
+        validation = await broker.handle(run_id, token, "sap_query_validate", {"plan": plan})
+        execution = await broker.handle(run_id, token, "sap_query_execute", {"plan": plan})
+
+        assert validation["ok"] is True
+        assert validation["advisories"][0]["code"] == "paired_transaction_amount_required"
+        assert execution["ok"] is True
+        assert execution["advisories"][0]["code"] == "paired_transaction_amount_required"
+        evidence, _metadata = broker._read_evidence(run_id, execution["evidence_ref"])
+        assert "advisories" not in evidence
+
+    asyncio.run(scenario())
+
+
+def test_business_advisory_shape_does_not_claim_exhaustive_knowledge() -> None:
+    advisories = _plan_business_contract_advisories(
+        "List customer transaction-currency amount as of the cutoff",
+        {
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "select_fields": ["TransactionCurrency"],
+        },
+    )
+
+    assert advisories[0]["code"] == "paired_transaction_amount_required"
+    assert advisories[0]["knowledge_refs"] == ["runtime-question-business-heuristics"]
 
 
 async def _broker_scenario(tmp_path: Path) -> None:

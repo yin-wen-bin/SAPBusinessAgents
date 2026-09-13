@@ -17,6 +17,8 @@ const text = {
     loading: "正在加载…", empty: "当前没有符合条件的记录。", view: "管理",
     version: "版本", validation: "验收", dependencies: "工作流引用", createVersion: "创建新版本",
     deactivate: "停用", activate: "重新启用", rollback: "回滚", delete: "永久删除",
+    activateBlocked: "当前版本尚未通过启用门禁。请创建新版本并完成验收后再重新启用。",
+    activationBlockerLabels: { agent_must_be_inactive: "只有已停用Agent可以重新启用", agent_validation_pass_required: "当前版本未通过验收", agent_version_not_found: "找不到可启用的版本" },
     deleteBlocked: "当前不能永久删除", back: "返回目录", source: "创建方式", blank: "从空白模板",
     clone: "复制现有 Agent", free: "从成功自由查询", gap: "从工作流缺口", agentId: "Agent 技术 ID",
     module: "模块", sourceAgent: "源 Agent", runId: "自由查询运行编号", workflowDraft: "工作流草稿编号",
@@ -47,6 +49,8 @@ const text = {
     loading: "Loading…", empty: "No records match this view.", view: "Manage",
     version: "Version", validation: "Acceptance", dependencies: "Workflow references", createVersion: "Create new version",
     deactivate: "Deactivate", activate: "Activate", rollback: "Roll back", delete: "Delete permanently",
+    activateBlocked: "The current version has not passed activation gates. Create and validate a new version before activation.",
+    activationBlockerLabels: { agent_must_be_inactive: "Only inactive Agents can be activated", agent_validation_pass_required: "The current version has not passed acceptance", agent_version_not_found: "No activatable version was found" },
     deleteBlocked: "Permanent deletion is unavailable", back: "Back to catalog", source: "Creation source", blank: "Blank template",
     clone: "Clone existing Agent", free: "Successful free query", gap: "Workflow capability gap", agentId: "Agent technical ID",
     module: "Module", sourceAgent: "Source Agent", runId: "Free-query run ID", workflowDraft: "Workflow draft ID",
@@ -242,7 +246,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   if (selected) return <main className="agent-management"><button onClick={backToList}>{t.back}</button><p className="eyebrow">{t.eyebrow}</p><h1>{localized(selected.title, locale)}</h1><p>{localized(selected.summary, locale)}</p><dl><dt>ID</dt><dd><code>{selected.id}</code></dd><dt>{t.version}</dt><dd>{selected.version}</dd><dt>{t.validation}</dt><dd>{selected.validation?.verdict || "-"}</dd><dt>{t.dependencies}</dt><dd>{selected.workflow_dependencies?.length || 0}</dd></dl>
     {error && <p className="agent-alert error">{error}</p>}{notice && <p className="agent-alert">{notice}</p>}
     <section className="agent-panel"><h2>{t.createVersion}</h2><select value={bump} onChange={(e) => setBump(e.target.value as any)}><option value="patch">{t.patch}</option><option value="minor">{t.minor}</option><option value="major">{t.major}</option></select><button disabled={busy || !selected.management?.can_create_version} onClick={createVersion}>{t.createVersion}</button></section>
-    <section className="agent-panel"><label>{t.reason}<input value={reason} onChange={(e) => setReason(e.target.value)} /></label><div className="agent-actions">{selected.lifecycle?.state === "active" ? <button disabled={busy} onClick={() => lifecycleAction("deactivate")}>{t.deactivate}</button> : <button disabled={busy} onClick={() => lifecycleAction("activate")}>{t.activate}</button>}</div></section>
+    <section className="agent-panel"><label>{t.reason}<input value={reason} onChange={(e) => setReason(e.target.value)} /></label><div className="agent-actions">{selected.lifecycle?.state === "active" ? <button disabled={busy} onClick={() => lifecycleAction("deactivate")}>{t.deactivate}</button> : <button disabled={busy || !selected.management?.can_activate} onClick={() => lifecycleAction("activate")}>{t.activate}</button>}</div>{selected.lifecycle?.state === "inactive" && !selected.management?.can_activate && <div role="status"><p>{t.activateBlocked}</p><ul>{(selected.management?.activate_blockers || []).map((item: string) => <li key={item}>{(t.activationBlockerLabels as Record<string, string>)[item] || t.activateBlocked}</li>)}</ul></div>}</section>
     <section className="agent-panel danger"><h2>{t.delete}</h2>{(selected.management?.delete_blockers || []).length > 0 && <ul>{selected.management.delete_blockers.map((item: string) => <li>{item}</li>)}</ul>}<label>{t.confirmId}<input value={confirmId} onChange={(e) => setConfirmId(e.target.value)} /></label><button disabled={busy || !selected.management?.can_delete || confirmId !== selected.id} onClick={() => lifecycleAction("delete")}>{t.delete}</button></section>
   </main>;
 

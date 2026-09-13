@@ -51,7 +51,12 @@ from .normalization import (
     discover_agent_input_references,
 )
 from .plugins import PluginError, SapReadCapability
-from .relationships import RelationshipCatalog
+from .relationships import (
+    ADVISORY_RELATIONSHIP_POLICY,
+    LEGACY_RELATIONSHIP_POLICY,
+    RelationshipCatalog,
+    relationship_policy,
+)
 from .scheduler import LocalRunScheduler, WorkloadClass
 from .sap_read import SapReadError
 from .skills import SkillError, SkillRegistry
@@ -1449,6 +1454,7 @@ class RunCoordinator:
             ) from exc
 
         execution = agent["execution"]
+        fixed_relationship_policy = relationship_policy(agent)
         total_steps = len(execution["steps"])
         self._set_progress(
             run_id,
@@ -1470,12 +1476,15 @@ class RunCoordinator:
         evidence_budget = max(
             1.0, deterministic_budget - finalization_reserve
         )
+        result_plan: dict[str, Any] = {"mode": "deterministic", "steps": execution["steps"]}
+        if "relationshipPolicy" in execution:
+            result_plan["relationshipPolicy"] = fixed_relationship_policy
         result = RunResult(
             run_id=run_id,
             mode=RunMode.agent,
             agent_id=record.agent_id,
             input=record.input,
-            plan={"mode": "deterministic", "steps": execution["steps"]},
+            plan=result_plan,
             started_at=record.started_at,
         )
         self.store.update_run(run_id, status=RunStatus.running, plan_json=result.plan)
@@ -1564,6 +1573,7 @@ class RunCoordinator:
                 else None
             )
             rendered = _render_template(step.get("request") or step.get("inputMapping") or {}, context)
+            step_advisories: list[dict[str, Any]] = []
             try:
                 if executor in {"sap_read", "skill"}:
                     remaining_evidence = evidence_budget - (
@@ -1582,6 +1592,8 @@ class RunCoordinator:
                                 rendered,
                                 record.query or "",
                                 call_id=call_id,
+                                relationship_policy_value=fixed_relationship_policy,
+                                relationship_advisories=step_advisories,
                             ),
                             timeout=remaining_evidence,
                         )
@@ -1607,6 +1619,8 @@ class RunCoordinator:
                                 rendered,
                                 record.query or "",
                                 call_id=call_id,
+                                relationship_policy_value=fixed_relationship_policy,
+                                relationship_advisories=step_advisories,
                             ),
                             timeout=remaining_total,
                         )
@@ -1740,6 +1754,8 @@ class RunCoordinator:
                 "output_reference": f"steps.{step_id}.output",
                 "execution": execution_envelope,
             }
+            if step_advisories:
+                step_record["advisories"] = step_advisories
             result.steps.append(step_record)
             if step["executor"] in {"sap_read", "skill"}:
                 operation = "execute" if step["executor"] == "skill" else str(step.get("operation") or "")
@@ -1867,6 +1883,8 @@ class RunCoordinator:
         query: str,
         *,
         call_id: str | None = None,
+        relationship_policy_value: str = LEGACY_RELATIONSHIP_POLICY,
+        relationship_advisories: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         executor = step["executor"]
         operation = step.get("operation")
@@ -1894,13 +1912,39 @@ class RunCoordinator:
             )
             if operation == "execute_plan":
                 plan = rendered.get("plan") if "plan" in rendered else rendered
-                relationship_failures = self.relationships.validate_plans(
+                relationship_findings = self.relationships.validate_plans(
                     [(str(step.get("id") or "deterministic_sap_plan"), plan)]
                 )
+                if relationship_policy_value == ADVISORY_RELATIONSHIP_POLICY:
+                    relationship_failures, advisories = self.relationships.partition_findings(
+                        relationship_findings
+                    )
+                    if advisories:
+                        if relationship_advisories is not None:
+                            relationship_advisories.extend(advisories)
+                        self.store.append_event(
+                            run_id,
+                            "relationship_advisories_recorded",
+                            {
+                                "step_id": str(step.get("id") or ""),
+                                "count": len(advisories),
+                                "codes": sorted({str(item.get("code") or "") for item in advisories}),
+                            },
+                        )
+                else:
+                    relationship_failures = relationship_findings
                 if relationship_failures:
                     raise RunExecutionError(
-                        "The deterministic Agent plan uses an unapproved cross-entity business relationship.",
-                        code="agent_relationship_rejected",
+                        (
+                            "The deterministic Agent plan contains an invalid cross-step relationship."
+                            if relationship_policy_value == ADVISORY_RELATIONSHIP_POLICY
+                            else "The deterministic Agent plan uses an unapproved cross-entity business relationship."
+                        ),
+                        code=(
+                            "agent_relationship_invalid"
+                            if relationship_policy_value == ADVISORY_RELATIONSHIP_POLICY
+                            else "agent_relationship_rejected"
+                        ),
                         detail={"failures": relationship_failures},
                     )
                 validation = await self.sap_read.validate_plan(plan, query)
@@ -3247,7 +3291,7 @@ class RunCoordinator:
             **(guidance if isinstance(guidance, dict) else {}),
             "data": {
                 **(guidance_data if isinstance(guidance_data, dict) else {}),
-                "business_relationship_contract": self.relationships.snapshot(),
+                "business_relationship_knowledge": self.relationships.knowledge_snapshot(),
                 "max_tool_calls": self.settings.max_tool_calls,
             },
         }
@@ -3570,7 +3614,7 @@ class RunCoordinator:
                 )
             }
         )
-        relationship_contract = self.relationships.snapshot_for(original_refs)
+        relationship_contract = self.relationships.knowledge_snapshot_for(original_refs)
         self.store.append_event(
             run_id,
             "schema_received",
@@ -3604,7 +3648,11 @@ class RunCoordinator:
                 },
             )
 
-        failures = self._validate_harness_relationships(decision.plan)
+        relationship_findings = self._validate_harness_relationships(decision.plan)
+        relationship_failures, relationship_advisories = self.relationships.partition_findings(
+            relationship_findings
+        )
+        failures = relationship_failures
         failures.extend(await self._validate_harness_sap_plans(decision.plan, query))
         repair_used = False
         supports = getattr(self.planner, "supports", None)
@@ -3643,25 +3691,34 @@ class RunCoordinator:
                 "plan_repaired",
                 {"attempt": 1, "previous_validation_failures": len(failures)},
             )
-            failures = self._validate_harness_relationships(decision.plan)
+            relationship_findings = self._validate_harness_relationships(decision.plan)
+            relationship_failures, relationship_advisories = self.relationships.partition_findings(
+                relationship_findings
+            )
+            failures = relationship_failures
             failures.extend(await self._validate_harness_sap_plans(decision.plan, query))
         if failures:
-            relationship_rejected = any(
-                failure.get("layer") == "business_relationship" for failure in failures
-            )
             raise RunExecutionError(
-                (
-                    "The schema-grounded Agent Runtime plan uses an unapproved cross-entity "
-                    "business relationship."
-                    if relationship_rejected
-                    else "The selected SAP Provider rejected the schema-grounded Agent Runtime plan."
-                ),
-                code=(
-                    "free_query_relationship_rejected"
-                    if relationship_rejected
-                    else "free_query_plan_rejected"
-                ),
+                "The schema-grounded Agent Runtime plan is technically invalid or was rejected by the selected SAP Provider.",
+                code="free_query_plan_rejected",
                 detail={"attempts": 1 if grounding_supported else 0, "failures": failures},
+            )
+        if relationship_advisories:
+            decision = decision.model_copy(
+                update={
+                    "plan": {
+                        **decision.plan,
+                        "advisories": relationship_advisories,
+                    }
+                }
+            )
+            self.store.append_event(
+                run_id,
+                "relationship_advisories_recorded",
+                {
+                    "count": len(relationship_advisories),
+                    "codes": sorted({str(item.get("code") or "") for item in relationship_advisories}),
+                },
             )
         self.store.append_event(
             run_id,
@@ -3669,6 +3726,7 @@ class RunCoordinator:
             {
                 "entity_count": len(original_refs),
                 "repair_used": repair_used,
+                "advisory_count": len(relationship_advisories),
             },
         )
         return decision
@@ -6486,6 +6544,7 @@ def _is_recoverable_evidence_error(exc: Exception) -> bool:
     if code in {
         "sap_read_plan_rejected",
         "agent_relationship_rejected",
+        "agent_relationship_invalid",
         "skill_contract_incompatible",
         "skill_input_connection_forbidden",
         "skill_package_digest_mismatch",
