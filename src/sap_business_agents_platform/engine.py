@@ -6285,6 +6285,54 @@ def _business_markdown_report(
                     f"{_markdown_cell(metric.get('value'))} |"
                 )
             lines.append("")
+        record_columns = [
+            column
+            for column in business_report.get("record_columns") or []
+            if isinstance(column, dict) and str(column.get("key") or "").strip()
+        ]
+        records = (
+            []
+            if business_report.get("display_records") is False
+            else [
+                record
+                for record in business_report.get("records") or []
+                if isinstance(record, dict)
+            ]
+        )
+        if record_columns and records:
+            lines.extend(
+                [
+                    "## 业务记录",
+                    "",
+                    "| "
+                    + " | ".join(
+                        _markdown_cell(column.get("label"))
+                        for column in record_columns
+                    )
+                    + " |",
+                    "| " + " | ".join("---" for _ in record_columns) + " |",
+                ]
+            )
+            for record in records[:200]:
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        _markdown_business_value(
+                            record.get(str(column.get("key"))),
+                            str(column.get("format") or "text"),
+                        )
+                        for column in record_columns
+                    )
+                    + " |"
+                )
+            if len(records) > 200:
+                lines.extend(
+                    [
+                        "",
+                        f"> 页面报告展示前 200 条；完整 {len(records)} 条请下载 `result.json`。",
+                    ]
+                )
+            lines.append("")
         action_tables = [
             table
             for table in business_report.get("action_tables") or []

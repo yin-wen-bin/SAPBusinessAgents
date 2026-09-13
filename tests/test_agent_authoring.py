@@ -63,6 +63,33 @@ def feedback_payload(draft, text="请说明并调整", request="req-1"):
     return AgentFeedbackRequest(baseTurn=max((item["turn"] for item in draft["conversation"]), default=0), baseRevision=draft["revision"], feedback=text, requestId=request)
 
 
+def test_trial_reports_the_specific_missing_business_output_contract(tmp_path):
+    service, _, _ = _service(tmp_path)
+    draft = create(service)
+    service.validate = lambda *_args, **_kwargs: {
+        "status": "invalid",
+        "metadata": {
+            "static_checks": {
+                "errors": [
+                    {
+                        "code": "agent_business_output_contract_missing",
+                        "message": "Business output missing.",
+                    }
+                ]
+            }
+        },
+    }
+    with pytest.raises(AgentLifecycleError) as failure:
+        asyncio.run(
+            service.live_validate(
+                draft["draft_id"],
+                expected_revision=draft["revision"],
+                input_value={},
+            )
+        )
+    assert failure.value.code == "agent_business_output_contract_missing"
+
+
 def test_runtime_optional_input_dependency_is_rejected_before_revision(tmp_path):
     service, _, _ = _service(tmp_path)
     draft = create(service)
@@ -95,6 +122,48 @@ def test_new_codex_turn_pins_tool_policy_without_changing_past_turns(tmp_path):
     assert service.runtime.calls[-1]['tool_policy'] == policy
     assert result['conversation'][-1]['decision']['authoring_policy'] == policy
     assert result['conversation'][:-1] == before
+
+
+def test_feedback_operation_persists_public_progress_phases(tmp_path):
+    service, store, _ = _service(tmp_path)
+    draft = create(service)
+
+    class BlockingRuntime(Runtime):
+        def __init__(self):
+            super().__init__("reply")
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def review_agent_feedback(self, **kwargs):
+            self.calls.append(kwargs)
+            self.started.set()
+            await self.release.wait()
+            return {"action": "reply", "summary": {"zh": "已完成", "en": "Done"}, "thread_id": "progress-thread"}
+
+    async def scenario():
+        runtime = BlockingRuntime()
+        service.runtime = runtime
+        submitted = await service.submit_feedback(draft["draft_id"], feedback_payload(draft))
+        queued = store.get_agent_operation_by_id(draft["draft_id"], submitted["task_id"])
+        assert queued["detail"] == {
+            "turn": submitted["turn"], "phase": "queued", "completed_units": 0,
+            "total_units": 4, "timeout_seconds": 3600.0,
+        }
+        await runtime.started.wait()
+        running = store.get_agent_operation_by_id(draft["draft_id"], submitted["task_id"])
+        assert running["detail"]["phase"] == "generating_revision"
+        assert running["detail"]["completed_units"] == 1
+        assert running["detail"]["started_at"]
+        assert running["detail"]["deadline_at"]
+        assert "feedback" not in running["detail"]
+        runtime.release.set()
+        await service._feedback_tasks[submitted["task_id"]]
+        completed = store.get_agent_operation_by_id(draft["draft_id"], submitted["task_id"])
+        assert completed["status"] == "completed"
+        assert completed["detail"]["phase"] == "completed"
+        assert completed["detail"]["completed_units"] == completed["detail"]["total_units"] == 4
+
+    asyncio.run(scenario())
 
 
 def test_diff_preserves_values_text_binary_and_stable_step_identity():
@@ -238,7 +307,12 @@ def test_trial_success_cannot_fabricate_formal_acceptance_and_secrets_not_saved(
     trial = asyncio.run(service.live_validate(draft["draft_id"], expected_revision=1, input_value={}, sensitive_inputs={"receipt_reference": "SECRET"}, request_id="trial-1"))
     assert calls[0][2]["sensitive_inputs"]["receipt_reference"] == "SECRET"
     assert "SECRET" not in json.dumps(store.get_agent_authoring_draft(draft["draft_id"]))
-    run = SimpleNamespace(status=RunStatus.completed, completed_at=utc, error=None, result=SimpleNamespace(tool_calls=[], workflow_output={"business_status": "inconclusive", "source_complete": True, "evidence_complete": True}, errors=[], completeness=SimpleNamespace(source_complete=True, business_complete=True)))
+    run = SimpleNamespace(status=RunStatus.completed, completed_at=utc, error=None, result=SimpleNamespace(
+        tool_calls=[], workflow_output={"business_status": "inconclusive", "source_complete": True, "evidence_complete": True}, errors=[],
+        completeness=SimpleNamespace(source_complete=True, business_complete=True),
+        rule_results=[{"business_report": {"headline": {"zh": "业务检查完成", "en": "Business check completed"}, "metrics": [{"id": "record_count", "value": 0}]}}],
+        presentation={"blocks": [{"type": "metrics", "metrics": [{"id": "record_count", "value": "0"}]}]},
+    ))
     monkeypatch.setattr(store, "get_run", lambda _: run)
     report = service.validation_report(draft["draft_id"])
     assert report["trial"]["verdict"] == "PASS"
@@ -254,6 +328,32 @@ def test_trial_success_cannot_fabricate_formal_acceptance_and_secrets_not_saved(
     with pytest.raises(AgentLifecycleError) as conflict:
         asyncio.run(service.live_validate(draft["draft_id"], expected_revision=1, input_value={}, sensitive_inputs={"receipt_reference": "DIFFERENT"}, request_id="trial-1"))
     assert conflict.value.code == "agent_request_conflict"
+
+
+def test_completed_trial_without_public_business_result_fails(tmp_path, monkeypatch):
+    service, store, _ = _service(tmp_path)
+    draft = create(service)
+
+    async def submit(*_args, **_kwargs):
+        return "run_without_business_output"
+
+    service.coordinator = SimpleNamespace(submit_agent_snapshot=submit, secret_protector=None)
+    asyncio.run(service.live_validate(draft["draft_id"], expected_revision=1, input_value={}))
+    run = SimpleNamespace(
+        status=RunStatus.completed, completed_at=utc, error=None,
+        result=SimpleNamespace(
+            tool_calls=[], workflow_output={"business_status": "inconclusive", "source_complete": True, "evidence_complete": True},
+            errors=[], completeness=SimpleNamespace(source_complete=True, business_complete=True),
+            rule_results=[{"rule_id": "evidence_completeness", "source_complete": True}],
+            presentation={"blocks": [{"type": "text", "text": {"zh": "查询已经结束。", "en": "Query completed."}}]},
+        ),
+    )
+    monkeypatch.setattr(store, "get_run", lambda _: run)
+    report = service.validation_report(draft["draft_id"])["trial"]
+    assert report["verdict"] == "FAIL"
+    assert report["business_output_available"] is False
+    assert report["business_record_count"] == 0
+    assert report["business_output_issues"][0]["code"] == "agent_trial_business_output_missing"
 
 
 utc = "2026-09-09T00:00:00Z"

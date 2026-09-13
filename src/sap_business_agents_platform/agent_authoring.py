@@ -211,11 +211,21 @@ class AgentAuthoringMixin:
                     raise
         if safe_runtime:
             validate_execution(manifest, f"agent-draft:{draft_id}")
-            from .authoring_checks import candidate_input_issues
+            from .authoring_checks import (
+                candidate_business_output_issues,
+                candidate_input_issues,
+            )
             input_issues = candidate_input_issues(manifest)
             if input_issues:
                 raise ManifestError("Candidate input references require conditional execution.",
                                     issue_code=input_issues[0]["code"], path=input_issues[0]["path"])
+            business_output_issues = candidate_business_output_issues(manifest)
+            if business_output_issues:
+                raise ManifestError(
+                    "A SAP-reading Agent must produce a deterministic business result.",
+                    issue_code=business_output_issues[0]["code"],
+                    path=business_output_issues[0]["path"],
+                )
             if package.get("rules"):
                 validate_managed_rule(package["rules"], expected_digest=(manifest.get("managedRule") or {}).get("sha256"))
             elif manifest.get("managedRule"):
@@ -357,7 +367,13 @@ class AgentAuthoringMixin:
         try:
             done, _ = await asyncio.wait({task}, timeout=max(0, timeout))
             if not done:
-                self.store.update_agent_operation(draft_id, operation_id, status="cancelling")
+                current = self.store.get_agent_operation_by_id(draft_id, operation_id)
+                self.store.update_agent_operation(
+                    draft_id,
+                    operation_id,
+                    status="cancelling",
+                    detail={**(current.get("detail") or {}), "phase": "cancelling"},
+                )
                 await self._stop_feedback_runtime(task, operation_id)
                 raise _FeedbackDeadlineExceeded()
             return task.result()
@@ -409,7 +425,17 @@ class AgentAuthoringMixin:
             decision["binding_error"] = binding_error
         turn = {"draft_id": draft_id, "turn": latest_turn + 1, "parent_turn": latest_turn or None, "kind": "feedback", "status": "queued", "user_message": str(payload.feedback), "decision": decision, "base_revision": revision, "result_revision": None, "diff": [], "created_at": utc_now()}
         self.store.save_agent_conversation_turn(turn)
-        self.store.update_agent_operation(draft_id, operation["operation_id"], detail={"turn": turn["turn"]})
+        self.store.update_agent_operation(
+            draft_id,
+            operation["operation_id"],
+            detail={
+                "turn": turn["turn"],
+                "phase": "queued",
+                "completed_units": 0,
+                "total_units": 4,
+                "timeout_seconds": float(self.feedback_timeout_seconds),
+            },
+        )
         task = asyncio.create_task(self._run_feedback(draft_id, turn, payload, operation["operation_id"]))
         self._feedback_tasks[operation["operation_id"]] = task
         task.add_done_callback(lambda _: self._feedback_tasks.pop(operation["operation_id"], None))
@@ -423,6 +449,24 @@ class AgentAuthoringMixin:
         budget = float(execution["timeout_seconds"])
         started_at = datetime.now(timezone.utc)
         execution.update(started_at=started_at.isoformat(), deadline_at=(started_at + timedelta(seconds=budget)).isoformat())
+        def progress(phase: str, completed_units: int) -> None:
+            """Persist public authoring progress without exposing prompts or tool output."""
+            try:
+                current = self.store.get_agent_operation_by_id(draft_id, operation_id)
+            except KeyError:
+                return
+            detail = {
+                **(current.get("detail") or {}),
+                "turn": turn["turn"],
+                "phase": phase,
+                "completed_units": completed_units,
+                "total_units": 4,
+                "timeout_seconds": budget,
+                "started_at": execution["started_at"],
+                "deadline_at": execution["deadline_at"],
+            }
+            self.store.update_agent_operation(draft_id, operation_id, detail=detail)
+
         def check_deadline() -> None:
             if monotonic() - started >= budget:
                 raise _FeedbackDeadlineExceeded()
@@ -431,6 +475,7 @@ class AgentAuthoringMixin:
             self._assert_operation(draft_id, operation_id, int(turn["base_revision"]))
             turn["status"] = "running"
             self.store.save_agent_conversation_turn(turn)
+            progress("preparing_context", 0)
             draft = self.store.get_agent_authoring_draft(draft_id)
             current = self.store.get_agent_authoring_revision(draft_id, int(turn["base_revision"]))["package"]
             runtime_package = copy.deepcopy(current)
@@ -453,9 +498,11 @@ class AgentAuthoringMixin:
                 if callable(supports) and not supports("review_agent_feedback"):
                     raise self._authoring_error("The Runtime does not support Agent authoring.", "runtime_agent_feedback_unavailable")
                 tool_options = {"tool_policy": copy.deepcopy(turn["decision"]["authoring_policy"])} if turn["decision"].get("authoring_policy") else {}
+                progress("generating_revision", 1)
                 decision = await self._await_feedback_runtime(self.runtime.review_agent_feedback(feedback=str(payload.feedback), locale=str(payload.locale), package=runtime_package, history=history, thread_id=None if turn["decision"].get("retry_of_turn") else draft.get("thread_id"), operation_id=operation_id, **tool_options), draft_id=draft_id, operation_id=operation_id, timeout=budget - (monotonic() - started))
             check_deadline()
             self._assert_operation(draft_id, operation_id, int(turn["base_revision"]))
+            progress("validating_response", 2)
             if isinstance(decision.get("harness"), dict):
                 turn["decision"]["harness"] = copy.deepcopy(decision["harness"])
             action = decision.get("action")
@@ -478,6 +525,7 @@ class AgentAuthoringMixin:
                     if isinstance(package["manifest"].get("managedRule"), dict):
                         package["manifest"]["managedRule"]["sha256"] = source_digest(package["rules"])
                 check_deadline()
+                progress("applying_revision", 3)
                 result = self._apply_package(draft_id, int(turn["base_revision"]), package, kind="feedback", operation_id=operation_id, record_turn=False, safe_runtime=True, deadline_check=check_deadline, runtime_thread_id=decision.get("thread_id"))
             changed = bool(result and int(result["revision"]) != int(turn["base_revision"]))
             if changed:
@@ -489,6 +537,7 @@ class AgentAuthoringMixin:
                 refreshed["thread_id"] = decision.get("thread_id") or refreshed.get("thread_id")
                 check_deadline()
                 self.store.save_agent_authoring_draft(refreshed, expected_revision=int(refreshed["revision"]), operation_id=operation_id, deadline_check=check_deadline)
+            progress("finalizing", 3)
             turn.update(status="completed", result_revision=int(refreshed["revision"]), decision={**turn["decision"], "action": action, "summary": decision["summary"], "changed": bool(result and int(result["revision"]) != int(turn["base_revision"]))}, diff=result["diff"] if result and int(result["revision"]) != int(turn["base_revision"]) else [])
             status = "completed"
         except asyncio.CancelledError:
@@ -510,6 +559,7 @@ class AgentAuthoringMixin:
             turn["completed_at"] = utc_now()
             turn["decision"]["execution"].update(completed_at=turn["completed_at"], elapsed_seconds=max(0, monotonic() - started))
             self.store.save_agent_conversation_turn(turn)
+            progress("cancelled" if status == "cancelled" else "completed" if status == "completed" else "failed", 4)
             if code != "agent_feedback_cleanup_failed":
                 self._finish_operation(draft_id, operation_id, status)
 
@@ -552,7 +602,13 @@ class AgentAuthoringMixin:
         already_cancelling = False
         if operation_id:
             already_cancelling = self.store.get_agent_operation_by_id(draft_id, operation_id)["status"] == "cancelling"
-            self.store.update_agent_operation(draft_id, operation_id, status="cancelling")
+            current = self.store.get_agent_operation_by_id(draft_id, operation_id)
+            self.store.update_agent_operation(
+                draft_id,
+                operation_id,
+                status="cancelling",
+                detail={**(current.get("detail") or {}), "phase": "cancelling"},
+            )
         task = self._feedback_tasks.get(operation_id)
         if task and not task.done():
             if not already_cancelling:

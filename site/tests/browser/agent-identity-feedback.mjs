@@ -116,7 +116,9 @@ async function installMocks(context, state) {
     if (method === "POST" && path === `${base}/feedback`) {
       const body = request.postDataJSON(); state.feedbackRequests.push(body);
       if (state.dropFirstFeedback) { state.dropFirstFeedback = false; return route.abort("failed"); }
-      state.draft.active_operation = { operation_id: "synthetic-operation", kind: "feedback", status: "running", turn: 5, request_id: body.requestId };
+      state.draft.active_operation = { operation_id: "synthetic-operation", kind: "feedback", status: "running", turn: 5, request_id: body.requestId,
+        detail: { turn: 5, phase: "generating_revision", completed_units: 1, total_units: 4, timeout_seconds: 3600,
+          started_at: iso(state.now - 125000), deadline_at: iso(state.now + 3475000) } };
       state.draft.conversation.push({ turn: 5, kind: "feedback", status: "running", user_message: body.feedback,
         decision: { retry_of_turn: body.retryOfTurn, agent_id: state.draft.agent_id, runtime_snapshot: { model: "synthetic-model", reasoning_effort: "high" },
           execution: { started_at: iso(state.now - 125000), deadline_at: iso(state.now + 3475000), timeout_seconds: 3600, elapsed_seconds: 125 } } });
@@ -222,9 +224,19 @@ try {
       await shot("retry-prefilled", composer);
       state.now = await page.evaluate(() => Date.now());
       await button("确认发送重试", "Confirm retry").click();
+      const feedbackDialog = page.locator("dialog.feedback-progress-dialog[open]");
+      await feedbackDialog.waitFor();
+      assert.match(await feedbackDialog.innerText(), new RegExp(tr("正在处理修改意见", "Processing revision request")));
+      assert.match(await feedbackDialog.innerText(), new RegExp(tr("进度连接异常", "Progress connection was interrupted")));
+      await feedbackDialog.getByRole("button", { name: tr("后台继续", "Continue in background"), exact: true }).click();
       await button("重传原请求", "Resend original request").waitFor();
       assert.equal(await composer.inputValue(), requestText);
       await button("重传原请求", "Resend original request").click();
+      await feedbackDialog.waitFor();
+      await feedbackDialog.getByText(tr("调查并生成修改", "Investigating and preparing changes"), { exact: true }).waitFor();
+      assert.match(await feedbackDialog.innerText(), /synthetic-model/);
+      assert.match(await feedbackDialog.innerText(), /high/);
+      await feedbackDialog.getByRole("button", { name: tr("后台继续", "Continue in background"), exact: true }).click();
       await eventually(() => composer.isDisabled(), true, "Running feedback locks the composer");
       assert.equal(state.feedbackRequests.length, 2);
       assert.deepEqual(state.feedbackRequests[0], state.feedbackRequests[1], "A lost response retransmits the same complete payload");
@@ -290,7 +302,7 @@ try {
       await noOverflow(); await shot("reasoning", modelRow);
       assert.deepEqual(errors, []);
       assert.deepEqual(violations, []);
-      results.push({ locale, width, height, status: "PASS", checks: ["unconfirmed gates with static checks allowed", "collision", "same-ID confirmation", "rename invalidation", "dirty/active locks", "retry focus/confirmation", "network idempotency", "running/refresh/historical timing", "cleanup lock", "upgrade immutable", "model effort check/save/reload", "responsive layout"] });
+      results.push({ locale, width, height, status: "PASS", checks: ["unconfirmed gates with static checks allowed", "collision", "same-ID confirmation", "rename invalidation", "dirty/active locks", "retry focus/confirmation", "feedback progress dialog", "network idempotency", "running/refresh/historical timing", "cleanup lock", "upgrade immutable", "model effort check/save/reload", "responsive layout"] });
       console.log(`PASS isolated identity/feedback/settings ${locale} ${width}x${height}`);
     } catch (error) {
       await shot("failure").catch(() => {});

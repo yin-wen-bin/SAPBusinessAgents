@@ -555,10 +555,21 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             self._assert_manageable(manifest)
             validate_execution(manifest, f"agent-draft:{draft_id}")
             checks.append({"code": "agent_schema_valid", "status": "pass"})
-            from .authoring_checks import candidate_input_issues
+            from .authoring_checks import (
+                candidate_business_output_issues,
+                candidate_input_issues,
+            )
             input_issues = candidate_input_issues(manifest)
             errors.extend(input_issues)
             checks.append({"code": "agent_input_contract", "status": "fail" if input_issues else "pass"})
+            business_output_issues = candidate_business_output_issues(manifest)
+            errors.extend(business_output_issues)
+            checks.append(
+                {
+                    "code": "agent_business_output_contract",
+                    "status": "fail" if business_output_issues else "pass",
+                }
+            )
             self._require_skill_dependencies(manifest)
             checks.append({"code": "agent_skill_dependencies_valid", "status": "pass"})
         except (ManifestError, AgentLifecycleError) as exc:
@@ -636,12 +647,32 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         try:
             validated = self.validate(draft_id, operation_id=operation_id)
             if validated["status"] == "invalid":
+                static_errors = (
+                    (validated.get("metadata") or {})
+                    .get("static_checks", {})
+                    .get("errors", [])
+                )
+                business_issue = next(
+                    (
+                        item
+                        for item in static_errors
+                        if isinstance(item, dict)
+                        and item.get("code")
+                        == "agent_business_output_contract_missing"
+                    ),
+                    None,
+                )
+                if business_issue:
+                    raise AgentLifecycleError(
+                        str(business_issue.get("message") or "The Agent business-output contract is missing."),
+                        code="agent_business_output_contract_missing",
+                    )
                 raise AgentLifecycleError("Static Agent validation failed.", code="agent_static_validation_failed")
             draft = self.store.get_agent_authoring_draft(draft_id)
             package = self.store.get_agent_authoring_revision(draft_id, revision)["package"]
             run_id = await self.coordinator.submit_agent_snapshot(package["manifest"], copy.deepcopy(input_value), rules_source=package.get("rules"), draft_id=draft_id, revision=revision, sensitive_inputs=sensitive_inputs or {})
             self._assert_operation(draft_id, operation_id, revision)
-            report = {"type": "trial", "run_id": run_id, "revision": revision, "operation_id": operation_id, "execution_digest": _execution_digest(package["manifest"], package.get("rules")), "status": "running", "verdict": "pending", "automatic_checks": (draft.get("metadata", {}).get("static_checks") or {}).get("checks") or [], "sample_source": "user_confirmed", "started_at": utc_now()}
+            report = {"type": "trial", "run_id": run_id, "revision": revision, "operation_id": operation_id, "execution_digest": _execution_digest(package["manifest"], package.get("rules")), "status": "running", "verdict": "pending", "automatic_checks": (draft.get("metadata", {}).get("static_checks") or {}).get("checks") or [], "sample_source": "user_confirmed", "timeout_seconds": self.settings.deterministic_run_seconds, "business_output_available": None, "business_record_count": None, "business_output_issues": [], "started_at": utc_now()}
             self.store.save_agent_validation_attempt(draft_id=draft_id, run_id=run_id, revision=revision, report=report, report_digest=None)
             draft["metadata"] = {**(draft.get("metadata") or {}), "trial": report}
             draft.update(status="validating", validation_run_id=run_id, updated_at=utc_now())
@@ -694,14 +725,38 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             and result.completeness.source_complete
             and result.completeness.business_complete
         )
+        from .authoring_checks import trial_business_output_summary
+
+        business_output = trial_business_output_summary(result) if result else {
+            "business_output_available": False,
+            "business_record_count": 0,
+            "business_output_issues": [{
+                "code": "agent_trial_business_output_missing",
+                "message": "The trial did not produce a public business result.",
+            }],
+        }
         # A completed execution with incomplete SAP evidence is an
         # inconclusive trial, not a failed Agent implementation.  Keep safety
         # or output-contract violations as FAIL so they cannot be mistaken for
         # a merely data-bounded result.
         if run.status == RunStatus.completed:
-            verdict = "FAIL" if not tool_read_only or not schema_complete else "PASS" if complete else "INCONCLUSIVE"
+            verdict = (
+                "FAIL"
+                if not tool_read_only
+                or not schema_complete
+                or not business_output["business_output_available"]
+                else "PASS"
+                if complete
+                else "INCONCLUSIVE"
+            )
         elif run.status == RunStatus.inconclusive:
-            verdict = "INCONCLUSIVE"
+            verdict = (
+                "FAIL"
+                if not tool_read_only
+                or not schema_complete
+                or not business_output["business_output_available"]
+                else "INCONCLUSIVE"
+            )
         else:
             verdict = "FAIL"
         report = {
@@ -712,6 +767,10 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             "completed_at": run.completed_at or utc_now(),
             "read_only_audit": tool_read_only,
             "output_schema_valid": schema_complete,
+            "timeout_seconds": attempt["report"].get(
+                "timeout_seconds", self.settings.deterministic_run_seconds
+            ),
+            **business_output,
             "source_complete": bool(result and result.completeness.source_complete),
             "evidence_complete": bool(result and isinstance(result.workflow_output, dict) and result.workflow_output.get("evidence_complete", result.completeness.business_complete)),
             "business_complete": bool(result and result.completeness.business_complete),

@@ -54,6 +54,63 @@ test("sample modal exposes bilingual progress, background and cancellation separ
   }
 });
 
+test("trial modal exposes immediate bilingual progress and a full-result handoff", async () => {
+  const Modal = await component("AgentTrialProgress");
+  for (const locale of ["zh", "en"]) {
+    const props = { open: true, locale, onClose() {}, onCancel() {}, onReview() {} };
+    const active = renderToStaticMarkup(createElement(Modal, { ...props,
+      trial: { status: "starting", timeout_seconds: 600, started_at: "2026-09-13T00:00:00Z" }, run: null,
+    }));
+    assert.match(active, /<dialog/);
+    assert.ok(active.includes(locale === "zh" ? "正在执行只读试运行" : "Running read-only trial"));
+    assert.ok(active.includes(locale === "zh" ? "后台继续" : "Continue in background"));
+    assert.match(active, /10:00/);
+    const completed = renderToStaticMarkup(createElement(Modal, { ...props,
+      trial: { status: "completed", verdict: "PASS", timeout_seconds: 600, business_output_available: true, business_record_count: 2 },
+      run: { run_id: "trial-1", status: "completed", elapsed_seconds: 28 },
+    }));
+    assert.ok(completed.includes(locale === "zh" ? "查看完整结果" : "View full result"));
+    assert.ok(completed.includes(locale === "zh" ? "业务记录" : "Business records"));
+    const timedOut = renderToStaticMarkup(createElement(Modal, { ...props,
+      trial: { status: "failed", verdict: "FAIL", timeout_seconds: 600 },
+      run: { run_id: "trial-timeout", status: "failed", error: { code: "run_timeout" } },
+    }));
+    assert.ok(timedOut.includes(locale === "zh" ? "试运行超时" : "Trial timed out"));
+  }
+});
+
+test("feedback modal exposes immediate status, persisted phases and terminal actions", async () => {
+  const Modal = await component("AgentFeedbackProgress");
+  for (const locale of ["zh", "en"]) {
+    const props = { open: true, locale, onClose() {}, onCancel() {}, onRetry() {}, onReview() {} };
+    const active = renderToStaticMarkup(createElement(Modal, { ...props,
+      turn: { turn: 3, kind: "feedback", status: "running", decision: { execution: { timeout_seconds: 3600, elapsed_seconds: 65 }, runtime_snapshot: { model: "gpt-5.6-sol", reasoning_effort: "max" } } },
+      operation: { status: "running", detail: { turn: 3, phase: "generating_revision", completed_units: 1, total_units: 4 } },
+    }));
+    assert.match(active, /<dialog/);
+    assert.match(active, /aria-labelledby="feedback-progress-title"/);
+    assert.ok(active.includes(locale === "zh" ? "正在处理修改意见" : "Processing revision request"));
+    assert.ok(active.includes(locale === "zh" ? "调查并生成修改" : "Investigating and preparing changes"));
+    assert.ok(active.includes(locale === "zh" ? "后台继续" : "Continue in background"));
+    assert.ok(active.includes(locale === "zh" ? "取消本轮" : "Cancel turn"));
+    assert.match(active, /gpt-5\.6-sol/);
+    assert.match(active, /max/);
+    assert.ok(!active.includes("PRIVATE-RUNTIME-LOG"));
+
+    const completed = renderToStaticMarkup(createElement(Modal, { ...props,
+      turn: { turn: 3, kind: "feedback", status: "completed", base_revision: 8, result_revision: 9, decision: { changed: true, execution: { timeout_seconds: 3600, elapsed_seconds: 80 } } },
+      operation: null,
+    }));
+    assert.ok(completed.includes(locale === "zh" ? "查看修改前后对比" : "Review before and after"));
+
+    const failed = renderToStaticMarkup(createElement(Modal, { ...props,
+      turn: { turn: 4, kind: "feedback", status: "failed", user_message: "retry", decision: { error_code: "runtime_agent_feedback_connection_failed", execution: { timeout_seconds: 3600, elapsed_seconds: 12 } } },
+      operation: null,
+    }));
+    assert.ok(failed.includes(locale === "zh" ? "返回并重试" : "Return and retry"));
+  }
+});
+
 test("full access feedback separates execution permission from live acceptance and application", async () => {
   const Conversation = await component("AgentDraftConversation");
   for (const locale of ["zh", "en"]) {
@@ -94,6 +151,19 @@ test("actual trial result shows the actionable failure next to the result", asyn
   }
 });
 
+test("historical completed trial without a business report is not presented as business success", async () => {
+  const Result = await component("AgentDraftResult");
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Result, {
+      locale, runPath: "/run/", apiBase: "http://127.0.0.1:8765",
+      trial: { status: "completed", verdict: "PASS" },
+      run: { run_id: "legacy-run", status: "completed", result: { rule_results: [{ rule_id: "evidence_completeness" }], presentation: { blocks: [] } } },
+    }));
+    assert.ok(html.includes(locale === "zh" ? "查询已执行，但该草稿没有生成业务结果" : "The query ran, but this draft did not generate a business result"));
+    assert.match(html, /role="alert"/);
+  }
+});
+
 test("tool policy is conditional on preflight and is not SAP acceptance", async () => {
   const Conversation = await component("AgentDraftConversation");
   for (const locale of ["zh", "en"]) {
@@ -114,7 +184,11 @@ import { publicValues, validateDraftInput, changedDefinition, clearDiscoveredInp
 // Render the actual TSX without building the catalog or starting a browser/API.
 const require = createRequire(import.meta.url);
 async function component(name, dependencies = {}) {
-  if (name === "AgentDraftWorkspace") dependencies["./AgentSampleProgress"] = await component("AgentSampleProgress");
+  if (name === "AgentDraftWorkspace") {
+    dependencies["./AgentSampleProgress"] = await component("AgentSampleProgress");
+    dependencies["./AgentTrialProgress"] = await component("AgentTrialProgress");
+    dependencies["./AgentFeedbackProgress"] = await component("AgentFeedbackProgress");
+  }
   const source = await readFile(new URL(`../src/components/${name}.tsx`, import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } });
   const exports = {};
@@ -263,6 +337,9 @@ test("workbench uses confirmed live discovery, protected inputs and formal publi
   assert.match(source, /\["before", "after"\]/);
   assert.match(source, /setTrial\(value\.trial \|\| null\)/);
   assert.doesNotMatch(source, /value\.trial\?\.run_id \|\| trialRunId/);
+  assert.match(source, /setFeedbackDialogOpen\(true\)/);
+  assert.match(source, /<AgentFeedbackProgress/);
+  assert.ok(source.indexOf("setFeedbackDialogOpen(true)") < source.indexOf("call(`${base}/feedback`, request)"), "the modal opens before the feedback request returns");
 });
 
 test("technical identity trusts explicit server classification and never infers upgrade from source version", () => {

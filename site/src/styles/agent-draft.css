@@ -48,6 +48,10 @@
 .draft-field-requirement { display: inline-block; margin-inline-start: 8px; font-size: .8rem; font-weight: 500; color: var(--color-text-muted); }
 .draft-feedback-validation { border-inline-start: 3px solid #a93d32; padding-inline-start: 12px; }
 .draft-feedback-validation code { display: block; overflow-wrap: anywhere; font-size: .8rem; margin-block: 4px 12px; }
+.draft-feedback-progress-card { display: grid; gap: 12px; padding: 16px; border: 1px solid #b8c9e3; border-radius: 10px; background: var(--color-bg-muted, #f0f5ff); }
+.draft-feedback-progress-card > button { justify-self: start; }
+.feedback-progress-summary { display: grid; gap: 8px; min-width: 0; }
+.feedback-progress-summary > p, .feedback-progress-summary .draft-feedback-metrics { margin-block: 0; }
 .draft-diff-change { border-block-start: 1px solid var(--color-border); padding-block: 18px; }
 .draft-diff-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .draft-diff-values > div { min-width: 0; border: 1px solid var(--color-border); padding: 14px; border-radius: 8px; }

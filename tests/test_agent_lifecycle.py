@@ -132,7 +132,9 @@ def test_list_synchronizes_validation_terminal_without_sap(tmp_path: Path, monke
     store.save_agent_validation_attempt(draft_id=draft["draft_id"], run_id="validation_current", revision=1, report={"verdict": "pending"}, report_digest=None)
     run = SimpleNamespace(status=status, completed_at="2026-09-06T00:00:00Z", error=None,
                           result=SimpleNamespace(tool_calls=[], workflow_output={"business_status": "inconclusive", "source_complete": True, "evidence_complete": True}, errors=[],
-                              completeness=SimpleNamespace(source_complete=True, business_complete=True)))
+                              completeness=SimpleNamespace(source_complete=True, business_complete=True),
+                              rule_results=[{"business_report": {"headline": {"zh": "业务检查完成", "en": "Business check completed"}, "metrics": [{"id": "record_count", "value": 0}]}}],
+                              presentation={"blocks": [{"type": "metrics", "metrics": [{"id": "record_count", "value": "0"}]}]}))
     monkeypatch.setattr(store, "get_run", lambda _: run)
     listed = service.list_drafts("unpublished")[0]
     assert listed["validation"]["verdict"] == "pending"  # trial never upgrades formal acceptance

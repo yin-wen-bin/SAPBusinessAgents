@@ -118,6 +118,7 @@ const supplied = (value: any) => value !== undefined && value !== null && value 
 export function feedbackValidationIssues(turn: any, locale: Locale): { text: string; path: string }[] {
   const labels: Record<string, [string, string]> = {
     definition_invalid: ["Agent 定义不符合执行契约，请检查定义与静态检查结果。", "The Agent definition does not satisfy its execution contract. Review the definition and static checks."],
+    agent_business_output_contract_missing: ["SAP读取草稿必须包含确定性业务规则及至少一个非技术业务输出；仅汇总证据状态不能形成业务结果。", "A SAP-reading draft needs a deterministic business rule and at least one non-technical business output; an evidence summary alone is not a business result."],
     agent_optional_input_unguarded: ["可选输入被执行步骤无条件引用。请添加条件处理，不能只修改前台字段。", "An optional input is referenced unconditionally. Add conditional execution, not just an optional form field."],
     agent_optional_filter_unguarded: ["可选筛选缺少整条条件的省略规则；空值不能作为查询条件发送。", "An optional filter needs whole-filter omission; do not send an empty query condition."],
     agent_optional_filter_invalid: ["可选筛选的省略规则无效，必须引用该筛选值对应的输入字段。", "The filter omission rule must reference the same input as its filter value."],
