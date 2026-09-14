@@ -38,7 +38,7 @@ test("static catalog contains all agents and the GitHub Pages base path", async 
     assert.match(html, new RegExp(`/SAPBusinessAgents/zh/agents/(?:FI|MM)/${slug}/`));
   }
   assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 5);
-  assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 1);
+  assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 2);
   assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
   assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 9);

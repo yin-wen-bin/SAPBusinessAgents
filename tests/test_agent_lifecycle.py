@@ -11,6 +11,8 @@ import pytest
 from sap_business_agents_platform.agent_lifecycle import (
     AgentLifecycleError,
     AgentLifecycleService,
+    _catalog_validation_from_formal_report,
+    _formal_acceptance_markdown,
 )
 from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.database import RunStore
@@ -214,6 +216,137 @@ def _write_active_agent(service: AgentLifecycleService, root: Path) -> dict:
     directory = root / "agents" / "Common" / "managed-test-agent"
     service._write_package(directory, package)
     return package["manifest"]
+
+
+def test_formal_campaign_projects_to_public_manifest_validation() -> None:
+    report = {
+        "type": "formal_acceptance",
+        "campaign_id": "campaign_test",
+        "tested_at": "2026-09-14T13:41:07Z",
+        "verdict": "PASS",
+        "executable": True,
+        "acceptanceMode": "three_stage",
+        "freeQueryComparison": "MATCH",
+        "fixedAgentComparison": "MATCH",
+        "blockingLimitations": [],
+        "read_only_audit": True,
+        "report_digest": "sha256:report",
+        "cases": [
+            {
+                "case_id": "case-1",
+                "verdict": "PASS",
+                "baseline": {
+                    "normalized_result": {
+                        "source_complete": True,
+                        "evidence_complete": True,
+                        "business_complete": True,
+                    }
+                },
+                "free_query": {"comparison": {"verdict": "MATCH"}},
+                "fixed_agent": {"comparison": {"verdict": "MATCH"}},
+                "source_anchors": {"verdict": "PASS"},
+            }
+        ],
+    }
+
+    validation = _catalog_validation_from_formal_report(report)
+
+    assert validation == {
+        "verdict": "PASS",
+        "testedAt": "2026-09-14T13:41:07Z",
+        "evidenceScope": "complete",
+        "providers": [
+            "codex-sdk-direct-sap",
+            "free-query",
+            "embedded-sap-odata",
+        ],
+        "summary": {
+            "zh": "独立SAP基线、自由查询和固定Agent的业务语义一致。",
+            "en": "The independent SAP baseline, free query, and fixed Agent are semantically consistent.",
+        },
+        "reportPath": "docs/formal-acceptance.md",
+        "executable": True,
+        "acceptanceMode": "three_stage",
+        "freeQueryComparison": "MATCH",
+        "fixedAgentComparison": "MATCH",
+        "blockingLimitations": [],
+        "baselineRuntime": "codex_sdk_direct_sap",
+        "usedSapBusinessAgentsForBaseline": False,
+        "campaignId": "campaign_test",
+        "reportDigest": "sha256:report",
+    }
+    markdown = _formal_acceptance_markdown(
+        report,
+        {
+            "slug": "test-agent",
+            "title": {"zh": "测试Agent", "en": "Test Agent"},
+        },
+    )
+    assert "| case-1 | PASS | PASS | MATCH | MATCH | PASS |" in markdown
+    assert "`validation.json`" in markdown
+
+
+def test_formal_campaign_publication_package_passes_site_contract(tmp_path: Path) -> None:
+    service, _store, _settings = _service(tmp_path)
+    _write_active_agent(service, tmp_path)
+    package = service._capture_package(
+        tmp_path / "agents" / "Common" / "managed-test-agent"
+    )
+    report = {
+        "type": "formal_acceptance",
+        "campaign_id": "campaign_test",
+        "tested_at": "2026-09-14T13:41:07Z",
+        "verdict": "PASS",
+        "executable": True,
+        "acceptanceMode": "three_stage",
+        "freeQueryComparison": "MATCH",
+        "fixedAgentComparison": "MATCH",
+        "blockingLimitations": [],
+        "read_only_audit": True,
+        "cases": [
+            {
+                "case_id": "case-1",
+                "verdict": "PASS",
+                "baseline": {
+                    "normalized_result": {
+                        "source_complete": True,
+                        "evidence_complete": True,
+                        "business_complete": True,
+                    }
+                },
+                "free_query": {"comparison": {"verdict": "MATCH"}},
+                "fixed_agent": {"comparison": {"verdict": "MATCH"}},
+                "source_anchors": {"verdict": "PASS"},
+            }
+        ],
+    }
+    package["manifest"]["validation"] = _catalog_validation_from_formal_report(report)
+    package["files"]["docs/formal-acceptance.md"] = _formal_acceptance_markdown(
+        report, package["manifest"]
+    )
+
+    service._validate_documentation_package(package)
+
+
+def test_deterministic_campaign_uses_catalog_not_tested_for_free_query() -> None:
+    validation = _catalog_validation_from_formal_report(
+        {
+            "tested_at": "2026-09-14T13:41:07Z",
+            "verdict": "PASS",
+            "executable": True,
+            "acceptanceMode": "deterministic_runtime",
+            "freeQueryComparison": "NOT_APPLICABLE",
+            "fixedAgentComparison": "MATCH",
+            "cases": [],
+        }
+    )
+
+    assert validation["freeQueryComparison"] == "NOT_TESTED"
+    assert validation["evidenceScope"] == "bounded"
+    assert validation["providers"] == [
+        "codex-sdk-direct-sap",
+        "embedded-sap-odata",
+    ]
 
 
 def test_activation_rejects_drifted_skill_before_git_mutation(tmp_path: Path) -> None:

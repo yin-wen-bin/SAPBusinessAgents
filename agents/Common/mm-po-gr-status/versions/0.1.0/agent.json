@@ -10,7 +10,7 @@
     "zh": "按计划行交货日期核对采购订单的实际入库数量、未收货数量及入库状态。",
     "en": "Check actual receipts, open quantity, and receipt status for purchase orders due on a schedule-line delivery date."
   },
-  "status": "Draft",
+  "status": "Three-stage live acceptance passed",
   "version": "0.1.0",
   "owner": "Unassigned",
   "tags": [
@@ -932,6 +932,18 @@
     }
   },
   "validation": {
+    "testedAt": "2026-09-14T13:41:07.511697+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-sdk-direct-sap",
+      "free-query",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "独立SAP基线、自由查询和固定Agent的业务语义一致。",
+      "en": "The independent SAP baseline, free query, and fixed Agent are semantically consistent."
+    },
+    "reportPath": "docs/formal-acceptance.md",
     "schema_version": "1.0",
     "type": "formal_acceptance",
     "campaign_id": "campaign_9ed735b05a414c05bc83",

@@ -912,12 +912,22 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                 "reviewedAt": report["validated_at"],
             }
         else:
-            manifest["validation"] = copy.deepcopy(report.get("agent_validation") or report)
+            manifest["validation"] = _catalog_validation_from_formal_report(report)
+            manifest["status"] = (
+                "Three-stage live acceptance passed"
+                if manifest["validation"]["acceptanceMode"] == "three_stage"
+                else "Live acceptance passed"
+            )
+            package.setdefault("files", {})[
+                manifest["validation"]["reportPath"]
+            ] = _formal_acceptance_markdown(report, manifest)
         if bool(payload.activate):
             self._require_skill_dependencies(manifest)
         package = self._publication_package(draft, package)
-        if draft["risk_class"] == "metadata_only":
-            self._validate_documentation_package(package)
+        # Every published package must satisfy the same catalog contract as the
+        # site build.  This also verifies that the projected validation summary
+        # points to a bundled Markdown acceptance report before Git is touched.
+        self._validate_documentation_package(package)
         branch = self._prepare_branch(draft["agent_id"], "publish", target_version)
         agent_dir = self.settings.repository_root / "agents" / str(manifest.get("module") or "Common") / draft["agent_id"]
         existing_dir = self._existing_directory(draft["agent_id"])
@@ -1417,6 +1427,7 @@ def _transient_package_file(path: Path) -> bool:
 _GENERATED_PUBLIC_FILES = {
     "content.zh.md", "content.en.md", "src/rules.py", "src/rule-review-notes.json",
     "tests/test_manifest_contract.py", "docs/data-contract.json",
+    "docs/formal-acceptance.md",
 }
 
 
@@ -1426,6 +1437,136 @@ def _json_digest(value: Any) -> str:
 
 def _not_tested_validation() -> dict[str, Any]:
     return {"verdict": "NOT_TESTED", "executable": False, "acceptanceMode": "three_stage", "fixedAgentComparison": "NOT_TESTED", "freeQueryComparison": "NOT_TESTED"}
+
+
+def _catalog_validation_from_formal_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Project a detailed formal Campaign into the public Agent manifest contract."""
+
+    source = report.get("agent_validation")
+    if isinstance(source, dict) and all(
+        source.get(field) is not None
+        for field in ("testedAt", "evidenceScope", "providers", "summary", "reportPath")
+    ):
+        return copy.deepcopy(source)
+
+    mode = str(report.get("acceptanceMode") or "three_stage")
+    free_comparison = str(report.get("freeQueryComparison") or "NOT_TESTED")
+    if mode == "deterministic_runtime" and free_comparison == "NOT_APPLICABLE":
+        free_comparison = "NOT_TESTED"
+
+    normalized_results = [
+        ((case.get("baseline") or {}).get("normalized_result") or {})
+        for case in report.get("cases") or []
+        if isinstance(case, dict)
+    ]
+    complete = bool(normalized_results) and all(
+        result.get("source_complete") is True
+        and result.get("evidence_complete") is True
+        and result.get("business_complete") is True
+        for result in normalized_results
+    )
+    evidence_scope = "complete" if complete else "bounded"
+
+    providers = ["codex-sdk-direct-sap", "embedded-sap-odata"]
+    if mode == "three_stage":
+        providers.insert(1, "free-query")
+
+    verdict = str(report.get("verdict") or "NOT_TESTED")
+    if verdict == "PASS":
+        summary = {
+            "zh": (
+                "独立SAP基线、自由查询和固定Agent的业务语义一致。"
+                if mode == "three_stage"
+                else "独立SAP基线与固定Agent的业务语义一致。"
+            ),
+            "en": (
+                "The independent SAP baseline, free query, and fixed Agent are semantically consistent."
+                if mode == "three_stage"
+                else "The independent SAP baseline and fixed Agent are semantically consistent."
+            ),
+        }
+    else:
+        summary = {
+            "zh": "正式验收未通过；请查看验收报告中的差异或阻断原因。",
+            "en": "Formal acceptance did not pass; review the report for differences or blockers.",
+        }
+
+    return {
+        "verdict": verdict,
+        "testedAt": str(
+            report.get("tested_at")
+            or report.get("completed_at")
+            or report.get("testedAt")
+            or utc_now()
+        ),
+        "evidenceScope": evidence_scope,
+        "providers": providers,
+        "summary": summary,
+        "reportPath": "docs/formal-acceptance.md",
+        "executable": report.get("executable") is True,
+        "acceptanceMode": mode,
+        "freeQueryComparison": free_comparison,
+        "fixedAgentComparison": str(
+            report.get("fixedAgentComparison") or "NOT_TESTED"
+        ),
+        "blockingLimitations": copy.deepcopy(
+            report.get("blockingLimitations") or []
+        ),
+        "baselineRuntime": "codex_sdk_direct_sap",
+        "usedSapBusinessAgentsForBaseline": False,
+        "campaignId": report.get("campaign_id"),
+        "reportDigest": report.get("report_digest"),
+    }
+
+
+def _formal_acceptance_markdown(
+    report: dict[str, Any], manifest: dict[str, Any]
+) -> str:
+    """Create a public, non-sensitive summary while validation.json retains detail."""
+
+    title = manifest.get("title") or {}
+    lines = [
+        "# 正式验收 / Formal acceptance",
+        "",
+        f"- Agent: `{manifest.get('slug') or report.get('agent_id') or ''}`",
+        f"- 名称 / Name: {title.get('zh') or ''} / {title.get('en') or ''}",
+        f"- 判定 / Verdict: `{report.get('verdict') or 'NOT_TESTED'}`",
+        f"- 模式 / Mode: `{report.get('acceptanceMode') or 'three_stage'}`",
+        f"- 验收时间 / Tested at: `{report.get('tested_at') or report.get('completed_at') or ''}`",
+        f"- Campaign: `{report.get('campaign_id') or ''}`",
+        f"- 只读审计 / Read-only audit: `{'PASS' if report.get('read_only_audit') is True else 'NOT_TESTED'}`",
+        "",
+        "## 案例 / Cases",
+        "",
+        "| Case | Verdict | Baseline | Free query | Fixed Agent | Source anchors |",
+        "|---|---|---|---|---|---|",
+    ]
+    for case in report.get("cases") or []:
+        if not isinstance(case, dict):
+            continue
+        baseline = case.get("baseline") or {}
+        free_query = case.get("free_query") or {}
+        fixed_agent = case.get("fixed_agent") or {}
+        anchors = case.get("source_anchors") or {}
+        lines.append(
+            "| {case_id} | {verdict} | {baseline} | {free} | {fixed} | {anchors} |".format(
+                case_id=case.get("case_id") or "",
+                verdict=case.get("verdict") or "NOT_TESTED",
+                baseline="PASS" if baseline.get("normalized_result") else "NOT_TESTED",
+                free=(free_query.get("comparison") or {}).get("verdict") or "NOT_APPLICABLE",
+                fixed=(fixed_agent.get("comparison") or {}).get("verdict") or "NOT_TESTED",
+                anchors=anchors.get("verdict") or "NOT_TESTED",
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "完整的不可变验收记录保存在同版本目录的 `validation.json`。",
+            "The complete immutable acceptance record is stored in `validation.json` in this version directory.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _breaking_schema_change(before: dict[str, Any], after: dict[str, Any]) -> bool:
