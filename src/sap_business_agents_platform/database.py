@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import uuid
@@ -323,6 +324,60 @@ class RunStore:
                     created_at TEXT NOT NULL,
                     completed_at TEXT,
                     PRIMARY KEY(draft_id, run_id)
+                );
+                CREATE TABLE IF NOT EXISTS agent_acceptance_campaigns (
+                    campaign_id TEXT PRIMARY KEY,
+                    draft_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    acceptance_mode TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    runtime_json TEXT NOT NULL DEFAULT '{}',
+                    digests_json TEXT NOT NULL DEFAULT '{}',
+                    report_json TEXT NOT NULL DEFAULT '{}',
+                    report_digest TEXT,
+                    artifact_dir TEXT,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(draft_id, request_id)
+                );
+                CREATE INDEX IF NOT EXISTS agent_acceptance_campaign_draft
+                    ON agent_acceptance_campaigns(draft_id, created_at);
+                CREATE TABLE IF NOT EXISTS agent_acceptance_cases (
+                    campaign_id TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    case_order INTEGER NOT NULL,
+                    input_json TEXT NOT NULL DEFAULT '{}',
+                    sensitive_fingerprints_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    baseline_run_id TEXT,
+                    free_query_run_id TEXT,
+                    fixed_agent_run_id TEXT,
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(campaign_id, case_id),
+                    FOREIGN KEY(campaign_id) REFERENCES agent_acceptance_campaigns(campaign_id)
+                );
+                CREATE TABLE IF NOT EXISTS agent_acceptance_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    data_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(campaign_id, sequence),
+                    FOREIGN KEY(campaign_id) REFERENCES agent_acceptance_campaigns(campaign_id)
                 );
                 CREATE TABLE IF NOT EXISTS agent_draft_operations (
                     operation_id TEXT PRIMARY KEY,
@@ -2440,6 +2495,46 @@ class RunStore:
                         WHERE run_id = ? AND status NOT IN ('completed','failed','cancelled','inconclusive')""",
                         (now, _dump({"code": "agent_operation_interrupted"}), row["operation_id"]),
                     )
+                elif row["kind"] == "formal_acceptance":
+                    campaign = connection.execute(
+                        "SELECT campaign_id FROM agent_acceptance_campaigns WHERE operation_id = ?",
+                        (row["operation_id"],),
+                    ).fetchone()
+                    if campaign is not None:
+                        interrupted_report = {
+                            "schema_version": "1.0",
+                            "type": "formal_acceptance_attempt",
+                            "campaign_id": campaign["campaign_id"],
+                            "verdict": "NOT_TESTED",
+                            "executable": False,
+                            "error": {"code": "agent_acceptance_interrupted"},
+                            "completed_at": now,
+                        }
+                        report_digest = "sha256:" + hashlib.sha256(
+                            _dump(interrupted_report).encode("utf-8")
+                        ).hexdigest()
+                        connection.execute(
+                            """UPDATE agent_acceptance_campaigns SET status = 'interrupted',
+                            phase = 'completed', report_json = ?, report_digest = ?,
+                            completed_at = ?, updated_at = ?
+                            WHERE campaign_id = ? AND status NOT IN
+                            ('passed','failed','blocked','cancelled','interrupted','superseded')""",
+                            (_dump(interrupted_report), report_digest, now, now, campaign["campaign_id"]),
+                        )
+                        connection.execute(
+                            """UPDATE agent_acceptance_cases SET status = 'interrupted',
+                            phase = 'completed', result_json = ?, completed_at = ?, updated_at = ?
+                            WHERE campaign_id = ? AND status NOT IN
+                            ('pass','fail','blocked','cancelled','interrupted')""",
+                            (
+                                _dump({"verdict": "NOT_TESTED", "error": {"code": "agent_acceptance_interrupted"}}),
+                                now, now, campaign["campaign_id"],
+                            ),
+                        )
+                        _append_acceptance_event(
+                            connection, campaign["campaign_id"], "campaign_interrupted",
+                            {"code": "agent_acceptance_interrupted"}, now,
+                        )
                 connection.execute(
                     "UPDATE agent_draft_operations SET status = 'interrupted', detail_json = ?, updated_at = ? WHERE operation_id = ?",
                     (_dump(detail), now, row["operation_id"]),
@@ -2601,6 +2696,218 @@ class RunStore:
             for row in rows
         ]
 
+    def create_agent_acceptance_campaign(
+        self, *, campaign: dict[str, Any], cases: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Persist an immutable campaign request and its ordered cases."""
+        now = campaign.get("created_at") or utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior = connection.execute(
+                "SELECT * FROM agent_acceptance_campaigns WHERE draft_id = ? AND request_id = ?",
+                (campaign["draft_id"], campaign["request_id"]),
+            ).fetchone()
+            if prior is not None:
+                if prior["request_hash"] != campaign["request_hash"]:
+                    raise ValueError("agent_acceptance_request_conflict")
+                return _agent_acceptance_campaign_from_row(prior)
+            connection.execute(
+                """INSERT INTO agent_acceptance_campaigns
+                (campaign_id, draft_id, revision, operation_id, request_id, request_hash,
+                 agent_id, acceptance_mode, status, phase, runtime_json, digests_json,
+                 report_json, artifact_dir, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)""",
+                (
+                    campaign["campaign_id"], campaign["draft_id"], campaign["revision"],
+                    campaign["operation_id"], campaign["request_id"], campaign["request_hash"],
+                    campaign["agent_id"], campaign["acceptance_mode"],
+                    campaign.get("status") or "queued", campaign.get("phase") or "preparing",
+                    _dump(campaign.get("runtime") or {}), _dump(campaign.get("digests") or {}),
+                    campaign.get("artifact_dir"), now, now,
+                ),
+            )
+            for index, item in enumerate(cases):
+                connection.execute(
+                    """INSERT INTO agent_acceptance_cases
+                    (campaign_id, case_id, case_order, input_json, sensitive_fingerprints_json,
+                     status, phase, result_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 'queued', 'preparing', '{}', ?, ?)""",
+                    (
+                        campaign["campaign_id"], item["case_id"], index,
+                        _dump(item.get("input") or {}),
+                        _dump(item.get("sensitive_fingerprints") or {}), now, now,
+                    ),
+                )
+            _append_acceptance_event(connection, campaign["campaign_id"], "campaign_queued", {
+                "case_count": len(cases), "acceptance_mode": campaign["acceptance_mode"]
+            }, now)
+            row = connection.execute(
+                "SELECT * FROM agent_acceptance_campaigns WHERE campaign_id = ?",
+                (campaign["campaign_id"],),
+            ).fetchone()
+        return _agent_acceptance_campaign_from_row(row)
+
+    def get_agent_acceptance_campaign(self, draft_id: str, campaign_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_acceptance_campaigns WHERE draft_id = ? AND campaign_id = ?",
+                (draft_id, campaign_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(campaign_id)
+            case_rows = connection.execute(
+                "SELECT * FROM agent_acceptance_cases WHERE campaign_id = ? ORDER BY case_order",
+                (campaign_id,),
+            ).fetchall()
+        value = _agent_acceptance_campaign_from_row(row)
+        value["cases"] = [_agent_acceptance_case_from_row(item) for item in case_rows]
+        return value
+
+    def get_agent_acceptance_campaign_by_id(self, campaign_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_acceptance_campaigns WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(campaign_id)
+            case_rows = connection.execute(
+                "SELECT * FROM agent_acceptance_cases WHERE campaign_id = ? ORDER BY case_order",
+                (campaign_id,),
+            ).fetchall()
+        value = _agent_acceptance_campaign_from_row(row)
+        value["cases"] = [_agent_acceptance_case_from_row(item) for item in case_rows]
+        return value
+
+    def list_agent_acceptance_campaigns(self, draft_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM agent_acceptance_campaigns WHERE draft_id = ?
+                ORDER BY created_at DESC, rowid DESC""", (draft_id,),
+            ).fetchall()
+        return [_agent_acceptance_campaign_from_row(row) for row in rows]
+
+    def update_agent_acceptance_campaign(
+        self, draft_id: str, campaign_id: str, *, status: str | None = None,
+        phase: str | None = None, report: dict[str, Any] | None = None,
+        report_digest: str | None = None, cancel_requested: bool | None = None,
+        started_at: str | None = None, completed_at: str | None = None,
+        event_type: str | None = None, event_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """UPDATE agent_acceptance_campaigns SET
+                status = COALESCE(?, status), phase = COALESCE(?, phase),
+                report_json = COALESCE(?, report_json), report_digest = COALESCE(?, report_digest),
+                cancel_requested = COALESCE(?, cancel_requested),
+                started_at = COALESCE(?, started_at), completed_at = COALESCE(?, completed_at),
+                updated_at = ? WHERE draft_id = ? AND campaign_id = ?""",
+                (
+                    status, phase, _dump(report) if report is not None else None, report_digest,
+                    int(cancel_requested) if cancel_requested is not None else None,
+                    started_at, completed_at, now, draft_id, campaign_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(campaign_id)
+            if event_type:
+                _append_acceptance_event(connection, campaign_id, event_type, event_data or {}, now)
+            row = connection.execute(
+                "SELECT * FROM agent_acceptance_campaigns WHERE campaign_id = ?", (campaign_id,),
+            ).fetchone()
+        return _agent_acceptance_campaign_from_row(row)
+
+    def update_agent_acceptance_case(
+        self, campaign_id: str, case_id: str, *, status: str | None = None,
+        phase: str | None = None, baseline_run_id: str | None = None,
+        free_query_run_id: str | None = None, fixed_agent_run_id: str | None = None,
+        result: dict[str, Any] | None = None, started_at: str | None = None,
+        completed_at: str | None = None, event_type: str | None = None,
+        event_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """UPDATE agent_acceptance_cases SET status = COALESCE(?, status),
+                phase = COALESCE(?, phase), baseline_run_id = COALESCE(?, baseline_run_id),
+                free_query_run_id = COALESCE(?, free_query_run_id),
+                fixed_agent_run_id = COALESCE(?, fixed_agent_run_id),
+                result_json = COALESCE(?, result_json), started_at = COALESCE(?, started_at),
+                completed_at = COALESCE(?, completed_at), updated_at = ?
+                WHERE campaign_id = ? AND case_id = ?""",
+                (
+                    status, phase, baseline_run_id, free_query_run_id, fixed_agent_run_id,
+                    _dump(result) if result is not None else None, started_at, completed_at,
+                    now, campaign_id, case_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError((campaign_id, case_id))
+            if event_type:
+                _append_acceptance_event(connection, campaign_id, event_type, {
+                    "case_id": case_id, **(event_data or {})
+                }, now)
+            row = connection.execute(
+                "SELECT * FROM agent_acceptance_cases WHERE campaign_id = ? AND case_id = ?",
+                (campaign_id, case_id),
+            ).fetchone()
+        return _agent_acceptance_case_from_row(row)
+
+    def agent_acceptance_events_after(self, campaign_id: str, sequence: int = 0) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT sequence, event_type, data_json, created_at
+                FROM agent_acceptance_events WHERE campaign_id = ? AND sequence > ?
+                ORDER BY sequence""", (campaign_id, sequence),
+            ).fetchall()
+        return [{"sequence": int(row["sequence"]), "type": row["event_type"],
+                 "data": _load(row["data_json"], {}), "created_at": row["created_at"]}
+                for row in rows]
+
+    def bind_agent_acceptance_report(
+        self, *, draft_id: str, campaign_id: str, revision: int,
+        operation_id: str, report: dict[str, Any], report_digest: str,
+        campaign_status: str,
+    ) -> bool:
+        """Atomically bind a current formal result and release its draft lock."""
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            draft = connection.execute(
+                "SELECT revision, status FROM agent_authoring_drafts WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()
+            operation = connection.execute(
+                """SELECT 1 FROM agent_draft_operations WHERE draft_id = ? AND operation_id = ?
+                AND revision = ? AND status IN ('queued','running','cancelling')""",
+                (draft_id, operation_id, revision),
+            ).fetchone()
+            if draft is None or int(draft["revision"]) != int(revision) or draft["status"] == "published" or operation is None:
+                return False
+            connection.execute(
+                """UPDATE agent_authoring_drafts SET validation_json = ?, status = ?, updated_at = ?
+                WHERE draft_id = ? AND revision = ?""",
+                (_dump(report), "validated" if report.get("verdict") == "PASS" else "needs_review",
+                 now, draft_id, revision),
+            )
+            connection.execute(
+                """UPDATE agent_acceptance_campaigns SET status = ?, phase = 'completed',
+                report_json = ?, report_digest = ?, completed_at = ?, updated_at = ?
+                WHERE draft_id = ? AND campaign_id = ?""",
+                (campaign_status, _dump(report), report_digest, now, now, draft_id, campaign_id),
+            )
+            connection.execute(
+                "UPDATE agent_draft_operations SET status = ?, updated_at = ? WHERE operation_id = ?",
+                (campaign_status, now, operation_id),
+            )
+            _append_acceptance_event(connection, campaign_id, "campaign_completed", {
+                "verdict": report.get("verdict"), "report_digest": report_digest
+            }, now)
+        return True
+
     def save_agent_validation_attempt(
         self, *, draft_id: str, run_id: str, revision: int,
         report: dict[str, Any], report_digest: str | None,
@@ -2736,6 +3043,52 @@ def _free_query_session_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _agent_acceptance_campaign_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "campaign_id": row["campaign_id"], "draft_id": row["draft_id"],
+        "revision": int(row["revision"]), "operation_id": row["operation_id"],
+        "request_id": row["request_id"], "request_hash": row["request_hash"],
+        "agent_id": row["agent_id"], "acceptance_mode": row["acceptance_mode"],
+        "status": row["status"], "phase": row["phase"],
+        "runtime": _load(row["runtime_json"], {}), "digests": _load(row["digests_json"], {}),
+        "report": _load(row["report_json"], {}), "report_digest": row["report_digest"],
+        "artifact_dir": row["artifact_dir"], "cancel_requested": bool(row["cancel_requested"]),
+        "created_at": row["created_at"], "started_at": row["started_at"],
+        "completed_at": row["completed_at"], "updated_at": row["updated_at"],
+    }
+
+
+def _agent_acceptance_case_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "campaign_id": row["campaign_id"], "case_id": row["case_id"],
+        "case_order": int(row["case_order"]), "input": _load(row["input_json"], {}),
+        "sensitive_fingerprints": _load(row["sensitive_fingerprints_json"], {}),
+        "status": row["status"], "phase": row["phase"],
+        "baseline_run_id": row["baseline_run_id"],
+        "free_query_run_id": row["free_query_run_id"],
+        "fixed_agent_run_id": row["fixed_agent_run_id"],
+        "result": _load(row["result_json"], {}), "created_at": row["created_at"],
+        "started_at": row["started_at"], "completed_at": row["completed_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _append_acceptance_event(
+    connection: sqlite3.Connection, campaign_id: str, event_type: str,
+    data: dict[str, Any], created_at: str,
+) -> None:
+    current = connection.execute(
+        "SELECT COALESCE(MAX(sequence), 0) FROM agent_acceptance_events WHERE campaign_id = ?",
+        (campaign_id,),
+    ).fetchone()
+    sequence = int(current[0]) + 1
+    connection.execute(
+        """INSERT INTO agent_acceptance_events
+        (campaign_id, sequence, event_type, data_json, created_at) VALUES (?, ?, ?, ?, ?)""",
+        (campaign_id, sequence, event_type, _dump(data), created_at),
+    )
 
 
 def _agent_operation_from_row(row: sqlite3.Row) -> dict[str, Any]:

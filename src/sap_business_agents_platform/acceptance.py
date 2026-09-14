@@ -108,14 +108,41 @@ def validate_direct_baseline(
     value: JsonObject,
     case: CanonicalTestCase | None = None,
 ) -> JsonObject:
-    if value.get("runtime") != "codex_app_direct_sap":
+    baseline_version = str(value.get("schema_version") or "1.0")
+    if baseline_version == "4.0":
+        if value.get("runtime") != "codex_sdk_direct_sap":
+            raise ValueError("direct baseline v4 runtime must be codex_sdk_direct_sap")
+        if value.get("candidate_access") is not False:
+            raise ValueError("direct baseline v4 must attest candidate_access=false")
+        runtime_snapshot = value.get("runtime_snapshot")
+        if not isinstance(runtime_snapshot, dict) or not all(
+            runtime_snapshot.get(field) for field in ("provider_id", "sdk_id", "model", "configuration_digest")
+        ):
+            raise ValueError("direct baseline v4 runtime_snapshot is incomplete")
+        sources = value.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise ValueError("direct baseline v4 sources are required")
+        for index, source in enumerate(sources):
+            if not isinstance(source, dict):
+                raise ValueError(f"direct baseline v4 sources[{index}] must be an object")
+            method = source.get("http_method")
+            if (
+                source.get("read_only") is not True
+                or method not in {"GET", "POST"}
+                or (method == "POST" and source.get("semantic_read_only") is not True)
+            ):
+                raise ValueError(f"direct baseline v4 sources[{index}] must be read-only")
+            if not str(source.get("evidence_ref") or "").strip():
+                raise ValueError(f"direct baseline v4 sources[{index}].evidence_ref is required")
+    elif value.get("runtime") != "codex_app_direct_sap":
         raise ValueError("baseline runtime must be codex_app_direct_sap")
     if value.get("used_sap_business_agents") is not False:
         raise ValueError("direct baseline must attest used_sap_business_agents=false")
-    baseline_version = str(value.get("schema_version") or "1.0")
     is_v2 = baseline_version == "2.0"
     is_v3 = baseline_version == "3.0"
-    if is_v3:
+    if baseline_version == "4.0":
+        pass
+    elif is_v3:
         sources = value.get("sources")
         if not isinstance(sources, list) or not sources:
             raise ValueError("direct baseline v3 sources are required")
@@ -148,7 +175,14 @@ def validate_direct_baseline(
     expected_hash = canonical_hash(normalized)
     if value.get("result_hash") != expected_hash:
         raise ValueError("direct baseline result_hash does not match normalized_result")
-    if is_v3:
+    if baseline_version == "4.0":
+        if normalized.get("source_complete") is not True and not (
+            normalized.get("evidence_gap_codes") or normalized.get("limitations")
+        ):
+            raise ValueError("an incomplete direct baseline v4 requires explicit evidence gaps")
+        if case is not None and case.schema_version == "2.0":
+            _validate_case_evidence(value, normalized, case)
+    elif is_v3:
         if normalized.get("source_complete") is not True and not (
             normalized.get("evidence_gap_codes") or normalized.get("limitations")
         ):
@@ -397,17 +431,17 @@ def _validate_normalized_result(value: JsonObject, *, version: str = "1.0") -> N
         raise ValueError("normalized_result.limitations must be an array")
     if not isinstance(value.get("source_complete"), bool):
         raise ValueError("normalized_result.source_complete must be boolean")
-    if version == "3.0":
+    if version in {"3.0", "4.0"}:
         if not str(value.get("business_status") or "").strip():
-            raise ValueError("normalized_result.business_status is required for baseline v3")
+            raise ValueError("normalized_result.business_status is required for baseline v3+")
         for field in ("evidence_complete", "business_complete"):
             if not isinstance(value.get(field), bool):
-                raise ValueError(f"normalized_result.{field} must be boolean for baseline v3")
+                raise ValueError(f"normalized_result.{field} must be boolean for baseline v3+")
         if not isinstance(value.get("evidence_gap_codes"), list) or any(
             not str(item).strip() for item in value.get("evidence_gap_codes") or []
         ):
             raise ValueError(
-                "normalized_result.evidence_gap_codes must be an identifier array for baseline v3"
+                "normalized_result.evidence_gap_codes must be an identifier array for baseline v3+"
             )
 
 

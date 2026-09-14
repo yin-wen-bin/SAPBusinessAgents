@@ -62,7 +62,17 @@ def test_zero_and_full_receipt_produce_business_rows_with_normal_dates():
     assert result["records"][1]["latest_goods_receipt_posting_date"] == "2026-06-18"
     assert result["business_report"]["records"][0]["purchase_order"] == result["records"][0]["purchase_order"]
     assert result["business_report"]["records"][0]["receipt_status"] == {"zh": "未入库", "en": "Not received"}
-    assert result["business_report"]["findings"][0]["text"]["zh"] == "SAP交货完成标识与实际入库数量分别判断。"
+    findings = {
+        item["code"]: item["text"]
+        for item in result["business_report"]["findings"]
+    }
+    assert findings["NO_UNIT_CONVERSION"]["zh"] == (
+        "系统不执行单位换算；只有采购订单单位与收货单位可直接比较时才形成数量结论。"
+    )
+    assert findings["DELIVERY_COMPLETE_IS_NOT_RECEIPT_EVIDENCE"]["zh"] == (
+        "SAP交货完成标识与实际入库数量分别判断。"
+    )
+    assert result["business_report"]["missing_evidence"] == []
 
 
 def test_business_markdown_contains_the_same_schedule_line_rows():

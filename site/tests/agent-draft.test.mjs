@@ -7,6 +7,32 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as draftHelpers from "../src/lib/agentDraft.ts";
 
+test("formal acceptance setup and progress expose the multi-case read-only workflow", async () => {
+  const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
+  const setup = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceSetup, {
+    open: true, locale: "zh", schema: { type: "object", properties: {} },
+    mode: "three_stage", runtime: { model: "gpt-5.6-sol", reasoning_effort: "max" },
+    cases: [{ caseId: "case-1", source: "current", input: {}, sensitiveInputs: {} }],
+    currentInput: {}, currentSecrets: {}, canUseSample: false,
+    onCases() {}, onFindSample() {}, onClose() {}, onStart() {},
+  }));
+  assert.match(setup, /设置正式验收/);
+  assert.match(setup, /1–5组必选案例/);
+  assert.match(setup, /gpt-5.6-sol/);
+  assert.match(setup, /单独自动查找样本/);
+  const progress = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceProgress, {
+    open: true, locale: "en", apiBase: "http://127.0.0.1:8765", draftId: "draft-1",
+    campaign: { campaign_id: "campaign-1", status: "running", phase: "baseline",
+      started_at: new Date().toISOString(), estimated_max_seconds: 3120,
+      cases: [{ case_id: "case-1", status: "running", phase: "baseline" }] },
+    onClose() {}, onCancel() {}, onAdjust() {}, onRetry() {},
+  }));
+  assert.match(progress, /Formal acceptance in progress/);
+  assert.match(progress, /Independent SAP baseline/);
+  assert.match(progress, /Continue in background/);
+  assert.match(progress, /Cancel acceptance/);
+});
+
 test("sample field selection lists visible optional inputs and preserves entered scope", async () => {
   const schema = { type: "object", required: ["date"], properties: {
     date: { type: "string", format: "date", title: { zh: "收货日期", en: "Receipt date" } },
@@ -188,12 +214,17 @@ async function component(name, dependencies = {}) {
     dependencies["./AgentSampleProgress"] = await component("AgentSampleProgress");
     dependencies["./AgentTrialProgress"] = await component("AgentTrialProgress");
     dependencies["./AgentFeedbackProgress"] = await component("AgentFeedbackProgress");
+    dependencies["./AgentAcceptance"] ||= {
+      AcceptanceSummary: () => null,
+      AgentAcceptanceSetup: () => null,
+      AgentAcceptanceProgress: () => null,
+    };
   }
   const source = await readFile(new URL(`../src/components/${name}.tsx`, import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } });
   const exports = {};
   new Function("require", "exports", compiled.outputText)((id) => id === "../lib/agentDraft" ? draftHelpers : id.endsWith(".css") ? {} : dependencies[id] || require(id), exports);
-  return Object.assign(exports.default, exports);
+  return exports.default ? Object.assign(exports.default, exports) : exports;
 }
 
 const title = (zh, en) => ({ zh, en });

@@ -91,6 +91,95 @@ def test_v2_evidence_gaps_do_not_become_unexpected_scope_limitations():
     assert value["limitations"] == []
 
 
+def test_fixed_agent_prefers_typed_workflow_records_and_inherits_completeness():
+    case = CanonicalTestCase.from_dict({
+        "schema_version": "2.0", "case_id": "typed-output", "agent_id": "po-status",
+        "question": {"zh": "测试", "en": "Test"}, "input": {}, "business_conditions": {},
+        "expected_grain": ["purchase_order"], "expected_output": {
+            "record_fields": ["purchase_order", "receipt_status"], "metric_ids": [],
+            "minimum_primary_evidence_rows": 1, "allow_empty_result": False,
+            "evidence_scope": "complete"}})
+    contract = {
+        "business_keys": ["purchase_order"],
+        "facts": ["receipt_status", "source_complete", "evidence_complete"],
+        "metrics": [], "required_limitations": ["scope_limit"],
+        "field_aliases": {}, "input_defaults": {}, "constant_defaults": {},
+        "boolean_fields": ["source_complete", "evidence_complete"],
+    }
+    workflow_record = {"purchase_order": "1", "receipt_status": "fully_received"}
+    report_record = {
+        "purchase_order": "1",
+        "receipt_status": {"zh": "全部入库", "en": "Fully received"},
+    }
+    run = {"result": {"rule_results": [{
+        "business_status": "normal", "source_complete": True,
+        "evidence_complete": True, "business_complete": True,
+        "workflow_output": {"records": [workflow_record]},
+        "business_report": {
+            "records": [report_record], "metrics": [],
+            "findings": [{"code": "SCOPE_LIMIT"}],
+        },
+    }]}}
+
+    normalized = _normalize_run(run, case, contract)
+
+    assert normalized["records"] == [{
+        "purchase_order": "1",
+        "receipt_status": "fully_received",
+        "source_complete": True,
+        "evidence_complete": True,
+        "business_status": "normal",
+    }]
+    assert normalized["limitations"] == ["scope_limit"]
+
+
+def test_acceptance_projection_enforces_status_domain_and_normalizes_boolean_facts():
+    case = CanonicalTestCase.from_dict({
+        "schema_version": "2.0", "case_id": "status-domain", "agent_id": "po-status",
+        "question": {"zh": "测试", "en": "Test"}, "input": {}, "business_conditions": {},
+        "expected_grain": ["purchase_order"], "expected_output": {
+            "record_fields": ["purchase_order", "delivery_complete"], "metric_ids": [],
+            "minimum_primary_evidence_rows": 1, "allow_empty_result": False,
+            "evidence_scope": "complete"}})
+    contract = {
+        "business_keys": ["purchase_order"], "facts": ["delivery_complete"],
+        "metrics": [], "required_limitations": [], "field_aliases": {},
+        "input_defaults": {}, "constant_defaults": {},
+        "boolean_fields": ["delivery_complete"],
+        "business_status_values": ["normal", "attention", "inconclusive"],
+    }
+    projection = {
+        "records": [{"purchase_order": "1", "delivery_complete": "true"}],
+        "metrics": {}, "business_status": "normal", "source_complete": True,
+        "evidence_complete": True, "business_complete": True,
+        "evidence_gap_codes": [], "evidence_refs": ["ev_1"],
+    }
+
+    normalized = _normalize_acceptance_projection(projection, case, contract)
+    assert normalized["records"][0]["delivery_complete"] is True
+
+    with pytest.raises(ValueError, match="outside the declared output contract"):
+        _normalize_acceptance_projection(
+            {**projection, "business_status": "fully_received"}, case, contract
+        )
+
+
+def test_acceptance_prompt_declares_business_status_domain():
+    case = CanonicalTestCase.from_dict({
+        "schema_version": "2.0", "case_id": "status-prompt", "agent_id": "po-status",
+        "question": {"zh": "测试", "en": "Test"}, "input": {}, "business_conditions": {},
+        "expected_grain": ["purchase_order"], "expected_output": {
+            "record_fields": ["purchase_order"], "metric_ids": [],
+            "minimum_primary_evidence_rows": 0, "allow_empty_result": True,
+            "evidence_scope": "complete"}})
+    prompt = _acceptance_prompt(case, {
+        "business_keys": ["purchase_order"], "facts": [], "metrics": [],
+        "required_limitations": [],
+        "business_status_values": ["normal", "attention", "inconclusive"],
+    })
+    assert "must be one of [normal, attention, inconclusive]" in prompt
+
+
 def test_agent_execution_digest_changes_with_managed_rule_source() -> None:
     manifest = {
         "execution": {"mode": "deterministic", "steps": []},

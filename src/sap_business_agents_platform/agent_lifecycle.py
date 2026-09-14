@@ -810,10 +810,28 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         return copy.deepcopy(report)
 
     def _validation_summary(self, draft: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
-        acceptance = self._formal_acceptance(draft, package)
+        certificate = self._formal_acceptance(draft, package)
+        recorded = copy.deepcopy(draft.get("validation") or {})
+        current_digest = (
+            _execution_digest(package["manifest"], package.get("rules"))
+            if isinstance(package.get("manifest"), dict)
+            else None
+        )
+        acceptance = certificate
+        if (
+            acceptance is None
+            and current_digest is not None
+            and recorded.get("type") == "formal_acceptance"
+            and recorded.get("revision") == draft.get("revision")
+            and recorded.get("execution_digest", recorded.get("agent_execution_digest")) == current_digest
+        ):
+            # FAIL and BLOCKED are useful formal results, but are never
+            # publication certificates.  Keep them visible to the user while
+            # the publishability gate continues to require _formal_acceptance.
+            acceptance = recorded
         trial = copy.deepcopy((draft.get("metadata") or {}).get("trial"))
         static = copy.deepcopy((draft.get("metadata") or {}).get("static_checks") or {})
-        blockers = [] if acceptance else ["agent_formal_acceptance_required"]
+        blockers = [] if certificate else ["agent_formal_acceptance_required"]
         if self._platform_changes_pending(draft["draft_id"]):
             blockers.append("runtime_changeset_integration_verification_required")
         identity = self.technical_identity(draft)

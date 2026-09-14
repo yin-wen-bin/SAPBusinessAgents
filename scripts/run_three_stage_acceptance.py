@@ -106,9 +106,18 @@ def _normalize_run(
                 raise ValueError("recordScope requires a structured workflow output")
             report_records = _extract_record_scope(scoped_root, record_scope)
         else:
+            # Deterministic Agents can localize display-only report values while
+            # retaining canonical codes in their typed workflow output.  The
+            # acceptance comparison must prefer that typed contract; the report
+            # remains independently checked as presentation below.
+            workflow_records = workflow_output.get("records")
             report_records = [
                 dict(item)
-                for item in report.get("records") or []
+                for item in (
+                    workflow_records
+                    if isinstance(workflow_records, list)
+                    else report.get("records") or []
+                )
                 if isinstance(item, dict)
             ]
         if not report_records:
@@ -161,6 +170,18 @@ def _normalize_run(
             ]
             if str(item)
         ]
+        required_limitations = {
+            str(item).casefold(): str(item)
+            for item in contract.get("required_limitations") or []
+            if str(item)
+        }
+        for finding in report.get("findings") or []:
+            if not isinstance(finding, dict):
+                continue
+            code = str(finding.get("code") or "").strip().casefold()
+            canonical = required_limitations.get(code)
+            if canonical:
+                report_limitations.append(canonical)
         overview_text = _localized(report.get("overview"))
         for code, keywords in (contract.get("limitation_keywords") or {}).items():
             if any(str(keyword).casefold() in overview_text.casefold() for keyword in keywords or []):
@@ -403,6 +424,14 @@ def _normalize_acceptance_projection(
     # semantic comparison so a non-blocking limitation cannot lower completeness.
     limitation_codes = [item for item in projected_codes if item in declared_limitations]
     evidence_gap_codes = [item for item in projected_codes if item not in declared_limitations]
+    allowed_statuses = {
+        str(item) for item in contract.get("business_status_values") or [] if str(item)
+    }
+    business_status = str(projection.get("business_status") or "")
+    if allowed_statuses and business_status not in allowed_statuses:
+        raise ValueError(
+            "acceptance_projection.business_status is outside the declared output contract"
+        )
     return _finalize_normalized(
         {
             "records": [dict(item) for item in projection["records"]],
@@ -411,13 +440,12 @@ def _normalize_acceptance_projection(
             "source_complete": projection["source_complete"],
             "evidence_complete": projection["evidence_complete"],
             "business_complete": projection["business_complete"],
-            "business_status": str(projection.get("business_status") or ""),
+            "business_status": business_status,
             "evidence_gap_codes": evidence_gap_codes,
         },
         case,
         contract,
-        business_status=str(projection.get("business_status") or ""),
-        records_are_canonical=True,
+        business_status=business_status,
     )
 
 
@@ -453,7 +481,9 @@ def _normalize_record(
 ) -> JsonObject:
     aliases = _field_aliases(contract)
     record = {
-        aliases.get(_field_token(key), str(key)): value
+        aliases.get(_field_token(key), str(key)): (
+            _localized(value) if isinstance(value, dict) else value
+        )
         for key, value in original.items()
     }
     token_values = {_field_token(key): value for key, value in record.items()}
@@ -664,6 +694,11 @@ def _finalize_normalized(
         for canonical, input_name in (contract.get("input_defaults") or {}).items()
     }
     defaults.update(contract.get("constant_defaults") or {})
+    for completeness_field in ("source_complete", "evidence_complete", "business_complete"):
+        if completeness_field in set(contract.get("facts") or []) and isinstance(
+            value.get(completeness_field), bool
+        ):
+            defaults.setdefault(completeness_field, value[completeness_field])
     for fact_field, metric_id in (contract.get("zero_fact_when_metric_zero") or {}).items():
         raw_metric = metrics.get(str(metric_id))
         metric_text = "" if raw_metric is None else str(raw_metric).strip()
@@ -803,6 +838,9 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
     limitations = ", ".join(
         str(item) for item in contract.get("required_limitations") or []
     )
+    business_status_values = ", ".join(
+        str(item) for item in contract.get("business_status_values") or [] if str(item)
+    )
     blocking_limitations = ", ".join(
         str(item) for item in contract.get("blocking_limitations") or []
     )
@@ -820,6 +858,11 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
         "- acceptance_projection must separately report business_status, source_complete, evidence_complete, business_complete, evidence_gap_codes, and only run-scoped verified evidence_refs.",
         "- Never infer acceptance_projection from prose and never omit a required record merely because it is normal, zero, or not_found.",
     ]
+    if business_status_values:
+        instructions.insert(
+            2,
+            f"- The projection root business_status must be one of [{business_status_values}].",
+        )
     record_scope = str(contract.get("record_scope") or "").strip()
     if record_scope:
         instructions.extend(

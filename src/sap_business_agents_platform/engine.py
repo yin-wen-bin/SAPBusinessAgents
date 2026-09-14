@@ -42,6 +42,7 @@ from .models import (
     RunPresentation,
     RunResult,
     RunStatus,
+    RuntimeSnapshot,
     TERMINAL_STATUSES,
     utc_now,
 )
@@ -559,6 +560,80 @@ class RunCoordinator:
             {"mode": request.mode.value, "acceptance_campaign": True},
         )
         await self._schedule_run(run_id, request.mode)
+        return run_id
+
+    async def submit_acceptance_query(
+        self,
+        request: RunCreate,
+        *,
+        runtime: dict[str, Any],
+        direct_baseline: bool = False,
+        hard_limit_seconds: int | None = None,
+    ) -> str:
+        """Submit a Runtime-pinned acceptance query without exposing baseline facts.
+
+        Direct baselines are marked before scheduler admission so the Harness
+        starts in an empty read-only workspace with web and engineering tools
+        disabled.  This avoids the race inherent in mutating run state after a
+        normal public submission.
+        """
+        if request.mode != RunMode.free_query or request.acceptance_spec is None:
+            raise RunExecutionError(
+                "Acceptance queries require free-query mode and an acceptance projection.",
+                code="acceptance_query_invalid",
+            )
+        unknown_sensitive = sorted(set(request.sensitive_inputs).difference({"receipt_reference"}))
+        if unknown_sensitive:
+            raise RunExecutionError(
+                "This acceptance Runtime cannot expose the requested protected fields.",
+                code="acceptance_sensitive_input_unsupported",
+                detail={"fields": unknown_sensitive},
+            )
+        RuntimeSnapshot.model_validate(runtime)
+        run_id = f"acceptance_{uuid.uuid4().hex[:16]}"
+        public_input = copy.deepcopy(request.input)
+        protected_secrets: list[tuple[str, str, bytes, dict[str, str]]] = []
+        if request.sensitive_inputs:
+            value = request.sensitive_inputs["receipt_reference"]
+            secret_ref, protected, descriptor = self.secret_protector.create_secret_ref(
+                run_id=run_id, field="receipt_reference", value=value,
+                domain="bank-receipt-reference",
+            )
+            public_input["receipt_reference"] = {
+                "provided": True, "secret_ref": secret_ref, "hmac": descriptor,
+            }
+            protected_secrets.append(("receipt_reference", secret_ref, protected, descriptor))
+        safe_request = request.model_copy(update={"input": public_input, "sensitive_inputs": {}})
+        self.store.create_run(run_id, safe_request, runtime=runtime)
+        state: dict[str, Any] = {
+            "acceptance_spec": request.acceptance_spec.model_dump(mode="json"),
+            "acceptance_direct_baseline": direct_baseline,
+        }
+        if hard_limit_seconds:
+            reserved = min(60, max(1, hard_limit_seconds // 10))
+            state["time_budget"] = {
+                "hard_limit_seconds": hard_limit_seconds,
+                "query_seconds_granted": max(1, hard_limit_seconds - reserved),
+                "finalization_seconds_reserved": reserved,
+                "extension_count": 0, "extension_reasons": [],
+                "deadline_phase": "querying", "progress_marker": 0,
+            }
+        self.store.update_harness_state(run_id, state)
+        for field, secret_ref, protected, descriptor in protected_secrets:
+            self.store.save_run_secret(
+                secret_ref=secret_ref, run_id=run_id, field_name=field,
+                protected_value=protected, hmac_descriptor=descriptor,
+            )
+        self.store.create_free_query_session(
+            session_id=f"fq_{uuid.uuid4().hex[:16]}", run_id=run_id,
+            original_query=str(request.query or ""), runtime=runtime,
+        )
+        self.store.append_event(run_id, "run_queued", {
+            "mode": "free_query", "acceptance_campaign": True,
+            "direct_baseline": direct_baseline,
+            "runtime_provider_id": runtime.get("provider_id"),
+        })
+        await self._schedule_run(run_id, RunMode.free_query)
         return run_id
 
     async def submit_agent_snapshot(

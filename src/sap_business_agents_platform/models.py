@@ -557,6 +557,42 @@ class AgentSampleDiscoveryRequest(BaseModel):
     request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
 
 
+class AgentAcceptanceCase(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    case_id: str = Field(alias="caseId", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
+    input: dict[str, Any] = Field(default_factory=dict)
+    sensitive_inputs: dict[str, str] = Field(
+        default_factory=dict, alias="sensitiveInputs", repr=False
+    )
+
+    @field_validator("sensitive_inputs")
+    @classmethod
+    def validate_sensitive_inputs(cls, value: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for name, item in value.items():
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(f"sensitiveInputs.{name} must not be blank")
+            normalized[str(name)] = item.strip()
+        return normalized
+
+
+class AgentAcceptanceCampaignRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+    request_id: str = Field(alias="requestId", min_length=1, max_length=100)
+    cases: list[AgentAcceptanceCase] = Field(min_length=1, max_length=5)
+
+    @field_validator("cases")
+    @classmethod
+    def validate_case_ids(cls, value: list[AgentAcceptanceCase]) -> list[AgentAcceptanceCase]:
+        identifiers = [item.case_id for item in value]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("caseId must be unique within an acceptance campaign")
+        return value
+
+
 class AgentStaticValidationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=1)

@@ -8,6 +8,8 @@ import AgentDraftConversation from "./AgentDraftConversation";
 import AgentSampleProgress, { SampleProgressSummary } from "./AgentSampleProgress";
 import AgentTrialProgress, { TrialProgressSummary } from "./AgentTrialProgress";
 import AgentFeedbackProgress, { FeedbackProgressSummary } from "./AgentFeedbackProgress";
+import { AcceptanceSummary, AgentAcceptanceProgress, AgentAcceptanceSetup } from "./AgentAcceptance";
+import type { AcceptanceCaseDraft } from "./AgentAcceptance";
 import { sampleFieldOptions } from "../lib/agentDraft";
 import "../styles/agent-draft.css";
 
@@ -69,6 +71,13 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const trialResultRef = useRef<HTMLDivElement>(null);
   const trialReviewFocus = useRef(false);
   const [report, setReport] = useState<any>(null);
+  const [acceptanceCampaign, setAcceptanceCampaign] = useState<any>(null);
+  const [acceptanceSetupOpen, setAcceptanceSetupOpen] = useState(false);
+  const [acceptanceProgressOpen, setAcceptanceProgressOpen] = useState(false);
+  const [acceptanceConnectionError, setAcceptanceConnectionError] = useState(false);
+  const [acceptanceCases, setAcceptanceCases] = useState<AcceptanceCaseDraft[]>([]);
+  const [acceptanceSampleCase, setAcceptanceSampleCase] = useState<number | null>(null);
+  const acceptanceResultRef = useRef<HTMLDivElement>(null);
   const [operation, setOperation] = useState<any>(initialDraft.active_operation || null);
   const [diff, setDiff] = useState<any>(null);
   const [compareFrom, setCompareFrom] = useState(Math.max(1, initialDraft.revision - 1));
@@ -86,7 +95,8 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   try { manifest = JSON.parse(manifestText); } catch { manifest = draft.package.manifest; }
   const schema = draft.package.manifest.execution?.inputSchema || { type: "object", properties: {} };
   const sampleFields = sampleFieldOptions(schema, locale, input);
-  const active = Boolean(operation && !draftTerminal.has(operation.status)) || (draft.conversation || []).some((turn: any) => turn.kind === "feedback" && ["queued", "running", "cancelling"].includes(turn.status));
+  const campaignActive = Boolean(acceptanceCampaign && !["passed", "failed", "blocked", "cancelled", "interrupted", "superseded"].includes(acceptanceCampaign.status));
+  const active = Boolean(operation && !draftTerminal.has(operation.status)) || campaignActive || (draft.conversation || []).some((turn: any) => turn.kind === "feedback" && ["queued", "running", "cancelling"].includes(turn.status));
   const locked = busy || active || draft.status === "published";
   const actionable = !locked && !dirty && !remoteConflict;
   const identity = technicalIdentity(draft);
@@ -99,6 +109,13 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const acceptance = report?.acceptance || draft.acceptance;
   const staticChecks = report?.static_checks || draft.static_checks || {};
   const staticLabel = staticChecks.errors?.length ? tr("自动检查未通过", "Automatic checks failed") : staticChecks.checks?.length ? tr("自动检查通过", "Automatic checks passed") : tr("尚未检查", "Not checked");
+  const formalAcceptanceReady = validationActionable
+    && acceptance?.reused_validation !== true
+    && !staticChecks.errors?.length
+    && ["PASS", "INCONCLUSIVE"].includes(String(trial?.verdict || draft.trial?.verdict || ""))
+    && (trial?.business_output_available ?? draft.trial?.business_output_available) === true
+    && (trial?.output_schema_valid ?? draft.trial?.output_schema_valid) === true
+    && (trial?.read_only_audit ?? draft.trial?.read_only_audit) === true;
   const publishability = report?.publishability || draft.publishability;
   const canPublish = identityReady && (publishability?.can_publish === true || publishability?.allowed === true);
   const sampleFingerprint = discoveryFingerprint(draft.revision, input);
@@ -113,6 +130,10 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const feedbackOperation = operation?.kind === "feedback" ? operation : null;
   const feedbackTaskActive = Boolean(feedbackOperation && !draftTerminal.has(feedbackOperation.status)) || ["starting", "start_uncertain", "queued", "running", "cancelling"].includes(String(feedbackProgressTurn?.status || ""));
   const trialRunId = trial?.run_id || draft.trial?.run_id;
+  const acceptanceDefaultInput = run && draftTerminal.has(run.status)
+    && Number(trial?.revision ?? trial?.draft_revision) === Number(draft.revision)
+    ? publicValues(schema, run.input || {})
+    : publicValues(schema, input);
 
   const replace = (value: any, replaceEditor = true) => {
     if (!value?.package?.manifest) return;
@@ -121,7 +142,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     if (value.agent_id !== draftRef.current.agent_id) setIdentityInput(value.agent_id);
     if (value.revision !== draftRef.current.revision) {
       const previousSchema = draftRef.current.package.manifest.execution?.inputSchema || {};
-      setReport(null); setRun(null); setTrial(null); setTrialDialogOpen(false); setTrialConnectionError(false); setDiscovery(null); setDiscoveryInputHash(""); setConfirmedSample(""); setAutoDiscover(false); setAutoFilled({}); setSecrets({}); sampleApplied.current = "";
+      setReport(null); setRun(null); setTrial(null); setTrialDialogOpen(false); setTrialConnectionError(false); setDiscovery(null); setDiscoveryInputHash(""); setConfirmedSample(""); setAutoDiscover(false); setAutoFilled({}); setSecrets({}); setAcceptanceCampaign(null); setAcceptanceSetupOpen(false); setAcceptanceProgressOpen(false); setAcceptanceCases([]); setAcceptanceSampleCase(null); sampleApplied.current = "";
       setInput((current) => retainCompatibleInput(previousSchema, value.package.manifest.execution?.inputSchema || {}, current));
       setCompareFrom(Math.max(1, value.revision - 1)); setCompareTo(value.revision);
       setIdentityCheck(null);
@@ -156,6 +177,11 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         agent_technical_id_confirmation_required: ["请先确认技术 ID，再选样、试运行或发布。", "Confirm the technical ID before discovery, trial or publication."],
         agent_business_output_contract_missing: ["该草稿只有技术状态，缺少确定性业务规则和业务输出。请先完善定义再试运行。", "This draft has technical status only and lacks a deterministic business rule and business output. Complete the definition before running a trial."],
         agent_trial_business_output_missing: ["SAP查询已执行，但没有生成可展示的业务结果。请完善业务规则和展示定义后重试。", "The SAP query ran, but no displayable business result was generated. Complete the business rule and presentation, then retry."],
+        agent_trial_required: ["请先完成一次具备业务结果的只读试运行。", "Complete a read-only trial with business output first."],
+        agent_acceptance_contract_missing: ["当前定义缺少正式验收比较契约。", "The definition has no formal acceptance comparison contract."],
+        agent_acceptance_request_conflict: ["该验收请求编号已用于其他案例，请重新开始。", "This acceptance request ID was already used for different cases. Start again."],
+        agent_acceptance_reused: ["此纯文案修订已复用来源版本的PASS验收，无需再次访问SAP。", "This documentation-only revision already reuses the source version PASS acceptance; SAP does not need to be queried again."],
+        runtime_not_selectable: ["请先在系统配置中启用Runtime，并检查模型与推理强度。", "Enable the Runtime and check its model and reasoning effort in system settings."],
       };
       setError(labels[code]?.[locale === "zh" ? 0 : 1] || `${tr("操作未完成，请核对输入或重试。", "The operation did not complete. Check inputs or retry.")}${/^[a-z][a-z0-9_]{0,79}$/.test(code) ? ` (${code})` : ""}`);
     } finally { setBusy(false); }
@@ -200,6 +226,68 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     void poll();
     return () => { stopped = true; controller.abort(); clearTimeout(timer); };
   }, [base, trialRunId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    call(`${base}/acceptance-campaigns`, undefined, "GET", controller.signal)
+      .then((items: any[]) => {
+        if (!items?.length) return;
+        return call(`${base}/acceptance-campaigns/${encodeURIComponent(items[0].campaign_id)}`, undefined, "GET", controller.signal);
+      })
+      .then((value) => { if (value) setAcceptanceCampaign(value); })
+      .catch((failure) => { if (failure.name !== "AbortError") setAcceptanceConnectionError(true); });
+    return () => controller.abort();
+  }, [base]);
+
+  useEffect(() => {
+    const campaignId = acceptanceCampaign?.campaign_id;
+    if (!campaignId || !campaignActive) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const value = await call(`${base}/acceptance-campaigns/${encodeURIComponent(campaignId)}`, undefined, "GET", controller.signal);
+        if (stopped) return;
+        setAcceptanceCampaign(value); setAcceptanceConnectionError(false);
+        if (["passed", "failed", "blocked", "cancelled", "interrupted", "superseded"].includes(value.status)) {
+          setReport(await call(`${base}/validation-report`, undefined, "GET", controller.signal));
+          await refresh(false); return;
+        }
+      } catch (failure: any) {
+        if (!stopped && failure.name !== "AbortError") setAcceptanceConnectionError(true);
+      }
+      if (!stopped) timer = setTimeout(load, document.hidden ? 10000 : 2500);
+    };
+    void load();
+    return () => { stopped = true; controller.abort(); clearTimeout(timer); };
+  }, [base, acceptanceCampaign?.campaign_id, campaignActive]);
+
+  useEffect(() => {
+    const campaignId = acceptanceCampaign?.campaign_id;
+    if (!campaignId || !campaignActive || typeof EventSource === "undefined") return;
+    const stream = new EventSource(`${base}/acceptance-campaigns/${encodeURIComponent(campaignId)}/events`);
+    const controller = new AbortController();
+    let stopped = false;
+    const update = async () => {
+      try {
+        const value = await call(`${base}/acceptance-campaigns/${encodeURIComponent(campaignId)}`, undefined, "GET", controller.signal);
+        if (!stopped) { setAcceptanceCampaign(value); setAcceptanceConnectionError(false); }
+      } catch (failure: any) {
+        if (!stopped && failure.name !== "AbortError") setAcceptanceConnectionError(true);
+      }
+    };
+    const events = ["campaign_queued", "campaign_started", "case_started", "case_stage_started", "source_anchor_captured", "case_completed", "campaign_completed", "campaign_cancelling", "campaign_finished_without_certificate", "campaign_superseded", "campaign_interrupted"];
+    events.forEach((name) => stream.addEventListener(name, update));
+    stream.onopen = () => setAcceptanceConnectionError(false);
+    stream.onerror = () => setAcceptanceConnectionError(true);
+    return () => {
+      stopped = true;
+      controller.abort();
+      events.forEach((name) => stream.removeEventListener(name, update));
+      stream.close();
+    };
+  }, [base, acceptanceCampaign?.campaign_id, campaignActive]);
 
   useEffect(() => {
     if (!discovery?.run_id || sampleApplied.current === discovery.run_id) return;
@@ -377,7 +465,8 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     setNotice(renamed ? tr("技术 ID 已更新并确认。已保存新修订，需重新验证；历史对话保持不变，后续修改基于当前 ID。", "Technical ID changed and confirmed. A new revision requires fresh validation. Conversation history is preserved; future changes use the current ID.") : tr("技术 ID 已确认，现有验收记录保持不变。", "Technical ID confirmed. Existing acceptance records are unchanged."));
   });
   const cancel = () => action(async () => {
-    if (discovery?.run_id && !draftTerminal.has(discovery.status)) await call(`${base}/sample-discovery/${discovery.run_id}/cancel`, {});
+    if (acceptanceCampaign?.campaign_id && campaignActive) await call(`${base}/acceptance-campaigns/${acceptanceCampaign.campaign_id}/cancel`, {});
+    else if (discovery?.run_id && !draftTerminal.has(discovery.status)) await call(`${base}/sample-discovery/${discovery.run_id}/cancel`, {});
     else if (trialRunId && run && !draftTerminal.has(run.status)) await call(`${apiBase}/api/runs/${trialRunId}/cancel`, {});
     else if (operation?.kind === "feedback" || latestTurn?.status === "running" || latestTurn?.status === "queued") await call(`${base}/feedback/${operation?.turn ?? operation?.detail?.turn ?? latestTurn?.turn ?? latestTurn?.turn_number}/cancel`, {});
     setSecrets({}); await refresh(false);
@@ -400,6 +489,79 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     } catch {
       setFeedbackConnectionError(true);
       setError(tr("取消请求尚未确认，正在继续恢复任务状态。", "Cancellation was not confirmed. Continuing to recover the task status."));
+    }
+  };
+  const openAcceptance = () => {
+    const first: AcceptanceCaseDraft = {
+      caseId: "case-1", source: "current",
+      input: acceptanceDefaultInput, sensitiveInputs: { ...secrets },
+    };
+    setAcceptanceCases([first]); setAcceptanceSetupOpen(true); setError("");
+  };
+  const findAcceptanceSample = (index: number) => {
+    const selected = acceptanceCases[index];
+    const caseSampleFields = sampleFieldOptions(schema, locale, selected?.input || input);
+    if (selected) setInput(selected.input);
+    setAcceptanceSampleCase(index);
+    setAcceptanceSetupOpen(false);
+    window.setTimeout(() => {
+      setAutoDiscover(true);
+      setSelectedSampleFields(caseSampleFields.filter((field) => !field.disabled && field.required).map((field) => field.key));
+      setSelectingSampleFields(true); setSampleDialogOpen(true);
+    }, 0);
+  };
+  const confirmSample = (confirmed: boolean) => {
+    const fingerprint = confirmed ? sampleFingerprint : "";
+    setConfirmedSample(fingerprint);
+    if (!confirmed || acceptanceSampleCase === null) return;
+    setAcceptanceCases((current) => current.map((item, index) => index === acceptanceSampleCase ? {
+      ...item,
+      source: "sample",
+      input: publicValues(schema, input),
+    } : item));
+    setAcceptanceSampleCase(null);
+    setSampleDialogOpen(false);
+    setAcceptanceSetupOpen(true);
+  };
+  const startAcceptance = () => {
+    if (!validationActionable || !acceptanceCases.length) return;
+    for (const item of acceptanceCases) {
+      const errors = validateDraftInput(schema, item.input, item.sensitiveInputs, locale);
+      if (Object.keys(errors).length) {
+        setError(tr(`验收案例“${item.caseId}”的参数不完整或格式错误。`, `Acceptance case “${item.caseId}” has incomplete or invalid inputs.`));
+        return;
+      }
+    }
+    const ids = acceptanceCases.map((item) => item.caseId);
+    if (new Set(ids).size !== ids.length || ids.some((value) => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(value))) {
+      setError(tr("案例名称必须唯一，并使用字母、数字、下划线或连字符。", "Case names must be unique and use letters, numbers, underscores or hyphens."));
+      return;
+    }
+    setAcceptanceSetupOpen(false); setAcceptanceProgressOpen(true);
+    setAcceptanceConnectionError(false);
+    setAcceptanceCampaign({ status: "starting", phase: "preparing", cases: acceptanceCases.map((item) => ({ case_id: item.caseId, status: "queued", phase: "preparing" })), estimated_max_seconds: acceptanceCases.length * ((manifest.validation?.acceptanceMode === "three_stage" ? 1800 : 0) + 600 + 600 + 120), started_at: new Date().toISOString() });
+    return action(async () => {
+      try {
+        const value = await call(`${base}/acceptance-campaigns`, {
+          expectedRevision: draft.revision, requestId: crypto.randomUUID(),
+          cases: acceptanceCases.map((item) => ({ caseId: item.caseId, input: item.input, sensitiveInputs: item.sensitiveInputs })),
+        });
+        setSecrets({}); setAcceptanceCampaign(value); setOperation({ status: value.status || "queued", kind: "formal_acceptance", detail: { campaign_id: value.campaign_id } });
+      } catch (failure) {
+        setAcceptanceCampaign((current: any) => ({ ...current, status: "interrupted", phase: "completed", report: { verdict: "NOT_TESTED" } }));
+        throw failure;
+      }
+    });
+  };
+  const cancelAcceptance = async () => {
+    const id = acceptanceCampaign?.campaign_id;
+    if (!id || !campaignActive) return;
+    setAcceptanceCampaign((current: any) => ({ ...current, status: "cancelling" }));
+    try {
+      setAcceptanceCampaign(await call(`${base}/acceptance-campaigns/${encodeURIComponent(id)}/cancel`, {}));
+      await refresh(false);
+    } catch {
+      setAcceptanceConnectionError(true);
     }
   };
   const check = () => action(async () => { if (!actionable) return; replace(await call(`${base}/validate`, { expectedRevision: draft.revision }), false); setReport(await call(`${base}/validation-report`)); });
@@ -448,7 +610,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
                 <p>{localText(discovery.selection_reason || discovery.result?.selection_reason, locale)}</p>
                 {Object.keys(discovery.field_sources || {}).length > 0 && <><p>{tr(`来源：本次SAP只读查询；已核对${Object.keys(discovery.field_sources).length}个参数。`, `Source: this read-only SAP query; ${Object.keys(discovery.field_sources).length} parameters verified.`)}</p><details><summary>{tr("样本来源详情", "Sample source details")}</summary>{discovery.query_count !== undefined && <p>{tr("数据读取次数：", "Data reads: ")}{discovery.query_count}</p>}<dl>{Object.entries(discovery.field_sources).map(([field, source]: [string, any]) => <div key={field}><dt>{localText(schema.properties?.[field]?.title, locale) || field}</dt><dd><code>{source.source_field}</code> · <code>{source.evidence_ref}</code></dd></div>)}</dl></details></>}
                 {(discovery.missing_fields || []).length > 0 && <p>{tr("仍需补充：", "Still required: ")}{discovery.missing_fields.map((field: string) => localText(schema.properties?.[field]?.title, locale) || field).join("、")}</p>}
-                {hasVerifiedSample && <label className="draft-checkbox"><input type="checkbox" disabled={!validationActionable || discoveryInputHash !== sampleFingerprint} checked={sampleConfirmed} onChange={(event) => setConfirmedSample(event.target.checked ? sampleFingerprint : "")} />{tr("已核对回填参数，确认用于本次试运行", "I reviewed the proposed parameters and confirm this trial")}</label>}
+                {hasVerifiedSample && <label className="draft-checkbox"><input type="checkbox" disabled={!validationActionable || discoveryInputHash !== sampleFingerprint} checked={sampleConfirmed} onChange={(event) => confirmSample(event.target.checked)} />{tr(acceptanceSampleCase === null ? "已核对回填参数，确认用于本次试运行" : "已核对回填参数，确认用于当前验收案例", acceptanceSampleCase === null ? "I reviewed the proposed parameters and confirm this trial" : "I reviewed the proposed parameters and confirm this acceptance case")}</label>}
               </div>}
             </>}
           </div>
@@ -456,8 +618,14 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         <AgentSampleProgress open={sampleDialogOpen} value={discovery} locale={locale} canRetry={validationActionable} fields={selectingSampleFields ? sampleFields : undefined} selectedFields={selectedSampleFields} onSelection={setSelectedSampleFields} onStart={discover} onClose={() => setSampleDialogOpen(false)} onCancel={cancelSample} onRetry={chooseSampleFields} onReview={reviewSample} onAfterClose={() => { if (sampleReviewFocus.current) { sampleReviewFocus.current = false; sampleInputsRef.current?.focus(); } }} />
         <AgentTrialProgress open={trialDialogOpen} run={run} trial={trial} locale={locale} connectionError={trialConnectionError} errorMessage={error} onClose={() => setTrialDialogOpen(false)} onCancel={cancelTrial} onReview={() => { trialReviewFocus.current = true; setTrialDialogOpen(false); }} onAfterClose={() => { if (trialReviewFocus.current) { trialReviewFocus.current = false; trialResultRef.current?.focus(); } }} />
       </section>
-      <section className="agent-panel"><h2>{tr("试运行与验收", "Trial and acceptance")}</h2><p>{tr("自动检查、试运行和正式验收分别记录，不相互替代。", "Automatic checks, trials and formal acceptance are recorded separately.")}</p><dl><dt>{tr("自动检查", "Automatic checks")}</dt><dd>{staticLabel}</dd><dt>{tr("正式验收", "Formal acceptance")}</dt><dd>{draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</dd></dl>{(acceptance?.source_version || acceptance?.reused_from_version) && <p>{tr("复用原版本验收：", "Acceptance reused from version: ")}{acceptance.source_version || acceptance.reused_from_version}</p>}{publishability?.blockers?.length > 0 && <ul className="draft-blockers">{publishability.blockers.map((item: any, index: number) => <li key={index}>{localText(item.message || item.description, locale) || tr("正式验收或发布条件尚未满足。", "Formal acceptance or publication conditions remain unmet.")}<details><summary>{tr("技术原因", "Technical reason")}</summary><code>{typeof item === "string" ? item : item.code}</code></details></li>)}</ul>}
-        {trialRunId ? <><p>{tr("试运行修订", "Trial revision")}: {trial?.revision ?? trial?.draft_revision ?? "—"} · {draftStatus(run?.status || trial?.status, locale)}{(trial?.revision ?? trial?.draft_revision) !== undefined && (trial?.revision ?? trial?.draft_revision) !== draft.revision && <strong> · {tr("历史修订结果，不适用于当前定义", "Historical result; not acceptance for this revision")}</strong>}</p>{run && !draftTerminal.has(run.status) && <><TrialProgressSummary run={run} trial={trial} locale={locale} connectionError={trialConnectionError} /><button type="button" className="agent-secondary-action" onClick={() => setTrialDialogOpen(true)}>{tr("查看试运行进度", "View trial progress")}</button></>}{run && draftTerminal.has(run.status) && <div ref={trialResultRef} tabIndex={-1}><AgentDraftResult run={run} trial={trial} locale={locale} runPath={runPath} apiBase={apiBase} /></div>}{!run && <a href={`${runPath}?run=${encodeURIComponent(trialRunId)}`} target="_blank" rel="noreferrer">{tr("查看试运行记录", "Open trial run")}</a>}</> : <p>{tr("当前没有试运行记录。", "No trial has been run yet.")}</p>}<button className="agent-secondary-action" disabled={busy} onClick={() => action(async () => { setReport(await call(`${base}/validation-report`)); await refresh(false); })}>{tr("刷新验证状态", "Refresh validation status")}</button>
+      <section className="agent-panel" ref={acceptanceResultRef} tabIndex={-1}><h2>{tr("试运行与验收", "Trial and acceptance")}</h2><p>{tr("自动检查、试运行和正式验收分别记录，不相互替代。正式验收支持1–5组必选案例，全部通过才会解锁发布。", "Automatic checks, trials and formal acceptance are recorded separately. Formal acceptance supports 1–5 required cases; every case must pass before publication is unlocked.")}</p><dl><dt>{tr("自动检查", "Automatic checks")}</dt><dd>{staticLabel}</dd><dt>{tr("正式验收", "Formal acceptance")}</dt><dd>{draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</dd></dl>{(acceptance?.source_version || acceptance?.reused_from_version) && <p>{tr("复用原版本验收：", "Acceptance reused from version: ")}{acceptance.source_version || acceptance.reused_from_version}</p>}{publishability?.blockers?.length > 0 && <ul className="draft-blockers">{publishability.blockers.map((item: any, index: number) => <li key={index}>{localText(item.message || item.description, locale) || tr("正式验收或发布条件尚未满足。", "Formal acceptance or publication conditions remain unmet.")}<details><summary>{tr("技术原因", "Technical reason")}</summary><code>{typeof item === "string" ? item : item.code}</code></details></li>)}</ul>}
+        {trialRunId ? <><p>{tr("试运行修订", "Trial revision")}: {trial?.revision ?? trial?.draft_revision ?? "—"} · {draftStatus(run?.status || trial?.status, locale)}{(trial?.revision ?? trial?.draft_revision) !== undefined && (trial?.revision ?? trial?.draft_revision) !== draft.revision && <strong> · {tr("历史修订结果，不适用于当前定义", "Historical result; not acceptance for this revision")}</strong>}</p>{run && !draftTerminal.has(run.status) && <><TrialProgressSummary run={run} trial={trial} locale={locale} connectionError={trialConnectionError} /><button type="button" className="agent-secondary-action" onClick={() => setTrialDialogOpen(true)}>{tr("查看试运行进度", "View trial progress")}</button></>}{run && draftTerminal.has(run.status) && <div ref={trialResultRef} tabIndex={-1}><AgentDraftResult run={run} trial={trial} locale={locale} runPath={runPath} apiBase={apiBase} /></div>}{!run && <a href={`${runPath}?run=${encodeURIComponent(trialRunId)}`} target="_blank" rel="noreferrer">{tr("查看试运行记录", "Open trial run")}</a>}</> : <p>{tr("当前没有试运行记录。", "No trial has been run yet.")}</p>}
+        {trial?.verdict === "INCONCLUSIVE" && <p className="agent-alert">{tr("当前试运行证据不完整。允许继续正式验收，但最终结果很可能为BLOCKED。", "The current trial has incomplete evidence. Formal acceptance may continue, but is likely to be BLOCKED.")}</p>}
+        <AcceptanceSummary campaign={acceptanceCampaign} locale={locale} onOpen={() => setAcceptanceProgressOpen(true)} />
+        <div className="agent-actions"><button type="button" disabled={!formalAcceptanceReady || campaignActive} onClick={openAcceptance}>{tr(acceptanceCampaign ? "更换案例并重新验收" : "开始正式验收", acceptanceCampaign ? "Change cases and run again" : "Start formal acceptance")}</button><button className="agent-secondary-action" disabled={busy} onClick={() => action(async () => { setReport(await call(`${base}/validation-report`)); await refresh(false); })}>{tr("刷新验证状态", "Refresh validation status")}</button></div>
+        {!formalAcceptanceReady && <p>{acceptance?.reused_validation ? tr("此纯文案修订已复用来源版本的PASS验收，无需再次访问SAP。", "This documentation-only revision already reuses the source version PASS acceptance; SAP does not need to be queried again.") : tr("请先确认技术ID、保存修改、通过自动检查，并完成一次具备业务结果且只读审计通过的试运行。", "Confirm the technical ID, save edits, pass automatic checks, and complete a trial with business output and a passing read-only audit.")}</p>}
+        <AgentAcceptanceSetup open={acceptanceSetupOpen} locale={locale} schema={schema} mode={manifest.validation?.acceptanceMode || "three_stage"} runtime={draft.formal_acceptance_runtime} cases={acceptanceCases} currentInput={acceptanceDefaultInput} currentSecrets={secrets} sampleInput={discovery?.input} canUseSample={sampleConfirmed} disabled={!formalAcceptanceReady} onCases={setAcceptanceCases} onFindSample={findAcceptanceSample} onClose={() => setAcceptanceSetupOpen(false)} onStart={startAcceptance} />
+        <AgentAcceptanceProgress open={acceptanceProgressOpen} locale={locale} campaign={acceptanceCampaign} connectionError={acceptanceConnectionError} apiBase={apiBase} draftId={draft.draft_id} onClose={() => { setAcceptanceProgressOpen(false); window.setTimeout(() => acceptanceResultRef.current?.focus(), 0); }} onCancel={cancelAcceptance} onAdjust={() => { setAcceptanceProgressOpen(false); window.setTimeout(() => chatRef.current?.focus(), 0); }} onRetry={() => { setAcceptanceProgressOpen(false); window.setTimeout(openAcceptance, 0); }} />
       </section>
       <section className="agent-panel"><h2>{tr("输入与输出", "Inputs and outputs")}</h2><div className="draft-basic-grid"><div><h3>{tr("您需要提供", "What you provide")}</h3><ul>{draftInputLabels(manifest.execution?.inputSchema || {}, locale, input).map((item) => <li key={item.key}>{item.label}<span className="draft-field-requirement">{item.requirement}</span></li>)}</ul></div><div><h3>{tr("您将获得", "What you receive")}</h3><ul>{(manifest.outputs?.[locale] || []).map((item: string, index: number) => <li key={index}>{item}</li>)}</ul></div></div></section>
       <section className="agent-panel"><h2>{tr("业务处理步骤", "Business steps")}</h2><ol className="draft-business-steps">{(manifest.workflow || []).map((item: any, index: number) => <li key={item.id || index}><h3>{localText(item.title, locale)}</h3><p>{localText(item.description, locale)}</p></li>)}</ol></section>

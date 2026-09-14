@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .codex_planner import CodexPlanner, Planner
 from .agent_lifecycle import AgentLifecycleError, AgentLifecycleService
 from .agent_discovery_jobs import AgentDiscoveryJobs
+from .agent_acceptance_campaigns import AgentAcceptanceJobs, TERMINAL_CAMPAIGN_STATUSES
 from .sample_discovery import SampleDiscoveryService
 from .config import Settings
 from .database import RunStore
@@ -52,6 +53,7 @@ from .models import (
     AgentLiveValidationRequest,
     AgentPublishRequest,
     AgentSampleDiscoveryRequest,
+    AgentAcceptanceCampaignRequest,
     AgentStaticValidationRequest,
     AgentUndoRequest,
     AgentVersionDraftRequest,
@@ -393,6 +395,9 @@ def create_app(
         settings, store, agent_lifecycle, sdk_registry,
         SampleDiscoveryService(settings, store, harness_broker),
     )
+    acceptance_campaigns = AgentAcceptanceJobs(
+        settings, store, agent_lifecycle, coordinator, sdk_registry,
+    )
     role_matching = RoleMatchingService(
         settings, store, business_agents, agent_runtime, workflow_drafts
     )
@@ -416,6 +421,7 @@ def create_app(
         try:
             yield
         finally:
+            await acceptance_campaigns.stop()
             await sample_discovery.stop()
             await agent_lifecycle.stop()
             await role_matching.stop()
@@ -452,6 +458,7 @@ def create_app(
     app.state.workflow_management = workflow_management
     app.state.agent_lifecycle = agent_lifecycle
     app.state.agent_sample_discovery = sample_discovery
+    app.state.agent_acceptance_campaigns = acceptance_campaigns
     app.state.role_matching = role_matching
     app.state.restricted_artifacts = restricted_artifacts
     app.state.sdk_manager = sdk_registry
@@ -2116,7 +2123,15 @@ def create_app(
     @app.get("/api/authoring/agents/{draft_id}")
     def get_managed_agent_draft(draft_id: str) -> dict[str, Any]:
         try:
-            return agent_lifecycle.get_draft(draft_id)
+            value = agent_lifecycle.get_draft(draft_id)
+            try:
+                value["formal_acceptance_runtime"] = sdk_registry.runtime_snapshot()
+            except Exception as exc:
+                value["formal_acceptance_runtime"] = {
+                    "available": False,
+                    "error": {"code": str(getattr(exc, "code", "runtime_not_selectable"))},
+                }
+            return value
         except KeyError as exc:
             raise HTTPException(404, "Agent draft not found") from exc
 
@@ -2242,6 +2257,91 @@ def create_app(
             return await sample_discovery.cancel(draft_id, run_id)
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/acceptance-campaigns", status_code=202)
+    async def start_managed_agent_acceptance_campaign(
+        draft_id: str, payload: AgentAcceptanceCampaignRequest,
+    ) -> dict[str, Any]:
+        try:
+            return acceptance_campaigns.start(draft_id, payload)
+        except (AgentLifecycleError, RunExecutionError, KeyError, ValueError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.get("/api/authoring/agents/{draft_id}/acceptance-campaigns")
+    def list_managed_agent_acceptance_campaigns(draft_id: str) -> list[dict[str, Any]]:
+        try:
+            agent_lifecycle.get_draft(draft_id)
+            return acceptance_campaigns.list(draft_id)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.get("/api/authoring/agents/{draft_id}/acceptance-campaigns/{campaign_id}")
+    def get_managed_agent_acceptance_campaign(
+        draft_id: str, campaign_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return acceptance_campaigns.get(draft_id, campaign_id)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.get("/api/authoring/agents/{draft_id}/acceptance-campaigns/{campaign_id}/events")
+    async def managed_agent_acceptance_events(
+        request: Request, draft_id: str, campaign_id: str,
+        after: int = Query(0, ge=0),
+    ) -> StreamingResponse:
+        try:
+            acceptance_campaigns.get(draft_id, campaign_id)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+        async def stream() -> AsyncIterator[str]:
+            last_event_id = request.headers.get("last-event-id", "")
+            try:
+                resumed = int(last_event_id) if last_event_id else 0
+            except ValueError:
+                resumed = 0
+            sequence = max(after, resumed)
+            while True:
+                if await request.is_disconnected():
+                    return
+                events = acceptance_campaigns.events(draft_id, campaign_id, sequence)
+                for event in events:
+                    sequence = int(event["sequence"])
+                    yield (
+                        f"id: {sequence}\nevent: {event['type']}\n"
+                        f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    )
+                current = acceptance_campaigns.get(draft_id, campaign_id)
+                if current["status"] in TERMINAL_CAMPAIGN_STATUSES and not events:
+                    return
+                if not events:
+                    yield ": heartbeat\n\n"
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/authoring/agents/{draft_id}/acceptance-campaigns/{campaign_id}/cancel")
+    async def cancel_managed_agent_acceptance_campaign(
+        draft_id: str, campaign_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return await acceptance_campaigns.cancel(draft_id, campaign_id)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.get("/api/authoring/agents/{draft_id}/acceptance-campaigns/{campaign_id}/artifacts/{name}")
+    def managed_agent_acceptance_artifact(
+        draft_id: str, campaign_id: str, name: str,
+    ) -> FileResponse:
+        try:
+            path = acceptance_campaigns.artifact(draft_id, campaign_id, name)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+        media = "application/json" if name.endswith(".json") else "text/markdown; charset=utf-8"
+        return FileResponse(path, media_type=media, filename=name)
 
     @app.get("/api/authoring/agents/{draft_id}/validation-report")
     def managed_agent_validation_report(draft_id: str) -> dict[str, Any]:

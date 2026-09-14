@@ -360,6 +360,13 @@ def evaluate(inputs):
         "missing_evidence": [_localized_gap(code) for code in sorted(gaps)],
         "findings": [
             {
+                "code": "NO_UNIT_CONVERSION",
+                "text": {
+                    "zh": "系统不执行单位换算；只有采购订单单位与收货单位可直接比较时才形成数量结论。",
+                    "en": "No unit conversion is performed; quantity conclusions are produced only when the purchase-order and receipt units are directly comparable.",
+                },
+            },
+            {
                 "code": "DELIVERY_COMPLETE_IS_NOT_RECEIPT_EVIDENCE",
                 "text": {
                     "zh": "SAP交货完成标识与实际入库数量分别判断。",

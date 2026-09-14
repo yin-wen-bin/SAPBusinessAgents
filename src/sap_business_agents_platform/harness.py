@@ -1823,21 +1823,36 @@ class CodexHarnessController:
         workspace.mkdir(parents=True, exist_ok=True)
         from .authoring_workspace import AuthoringWorkspace
         from .runtime_execution import execution_snapshot, owned_client, command_preflight, public_tool_event
-        # A new run owns a distinct copy; previous runs and their files stay intact.
-        engineering = AuthoringWorkspace(self.settings.repository_root,
-            self.settings.data_root / "harness" / run_id / ("engineering-" + secrets.token_hex(8)))
+        direct_baseline = state.get("acceptance_direct_baseline") is True
+        full_access = not direct_baseline
+        # An independent acceptance baseline receives an empty, read-only task
+        # directory.  Ordinary free queries keep their engineering work copy.
+        engineering = None if direct_baseline else AuthoringWorkspace(
+            self.settings.repository_root,
+            self.settings.data_root / "harness" / run_id / ("engineering-" + secrets.token_hex(8)),
+        )
         try:
             if not model or not reasoning_effort:
                 raise RuntimeError("runtime_execution_binding_missing")
-            engineering.prepare(None, current_source=True)
-            workspace = engineering.source
-            self.store.update_harness_state(run_id, {"execution_snapshot": execution_snapshot(model=model, effort=reasoning_effort),
-                "workspace_id": engineering.root.name, "base_commit": engineering.base_commit,
-                "base_digest": engineering.base_digest})
+            snapshot = execution_snapshot(model=model, effort=reasoning_effort)
+            if engineering is not None:
+                engineering.prepare(None, current_source=True)
+                workspace = engineering.source
+                snapshot.update({"workspace_id": engineering.root.name,
+                                 "base_commit": engineering.base_commit,
+                                 "base_digest": engineering.base_digest})
+            else:
+                workspace = self.settings.data_root / "acceptance" / run_id / "baseline-workspace"
+                workspace.mkdir(parents=True, exist_ok=True)
+                snapshot.update({"workspace_id": run_id, "candidate_access": False})
+            self.store.update_harness_state(run_id, {"execution_snapshot": snapshot})
         except BaseException:
             self.broker.close_session(run_id)
             raise
-        codex = _safe_codex(self.settings, run_id, capability, workspace, full_access=True)
+        codex = _safe_codex(
+            self.settings, run_id, capability, workspace,
+            allow_web=not direct_baseline, full_access=full_access,
+        )
         web_search_count = 0
         self.store.append_event(
             run_id,
@@ -1845,30 +1860,32 @@ class CodexHarnessController:
             {
                 "runtime": "codex_app_server",
                 "protocol": "agent_runtime.v2",
-                "web_search": True,
+                "web_search": not direct_baseline,
+                "acceptance_direct_baseline": direct_baseline,
                 "turn_count": turn_count,
             },
         )
         try:
             async with owned_client(codex):
-                preflight = await command_preflight(codex, workspace)
-                self.store.append_event(run_id, "runtime_command_preflight", preflight)
+                if full_access:
+                    preflight = await command_preflight(codex, workspace)
+                    self.store.append_event(run_id, "runtime_command_preflight", preflight)
                 if thread_id:
                     thread = await codex.thread_resume(
                         thread_id,
                         approval_mode=_approval_mode(),
-                        developer_instructions=_developer_instructions(full_access=True),
+                        developer_instructions=_developer_instructions(full_access=full_access),
                         cwd=str(workspace),
                         model=model,
-                        sandbox=_sandbox(full_access=True),
+                        sandbox=_sandbox(full_access=full_access),
                     )
                 else:
                     thread = await codex.thread_start(
                         approval_mode=_approval_mode(),
-                        developer_instructions=_developer_instructions(full_access=True),
+                        developer_instructions=_developer_instructions(full_access=full_access),
                         cwd=str(workspace),
                         model=model,
-                        sandbox=_sandbox(full_access=True),
+                        sandbox=_sandbox(full_access=full_access),
                     )
                     thread_id = thread.id
                 self.store.update_run(run_id, thread_id=thread_id)
@@ -1892,7 +1909,7 @@ class CodexHarnessController:
                     approval_mode=_approval_mode(),
                     model=model,
                     output_schema=output_schema(_HARNESS_OUTPUT_SCHEMA, state.get("acceptance_spec")),
-                    sandbox=_sandbox(full_access=True),
+                    sandbox=_sandbox(full_access=full_access),
                 )
                 self._active_turns[run_id] = turn
                 self.store.update_harness_state(
@@ -1921,7 +1938,7 @@ class CodexHarnessController:
                                 {"turn_id": turn.id, "code": turn_error[0], "message": turn_error[1]},
                             )
                             raise RuntimeError(f"{turn_error[0]}:{turn_error[1]}")
-                    custom_kind, custom_topic = _custom_tool_kind(item, full_access=True)
+                    custom_kind, custom_topic = _custom_tool_kind(item, full_access=full_access)
                     if custom_kind == "forbidden":
                         await _best_effort_interrupt(turn)
                         raise RuntimeError("capability_isolation_failed:custom_tool")
@@ -2266,7 +2283,13 @@ class CodexHarnessController:
             self.broker.close_session(run_id)
             from .runtime_changesets import RuntimeChangeSets
             try:
-                change_set = RuntimeChangeSets(self.settings.data_root / "runtime-change-sets").create(engineering, source_id=run_id)
+                change_set = (
+                    RuntimeChangeSets(self.settings.data_root / "runtime-change-sets").create(
+                        engineering, source_id=run_id
+                    )
+                    if engineering is not None
+                    else None
+                )
                 if change_set:
                     self.store.update_harness_state(run_id, {"change_set_id": change_set["change_set_id"]})
                     self.store.append_event(run_id, "runtime_changeset_created", {
