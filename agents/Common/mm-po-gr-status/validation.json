@@ -1,0 +1,291 @@
+{
+  "schema_version": "1.0",
+  "type": "formal_acceptance",
+  "campaign_id": "campaign_9ed735b05a414c05bc83",
+  "draft_id": "agent_draft_bc9c4443c61c0c5c1d88e6a9",
+  "agent_id": "mm-po-gr-status",
+  "revision": 10,
+  "tested_at": "2026-09-14T13:41:07.511697+00:00",
+  "started_at": "2026-09-14T13:13:14.226122+00:00",
+  "completed_at": "2026-09-14T13:41:07.511697+00:00",
+  "execution_digest": "sha256:5ec6e74963e3c1119fa4c2ca0dbe777f184e004863d0870c295668f4f8f40033",
+  "managed_rule_digest": "sha256:417faa4bb296e5a8e68669eb8b6d20f7b591e872d950f64c159a038c8e007cca",
+  "acceptance_contract_digest": "sha256:3aa94dd0c54bae461768d6a09470dd4d373f10724ba1ac08dfb05fe0239f2ef4",
+  "acceptanceMode": "three_stage",
+  "verdict": "PASS",
+  "executable": true,
+  "fixedAgentComparison": "MATCH",
+  "freeQueryComparison": "MATCH",
+  "blockingLimitations": [],
+  "runtime": {
+    "provider_id": "codex",
+    "sdk_id": "codex-python-sdk",
+    "version": "0.147.0",
+    "cli_version": "0.147.0",
+    "model": "gpt-5.6-sol",
+    "model_source": "system_settings",
+    "reasoning_effort": "max",
+    "reasoning_effort_source": "system_settings",
+    "model_catalog_digest": "26da4f344b32be72205ab275f0de910b375a3d5b61cb12f8f20a89184a45e717",
+    "model_check_digest": "4833e11bbc7d64a80c5eb0386cc204abe6a2735b6ff0a1eb525531162f0453cd",
+    "runtime_configuration_revision": 24,
+    "configuration_digest": "f9b5f0bdd84f818d6396ae539741ed6770a3283da93ede738f2577dd5fe28ff4",
+    "capabilities": [
+      "planning",
+      "tool_calling",
+      "mcp",
+      "streaming",
+      "resume",
+      "structured_output",
+      "cancel",
+      "authoring",
+      "workflow_authoring",
+      "role_matching"
+    ],
+    "integration_runtime": {
+      "adapter_id": "codex-app-server",
+      "resource_kinds": [
+        "app",
+        "mcp_server"
+      ],
+      "features": {
+        "catalog": true,
+        "configured_discovery": true,
+        "status": true,
+        "authentication": true,
+        "configuration": true,
+        "direct_tool_call": true
+      },
+      "credential_owner": "runtime",
+      "readiness": "production",
+      "blockers": []
+    },
+    "selected_at": "2026-09-14T13:13:14.193718+00:00"
+  },
+  "case_count": 1,
+  "cases": [
+    {
+      "case_id": "case-1",
+      "verdict": "PASS",
+      "baseline": {
+        "schema_version": "4.0",
+        "run_id": "acceptance_635d32304d474ad7",
+        "runtime": "codex_sdk_direct_sap",
+        "runtime_snapshot": {
+          "provider_id": "codex",
+          "sdk_id": "codex-python-sdk",
+          "version": "0.147.0",
+          "cli_version": "0.147.0",
+          "model": "gpt-5.6-sol",
+          "model_source": "system_settings",
+          "reasoning_effort": "max",
+          "reasoning_effort_source": "system_settings",
+          "model_catalog_digest": "26da4f344b32be72205ab275f0de910b375a3d5b61cb12f8f20a89184a45e717",
+          "model_check_digest": "4833e11bbc7d64a80c5eb0386cc204abe6a2735b6ff0a1eb525531162f0453cd",
+          "runtime_configuration_revision": 24,
+          "configuration_digest": "f9b5f0bdd84f818d6396ae539741ed6770a3283da93ede738f2577dd5fe28ff4",
+          "capabilities": [
+            "planning",
+            "tool_calling",
+            "mcp",
+            "streaming",
+            "resume",
+            "structured_output",
+            "cancel",
+            "authoring",
+            "workflow_authoring",
+            "role_matching"
+          ],
+          "integration_runtime": {
+            "adapter_id": "codex-app-server",
+            "resource_kinds": [
+              "app",
+              "mcp_server"
+            ],
+            "features": {
+              "catalog": true,
+              "configured_discovery": true,
+              "status": true,
+              "authentication": true,
+              "configuration": true,
+              "direct_tool_call": true
+            },
+            "credential_owner": "runtime",
+            "readiness": "production",
+            "blockers": []
+          },
+          "selected_at": "2026-09-14T13:13:14.193718+00:00"
+        },
+        "candidate_access": false,
+        "sources": [
+          {
+            "tool": "sap_query_execute",
+            "http_method": "GET",
+            "semantic_read_only": false,
+            "read_only": true,
+            "evidence_ref": "ev_778e55b4c6e3ddf3b69289c9",
+            "plan_digest": "sha256:9c3926c9da52b0b0731a65402c2f0d3677e2195a405c52def479ff2cb79268cb",
+            "scope": [
+              {
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrderItem"
+              }
+            ]
+          },
+          {
+            "tool": "sap_query_execute",
+            "http_method": "GET",
+            "semantic_read_only": false,
+            "read_only": true,
+            "evidence_ref": "ev_59c4668f61882bb5e8d8918f",
+            "plan_digest": "sha256:601c0d80fb85fa511e0ecc6062ee652bb67c57bca9d4055a46ad06ebbc7be9aa",
+            "scope": [
+              {
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrderScheduleLine"
+              }
+            ]
+          },
+          {
+            "tool": "sap_query_execute",
+            "http_method": "GET",
+            "semantic_read_only": false,
+            "read_only": true,
+            "evidence_ref": "ev_0eba142bcc5179e3ccb0495c",
+            "plan_digest": "sha256:104621373a90133074511ea47ca8a7a520b2df23c9af287083285133787a36cb",
+            "scope": [
+              {
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrder"
+              }
+            ]
+          },
+          {
+            "tool": "sap_query_execute",
+            "http_method": "GET",
+            "semantic_read_only": false,
+            "read_only": true,
+            "evidence_ref": "ev_538710b320adb9c5c8fed68e",
+            "plan_digest": "sha256:2dba27c60240887ee9d674ee4ec7a2ae41be826b25f4369e3580ac3471421370",
+            "scope": [
+              {
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentItem"
+              }
+            ]
+          },
+          {
+            "tool": "sap_query_execute",
+            "http_method": "GET",
+            "semantic_read_only": false,
+            "read_only": true,
+            "evidence_ref": "ev_bcb13d203a75a996c5dac24d",
+            "plan_digest": "sha256:cee1d6b7094add84ef382660a0d1fc528e8c42a1cfa6820cf47a8f472b69d467",
+            "scope": [
+              {
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrderScheduleLine"
+              }
+            ]
+          }
+        ],
+        "tool_summary": [
+          {
+            "tool": "sap_query_execute",
+            "count": 5
+          }
+        ],
+        "result_hash": "sha256:c08a4bac7f51dc1c019922d74096b8b35fd16eaa2c462771cfa995d8ee9fbd10",
+        "normalized_result": {
+          "records": [
+            {
+              "source_complete": true,
+              "evidence_complete": true,
+              "business_status": "normal",
+              "purchase_order": "4500001466",
+              "purchase_order_item": "10",
+              "schedule_line": "1",
+              "receipt_status": "fully_received",
+              "delivery_complete": true,
+              "evidence_refs": [
+                "ev_0eba142bcc5179e3ccb0495c",
+                "ev_778e55b4c6e3ddf3b69289c9",
+                "ev_59c4668f61882bb5e8d8918f",
+                "ev_538710b320adb9c5c8fed68e",
+                "ev_bcb13d203a75a996c5dac24d"
+              ]
+            }
+          ],
+          "metrics": {
+            "schedule_line_count": 1,
+            "fully_received_count": 1,
+            "partially_received_count": 0,
+            "not_received_count": 0,
+            "inconclusive_count": 0
+          },
+          "limitations": [
+            "no_unit_conversion",
+            "delivery_complete_is_not_receipt_evidence"
+          ],
+          "source_complete": true,
+          "evidence_complete": true,
+          "business_complete": true,
+          "business_status": "normal",
+          "evidence_gap_codes": []
+        }
+      },
+      "free_query": {
+        "run_id": "acceptance_01c023e2435140d5",
+        "status": "completed",
+        "comparison": {
+          "verdict": "MATCH",
+          "expected_hash": "sha256:c08a4bac7f51dc1c019922d74096b8b35fd16eaa2c462771cfa995d8ee9fbd10",
+          "actual_hash": "sha256:c027d5e7f1da9615070d0661382b7cdd4e50725333259998d9a429b7c6790f72",
+          "differences": [],
+          "comparison_hash": "sha256:0e6eed7c996199d15074e158f47cb900f01f59acc2cd62ad40e541c73615a7a4"
+        }
+      },
+      "fixed_agent": {
+        "run_id": "acceptance_d505b2ee425c44de",
+        "status": "completed",
+        "comparison": {
+          "verdict": "MATCH",
+          "expected_hash": "sha256:c08a4bac7f51dc1c019922d74096b8b35fd16eaa2c462771cfa995d8ee9fbd10",
+          "actual_hash": "sha256:e942b3f99bfe55822ec951f873b4698999c18e8c9dd9276cacc8e3cf535a5aae",
+          "differences": [],
+          "comparison_hash": "sha256:91042122dc390e5b254c159ec90b42b77407ad50580977de2838c0807a31a543"
+        }
+      },
+      "source_anchors": {
+        "verdict": "PASS",
+        "method": "controller_replay_of_independent_baseline_get_plans",
+        "before": {
+          "verdict": "PASS",
+          "expected_hash": "sha256:f3d748f4427326e400ae14513fc41064e34a07dcebc61aa07d06189cdb5632e3",
+          "observed_hash": "sha256:f3d748f4427326e400ae14513fc41064e34a07dcebc61aa07d06189cdb5632e3",
+          "source_count": 5,
+          "captured_at": "2026-09-14T13:23:45.365403+00:00"
+        },
+        "after": {
+          "verdict": "PASS",
+          "expected_hash": "sha256:f3d748f4427326e400ae14513fc41064e34a07dcebc61aa07d06189cdb5632e3",
+          "observed_hash": "sha256:f3d748f4427326e400ae14513fc41064e34a07dcebc61aa07d06189cdb5632e3",
+          "source_count": 5,
+          "captured_at": "2026-09-14T13:41:07.497019+00:00"
+        },
+        "reason_code": null
+      },
+      "blocking_limitations": [],
+      "validation_issues": [],
+      "completed_at": "2026-09-14T13:41:07.500207+00:00"
+    }
+  ],
+  "read_only_audit": true,
+  "applicable_to_current_revision": true,
+  "report_digest": "sha256:145dceeede546cb3796c908388357f28f894a17c2a215662b1648a2f2e8b0d2b"
+}

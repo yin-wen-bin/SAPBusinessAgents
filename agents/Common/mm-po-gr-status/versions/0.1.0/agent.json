@@ -1,0 +1,1229 @@
+{
+  "schemaVersion": 2,
+  "slug": "mm-po-gr-status",
+  "module": "Common",
+  "title": {
+    "zh": "采购订单入库状态检查",
+    "en": "Purchase order receipt status check"
+  },
+  "summary": {
+    "zh": "按计划行交货日期核对采购订单的实际入库数量、未收货数量及入库状态。",
+    "en": "Check actual receipts, open quantity, and receipt status for purchase orders due on a schedule-line delivery date."
+  },
+  "status": "Draft",
+  "version": "0.1.0",
+  "owner": "Unassigned",
+  "tags": [
+    "Generated draft",
+    "Read-only"
+  ],
+  "sapModules": [
+    "Common"
+  ],
+  "transactions": [],
+  "tables": [
+    "SAP OData entity"
+  ],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "计划行交货日期",
+      "采购组织",
+      "采购组",
+      "工厂",
+      "供应商",
+      "采购订单号"
+    ],
+    "en": [
+      "Schedule-line delivery date",
+      "Purchasing organization",
+      "Purchasing group",
+      "Plant",
+      "Supplier",
+      "Purchase order"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "业务状态",
+      "查询源完整性",
+      "业务证据完整性",
+      "目标计划行数量",
+      "全部入库数量",
+      "部分入库数量",
+      "未入库数量",
+      "无法确认数量",
+      "逐计划行明细",
+      "业务报告"
+    ],
+    "en": [
+      "Business status",
+      "Query-source completeness",
+      "Business-evidence completeness",
+      "Target schedule-line count",
+      "Fully received count",
+      "Partially received count",
+      "Not received count",
+      "Inconclusive count",
+      "Schedule-line details",
+      "Business report"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "严格只读；仅执行SAP OData GET。",
+      "不执行单位换算；单位不可直接比较时返回无法确认。",
+      "SAP交货完成标识不替代物料凭证收货证据。"
+    ],
+    "en": [
+      "Strictly read-only; only SAP OData GET is used.",
+      "No unit conversion is performed; non-comparable units produce an inconclusive result.",
+      "The SAP delivery-complete flag does not replace material-document receipt evidence."
+    ]
+  },
+  "workflow": [
+    {
+      "id": "read-po-receipt-evidence",
+      "title": {
+        "zh": "读取采购订单与入库证据",
+        "en": "Read purchase-order and receipt evidence"
+      },
+      "description": {
+        "zh": "按目标日期读取计划行、采购订单项目与抬头、全部计划行以及物料凭证项目与抬头。",
+        "en": "Read target and complete schedule lines, purchase-order items and headers, and material-document items and headers."
+      },
+      "tools": [
+        {
+          "name": "sap_read_execute_plan",
+          "kind": "SAP Read Provider",
+          "purpose": {
+            "zh": "执行确定性的OData GET计划。",
+            "en": "Execute the deterministic OData GET plan."
+          }
+        }
+      ],
+      "executionStepIds": [
+        "collect_po_receipt_evidence"
+      ]
+    },
+    {
+      "id": "assess-po-receipt-status",
+      "title": {
+        "zh": "计算计划行入库状态",
+        "en": "Calculate schedule-line receipt status"
+      },
+      "description": {
+        "zh": "按稳定业务键去重，计算收货与冲销净额，并按计划行顺序分配后形成业务结果。",
+        "en": "Deduplicate stable business keys, calculate net receipts and reversals, and allocate them by schedule-line order to produce the business result."
+      },
+      "tools": [
+        {
+          "name": "managed_agent_rule",
+          "kind": "Managed deterministic rule",
+          "purpose": {
+            "zh": "生成入库指标、明细与建议。",
+            "en": "Produce receipt metrics, details, and recommendations."
+          }
+        }
+      ],
+      "executionStepIds": [
+        "evaluate_receipt_status"
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "relationshipPolicy": "advisory",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schedule_line_delivery_date"
+      ],
+      "properties": {
+        "schedule_line_delivery_date": {
+          "type": "string",
+          "format": "date",
+          "minLength": 1,
+          "title": {
+            "zh": "计划行交货日期",
+            "en": "Schedule-line delivery date"
+          }
+        },
+        "purchasing_organization": {
+          "type": "string",
+          "minLength": 1,
+          "title": {
+            "zh": "采购组织",
+            "en": "Purchasing organization"
+          }
+        },
+        "purchasing_group": {
+          "type": "string",
+          "minLength": 1,
+          "title": {
+            "zh": "采购组",
+            "en": "Purchasing group"
+          }
+        },
+        "plant": {
+          "type": "string",
+          "minLength": 1,
+          "title": {
+            "zh": "工厂",
+            "en": "Plant"
+          }
+        },
+        "supplier": {
+          "type": "string",
+          "minLength": 1,
+          "title": {
+            "zh": "供应商",
+            "en": "Supplier"
+          }
+        },
+        "purchase_order": {
+          "type": "string",
+          "minLength": 1,
+          "title": {
+            "zh": "采购订单号",
+            "en": "Purchase order"
+          }
+        }
+      }
+    },
+    "steps": [
+      {
+        "id": "collect_po_receipt_evidence",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "schema_version": "1.0",
+            "plan_kind": "multi_step",
+            "steps": [
+              {
+                "step_id": "target_schedule_lines",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrderScheduleLine",
+                "http_method": "GET",
+                "filters": [
+                  {
+                    "field": "ScheduleLineDeliveryDate",
+                    "operator": "eq",
+                    "value": "{{input.schedule_line_delivery_date}}"
+                  },
+                  {
+                    "field": "PurchasingDocument",
+                    "operator": "eq",
+                    "value": "{{input.purchase_order}}",
+                    "omitIfEmpty": "{{input.purchase_order?}}"
+                  }
+                ],
+                "select_fields": [
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "ScheduleLine",
+                  "ScheduleLineDeliveryDate",
+                  "ScheduleLineOrderQuantity",
+                  "PurchaseOrderQuantityUnit"
+                ],
+                "order_by": [
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "ScheduleLine"
+                ],
+                "response_summary_fields": [
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "ScheduleLine",
+                  "ScheduleLineDeliveryDate",
+                  "ScheduleLineOrderQuantity",
+                  "PurchaseOrderQuantityUnit"
+                ]
+              },
+              {
+                "step_id": "purchase_order_items",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrderItem",
+                "http_method": "GET",
+                "filters": [
+                  {
+                    "field": "Plant",
+                    "operator": "eq",
+                    "value": "{{input.plant}}",
+                    "omitIfEmpty": "{{input.plant?}}"
+                  }
+                ],
+                "filter_from_previous": [
+                  {
+                    "source_step_id": "target_schedule_lines",
+                    "field": "PurchaseOrder",
+                    "source_field": "PurchasingDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "source_step_id": "target_schedule_lines",
+                    "field": "PurchaseOrderItem",
+                    "source_field": "PurchasingDocumentItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ],
+                "select_fields": [
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Material",
+                  "PurchaseOrderItemText",
+                  "Plant",
+                  "StorageLocation",
+                  "OrderQuantity",
+                  "PurchaseOrderQuantityUnit",
+                  "PurchasingDocumentDeletionCode",
+                  "PurchaseOrderItemCategory",
+                  "GoodsReceiptIsExpected",
+                  "GoodsReceiptIsNonValuated",
+                  "IsCompletelyDelivered"
+                ],
+                "order_by": [
+                  "PurchaseOrder",
+                  "PurchaseOrderItem"
+                ],
+                "response_summary_fields": [
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Material",
+                  "PurchaseOrderItemText",
+                  "Plant",
+                  "StorageLocation",
+                  "OrderQuantity",
+                  "PurchaseOrderQuantityUnit",
+                  "PurchasingDocumentDeletionCode",
+                  "PurchaseOrderItemCategory",
+                  "GoodsReceiptIsExpected",
+                  "GoodsReceiptIsNonValuated",
+                  "IsCompletelyDelivered"
+                ]
+              },
+              {
+                "step_id": "purchase_order_headers",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrder",
+                "http_method": "GET",
+                "filters": [
+                  {
+                    "field": "PurchasingOrganization",
+                    "operator": "eq",
+                    "value": "{{input.purchasing_organization}}",
+                    "omitIfEmpty": "{{input.purchasing_organization?}}"
+                  },
+                  {
+                    "field": "PurchasingGroup",
+                    "operator": "eq",
+                    "value": "{{input.purchasing_group}}",
+                    "omitIfEmpty": "{{input.purchasing_group?}}"
+                  },
+                  {
+                    "field": "Supplier",
+                    "operator": "eq",
+                    "value": "{{input.supplier}}",
+                    "omitIfEmpty": "{{input.supplier?}}"
+                  }
+                ],
+                "filter_from_previous": [
+                  {
+                    "source_step_id": "purchase_order_items",
+                    "field": "PurchaseOrder",
+                    "source_field": "PurchaseOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ],
+                "select_fields": [
+                  "PurchaseOrder",
+                  "Supplier",
+                  "PurchasingOrganization",
+                  "PurchasingGroup",
+                  "PurchaseOrderDate"
+                ],
+                "order_by": [
+                  "PurchaseOrder"
+                ],
+                "response_summary_fields": [
+                  "PurchaseOrder",
+                  "Supplier",
+                  "PurchasingOrganization",
+                  "PurchasingGroup",
+                  "PurchaseOrderDate"
+                ]
+              },
+              {
+                "step_id": "all_schedule_lines",
+                "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_PurchaseOrderScheduleLine",
+                "http_method": "GET",
+                "filters": [
+                  {
+                    "field": "PurchasingDocument",
+                    "operator": "eq",
+                    "value": "{{input.purchase_order}}",
+                    "omitIfEmpty": "{{input.purchase_order?}}"
+                  }
+                ],
+                "filter_from_previous": [
+                  {
+                    "source_step_id": "purchase_order_items",
+                    "field": "PurchasingDocument",
+                    "source_field": "PurchaseOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "source_step_id": "purchase_order_items",
+                    "field": "PurchasingDocumentItem",
+                    "source_field": "PurchaseOrderItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ],
+                "select_fields": [
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "ScheduleLine",
+                  "ScheduleLineDeliveryDate",
+                  "ScheduleLineOrderQuantity",
+                  "PurchaseOrderQuantityUnit"
+                ],
+                "order_by": [
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "ScheduleLine"
+                ],
+                "response_summary_fields": [
+                  "PurchasingDocument",
+                  "PurchasingDocumentItem",
+                  "ScheduleLine",
+                  "ScheduleLineDeliveryDate",
+                  "ScheduleLineOrderQuantity",
+                  "PurchaseOrderQuantityUnit"
+                ]
+              },
+              {
+                "step_id": "material_document_items",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentItem",
+                "http_method": "GET",
+                "filters": [],
+                "filter_from_previous": [
+                  {
+                    "source_step_id": "purchase_order_items",
+                    "field": "PurchaseOrder",
+                    "source_field": "PurchaseOrder",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "source_step_id": "purchase_order_items",
+                    "field": "PurchaseOrderItem",
+                    "source_field": "PurchaseOrderItem",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ],
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Material",
+                  "Plant",
+                  "StorageLocation",
+                  "GoodsMovementType",
+                  "DebitCreditCode",
+                  "GoodsMovementIsCancelled",
+                  "QuantityInEntryUnit",
+                  "EntryUnit",
+                  "QuantityInBaseUnit",
+                  "MaterialBaseUnit",
+                  "ReversedMaterialDocumentYear",
+                  "ReversedMaterialDocument",
+                  "ReversedMaterialDocumentItem"
+                ],
+                "order_by": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem"
+                ],
+                "response_summary_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "MaterialDocumentItem",
+                  "PurchaseOrder",
+                  "PurchaseOrderItem",
+                  "Material",
+                  "Plant",
+                  "StorageLocation",
+                  "GoodsMovementType",
+                  "DebitCreditCode",
+                  "GoodsMovementIsCancelled",
+                  "QuantityInEntryUnit",
+                  "EntryUnit",
+                  "QuantityInBaseUnit",
+                  "MaterialBaseUnit",
+                  "ReversedMaterialDocumentYear",
+                  "ReversedMaterialDocument",
+                  "ReversedMaterialDocumentItem"
+                ]
+              },
+              {
+                "step_id": "material_document_headers",
+                "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_MaterialDocumentHeader",
+                "http_method": "GET",
+                "filters": [],
+                "filter_from_previous": [
+                  {
+                    "source_step_id": "material_document_items",
+                    "field": "MaterialDocumentYear",
+                    "source_field": "MaterialDocumentYear",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  },
+                  {
+                    "source_step_id": "material_document_items",
+                    "field": "MaterialDocument",
+                    "source_field": "MaterialDocument",
+                    "fanout": true,
+                    "fetch_all_for_binding": true
+                  }
+                ],
+                "select_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "PostingDate",
+                  "DocumentDate",
+                  "CreationDate",
+                  "CreationTime",
+                  "GoodsMovementCode",
+                  "InventoryTransactionType"
+                ],
+                "order_by": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument"
+                ],
+                "response_summary_fields": [
+                  "MaterialDocumentYear",
+                  "MaterialDocument",
+                  "PostingDate",
+                  "DocumentDate",
+                  "CreationDate",
+                  "CreationTime",
+                  "GoodsMovementCode",
+                  "InventoryTransactionType"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "evaluate_receipt_status",
+        "executor": "rule",
+        "operation": "managed_agent_rule",
+        "inputMapping": {
+          "run_input": {
+            "schedule_line_delivery_date": "{{input.schedule_line_delivery_date}}",
+            "purchasing_organization": "{{input.purchasing_organization?}}",
+            "purchasing_group": "{{input.purchasing_group?}}",
+            "plant": "{{input.plant?}}",
+            "supplier": "{{input.supplier?}}",
+            "purchase_order": "{{input.purchase_order?}}"
+          },
+          "evidence": "{{steps.collect_po_receipt_evidence.output}}"
+        }
+      }
+    ],
+    "outputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "business_status",
+        "source_complete",
+        "evidence_complete",
+        "schedule_line_count",
+        "fully_received_count",
+        "partially_received_count",
+        "not_received_count",
+        "inconclusive_count",
+        "records",
+        "business_report"
+      ],
+      "properties": {
+        "business_status": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "attention",
+            "inconclusive"
+          ],
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          },
+          "x-sapba-display": {
+            "format": "enum",
+            "labels": {
+              "normal": {
+                "zh": "正常",
+                "en": "Normal"
+              },
+              "attention": {
+                "zh": "需要关注",
+                "en": "Needs attention"
+              },
+              "inconclusive": {
+                "zh": "无法确认",
+                "en": "Inconclusive"
+              }
+            }
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务证据完整性",
+            "en": "Business-evidence completeness"
+          }
+        },
+        "schedule_line_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "目标计划行数量",
+            "en": "Target schedule-line count"
+          }
+        },
+        "fully_received_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "全部入库数量",
+            "en": "Fully received count"
+          }
+        },
+        "partially_received_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "部分入库数量",
+            "en": "Partially received count"
+          }
+        },
+        "not_received_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "未入库数量",
+            "en": "Not received count"
+          }
+        },
+        "inconclusive_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "无法确认数量",
+            "en": "Inconclusive count"
+          }
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "purchase_order",
+              "purchase_order_item",
+              "schedule_line",
+              "schedule_line_delivery_date",
+              "supplier",
+              "purchasing_organization",
+              "purchasing_group",
+              "plant",
+              "material",
+              "scheduled_quantity",
+              "received_quantity",
+              "open_quantity",
+              "unit",
+              "latest_goods_receipt_posting_date",
+              "delivery_complete",
+              "receipt_status"
+            ],
+            "properties": {
+              "purchase_order": {
+                "type": "string"
+              },
+              "purchase_order_item": {
+                "type": "string"
+              },
+              "schedule_line": {
+                "type": "string"
+              },
+              "schedule_line_delivery_date": {
+                "type": "string",
+                "format": "date"
+              },
+              "supplier": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "purchasing_organization": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "purchasing_group": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "material": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scheduled_quantity": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+              },
+              "received_quantity": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+              },
+              "open_quantity": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "latest_goods_receipt_posting_date": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date"
+              },
+              "delivery_complete": {
+                "type": "boolean"
+              },
+              "receipt_status": {
+                "type": "string",
+                "enum": [
+                  "fully_received",
+                  "partially_received",
+                  "not_received",
+                  "inconclusive"
+                ],
+                "x-sapba-display": {
+                  "format": "enum",
+                  "labels": {
+                    "fully_received": {
+                      "zh": "全部入库",
+                      "en": "Fully received"
+                    },
+                    "partially_received": {
+                      "zh": "部分入库",
+                      "en": "Partially received"
+                    },
+                    "not_received": {
+                      "zh": "未入库",
+                      "en": "Not received"
+                    },
+                    "inconclusive": {
+                      "zh": "无法确认",
+                      "en": "Inconclusive"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "title": {
+            "zh": "逐计划行明细",
+            "en": "Schedule-line details"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "业务报告",
+            "en": "Business report"
+          }
+        }
+      }
+    },
+    "outputMapping": {
+      "business_status": "{{steps.evaluate_receipt_status.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.evaluate_receipt_status.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.evaluate_receipt_status.output.workflow_output.evidence_complete}}",
+      "schedule_line_count": "{{steps.evaluate_receipt_status.output.workflow_output.schedule_line_count}}",
+      "fully_received_count": "{{steps.evaluate_receipt_status.output.workflow_output.fully_received_count}}",
+      "partially_received_count": "{{steps.evaluate_receipt_status.output.workflow_output.partially_received_count}}",
+      "not_received_count": "{{steps.evaluate_receipt_status.output.workflow_output.not_received_count}}",
+      "inconclusive_count": "{{steps.evaluate_receipt_status.output.workflow_output.inconclusive_count}}",
+      "records": "{{steps.evaluate_receipt_status.output.workflow_output.records}}",
+      "business_report": "{{steps.evaluate_receipt_status.output.workflow_output.business_report}}"
+    },
+    "acceptance": {
+      "schemaVersion": "1.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "purchase_order",
+        "purchase_order_item",
+        "schedule_line"
+      ],
+      "facts": [
+        "receipt_status",
+        "delivery_complete",
+        "source_complete",
+        "evidence_complete"
+      ],
+      "metrics": [
+        "schedule_line_count",
+        "fully_received_count",
+        "partially_received_count",
+        "not_received_count",
+        "inconclusive_count"
+      ],
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [
+        "no_unit_conversion",
+        "delivery_complete_is_not_receipt_evidence"
+      ]
+    }
+  },
+  "authoring": {
+    "source": "validated_free_query",
+    "correction": "Iteration 2: 交货日期：2026-07-17",
+    "freeQuerySession": {
+      "source_session_id": "fq_3c8c0aa947ca440e",
+      "accepted_iteration": 2,
+      "result_digest": "sha256:489886ff60c51343e09616a8c5a05fa585a4c9b2dc36cd9ea75c6f5f34ac222b",
+      "feedback_digest": "sha256:b27376b39162dbdc9d10d68f03fd96457d6d3255b2a2e8c0a2ef59e5bacaccfb",
+      "feedback_trace": [
+        {
+          "iteration": 2,
+          "feedback_type": "scope_or_filter",
+          "execution_action": "requery"
+        }
+      ],
+      "plan_digest": "sha256:ad12334c193a46471026500a9a66f3f5db8b85f9fe2239f1d8e6d7d070413c75",
+      "accepted_iteration_plan_digest": "sha256:2cb8bc16d843f3a002d576cc5acb91c2d504caffe2e9d22e62783f8fdc41043a",
+      "execution_source_run_id": "run_386d41a8ef1845b4",
+      "runtime": {
+        "provider_id": "codex",
+        "sdk_id": "codex-python-sdk",
+        "version": "0.147.0",
+        "cli_version": "0.147.0",
+        "model": "gpt-5.6-sol",
+        "model_source": "system_settings",
+        "reasoning_effort": "max",
+        "reasoning_effort_source": "system_settings",
+        "model_catalog_digest": "26da4f344b32be72205ab275f0de910b375a3d5b61cb12f8f20a89184a45e717",
+        "model_check_digest": "4833e11bbc7d64a80c5eb0386cc204abe6a2735b6ff0a1eb525531162f0453cd",
+        "runtime_configuration_revision": 24,
+        "configuration_digest": "83128380125109489494086efe36ac209cb110a303ea36806f60ee7418ff8c76",
+        "capabilities": [
+          "planning",
+          "tool_calling",
+          "mcp",
+          "streaming",
+          "resume",
+          "structured_output",
+          "cancel",
+          "authoring",
+          "workflow_authoring",
+          "role_matching"
+        ],
+        "integration_runtime": {
+          "adapter_id": "codex-app-server",
+          "resource_kinds": [
+            "app",
+            "mcp_server"
+          ],
+          "features": {
+            "catalog": true,
+            "configured_discovery": true,
+            "status": true,
+            "authentication": true,
+            "configuration": true,
+            "direct_tool_call": true
+          },
+          "credential_owner": "runtime",
+          "readiness": "production",
+          "blockers": []
+        },
+        "selected_at": "2026-09-11T07:15:11.992495+08:00"
+      },
+      "thread_id": "01a08d9a-a4a5-7892-be1b-d4e73763b077",
+      "expectation_statuses": [
+        "not_verifiable"
+      ],
+      "evidence_gaps": [],
+      "source_complete": true,
+      "business_complete": true,
+      "requires_parameterization_review": true
+    },
+    "parameterization": {
+      "status": "needs_review",
+      "input_fields": [
+        "schedule_line_delivery_date",
+        "purchasing_organization",
+        "purchasing_group",
+        "plant",
+        "supplier",
+        "purchase_order"
+      ],
+      "source_plan_digest": "sha256:ad12334c193a46471026500a9a66f3f5db8b85f9fe2239f1d8e6d7d070413c75",
+      "sample_value_hashes": {
+        "schedule_line_delivery_date": "sha256:a6e799e85971dc5f260e6fb0b44a065743082beac51eb16a4e80d20335092af1"
+      }
+    }
+  },
+  "validation": {
+    "schema_version": "1.0",
+    "type": "formal_acceptance",
+    "campaign_id": "campaign_9ed735b05a414c05bc83",
+    "draft_id": "agent_draft_bc9c4443c61c0c5c1d88e6a9",
+    "agent_id": "mm-po-gr-status",
+    "revision": 10,
+    "tested_at": "2026-09-14T13:41:07.511697+00:00",
+    "started_at": "2026-09-14T13:13:14.226122+00:00",
+    "completed_at": "2026-09-14T13:41:07.511697+00:00",
+    "execution_digest": "sha256:5ec6e74963e3c1119fa4c2ca0dbe777f184e004863d0870c295668f4f8f40033",
+    "managed_rule_digest": "sha256:417faa4bb296e5a8e68669eb8b6d20f7b591e872d950f64c159a038c8e007cca",
+    "acceptance_contract_digest": "sha256:3aa94dd0c54bae461768d6a09470dd4d373f10724ba1ac08dfb05fe0239f2ef4",
+    "acceptanceMode": "three_stage",
+    "verdict": "PASS",
+    "executable": true,
+    "fixedAgentComparison": "MATCH",
+    "freeQueryComparison": "MATCH",
+    "blockingLimitations": [],
+    "runtime": {
+      "provider_id": "codex",
+      "sdk_id": "codex-python-sdk",
+      "version": "0.147.0",
+      "cli_version": "0.147.0",
+      "model": "gpt-5.6-sol",
+      "model_source": "system_settings",
+      "reasoning_effort": "max",
+      "reasoning_effort_source": "system_settings",
+      "model_catalog_digest": "26da4f344b32be72205ab275f0de910b375a3d5b61cb12f8f20a89184a45e717",
+      "model_check_digest": "4833e11bbc7d64a80c5eb0386cc204abe6a2735b6ff0a1eb525531162f0453cd",
+      "runtime_configuration_revision": 24,
+      "configuration_digest": "f9b5f0bdd84f818d6396ae539741ed6770a3283da93ede738f2577dd5fe28ff4",
+      "capabilities": [
+        "planning",
+        "tool_calling",
+        "mcp",
+        "streaming",
+        "resume",
+        "structured_output",
+        "cancel",
+        "authoring",
+        "workflow_authoring",
+        "role_matching"
+      ],
+      "integration_runtime": {
+        "adapter_id": "codex-app-server",
+        "resource_kinds": [
+          "app",
+          "mcp_server"
+        ],
+        "features": {
+          "catalog": true,
+          "configured_discovery": true,
+          "status": true,
+          "authentication": true,
+          "configuration": true,
+          "direct_tool_call": true
+        },
+        "credential_owner": "runtime",
+        "readiness": "production",
+        "blockers": []
+      },
+      "selected_at": "2026-09-14T13:13:14.193718+00:00"
+    },
+    "case_count": 1,
+    "cases": [
+      {
+        "case_id": "case-1",
+        "verdict": "PASS",
+        "baseline": {
+          "schema_version": "4.0",
+          "run_id": "acceptance_635d32304d474ad7",
+          "runtime": "codex_sdk_direct_sap",
+          "runtime_snapshot": {
+            "provider_id": "codex",
+            "sdk_id": "codex-python-sdk",
+            "version": "0.147.0",
+            "cli_version": "0.147.0",
+            "model": "gpt-5.6-sol",
+            "model_source": "system_settings",
+            "reasoning_effort": "max",
+            "reasoning_effort_source": "system_settings",
+            "model_catalog_digest": "26da4f344b32be72205ab275f0de910b375a3d5b61cb12f8f20a89184a45e717",
+            "model_check_digest": "4833e11bbc7d64a80c5eb0386cc204abe6a2735b6ff0a1eb525531162f0453cd",
+            "runtime_configuration_revision": 24,
+            "configuration_digest": "f9b5f0bdd84f818d6396ae539741ed6770a3283da93ede738f2577dd5fe28ff4",
+            "capabilities": [
+              "planning",
+              "tool_calling",
+              "mcp",
+              "streaming",
+              "resume",
+              "structured_output",
+              "cancel",
+              "authoring",
+              "workflow_authoring",
+              "role_matching"
+            ],
+            "integration_runtime": {
+              "adapter_id": "codex-app-server",
+              "resource_kinds": [
+                "app",
+                "mcp_server"
+              ],
+              "features": {
+                "catalog": true,
+                "configured_discovery": true,
+                "status": true,
+                "authentication": true,
+                "configuration": true,
+                "direct_tool_call": true
+              },
+              "credential_owner": "runtime",
+              "readiness": "production",
+              "blockers": []
+            },
+            "selected_at": "2026-09-14T13:13:14.193718+00:00"
+          },
+          "candidate_access": false,
+          "sources": [
+            {
+              "tool": "sap_query_execute",
+              "http_method": "GET",
+              "semantic_read_only": false,
+              "read_only": true,
+              "evidence_ref": "ev_778e55b4c6e3ddf3b69289c9",
+              "plan_digest": "sha256:9c3926c9da52b0b0731a65402c2f0d3677e2195a405c52def479ff2cb79268cb",
+              "scope": [
+                {
+                  "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                  "odata_version": "2.0",
+                  "entity_set": "A_PurchaseOrderItem"
+                }
+              ]
+            },
+            {
+              "tool": "sap_query_execute",
+              "http_method": "GET",
+              "semantic_read_only": false,
+              "read_only": true,
+              "evidence_ref": "ev_59c4668f61882bb5e8d8918f",
+              "plan_digest": "sha256:601c0d80fb85fa511e0ecc6062ee652bb67c57bca9d4055a46ad06ebbc7be9aa",
+              "scope": [
+                {
+                  "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                  "odata_version": "2.0",
+                  "entity_set": "A_PurchaseOrderScheduleLine"
+                }
+              ]
+            },
+            {
+              "tool": "sap_query_execute",
+              "http_method": "GET",
+              "semantic_read_only": false,
+              "read_only": true,
+              "evidence_ref": "ev_0eba142bcc5179e3ccb0495c",
+              "plan_digest": "sha256:104621373a90133074511ea47ca8a7a520b2df23c9af287083285133787a36cb",
+              "scope": [
+                {
+                  "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                  "odata_version": "2.0",
+                  "entity_set": "A_PurchaseOrder"
+                }
+              ]
+            },
+            {
+              "tool": "sap_query_execute",
+              "http_method": "GET",
+              "semantic_read_only": false,
+              "read_only": true,
+              "evidence_ref": "ev_538710b320adb9c5c8fed68e",
+              "plan_digest": "sha256:2dba27c60240887ee9d674ee4ec7a2ae41be826b25f4369e3580ac3471421370",
+              "scope": [
+                {
+                  "service_name": "API_MATERIAL_DOCUMENT_SRV",
+                  "odata_version": "2.0",
+                  "entity_set": "A_MaterialDocumentItem"
+                }
+              ]
+            },
+            {
+              "tool": "sap_query_execute",
+              "http_method": "GET",
+              "semantic_read_only": false,
+              "read_only": true,
+              "evidence_ref": "ev_bcb13d203a75a996c5dac24d",
+              "plan_digest": "sha256:cee1d6b7094add84ef382660a0d1fc528e8c42a1cfa6820cf47a8f472b69d467",
+              "scope": [
+                {
+                  "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+                  "odata_version": "2.0",
+                  "entity_set": "A_PurchaseOrderScheduleLine"
+                }
+              ]
+            }
+          ],
+          "tool_summary": [
+            {
+              "tool": "sap_query_execute",
+              "count": 5
+            }
+          ],
+          "result_hash": "sha256:c08a4bac7f51dc1c019922d74096b8b35fd16eaa2c462771cfa995d8ee9fbd10",
+          "normalized_result": {
+            "records": [
+              {
+                "source_complete": true,
+                "evidence_complete": true,
+                "business_status": "normal",
+                "purchase_order": "4500001466",
+                "purchase_order_item": "10",
+                "schedule_line": "1",
+                "receipt_status": "fully_received",
+                "delivery_complete": true,
+                "evidence_refs": [
+                  "ev_0eba142bcc5179e3ccb0495c",
+                  "ev_778e55b4c6e3ddf3b69289c9",
+                  "ev_59c4668f61882bb5e8d8918f",
+                  "ev_538710b320adb9c5c8fed68e",
+                  "ev_bcb13d203a75a996c5dac24d"
+                ]
+              }
+            ],
+            "metrics": {
+              "schedule_line_count": 1,
+              "fully_received_count": 1,
+              "partially_received_count": 0,
+              "not_received_count": 0,
+              "inconclusive_count": 0
+            },
+            "limitations": [
+              "no_unit_conversion",
+              "delivery_complete_is_not_receipt_evidence"
+            ],
+            "source_complete": true,
+            "evidence_complete": true,
+            "business_complete": true,
+            "business_status": "normal",
+            "evidence_gap_codes": []
+          }
+        },
+        "free_query": {
+          "run_id": "acceptance_01c023e2435140d5",
+          "status": "completed",
+          "comparison": {
+            "verdict": "MATCH",
+            "expected_hash": "sha256:c08a4bac7f51dc1c019922d74096b8b35fd16eaa2c462771cfa995d8ee9fbd10",
+            "actual_hash": "sha256:c027d5e7f1da9615070d0661382b7cdd4e50725333259998d9a429b7c6790f72",
+            "differences": [],
+            "comparison_hash": "sha256:0e6eed7c996199d15074e158f47cb900f01f59acc2cd62ad40e541c73615a7a4"
+          }
+        },
+        "fixed_agent": {
+          "run_id": "acceptance_d505b2ee425c44de",
+          "status": "completed",
+          "comparison": {
+            "verdict": "MATCH",
+            "expected_hash": "sha256:c08a4bac7f51dc1c019922d74096b8b35fd16eaa2c462771cfa995d8ee9fbd10",
+            "actual_hash": "sha256:e942b3f99bfe55822ec951f873b4698999c18e8c9dd9276cacc8e3cf535a5aae",
+            "differences": [],
+            "comparison_hash": "sha256:91042122dc390e5b254c159ec90b42b77407ad50580977de2838c0807a31a543"
+          }
+        },
+        "source_anchors": {
+          "verdict": "PASS",
+          "method": "controller_replay_of_independent_baseline_get_plans",
+          "before": {
+            "verdict": "PASS",
+            "expected_hash": "sha256:f3d748f4427326e400ae14513fc41064e34a07dcebc61aa07d06189cdb5632e3",
+            "observed_hash": "sha256:f3d748f4427326e400ae14513fc41064e34a07dcebc61aa07d06189cdb5632e3",
+            "source_count": 5,
+            "captured_at": "2026-09-14T13:23:45.365403+00:00"
+          },
+          "after": {
+            "verdict": "PASS",
+            "expected_hash": "sha256:f3d748f4427326e400ae14513fc41064e34a07dcebc61aa07d06189cdb5632e3",
+            "observed_hash": "sha256:f3d748f4427326e400ae14513fc41064e34a07dcebc61aa07d06189cdb5632e3",
+            "source_count": 5,
+            "captured_at": "2026-09-14T13:41:07.497019+00:00"
+          },
+          "reason_code": null
+        },
+        "blocking_limitations": [],
+        "validation_issues": [],
+        "completed_at": "2026-09-14T13:41:07.500207+00:00"
+      }
+    ],
+    "read_only_audit": true,
+    "applicable_to_current_revision": true,
+    "report_digest": "sha256:145dceeede546cb3796c908388357f28f894a17c2a215662b1648a2f2e8b0d2b"
+  },
+  "managedRule": {
+    "entrypoint": "evaluate",
+    "sha256": "sha256:417faa4bb296e5a8e68669eb8b6d20f7b591e872d950f64c159a038c8e007cca"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "mm-po-gr-status",
+  "lifecycle_state": "active",
+  "state": "active",
+  "active_version": "0.1.0",
+  "latest_version": "0.1.0",
+  "active_digest": "sha256:d430ab2f9b7e8224ffba683f90bae0dd055bbf090f388826ccaa9f9cc4e3aba2",
+  "published_at": "2026-09-14T13:42:00.602191+00:00",
+  "git_branch": "codex/agent-mm-po-gr-status-publish-v0.1.0-24270620",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-14T13:42:00.619046+00:00",
+  "deactivated_at": null
+}
