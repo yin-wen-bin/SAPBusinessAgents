@@ -44,6 +44,7 @@ ALLOWED_RULE_OPERATIONS = {
     "managed_agent_rule",
 }
 ALLOWED_FAILURE_POLICIES = {"fail_run", "record_gap"}
+ALLOWED_CATALOG_MODULES = {"CO", "Common", "FI", "MM", "PP", "SD"}
 _TEMPLATE_EXPRESSION = re.compile(r"\{\{\s*[^{}]+?\s*\}\}")
 _HAN_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
@@ -143,6 +144,16 @@ class AgentRepository:
             state = payload.get("lifecycle_state", payload.get("state"))
             if state not in {"active", "inactive"}:
                 raise ManifestError(f"{path}.lifecycle_state must be active or inactive")
+            catalog_module = payload.get("catalog_module")
+            if catalog_module is not None and catalog_module not in ALLOWED_CATALOG_MODULES:
+                raise ManifestError(f"{path}.catalog_module is invalid")
+            catalog_revision = payload.get("catalog_revision")
+            if catalog_revision is not None and (
+                not isinstance(catalog_revision, int)
+                or isinstance(catalog_revision, bool)
+                or catalog_revision < 1
+            ):
+                raise ManifestError(f"{path}.catalog_revision must be a positive integer")
             payload["state"] = state
             return payload
         manifest_path = directory / "agent.json"
@@ -158,6 +169,24 @@ class AgentRepository:
             "latest_version": str(payload.get("version") or ""),
             "active_digest": agent_digest(payload),
         }
+
+    def repository_module(self, agent_id: str) -> str:
+        """Return the immutable module encoded by the published package path."""
+
+        return self._path(agent_id).parent.parent.name
+
+    def catalog_module(self, agent_id: str) -> str:
+        """Return the mutable catalog classification without changing the package."""
+
+        manifest = self.get(agent_id)
+        lifecycle = self.lifecycle(agent_id)
+        module = str(lifecycle.get("catalog_module") or manifest.get("module") or "Common")
+        if module not in ALLOWED_CATALOG_MODULES:
+            raise ManifestError(
+                f"Agent {agent_id} has an invalid catalog module",
+                issue_code="definition_invalid",
+            )
+        return module
 
     def is_active(self, agent_id: str) -> bool:
         return self.lifecycle(agent_id)["state"] == "active"

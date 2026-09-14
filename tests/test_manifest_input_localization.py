@@ -24,7 +24,7 @@ def _manifest(module: str, agent_id: str) -> dict[str, object]:
 def test_all_agent_manifests_have_locale_consistent_public_input_titles() -> None:
     manifests = AgentRepository(ROOT / "agents").list_all()
 
-    assert len(manifests) == 32
+    assert len(manifests) == 33
 
 
 def test_manifest_rejects_english_label_in_chinese_input_title() -> None:

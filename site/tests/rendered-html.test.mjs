@@ -38,9 +38,9 @@ test("static catalog contains all agents and the GitHub Pages base path", async 
     assert.match(html, new RegExp(`/SAPBusinessAgents/zh/agents/(?:FI|MM)/${slug}/`));
   }
   assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 5);
-  assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 2);
+  assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 1);
   assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
-  assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 5);
+  assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 6);
   assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 9);
   assert.match(html, /class="odata-version-tag">V2</);
   assert.doesNotMatch(html, /href="\/zh\//);
@@ -109,6 +109,13 @@ test("new MM detail pages render exact steps and fail-closed validation metadata
   }
 });
 
+test("catalog reclassification keeps the repository path as a redirect", async () => {
+  const canonical = await readPage("zh", "agents", "MM", "mm-po-gr-status");
+  const legacy = await readPage("zh", "agents", "Common", "mm-po-gr-status");
+  assert.match(canonical, /采购订单入库状态检查/);
+  assert.match(legacy, /url=\/SAPBusinessAgents\/zh\/agents\/MM\/mm-po-gr-status\//);
+});
+
 test("role matching assistant renders description and document input modes", async () => {
   const zh = await readPage("zh", "agents", "Common", "role-agent-matching");
   const en = await readPage("en", "agents", "Common", "role-agent-matching");
@@ -133,10 +140,15 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   assert.match(zh, /Agent 管理中心/);
   assert.match(en, /Agent management center/);
   for (const [locale, html] of [["zh", zh], ["en", en]]) {
-    assert.match(html, new RegExp(`class="agent-create-link" href="/SAPBusinessAgents/${locale}/ask/"`));
+    assert.match(html, new RegExp(`class="header-link" href="/SAPBusinessAgents/${locale}/ask/"`));
     assert.equal((html.match(/<select/g) || []).length, 3);
     assert.doesNotMatch(html, /agent-tabs|agent-create-form/);
   }
+  assert.match(component, /className="agent-create-link" href=\{askPath\}/);
+  assert.match(component, /\/catalog-module/);
+  assert.match(component, /expectedCatalogRevision/);
+  assert.match(workbench, /保存所属模块/);
+  assert.match(workbench, /当前草稿没有需要发布的业务变更/);
   assert.match(component, /创建新版本/);
   assert.match(component, /GET-only 真机验证/);
   assert.match(component, /发布并启用/);
@@ -379,6 +391,10 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /free-query-sessions/);
   assert.match(run, /feedback-input/);
   assert.match(run, /agent-draft/);
+  assert.match(run, /选择 Agent 所属模块/);
+  assert.match(runEn, /Choose the Agent catalog module/);
+  assert.match(run, /inferDraftModule/);
+  assert.match(run, /JSON\.stringify\(\{ module \}\)/);
   assert.match(run, /本轮没有新增SAP查询/);
   assert.match(run, /反馈处理进度/);
   assert.match(run, /Agent Runtime正在理解反馈/);

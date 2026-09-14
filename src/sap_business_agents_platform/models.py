@@ -430,6 +430,7 @@ class PlannerDecision(BaseModel):
 class DraftCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     correction: str = ""
+    module: Literal["CO", "Common", "FI", "MM", "PP", "SD"] | None = None
     workflow_draft_id: str | None = Field(default=None, alias="workflowDraftId")
     gap_id: str | None = Field(default=None, alias="gapId")
 
@@ -495,6 +496,16 @@ class AgentDraftUpdate(BaseModel):
     manifest: dict[str, Any] | None = None
     readme: str | None = Field(default=None, max_length=200_000)
     rules: str | None = Field(default=None, max_length=500_000)
+
+
+class AgentDraftCatalogModuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    module: Literal["CO", "Common", "FI", "MM", "PP", "SD"]
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+    expected_catalog_revision: int | None = Field(
+        default=None, alias="expectedCatalogRevision", ge=1
+    )
 
 
 class AgentDraftDeleteRequest(BaseModel):
@@ -617,6 +628,17 @@ class AgentVersionDraftRequest(BaseModel):
     expected_agent_hash: str = Field(
         alias="expectedAgentHash", pattern=r"^sha256:[0-9a-f]{64}$"
     )
+
+
+class AgentCatalogModuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    module: Literal["CO", "Common", "FI", "MM", "PP", "SD"]
+    expected_version: str = Field(alias="expectedVersion", pattern=r"^\d+\.\d+\.\d+$")
+    expected_agent_hash: str = Field(
+        alias="expectedAgentHash", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    expected_catalog_revision: int = Field(alias="expectedCatalogRevision", ge=1)
 
 
 class AgentLifecycleRequest(BaseModel):

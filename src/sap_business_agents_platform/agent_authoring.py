@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .acceptance import agent_execution_digest
 from .managed_rules import validate_managed_rule
 from .manifests import ManifestError, derive_input_display, validate_execution
 from .models import utc_now
@@ -179,7 +180,7 @@ class AgentAuthoringMixin:
         after = self.store.get_agent_authoring_revision(draft_id, target)["package"]
         return {"draft_id": draft_id, "from_revision": source, "to_revision": target, "changes": package_changes(before, after)}
 
-    def _apply_package(self, draft_id: str, expected_revision: int, package: dict[str, Any], *, kind: str, operation_id: str, record_turn: bool = True, decision: dict[str, Any] | None = None, safe_runtime: bool = False, deadline_check: Any = None, runtime_thread_id: str | None = None) -> dict[str, Any]:
+    def _apply_package(self, draft_id: str, expected_revision: int, package: dict[str, Any], *, kind: str, operation_id: str, record_turn: bool = True, decision: dict[str, Any] | None = None, safe_runtime: bool = False, deadline_check: Any = None, runtime_thread_id: str | None = None, allow_catalog_module_change: bool = False, preserve_validation: bool = False) -> dict[str, Any]:
         self._assert_operation(draft_id, operation_id, expected_revision)
         draft = self.store.get_agent_authoring_draft(draft_id)
         self._assert_editable(draft)
@@ -189,7 +190,7 @@ class AgentAuthoringMixin:
         identity_changed = self._prepare_identity_package(draft, package, kind=kind)
         if not isinstance(manifest, dict) or str(manifest.get("slug") or "") != draft["agent_id"]:
             raise self._authoring_error("Agent ID cannot change inside a draft.", "agent_id_immutable")
-        if manifest.get("module") != previous["manifest"].get("module"):
+        if manifest.get("module") != previous["manifest"].get("module") and not allow_catalog_module_change:
             raise self._authoring_error("Agent module cannot change inside a draft.", "agent_module_immutable")
         self._assert_manageable(manifest)
         manifest["version"] = draft.get("target_version") or manifest.get("version")
@@ -234,10 +235,48 @@ class AgentAuthoringMixin:
         if not diff:
             return self.get_draft(draft_id)
         risk = self._risk_class(draft, package)
-        draft.update(status="draft", revision=expected_revision + 1, risk_class=risk, validation_run_id=None, validation={}, updated_at=utc_now())
+        preserved_status = draft.get("status") or "draft"
+        preserved_validation_run_id = draft.get("validation_run_id")
+        preserved_validation = copy.deepcopy(draft.get("validation") or {})
+        preserved_metadata = copy.deepcopy(draft.get("metadata") or {})
+        draft.update(
+            status=preserved_status if preserve_validation else "draft",
+            revision=expected_revision + 1,
+            risk_class=risk,
+            validation_run_id=preserved_validation_run_id if preserve_validation else None,
+            validation=preserved_validation if preserve_validation else {},
+            updated_at=utc_now(),
+        )
         if runtime_thread_id:
             draft["thread_id"] = runtime_thread_id
-        draft["metadata"] = {**(draft.get("metadata") or {}), "static_checks": None, "trial": None}
+        if preserve_validation:
+            static_checks = copy.deepcopy(preserved_metadata.get("static_checks"))
+            if isinstance(static_checks, dict):
+                static_checks["catalog_metadata_revision"] = expected_revision + 1
+                static_checks["catalog_metadata_reuse"] = True
+            trial = copy.deepcopy(preserved_metadata.get("trial"))
+            if isinstance(trial, dict):
+                trial["catalog_metadata_revision"] = expected_revision + 1
+                trial["catalog_metadata_reuse"] = True
+            draft["metadata"] = {
+                **preserved_metadata,
+                "static_checks": static_checks,
+                "trial": trial,
+                "catalog_module": str(manifest.get("module") or "Common"),
+                "catalog_revision": int(preserved_metadata.get("catalog_revision") or 1) + 1,
+                "catalog_updated_at": utc_now(),
+                "acceptance_reuse": {
+                    "reason": "catalog_module_only",
+                    "from_revision": expected_revision,
+                    "execution_digest": agent_execution_digest(manifest, package.get("rules")),
+                },
+            }
+        else:
+            draft["metadata"] = {
+                **(draft.get("metadata") or {}),
+                "static_checks": None,
+                "trial": None,
+            }
         path = self._draft_path(draft_id)
         if Path(draft["path"]).resolve() != path:
             raise self._authoring_error("Agent draft escaped its registered directory.", "agent_draft_path_invalid")

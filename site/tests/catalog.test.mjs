@@ -15,7 +15,7 @@ test("complete management catalog validates thirty-two deterministic agents and 
   assert.deepEqual(
     records.map((agent) => `${agent.module}/${agent.slug}`),
     [
-      "Common/mm-po-gr-status",
+      "MM/mm-po-gr-status",
       "Common/role-agent-matching",
       "FI/ap-payment",
       "FI/ar-cash-application",
@@ -75,6 +75,10 @@ test("complete management catalog validates thirty-two deterministic agents and 
   assert.equal(assistant.version, "0.2.0");
   assert.equal(assistant.assistant.composable, false);
   assert.equal(assistant.execution, undefined);
+  const reclassified = records.find((agent) => agent.slug === "mm-po-gr-status");
+  assert.equal(reclassified.catalogModule, "MM");
+  assert.equal(reclassified.catalogRevision, 2);
+  assert.equal(reclassified.repositoryModule, "Common");
 
   const sdAgents = records.filter((agent) => agent.module === "SD");
   assert.equal(sdAgents.length, 11);
@@ -105,8 +109,10 @@ test("complete management catalog validates thirty-two deterministic agents and 
   }
 
   const mmAgents = records.filter((agent) => agent.module === "MM");
-  assert.equal(mmAgents.length, 5);
-  const newMmAgents = mmAgents.filter((agent) => agent.slug !== "procure-to-pay-status");
+  assert.equal(mmAgents.length, 6);
+  const newMmAgents = mmAgents.filter(
+    (agent) => agent.repositoryModule === "MM" && agent.slug !== "procure-to-pay-status",
+  );
   assert.ok(newMmAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(newMmAgents.every((agent) => agent.validation?.providers.includes("embedded-sap-odata")));
   assert.ok(newMmAgents.every((agent) => agent.execution.steps.some((step) => step.when)));

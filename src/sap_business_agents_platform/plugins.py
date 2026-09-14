@@ -583,10 +583,24 @@ class BusinessAgentPluginProvider:
         }
 
     def list(self) -> list[dict[str, Any]]:
-        return self.repository.list()
+        return [self._catalog_projection(agent) for agent in self.repository.list()]
 
     def executable(self) -> list[dict[str, Any]]:
-        return self.repository.executable()
+        return [self._catalog_projection(agent) for agent in self.repository.executable()]
+
+    def _catalog_projection(self, agent: dict[str, Any]) -> dict[str, Any]:
+        """Project mutable discovery metadata without changing execution manifests."""
+
+        agent_id = str(agent.get("slug") or "")
+        lifecycle = self.repository.lifecycle(agent_id)
+        catalog_module = self.repository.catalog_module(agent_id)
+        return {
+            **agent,
+            "module": catalog_module,
+            "catalog_module": catalog_module,
+            "catalog_revision": int(lifecycle.get("catalog_revision") or 1),
+            "repository_module": self.repository.repository_module(agent_id),
+        }
 
     def get(self, agent_id: str) -> dict[str, Any]:
         return self.repository.get(agent_id)

@@ -497,8 +497,8 @@ export function loadAgentCatalog(root = agentsRoot, { includeInactive = true } =
       }
       validateAgent(agent, moduleName, directory.name, `agents/${moduleName}/${directory.name}/agent.json`);
       const publicationPath = path.join(modulePath, directory.name, "publication.json");
-      if (!includeInactive && existsSync(publicationPath)) {
-        let publication;
+      let publication = {};
+      if (existsSync(publicationPath)) {
         try {
           publication = JSON.parse(readFileSync(publicationPath, "utf8"));
         } catch (error) {
@@ -508,11 +508,21 @@ export function loadAgentCatalog(root = agentsRoot, { includeInactive = true } =
         if (!["active", "inactive"].includes(lifecycleState)) {
           throw new Error(`agents/${moduleName}/${directory.name}/publication.json: lifecycle state must be active or inactive`);
         }
-        if (lifecycleState === "inactive") continue;
+        if (!includeInactive && lifecycleState === "inactive") continue;
       }
+      const catalogModule = publication.catalog_module ?? moduleName;
+      if (!MODULES.includes(catalogModule)) throw new Error(`agents/${moduleName}/${directory.name}/publication.json: catalog_module is invalid`);
+      const catalogRevision = publication.catalog_revision ?? 1;
+      if (!Number.isInteger(catalogRevision) || catalogRevision < 1) throw new Error(`agents/${moduleName}/${directory.name}/publication.json: catalog_revision must be a positive integer`);
       if (slugs.has(agent.slug)) throw new Error(`Duplicate agent slug: ${agent.slug}`);
       slugs.add(agent.slug);
-      records.push(agent);
+      records.push({
+        ...agent,
+        module: catalogModule,
+        catalogModule,
+        catalogRevision,
+        repositoryModule: moduleName,
+      });
     }
   }
   return records;

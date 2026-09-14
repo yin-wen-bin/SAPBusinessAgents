@@ -56,13 +56,14 @@ def input_rows(schema: dict, prefix: str = "", inherited_required: bool = True):
 
 def agent_facts(repo: AgentRepository, a: dict, path: Path) -> str:
     state = repo.lifecycle(a["slug"])["state"]
+    catalog_module = repo.catalog_module(a["slug"])
     v = a.get("validation") or {}
     assistant = a.get("kind") == "platform_assistant"
     entry_label = "Agent 管理 / Agent management" if state == "inactive" else "网页 / Web"
     entry_path = (
         lambda lang: f"http://127.0.0.1:4321/{lang}/agent-management/?agent={a['slug']}"
         if state == "inactive"
-        else f"http://127.0.0.1:4321/{lang}/agents/{a['module']}/{a['slug']}/"
+        else f"http://127.0.0.1:4321/{lang}/agents/{catalog_module}/{a['slug']}/"
     )
     lines = [f"版本 / Version: **{a['version']}** · {LABELS[state]} · {LABELS.get(v.get('verdict'), '平台助理：由 Runtime 能力门禁控制 / Platform assistant: Runtime capability gate')}", "",
              entry_label + ": " + " · ".join(f"[{lang}]({entry_path(lang)})" for lang in ("zh", "en")), ""]
@@ -122,22 +123,22 @@ def index(repo: AgentRepository, agents: list[dict], path: Path, lang: str | Non
         if lang:
             offset = 0 if lang == "zh" else 1
             state, acceptance = state.split(" / ")[offset], acceptance.split(" / ")[offset]
-        lines.append(f"| {a['module']} | [{cell(title)}]({relative(path, target)}) | {a['version']} | {state} | {acceptance} |")
+        lines.append(f"| {repo.catalog_module(a['slug'])} | [{cell(title)}]({relative(path, target)}) | {a['version']} | {state} | {acceptance} |")
     return "\n".join(lines)
 
 
 def document_updates(root: Path = ROOT):
     repo = AgentRepository(root / "agents")
-    agents = sorted(repo.list_all(), key=lambda a: (a["module"], a["slug"]))
+    agents = sorted(repo.list_all(), key=lambda a: (repo.catalog_module(a["slug"]), a["slug"]))
     readme = root / "README.md"
     text = readme.read_text(encoding="utf-8")
     for lang in ("zh", "en"):
         text = replace_block(text, "agents-" + lang, index(repo, agents, readme, lang))
     yield readme, text
-    for module in sorted({a["module"] for a in agents}):
+    for module in sorted(MODULE_NAMES):
         path = root / "agents" / module / "README.md"
         text = path.read_text(encoding="utf-8")
-        yield path, replace_block(text, "agents", index(repo, [a for a in agents if a["module"] == module], path))
+        yield path, replace_block(text, "agents", index(repo, [a for a in agents if repo.catalog_module(a["slug"]) == module], path))
     for a in agents:
         path = repo._path(a["slug"]).parent / "README.md"
         text = path.read_text(encoding="utf-8")

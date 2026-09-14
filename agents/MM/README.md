@@ -16,6 +16,7 @@ The index below reflects current manifests. Active lifecycle does not automatica
 | MM | [智能寻源与 RFQ 评估助手 / Intelligent Sourcing and RFQ Evaluation Assistant](intelligent-sourcing-rfq/README.md) | 0.1.1 | 使用中 / Active | 验收通过 / Passed |
 | MM | [库存健康检查 / Inventory Health Check](inventory-health-balancing/README.md) | 0.4.0 | 使用中 / Active | 验收通过 / Passed |
 | MM | [外购件短缺采购响应助手 / Material Shortage Procurement Response Assistant](material-shortage-procurement-response/README.md) | 0.2.1 | 使用中 / Active | 验收通过 / Passed |
+| MM | [采购订单入库状态检查 / Purchase order receipt status check](../Common/mm-po-gr-status/README.md) | 0.1.0 | 使用中 / Active | 验收通过 / Passed |
 | MM | [采购到付款状态助手 / Procure-to-Pay Status Assistant](procure-to-pay-status/README.md) | 0.3.2 | 使用中 / Active | 验收通过 / Passed |
 | MM | [供应商绩效与交付风险助手 / Supplier Performance and Delivery Risk Assistant](supplier-performance-risk/README.md) | 0.2.3 | 使用中 / Active | 验收通过 / Passed |
 <!-- generated:agents:end -->

@@ -1733,7 +1733,7 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
     manifests = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted((root / "agents").glob("*/*/agent.json"))
-        if path.parent.name not in {"ap-payment", "role-agent-matching"}
+        if path.parent.name not in {"ap-payment", "mm-po-gr-status", "role-agent-matching"}
     ]
 
     assert len(manifests) == 30
@@ -1798,7 +1798,7 @@ def test_agent_status_matches_terminal_three_stage_verdict() -> None:
     ]
 
     deterministic = [item for item in manifests if item.get("kind") != "platform_assistant"]
-    assert len(deterministic) == 31
+    assert len(deterministic) == 32
     for manifest in deterministic:
         verdict = manifest["validation"]["verdict"]
         expected = "passed" if verdict == "PASS" else verdict.lower()

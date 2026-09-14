@@ -25,6 +25,7 @@ from sap_business_agents_platform.engine import (
     _safe_business_csv_cell,
     _validate_input,
 )
+from sap_business_agents_platform.factory import infer_catalog_module
 from sap_business_agents_platform.manifests import AgentRepository, ManifestError, validate_execution
 from sap_business_agents_platform.models import (
     HarnessResult,
@@ -43,6 +44,22 @@ from sap_business_agents_platform.models import (
 from sap_business_agents_platform.skills import SkillError, SkillRegistry
 from sap_business_agents_platform.scheduler import LocalRunScheduler, WorkloadClass
 from sap_business_agents_platform.workflows import workflow_digest
+
+
+@pytest.mark.parametrize(
+    ("plan", "expected"),
+    [
+        ({"sapModules": ["SD"]}, "SD"),
+        ({"service": "API_PURCHASEORDER_PROCESS_SRV"}, "MM"),
+        ({"entity_set": "A_ProductionOrder"}, "PP"),
+        ({"entity_set": "A_OperationalAcctgDocItemCube"}, "FI"),
+        ({"entity_set": "A_UnknownBusinessObject"}, "Common"),
+    ],
+)
+def test_catalog_module_inference_is_advisory_and_bounded(
+    plan: dict[str, Any], expected: str
+) -> None:
+    assert infer_catalog_module(plan) == expected
 
 
 def test_business_report_positive_tone_maps_to_presentation_success() -> None:
@@ -1177,6 +1194,7 @@ def test_repository_separates_active_and_inactive_schema_v2_agents() -> None:
     records = repository.list()
     assert [record["slug"] for record in repository.executable()] == [
         "product-cost-variance",
+        "mm-po-gr-status",
         "ap-payment",
         "ar-cash-application",
         "ar-collection",
@@ -1217,6 +1235,7 @@ def test_repository_separates_active_and_inactive_schema_v2_agents() -> None:
         "inventory-health-balancing",
         "internal-order-project-control",
         "material-shortage-procurement-response",
+        "mm-po-gr-status",
         "month-end-closing",
         "mrp-exception-analysis",
         "new-sales-demand-coverage",
@@ -2558,6 +2577,8 @@ def test_validated_free_query_creates_isolated_agent_draft(tmp_path: Path) -> No
         assert draft["status"] == "validated"
         manifest = json.loads((Path(draft["path"]) / "agent.json").read_text(encoding="utf-8"))
         assert manifest["schemaVersion"] == 2
+        assert manifest["module"] == "MM"
+        assert manifest["sapModules"] == ["Common"]
         assert manifest["execution"]["steps"][0]["readOnly"] is True
         assert (Path(draft["path"]) / "content.zh.md").is_file()
         assert (Path(draft["path"]) / "content.en.md").is_file()
@@ -2671,6 +2692,10 @@ def test_gap_origin_is_preserved_and_linked_when_free_query_becomes_agent_draft(
         assert agent_draft["status"] == "needs_review"
         assert agent_draft["origin"]["workflow_draft_id"] == workflow.draft_id
         assert agent_draft["origin"]["gap_id"] == gap["gap_id"]
+        gap_manifest = json.loads(
+            (Path(agent_draft["path"]) / "agent.json").read_text(encoding="utf-8")
+        )
+        assert gap_manifest["module"] == "MM"
         assert (Path(agent_draft["path"]) / "docs" / "gap-contract.json").is_file()
         linked = client.get(f"/api/authoring/workflows/{workflow.draft_id}").json()
         assert linked["composition"]["gaps"][0]["status"] == "agent_draft_created"

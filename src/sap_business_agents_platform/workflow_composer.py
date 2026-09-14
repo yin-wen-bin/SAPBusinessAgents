@@ -34,11 +34,17 @@ def compact_agent_catalog(agents: Any) -> dict[str, Any]:
         execution = agent.get("execution") or {}
         if not isinstance(execution.get("outputSchema"), dict):
             continue
+        agent_id = str(agent.get("slug") or "")
+        catalog_module = (
+            agents.catalog_module(agent_id)
+            if callable(getattr(agents, "catalog_module", None))
+            else str(agent.get("module") or "Common")
+        )
         items.append(
             {
-                "agent_id": str(agent.get("slug") or ""),
+                "agent_id": agent_id,
                 "version": str(agent.get("version") or "0.0.0"),
-                "module": str(agent.get("module") or "Common"),
+                "module": catalog_module,
                 "title": deepcopy(agent.get("title") or {}),
                 "summary": deepcopy(agent.get("summary") or {}),
                 "tags": [str(item) for item in agent.get("tags") or []],

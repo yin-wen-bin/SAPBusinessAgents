@@ -11,20 +11,29 @@ import type { AgentDefinition, Locale } from "../../../../lib/types";
 import { agentManagementPath, agentPath, homePath, sourceUrl } from "../../../../lib/urls";
 
 export function getStaticPaths() {
-  return getAgents().flatMap((agent) => (["zh", "en"] as const).map((locale) => ({
-    params: { lang: locale, module: agent.module, slug: agent.slug },
-    props: { locale, agent },
-  })));
+  return getAgents().flatMap((agent) => (["zh", "en"] as const).flatMap((locale) => {
+    const canonical = {
+      params: { lang: locale, module: agent.module, slug: agent.slug },
+      props: { locale, agent },
+    };
+    return agent.repositoryModule && agent.repositoryModule !== agent.module
+      ? [canonical, {
+          params: { lang: locale, module: agent.repositoryModule, slug: agent.slug },
+          props: { locale, agent, redirectTo: agentPath(import.meta.env.BASE_URL, locale, agent.module, agent.slug) },
+        }]
+      : [canonical];
+  }));
 }
 
-interface Props { locale: Locale; agent: AgentDefinition }
-const { locale, agent } = Astro.props as Props;
+interface Props { locale: Locale; agent: AgentDefinition; redirectTo?: string }
+const { locale, agent, redirectTo } = Astro.props as Props;
+if (redirectTo) return Astro.redirect(redirectTo, 301);
 const counts = moduleCounts();
 const base = import.meta.env.BASE_URL;
 const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const alternateLocale: Locale = locale === "zh" ? "en" : "zh";
 const alternateHref = agentPath(base, alternateLocale, agent.module, agent.slug);
-const githubUrl = sourceUrl(agent.module, agent.slug);
+const githubUrl = sourceUrl(agent.repositoryModule || agent.module, agent.slug);
 const validationReportUrl = agent.validation
   ? `${githubUrl}/${agent.validation.reportPath}`
   : undefined;

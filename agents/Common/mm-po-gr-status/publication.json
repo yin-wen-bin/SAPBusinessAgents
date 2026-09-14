@@ -1,6 +1,9 @@
 {
   "schemaVersion": 1,
   "agent_id": "mm-po-gr-status",
+  "catalog_module": "MM",
+  "catalog_revision": 2,
+  "catalog_updated_at": "2026-09-14T15:53:08.680746+00:00",
   "lifecycle_state": "active",
   "state": "active",
   "active_version": "0.1.0",

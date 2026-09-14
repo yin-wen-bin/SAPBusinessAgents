@@ -113,7 +113,10 @@ class AgentAcceptanceJobs:
                 code="agent_acceptance_reused",
             )
         trial = copy.deepcopy((draft.get("metadata") or {}).get("trial") or {})
-        trial_revision = trial.get("revision", trial.get("draft_revision"))
+        trial_revision = trial.get(
+            "catalog_metadata_revision",
+            trial.get("revision", trial.get("draft_revision")),
+        )
         if int(trial_revision or 0) != revision:
             raise AgentLifecycleError("A trial for the current revision is required.", code="agent_trial_required")
         if trial.get("verdict") not in {"PASS", "INCONCLUSIVE"}:

@@ -50,6 +50,11 @@ const labels = locale === "zh" ? {
   send: "继续查询",
   cancel: "取消查询",
   draft: "保存为 Agent 草稿",
+  draftModuleTitle: "选择 Agent 所属模块",
+  draftModuleHelp: "所属模块只用于目录归类；创建后仍可在 Agent 管理中调整。",
+  catalogModule: "所属模块",
+  continueDraft: "继续创建草稿",
+  close: "取消",
   manageDraft: "管理此草稿", retryImport: "接入管理中心", importFailed: "草稿已生成，接入管理中心失败。请重试接入。", sourceDraftReady: "草稿已生成，可接入管理中心继续编辑。",
   continueCorrection: "继续修正此结果",
   returnWorkflow: "返回工作流查看缺口",
@@ -219,6 +224,11 @@ const labels = locale === "zh" ? {
   send: "Continue query",
   cancel: "Cancel query",
   draft: "Save as Agent draft",
+  draftModuleTitle: "Choose the Agent catalog module",
+  draftModuleHelp: "The module controls catalog grouping only and remains editable in Agent management.",
+  catalogModule: "Catalog module",
+  continueDraft: "Continue creating draft",
+  close: "Cancel",
   manageDraft: "Manage this draft", retryImport: "Import into management", importFailed: "Draft generated, but management import failed. Retry the import.", sourceDraftReady: "Draft generated. Import it into management to continue editing.",
   continueCorrection: "Continue correcting this result",
   returnWorkflow: "Return to workflow gap",
@@ -555,6 +565,17 @@ const labels = locale === "zh" ? {
       <section><h3>{labels.rawEvidence}</h3><pre data-evidence>—</pre></section>
     </div>
   </details>
+  <dialog class="run-draft-module-dialog" data-draft-module-dialog aria-labelledby={`run-draft-module-title-${locale}`}>
+    <h2 id={`run-draft-module-title-${locale}`}>{labels.draftModuleTitle}</h2>
+    <p>{labels.draftModuleHelp}</p>
+    <label>{labels.catalogModule}<select data-draft-module-select>
+      {['CO', 'Common', 'FI', 'MM', 'PP', 'SD'].map((module) => <option value={module} selected={module === 'Common'}>{module}</option>)}
+    </select></label>
+    <footer>
+      <button type="button" class="secondary-button" data-draft-module-cancel>{labels.close}</button>
+      <button type="button" data-draft-module-confirm>{labels.continueDraft}</button>
+    </footer>
+  </dialog>
 </section>
 
 <script is:inline define:vars={{ labels, locale }}>
@@ -574,6 +595,7 @@ const labels = locale === "zh" ? {
   let currentSession;
   let selectedFeedbackType = "";
   let inputDisplayMode = "";
+  let pendingDraftCreation = null;
 
   const showAlert = (message) => {
     const alert = root?.querySelector("[data-run-alert]");
@@ -1967,21 +1989,31 @@ const labels = locale === "zh" ? {
     } catch (_) { showDraftManagement({ draft_id: sourceDraftId, management_import_status: "failed" }); }
     finally { button.disabled = false; }
   });
-  root?.querySelector("[data-draft]")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget; button.disabled = true;
-    try {
-    const body = { correction: "" };
-    if (workflowDraft && gap) { body.workflowDraftId = workflowDraft; body.gapId = gap; }
-    const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/create-agent-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const payload = await response.json();
-    if (response.ok) showDraftManagement(payload);
-    button.textContent = response.ok ? `${payload.draft_id} · ${payload.status}` : String(payload.detail?.message || payload.detail || "Draft failed");
-    if (response.ok && workflowDraft && gap) {
-      const returnLink = root.querySelector("[data-gap-return]");
-      returnLink.href = `${root.dataset.workflowsPath}?draft=${encodeURIComponent(workflowDraft)}`;
-      returnLink.hidden = false;
-    } else if (!response.ok) button.disabled = false;
-    } catch (_) { button.disabled = false; showAlert(labels.unavailable); }
+  const inferDraftModule = () => {
+    const plan = currentRun?.plan || currentRun?.result?.plan || {};
+    const explicit = plan?.module || plan?.sap_module || plan?.sapModule
+      || plan?.sap_modules?.find?.((item) => ["CO", "FI", "MM", "PP", "SD"].includes(item))
+      || plan?.sapModules?.find?.((item) => ["CO", "FI", "MM", "PP", "SD"].includes(item));
+    if (["CO", "FI", "MM", "PP", "SD"].includes(explicit)) return explicit;
+    const content = JSON.stringify(plan).toLowerCase();
+    const groups = [
+      ["CO", ["controlling", "cost center", "cost_center", "internal order", "internal_order"]],
+      ["FI", ["accounting document", "accounting_document", "acctgdoc", "operationalacctg", "glaccount", "journal entry", "bank accounting"]],
+      ["MM", ["purchase order", "purchase_order", "purchaseorder", "material document", "material_document", "supplier invoice", "supplierinvoice", "goods receipt"]],
+      ["PP", ["production order", "production_order", "productionorder", "planned order", "planned_order", "plannedorder", "mrp", "capacity requirement"]],
+      ["SD", ["sales order", "sales_order", "salesorder", "outbound delivery", "billing document", "billing_document"]],
+    ];
+    return groups.find(([, keywords]) => keywords.some((keyword) => content.includes(keyword)))?.[0] || "Common";
+  };
+  const openDraftModuleDialog = (kind, button) => {
+    pendingDraftCreation = { kind, button };
+    const dialog = root.querySelector("[data-draft-module-dialog]");
+    dialog.querySelector("[data-draft-module-select]").value = inferDraftModule();
+    if (!dialog.open) dialog.showModal();
+    dialog.querySelector("[data-draft-module-select]").focus();
+  };
+  root?.querySelector("[data-draft]")?.addEventListener("click", (event) => {
+    openDraftModuleDialog("run", event.currentTarget);
   });
   root?.querySelector("[data-start-session]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget; button.disabled = true;
@@ -2072,14 +2104,48 @@ const labels = locale === "zh" ? {
     const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/reopen`, { method: "POST" });
     if (response.ok) renderFreeQuerySession(await response.json()); else showAlert(await response.text());
   });
-  root?.querySelector("[data-session-draft]")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget; button.disabled = true;
+  root?.querySelector("[data-session-draft]")?.addEventListener("click", (event) => {
+    openDraftModuleDialog("session", event.currentTarget);
+  });
+  root?.querySelector("[data-draft-module-cancel]")?.addEventListener("click", () => {
+    root.querySelector("[data-draft-module-dialog]").close();
+    pendingDraftCreation?.button?.focus();
+    pendingDraftCreation = null;
+  });
+  root?.querySelector("[data-draft-module-confirm]")?.addEventListener("click", async (event) => {
+    if (!pendingDraftCreation) return;
+    const confirm = event.currentTarget;
+    const { kind, button } = pendingDraftCreation;
+    const module = root.querySelector("[data-draft-module-select]").value;
+    confirm.disabled = true;
+    button.disabled = true;
+    root.querySelector("[data-draft-module-dialog]").close();
     try {
-    const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/agent-draft`, { method: "POST" });
-    const payload = await response.json();
-    button.textContent = response.ok ? `${labels.freeQuerySession.draftCreated} · ${payload.draft_id}` : String(payload.detail || "Draft failed");
-    if (response.ok) { await loadSession(); showDraftManagement(payload); } else button.disabled = false;
-    } catch (_) { button.disabled = false; showAlert(labels.unavailable); }
+      if (kind === "run") {
+        const body = { correction: "", module };
+        if (workflowDraft && gap) { body.workflowDraftId = workflowDraft; body.gapId = gap; }
+        const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/create-agent-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const payload = await response.json();
+        if (response.ok) showDraftManagement(payload);
+        button.textContent = response.ok ? `${payload.draft_id} · ${payload.status}` : String(payload.detail?.message || payload.detail || "Draft failed");
+        if (response.ok && workflowDraft && gap) {
+          const returnLink = root.querySelector("[data-gap-return]");
+          returnLink.href = `${root.dataset.workflowsPath}?draft=${encodeURIComponent(workflowDraft)}`;
+          returnLink.hidden = false;
+        } else if (!response.ok) button.disabled = false;
+      } else {
+        const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/agent-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ module }) });
+        const payload = await response.json();
+        button.textContent = response.ok ? `${labels.freeQuerySession.draftCreated} · ${payload.draft_id}` : String(payload.detail || "Draft failed");
+        if (response.ok) { await loadSession(); showDraftManagement(payload); } else button.disabled = false;
+      }
+    } catch (_) {
+      button.disabled = false;
+      showAlert(labels.unavailable);
+    } finally {
+      confirm.disabled = false;
+      pendingDraftCreation = null;
+    }
   });
   if (runId || sessionId) {
     Promise.all([loadRun(), sessionId ? loadSession() : Promise.resolve()]).then(connect).catch(() => {

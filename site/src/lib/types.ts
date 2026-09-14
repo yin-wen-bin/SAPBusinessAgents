@@ -110,6 +110,8 @@ export interface AgentExecutionStep {
 }
 
 export interface AgentValidation {
+  [key: string]: unknown;
+  schema_version?: string;
   documentationReuse?: {
     sourceVersion: string;
     executionDigest: string;
@@ -158,7 +160,7 @@ export interface AgentValidation {
 }
 
 export interface AgentAcceptance {
-  schemaVersion?: "2.0";
+  schemaVersion?: "1.0" | "2.0";
   comparisonMode: "business_semantic";
   businessKeys: string[];
   facts: string[];
@@ -357,6 +359,7 @@ export interface WorkflowComposition {
 }
 
 export interface AgentDefinition {
+  authoring?: Record<string, unknown>;
   schemaVersion: number;
   kind?: "platform_assistant";
   assistant?: {
@@ -367,6 +370,9 @@ export interface AgentDefinition {
   };
   slug: string;
   module: SapModule;
+  catalogModule?: SapModule;
+  catalogRevision?: number;
+  repositoryModule?: SapModule;
   title: LocalizedText;
   summary: LocalizedText;
   status: string;

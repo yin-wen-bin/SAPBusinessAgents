@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from sap_business_agents_platform.acceptance import agent_execution_digest
 from sap_business_agents_platform.agent_lifecycle import (
     AgentLifecycleError,
     AgentLifecycleService,
@@ -26,7 +27,9 @@ from sap_business_agents_platform.manifests import AgentRepository
 from sap_business_agents_platform.models import (
     AgentActivateRequest,
     AgentAuthoringCreate,
+    AgentCatalogModuleUpdate,
     AgentDraftDeleteRequest,
+    AgentDraftCatalogModuleUpdate,
     AgentDraftUpdate,
     AgentPublishRequest,
     AgentVersionDraftRequest,
@@ -34,6 +37,7 @@ from sap_business_agents_platform.models import (
     RunCreate,
     RunStatus,
 )
+from sap_business_agents_platform.plugins import BusinessAgentPluginProvider
 from sap_business_agents_platform.skills import SkillError
 from sap_business_agents_platform.workflows import agent_digest
 
@@ -751,6 +755,142 @@ def test_metadata_only_version_reuses_pass_acceptance_and_publishes_local_commit
     assert validated["validation"]["sap_get_count"] == 0
     assert (tmp_path / "agents" / "Common" / "managed-test-agent" / "versions" / "1.0.0" / "agent.json").is_file()
     assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout == ""
+
+
+def test_published_catalog_module_changes_without_touching_agent_or_acceptance(tmp_path: Path) -> None:
+    service, _store, _settings = _service(tmp_path)
+    current = _write_active_agent(service, tmp_path)
+    original_hash = agent_digest(current)
+    original_validation = json.loads(json.dumps(current["validation"]))
+    (tmp_path / ".gitignore").write_text(".local-data/\n.prototype/\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, check=True, capture_output=True)
+
+    result = service.set_catalog_module(
+        current["slug"],
+        AgentCatalogModuleUpdate(
+            module="MM",
+            expectedVersion=current["version"],
+            expectedAgentHash=original_hash,
+            expectedCatalogRevision=1,
+        ),
+    )
+
+    reloaded = service.agents.get(current["slug"])
+    assert result["catalog_module"] == "MM"
+    assert result["catalog_revision"] == 2
+    assert result["acceptance_reused"] is True
+    assert result["reload_required"] is True
+    assert service.agents.catalog_module(current["slug"]) == "MM"
+    assert service.agents.repository_module(current["slug"]) == "Common"
+    assert service.catalog("active")[0]["module"] == "MM"
+    projected = BusinessAgentPluginProvider(service.agents).list()[0]
+    assert projected["module"] == "MM"
+    assert projected["catalog_module"] == "MM"
+    assert projected["repository_module"] == "Common"
+    assert BusinessAgentPluginProvider(service.agents).get(current["slug"])["module"] == "Common"
+    assert reloaded["module"] == "Common"
+    assert reloaded["sapModules"] == current["sapModules"]
+    assert reloaded["validation"] == original_validation
+    assert agent_digest(reloaded) == original_hash
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout == ""
+
+    version_draft = service.create_version_draft(
+        current["slug"],
+        bump="patch",
+        expected_version=current["version"],
+        expected_hash=original_hash,
+    )
+    assert version_draft["catalog_module"] == "MM"
+    assert version_draft["package"]["manifest"]["module"] == "Common"
+    assert version_draft["has_publishable_changes"] is False
+
+    clone = asyncio.run(
+        service.create(
+            AgentAuthoringCreate(
+                source="clone",
+                sourceAgentId=current["slug"],
+                agentId="catalog-module-clone",
+            )
+        )
+    )
+    assert clone["catalog_module"] == "MM"
+    assert clone["package"]["manifest"]["module"] == "MM"
+
+    reclassified_draft = service.set_draft_catalog_module(
+        version_draft["draft_id"],
+        AgentDraftCatalogModuleUpdate(
+            module="FI",
+            expectedRevision=version_draft["revision"],
+            expectedCatalogRevision=2,
+        ),
+    )
+    assert reclassified_draft["revision"] == version_draft["revision"]
+    assert reclassified_draft["catalog_module"] == "FI"
+    assert reclassified_draft["package"]["manifest"]["module"] == "Common"
+    assert reclassified_draft["has_publishable_changes"] is False
+
+    with pytest.raises(AgentLifecycleError) as conflict:
+        service.set_catalog_module(
+            current["slug"],
+            AgentCatalogModuleUpdate(
+                module="FI",
+                expectedVersion=current["version"],
+                expectedAgentHash=original_hash,
+                expectedCatalogRevision=1,
+            ),
+        )
+    assert conflict.value.code == "agent_catalog_module_conflict"
+
+
+def test_new_agent_draft_module_revision_preserves_validation_evidence(tmp_path: Path) -> None:
+    service, store, _settings = _service(tmp_path)
+    draft = asyncio.run(
+        service.create(
+            AgentAuthoringCreate(source="blank", agentId="module-draft-agent", module="Common")
+        )
+    )
+    stored = store.get_agent_authoring_draft(draft["draft_id"])
+    stored["status"] = "validated"
+    stored["validation"] = {
+        "type": "formal_acceptance",
+        "verdict": "PASS",
+        "revision": 1,
+        "execution_digest": agent_execution_digest(
+            draft["package"]["manifest"], draft["package"].get("rules")
+        ),
+        "executable": True,
+        "fixedAgentComparison": "MATCH",
+        "acceptanceMode": "deterministic_runtime",
+        "blockingLimitations": [],
+    }
+    stored["metadata"] = {
+        **stored.get("metadata", {}),
+        "trial": {
+            "revision": 1,
+            "verdict": "PASS",
+            "business_output_available": True,
+            "output_schema_valid": True,
+            "read_only_audit": True,
+        },
+    }
+    store.save_agent_authoring_draft(stored, expected_revision=1)
+
+    updated = service.set_draft_catalog_module(
+        draft["draft_id"],
+        AgentDraftCatalogModuleUpdate(module="MM", expectedRevision=1),
+    )
+
+    assert updated["revision"] == 2
+    assert updated["catalog_module"] == "MM"
+    assert updated["package"]["manifest"]["module"] == "MM"
+    assert updated["package"]["manifest"]["sapModules"] == ["Common"]
+    assert updated["trial"]["catalog_metadata_revision"] == 2
+    assert updated["validation"]["verdict"] == "PASS"
+    assert updated["acceptance"]["verdict"] == "PASS"
 
 
 def test_permanent_delete_is_blocked_while_agent_is_active(tmp_path: Path) -> None:

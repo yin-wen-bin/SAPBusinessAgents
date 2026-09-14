@@ -18,6 +18,47 @@ class DraftError(RuntimeError):
     pass
 
 
+def infer_catalog_module(value: Any) -> str:
+    """Suggest a catalog grouping from a run plan without changing SAP scope."""
+
+    explicit: list[str] = []
+    text: list[str] = []
+
+    def visit(item: Any, key: str = "") -> None:
+        if isinstance(item, dict):
+            for child_key, child in item.items():
+                visit(child, str(child_key))
+            return
+        if isinstance(item, list):
+            for child in item:
+                visit(child, key)
+            return
+        if item is None:
+            return
+        raw = str(item)
+        text.append(raw)
+        if key in {"module", "sap_module", "sapModule", "sap_modules", "sapModules"} and raw in {
+            "CO", "FI", "MM", "PP", "SD"
+        }:
+            explicit.append(raw)
+
+    visit(value)
+    if explicit:
+        return explicit[0]
+    haystack = " ".join(text).lower()
+    keyword_groups = (
+        ("CO", ("controlling", "cost center", "cost_center", "internal order", "internal_order")),
+        ("FI", ("accounting document", "accounting_document", "acctgdoc", "operationalacctg", "glaccount", "journal entry", "bank accounting")),
+        ("MM", ("purchase order", "purchase_order", "purchaseorder", "material document", "material_document", "supplier invoice", "supplierinvoice", "goods receipt")),
+        ("PP", ("production order", "production_order", "productionorder", "planned order", "planned_order", "plannedorder", "mrp", "capacity requirement")),
+        ("SD", ("sales order", "sales_order", "salesorder", "outbound delivery", "billing document", "billing_document")),
+    )
+    for module, keywords in keyword_groups:
+        if any(keyword in haystack for keyword in keywords):
+            return module
+    return "Common"
+
+
 class AgentDraftService:
     def __init__(self, settings: Settings, store: RunStore, author: Any = None) -> None:
         self.settings = settings
@@ -32,8 +73,9 @@ class AgentDraftService:
         *,
         origin: dict[str, Any] | None = None,
         execution_plan: dict[str, Any] | None = None,
+        module: str | None = None,
     ) -> DraftRecord:
-        key = _content_digest({"run_id": run_id, "correction": correction, "origin": origin or {}, "plan": execution_plan})
+        key = _content_digest({"run_id": run_id, "correction": correction, "origin": origin or {}, "plan": execution_plan, "module": module})
         async with self._creation_locks.setdefault(key, asyncio.Lock()):
             draft_id, claimed = self.store.reserve_draft_creation(key, f"draft_{uuid.uuid4().hex[:12]}")
             if not claimed:
@@ -42,7 +84,7 @@ class AgentDraftService:
                 except KeyError as exc:
                     raise DraftError("Draft generation is already pending; retry the same request later.") from exc
             try:
-                return await self._create_from_run(run_id, correction, origin=origin, execution_plan=execution_plan, draft_id=draft_id)
+                return await self._create_from_run(run_id, correction, origin=origin, execution_plan=execution_plan, module=module, draft_id=draft_id)
             except Exception:
                 if not (self.settings.draft_root / draft_id).exists():
                     self.store.release_draft_creation(key, draft_id)
@@ -50,7 +92,7 @@ class AgentDraftService:
 
     async def _create_from_run(
         self, run_id: str, correction: str, *, origin: dict[str, Any] | None,
-        execution_plan: dict[str, Any] | None, draft_id: str,
+        execution_plan: dict[str, Any] | None, module: str | None, draft_id: str,
     ) -> DraftRecord:
         run = self.store.get_run(run_id)
         if run.mode != RunMode.free_query:
@@ -64,6 +106,7 @@ class AgentDraftService:
         query = str(run.query or "SAP free query")
         draft_plan = json.loads(json.dumps(execution_plan or run.plan))
         manifest = _manifest_from_run(slug, query, draft_plan, correction)
+        manifest["module"] = module or infer_catalog_module(draft_plan)
         origin = json.loads(json.dumps(origin or {}))
         if origin:
             if origin.get("workflow_draft_id") or origin.get("gap_id"):
@@ -190,11 +233,11 @@ class AgentDraftService:
         self.store.save_draft(draft)
         return self.validate(draft_id)
 
-    async def create_from_session(self, session_id: str) -> DraftRecord:
+    async def create_from_session(self, session_id: str, *, module: str | None = None) -> DraftRecord:
         async with self._creation_locks.setdefault(f"session:{session_id}", asyncio.Lock()):
-            return await self._create_from_session(session_id)
+            return await self._create_from_session(session_id, module=module)
 
-    async def _create_from_session(self, session_id: str) -> DraftRecord:
+    async def _create_from_session(self, session_id: str, *, module: str | None) -> DraftRecord:
         session = self.store.get_free_query_session(session_id)
         if session.get("status") == "draft_created" and session.get("draft_id"):
             existing = self.store.get_draft(session["draft_id"])
@@ -263,6 +306,7 @@ class AgentDraftService:
             correction,
             origin=origin,
             execution_plan=execution_plan,
+            module=module,
         )
         _parameterize_session_draft(Path(draft.path), execution_plan)
         draft = self.validate(draft.draft_id)

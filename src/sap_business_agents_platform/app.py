@@ -43,9 +43,11 @@ from .manifests import AgentRepository
 from .models import (
     AgentActivateRequest,
     AgentAuthoringCreate,
+    AgentCatalogModuleUpdate,
     AgentDeleteRequest,
     AgentDraftDeleteRequest,
     AgentDraftUpdate,
+    AgentDraftCatalogModuleUpdate,
     AgentFeedbackRequest,
     AgentTechnicalIdCheck,
     AgentTechnicalIdUpdate,
@@ -930,6 +932,15 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(404, "Agent not found") from exc
 
+    @app.put("/api/agents/{agent_id}/catalog-module")
+    def update_agent_catalog_module(
+        agent_id: str, payload: AgentCatalogModuleUpdate
+    ) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.set_catalog_module(agent_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
     @app.get("/api/agents/{agent_id}/versions/{version}")
     def get_agent_version(agent_id: str, version: str) -> dict[str, Any]:
         try:
@@ -1526,10 +1537,12 @@ def create_app(
 
     @app.post("/api/free-query-sessions/{session_id}/agent-draft", status_code=201)
     async def create_free_query_session_agent_draft(
-        session_id: str,
+        session_id: str, payload: DraftCreate | None = None,
     ) -> dict[str, Any]:
         try:
-            draft = await drafts.create_from_session(session_id)
+            draft = await drafts.create_from_session(
+                session_id, module=payload.module if payload else None
+            )
             return attach_management_draft(draft)
         except KeyError as exc:
             raise HTTPException(404, "Free-query session not found") from exc
@@ -2024,7 +2037,9 @@ def create_app(
     async def create_draft(run_id: str, payload: DraftCreate) -> dict[str, Any]:
         try:
             origin = _agent_draft_origin(workflow_drafts, payload)
-            draft = await drafts.create_from_run(run_id, payload.correction, origin=origin)
+            draft = await drafts.create_from_run(
+                run_id, payload.correction, origin=origin, module=payload.module
+            )
             if origin:
                 workflow_drafts.link_agent_draft(
                     str(origin["workflow_draft_id"]), str(origin["gap_id"]), draft.draft_id
@@ -2043,7 +2058,9 @@ def create_app(
     async def create_authoring_draft(payload: DraftAuthoringCreate) -> dict[str, Any]:
         try:
             origin = _agent_draft_origin(workflow_drafts, payload)
-            draft = await drafts.create_from_run(payload.run_id, payload.correction, origin=origin)
+            draft = await drafts.create_from_run(
+                payload.run_id, payload.correction, origin=origin, module=payload.module
+            )
             if origin:
                 workflow_drafts.link_agent_draft(
                     str(origin["workflow_draft_id"]), str(origin["gap_id"]), draft.draft_id
@@ -2139,6 +2156,15 @@ def create_app(
     def update_managed_agent_draft(draft_id: str, payload: AgentDraftUpdate) -> dict[str, Any]:
         try:
             return agent_lifecycle.update(draft_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.put("/api/authoring/agents/{draft_id}/catalog-module")
+    def update_agent_draft_catalog_module(
+        draft_id: str, payload: AgentDraftCatalogModuleUpdate
+    ) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.set_draft_catalog_module(draft_id, payload)
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 

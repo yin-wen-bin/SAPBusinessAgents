@@ -15,6 +15,7 @@ import "../styles/agent-draft.css";
 
 type Props = { initialDraft: any; apiBase: string; locale: Locale; runPath: string; initialStep?: string; onBack: () => void; onPublished: (result: any) => void };
 type Step = typeof draftStepNames[number];
+const catalogModules = ["CO", "Common", "FI", "MM", "PP", "SD"] as const;
 
 async function call(url: string, data?: any, method = "POST", signal?: AbortSignal) {
   const response = await fetch(url, { method: data === undefined && method === "POST" ? "GET" : method, headers: { "Content-Type": "application/json" }, body: data === undefined ? undefined : JSON.stringify(data), signal });
@@ -83,6 +84,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const [compareFrom, setCompareFrom] = useState(Math.max(1, initialDraft.revision - 1));
   const [compareTo, setCompareTo] = useState(initialDraft.revision);
   const [targetVersion, setTargetVersion] = useState(initialDraft.target_version || initialDraft.package.manifest.version);
+  const [catalogModule, setCatalogModule] = useState(initialDraft.catalog_module || initialDraft.package.manifest.module || "Common");
   const chatRef = useRef<HTMLTextAreaElement>(null);
   const progressRef = useRef<HTMLParagraphElement>(null);
   const pendingFocus = useRef(false);
@@ -140,6 +142,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     if (value.revision < draftRef.current.revision) return;
     if (!replaceEditor && dirtyRef.current && value.revision > draftRef.current.revision) { setRemoteConflict(true); return; }
     if (value.agent_id !== draftRef.current.agent_id) setIdentityInput(value.agent_id);
+    setCatalogModule(value.catalog_module || value.package.manifest.module || "Common");
     if (value.revision !== draftRef.current.revision) {
       const previousSchema = draftRef.current.package.manifest.execution?.inputSchema || {};
       setReport(null); setRun(null); setTrial(null); setTrialDialogOpen(false); setTrialConnectionError(false); setDiscovery(null); setDiscoveryInputHash(""); setConfirmedSample(""); setAutoDiscover(false); setAutoFilled({}); setSecrets({}); setAcceptanceCampaign(null); setAcceptanceSetupOpen(false); setAcceptanceProgressOpen(false); setAcceptanceCases([]); setAcceptanceSampleCase(null); sampleApplied.current = "";
@@ -565,6 +568,20 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     }
   };
   const check = () => action(async () => { if (!actionable) return; replace(await call(`${base}/validate`, { expectedRevision: draft.revision }), false); setReport(await call(`${base}/validation-report`)); });
+  const saveCatalogModule = () => action(async () => {
+    if (!actionable || catalogModule === (draft.catalog_module || manifest.module)) return;
+    const value = await call(`${base}/catalog-module`, {
+      expectedRevision: draft.revision,
+      expectedCatalogRevision: draft.catalog_revision || 1,
+      module: catalogModule,
+    }, "PUT");
+    replace(value, false);
+    setReport(value);
+    const update = value.catalog_module_update;
+    setNotice(update?.reload_required
+      ? tr("所属模块已保存；前台目录需要手动刷新服务。", "Module saved; the site catalog requires a manual service refresh.")
+      : tr("所属模块已保存，不影响执行逻辑或验收。", "Module saved without changing execution or acceptance."));
+  });
   const publish = (activate: boolean) => action(async () => {
     if (!actionable || !canPublish) return;
     onPublished(await call(`${base}/publish`, { expectedRevision: draft.revision, targetVersion, activate, validationReportDigest: acceptance?.report_digest || report?.report_digest || null }));
@@ -577,10 +594,12 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   });
   const revisions: number[] = (draft.revisions?.length ? draft.revisions.map((item: any) => item.revision) : Array.from({ length: draft.revision }, (_, index) => index + 1)).sort((a: number, b: number) => a - b);
 
-  return <main className="agent-management agent-draft-workspace"><header><button className="agent-secondary-action" disabled={dirty || busy} onClick={onBack}>{tr("返回管理列表", "Back to management")}</button><p className="eyebrow">{tr("未发布草稿 · 不影响当前活动Agent", "Unpublished draft · Active Agent unchanged")}</p><h1>{localText(manifest.title, locale) || draft.agent_id}</h1><p>{localText(manifest.summary, locale)}</p><div className="draft-meta"><span>{manifest.module}</span><code>{draft.agent_id}</code><span>{tr("目标版本", "Target version")} {draft.target_version}</span><span>{tr("修订", "Revision")} {draft.revision}</span></div></header>
+  return <main className="agent-management agent-draft-workspace"><header><button className="agent-secondary-action" disabled={dirty || busy} onClick={onBack}>{tr("返回管理列表", "Back to management")}</button><p className="eyebrow">{tr("未发布草稿 · 不影响当前活动Agent", "Unpublished draft · Active Agent unchanged")}</p><h1>{localText(manifest.title, locale) || draft.agent_id}</h1><p>{localText(manifest.summary, locale)}</p><div className="draft-meta"><span>{draft.catalog_module || manifest.module}</span><code>{draft.agent_id}</code><span>{tr("目标版本", "Target version")} {draft.target_version}</span><span>{tr("修订", "Revision")} {draft.revision}</span></div></header>
     <nav className="agent-steps" aria-label={tr("编辑步骤", "Editing steps")}>{draftStepNames.map((name, index) => <button key={name} className={step === name ? "active" : "agent-secondary-action"} aria-current={step === name ? "step" : undefined} onClick={() => setStep(name)}>{index + 1}. {name === "compose" ? tr("定义与修改", "Define and revise") : name === "review" ? tr("检查修改内容", "Review changes") : tr("发布与启用", "Publish and activate")}</button>)}</nav>
     {error && <p className="agent-alert error" role="alert">{error}</p>}{notice && <p className="agent-alert" role="status">{notice}</p>}
+    {draft.technical_identity?.kind === "version_upgrade" && draft.has_publishable_changes === false && <p className="agent-alert" role="status">{tr("当前草稿没有需要发布的业务变更；所属模块已独立保存，可在管理列表中删除此草稿。", "This draft has no business changes to publish. Its catalog module is already saved independently, so you can delete this draft from the management list.")}</p>}
     {remoteConflict && <p className="agent-alert error" role="alert">{tr("草稿已在其他操作中生成新修订。当前未保存内容已保留，请复制需要保留的修改，再放弃本地修改并加载最新修订。", "Another operation created a revision. Your unsaved content is retained. Copy any edits you need, then discard local edits and load the latest revision.")}</p>}
+    {step === "compose" && <section className="agent-panel draft-catalog-module"><h2>{tr("所属模块", "Catalog module")}</h2><div className="draft-module-editor"><label>{tr("目录归类", "Catalog grouping")}<select value={catalogModule} disabled={!actionable} onChange={(event) => setCatalogModule(event.target.value)}>{catalogModules.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" disabled={!actionable || catalogModule === (draft.catalog_module || manifest.module)} onClick={saveCatalogModule}>{tr("保存所属模块", "Save module")}</button></div><p>{tr("仅调整目录归类、导航和发现方式，不改变SAP范围、执行逻辑或验收状态。", "This changes catalog grouping, navigation and discovery only. It does not change SAP scope, execution or acceptance.")}</p></section>}
     {dirty && <aside className="agent-alert draft-unsaved"><p>{tr("有尚未保存的定义修改。请保存或放弃后，再进行选样、试运行、对话或发布。", "There are unsaved definition changes. Save or discard before discovery, trials, chat or publication.")}</p><div className="agent-actions"><button disabled={locked || remoteConflict} onClick={save}>{tr("保存新修订", "Save revision")}</button><button className="agent-secondary-action" disabled={locked} onClick={discard}>{tr("放弃未保存修改", "Discard unsaved edits")}</button></div></aside>}
     {active && <p className="agent-alert" role="status" ref={progressRef} tabIndex={-1}>{tr("草稿任务", "Draft operation")}: {draftStatus(operation?.status || latestTurn?.status, locale)} <button className="agent-secondary-action" disabled={busy || operation?.status === "cancelling"} onClick={cancel}>{tr("取消任务", "Cancel task")}</button></p>}
     {step === "compose" && <div className="agent-document-body">

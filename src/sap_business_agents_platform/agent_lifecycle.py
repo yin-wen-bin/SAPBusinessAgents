@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from threading import RLock
@@ -16,11 +17,18 @@ from typing import Any
 from .config import Settings
 from .database import RunStore
 from .managed_rules import ManagedRuleError, validate_managed_rule
-from .manifests import AgentRepository, ManifestError, is_agent_executable, validate_execution
+from .manifests import (
+    ALLOWED_CATALOG_MODULES,
+    AgentRepository,
+    ManifestError,
+    is_agent_executable,
+    validate_execution,
+)
 from .models import RunStatus, TERMINAL_STATUSES, utc_now
 from .acceptance import agent_execution_digest
 from .agent_authoring import AgentAuthoringMixin, package_changes
 from .agent_identity import AgentIdentityMixin, draft_identity_kind
+from .factory import infer_catalog_module
 from .plugins import PluginError
 from .relationships import apply_advisory_relationship_policy
 from .skills import SkillError, validate_agent_skill_dependencies
@@ -85,10 +93,16 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                 continue
             dependencies = self._workflow_dependencies(agent_id)
             versions = self.versions(agent_id)
+            repository_module = self.agents.repository_module(agent_id)
+            catalog_module = self.agents.catalog_module(agent_id)
+            catalog_revision = int(lifecycle.get("catalog_revision") or 1)
             items.append(
                 {
                     "id": agent_id,
-                    "module": agent.get("module"),
+                    "module": catalog_module,
+                    "catalog_module": catalog_module,
+                    "catalog_revision": catalog_revision,
+                    "repository_module": repository_module,
                     "title": agent.get("title"),
                     "summary": agent.get("summary"),
                     "version": agent.get("version"),
@@ -101,6 +115,177 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                 }
             )
         return items
+
+    def set_catalog_module(self, agent_id: str, payload: Any) -> dict[str, Any]:
+        """Reclassify a published Agent without changing its immutable package."""
+
+        with self._import_lock:
+            current = self._assert_expected(
+                agent_id, payload.expected_version, payload.expected_agent_hash
+            )
+            lifecycle = copy.deepcopy(self.agents.lifecycle(agent_id))
+            current_revision = int(lifecycle.get("catalog_revision") or 1)
+            if int(payload.expected_catalog_revision) != current_revision:
+                raise AgentLifecycleError(
+                    "The Agent catalog classification changed; reload before continuing.",
+                    code="agent_catalog_module_conflict",
+                    detail={"actual_catalog_revision": current_revision},
+                )
+            return self._set_catalog_module_owned(
+                agent_id,
+                str(payload.module),
+                current=current,
+                lifecycle=lifecycle,
+            )
+
+    def _set_catalog_module_owned(
+        self,
+        agent_id: str,
+        module: str,
+        *,
+        current: dict[str, Any] | None = None,
+        lifecycle: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if module not in ALLOWED_CATALOG_MODULES:
+            raise AgentLifecycleError(
+                "The requested Agent catalog module is invalid.",
+                code="agent_catalog_module_invalid",
+            )
+        current = current or self.agents.get(agent_id)
+        lifecycle = copy.deepcopy(lifecycle or self.agents.lifecycle(agent_id))
+        previous_module = str(
+            lifecycle.get("catalog_module") or current.get("module") or "Common"
+        )
+        current_revision = int(lifecycle.get("catalog_revision") or 1)
+        if previous_module == module:
+            return {
+                "agent_id": agent_id,
+                "catalog_module": module,
+                "catalog_revision": current_revision,
+                "repository_module": self.agents.repository_module(agent_id),
+                "changed": False,
+                "pushed": False,
+                "reload_required": False,
+                "reload_scheduled": False,
+            }
+
+        package = self.agents.package(agent_id)
+        execution_digest = _execution_digest(current, package.get("rules_source"))
+        rules_digest = (
+            "sha256:" + hashlib.sha256(package["rules_source"].encode("utf-8")).hexdigest()
+            if package.get("rules_source") is not None
+            else None
+        )
+        acceptance_digest = _json_digest(
+            ((current.get("execution") or {}).get("acceptance") or {})
+        )
+        agent_hash = agent_digest(current)
+        directory = self.agents._path(agent_id).parent
+        branch = self._prepare_branch(
+            agent_id, "catalog-module", str(current.get("version") or "0.0.0")
+        )
+        publication_path = directory / "publication.json"
+        publication_before = publication_path.read_bytes() if publication_path.is_file() else None
+        documentation_before = self._catalog_documentation_snapshot()
+        lifecycle.update(
+            catalog_module=module,
+            catalog_revision=current_revision + 1,
+            catalog_updated_at=utc_now(),
+        )
+        try:
+            self._write_json(publication_path, lifecycle)
+            reloaded = self.agents.get(agent_id)
+            reloaded_package = self.agents.package(agent_id)
+            reloaded_rules = reloaded_package.get("rules_source")
+            reloaded_rules_digest = (
+                "sha256:" + hashlib.sha256(reloaded_rules.encode("utf-8")).hexdigest()
+                if reloaded_rules is not None
+                else None
+            )
+            if (
+                agent_digest(reloaded) != agent_hash
+                or _execution_digest(reloaded, reloaded_rules) != execution_digest
+                or reloaded_rules_digest != rules_digest
+                or _json_digest(((reloaded.get("execution") or {}).get("acceptance") or {}))
+                != acceptance_digest
+            ):
+                raise AgentLifecycleError(
+                    "Catalog reclassification changed the immutable Agent package.",
+                    code="agent_catalog_module_execution_changed",
+                )
+            documentation_paths = self._refresh_catalog_documentation()
+            commit = self._commit_agent_change(
+                directory,
+                f"Reclassify {agent_id} as {module}",
+                additional_paths=documentation_paths,
+            )
+        except Exception as exc:
+            if publication_before is None:
+                publication_path.unlink(missing_ok=True)
+            else:
+                publication_path.write_bytes(publication_before)
+            for path, content in documentation_before.items():
+                path.write_bytes(content)
+            rollback_paths = [publication_path, *documentation_before]
+            subprocess.run(
+                [
+                    "git",
+                    "add",
+                    "-A",
+                    "--",
+                    *(str(path.relative_to(self.settings.repository_root)) for path in rollback_paths),
+                ],
+                cwd=self.settings.repository_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if isinstance(exc, AgentLifecycleError):
+                raise
+            raise AgentLifecycleError(
+                "The Agent catalog module could not be updated; repository files were restored.",
+                code="agent_catalog_module_update_failed",
+            ) from exc
+        detail = {
+            "from_module": previous_module,
+            "to_module": module,
+            "catalog_revision": current_revision + 1,
+            "repository_module": self.agents.repository_module(agent_id),
+            "execution_digest": execution_digest,
+            "rules_digest": rules_digest,
+            "acceptance_contract_digest": acceptance_digest,
+            "sap_get_count": 0,
+            "runtime_call_count": 0,
+        }
+        self._audit(
+            agent_id,
+            "catalog_module_changed",
+            str(current.get("version") or ""),
+            str(current.get("version") or ""),
+            agent_hash,
+            branch,
+            commit,
+            detail,
+        )
+        reload_scheduled = self._schedule_service_refresh()
+        return {
+            "agent_id": agent_id,
+            "catalog_module": module,
+            "catalog_revision": current_revision + 1,
+            "repository_module": detail["repository_module"],
+            "changed": True,
+            "branch": branch,
+            "commit_sha": commit,
+            "pushed": False,
+            "reload_required": not reload_scheduled,
+            "reload_scheduled": reload_scheduled,
+            "acceptance_reused": True,
+            "digests": {
+                "execution": execution_digest,
+                "rules": rules_digest,
+                "acceptance_contract": acceptance_digest,
+            },
+        }
 
     def versions(self, agent_id: str) -> list[dict[str, Any]]:
         current = self.agents.get(agent_id)
@@ -140,20 +325,32 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             package["manifest"]["version"] = "0.1.0"
             package["manifest"]["status"] = "Draft"
             package["manifest"]["validation"] = _not_tested_validation()
+            package["manifest"]["module"] = str(
+                payload.module or self.agents.catalog_module(str(payload.source_agent_id))
+            )
         elif source == "free_query":
             if self.legacy_factory is None:
                 raise AgentLifecycleError("Agent Factory is unavailable.", code="agent_factory_unavailable")
-            generated = await self.legacy_factory.create_from_run(str(payload.run_id))
+            generated = await self.legacy_factory.create_from_run(
+                str(payload.run_id), module=payload.module
+            )
             if not payload.agent_id:
                 imported = self.import_source_draft(generated.draft_id)
                 return self.get_draft(imported["managed_draft_id"])
             package = self._capture_package(Path(generated.path))
             if payload.agent_id:
                 package["manifest"]["slug"] = str(payload.agent_id)
+            if payload.module:
+                package["manifest"]["module"] = str(payload.module)
         else:
+            requested_module = payload.module
+            if source == "workflow_gap" and not requested_module:
+                requested_module = infer_catalog_module(
+                    self.store.get_run(str(payload.run_id)).plan
+                )
             package = self._blank_package(
                 str(payload.agent_id or f"agent-{uuid.uuid4().hex[:8]}"),
-                str(payload.module or "Common"),
+                str(requested_module or "Common"),
                 payload.title or {"zh": "新固定Agent", "en": "New Fixed Agent"},
             )
             if source == "workflow_gap":
@@ -193,6 +390,8 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                     "gapId": payload.gap_id,
                 },
                 "runtime_snapshot": runtime_snapshot,
+                "catalog_module": str(package["manifest"].get("module") or "Common"),
+                "catalog_revision": 1,
             },
             "created_at": now,
             "updated_at": now,
@@ -267,6 +466,8 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                     "validation": _not_tested_validation(),
                     "metadata": {"identity": {"kind": "new_agent"}, "source_draft_id": source_id, "source_run_id": source.run_id,
                                  "source_package_hash": source_hash, "source_validation": source.validation,
+                                 "catalog_module": str(package["manifest"].get("module") or "Common"),
+                                 "catalog_revision": 1,
                                  "source_result_available": source_result is not None,
                                  "source_summary": copy.deepcopy(source_result.summary) if source_result else None,
                                  "runtime_snapshot": (
@@ -338,6 +539,8 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                 "identity": {"kind": "version_upgrade", "confirmed_agent_id": agent_id, "confirmed_at": now},
                 "version_origin": {"bump": bump},
                 "runtime_snapshot": self._new_runtime_snapshot(),
+                "catalog_module": self.agents.catalog_module(agent_id),
+                "catalog_revision": int(self.agents.lifecycle(agent_id).get("catalog_revision") or 1),
             },
             "created_at": now,
             "updated_at": now,
@@ -349,6 +552,9 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         draft = self.store.get_agent_authoring_draft(draft_id)
         revision = self.store.get_agent_authoring_revision(draft_id, int(draft["revision"]))
         assessment = self._validation_summary(draft, revision["package"])
+        catalog_module, catalog_revision, repository_module = self._draft_catalog_metadata(
+            draft, revision["package"]
+        )
         sample_operation = self.store.latest_agent_operation(draft_id, "sample_discovery")
         sample = ({**(sample_operation.get("detail") or {}), "run_id": sample_operation["operation_id"], "status": sample_operation["status"], "revision": sample_operation["revision"]} if sample_operation and int(sample_operation["revision"]) == int(draft["revision"]) else None)
         if sample and sample["status"] in {"queued", "running", "cancelling"} and sample.get("phase") != "cleaning_up":
@@ -356,6 +562,12 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         return {
             **draft,
             "technical_identity": self.technical_identity(draft),
+            "catalog_module": catalog_module,
+            "catalog_revision": catalog_revision,
+            "repository_module": repository_module,
+            "has_publishable_changes": self._has_publishable_changes(
+                draft, revision["package"]
+            ),
             "package": revision["package"],
             "diff": revision["diff"],
             "revisions": self.store.list_agent_authoring_revisions(draft_id),
@@ -390,6 +602,9 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             except KeyError:
                 package = {}
             manifest = package.get("manifest") if isinstance(package, dict) else {}
+            catalog_module, catalog_revision, repository_module = self._draft_catalog_metadata(
+                draft, package
+            )
             blockers = self._draft_delete_blockers(draft)
             items.append(
                 {
@@ -397,7 +612,10 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                     "sync_error": sync_error,
                     "technical_identity": self.technical_identity(draft),
                     "title": copy.deepcopy((manifest or {}).get("title") or {}),
-                    "module": (manifest or {}).get("module"),
+                    "module": catalog_module,
+                    "catalog_module": catalog_module,
+                    "catalog_revision": catalog_revision,
+                    "repository_module": repository_module,
                     "management": {
                         "can_delete": not blockers,
                         "delete_blockers": blockers,
@@ -405,6 +623,77 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                 }
             )
         return items
+
+    def set_draft_catalog_module(self, draft_id: str, payload: Any) -> dict[str, Any]:
+        operation = self._reserve_operation(
+            draft_id, int(payload.expected_revision), "catalog_module"
+        )
+        try:
+            draft = self.store.get_agent_authoring_draft(draft_id)
+            self._assert_editable(draft)
+            if draft_identity_kind(draft) == "version_upgrade":
+                with self._import_lock:
+                    current = self._assert_expected(
+                        draft["agent_id"], draft["source_version"], draft["source_hash"]
+                    )
+                    lifecycle = copy.deepcopy(self.agents.lifecycle(draft["agent_id"]))
+                    current_catalog_revision = int(lifecycle.get("catalog_revision") or 1)
+                    expected_catalog_revision = getattr(
+                        payload, "expected_catalog_revision", None
+                    )
+                    if (
+                        expected_catalog_revision is not None
+                        and int(expected_catalog_revision) != current_catalog_revision
+                    ):
+                        raise AgentLifecycleError(
+                            "The Agent catalog classification changed; reload before continuing.",
+                            code="agent_catalog_module_conflict",
+                            detail={"actual_catalog_revision": current_catalog_revision},
+                        )
+                    result = self._set_catalog_module_owned(
+                        draft["agent_id"],
+                        str(payload.module),
+                        current=current,
+                        lifecycle=lifecycle,
+                    )
+                return {**self.get_draft(draft_id), "catalog_module_update": result}
+
+            package = self.store.get_agent_authoring_revision(
+                draft_id, int(payload.expected_revision)
+            )["package"]
+            previous_digests = {
+                "execution": _execution_digest(package["manifest"], package.get("rules")),
+                "rules": _json_digest(package.get("rules")),
+                "acceptance": _json_digest(
+                    ((package["manifest"].get("execution") or {}).get("acceptance") or {})
+                ),
+            }
+            updated = copy.deepcopy(package)
+            updated["manifest"]["module"] = str(payload.module)
+            updated_digests = {
+                "execution": _execution_digest(updated["manifest"], updated.get("rules")),
+                "rules": _json_digest(updated.get("rules")),
+                "acceptance": _json_digest(
+                    ((updated["manifest"].get("execution") or {}).get("acceptance") or {})
+                ),
+            }
+            if updated_digests != previous_digests:
+                raise AgentLifecycleError(
+                    "Catalog reclassification changed Agent execution.",
+                    code="agent_catalog_module_execution_changed",
+                )
+            return self._apply_package(
+                draft_id,
+                int(payload.expected_revision),
+                updated,
+                kind="catalog_module",
+                operation_id=operation["operation_id"],
+                record_turn=False,
+                allow_catalog_module_change=True,
+                preserve_validation=True,
+            )
+        finally:
+            self._finish_operation(draft_id, operation["operation_id"])
 
     def delete_draft(self, draft_id: str, payload: Any) -> dict[str, Any]:
         operation = self._reserve_operation(draft_id, int(payload.expected_revision), "delete")
@@ -943,6 +1232,13 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         lifecycle.update(
             schemaVersion=1,
             agent_id=draft["agent_id"],
+            catalog_module=str(
+                lifecycle.get("catalog_module")
+                or (draft.get("metadata") or {}).get("catalog_module")
+                or manifest.get("module")
+                or "Common"
+            ),
+            catalog_revision=int(lifecycle.get("catalog_revision") or 1),
             latest_version=target_version,
             published_at=utc_now(),
             git_branch=branch,
@@ -1203,6 +1499,48 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         except KeyError:
             return {"schemaVersion": 1, "agent_id": agent_id, "lifecycle_state": "inactive", "state": "inactive", "active_version": None, "latest_version": str(manifest.get("version") or ""), "active_digest": None}
 
+    def _draft_catalog_metadata(
+        self, draft: dict[str, Any], package: dict[str, Any]
+    ) -> tuple[str, int, str | None]:
+        manifest = package.get("manifest") if isinstance(package, dict) else {}
+        if draft_identity_kind(draft) == "version_upgrade":
+            try:
+                lifecycle = self.agents.lifecycle(draft["agent_id"])
+                return (
+                    self.agents.catalog_module(draft["agent_id"]),
+                    int(lifecycle.get("catalog_revision") or 1),
+                    self.agents.repository_module(draft["agent_id"]),
+                )
+            except (KeyError, ManifestError):
+                pass
+        metadata = draft.get("metadata") or {}
+        module = str(
+            metadata.get("catalog_module") or (manifest or {}).get("module") or "Common"
+        )
+        return module, int(metadata.get("catalog_revision") or 1), None
+
+    def _has_publishable_changes(
+        self, draft: dict[str, Any], package: dict[str, Any]
+    ) -> bool:
+        if draft_identity_kind(draft) != "version_upgrade":
+            return True
+        try:
+            source_directory = Path(
+                self.agents.package(draft["agent_id"], draft["source_version"])["directory"]
+            )
+            source = self._capture_package(source_directory)
+        except (KeyError, AgentLifecycleError, ManifestError):
+            return True
+
+        def normalized(value: dict[str, Any]) -> dict[str, Any]:
+            result = copy.deepcopy(value)
+            manifest = result.get("manifest") or {}
+            for key in ("module", "status", "validation", "version"):
+                manifest.pop(key, None)
+            return result
+
+        return normalized(source) != normalized(package)
+
     def _activate_package(self, directory: Path, version_dir: Path, lifecycle: dict[str, Any], *, archive_current: bool = True) -> None:
         current = directory / "agent.json"
         if archive_current and current.is_file():
@@ -1244,9 +1582,59 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         subprocess.run(["git", "switch", "-c", branch], cwd=self.settings.repository_root, check=True, capture_output=True, text=True)
         return branch
 
-    def _commit_agent_change(self, directory: Path, message: str, *, deleted: bool = False) -> str:
+    def _catalog_documentation_snapshot(self) -> dict[Path, bytes]:
+        root = self.settings.repository_root
+        paths = [root / "README.md"]
+        paths.extend((root / "agents").rglob("README.md"))
+        paths.extend((root / "workflows").rglob("README.md"))
+        return {path: path.read_bytes() for path in paths if path.is_file()}
+
+    def _refresh_catalog_documentation(self) -> list[Path]:
+        script = self.settings.repository_root / "scripts" / "documentation.py"
+        if not script.is_file():
+            return []
+        subprocess.run(
+            [sys.executable, str(script), "--write"],
+            cwd=self.settings.repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        changed = subprocess.run(
+            ["git", "diff", "--name-only", "--", "README.md", "agents", "workflows"],
+            cwd=self.settings.repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        return [
+            self.settings.repository_root / path
+            for path in changed
+            if path.replace("\\", "/").endswith("README.md")
+        ]
+
+    def _commit_agent_change(
+        self,
+        directory: Path,
+        message: str,
+        *,
+        deleted: bool = False,
+        additional_paths: list[Path] | None = None,
+    ) -> str:
         relative = directory.resolve().relative_to(self.settings.repository_root.resolve()) if not deleted else directory.relative_to(self.settings.repository_root)
-        subprocess.run(["git", "add", "-A", "--", str(relative)], cwd=self.settings.repository_root, check=True, capture_output=True, text=True)
+        relatives = [relative]
+        for path in additional_paths or []:
+            resolved = path.resolve()
+            try:
+                candidate = resolved.relative_to(self.settings.repository_root.resolve())
+            except ValueError as exc:
+                raise AgentLifecycleError(
+                    "Agent management attempted to stage a file outside the repository.",
+                    code="agent_management_path_invalid",
+                ) from exc
+            if candidate not in relatives:
+                relatives.append(candidate)
+        subprocess.run(["git", "add", "-A", "--", *(str(path) for path in relatives)], cwd=self.settings.repository_root, check=True, capture_output=True, text=True)
         staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=self.settings.repository_root)
         if staged.returncode == 0:
             raise AgentLifecycleError("Agent management produced no repository change.", code="agent_management_no_change")
