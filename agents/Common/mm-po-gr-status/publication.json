@@ -6,12 +6,12 @@
   "catalog_updated_at": "2026-09-14T15:53:08.680746+00:00",
   "lifecycle_state": "active",
   "state": "active",
-  "active_version": "0.1.0",
-  "latest_version": "0.1.0",
-  "active_digest": "sha256:d430ab2f9b7e8224ffba683f90bae0dd055bbf090f388826ccaa9f9cc4e3aba2",
-  "published_at": "2026-09-14T13:42:00.602191+00:00",
-  "git_branch": "codex/agent-mm-po-gr-status-publish-v0.1.0-24270620",
+  "active_version": "0.1.1",
+  "latest_version": "0.1.1",
+  "active_digest": "sha256:ad891bc549ce13a3dbf40717e5f991c2836dfbe9a2329c37d3efb5edc9b225e9",
+  "published_at": "2026-09-15T04:41:13.204179+00:00",
+  "git_branch": "codex/agent-mm-po-gr-status-publish-v0.1.1-3e6544bb",
   "git_commit": "recorded_in_agent_management_events",
-  "activated_at": "2026-09-14T13:42:00.619046+00:00",
+  "activated_at": "2026-09-15T04:41:13.226129+00:00",
   "deactivated_at": null
 }

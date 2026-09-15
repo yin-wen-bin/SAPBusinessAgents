@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "schedule_line_delivery_date": {
+        "type": "string",
+        "minLength": 1,
+        "format": "date",
+        "title": {
+          "zh": "业务字段（ScheduleLineDeliveryDate）",
+          "en": "Schedule Line Delivery Date"
+        }
+      },
+      "purchasing_organization": {
+        "type": "string",
+        "minLength": 1,
+        "title": {
+          "zh": "采购组织",
+          "en": "Purchasing Organization"
+        }
+      },
+      "purchasing_group": {
+        "type": "string",
+        "minLength": 1,
+        "title": {
+          "zh": "采购组",
+          "en": "Purchasing Group"
+        }
+      },
+      "plant": {
+        "type": "string",
+        "minLength": 1,
+        "title": {
+          "zh": "工厂",
+          "en": "Plant"
+        }
+      },
+      "supplier": {
+        "type": "string",
+        "minLength": 1,
+        "title": {
+          "zh": "供应商",
+          "en": "Supplier"
+        }
+      },
+      "purchase_order": {
+        "type": "string",
+        "minLength": 1,
+        "title": {
+          "zh": "采购订单号",
+          "en": "Purchase Order"
+        }
+      }
+    },
+    "required": [
+      "schedule_line_delivery_date"
+    ],
+    "additionalProperties": false
+  },
+  "evidence_sources": [
+    {
+      "step_id": "sap_query_1",
+      "executor": "sap_read",
+      "read_only": true
+    },
+    {
+      "step_id": "sap_query_2",
+      "executor": "sap_read",
+      "read_only": true
+    },
+    {
+      "step_id": "sap_query_3",
+      "executor": "sap_read",
+      "read_only": true
+    },
+    {
+      "step_id": "sap_query_4",
+      "executor": "sap_read",
+      "read_only": true
+    },
+    {
+      "step_id": "sap_query_5",
+      "executor": "sap_read",
+      "read_only": true
+    }
+  ],
+  "completeness_policy": "Never infer source_complete=true without an explicit source assertion.",
+  "sample_values_redacted": true
+}
