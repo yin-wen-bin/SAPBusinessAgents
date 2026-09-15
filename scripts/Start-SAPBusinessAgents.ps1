@@ -41,6 +41,9 @@ $SiteMode = if ($Dev) { "dev" } else { "preview" }
 $SiteFingerprint = $null
 $SiteBuildReused = $false
 $SiteBuildDurationMs = 0
+$SitePreparedBeforeRestart = $false
+$DeploymentLock = $null
+$DeploymentLockPath = Join-Path $ProjectRoot ".local-data\deployment.lock"
 
 function Write-LauncherMessage {
     param(
@@ -51,6 +54,13 @@ function Write-LauncherMessage {
     $line = "{0} [{1}] {2}" -f (Get-Date).ToString("o"), $Level, $Message
     Add-Content -LiteralPath $LauncherLog -Value $line -Encoding UTF8
     Write-Host "[SAPBusinessAgents] $Message" -ForegroundColor $Color
+}
+
+function Write-JsonAtomic {
+    param([string]$Path, [object]$Value)
+    $temporary = "$Path.tmp-$PID"
+    $Value | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $temporary -Encoding UTF8
+    Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
 function Invoke-StartupPhase {
@@ -203,9 +213,25 @@ function Get-SiteFingerprint {
             Where-Object { $_.FullName -notlike (Join-Path $SiteRoot "src\generated\*") } |
             ForEach-Object { $files.Add($_) }
     }
-    Get-ChildItem -LiteralPath $AgentsRoot -Recurse -File -Filter "agent.json" | ForEach-Object { $files.Add($_) }
+    Get-ChildItem -LiteralPath $AgentsRoot -Recurse -File |
+        Where-Object {
+            $_.FullName -notmatch '[\\/]versions[\\/]' -and
+            $_.Name -in @("agent.json", "publication.json", "README.md")
+        } | ForEach-Object { $files.Add($_) }
+    $workflowsRoot = Join-Path $ProjectRoot "workflows"
+    if (Test-Path -LiteralPath $workflowsRoot) {
+        Get-ChildItem -LiteralPath $workflowsRoot -Recurse -File |
+            Where-Object {
+                $_.FullName -notmatch '[\\/]versions[\\/]' -and
+                $_.Name -in @("workflow.json", "publication.json", "README.md")
+            } | ForEach-Object { $files.Add($_) }
+    }
     foreach ($name in @("astro.config.mjs", "package.json", "package-lock.json")) {
         $files.Add((Get-Item -LiteralPath (Join-Path $SiteRoot $name)))
+    }
+    foreach ($relative in @("config\agent-authoring-standard.json", "config\agent-presentation-contract.json")) {
+        $path = Join-Path $ProjectRoot $relative
+        if (Test-Path -LiteralPath $path -PathType Leaf) { $files.Add((Get-Item -LiteralPath $path)) }
     }
 
     $material = New-Object System.Text.StringBuilder
@@ -233,6 +259,12 @@ function Test-SiteBuild {
     return ((Test-Path -LiteralPath (Join-Path $DistPath "index.html") -PathType Leaf) -and
         (Test-Path -LiteralPath (Join-Path $DistPath "zh\index.html") -PathType Leaf) -and
         (Test-Path -LiteralPath (Join-Path $DistPath "_astro") -PathType Container))
+}
+
+function Test-SiteReleaseBuild {
+    param([string]$DistPath)
+    return ((Test-SiteBuild -DistPath $DistPath) -and
+        (Test-Path -LiteralPath (Join-Path $DistPath "sapba-build.json") -PathType Leaf))
 }
 
 function Invoke-SiteCommand {
@@ -265,7 +297,21 @@ function Build-SiteCache {
         }
         finally { Pop-Location }
         if (-not (Test-SiteBuild -DistPath $temporaryDist)) { throw "The local Web UI build is incomplete." }
-        if (Test-Path -LiteralPath $finalRoot) { Remove-Item -LiteralPath $finalRoot -Recurse -Force }
+        [ordered]@{
+            fingerprint = $Fingerprint
+            agent_id = ""
+            version = ""
+            catalog_module = ""
+        } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $temporaryDist "sapba-build.json") -Encoding UTF8
+        if (Test-Path -LiteralPath $finalRoot) {
+            if (Test-SiteReleaseBuild -DistPath $finalDist) {
+                Write-LauncherMessage "Keeping immutable Web UI cache $Fingerprint; the rebuilt copy was only a verification candidate."
+                Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
+                return $finalDist
+            }
+            $quarantine = Join-Path $SiteBuildRoot (".corrupt-{0}-{1}" -f $Fingerprint, $Timestamp)
+            Move-Item -LiteralPath $finalRoot -Destination $quarantine
+        }
         Move-Item -LiteralPath $temporaryRoot -Destination $finalRoot
         return $finalDist
     }
@@ -288,6 +334,18 @@ function Remove-OldSiteBuilds {
         Sort-Object LastWriteTime -Descending
     $keep = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     [void]$keep.Add($CurrentFingerprint)
+    foreach ($pointerName in @("current.json", "previous.json")) {
+        $pointerPath = Join-Path $SiteBuildRoot $pointerName
+        if (Test-Path -LiteralPath $pointerPath -PathType Leaf) {
+            try {
+                $pointer = Get-Content -LiteralPath $pointerPath -Raw | ConvertFrom-Json
+                if (-not [string]::IsNullOrWhiteSpace([string]$pointer.fingerprint)) {
+                    [void]$keep.Add([string]$pointer.fingerprint)
+                }
+            }
+            catch { Write-LauncherMessage "Ignoring invalid Web UI pointer $pointerName." "Yellow" }
+        }
+    }
     foreach ($build in $builds) {
         if ($keep.Count -lt 3) { [void]$keep.Add($build.Name); continue }
         if (-not $keep.Contains($build.Name)) {
@@ -400,11 +458,50 @@ try {
         if ($null -eq $NodeCommand -or $null -eq $NpmCommand) { throw "Node.js and npm must be installed before the Web UI can start." }
         if (-not (Test-Path -LiteralPath $AstroCli -PathType Leaf)) { throw "Web UI dependencies are missing. Run 'npm ci' once under $SiteRoot." }
         $script:NodeVersion = (& $NodeCommand.Source --version).Trim()
+        $lockDeadline = (Get-Date).AddSeconds(60)
+        do {
+            try {
+                $script:DeploymentLock = [System.IO.File]::Open(
+                    $DeploymentLockPath, [System.IO.FileMode]::OpenOrCreate,
+                    [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None
+                )
+                break
+            }
+            catch [System.IO.IOException] {
+                if ((Get-Date) -ge $lockDeadline) {
+                    throw "Another startup or deployment operation still owns the service lock."
+                }
+                Start-Sleep -Milliseconds 250
+            }
+        } while ($null -eq $DeploymentLock)
     }
 
     $env:PUBLIC_SAPBA_API_URL = $ApiUrl
     $env:SAPBA_INTERNAL_API_URL = $ApiUrl
     Write-LauncherMessage "Using the Embedded GET-only SAP Provider."
+
+    if ($Restart -and -not $Dev) {
+        $SiteFingerprint = Invoke-StartupPhase -Name "site_fingerprint_before_restart" -Action {
+            Get-SiteFingerprint -SiteRoot $SiteRoot -AgentsRoot $AgentsRoot -NodeVersion $NodeVersion
+        }
+        $SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) "dist"
+        $cacheValid = Test-SiteReleaseBuild -DistPath $SiteDist
+        if ($cacheValid -and -not $RebuildSite) {
+            $SiteBuildReused = $true
+            Invoke-StartupPhase -Name "site_build_before_restart" -Action {
+                Write-LauncherMessage "Validated Web UI cache $SiteFingerprint before stopping services."
+            }
+        }
+        else {
+            $buildStarted = Get-Date
+            Invoke-StartupPhase -Name "site_build_before_restart" -Action {
+                $script:SiteDist = Build-SiteCache -Fingerprint $SiteFingerprint -SiteRoot $SiteRoot `
+                    -NodePath $NodeCommand.Source -NpmPath $NpmCommand.Source -AstroPath $AstroCli
+            }
+            $SiteBuildDurationMs = [int][Math]::Round(((Get-Date) - $buildStarted).TotalMilliseconds)
+        }
+        $SitePreparedBeforeRestart = $true
+    }
 
     Invoke-StartupPhase -Name "port_detection" -Action {
         if ($Restart) {
@@ -464,26 +561,36 @@ try {
             }
         }
         else {
-            $SiteFingerprint = Invoke-StartupPhase -Name "site_fingerprint" -Action {
-                Get-SiteFingerprint -SiteRoot $SiteRoot -AgentsRoot $AgentsRoot -NodeVersion $NodeVersion
-            }
-            $SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) "dist"
-            $cacheValid = Test-SiteBuild -DistPath $SiteDist
-            if ($cacheValid -and -not $RebuildSite) {
-                $SiteBuildReused = $true
-                Invoke-StartupPhase -Name "site_build" -Action { Write-LauncherMessage "Reusing Web UI build cache $SiteFingerprint." }
+            if ($SitePreparedBeforeRestart) {
+                Invoke-StartupPhase -Name "site_fingerprint" -Action {
+                    Write-LauncherMessage "Using the Web UI fingerprint calculated before restart."
+                }
+                Invoke-StartupPhase -Name "site_build" -Action {
+                    Write-LauncherMessage "Using the Web UI build validated before services were stopped."
+                }
             }
             else {
-                $buildStarted = Get-Date
-                Invoke-StartupPhase -Name "site_build" -Action {
-                    if ($RebuildSite -and $cacheValid) { Write-LauncherMessage "Rebuilding Web UI cache $SiteFingerprint because -RebuildSite was requested." }
-                    else { Write-LauncherMessage "Building Web UI cache $SiteFingerprint." }
-                    $script:SiteDist = Build-SiteCache -Fingerprint $SiteFingerprint -SiteRoot $SiteRoot `
-                        -NodePath $NodeCommand.Source -NpmPath $NpmCommand.Source -AstroPath $AstroCli
-                    Remove-OldSiteBuilds -CurrentFingerprint $SiteFingerprint
+                $SiteFingerprint = Invoke-StartupPhase -Name "site_fingerprint" -Action {
+                    Get-SiteFingerprint -SiteRoot $SiteRoot -AgentsRoot $AgentsRoot -NodeVersion $NodeVersion
                 }
-                $SiteBuildDurationMs = [int][Math]::Round(((Get-Date) - $buildStarted).TotalMilliseconds)
+                $SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) "dist"
+                $cacheValid = Test-SiteReleaseBuild -DistPath $SiteDist
+                if ($cacheValid -and -not $RebuildSite) {
+                    $SiteBuildReused = $true
+                    Invoke-StartupPhase -Name "site_build" -Action { Write-LauncherMessage "Reusing Web UI build cache $SiteFingerprint." }
+                }
+                else {
+                    $buildStarted = Get-Date
+                    Invoke-StartupPhase -Name "site_build" -Action {
+                        if ($RebuildSite -and $cacheValid) { Write-LauncherMessage "Rebuilding Web UI cache $SiteFingerprint because -RebuildSite was requested." }
+                        else { Write-LauncherMessage "Building Web UI cache $SiteFingerprint." }
+                        $script:SiteDist = Build-SiteCache -Fingerprint $SiteFingerprint -SiteRoot $SiteRoot `
+                            -NodePath $NodeCommand.Source -NpmPath $NpmCommand.Source -AstroPath $AstroCli
+                    }
+                    $SiteBuildDurationMs = [int][Math]::Round(((Get-Date) - $buildStarted).TotalMilliseconds)
+                }
             }
+            Remove-OldSiteBuilds -CurrentFingerprint $SiteFingerprint
             $SiteProcess = Invoke-StartupPhase -Name "site_process_start" -Action {
                 $env:PUBLIC_SITE_BASE = "/"
                 Start-LocalProcess -Name "Web UI" -Port $SitePort -FilePath $NodeCommand.Source `
@@ -512,6 +619,23 @@ try {
     Write-LauncherMessage "END total (${totalDuration} ms)"
     $state = New-AttemptState -Status "completed"
     Save-AttemptState -State $state -Successful
+    if ($null -ne $SiteDist -and $SiteFingerprint) {
+        $currentPointerPath = Join-Path $SiteBuildRoot "current.json"
+        if (Test-Path -LiteralPath $currentPointerPath -PathType Leaf) {
+            try {
+                $oldPointer = Get-Content -LiteralPath $currentPointerPath -Raw | ConvertFrom-Json
+                if ($oldPointer.fingerprint -and $oldPointer.fingerprint -ne $SiteFingerprint) {
+                    Write-JsonAtomic -Path (Join-Path $SiteBuildRoot "previous.json") -Value $oldPointer
+                }
+            }
+            catch { Write-LauncherMessage "The previous Web UI pointer could not be preserved." "Yellow" }
+        }
+        Write-JsonAtomic -Path $currentPointerPath -Value ([ordered]@{
+            fingerprint = $SiteFingerprint; dist_path = $SiteDist; pid = $SiteProcessId;
+            recorded_at = (Get-Date).ToString("o")
+        })
+    }
+    if ($null -ne $DeploymentLock) { $DeploymentLock.Dispose(); $DeploymentLock = $null }
     Write-Host ""
     Write-Host "SAPBusinessAgents is ready." -ForegroundColor Green
     Write-Host "Web UI:    $SiteUrl"
@@ -547,5 +671,6 @@ catch {
     $failure = [ordered]@{ phase = $CurrentPhase; message = $errorMessage }
     $state = New-AttemptState -Status "failed" -Failure $failure
     Save-AttemptState -State $state
+    if ($null -ne $DeploymentLock) { $DeploymentLock.Dispose(); $DeploymentLock = $null }
     throw
 }

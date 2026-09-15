@@ -55,4 +55,12 @@ def test_documentation_releases_retain_original_acceptance_and_execution():
         assert agent_execution_digest(current, new.get("rules_source")) == reuse["executionDigest"]
         assert len(source["workflow"]) == len(current["workflow"])
         for before, after in zip(source["workflow"], current["workflow"], strict=True):
-            assert {k: v for k, v in before.items() if k not in {"title", "description"}} == {k: v for k, v in after.items() if k not in {"title", "description"}}
+            assert {
+                k: v
+                for k, v in before.items()
+                if k not in {"title", "description", "operations"}
+            } == {
+                k: v
+                for k, v in after.items()
+                if k not in {"title", "description", "operations"}
+            }

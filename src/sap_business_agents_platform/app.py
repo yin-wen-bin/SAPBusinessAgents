@@ -54,6 +54,7 @@ from .models import (
     AgentLifecycleRequest,
     AgentLiveValidationRequest,
     AgentPublishRequest,
+    AgentSiteRefreshRequest,
     AgentSampleDiscoveryRequest,
     AgentAcceptanceCampaignRequest,
     AgentStaticValidationRequest,
@@ -412,6 +413,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         store.recover_agent_operations()
+        agent_lifecycle.reconcile_publications()
         await plugin_manager.start()
         health_catalog_counts.update(
             executable_agents=len(agents.executable()),
@@ -523,7 +525,9 @@ def create_app(
                 "native_web_search": harness is not None and default_runtime_id == "codex",
                 "automatic_fallback": False,
             },
-            **health_catalog_counts,
+            "executable_agents": len(agents.executable()),
+            "published_workflows": len(workflows.list()),
+            "approved_skills": len(skill_registry.list()),
             "plugins": {
                 "total": len(plugin_manager.list()),
                 "ready": sum(
@@ -2376,15 +2380,24 @@ def create_app(
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
-    @app.post("/api/authoring/agents/{draft_id}/publish")
-    def publish_managed_agent(draft_id: str, payload: AgentPublishRequest) -> dict[str, Any]:
+    @app.post("/api/authoring/agents/{draft_id}/publish", status_code=202)
+    async def publish_managed_agent(draft_id: str, payload: AgentPublishRequest) -> dict[str, Any]:
         try:
             current = agent_lifecycle.get_draft(draft_id)
             if int(current["revision"]) != payload.expected_revision:
                 raise AgentLifecycleError(
                     "Agent draft revision changed.", code="agent_draft_conflict"
                 )
-            return agent_lifecycle.publish(draft_id, payload)
+            return agent_lifecycle.start_publish(draft_id, payload)
+        except (AgentLifecycleError, KeyError, subprocess.CalledProcessError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/refresh-site", status_code=202)
+    async def refresh_published_agent_site(
+        draft_id: str, payload: AgentSiteRefreshRequest
+    ) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.start_site_refresh(draft_id, payload)
         except (AgentLifecycleError, KeyError, subprocess.CalledProcessError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 

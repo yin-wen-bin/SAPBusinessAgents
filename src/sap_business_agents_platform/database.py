@@ -2281,6 +2281,7 @@ class RunStore:
     def reserve_agent_operation(
         self, draft_id: str, expected_revision: int, kind: str,
         request_id: str | None = None, input_hash: str | None = None,
+        *, allow_published: bool = False,
     ) -> dict[str, Any]:
         """Atomically claim one draft; request IDs cannot be reused for different inputs."""
         with self._lock, self._connect() as connection:
@@ -2300,7 +2301,7 @@ class RunStore:
             ).fetchone()
             if draft is None:
                 raise KeyError(draft_id)
-            if draft["status"] == "published":
+            if draft["status"] == "published" and not allow_published:
                 raise ValueError("agent_draft_published")
             if int(draft["revision"]) != int(expected_revision):
                 raise ValueError("agent_draft_conflict")
@@ -2375,6 +2376,21 @@ class RunStore:
         if status in {"queued", "running", "cancelling"}:
             raise ValueError("agent_operation_terminal_status_required")
         return self.update_agent_operation(draft_id, operation_id, status=status)
+
+    def reconcile_interrupted_agent_operation(
+        self, draft_id: str, operation_id: str, *, status: str, detail: dict[str, Any]
+    ) -> bool:
+        """Finalize an interrupted publication only after Git proves its commit landed."""
+
+        if status in {"queued", "running", "cancelling", "interrupted"}:
+            raise ValueError("agent_operation_terminal_status_required")
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE agent_draft_operations SET status = ?, detail_json = ?, updated_at = ?
+                WHERE draft_id = ? AND operation_id = ? AND status = 'interrupted'""",
+                (status, _dump(detail), utc_now(), draft_id, operation_id),
+            )
+            return cursor.rowcount == 1
 
     def recover_agent_operations(self) -> None:
         """Recover only fully persisted trial jobs; release orphan reservations.

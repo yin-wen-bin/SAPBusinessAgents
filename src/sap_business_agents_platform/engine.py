@@ -251,6 +251,7 @@ class RunCoordinator:
     async def submit(self, request: RunCreate) -> str:
         defaulted_fields: list[str] = []
         workflow: dict[str, Any] | None = None
+        agent_package: dict[str, Any] | None = None
         pending_secrets: list[tuple[str, str, str]] = []
         if request.mode == RunMode.free_query and request.sensitive_inputs:
             unknown_sensitive = sorted(
@@ -279,11 +280,19 @@ class RunCoordinator:
             )
         if request.mode == RunMode.agent:
             try:
-                agent = self.agents.get(str(request.agent_id))
+                snapshot_loader = getattr(self.agents, "snapshot", None)
+                agent_package = (
+                    snapshot_loader(str(request.agent_id))
+                    if callable(snapshot_loader)
+                    else {
+                        **self.agents.package(str(request.agent_id)),
+                        "active": self.agents.is_active(str(request.agent_id)),
+                    }
+                )
+                agent = agent_package["manifest"]
             except (KeyError, PluginError) as exc:
                 raise RunExecutionError("Agent not found.", code="agent_not_found") from exc
-            active_check = getattr(self.agents, "is_active", None)
-            if callable(active_check) and not active_check(str(request.agent_id)):
+            if agent_package.get("active") is False:
                 raise RunExecutionError(
                     "The fixed Agent is inactive and cannot accept new runs.",
                     code="agent_inactive",
@@ -451,12 +460,7 @@ class RunCoordinator:
                 hmac_descriptor=descriptor,
             )
         if request.mode == RunMode.agent:
-            package_loader = getattr(self.agents, "package", None)
-            package = (
-                package_loader(str(request.agent_id))
-                if callable(package_loader)
-                else {"manifest": agent, "rules_source": None}
-            )
+            package = agent_package or {"manifest": agent, "rules_source": None}
             self.store.save_agent_run_snapshot(
                 run_id,
                 package["manifest"],
@@ -502,9 +506,15 @@ class RunCoordinator:
             raise RunExecutionError(
                 "Acceptance submission only supports fixed Agents.",
                 code="acceptance_mode_invalid",
-            )
+        )
         try:
-            agent = self.agents.get(str(request.agent_id))
+            snapshot_loader = getattr(self.agents, "snapshot", None)
+            package = (
+                snapshot_loader(str(request.agent_id))
+                if callable(snapshot_loader)
+                else self.agents.package(str(request.agent_id))
+            )
+            agent = package["manifest"]
             effective_input, defaulted_fields = _resolve_server_defaults(
                 request.input,
                 agent["execution"]["inputSchema"],
@@ -533,12 +543,6 @@ class RunCoordinator:
         run_id = f"acceptance_{uuid.uuid4().hex[:16]}"
         self._acceptance_runs.add(run_id)
         self.store.create_run(run_id, request)
-        package_loader = getattr(self.agents, "package", None)
-        package = (
-            package_loader(str(request.agent_id))
-            if callable(package_loader)
-            else {"manifest": agent, "rules_source": None}
-        )
         self.store.save_agent_run_snapshot(
             run_id,
             package["manifest"],
@@ -2266,11 +2270,21 @@ class RunCoordinator:
                     workflow_input,
                     node_outputs,
                 )
-                agent = self.agents.get_version(
-                    agent_id,
-                    str(node.get("agentVersion") or ""),
-                    str(node.get("agentDigest") or ""),
+                snapshot_loader = getattr(self.agents, "snapshot", None)
+                agent_package = (
+                    snapshot_loader(
+                        agent_id,
+                        str(node.get("agentVersion") or ""),
+                        str(node.get("agentDigest") or ""),
+                    )
+                    if callable(snapshot_loader)
+                    else self.agents.package(
+                        agent_id,
+                        str(node.get("agentVersion") or ""),
+                        str(node.get("agentDigest") or ""),
+                    )
                 )
+                agent = agent_package["manifest"]
                 node_input, defaulted_fields = _resolve_server_defaults(
                     node_input,
                     agent["execution"]["inputSchema"],
@@ -2376,15 +2390,10 @@ class RunCoordinator:
                 parent_run_id=run_id,
                 node_id=node_id,
             )
-            package = self.agents.package(
-                agent_id,
-                str(node.get("agentVersion") or ""),
-                str(node.get("agentDigest") or ""),
-            )
             self.store.save_agent_run_snapshot(
                 child_run_id,
-                package["manifest"],
-                rules_source=package.get("rules_source"),
+                agent_package["manifest"],
+                rules_source=agent_package.get("rules_source"),
             )
             self.store.append_event(
                 child_run_id,
@@ -2673,16 +2682,20 @@ class RunCoordinator:
             )
         concurrency = int(foreach.get("maxConcurrency") or 4)
         semaphore = asyncio.Semaphore(concurrency)
-        agent = self.agents.get_version(
-            agent_id,
-            str(node.get("agentVersion") or ""),
-            str(node.get("agentDigest") or ""),
-        )
-        agent_package = self.agents.package(
-            agent_id,
-            str(node.get("agentVersion") or ""),
-            str(node.get("agentDigest") or ""),
-        )
+        snapshot_loader = getattr(self.agents, "snapshot", None)
+        if callable(snapshot_loader):
+            agent_package = snapshot_loader(
+                agent_id,
+                str(node.get("agentVersion") or ""),
+                str(node.get("agentDigest") or ""),
+            )
+        else:
+            agent_package = self.agents.package(
+                agent_id,
+                str(node.get("agentVersion") or ""),
+                str(node.get("agentDigest") or ""),
+            )
+        agent = agent_package["manifest"]
 
         async def run_item(index: int, iteration_item: Any) -> dict[str, Any]:
             async with semaphore:

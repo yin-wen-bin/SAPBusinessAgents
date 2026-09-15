@@ -8,6 +8,7 @@ import AgentDraftConversation from "./AgentDraftConversation";
 import AgentSampleProgress, { SampleProgressSummary } from "./AgentSampleProgress";
 import AgentTrialProgress, { TrialProgressSummary } from "./AgentTrialProgress";
 import AgentFeedbackProgress, { FeedbackProgressSummary } from "./AgentFeedbackProgress";
+import AgentPublicationProgress, { PublicationProgressSummary } from "./AgentPublicationProgress";
 import { AcceptanceSummary, AgentAcceptanceProgress, AgentAcceptanceSetup } from "./AgentAcceptance";
 import AgentDefinitionDetails from "./AgentDefinitionDetails";
 import type { AcceptanceCaseDraft } from "./AgentAcceptance";
@@ -81,6 +82,9 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const [acceptanceSampleCase, setAcceptanceSampleCase] = useState<number | null>(null);
   const acceptanceResultRef = useRef<HTMLDivElement>(null);
   const [operation, setOperation] = useState<any>(initialDraft.active_operation || null);
+  const [publication, setPublication] = useState<any>(initialDraft.publication_operation || null);
+  const [publicationDialogOpen, setPublicationDialogOpen] = useState(false);
+  const [publicationConnectionError, setPublicationConnectionError] = useState(false);
   const [diff, setDiff] = useState<any>(null);
   const [compareFrom, setCompareFrom] = useState(Math.max(1, initialDraft.revision - 1));
   const [compareTo, setCompareTo] = useState(initialDraft.revision);
@@ -99,7 +103,8 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const schema = draft.package.manifest.execution?.inputSchema || { type: "object", properties: {} };
   const sampleFields = sampleFieldOptions(schema, locale, input);
   const campaignActive = Boolean(acceptanceCampaign && !["passed", "failed", "blocked", "cancelled", "interrupted", "superseded"].includes(acceptanceCampaign.status));
-  const active = Boolean(operation && !draftTerminal.has(operation.status)) || campaignActive || (draft.conversation || []).some((turn: any) => turn.kind === "feedback" && ["queued", "running", "cancelling"].includes(turn.status));
+  const publicationActive = Boolean(publication && !draftTerminal.has(publication.status));
+  const active = Boolean(operation && !draftTerminal.has(operation.status)) || publicationActive || campaignActive || (draft.conversation || []).some((turn: any) => turn.kind === "feedback" && ["queued", "running", "cancelling"].includes(turn.status));
   const locked = busy || active || draft.status === "published";
   const actionable = !locked && !dirty && !remoteConflict;
   const identity = technicalIdentity(draft);
@@ -163,6 +168,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     draftRef.current = value;
     setDraft(value);
     setOperation(value.active_operation || null);
+    if (value.publication_operation) setPublication(value.publication_operation);
     setTrial(value.trial || null);
     if (pendingFeedbackRequest.current && value.active_operation?.request_id === pendingFeedbackRequest.current.requestId) {
       pendingFeedbackRequest.current = null; setUncertainFeedback(false); setFeedback(""); setRetryOfTurn(undefined);
@@ -218,6 +224,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         if (stopped) return;
         replace(value, !dirtyRef.current);
         setFeedbackConnectionError(false);
+        setPublicationConnectionError(false);
         const sample = value.sample_discovery || value.metadata?.sample_discovery || (value.active_operation?.kind === "sample_discovery" ? value.active_operation.detail : null);
         if (sample?.run_id && sample.revision === value.revision && !sampleSubmitting.current) {
           setDiscovery((current: any) => current?.run_id && current.run_id !== sample.run_id && current.created_at > sample.created_at ? current : sample);
@@ -234,12 +241,12 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
             }
           }
         }
-      } catch (failure: any) { if (!stopped && failure.name !== "AbortError") { if (trialRunId) setTrialConnectionError(true); setFeedbackConnectionError(true); setError(tr("进度连接中断，正在重试；已保存的任务不会丢失。", "Progress connection interrupted; retrying. Saved work is retained.")); } }
+      } catch (failure: any) { if (!stopped && failure.name !== "AbortError") { if (trialRunId) setTrialConnectionError(true); setFeedbackConnectionError(true); if (publicationActive) setPublicationConnectionError(true); setError(tr("进度连接中断，正在重试；已保存的任务不会丢失。", "Progress connection interrupted; retrying. Saved work is retained.")); } }
       if (!stopped) timer = setTimeout(poll, document.hidden ? 10000 : 3000);
     };
     void poll();
     return () => { stopped = true; controller.abort(); clearTimeout(timer); };
-  }, [base, trialRunId]);
+  }, [base, trialRunId, publicationActive]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -599,10 +606,49 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       ? tr("所属模块已保存；前台目录需要手动刷新服务。", "Module saved; the site catalog requires a manual service refresh.")
       : tr("所属模块已保存，不影响执行逻辑或验收。", "Module saved without changing execution or acceptance."));
   });
-  const publish = (activate: boolean) => action(async () => {
+  const publish = (activate: boolean) => {
     if (!actionable || !canPublish) return;
-    onPublished(await call(`${base}/publish`, { expectedRevision: draft.revision, targetVersion, activate, validationReportDigest: acceptance?.report_digest || report?.report_digest || null }));
-  });
+    const requestId = crypto.randomUUID();
+    const request = { expectedRevision: draft.revision, requestId, targetVersion, activate, validationReportDigest: acceptance?.report_digest || report?.report_digest || null };
+    setPublicationConnectionError(false);
+    setPublication({ status: "starting", phase: "preparing", publication_status: "pending", site_refresh_status: activate ? "pending" : "not_required", version: targetVersion, activate, created_at: new Date().toISOString() });
+    setPublicationDialogOpen(true);
+    return action(async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const value = await call(`${base}/publish`, request);
+          setPublicationConnectionError(false);
+          setPublication(value); setOperation({ ...value, kind: "publish" });
+          return;
+        } catch (failure: any) {
+          if ((failure.uncertain || !failure.status) && attempt < 2) {
+            setPublicationConnectionError(true);
+            await new Promise((resolve) => window.setTimeout(resolve, 1500));
+            continue;
+          }
+          if (failure.uncertain || !failure.status) {
+            setPublicationConnectionError(true);
+            return;
+          }
+          setPublication((current: any) => ({ ...current, status: "failed", phase: "completed", publication_status: "failed", failure_code: String(failure.message || "agent_publication_failed"), completed_at: new Date().toISOString() }));
+          throw failure;
+        }
+      }
+    });
+  };
+  const retrySiteRefresh = () => {
+    setPublicationConnectionError(false);
+    setPublication((current: any) => ({ ...current, status: "starting", phase: "building_site", publication_status: "published", site_refresh_status: "queued", failure_code: null, started_at: null, completed_at: null }));
+    setPublicationDialogOpen(true);
+    return action(async () => {
+      const value = await call(`${base}/refresh-site`, { requestId: crypto.randomUUID() });
+      setPublication(value); setOperation({ ...value, kind: "site_refresh" });
+    });
+  };
+  const finishPublication = () => {
+    setPublicationDialogOpen(false);
+    onPublished(publication?.result || publication || {});
+  };
   const restore = () => action(async () => {
     if (!actionable) return;
     const value = await call(`${base}/undo`, { baseRevision: draft.revision, targetRevision: compareFrom });
@@ -618,7 +664,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     {remoteConflict && <p className="agent-alert error" role="alert">{tr("草稿已在其他操作中生成新修订。当前未保存内容已保留，请复制需要保留的修改，再放弃本地修改并加载最新修订。", "Another operation created a revision. Your unsaved content is retained. Copy any edits you need, then discard local edits and load the latest revision.")}</p>}
     {step === "compose" && <section className="agent-panel draft-catalog-module"><h2>{tr("所属模块", "Catalog module")}</h2><div className="draft-module-editor"><label>{tr("目录归类", "Catalog grouping")}<select value={catalogModule} disabled={!actionable} onChange={(event) => setCatalogModule(event.target.value)}>{catalogModules.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" disabled={!actionable || catalogModule === (draft.catalog_module || manifest.module)} onClick={saveCatalogModule}>{tr("保存所属模块", "Save module")}</button></div><p>{tr("仅调整目录归类、导航和发现方式，不改变SAP范围、执行逻辑或验收状态。", "This changes catalog grouping, navigation and discovery only. It does not change SAP scope, execution or acceptance.")}</p></section>}
     {dirty && <aside className="agent-alert draft-unsaved"><p>{tr("有尚未保存的定义修改。请保存或放弃后，再进行选样、试运行、对话或发布。", "There are unsaved definition changes. Save or discard before discovery, trials, chat or publication.")}</p><div className="agent-actions"><button disabled={locked || remoteConflict} onClick={save}>{tr("保存新修订", "Save revision")}</button><button className="agent-secondary-action" disabled={locked} onClick={discard}>{tr("放弃未保存修改", "Discard unsaved edits")}</button></div></aside>}
-    {active && <p className="agent-alert" role="status" ref={progressRef} tabIndex={-1}>{tr("草稿任务", "Draft operation")}: {draftStatus(operation?.status || latestTurn?.status, locale)} <button className="agent-secondary-action" disabled={busy || operation?.status === "cancelling"} onClick={cancel}>{tr("取消任务", "Cancel task")}</button></p>}
+    {active && <p className="agent-alert" role="status" ref={progressRef} tabIndex={-1}>{publicationActive ? tr("Agent发布正在后台执行", "Agent publication is running in the background") : <>{tr("草稿任务", "Draft operation")}: {draftStatus(operation?.status || latestTurn?.status, locale)}</>} {!publicationActive && <button className="agent-secondary-action" disabled={busy || operation?.status === "cancelling"} onClick={cancel}>{tr("取消任务", "Cancel task")}</button>}</p>}
     {step === "compose" && <div className="agent-document-body">
       <section className="agent-panel draft-technical-identity" id="draft-technical-identity" aria-labelledby="draft-identity-title">
         <div className="draft-identity-heading"><h2 id="draft-identity-title">{tr("技术 ID", "Technical ID")}</h2><span className={identityReady ? "draft-identity-confirmed" : "draft-identity-pending"}>{identity.kind === "unknown" ? tr("身份待核对", "Identity needs review") : identity.locked ? tr("已锁定", "Locked") : identityReady ? tr("已确认", "Confirmed") : tr("首次发布前需确认", "Confirm before first publication")}</span></div>
@@ -679,6 +725,6 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       </section>
     </div>}
     {step === "review" && <section className="agent-panel"><h2>{tr("检查修改内容", "Review changes")}</h2><p>{tr("对比已保存的草稿修订，不代表与当前活动版本比较。", "Compare saved draft revisions, not necessarily the active version.")}</p><div className="draft-basic-grid"><label>{tr("修改前修订", "Before revision")}<select value={compareFrom} onChange={(event) => setCompareFrom(Number(event.target.value))}>{revisions.map((revision) => <option key={revision}>{revision}</option>)}</select></label><label>{tr("修改后修订", "After revision")}<select value={compareTo} onChange={(event) => setCompareTo(Number(event.target.value))}>{revisions.map((revision) => <option key={revision}>{revision}</option>)}</select></label></div>{!diff ? <p role="status">{tr("正在加载修改对比…", "Loading comparison…")}</p> : diff.changes?.length ? diff.changes.map((change: any, index: number) => <section className="draft-diff-change" key={index}><h3>{diffBusinessLabel(change, manifest, locale)} · {tr(change.change === "added" ? "新增" : change.change === "removed" ? "删除" : "修改", change.change === "added" ? "Added" : change.change === "removed" ? "Removed" : "Modified")}</h3><details><summary>{tr("技术位置", "Technical location")}</summary><code>{change.path}</code></details><div className="draft-diff-values">{(["before", "after"] as const).map((side) => <div key={side} className={`draft-diff-${side}`}><h4>{side === "before" ? tr("修改前", "Before") : tr("修改后", "After")}</h4><pre>{!(side in change) || change[`${side}_exists`] === false ? tr("未设置", "Not set") : change[side] === null ? tr("空值", "Null") : change[side] === "" ? tr("空内容", "Empty content") : typeof change[side] === "string" ? change[side] : JSON.stringify(change[side], null, 2)}</pre></div>)}</div>{change.unified_diff && <details><summary>{tr("查看逐行变更", "View line-by-line changes")}</summary><pre className="draft-unified-diff">{String(change.unified_diff).split("\n").map((line, number) => <span key={number} className={line.startsWith("+") ? "diff-added" : line.startsWith("-") ? "diff-removed" : ""}>{line}{"\n"}</span>)}</pre></details>}</section>) : <p>{tr("两个修订没有内容差异。", "There are no content differences.")}</p>}<div className="agent-actions"><button className="agent-secondary-action" disabled={!actionable || compareFrom === draft.revision} onClick={restore}>{tr("恢复修改前修订（创建新修订）", "Restore before revision (creates a new revision)")}</button><button onClick={() => setStep("compose")}>{tr("返回定义与试运行", "Back to definition and trial")}</button></div></section>}
-    {step === "publish" && <section className="agent-panel"><h2>{tr("发布与启用", "Publish and activate")}</h2><p>{tr("正式验收通过后才可发布。一次试运行完成不代表通过正式验收。发布会创建本地Git分支和提交，不推送远端。", "Formal acceptance is required. A completed trial is not formal acceptance. Publication creates a local Git branch and commit without pushing.")}</p><p>{tr("将发布的技术 ID", "Technical ID to publish")}: <code>{identity.agent_id}</code> · {identityReady ? tr("已确认", "Confirmed") : tr("尚未确认", "Not confirmed")}</p>{!identityReady && <button className="agent-secondary-action" onClick={() => setStep("compose")}>{tr("返回定义并确认技术 ID", "Return to confirm technical ID")}</button>}<p>{tr("正式验收", "Formal acceptance")}: {draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</p>{!canPublish && <p role="status">{tr("正式验收或发布条件尚未满足，暂不可发布。请在定义页面查看验证状态。", "Acceptance or publication requirements remain unmet. Review validation in the definition page.")}</p>}<label>{tr("目标版本", "Target version")}<input value={targetVersion} disabled={locked} onChange={(event) => setTargetVersion(event.target.value)} /></label><div className="agent-actions"><button disabled={!actionable || !canPublish} onClick={() => publish(false)}>{tr("发布为未启用版本", "Publish inactive")}</button><button disabled={!actionable || !canPublish} onClick={() => publish(true)}>{tr("发布并启用", "Publish and activate")}</button></div></section>}
+    {step === "publish" && <section className="agent-panel"><h2>{tr("发布与启用", "Publish and activate")}</h2><p>{tr("正式验收通过后才可发布。系统会先在隔离工作区检查Agent包并构建候选页面，再用一个提交快进合并到本地main；不会推送远端。", "Formal acceptance is required. The package and candidate pages are checked in an isolated worktree before one commit is fast-forwarded into local main. Nothing is pushed.")}</p><p>{tr("将发布的技术 ID", "Technical ID to publish")}: <code>{identity.agent_id}</code> · {identityReady ? tr("已确认", "Confirmed") : tr("尚未确认", "Not confirmed")}</p>{!identityReady && <button className="agent-secondary-action" onClick={() => setStep("compose")}>{tr("返回定义并确认技术 ID", "Return to confirm technical ID")}</button>}<p>{tr("正式验收", "Formal acceptance")}: {draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</p>{!canPublish && <p role="status">{tr("正式验收或发布条件尚未满足，暂不可发布。请在定义页面查看验证状态。", "Acceptance or publication requirements remain unmet. Review validation in the definition page.")}</p>}<label>{tr("目标版本", "Target version")}<input value={targetVersion} disabled={locked} onChange={(event) => setTargetVersion(event.target.value)} /></label><div className="agent-actions"><button disabled={!actionable || !canPublish} onClick={() => publish(false)}>{tr("发布为未启用版本", "Publish inactive")}</button><button disabled={!actionable || !canPublish} onClick={() => publish(true)}>{tr("发布并启用", "Publish and activate")}</button></div>{publication && <div className="draft-publication-summary"><PublicationProgressSummary value={publication} locale={locale} connectionError={publicationConnectionError} /><div className="agent-actions"><button type="button" className="agent-secondary-action" onClick={() => setPublicationDialogOpen(true)}>{tr("查看发布进度", "View publication progress")}</button>{publication.publication_status === "published" && publication.site_refresh_status === "failed" && <button type="button" onClick={retrySiteRefresh}>{tr("重试刷新页面", "Retry page refresh")}</button>}</div></div>}<AgentPublicationProgress open={publicationDialogOpen} value={publication} locale={locale} connectionError={publicationConnectionError} onClose={() => setPublicationDialogOpen(false)} onRetrySite={retrySiteRefresh} onComplete={finishPublication} /></section>}
   </main>;
 }

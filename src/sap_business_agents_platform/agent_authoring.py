@@ -151,7 +151,7 @@ class AgentAuthoringMixin:
         from .agent_lifecycle import AgentLifecycleError
         return AgentLifecycleError(message, code=code)
 
-    def _reserve_operation(self, draft_id: str, expected_revision: int, kind: str, request_id: str | None = None, input_hash: str | None = None) -> dict[str, Any]:
+    def _reserve_operation(self, draft_id: str, expected_revision: int, kind: str, request_id: str | None = None, input_hash: str | None = None, *, allow_published: bool = False) -> dict[str, Any]:
         active = self.store.get_agent_operation(draft_id)
         if active and active.get("kind") == "trial":
             # A completed run must not leave a draft locked just because its browser
@@ -161,7 +161,7 @@ class AgentAuthoringMixin:
             except KeyError:
                 pass
         try:
-            return self.store.reserve_agent_operation(draft_id, expected_revision=expected_revision, kind=kind, request_id=request_id, input_hash=input_hash)
+            return self.store.reserve_agent_operation(draft_id, expected_revision=expected_revision, kind=kind, request_id=request_id, input_hash=input_hash, allow_published=allow_published)
         except ValueError as exc:
             raise self._authoring_error("The Agent draft changed or already has an active operation.", str(exc)) from exc
 
@@ -674,3 +674,9 @@ class AgentAuthoringMixin:
                 # live task so a late Runtime response cannot revise a draft.
                 if turn["status"] in {"queued", "running"}:
                     await self.cancel_feedback(draft["draft_id"], int(turn["turn"]))
+        publication_tasks = list(getattr(self, "_publication_tasks", {}).values())
+        if publication_tasks:
+            # Publication owns Git and immutable-build state. A graceful API
+            # shutdown waits for that bounded operation instead of cancelling
+            # an asyncio wrapper while its worker thread continues mutating Git.
+            await asyncio.gather(*publication_tasks, return_exceptions=True)

@@ -714,7 +714,7 @@ def test_metadata_only_version_reuses_pass_acceptance_and_publishes_local_commit
         current["validation"]["freeQueryComparison"] = "MATCH"
     service._write_json(service.agents._path(current["slug"]), current)
     (tmp_path / ".gitignore").write_text(".local-data/\n.prototype/\n", encoding="utf-8")
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
@@ -747,7 +747,9 @@ def test_metadata_only_version_reuses_pass_acceptance_and_publishes_local_commit
             expectedRevision=revised["revision"],
             targetVersion="1.0.1",
             activate=True,
+            requestId=f"metadata-publish-{mode}",
         ),
+        schedule_refresh=False,
     )
     assert result["active"] is True
     assert len(result["commit_sha"]) == 40
@@ -798,7 +800,7 @@ def test_published_catalog_module_changes_without_touching_agent_or_acceptance(t
     original_hash = agent_digest(current)
     original_validation = json.loads(json.dumps(current["validation"]))
     (tmp_path / ".gitignore").write_text(".local-data/\n.prototype/\n", encoding="utf-8")
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
@@ -957,9 +959,46 @@ def test_documentation_reuse_rejects_changed_acceptance_before_git(tmp_path: Pat
     current["validation"]["testedAt"] = "2026-02-01T00:00:00Z"
     service._write_json(service.agents._path(current["slug"]), current)
     with pytest.raises(AgentLifecycleError) as error:
-        service.publish(draft["draft_id"], AgentPublishRequest(expectedRevision=1, targetVersion="1.0.1"))
+        service.publish(draft["draft_id"], AgentPublishRequest(expectedRevision=1, targetVersion="1.0.1", requestId="stale-acceptance"))
     assert error.value.code == "agent_validation_report_conflict"
     assert not (tmp_path / ".git").exists()
+
+
+def test_publication_failure_is_persisted_as_failed_not_completed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, store, _settings = _service(tmp_path)
+    draft = asyncio.run(
+        service.create(
+            AgentAuthoringCreate(
+                source="blank",
+                agentId="publication-failure-agent",
+                module="Common",
+                title={"zh": "测试", "en": "Test"},
+            )
+        )
+    )
+
+    def fail(*_args, **_kwargs):
+        raise AgentLifecycleError("candidate build failed", code="site_build_failed")
+
+    monkeypatch.setattr(service, "_publish_owned", fail)
+    with pytest.raises(AgentLifecycleError) as failure:
+        service.publish(
+            draft["draft_id"],
+            AgentPublishRequest(
+                expectedRevision=draft["revision"],
+                requestId="publication-failure",
+                targetVersion="0.1.0",
+                activate=True,
+            ),
+        )
+    assert failure.value.code == "site_build_failed"
+    operation = store.latest_agent_operation(draft["draft_id"], "publish")
+    assert operation is not None
+    assert operation["status"] == "failed"
+    assert operation["detail"]["publication_status"] == "failed"
+    assert operation["detail"]["failure_code"] == "site_build_failed"
 
 
 def test_documentation_package_requires_full_catalog_and_report(tmp_path: Path):

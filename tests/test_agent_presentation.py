@@ -19,7 +19,13 @@ def _agent() -> dict:
 
 
 def test_python_bridge_returns_same_nested_scope_and_actionable_paths() -> None:
-    projection = inspect_agent_presentation(_agent())
+    agent = _agent()
+    agent["owner"] = "Unassigned"
+    agent["sapModules"] = ["Common"]
+    agent["tables"] = ["SAP OData entity"]
+    for step in agent["workflow"]:
+        step.pop("operations", None)
+    projection = inspect_agent_presentation(agent)
     assert projection["status"] == "needs_input"
     assert [item["entity"] for item in projection["odata_objects"]] == [
         "A_PurchaseOrderScheduleLine",

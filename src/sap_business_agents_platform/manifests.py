@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError, ValidationError
 
 from .relationships import ALLOWED_RELATIONSHIP_POLICIES
+from .repository_gate import repository_gate
 
 
 ALLOWED_EXECUTORS = {"sap_read", "skill", "rule"}
@@ -75,100 +77,131 @@ class ManifestError(ValueError):
 class AgentRepository:
     def __init__(self, agents_root: Path) -> None:
         self.agents_root = agents_root
+        self._gate = repository_gate(agents_root.parent)
+
+    @contextmanager
+    def read_transaction(self) -> Iterator[None]:
+        with self._gate.read():
+            yield
+
+    @contextmanager
+    def write_transaction(self) -> Iterator[None]:
+        with self._gate.write():
+            yield
 
     def list(self) -> list[dict[str, Any]]:
-        manifests: list[dict[str, Any]] = []
-        for path in sorted(self.agents_root.glob("*/*/agent.json")):
-            if self.lifecycle(path.parent)["state"] == "active":
-                manifests.append(self._load_path(path))
-        return manifests
+        with self.read_transaction():
+            manifests: list[dict[str, Any]] = []
+            for path in sorted(self.agents_root.glob("*/*/agent.json")):
+                if self.lifecycle(path.parent)["state"] == "active":
+                    manifests.append(self._load_path(path))
+            return manifests
 
     def list_all(self) -> list[dict[str, Any]]:
-        return [self._load_path(path) for path in sorted(self.agents_root.glob("*/*/agent.json"))]
+        with self.read_transaction():
+            return [self._load_path(path) for path in sorted(self.agents_root.glob("*/*/agent.json"))]
 
     def get(self, agent_id: str) -> dict[str, Any]:
-        for path in self.agents_root.glob("*/*/agent.json"):
-            if path.parent.name == agent_id:
-                return self._load_path(path)
-        raise KeyError(agent_id)
+        with self.read_transaction():
+            for path in self.agents_root.glob("*/*/agent.json"):
+                if path.parent.name == agent_id:
+                    return self._load_path(path)
+            raise KeyError(agent_id)
 
     def get_version(
         self, agent_id: str, version: str, digest: str | None = None
     ) -> dict[str, Any]:
-        current_path = self._path(agent_id)
-        current = self._load_path(current_path)
-        candidate = current
-        if str(current.get("version") or "") != version:
-            version_path = current_path.parent / "versions" / version / "agent.json"
-            if not version_path.is_file():
-                raise KeyError((agent_id, version))
-            candidate = self._load_path(version_path)
-        if digest:
-            from .workflows import agent_digest
+        with self.read_transaction():
+            current_path = self._path(agent_id)
+            current = self._load_path(current_path)
+            candidate = current
+            if str(current.get("version") or "") != version:
+                version_path = current_path.parent / "versions" / version / "agent.json"
+                if not version_path.is_file():
+                    raise KeyError((agent_id, version))
+                candidate = self._load_path(version_path)
+            if digest:
+                from .workflows import agent_digest
 
-            if agent_digest(candidate) != digest:
-                raise ManifestError(
-                    f"Agent {agent_id} version {version} digest does not match the published package"
-                )
-        return candidate
+                if agent_digest(candidate) != digest:
+                    raise ManifestError(
+                        f"Agent {agent_id} version {version} digest does not match the published package"
+                    )
+            return candidate
 
     def package(
         self, agent_id: str, version: str | None = None, digest: str | None = None
     ) -> dict[str, Any]:
-        manifest = self.get(agent_id) if version is None else self.get_version(agent_id, version, digest)
-        current_path = self._path(agent_id)
-        directory = current_path.parent
-        if version is not None and str(manifest.get("version") or "") != str(
-            self.get(agent_id).get("version") or ""
-        ):
-            directory = directory / "versions" / version
-        rules_path = directory / "rules.py"
-        return {
-            "manifest": manifest,
-            "rules_source": rules_path.read_text(encoding="utf-8") if rules_path.is_file() else None,
-            "directory": str(directory),
-        }
+        with self.read_transaction():
+            manifest = self.get(agent_id) if version is None else self.get_version(agent_id, version, digest)
+            current_path = self._path(agent_id)
+            directory = current_path.parent
+            if version is not None and str(manifest.get("version") or "") != str(
+                self.get(agent_id).get("version") or ""
+            ):
+                directory = directory / "versions" / version
+            rules_path = directory / "rules.py"
+            return {
+                "manifest": manifest,
+                "rules_source": rules_path.read_text(encoding="utf-8") if rules_path.is_file() else None,
+                "directory": str(directory),
+            }
+
+    def snapshot(
+        self, agent_id: str, version: str | None = None, digest: str | None = None
+    ) -> dict[str, Any]:
+        """Read one complete immutable package and its lifecycle atomically."""
+
+        with self.read_transaction():
+            package = self.package(agent_id, version, digest)
+            lifecycle = self.lifecycle(agent_id)
+            return {
+                **package,
+                "lifecycle": lifecycle,
+                "active": lifecycle["state"] == "active",
+            }
 
     def lifecycle(self, directory_or_agent: Path | str) -> dict[str, Any]:
-        directory = (
-            directory_or_agent
-            if isinstance(directory_or_agent, Path)
-            else self._path(directory_or_agent).parent
-        )
-        path = directory / "publication.json"
-        if path.is_file():
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise ManifestError(f"Cannot load {path}: {exc}") from exc
-            state = payload.get("lifecycle_state", payload.get("state"))
-            if state not in {"active", "inactive"}:
-                raise ManifestError(f"{path}.lifecycle_state must be active or inactive")
-            catalog_module = payload.get("catalog_module")
-            if catalog_module is not None and catalog_module not in ALLOWED_CATALOG_MODULES:
-                raise ManifestError(f"{path}.catalog_module is invalid")
-            catalog_revision = payload.get("catalog_revision")
-            if catalog_revision is not None and (
-                not isinstance(catalog_revision, int)
-                or isinstance(catalog_revision, bool)
-                or catalog_revision < 1
-            ):
-                raise ManifestError(f"{path}.catalog_revision must be a positive integer")
-            payload["state"] = state
-            return payload
-        manifest_path = directory / "agent.json"
-        payload = self._load_path(manifest_path)
-        from .workflows import agent_digest
+        with self.read_transaction():
+            directory = (
+                directory_or_agent
+                if isinstance(directory_or_agent, Path)
+                else self._path(directory_or_agent).parent
+            )
+            path = directory / "publication.json"
+            if path.is_file():
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ManifestError(f"Cannot load {path}: {exc}") from exc
+                state = payload.get("lifecycle_state", payload.get("state"))
+                if state not in {"active", "inactive"}:
+                    raise ManifestError(f"{path}.lifecycle_state must be active or inactive")
+                catalog_module = payload.get("catalog_module")
+                if catalog_module is not None and catalog_module not in ALLOWED_CATALOG_MODULES:
+                    raise ManifestError(f"{path}.catalog_module is invalid")
+                catalog_revision = payload.get("catalog_revision")
+                if catalog_revision is not None and (
+                    not isinstance(catalog_revision, int)
+                    or isinstance(catalog_revision, bool)
+                    or catalog_revision < 1
+                ):
+                    raise ManifestError(f"{path}.catalog_revision must be a positive integer")
+                payload["state"] = state
+                return payload
+            manifest_path = directory / "agent.json"
+            payload = self._load_path(manifest_path)
+            from .workflows import agent_digest
 
-        return {
-            "schemaVersion": 1,
-            "agent_id": str(payload.get("slug") or directory.name),
-            "state": "active",
-            "lifecycle_state": "active",
-            "active_version": str(payload.get("version") or ""),
-            "latest_version": str(payload.get("version") or ""),
-            "active_digest": agent_digest(payload),
-        }
+            return {
+                "schemaVersion": 1,
+                "agent_id": str(payload.get("slug") or directory.name),
+                "state": "active",
+                "lifecycle_state": "active",
+                "active_version": str(payload.get("version") or ""),
+                "latest_version": str(payload.get("version") or ""),
+                "active_digest": agent_digest(payload),
+            }
 
     def repository_module(self, agent_id: str) -> str:
         """Return the immutable module encoded by the published package path."""

@@ -29,10 +29,16 @@ from .acceptance import agent_execution_digest
 from .agent_authoring import AgentAuthoringMixin, package_changes
 from .agent_identity import AgentIdentityMixin, draft_identity_kind
 from .agent_presentation import inspect_agent_presentation, presentation_ready
+from .agent_publication import (
+    AgentPublicationWorkspace,
+    PublicationInfrastructureError,
+    deployment_file_lock,
+)
 from .factory import infer_catalog_module
 from .plugins import PluginError
 from .relationships import apply_advisory_relationship_policy
 from .skills import SkillError, validate_agent_skill_dependencies
+from .site_release import SiteReleaseError, SiteReleaseManager
 from .workflows import WorkflowRepository, WorkflowError, agent_digest, validate_value
 
 
@@ -69,7 +75,14 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         self._import_lock = RLock()
         self.store.register_published_agent_identities(self._registered_agent_ids())
         self._feedback_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._publication_tasks: dict[str, asyncio.Task[Any]] = {}
         self.feedback_timeout_seconds = settings.agent_feedback_budget_seconds
+        self._publication_workspace = AgentPublicationWorkspace(
+            settings.repository_root, settings.data_root
+        )
+        self._site_release = SiteReleaseManager(
+            settings.repository_root, settings.data_root
+        )
 
     def _require_skill_dependencies(self, manifest: dict[str, Any]) -> list[str]:
         if self.skills is None:
@@ -560,6 +573,21 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         sample = ({**(sample_operation.get("detail") or {}), "run_id": sample_operation["operation_id"], "status": sample_operation["status"], "revision": sample_operation["revision"]} if sample_operation and int(sample_operation["revision"]) == int(draft["revision"]) else None)
         if sample and sample["status"] in {"queued", "running", "cancelling"} and sample.get("phase") != "cleaning_up":
             sample.update(self.store.get_harness_state(sample["run_id"]).get("sample_execution", {}))
+        publication_candidates = [
+            item
+            for item in (
+                self.store.latest_agent_operation(draft_id, "publish"),
+                self.store.latest_agent_operation(draft_id, "site_refresh"),
+            )
+            if item is not None
+        ]
+        publication_operation = (
+            self._public_publication_operation(
+                max(publication_candidates, key=lambda item: str(item.get("created_at") or ""))
+            )
+            if publication_candidates
+            else None
+        )
         return {
             **draft,
             "technical_identity": self.technical_identity(draft),
@@ -575,6 +603,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             "revisions": self.store.list_agent_authoring_revisions(draft_id),
             "conversation": [self._public_feedback_turn(turn) for turn in self.store.list_agent_conversation_turns(draft_id)],
             "active_operation": self.store.get_agent_operation(draft_id),
+            "publication_operation": publication_operation,
             "sample_discovery": sample,
             **assessment,
         }
@@ -1178,12 +1207,195 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         return {**copy.deepcopy(draft.get("validation") or {}), **summary, "verdict": summary["acceptance"]["verdict"], "revision": draft["revision"]}
 
     def publish(self, draft_id: str, payload: Any, *, schedule_refresh: bool = True) -> dict[str, Any]:
-        operation = self._reserve_operation(draft_id, int(payload.expected_revision), "publish")
+        """Synchronous entry point retained for lifecycle scripts and unit tests."""
+
+        operation = self._reserve_publication(draft_id, payload)
+        if operation.get("reused"):
+            detail = operation.get("detail") or {}
+            return copy.deepcopy(detail.get("result") or self._public_publication_operation(operation))
+        return self._execute_publication(
+            draft_id, payload, operation["operation_id"], schedule_refresh=schedule_refresh
+        )
+
+    def start_publish(self, draft_id: str, payload: Any) -> dict[str, Any]:
+        operation = self._reserve_publication(draft_id, payload)
+        public = self._public_publication_operation(operation)
+        if operation.get("reused"):
+            return public
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                self._execute_publication,
+                draft_id,
+                payload,
+                operation["operation_id"],
+                True,
+            )
+        )
+        self._publication_tasks[operation["operation_id"]] = task
+        task.add_done_callback(
+            lambda completed: self._publication_task_done(operation["operation_id"], completed)
+        )
+        return public
+
+    def start_site_refresh(self, draft_id: str, payload: Any) -> dict[str, Any]:
+        draft = self.store.get_agent_authoring_draft(draft_id)
+        latest_publish = self.store.latest_agent_operation(draft_id, "publish")
+        publish_detail = (latest_publish or {}).get("detail") or {}
+        publication = publish_detail.get("result") or {}
+        if draft.get("status") != "published" or publication.get("publication_status") != "published":
+            raise AgentLifecycleError(
+                "Only a completed Agent publication can retry the Web UI refresh.",
+                code="agent_publication_required",
+            )
+        fingerprint = _json_digest(
+            {
+                "revision": int(draft["revision"]),
+                "agent_id": draft["agent_id"],
+                "kind": "site_refresh",
+            }
+        )
+        operation = self._reserve_operation(
+            draft_id,
+            int(draft["revision"]),
+            "site_refresh",
+            str(payload.request_id),
+            fingerprint,
+            allow_published=True,
+        )
+        if operation.get("reused"):
+            return self._public_publication_operation(operation)
+        detail = {
+            "phase": "queued",
+            "publication_status": "published",
+            "site_refresh_status": "queued",
+            "commit_sha": publication.get("commit_sha"),
+            "started_at": None,
+            "completed_at": None,
+            "failure_code": None,
+            "agent_id": draft["agent_id"],
+            "version": publication.get("version") or draft.get("target_version"),
+        }
+        self.store.update_agent_operation(
+            draft_id, operation["operation_id"], status="queued", detail=detail
+        )
+        operation = self.store.get_agent_operation_by_id(draft_id, operation["operation_id"])
+        task = asyncio.create_task(
+            asyncio.to_thread(self._execute_site_refresh, draft_id, operation["operation_id"])
+        )
+        self._publication_tasks[operation["operation_id"]] = task
+        task.add_done_callback(
+            lambda completed: self._publication_task_done(operation["operation_id"], completed)
+        )
+        return self._public_publication_operation(operation)
+
+    def _reserve_publication(self, draft_id: str, payload: Any) -> dict[str, Any]:
+        input_hash = _json_digest(
+            {
+                "expected_revision": int(payload.expected_revision),
+                "target_version": str(getattr(payload, "target_version", "") or ""),
+                "activate": bool(getattr(payload, "activate", False)),
+                "validation_report_digest": getattr(payload, "validation_report_digest", None),
+            }
+        )
+        operation = self._reserve_operation(
+            draft_id,
+            int(payload.expected_revision),
+            "publish",
+            str(getattr(payload, "request_id", "") or uuid.uuid4()),
+            input_hash,
+        )
+        if not operation.get("reused"):
+            detail = {
+                "phase": "queued",
+                "publication_status": "pending",
+                "site_refresh_status": "pending" if bool(getattr(payload, "activate", False)) else "not_required",
+                "commit_sha": None,
+                "build_fingerprint": None,
+                "started_at": None,
+                "completed_at": None,
+                "failure_code": None,
+                "agent_id": self.store.get_agent_authoring_draft(draft_id)["agent_id"],
+                "version": str(getattr(payload, "target_version", "") or ""),
+                "activate": bool(getattr(payload, "activate", False)),
+            }
+            self.store.update_agent_operation(
+                draft_id, operation["operation_id"], status="queued", detail=detail
+            )
+            operation = self.store.get_agent_operation_by_id(draft_id, operation["operation_id"])
+        return operation
+
+    def _publication_task_done(self, operation_id: str, task: asyncio.Task[Any]) -> None:
+        self._publication_tasks.pop(operation_id, None)
+        if not task.cancelled():
+            task.exception()
+
+    def _execute_publication(
+        self,
+        draft_id: str,
+        payload: Any,
+        operation_id: str,
+        schedule_refresh: bool = True,
+    ) -> dict[str, Any]:
+        self._update_publication_operation(
+            draft_id, operation_id, status="running", phase="preparing", started_at=utc_now()
+        )
         try:
             with self._import_lock:
-                return self._publish_owned(draft_id, payload, schedule_refresh=schedule_refresh, operation_id=operation["operation_id"])
-        finally:
-            self._finish_operation(draft_id, operation["operation_id"])
+                result = self._publish_owned(
+                    draft_id,
+                    payload,
+                    schedule_refresh=schedule_refresh,
+                    operation_id=operation_id,
+                )
+        except Exception as exc:
+            code = str(
+                getattr(
+                    exc,
+                    "code",
+                    "agent_publication_failed",
+                )
+            )
+            try:
+                interrupted_detail = self.store.get_agent_operation_by_id(
+                    draft_id, operation_id
+                ).get("detail") or {}
+                candidate = str(interrupted_detail.get("candidate_commit_sha") or "")
+                merged_but_unrecorded = bool(
+                    candidate and self._publication_workspace.is_merged(candidate)
+                )
+            except (KeyError, PublicationInfrastructureError):
+                merged_but_unrecorded = False
+            if merged_but_unrecorded:
+                code = "agent_publication_state_unconfirmed"
+            self._update_publication_operation(
+                draft_id,
+                operation_id,
+                status="failed",
+                publication_status="unknown" if merged_but_unrecorded else "failed",
+                site_refresh_status="not_started",
+                failure_code=code,
+                completed_at=utc_now(),
+            )
+            if isinstance(exc, AgentLifecycleError):
+                raise
+            if isinstance(exc, (PublicationInfrastructureError, SiteReleaseError)):
+                raise AgentLifecycleError(str(exc), code=code) from exc
+            raise
+        terminal_status = "completed"
+        self._update_publication_operation(
+            draft_id,
+            operation_id,
+            status=terminal_status,
+            phase="completed",
+            completed_at=utc_now(),
+            result=result,
+            publication_status=result["publication_status"],
+            site_refresh_status=result["site_refresh_status"],
+            commit_sha=result.get("commit_sha"),
+            build_fingerprint=result.get("build_fingerprint"),
+            failure_code=result.get("failure_code"),
+        )
+        return result
 
     def _publish_owned(self, draft_id: str, payload: Any, *, schedule_refresh: bool, operation_id: str) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
@@ -1248,58 +1460,395 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         # site build.  This also verifies that the projected validation summary
         # points to a bundled Markdown acceptance report before Git is touched.
         self._validate_documentation_package(package)
-        branch = self._prepare_branch(draft["agent_id"], "publish", target_version)
-        agent_dir = self.settings.repository_root / "agents" / str(manifest.get("module") or "Common") / draft["agent_id"]
+        self._update_publication_operation(draft_id, operation_id, phase="preparing_worktree")
+        try:
+            base_sha = self._publication_workspace.assert_clean_main()
+        except PublicationInfrastructureError as exc:
+            raise AgentLifecycleError(str(exc), code=exc.code) from exc
+        branch = self._publication_workspace.branch_name(
+            draft["agent_id"], target_version, operation_id
+        )
+        self._update_publication_operation(
+            draft_id,
+            operation_id,
+            branch=branch,
+            base_sha=base_sha,
+            validation_report_digest=report.get("report_digest"),
+        )
+        worktree: Path | None = None
+        build: dict[str, Any] | None = None
         existing_dir = self._existing_directory(draft["agent_id"])
-        if existing_dir is not None:
-            agent_dir = existing_dir
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        version_dir = agent_dir / "versions" / target_version
-        if version_dir.exists():
-            raise AgentLifecycleError("Agent version already exists.", code="agent_version_exists")
-        self._write_package(version_dir, package, manifest_override=manifest)
-        self._write_json(version_dir / "validation.json", report)
-        lifecycle = self._current_lifecycle_or_default(draft["agent_id"], manifest, agent_dir)
-        lifecycle.update(
-            schemaVersion=1,
-            agent_id=draft["agent_id"],
-            catalog_module=str(
+        agent_relative = (
+            existing_dir.relative_to(self.settings.repository_root)
+            if existing_dir is not None
+            else Path("agents") / str(manifest.get("module") or "Common") / draft["agent_id"]
+        )
+        try:
+            worktree = self._publication_workspace.create(operation_id, branch, base_sha)
+            agent_dir = worktree / agent_relative
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            version_dir = agent_dir / "versions" / target_version
+            if version_dir.exists():
+                raise AgentLifecycleError("Agent version already exists.", code="agent_version_exists")
+            self._write_package(version_dir, package, manifest_override=manifest)
+            self._write_json(version_dir / "validation.json", report)
+            lifecycle = self._current_lifecycle_or_default(draft["agent_id"], manifest, agent_dir)
+            catalog_module = str(
                 lifecycle.get("catalog_module")
                 or (draft.get("metadata") or {}).get("catalog_module")
                 or manifest.get("module")
                 or "Common"
-            ),
-            catalog_revision=int(lifecycle.get("catalog_revision") or 1),
-            latest_version=target_version,
-            published_at=utc_now(),
-            git_branch=branch,
-            git_commit="recorded_in_agent_management_events",
-        )
-        if bool(payload.activate):
-            self._activate_package(agent_dir, version_dir, lifecycle)
-            lifecycle.update(
-                lifecycle_state="active",
-                state="active",
-                active_version=target_version,
-                active_digest=agent_digest(manifest),
-                activated_at=utc_now(),
-                deactivated_at=None,
             )
-        else:
-            lifecycle.setdefault("lifecycle_state", "inactive" if existing_dir is None else lifecycle.get("state", "active"))
-            lifecycle["state"] = lifecycle["lifecycle_state"]
-            if existing_dir is None:
-                # Keep the package discoverable by the management catalog but not runnable.
-                self._activate_package(agent_dir, version_dir, lifecycle, archive_current=False)
-                lifecycle.update(active_version=None, active_digest=None, lifecycle_state="inactive", state="inactive")
-        self._write_json(agent_dir / "publication.json", lifecycle)
-        commit_sha = self._commit_agent_change(agent_dir, f"Publish {draft['agent_id']} v{target_version}")
-        self._audit(draft["agent_id"], "published", base_version, target_version, agent_digest(manifest), branch, commit_sha, {"activated": bool(payload.activate)})
-        draft.update(status="published", target_version=target_version, validation={**report, "branch": branch, "commit_sha": commit_sha}, updated_at=utc_now())
-        self.store.save_agent_authoring_draft(draft, expected_revision=int(payload.expected_revision), operation_id=operation_id)
-        # Offline batch publishers refresh their isolated API/preview once after all releases.
-        reload_scheduled = self._schedule_service_refresh() if payload.activate and schedule_refresh else False
-        return {"agent_id": draft["agent_id"], "version": target_version, "active": bool(payload.activate), "branch": branch, "commit_sha": commit_sha, "pushed": False, "reload_scheduled": reload_scheduled}
+            lifecycle.update(
+                schemaVersion=1,
+                agent_id=draft["agent_id"],
+                catalog_module=catalog_module,
+                catalog_revision=int(lifecycle.get("catalog_revision") or 1),
+                latest_version=target_version,
+                published_at=utc_now(),
+                git_branch=branch,
+                git_commit="recorded_in_agent_management_events",
+            )
+            if bool(payload.activate):
+                self._activate_package(agent_dir, version_dir, lifecycle)
+                lifecycle.update(
+                    lifecycle_state="active",
+                    state="active",
+                    active_version=target_version,
+                    active_digest=agent_digest(manifest),
+                    activated_at=utc_now(),
+                    deactivated_at=None,
+                )
+            else:
+                lifecycle.setdefault(
+                    "lifecycle_state",
+                    "inactive" if existing_dir is None else lifecycle.get("state", "active"),
+                )
+                lifecycle["state"] = lifecycle["lifecycle_state"]
+                if existing_dir is None:
+                    self._activate_package(agent_dir, version_dir, lifecycle, archive_current=False)
+                    lifecycle.update(
+                        active_version=None,
+                        active_digest=None,
+                        lifecycle_state="inactive",
+                        state="inactive",
+                    )
+            self._write_json(agent_dir / "publication.json", lifecycle)
+            self._refresh_catalog_documentation_at(worktree)
+            if bool(payload.activate) and schedule_refresh:
+                self._update_publication_operation(
+                    draft_id, operation_id, phase="building_site", site_refresh_status="building"
+                )
+                build = self._site_release.prepare(
+                    worktree,
+                    operation_id=operation_id,
+                    agent_id=draft["agent_id"],
+                    version=target_version,
+                    catalog_module=catalog_module,
+                )
+                self._update_publication_operation(
+                    draft_id,
+                    operation_id,
+                    phase="checking_site",
+                    build_fingerprint=build["fingerprint"],
+                    site_refresh_status="prepared",
+                )
+            self._update_publication_operation(draft_id, operation_id, phase="saving_publication")
+            try:
+                commit_sha = self._publication_workspace.commit(
+                    worktree,
+                    f"Publish {draft['agent_id']} v{target_version}",
+                    agent_relative,
+                )
+            except PublicationInfrastructureError as exc:
+                raise AgentLifecycleError(str(exc), code=exc.code) from exc
+            self._update_publication_operation(
+                draft_id, operation_id, commit_sha=commit_sha, candidate_commit_sha=commit_sha
+            )
+            with deployment_file_lock(self.settings.data_root), self.agents.write_transaction():
+                latest = self.store.get_agent_authoring_draft(draft_id)
+                if int(latest["revision"]) != int(payload.expected_revision) or latest["status"] == "published":
+                    raise AgentLifecycleError(
+                        "Agent draft revision changed.", code="agent_draft_conflict"
+                    )
+                latest_report = self._formal_acceptance(latest, package)
+                if not latest_report or latest_report.get("report_digest") != report.get("report_digest"):
+                    raise AgentLifecycleError(
+                        "Agent validation report changed.", code="agent_validation_report_conflict"
+                    )
+                try:
+                    self._publication_workspace.fast_forward(commit_sha, base_sha)
+                except PublicationInfrastructureError as exc:
+                    raise AgentLifecycleError(str(exc), code=exc.code) from exc
+            self._audit(
+                draft["agent_id"],
+                "published",
+                base_version,
+                target_version,
+                agent_digest(manifest),
+                branch,
+                commit_sha,
+                {"activated": bool(payload.activate), "base_sha": base_sha},
+            )
+            draft.update(
+                status="published",
+                target_version=target_version,
+                validation={**report, "branch": branch, "commit_sha": commit_sha},
+                updated_at=utc_now(),
+            )
+            self.store.save_agent_authoring_draft(
+                draft,
+                expected_revision=int(payload.expected_revision),
+                operation_id=operation_id,
+            )
+            result = {
+                "agent_id": draft["agent_id"],
+                "version": target_version,
+                "active": bool(payload.activate),
+                "branch": branch,
+                "commit_sha": commit_sha,
+                "pushed": False,
+                "publication_status": "published",
+                "site_refresh_status": "not_required",
+                "build_fingerprint": build.get("fingerprint") if build else None,
+                "failure_code": None,
+            }
+            if build is not None:
+                self._update_publication_operation(
+                    draft_id, operation_id, phase="refreshing_site", publication_status="published",
+                    site_refresh_status="switching",
+                )
+                try:
+                    switched = self._site_release.switch(
+                        build,
+                        operation_id=operation_id,
+                        agent_id=draft["agent_id"],
+                        version=target_version,
+                        catalog_module=catalog_module,
+                    )
+                except Exception as exc:
+                    # The Git commit and draft state are authoritative now.
+                    # A Web UI failure must never be reported as a failed or
+                    # ambiguous Agent publication.
+                    switched = {
+                        "status": "failed",
+                        "failure_code": str(getattr(exc, "code", "site_refresh_failed")),
+                        "rolled_back": False,
+                    }
+                result["site_refresh_status"] = (
+                    "completed" if switched.get("status") == "completed" else "failed"
+                )
+                result["failure_code"] = switched.get("failure_code")
+                result["site_rolled_back"] = bool(switched.get("rolled_back"))
+            return result
+        except SiteReleaseError as exc:
+            raise AgentLifecycleError(str(exc), code=exc.code) from exc
+        except PublicationInfrastructureError as exc:
+            raise AgentLifecycleError(str(exc), code=exc.code) from exc
+        finally:
+            self._publication_workspace.cleanup(worktree)
+
+    def _execute_site_refresh(self, draft_id: str, operation_id: str) -> None:
+        self._update_publication_operation(
+            draft_id,
+            operation_id,
+            status="running",
+            phase="building_site",
+            started_at=utc_now(),
+            site_refresh_status="building",
+        )
+        try:
+            draft = self.store.get_agent_authoring_draft(draft_id)
+            latest_publish = self.store.latest_agent_operation(draft_id, "publish") or {}
+            published = ((latest_publish.get("detail") or {}).get("result") or {})
+            agent_id = str(draft["agent_id"])
+            manifest = self.agents.get(agent_id)
+            version = str(published.get("version") or manifest.get("version") or "")
+            catalog_module = self.agents.catalog_module(agent_id)
+            self._publication_workspace.assert_clean_main()
+            build = self._site_release.prepare(
+                self.settings.repository_root,
+                operation_id=operation_id,
+                agent_id=agent_id,
+                version=version,
+                catalog_module=catalog_module,
+            )
+            self._update_publication_operation(
+                draft_id,
+                operation_id,
+                phase="refreshing_site",
+                site_refresh_status="switching",
+                build_fingerprint=build["fingerprint"],
+            )
+            switched = self._site_release.switch(
+                build,
+                operation_id=operation_id,
+                agent_id=agent_id,
+                version=version,
+                catalog_module=catalog_module,
+            )
+            success = switched.get("status") == "completed"
+            result = {
+                **published,
+                "agent_id": agent_id,
+                "version": version,
+                "publication_status": "published",
+                "site_refresh_status": "completed" if success else "failed",
+                "build_fingerprint": build["fingerprint"],
+                "failure_code": switched.get("failure_code"),
+                "site_rolled_back": bool(switched.get("rolled_back")),
+            }
+            self._update_publication_operation(
+                draft_id,
+                operation_id,
+                status="completed" if success else "failed",
+                phase="completed",
+                completed_at=utc_now(),
+                result=result,
+                publication_status="published",
+                site_refresh_status=result["site_refresh_status"],
+                build_fingerprint=build["fingerprint"],
+                failure_code=result["failure_code"],
+            )
+        except Exception as exc:
+            code = str(getattr(exc, "code", "site_refresh_failed"))
+            self._update_publication_operation(
+                draft_id,
+                operation_id,
+                status="failed",
+                phase="completed",
+                completed_at=utc_now(),
+                publication_status="published",
+                site_refresh_status="failed",
+                failure_code=code,
+            )
+
+    def _update_publication_operation(
+        self,
+        draft_id: str,
+        operation_id: str,
+        *,
+        status: str | None = None,
+        phase: str | None = None,
+        **changes: Any,
+    ) -> None:
+        try:
+            current = self.store.get_agent_operation_by_id(draft_id, operation_id)
+        except KeyError:
+            return
+        detail = copy.deepcopy(current.get("detail") or {})
+        if phase is not None:
+            detail["phase"] = phase
+        detail.update(changes)
+        self.store.update_agent_operation(
+            draft_id, operation_id, status=status, detail=detail
+        )
+
+    @staticmethod
+    def _public_publication_operation(operation: dict[str, Any]) -> dict[str, Any]:
+        detail = copy.deepcopy(operation.get("detail") or {})
+        return {
+            **detail,
+            "operation_id": operation.get("operation_id"),
+            "kind": operation.get("kind"),
+            "status": operation.get("status"),
+            "request_id": operation.get("request_id"),
+            "revision": operation.get("revision"),
+            "created_at": operation.get("created_at"),
+            "updated_at": operation.get("updated_at"),
+        }
+
+    def reconcile_publications(self) -> None:
+        """Repair the DB side of a publication whose prepared commit reached main."""
+
+        for draft in self.store.list_agent_authoring_drafts():
+            operation = self.store.latest_agent_operation(draft["draft_id"], "publish")
+            if not operation or operation.get("status") != "interrupted":
+                continue
+            detail = copy.deepcopy(operation.get("detail") or {})
+            candidate = str(detail.get("candidate_commit_sha") or detail.get("commit_sha") or "")
+            version = str(detail.get("version") or draft.get("target_version") or "")
+            if not candidate or not version or not self._publication_workspace.is_merged(candidate):
+                self._publication_workspace.cleanup(
+                    self._publication_workspace.worktree_root / operation["operation_id"]
+                )
+                continue
+            try:
+                manifest = self.agents.get_version(draft["agent_id"], version)
+            except (KeyError, ManifestError):
+                continue
+            if draft.get("status") != "published":
+                report = copy.deepcopy(draft.get("validation") or {})
+                report.update(branch=detail.get("branch"), commit_sha=candidate)
+                draft.update(
+                    status="published",
+                    target_version=version,
+                    validation=report,
+                    updated_at=utc_now(),
+                )
+                try:
+                    self.store.save_agent_authoring_draft(
+                        draft, expected_revision=int(draft["revision"])
+                    )
+                except ValueError:
+                    self._publication_workspace.cleanup(
+                        self._publication_workspace.worktree_root / operation["operation_id"]
+                    )
+                    continue
+            activated = bool(detail.get("activate"))
+            refreshed = bool(
+                activated
+                and detail.get("build_fingerprint")
+                and self._site_release.current_fingerprint() == detail.get("build_fingerprint")
+            )
+            result = {
+                "agent_id": draft["agent_id"],
+                "version": version,
+                "active": activated,
+                "branch": detail.get("branch"),
+                "commit_sha": candidate,
+                "pushed": False,
+                "publication_status": "published",
+                "site_refresh_status": (
+                    "completed" if refreshed else "failed" if activated else "not_required"
+                ),
+                "build_fingerprint": detail.get("build_fingerprint"),
+                "failure_code": "site_refresh_required" if activated and not refreshed else None,
+            }
+            detail.update(
+                phase="completed",
+                completed_at=utc_now(),
+                publication_status="published",
+                site_refresh_status=result["site_refresh_status"],
+                failure_code=result["failure_code"],
+                result=result,
+            )
+            self.store.reconcile_interrupted_agent_operation(
+                draft["draft_id"], operation["operation_id"], status="completed", detail=detail
+            )
+            self.store.register_published_agent_identities({draft["agent_id"]})
+            self._publication_workspace.cleanup(
+                self._publication_workspace.worktree_root / operation["operation_id"]
+            )
+
+    def _refresh_catalog_documentation_at(self, repository_root: Path) -> None:
+        script = repository_root / "scripts" / "documentation.py"
+        if not script.is_file():
+            return
+        result = subprocess.run(
+            [sys.executable, str(script), "--write"],
+            cwd=repository_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+        )
+        if result.returncode != 0:
+            raise AgentLifecycleError(
+                "Agent documentation indexes could not be refreshed.",
+                code="agent_documentation_refresh_failed",
+            )
 
     @staticmethod
     def _validate_documentation_package(package: dict[str, Any]) -> None:

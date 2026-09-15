@@ -7,6 +7,26 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as draftHelpers from "../src/lib/agentDraft.ts";
 
+test("publication progress separates the Git result from the page refresh", async () => {
+  const Publication = await component("AgentPublicationProgress");
+  const running = renderToStaticMarkup(createElement(Publication.default, {
+    open: true, locale: "zh", connectionError: false,
+    value: { status: "running", phase: "building_site", version: "1.2.3", publication_status: "pending", site_refresh_status: "building" },
+    onClose() {}, onRetrySite() {}, onComplete() {},
+  }));
+  assert.match(running, /正在发布Agent/);
+  assert.match(running, /构建页面/);
+  assert.match(running, /后台继续/);
+  const refreshFailed = renderToStaticMarkup(createElement(Publication.default, {
+    open: true, locale: "zh", connectionError: false,
+    value: { status: "completed", phase: "completed", version: "1.2.3", publication_status: "published", site_refresh_status: "failed", failure_code: "site_refresh_health_failed" },
+    onClose() {}, onRetrySite() {}, onComplete() {},
+  }));
+  assert.match(refreshFailed, /Agent已发布，页面待刷新/);
+  assert.match(refreshFailed, /当前前台仍显示上一可用页面/);
+  assert.match(refreshFailed, /重试刷新页面/);
+});
+
 test("formal acceptance setup and progress expose the multi-case read-only workflow", async () => {
   const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
   const setup = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceSetup, {
@@ -214,6 +234,7 @@ async function component(name, dependencies = {}) {
     dependencies["./AgentSampleProgress"] = await component("AgentSampleProgress");
     dependencies["./AgentTrialProgress"] = await component("AgentTrialProgress");
     dependencies["./AgentFeedbackProgress"] = await component("AgentFeedbackProgress");
+    dependencies["./AgentPublicationProgress"] = await component("AgentPublicationProgress");
     dependencies["./AgentDefinitionDetails"] ||= () => null;
     dependencies["./AgentAcceptance"] ||= {
       AcceptanceSummary: () => null,

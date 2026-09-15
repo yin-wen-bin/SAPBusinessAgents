@@ -613,6 +613,11 @@ class BusinessAgentPluginProvider:
     ) -> dict[str, Any]:
         return self.repository.package(agent_id, version, digest)
 
+    def snapshot(
+        self, agent_id: str, version: str | None = None, digest: str | None = None
+    ) -> dict[str, Any]:
+        return self.repository.snapshot(agent_id, version, digest)
+
     def is_active(self, agent_id: str) -> bool:
         return self.repository.is_active(agent_id)
 
@@ -705,6 +710,11 @@ class BusinessAgentCapability:
         self, agent_id: str, version: str | None = None, digest: str | None = None
     ) -> dict[str, Any]:
         return self.manager.invoke_sync(self.capability, "package", agent_id, version, digest)
+
+    def snapshot(
+        self, agent_id: str, version: str | None = None, digest: str | None = None
+    ) -> dict[str, Any]:
+        return self.manager.invoke_sync(self.capability, "snapshot", agent_id, version, digest)
 
     def is_active(self, agent_id: str) -> bool:
         return bool(self.manager.invoke_sync(self.capability, "is_active", agent_id))
@@ -995,7 +1005,7 @@ def official_plugin_manifests() -> list[PluginManifest]:
             "name": {"zh": "业务 Agent 包", "en": "Business Agent Packages"},
             "publisher": "SAPBusinessAgents",
             "capabilities": [
-                {"capability": "business_agent.v1", "operations": ["list", "executable", "get", "get_version", "package", "is_active", "validate"]},
+                {"capability": "business_agent.v1", "operations": ["list", "executable", "get", "get_version", "package", "snapshot", "is_active", "validate"]},
             ],
             "transport": {"type": "builtin", "loopback_only": True},
             "permissions": {},

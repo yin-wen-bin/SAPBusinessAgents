@@ -321,7 +321,7 @@ def test_trial_success_cannot_fabricate_formal_acceptance_and_secrets_not_saved(
     assert report["publishability"]["can_publish"] is False
     assert store.get_agent_operation(draft["draft_id"]) is None
     with pytest.raises(AgentLifecycleError) as error:
-        service.publish(draft["draft_id"], AgentPublishRequest(expectedRevision=1, targetVersion="0.1.0"))
+        service.publish(draft["draft_id"], AgentPublishRequest(expectedRevision=1, targetVersion="0.1.0", requestId="test-publish"))
     assert error.value.code == "agent_validation_pass_required"
     duplicate = asyncio.run(service.live_validate(draft["draft_id"], expected_revision=1, input_value={}, sensitive_inputs={"receipt_reference": "SECRET"}, request_id="trial-1"))
     assert duplicate["run_id"] == trial["run_id"] and len(calls) == 1

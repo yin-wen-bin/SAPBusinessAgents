@@ -613,6 +613,7 @@ class AgentPublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     expected_revision: int = Field(alias="expectedRevision", ge=1)
+    request_id: str = Field(alias="requestId", min_length=1, max_length=100)
     target_version: str = Field(alias="targetVersion", pattern=r"^\d+\.\d+\.\d+$")
     activate: bool = False
     validation_report_digest: str | None = Field(
@@ -628,6 +629,12 @@ class AgentVersionDraftRequest(BaseModel):
     expected_agent_hash: str = Field(
         alias="expectedAgentHash", pattern=r"^sha256:[0-9a-f]{64}$"
     )
+
+
+class AgentSiteRefreshRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    request_id: str = Field(alias="requestId", min_length=1, max_length=100)
 
 
 class AgentCatalogModuleUpdate(BaseModel):

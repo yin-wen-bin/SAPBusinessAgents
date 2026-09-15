@@ -90,12 +90,22 @@
 .sample-progress-dialog footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
 .sample-progress-dialog button { min-height: 44px; padding: 8px 16px; cursor: pointer; }
 .sample-progress-dialog button:disabled { cursor: not-allowed; opacity: .6; }
+.publication-progress-dialog { width: min(700px, calc(100vw - 32px)); }
+.publication-phase-list { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; padding: 0; list-style: none; counter-reset: publication-phase; }
+.publication-phase-list li { display: grid; align-content: start; gap: 6px; min-width: 0; color: #61738a; font-size: .78rem; overflow-wrap: anywhere; }
+.publication-phase-list li::before { counter-increment: publication-phase; content: counter(publication-phase); display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid #b8c9e3; border-radius: 50%; background: white; font-weight: 800; }
+.publication-phase-list li.completed::before { border-color: #0a7a53; color: white; background: #0a7a53; }
+.publication-phase-list li.current { color: #0b5ed7; font-weight: 800; }
+.publication-phase-list li.current::before { border-color: #0b5ed7; color: #0b5ed7; box-shadow: 0 0 0 3px rgb(11 94 215 / 12%); }
+.draft-publication-summary { margin-top: 20px; padding-top: 18px; border-top: 1px solid #d7e1ef; }
+.publication-progress-summary details dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; }
+.publication-progress-summary details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .sample-parameter-selection { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid #b8c9e3; }
 .sample-parameter-selection label { min-height: 44px; overflow-wrap: anywhere; }
 .sample-spinner { display: inline-block; width: 16px; height: 16px; margin-inline-end: 10px; border: 2px solid #bfd3f0; border-top-color: #0057d9; border-radius: 50%; animation: sample-spin 1s linear infinite; }
 @keyframes sample-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .sample-spinner { animation: none; } }
-@media (max-width: 480px) { .sample-progress-dialog { padding: 16px; } .sample-progress-dialog footer { flex-direction: column; } }
+@media (max-width: 480px) { .sample-progress-dialog { padding: 16px; } .sample-progress-dialog footer { flex-direction: column; } .publication-phase-list { grid-template-columns: 1fr; } .publication-phase-list li { grid-template-columns: 32px 1fr; align-items: center; } .publication-phase-list li::before { grid-column: 1; } .publication-progress-summary details dl { grid-template-columns: 1fr; } }
 .acceptance-setup-dialog { width: min(880px, calc(100vw - 32px)); }
 .acceptance-dialog-body, .acceptance-case-list { display: grid; gap: 18px; min-width: 0; }
 .acceptance-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }

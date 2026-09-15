@@ -6,7 +6,12 @@ import { deriveAgentPresentation } from "../scripts/agent-presentation.mjs";
 const purchaseOrderAgent = () => JSON.parse(readFileSync("../agents/Common/mm-po-gr-status/agent.json", "utf8"));
 
 test("shared presentation extracts nested OData entities once and diagnoses legacy placeholders", () => {
-  const projection = deriveAgentPresentation(purchaseOrderAgent());
+  const agent = purchaseOrderAgent();
+  agent.owner = "Unassigned";
+  agent.sapModules = ["Common"];
+  agent.tables = ["SAP OData entity"];
+  for (const step of agent.workflow) delete step.operations;
+  const projection = deriveAgentPresentation(agent);
   assert.equal(projection.status, "needs_input");
   assert.deepEqual(projection.odata_objects.map((item) => item.entity), [
     "A_PurchaseOrderScheduleLine",
