@@ -97,7 +97,11 @@ class _Lifecycle:
     def validate(self, draft_id, *, expected_revision):
         if self.validation_must_not_run:
             raise AssertionError("idempotent recovery must precede mutable validation")
-        return {"static_checks": {"errors": [], "checks": ["manifest"]}}
+        return {"static_checks": {
+            "errors": [],
+            "checks": ["manifest"],
+            "presentation_contract": {"status": "ready", "issues": []},
+        }}
 
     def _platform_changes_pending(self, draft_id):
         return False

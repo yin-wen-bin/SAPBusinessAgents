@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { deriveAgentPresentation } from "./agent-presentation.mjs";
 
 export const MODULES = ["Common", "FI", "CO", "SD", "MM", "PP"];
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -516,6 +517,10 @@ export function loadAgentCatalog(root = agentsRoot, { includeInactive = true } =
       if (!Number.isInteger(catalogRevision) || catalogRevision < 1) throw new Error(`agents/${moduleName}/${directory.name}/publication.json: catalog_revision must be a positive integer`);
       if (slugs.has(agent.slug)) throw new Error(`Duplicate agent slug: ${agent.slug}`);
       slugs.add(agent.slug);
+      // Run the shared projection for every package so extraction failures are
+      // caught during catalog generation.  Diagnostics remain non-blocking for
+      // immutable published packages and are derived again by their detail page.
+      deriveAgentPresentation(agent);
       records.push({
         ...agent,
         module: catalogModule,

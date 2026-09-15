@@ -28,6 +28,7 @@ from .models import RunStatus, TERMINAL_STATUSES, utc_now
 from .acceptance import agent_execution_digest
 from .agent_authoring import AgentAuthoringMixin, package_changes
 from .agent_identity import AgentIdentityMixin, draft_identity_kind
+from .agent_presentation import inspect_agent_presentation, presentation_ready
 from .factory import infer_catalog_module
 from .plugins import PluginError
 from .relationships import apply_advisory_relationship_policy
@@ -569,6 +570,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                 draft, revision["package"]
             ),
             "package": revision["package"],
+            "presentation": inspect_agent_presentation(revision["package"]["manifest"]),
             "diff": revision["diff"],
             "revisions": self.store.list_agent_authoring_revisions(draft_id),
             "conversation": [self._public_feedback_turn(turn) for turn in self.store.list_agent_conversation_turns(draft_id)],
@@ -882,7 +884,13 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             "sap_get_count": 0,
             "validated_at": utc_now(),
         }
-        if not errors and risk == "metadata_only":
+        presentation = inspect_agent_presentation(manifest)
+        report["presentation_contract"] = presentation
+        checks.append({
+            "code": "agent_presentation_contract",
+            "status": "pass" if presentation.get("status") == "ready" else "needs_input",
+        })
+        if not errors and presentation.get("status") == "ready" and risk == "metadata_only":
             source = self.agents.get(str(draft["agent_id"]))
             if not is_agent_executable(source):
                 errors.append({"code": "source_acceptance_unavailable", "message": "The source version has no reusable PASS acceptance."})
@@ -1075,6 +1083,8 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         return self._validation_response(refreshed)
 
     def _formal_acceptance(self, draft: dict[str, Any], package: dict[str, Any]) -> dict[str, Any] | None:
+        if not presentation_ready(package["manifest"]):
+            return None
         report = draft.get("validation") or {}
         identity = (draft.get("metadata") or {}).get("identity") or {}
         if identity.get("validation_invalidated_revision") and (
@@ -1120,7 +1130,28 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             acceptance = recorded
         trial = copy.deepcopy((draft.get("metadata") or {}).get("trial"))
         static = copy.deepcopy((draft.get("metadata") or {}).get("static_checks") or {})
+        manifest = package.get("manifest")
+        presentation = (
+            inspect_agent_presentation(manifest)
+            if isinstance(manifest, dict)
+            else {
+                "status": "invalid",
+                "issues": [{
+                    "code": "presentation_manifest_missing",
+                    "path": "manifest",
+                    "severity": "error",
+                    "blocking": True,
+                    "message": {
+                        "zh": "Agent包缺少Manifest，无法生成展示资料。",
+                        "en": "The Agent package has no Manifest, so presentation metadata cannot be derived.",
+                    },
+                }],
+            }
+        )
+        static["presentation_contract"] = presentation
         blockers = [] if certificate else ["agent_formal_acceptance_required"]
+        if presentation.get("status") != "ready":
+            blockers.append("agent_presentation_contract_invalid")
         if self._platform_changes_pending(draft["draft_id"]):
             blockers.append("runtime_changeset_integration_verification_required")
         identity = self.technical_identity(draft)

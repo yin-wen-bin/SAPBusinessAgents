@@ -381,6 +381,17 @@ def test_external_formal_report_requires_explicit_execution_approval(tmp_path, e
     from sap_business_agents_platform.acceptance import agent_execution_digest
     service, store, _ = _service(tmp_path)
     draft = create(service)
+    manifest = copy.deepcopy(draft["package"]["manifest"])
+    manifest["owner"] = "SD-O2C"
+    manifest["sapModules"] = ["SD-SLS"]
+    manifest["workflow"][0]["operations"] = {
+        "zh": ["根据结构化输入执行本地确定性规则并输出完整性状态。"],
+        "en": ["Run the local deterministic rule over structured input and emit completeness status."],
+    }
+    draft = service.update(
+        draft["draft_id"],
+        AgentDraftUpdate(expectedRevision=draft["revision"], manifest=manifest),
+    )
     report = {"verdict": "PASS", "execution_digest": agent_execution_digest(draft["package"]["manifest"], None), "fixedAgentComparison": "MATCH", "freeQueryComparison": "MATCH", "acceptanceMode": "three_stage", "executable": executable, "blockingLimitations": []}
     row = store.get_agent_authoring_draft(draft["draft_id"])
     row["validation"] = report

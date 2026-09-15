@@ -94,6 +94,10 @@ def test_unapplied_dependency_disables_publishability_even_with_acceptance():
         technical_identity=lambda _: {'kind': 'new_agent', 'confirmed': True},
         store=SimpleNamespace(get_agent_operation=lambda _: None),
     )
-    result = AgentLifecycleService._validation_summary(service, {'draft_id': 'draft-example', 'status': 'draft'}, {})
+    package = {'manifest': {
+        'slug': 'draft-example', 'owner': 'SD-O2C', 'sapModules': [], 'tables': [],
+        'workflow': [], 'execution': {'steps': []},
+    }}
+    result = AgentLifecycleService._validation_summary(service, {'draft_id': 'draft-example', 'status': 'draft'}, package)
     assert result['publishability'] == {'can_publish': False,
         'blockers': ['runtime_changeset_integration_verification_required']}

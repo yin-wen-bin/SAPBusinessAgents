@@ -1,10 +1,12 @@
 ---
-import { Database, ExternalLink, FolderGit2, ListChecks, ShieldCheck, Wrench } from "@lucide/astro";
+import { ExternalLink, FolderGit2, ShieldCheck, Wrench } from "@lucide/astro";
 import SiteLayout from "../../../../layouts/SiteLayout.astro";
 import Sidebar from "../../../../components/Sidebar.astro";
 import AgentRunPanel from "../../../../components/AgentRunPanel.astro";
 import MonthEndProfileManager from "../../../../components/MonthEndProfileManager";
 import RoleMatchingAssistant from "../../../../components/RoleMatchingAssistant";
+import AgentDefinitionDetails from "../../../../components/AgentDefinitionDetails";
+import { deriveAgentPresentation } from "../../../../../scripts/agent-presentation.mjs";
 import { getAgents, moduleCounts } from "../../../../lib/catalog";
 import { statusLabel, validationLabel } from "../../../../lib/display";
 import type { AgentDefinition, Locale } from "../../../../lib/types";
@@ -37,24 +39,9 @@ const githubUrl = sourceUrl(agent.repositoryModule || agent.module, agent.slug);
 const validationReportUrl = agent.validation
   ? `${githubUrl}/${agent.validation.reportPath}`
   : undefined;
-const hasStepSapScope = agent.workflow.some((step) => step.sapScope !== undefined);
-const collectODataRefs = (value: unknown, refs = new Map<string, { service: string; version: string; entity: string }>()) => {
-  if (Array.isArray(value)) {
-    value.forEach((item) => collectODataRefs(item, refs));
-    return refs;
-  }
-  if (!value || typeof value !== "object") return refs;
-  const record = value as Record<string, unknown>;
-  if (typeof record.service_name === "string" && typeof record.entity_set === "string" && typeof record.odata_version === "string") {
-    const key = `${record.service_name}|${record.odata_version}|${record.entity_set}`;
-    refs.set(key, { service: record.service_name, version: record.odata_version, entity: record.entity_set });
-  }
-  Object.values(record).forEach((item) => collectODataRefs(item, refs));
-  return refs;
-};
-const odataRefs = [...collectODataRefs(agent.execution).values()];
 const inputProperties = Object.entries(agent.execution?.inputSchema.properties ?? {});
 const outputProperties = Object.entries(agent.execution?.outputSchema?.properties ?? {});
+const presentation = deriveAgentPresentation(agent);
 const labels = locale === "zh" ? {
   all: "全部 Agents",
   profile: "Agent 信息",
@@ -90,7 +77,7 @@ const labels = locale === "zh" ? {
 } : {
   all: "All agents",
   profile: "Agent profile",
-  owner: "Business owner",
+  owner: "Business domain",
   status: "Status",
   version: "Version",
   systems: "Systems",
@@ -225,104 +212,7 @@ const labels = locale === "zh" ? {
               </div>
             </section>
 
-            {!hasStepSapScope && (
-              <section id="sap-scope">
-                <h2>{labels.sapScope}</h2>
-                <div class="scope-grid">
-                  <div>
-                    <h3><Database size={18} stroke-width={1.8} aria-hidden="true" />{labels.modules}</h3>
-                    <ul class="tag-list scope-tags">{agent.sapModules.map((item) => <li>{item}</li>)}</ul>
-                  </div>
-                  {agent.transactions.length > 0 && (
-                    <div>
-                      <h3>{labels.transactions}</h3>
-                      <ul class="tag-list scope-tags">{agent.transactions.map((item) => <li><code>{item}</code></li>)}</ul>
-                    </div>
-                  )}
-                  {agent.tables.length > 0 && (
-                    <div>
-                      <h3>{labels.tables}</h3>
-                      <ul class="tag-list scope-tags">{agent.tables.map((item) => <li><code>{item}</code></li>)}</ul>
-                    </div>
-                  )}
-                </div>
-              </section>
-            )}
-
-            {odataRefs.length > 0 && (
-              <section id="odata-api-scope">
-                <h2>{labels.odataServices}</h2>
-                <ul class="tag-list scope-tags odata-api-tags">
-                  {odataRefs.map((item) => (
-                    <li>
-                      <code>{item.service} / {item.entity}</code>
-                      <span class="odata-version-badge">V{item.version.split(".")[0]}</span>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            <section id="workflow-tools">
-              <h2>{labels.workflow}</h2>
-              <p>{labels.workflowLead}</p>
-              <ol class="agent-workflow">
-                {agent.workflow.map((step, index) => (
-                  <li class="workflow-step">
-                    <div class="workflow-step-heading">
-                      <span class="workflow-index">{String(index + 1).padStart(2, "0")}</span>
-                      <div>
-                        <small>{labels.step} {index + 1}</small>
-                        <h3>{step.title[locale]}</h3>
-                      </div>
-                      <code>{step.id}</code>
-                    </div>
-                    <p>{step.description[locale]}</p>
-                    {step.operations && (
-                      <div class="step-operations">
-                        <h4><ListChecks size={16} stroke-width={1.8} aria-hidden="true" />{labels.operations}</h4>
-                        <ol>
-                          {step.operations[locale].map((operation) => <li>{operation}</li>)}
-                        </ol>
-                      </div>
-                    )}
-                    {step.sapScope && (
-                      <div class="step-sap-scope">
-                        {step.sapScope.modules.length > 0 && (
-                          <div>
-                            <h4><Database size={15} stroke-width={1.8} aria-hidden="true" />{labels.modules}</h4>
-                            <ul class="tag-list scope-tags">{step.sapScope.modules.map((item) => <li>{item}</li>)}</ul>
-                          </div>
-                        )}
-                        {step.sapScope.transactions.length > 0 && (
-                          <div>
-                            <h4>{labels.transactions}</h4>
-                            <ul class="tag-list scope-tags">{step.sapScope.transactions.map((item) => <li><code>{item}</code></li>)}</ul>
-                          </div>
-                        )}
-                        {step.sapScope.tables.length > 0 && (
-                          <div>
-                            <h4>{labels.tables}</h4>
-                            <ul class="tag-list scope-tags">{step.sapScope.tables.map((item) => <li><code>{item}</code></li>)}</ul>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    <div class="step-tools">
-                      <h4><Wrench size={16} stroke-width={1.8} aria-hidden="true" />{labels.tools}</h4>
-                      <ul>
-                        {step.tools.map((tool) => (
-                          <li>
-                            <div class="tool-heading"><code>{tool.name}</code><span>{tool.kind}</span></div>
-                            <p>{tool.purpose[locale]}</p>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            </section>
+            <AgentDefinitionDetails agent={agent} presentation={presentation} locale={locale} />
 
             <section id="guardrails">
               <h2>{labels.guardrails}</h2>

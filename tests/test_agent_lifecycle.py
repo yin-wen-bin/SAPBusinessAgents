@@ -199,6 +199,11 @@ def _write_active_agent(service: AgentLifecycleService, root: Path) -> dict:
         {"zh": "测试固定Agent", "en": "Test Fixed Agent"},
     )
     package["manifest"]["version"] = "1.0.0"
+    package["manifest"]["owner"] = "Test business domain"
+    package["manifest"]["workflow"][0]["operations"] = {
+        "zh": ["核对输入并生成确定性业务结果。"],
+        "en": ["Check input and produce a deterministic business result."],
+    }
     package["manifest"]["inputs"] = {"zh": ["范围"], "en": ["Scope"]}
     package["manifest"]["execution"]["inputSchema"]["properties"] = {
         "scope": {"type": "string", "title": {"zh": "范围", "en": "Scope"}}
@@ -757,6 +762,36 @@ def test_metadata_only_version_reuses_pass_acceptance_and_publishes_local_commit
     assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout == ""
 
 
+def test_presentation_gap_is_separate_from_execution_errors_and_blocks_acceptance_reuse(tmp_path: Path) -> None:
+    service, _store, _settings = _service(tmp_path)
+    current = _write_active_agent(service, tmp_path)
+    draft = service.create_version_draft(
+        current["slug"],
+        bump="patch",
+        expected_version=current["version"],
+        expected_hash=agent_digest(current),
+    )
+    package = draft["package"]
+    package["manifest"]["owner"] = "Unassigned"
+    revised = service.update(
+        draft["draft_id"],
+        AgentDraftUpdate(
+            expectedRevision=1,
+            manifest=package["manifest"],
+            readme=package["readme"],
+            rules="",
+        ),
+    )
+
+    checked = service.validate(revised["draft_id"])
+
+    assert checked["status"] == "validated"
+    assert checked["static_checks"]["errors"] == []
+    assert checked["static_checks"]["presentation_contract"]["status"] == "needs_input"
+    assert "agent_presentation_contract_invalid" in checked["publishability"]["blockers"]
+    assert checked["acceptance"]["verdict"] == "NOT_TESTED"
+
+
 def test_published_catalog_module_changes_without_touching_agent_or_acceptance(tmp_path: Path) -> None:
     service, _store, _settings = _service(tmp_path)
     current = _write_active_agent(service, tmp_path)
@@ -853,12 +888,27 @@ def test_new_agent_draft_module_revision_preserves_validation_evidence(tmp_path:
             AgentAuthoringCreate(source="blank", agentId="module-draft-agent", module="Common")
         )
     )
+    package = draft["package"]
+    package["manifest"]["owner"] = "Test business domain"
+    package["manifest"]["workflow"][0]["operations"] = {
+        "zh": ["核对输入并生成确定性业务结果。"],
+        "en": ["Check input and produce a deterministic business result."],
+    }
+    draft = service.update(
+        draft["draft_id"],
+        AgentDraftUpdate(
+            expectedRevision=1,
+            manifest=package["manifest"],
+            readme=package["readme"],
+            rules="",
+        ),
+    )
     stored = store.get_agent_authoring_draft(draft["draft_id"])
     stored["status"] = "validated"
     stored["validation"] = {
         "type": "formal_acceptance",
         "verdict": "PASS",
-        "revision": 1,
+        "revision": 2,
         "execution_digest": agent_execution_digest(
             draft["package"]["manifest"], draft["package"].get("rules")
         ),
@@ -870,25 +920,25 @@ def test_new_agent_draft_module_revision_preserves_validation_evidence(tmp_path:
     stored["metadata"] = {
         **stored.get("metadata", {}),
         "trial": {
-            "revision": 1,
+            "revision": 2,
             "verdict": "PASS",
             "business_output_available": True,
             "output_schema_valid": True,
             "read_only_audit": True,
         },
     }
-    store.save_agent_authoring_draft(stored, expected_revision=1)
+    store.save_agent_authoring_draft(stored, expected_revision=2)
 
     updated = service.set_draft_catalog_module(
         draft["draft_id"],
-        AgentDraftCatalogModuleUpdate(module="MM", expectedRevision=1),
+        AgentDraftCatalogModuleUpdate(module="MM", expectedRevision=2),
     )
 
-    assert updated["revision"] == 2
+    assert updated["revision"] == 3
     assert updated["catalog_module"] == "MM"
     assert updated["package"]["manifest"]["module"] == "MM"
     assert updated["package"]["manifest"]["sapModules"] == ["Common"]
-    assert updated["trial"]["catalog_metadata_revision"] == 2
+    assert updated["trial"]["catalog_metadata_revision"] == 3
     assert updated["validation"]["verdict"] == "PASS"
     assert updated["acceptance"]["verdict"] == "PASS"
 

@@ -9,6 +9,7 @@ import AgentSampleProgress, { SampleProgressSummary } from "./AgentSampleProgres
 import AgentTrialProgress, { TrialProgressSummary } from "./AgentTrialProgress";
 import AgentFeedbackProgress, { FeedbackProgressSummary } from "./AgentFeedbackProgress";
 import { AcceptanceSummary, AgentAcceptanceProgress, AgentAcceptanceSetup } from "./AgentAcceptance";
+import AgentDefinitionDetails from "./AgentDefinitionDetails";
 import type { AcceptanceCaseDraft } from "./AgentAcceptance";
 import { sampleFieldOptions } from "../lib/agentDraft";
 import "../styles/agent-draft.css";
@@ -110,10 +111,19 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const validationActionable = actionable && identityReady;
   const acceptance = report?.acceptance || draft.acceptance;
   const staticChecks = report?.static_checks || draft.static_checks || {};
-  const staticLabel = staticChecks.errors?.length ? tr("自动检查未通过", "Automatic checks failed") : staticChecks.checks?.length ? tr("自动检查通过", "Automatic checks passed") : tr("尚未检查", "Not checked");
+  const presentation = staticChecks.presentation_contract || draft.presentation || {};
+  const presentationReady = presentation.status === "ready";
+  const staticLabel = staticChecks.errors?.length
+    ? tr("自动检查未通过", "Automatic checks failed")
+    : staticChecks.checks?.length && !presentationReady
+      ? tr("执行检查通过，基础资料待完善", "Execution checks passed; documentation needs attention")
+      : staticChecks.checks?.length
+        ? tr("自动检查通过", "Automatic checks passed")
+        : tr("尚未检查", "Not checked");
   const formalAcceptanceReady = validationActionable
     && acceptance?.reused_validation !== true
     && !staticChecks.errors?.length
+    && presentationReady
     && ["PASS", "INCONCLUSIVE"].includes(String(trial?.verdict || draft.trial?.verdict || ""))
     && (trial?.business_output_available ?? draft.trial?.business_output_available) === true
     && (trial?.output_schema_valid ?? draft.trial?.output_schema_valid) === true
@@ -184,6 +194,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         agent_acceptance_contract_missing: ["当前定义缺少正式验收比较契约。", "The definition has no formal acceptance comparison contract."],
         agent_acceptance_request_conflict: ["该验收请求编号已用于其他案例，请重新开始。", "This acceptance request ID was already used for different cases. Start again."],
         agent_acceptance_reused: ["此纯文案修订已复用来源版本的PASS验收，无需再次访问SAP。", "This documentation-only revision already reuses the source version PASS acceptance; SAP does not need to be queried again."],
+        agent_presentation_contract_invalid: ["请先补齐业务域、SAP业务组件和业务步骤详细说明。", "Complete the business domain, SAP components and business-step detail first."],
         runtime_not_selectable: ["请先在系统配置中启用Runtime，并检查模型与推理强度。", "Enable the Runtime and check its model and reasoning effort in system settings."],
       };
       setError(labels[code]?.[locale === "zh" ? 0 : 1] || `${tr("操作未完成，请核对输入或重试。", "The operation did not complete. Check inputs or retry.")}${/^[a-z][a-z0-9_]{0,79}$/.test(code) ? ` (${code})` : ""}`);
@@ -338,6 +349,12 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     let current;
     try { current = JSON.parse(manifestText); } catch { setError(tr("高级定义不是有效JSON，请先修正或放弃修改。", "Advanced definition is not valid JSON. Correct or discard it first.")); return; }
     if (lang) current[key] = { ...current[key], [lang]: value }; else current[key] = value;
+    setManifestText(JSON.stringify(current, null, 2));
+  };
+  const updateSapModules = (value: string) => {
+    let current;
+    try { current = JSON.parse(manifestText); } catch { setError(tr("高级定义不是有效JSON，请先修正或放弃修改。", "Advanced definition is not valid JSON. Correct or discard it first.")); return; }
+    current.sapModules = [...new Set(value.split(/[，,]/).map((item) => item.trim()).filter(Boolean))];
     setManifestText(JSON.stringify(current, null, 2));
   };
   const chooseSampleFields = () => {
@@ -615,7 +632,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         {!identityReady && <p className="draft-identity-warning" role="status">{tr("技术 ID 尚未确认：可以编辑和对话；选样、试运行、验收和发布暂不可用。", "Technical ID is not confirmed: editing and chat are available; discovery, trials, acceptance and publication are disabled.")}</p>}
         {(active || dirty) && identity.kind === "new_agent" && <p>{tr("请先结束当前任务，或保存/放弃定义修改，再操作技术 ID。", "Finish the active task or save/discard definition edits before changing the technical ID.")}</p>}
       </section>
-      <section className="agent-panel"><h2>{tr("基础信息", "Basic information")}</h2><div className="draft-basic-grid">{(["zh", "en"] as const).map((lang) => <div key={lang}><label>{tr(lang === "zh" ? "中文名称" : "英文名称", lang === "zh" ? "Chinese name" : "English name")}<input disabled={locked} value={manifest.title?.[lang] || ""} onChange={(event) => updateBasic("title", event.target.value, lang)} /></label><label>{tr(lang === "zh" ? "中文说明" : "英文说明", lang === "zh" ? "Chinese summary" : "English summary")}<textarea disabled={locked} rows={3} value={manifest.summary?.[lang] || ""} onChange={(event) => updateBasic("summary", event.target.value, lang)} /></label></div>)}</div><label>{tr("负责人或负责团队", "Owner or responsible team")}<input disabled={locked} value={manifest.owner || ""} onChange={(event) => updateBasic("owner", event.target.value)} /></label><p>{tr("模块及来源版本保持不变。技术 ID 仅可通过上方确认区域修改；复杂结构可通过页面底部对话修改。", "Module and source version are unchanged. Change the technical ID only in the confirmation section above; use the conversation below for complex definitions.")}</p><div className="agent-actions"><button disabled={locked || remoteConflict || !dirty} onClick={save}>{tr("保存新修订", "Save revision")}</button></div></section>
+      <section className="agent-panel"><h2>{tr("基础信息", "Basic information")}</h2><div className="draft-basic-grid">{(["zh", "en"] as const).map((lang) => <div key={lang}><label>{tr(lang === "zh" ? "中文名称" : "英文名称", lang === "zh" ? "Chinese name" : "English name")}<input disabled={locked} value={manifest.title?.[lang] || ""} onChange={(event) => updateBasic("title", event.target.value, lang)} /></label><label>{tr(lang === "zh" ? "中文说明" : "英文说明", lang === "zh" ? "Chinese summary" : "English summary")}<textarea disabled={locked} rows={3} value={manifest.summary?.[lang] || ""} onChange={(event) => updateBasic("summary", event.target.value, lang)} /></label></div>)}</div><div className="draft-basic-grid"><label>{tr("业务域", "Business domain")}<input disabled={locked} value={manifest.owner || ""} placeholder={tr("例如：MM-PUR / MM-IM", "For example: MM-PUR / MM-IM")} onChange={(event) => updateBasic("owner", event.target.value)} /></label><label>{tr("SAP业务组件", "SAP business components")}<input disabled={locked} value={(manifest.sapModules || []).join(", ")} placeholder={tr("使用逗号分隔，例如：MM-PUR, MM-IM", "Comma-separated, for example: MM-PUR, MM-IM")} onChange={(event) => updateSapModules(event.target.value)} /></label></div><p>{tr("所属模块仅控制目录归类；业务域和SAP业务组件描述真实业务范围。技术 ID 仅可通过上方确认区域修改；复杂结构可通过页面底部对话修改。", "Catalog module controls grouping only; business domain and SAP components describe the real business scope. Change the technical ID only in the confirmation section above; use the conversation below for complex definitions.")}</p>{presentation.issues?.length > 0 && <aside className="agent-presentation-diagnostics" role="status"><h3>{tr("基础资料待完善", "Documentation needs attention")}</h3><ul>{presentation.issues.filter((item: any) => item.blocking).map((item: any, index: number) => <li key={`${item.code}-${index}`}>{localText(item.message, locale)} {item.path && <code>{item.path}</code>}</li>)}</ul></aside>}<div className="agent-actions"><button disabled={locked || remoteConflict || !dirty} onClick={save}>{tr("保存新修订", "Save revision")}</button></div></section>
       <section className="agent-run-panel"><h2>{tr("试运行这个Agent", "Try this Agent")}</h2><p>{tr("填写业务参数，使用已保存的草稿执行只读查询。试运行不会修改Agent默认值，也不代表正式验收通过。", "Enter business parameters to run the saved draft read-only. Trial input does not change Agent defaults or establish formal acceptance.")}</p>
         <form onSubmit={(event) => { event.preventDefault(); void runTrial(); }} noValidate><AgentDraftInputs schema={schema} values={input} onChange={(next) => { setInput(next); setFieldErrors({}); setConfirmedSample(""); if (hasVerifiedSample && Object.entries(discovery.input || {}).every(([key, value]) => discoveryFingerprint(0, { value }) === discoveryFingerprint(0, { value: next[key] }))) setDiscoveryInputHash(discoveryFingerprint(draft.revision, next)); }} secrets={secrets} onSecrets={setSecrets} locale={locale} errors={fieldErrors} disabled={locked || dirty} />
           <div className="draft-discovery" ref={sampleInputsRef} tabIndex={-1}>
@@ -647,8 +664,8 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         <AgentAcceptanceProgress open={acceptanceProgressOpen} locale={locale} campaign={acceptanceCampaign} connectionError={acceptanceConnectionError} apiBase={apiBase} draftId={draft.draft_id} onClose={() => { setAcceptanceProgressOpen(false); window.setTimeout(() => acceptanceResultRef.current?.focus(), 0); }} onCancel={cancelAcceptance} onAdjust={() => { setAcceptanceProgressOpen(false); window.setTimeout(() => chatRef.current?.focus(), 0); }} onRetry={() => { setAcceptanceProgressOpen(false); window.setTimeout(openAcceptance, 0); }} />
       </section>
       <section className="agent-panel"><h2>{tr("输入与输出", "Inputs and outputs")}</h2><div className="draft-basic-grid"><div><h3>{tr("您需要提供", "What you provide")}</h3><ul>{draftInputLabels(manifest.execution?.inputSchema || {}, locale, input).map((item) => <li key={item.key}>{item.label}<span className="draft-field-requirement">{item.requirement}</span></li>)}</ul></div><div><h3>{tr("您将获得", "What you receive")}</h3><ul>{(manifest.outputs?.[locale] || []).map((item: string, index: number) => <li key={index}>{item}</li>)}</ul></div></div></section>
-      <section className="agent-panel"><h2>{tr("业务处理步骤", "Business steps")}</h2><ol className="draft-business-steps">{(manifest.workflow || []).map((item: any, index: number) => <li key={item.id || index}><h3>{localText(item.title, locale)}</h3><p>{localText(item.description, locale)}</p></li>)}</ol></section>
-      <section className="agent-panel"><h2>{tr("SAP范围与安全边界", "SAP scope and safety")}</h2><p>{(manifest.sapModules || []).join(" · ")}</p><ul>{(manifest.guardrails?.[locale] || []).map((item: string, index: number) => <li key={index}>{item}</li>)}</ul></section>
+      <AgentDefinitionDetails agent={manifest} presentation={draft.presentation} locale={locale} idPrefix="draft" />
+      <section className="agent-panel"><h2>{tr("安全边界", "Guardrails")}</h2><ul>{(manifest.guardrails?.[locale] || []).map((item: string, index: number) => <li key={index}>{item}</li>)}</ul></section>
       <section><details className="agent-panel draft-advanced"><summary>{tr("高级技术编辑", "Advanced technical editing")}</summary><p>{tr("仅在了解数据契约时使用。所有修改仍须通过安全检查。", "Use only when familiar with the contracts. Every change remains subject to safety checks.")}</p><label>Agent JSON<textarea disabled={locked} rows={20} spellCheck={false} value={manifestText} onChange={(event) => setManifestText(event.target.value)} /></label><label>README<textarea disabled={locked} rows={8} value={readme} onChange={(event) => setReadme(event.target.value)} /></label><label>{tr("受控规则源码", "Managed rule source")}<textarea disabled={locked} rows={10} spellCheck={false} value={rules} onChange={(event) => setRules(event.target.value)} /></label><button disabled={locked || remoteConflict || !dirty} onClick={save}>{tr("保存新修订", "Save revision")}</button></details></section>
       <section className="agent-panel draft-conversation"><h2>{tr("您的修改意见是？", "What would you like to change?")}</h2>
         <p>{tr("可以描述业务需求、回答澄清问题或继续调整。明确需求后会保存为新修订，不会自动发布。请勿在对话中输入敏感参考号。", "Describe your business needs, answer clarifications or refine the draft. Clear changes become a new revision, never an automatic publication. Do not enter sensitive references here.")}</p>

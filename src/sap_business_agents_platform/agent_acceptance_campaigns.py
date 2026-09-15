@@ -105,6 +105,12 @@ class AgentAcceptanceJobs:
         static = checked.get("static_checks") or {}
         if static.get("errors"):
             raise AgentLifecycleError("Automatic Agent checks must pass first.", code="agent_static_validation_failed")
+        if (static.get("presentation_contract") or {}).get("status") != "ready":
+            raise AgentLifecycleError(
+                "Complete the Agent business domain, SAP scope and business-step documentation first.",
+                code="agent_presentation_contract_invalid",
+                detail={"issues": (static.get("presentation_contract") or {}).get("issues", [])},
+            )
         draft = self.store.get_agent_authoring_draft(draft_id)
         reusable = self.lifecycle._formal_acceptance(draft, package)
         if reusable and reusable.get("reused_validation"):

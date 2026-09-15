@@ -775,6 +775,8 @@ is absent, null, whitespace or an empty array; never emit empty or eq-null filte
 This directive belongs only to entries in a filters array, not arbitrary mappings.
 Return JSON only.
 """.strip()
+        from .agent_presentation import authoring_presentation_guidance
+        prompt += "\n\n" + authoring_presentation_guidance()
         if tool_workspace:
             prompt += """
 

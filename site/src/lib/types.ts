@@ -221,6 +221,69 @@ export interface AgentExecution {
   acceptance: AgentAcceptance;
 }
 
+export interface AgentPresentationIssue {
+  code: string;
+  path: string;
+  severity: "warning" | "error";
+  blocking: boolean;
+  message: LocalizedText;
+}
+
+export interface AgentPresentation {
+  contract_version: string;
+  package_digest?: string | null;
+  status: "ready" | "needs_input" | "invalid";
+  issues: AgentPresentationIssue[];
+  business_domain: string;
+  sap_modules: string[];
+  transactions: string[];
+  declared_tables: string[];
+  scope_mode: "odata_only" | "direct_tables_declared" | "partially_declared" | "no_sap_objects" | "unavailable";
+  odata_objects: Array<{
+    service: string;
+    version: string;
+    entity: string;
+    conditional: boolean;
+    workflow_step_ids: string[];
+    execution_step_ids: string[];
+  }>;
+  tables: Array<{
+    name: string;
+    source: string;
+    skill_id?: string | null;
+    conditional: boolean;
+    workflow_step_ids: string[];
+    execution_step_ids: string[];
+  }>;
+  unknown_skill_objects: Array<{
+    skill_id: string;
+    workflow_step_id?: string | null;
+    execution_step_id: string;
+    conditional: boolean;
+  }>;
+  tools: Array<{
+    id: string;
+    executor: string;
+    operation: string;
+    skill_id?: string | null;
+    conditional: boolean;
+    workflow_step_ids: string[];
+    execution_step_ids: string[];
+  }>;
+  workflow: Array<{
+    id: string;
+    execution_step_ids: string[];
+    execution_steps: Array<{
+      id: string;
+      executor: string;
+      operation: string;
+      tool_id: string;
+      conditional: boolean;
+      when?: Record<string, unknown> | null;
+    }>;
+  }>;
+}
+
 export interface WorkflowNodeDefinition {
   id: string;
   agentId: string;
@@ -393,6 +456,7 @@ export interface AgentDefinition {
   workflow: WorkflowStep[];
   execution?: AgentExecution;
   validation?: AgentValidation;
+  presentation?: AgentPresentation;
 }
 
 export interface AgentSearchItem {

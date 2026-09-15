@@ -16,6 +16,7 @@
 ## 契约、接口与架构 / Contracts, APIs and architecture
 
 - [Agent生命周期与管理接口 / Agent lifecycle and management](agent-lifecycle-management.md)
+- [Agent创建规范与共享展示契约 / Agent authoring and shared presentation contract](agent-authoring-standard.md)
 - [OData目录、元数据与只读Provider / OData catalog and read-only Provider](odata-catalog-v2.md)
 - [Codex Harness及证据工具 / Harness and evidence tools](codex-harness.md)
 - [工作流使用与接口 / Workflows and interfaces](user-workflows.md)
@@ -42,7 +43,7 @@ npm run build
 
 `documentation.py --write`只刷新当前README中的受控索引、状态及输入输出区块；人工叙述留在区块外。`--check`检查索引漂移、当前说明覆盖与本地文件链接，忽略versions及归档报告。历史README迁移到Agent的docs/offline-regression.md，不构成生产入口或新验收。 / `--write` refreshes bounded generated indexes/status/I/O only; keep human narrative outside markers. `--check` checks drift, current coverage and local file links, excluding versions and archived reports. Agent docs/offline-regression.md preserves historical CLI use without establishing production behavior or new acceptance.
 
-新增Agent先建立规范目录、双语说明、输入输出与确定性执行定义，补齐fixture及只读验收。使用Agent管理发布；BLOCKED/NOT_TESTED不可绕过门禁。修改业务规则不能夹带在文案补丁中。 / New Agents require localized docs, I/O and deterministic execution definitions, fixtures and read-only acceptance. Publish through Agent management; never bypass BLOCKED/NOT_TESTED gates or hide behavior changes in a documentation patch.
+新增Agent先遵循[统一创建规范](agent-authoring-standard.md)，建立明确业务域、SAP业务组件、双语步骤、输入输出与确定性执行映射，补齐fixture及只读验收。所有创建入口共用同一展示检查。使用Agent管理发布；BLOCKED/NOT_TESTED不可绕过门禁。修改业务规则不能夹带在文案补丁中。 / New Agents first follow the [shared authoring standard](agent-authoring-standard.md), declaring a business domain, SAP components, bilingual steps, I/O and deterministic execution mappings, then add fixtures and read-only acceptance. Every creation path uses the same presentation check. Publish through Agent management; never bypass BLOCKED/NOT_TESTED gates or hide behavior changes in a documentation patch.
 
 ## 部署与贡献 / Deployment and contribution
 

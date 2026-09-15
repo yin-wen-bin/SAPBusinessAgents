@@ -214,6 +214,7 @@ async function component(name, dependencies = {}) {
     dependencies["./AgentSampleProgress"] = await component("AgentSampleProgress");
     dependencies["./AgentTrialProgress"] = await component("AgentTrialProgress");
     dependencies["./AgentFeedbackProgress"] = await component("AgentFeedbackProgress");
+    dependencies["./AgentDefinitionDetails"] ||= () => null;
     dependencies["./AgentAcceptance"] ||= {
       AcceptanceSummary: () => null,
       AgentAcceptanceSetup: () => null,

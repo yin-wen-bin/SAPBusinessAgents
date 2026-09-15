@@ -1,0 +1,40 @@
+{
+  "version": "2026-09-15.1",
+  "business_domain_placeholders": [
+    "Unassigned",
+    "TBD",
+    "To be assigned"
+  ],
+  "sap_module_placeholders": [
+    "Common"
+  ],
+  "object_placeholders": [
+    "SAP OData entity",
+    "SAP object",
+    "SAP table"
+  ],
+  "authoring_requirements": {
+    "zh": [
+      "业务域必须明确，不能使用Unassigned等占位值。",
+      "SAP读取Agent必须声明具体SAP业务组件；目录分类不等于SAP业务组件。",
+      "每个业务步骤必须提供中英文标题、说明、详细操作，并映射到实际执行步骤。",
+      "详细操作应说明输入范围、筛选或关联、处理规则、空结果与缺口处理以及输出。",
+      "OData服务、实体、工具、条件调用和可追溯表对象必须与执行定义一致；未知Skill内部对象不得猜测。"
+    ],
+    "en": [
+      "Use a specific business domain, never a placeholder such as Unassigned.",
+      "An SAP-reading Agent must declare specific SAP business components; catalog grouping is not an SAP component.",
+      "Every business step needs bilingual titles, descriptions and detailed operations mapped to actual execution steps.",
+      "Detailed operations cover input scope, filters or joins, processing, empty or incomplete evidence handling, and output.",
+      "OData services, entities, tools, conditional calls and traceable table objects must match execution; never guess an unknown Skill's internals."
+    ]
+  },
+  "table_skills": {
+    "sap-adt-table-export": [
+      "inputMapping.object",
+      "request.object",
+      "inputMapping.table",
+      "request.table"
+    ]
+  }
+}
