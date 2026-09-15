@@ -1,6 +1,5 @@
 ---
-import { Bot, FolderGit2, Languages, MessageSquareText, Network, Plug, Settings } from "@lucide/astro";
-import { repositoryUrl } from "../lib/siteConfig";
+import { Bot, Languages, MessageSquareText, Network, Plug, Settings } from "@lucide/astro";
 import { agentManagementPath, askPath, homePath, pluginsPath, settingsPath, workflowsPath } from "../lib/urls";
 import type { Locale } from "../lib/types";
 
@@ -40,17 +39,6 @@ const alternateLocale: Locale = locale === "zh" ? "en" : "zh";
     <a class="header-link" href={settingsPath(base, locale)}>
       <Settings size={18} stroke-width={1.8} aria-hidden="true" />
       <span>{locale === "zh" ? "系统配置" : "Settings"}</span>
-    </a>
-    <span class="header-divider" aria-hidden="true"></span>
-    <a
-      class="header-link"
-      href={repositoryUrl}
-      target="_blank"
-      rel="noreferrer"
-      aria-label="GitHub"
-    >
-      <FolderGit2 size={18} stroke-width={1.8} aria-hidden="true" />
-      <span>GitHub</span>
     </a>
     <span class="header-divider" aria-hidden="true"></span>
     <a

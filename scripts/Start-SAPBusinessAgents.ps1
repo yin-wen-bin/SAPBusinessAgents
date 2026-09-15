@@ -39,6 +39,7 @@ $PlatformHealthy = $false
 $SiteHealthy = $false
 $SiteMode = if ($Dev) { "dev" } else { "preview" }
 $SiteFingerprint = $null
+$SiteDist = $null
 $SiteBuildReused = $false
 $SiteBuildDurationMs = 0
 $SitePreparedBeforeRestart = $false
@@ -112,7 +113,9 @@ function Get-ListenerProcessId {
 
 function Test-PlatformHealth {
     try {
-        $health = Invoke-RestMethod -Uri "$ApiUrl/api/health" -TimeoutSec 1
+        # The health response includes validated Agent, workflow, Skill, and plugin
+        # catalog state and can legitimately take more than one second to assemble.
+        $health = Invoke-RestMethod -Uri "$ApiUrl/api/health" -TimeoutSec 5
         return ($health.ok -eq $true -and $health.loopback_only -eq $true -and
             $health.sap_read.selected_provider -eq "embedded" -and $health.sap_read.data.read_only -eq $true)
     }
@@ -545,7 +548,6 @@ try {
     else { Invoke-StartupPhase -Name "api_process_start" -Action { Write-LauncherMessage "Reusing the healthy API process." } }
 
     $SiteProcess = $null
-    $SiteDist = $null
     if (-not $SiteHealthy) {
         if ($Dev) {
             Invoke-StartupPhase -Name "site_fingerprint" -Action { Write-LauncherMessage "Development mode bypasses the Web UI build cache." }
@@ -589,6 +591,10 @@ try {
                     }
                     $SiteBuildDurationMs = [int][Math]::Round(((Get-Date) - $buildStarted).TotalMilliseconds)
                 }
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$SiteDist) -or
+                -not (Test-SiteReleaseBuild -DistPath $SiteDist)) {
+                throw "The validated Web UI build path is unavailable before preview startup."
             }
             Remove-OldSiteBuilds -CurrentFingerprint $SiteFingerprint
             $SiteProcess = Invoke-StartupPhase -Name "site_process_start" -Action {

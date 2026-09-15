@@ -32,6 +32,33 @@ def test_launcher_contract_includes_cached_preview_and_explicit_dev_mode() -> No
     assert source.count("Get-NetTCPConnection") == 1
 
 
+def test_restart_preserves_the_prevalidated_site_build_path_until_preview_start() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+
+    initial_dist = source.index("$SiteDist = $null")
+    restart_build = source.index(
+        '$SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) "dist"'
+    )
+    preview_start = source.index(
+        '-Arguments @($AstroCli, "preview", "--host", "127.0.0.1"'
+    )
+
+    assert initial_dist < source.index("try {")
+    assert source.count("$SiteDist = $null") == 1
+    assert initial_dist < restart_build < preview_start
+    assert "The validated Web UI build path is unavailable before preview startup." in source
+
+
+def test_api_health_probe_allows_the_catalog_health_response_to_finish() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    health_probe = source[
+        source.index("function Test-PlatformHealth") : source.index("function Test-SiteHealth")
+    ]
+
+    assert 'Invoke-RestMethod -Uri "$ApiUrl/api/health" -TimeoutSec 5' in health_probe
+    assert "-TimeoutSec 1" not in health_probe
+
+
 @pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="Windows PowerShell is unavailable")
 def test_launcher_parses_in_windows_powershell() -> None:
     parser_command = (

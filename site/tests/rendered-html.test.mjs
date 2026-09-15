@@ -44,6 +44,12 @@ test("static catalog contains all agents and the GitHub Pages base path", async 
   assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 9);
   assert.match(html, /class="odata-version-tag">V2</);
   assert.doesNotMatch(html, /href="\/zh\//);
+  assert.match(
+    html,
+    /<div class="sidebar-footer">\s*<a href="https:\/\/github\.com\/yin-wen-bin\/SAPBusinessAgents"[^>]*aria-label="GitHub">\s*GitHub\s*<\/a>/,
+  );
+  assert.doesNotMatch(html, /贡献指南/);
+  assert.doesNotMatch(html, /<a class="header-link"[^>]*aria-label="GitHub"/);
 });
 
 test("CO detail pages render the exact manifest execution workflows", async () => {
