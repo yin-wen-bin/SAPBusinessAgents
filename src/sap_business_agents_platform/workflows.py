@@ -14,6 +14,7 @@ from jsonschema.exceptions import SchemaError
 
 from .manifests import ManifestError, validate_execution, validator_schema
 from .models import utc_now
+from .workflow_integration_capabilities import workflow_integration_capability
 
 
 ALLOWED_TRANSFORMS = {
@@ -871,12 +872,10 @@ def _validate_integration_contracts(workflow: dict[str, Any], source: str) -> No
         if not re.fullmatch(r"[a-z][a-z0-9_-]*", input_id) or input_id in input_ids:
             raise WorkflowError(f"{location}.id is invalid or duplicated")
         input_ids.add(input_id)
-        if item.get("capability") != "mail.v1" or item.get("operation") not in {
-            "search",
-            "read",
-        }:
+        capability = workflow_integration_capability(str(item.get("capability") or ""))
+        if capability is None or item.get("operation") not in capability.input_operations:
             raise WorkflowError(
-                f"{location} must use mail.v1/search or mail.v1/read",
+                f"{location} uses an unsupported integration input operation",
                 code="workflow_integration_operation_invalid",
             )
         _validate_fixed_binding(item, location, approval_required=False)
@@ -907,18 +906,21 @@ def _validate_integration_contracts(workflow: dict[str, Any], source: str) -> No
         if not re.fullmatch(r"[a-z][a-z0-9_-]*", action_id) or action_id in action_ids:
             raise WorkflowError(f"{location}.id is invalid or duplicated")
         action_ids.add(action_id)
-        if item.get("capability") != "mail.v1" or item.get("operation") not in {
-            "draft",
-            "send",
-        }:
+        capability = workflow_integration_capability(str(item.get("capability") or ""))
+        operation = str(item.get("operation") or "")
+        if capability is None or operation not in capability.output_operations:
             raise WorkflowError(
-                f"{location} must use mail.v1/draft or mail.v1/send",
+                f"{location} uses an unsupported integration output operation",
                 code="workflow_integration_operation_invalid",
             )
         if not isinstance(item.get("draftMapping"), dict):
             raise WorkflowError(f"{location}.draftMapping must be an object")
-        if item.get("operation") == "send":
-            _validate_fixed_binding(item, location, approval_required=True)
+        if capability.requires_output_binding(operation):
+            _validate_fixed_binding(
+                item,
+                location,
+                approval_required=capability.requires_approval(operation),
+            )
 
 
 def _validate_fixed_binding(

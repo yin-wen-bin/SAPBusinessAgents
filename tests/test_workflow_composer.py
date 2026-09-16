@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -10,6 +12,13 @@ from fastapi.testclient import TestClient
 from sap_business_agents_platform.app import create_app
 from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.manifests import AgentRepository
+from sap_business_agents_platform.engine import RunCoordinator
+from sap_business_agents_platform.integrations import IntegrationError
+from sap_business_agents_platform.workflow_integration_capabilities import (
+    WORKFLOW_INTEGRATION_CAPABILITIES,
+    WorkflowIntegrationCapability,
+)
+from sap_business_agents_platform.workflows import WorkflowError, validate_workflow
 from sap_business_agents_platform.workflow_composer import (
     WORKFLOW_COMPILER_VERSION,
     WorkflowCompositionError,
@@ -301,6 +310,145 @@ def test_compiler_pins_ready_mail_binding_in_workflow_revision() -> None:
     assert workflow["integrationInputs"][0]["targetPort"] == "purchase_orders"
     assert workflow["outputActions"][0]["approvalPolicy"] == "always"
     assert workflow["outputActions"][0]["bindingSnapshot"]["schemaHash"] == "sha256:" + "a" * 64
+
+
+def test_test_only_capability_compiles_validates_and_dispatches_without_external_call(monkeypatch) -> None:
+    capability_id = "test.message.v1"
+    monkeypatch.setitem(
+        WORKFLOW_INTEGRATION_CAPABILITIES,
+        capability_id,
+        WorkflowIntegrationCapability(
+            capability=capability_id,
+            input_operations=frozenset({"read"}),
+            output_operations=frozenset({"draft"}),
+            output_binding_operations=frozenset(),
+            approval_operations=frozenset(),
+            read_only_input_operations=frozenset({"read"}),
+        ),
+    )
+    agents = AgentRepository(Path(__file__).resolve().parents[1] / "agents")
+    proposal = _proposal()
+    proposal["output_actions"] = [
+        {
+            "id": "prepare_message",
+            "capability": capability_id,
+            "operation": "draft",
+            "draft_mapping": {"content": "{{output.business_report}}"},
+        }
+    ]
+    workflow, composition = compile_workflow_proposal(
+        workflow_id="test-message-workflow",
+        requirement="Prepare a test message",
+        locale="en",
+        proposal=proposal,
+        catalog=compact_agent_catalog(agents),
+        agents=agents,
+        integration_catalog={"digest": "sha256:test", "items": [], "bindings": []},
+    )
+    assert composition["gaps"] == []
+    assert workflow["outputActions"][0]["capability"] == capability_id
+
+    class TestHandler:
+        def normalize_input(self, operation: str, result: Any) -> Any:
+            return result
+
+        def create_output_action(
+            self, run_id: str, item: dict[str, Any], draft: dict[str, Any],
+            integrations: Any, idempotency_key: str,
+        ) -> dict[str, Any]:
+            assert draft == {"content": "ready"}
+            return {"action_id": "test-action", "status": "draft", "draft_digest": "sha256:test"}
+
+    class EventStore:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, str, dict[str, Any]]] = []
+
+        def append_event(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
+            self.events.append((run_id, kind, payload))
+
+        def update_run(self, run_id: str, **kwargs: Any) -> None:
+            assert run_id == "test-run"
+
+    class TestGateway:
+        async def invoke_binding(self, binding_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            assert binding_id == "test-binding"
+            return {"text": "ready"}
+
+    coordinator = object.__new__(RunCoordinator)
+    coordinator.integrations = TestGateway()
+    coordinator.store = EventStore()
+    coordinator._workflow_integration_handlers = {capability_id: TestHandler()}
+    coordinator._verify_workflow_binding = lambda item: None
+    result = SimpleNamespace(integration_results=[])
+    effective = asyncio.run(coordinator._execute_workflow_integration_inputs(
+        "test-run",
+        {"integrationInputs": [{
+            "id": "read_message", "capability": capability_id, "operation": "read",
+            "targetPort": "message", "bindingId": "test-binding", "arguments": {},
+        }]},
+        {},
+        result,
+    ))
+    assert effective["message"] == {"text": "ready"}
+    assert result.integration_results[0]["capability"] == capability_id
+    actions = asyncio.run(coordinator._create_workflow_output_actions(
+        "test-run", workflow, {}, {"business_report": "ready"}
+    ))
+    assert actions[0]["action_id"] == "test-action"
+    assert coordinator.store.events[-1][1] == "integration_action_created"
+
+
+def test_unregistered_workflow_capability_fails_closed() -> None:
+    agents = AgentRepository(Path(__file__).resolve().parents[1] / "agents")
+    proposal = _proposal()
+    proposal["output_actions"] = [
+        {"id": "wecom_message", "capability": "business_message.v1", "operation": "send"}
+    ]
+    try:
+        compile_workflow_proposal(
+            workflow_id="unregistered-integration",
+            requirement="Send a message",
+            locale="en",
+            proposal=proposal,
+            catalog=compact_agent_catalog(agents),
+            agents=agents,
+            integration_catalog={"digest": "sha256:test", "items": [], "bindings": []},
+        )
+    except WorkflowCompositionError as exc:
+        assert exc.code == "workflow_integration_operation_invalid"
+    else:
+        raise AssertionError("An unregistered capability must not compile")
+
+    valid_workflow, _ = compile_workflow_proposal(
+        workflow_id="valid-without-integration",
+        requirement="Review payment",
+        locale="en",
+        proposal=_proposal(),
+        catalog=compact_agent_catalog(agents),
+        agents=agents,
+    )
+    valid_workflow["outputActions"] = [{
+        "id": "wecom_message", "capability": "business_message.v1",
+        "operation": "draft", "draftMapping": {},
+    }]
+    try:
+        validate_workflow(valid_workflow, agents)
+    except WorkflowError as exc:
+        assert exc.code == "workflow_integration_operation_invalid"
+    else:
+        raise AssertionError("An unregistered capability must not validate")
+
+    coordinator = object.__new__(RunCoordinator)
+    coordinator._workflow_integration_handlers = {}
+    try:
+        coordinator._workflow_integration_handler(
+            {"capability": "business_message.v1", "operation": "send"},
+            input_operation=False,
+        )
+    except IntegrationError as exc:
+        assert exc.code == "workflow_integration_operation_invalid"
+    else:
+        raise AssertionError("An unregistered capability must not execute")
 
 
 def test_workflow_feedback_creates_immutable_turn_and_revision(tmp_path: Path) -> None:

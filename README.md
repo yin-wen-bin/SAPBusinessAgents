@@ -21,7 +21,7 @@ SAP 访问限于 OData GET 或已批准的语义只读 ADT 查询。查询、催
 | 把多个固定 Agent 串成流程 | 我的工作流 | 自然语言编写需要；确定性执行不需要 |
 | 根据岗位职责寻找现有能力 | 岗位匹配助理 | 需要；不访问 SAP |
 | 创建、修改、验证或停用固定 Agent | Agent 管理 | 对话编写需要；结构化管理不需要 |
-| 配置邮件、插件或外部连接 | 插件与连接 | 取决于所选能力 |
+| 配置工作流邮件连接 | 插件 | 需要可用的 Runtime App 或 HTTP MCP 连接；邮件发送须逐次确认 |
 
 精选入口：[应收催收](agents/FI/ar-collection/README.md) · [银行来款核对](agents/FI/ar-cash-application/README.md) · [批量采购到付款](agents/MM/procure-to-pay-status/README.md) · [生产订单成本差异](agents/CO/product-cost-variance/README.md) · [MRP需求覆盖](agents/PP/demand-forecast-planning/README.md) · [新增销售需求模拟](agents/SD/new-sales-demand-coverage/README.md)。
 
@@ -129,7 +129,7 @@ SAP access is limited to OData GET or approved semantically read-only ADT querie
 | Combine fixed Agents into a process | My workflows | For natural-language authoring; not deterministic execution |
 | Match job responsibilities to capabilities | Role matching assistant | Yes; it does not access SAP |
 | Create, edit, validate or deactivate fixed Agents | Agent management | For conversational authoring; not structured management |
-| Configure mail, plugins or external connections | Plugins and connections | Depends on the capability |
+| Configure workflow mail connections | Plugins | Requires a ready Runtime App or HTTP MCP connection; each mail send requires confirmation |
 
 Selected tasks: [AR collection](agents/FI/ar-collection/README.md), [bank reconciliation](agents/FI/ar-cash-application/README.md), [batch P2P](agents/MM/procure-to-pay-status/README.md), [production-order costs](agents/CO/product-cost-variance/README.md), [MRP demand coverage](agents/PP/demand-forecast-planning/README.md), [new sales-demand simulation](agents/SD/new-sales-demand-coverage/README.md).
 

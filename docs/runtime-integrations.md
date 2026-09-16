@@ -54,9 +54,11 @@ Codex App 未安装时，连接接口只返回 App Server 提供的 `installUrl`
 `installed_non_callable`。MCP 需要登录时，连接接口返回 App Server OAuth URL，
 前端每两秒刷新连接状态，最多等待两分钟。
 
-## 前台邮箱配置
+## 插件页面与前台邮箱配置
 
-“插件与连接”页的“添加邮箱服务”向导有两种入口：
+“插件”页默认只展示邮件连接与操作状态，以及不可操作的“企业微信 · 规划中”入口。内部插件、完整 Runtime App/MCP 目录及原生工具不在普通视图展示；HTTP MCP 和精确工具绑定保留在默认折叠的“高级设置”中。企业微信尚未注册工作流能力，不能执行连接或发送。
+
+“添加邮箱服务”向导沿用两种入口：
 
 - Runtime 邮件 App：从 App Server 目录选择 Outlook Email 等邮件 App，打开其
   `installUrl`，再重新扫描 MCP Server。
@@ -78,7 +80,7 @@ Codex App 未安装时，连接接口只返回 App Server 提供的 `installUrl`
 ## 邮件能力
 
 首期规范能力为 `mail.v1/search`、`mail.v1/read`、平台本地 `draft` 和
-`mail.v1/send`。管理员在“插件与连接”页把每个规范操作绑定到一个精确的 MCP
+`mail.v1/send`。管理员在“插件 → 高级设置”把每个规范操作绑定到一个精确的 MCP
 工具。绑定保存原生输入输出 schema hash；schema 变化会阻止运行。
 
 `search` 和 `read` 只能放入 `integrationInputs`。平台按需查询邮件，把结果收敛为
@@ -110,7 +112,7 @@ Codex App 未安装时，连接接口只返回 App Server 提供的 `installUrl`
 自动编排把缺口分为 `agent_missing`、`plugin_missing`、
 `connection_required`、`reauthentication_required`、`permission_required`、
 `runtime_adapter_unavailable` 和 `tool_contract_changed`。只有 `agent_missing`
-进入“自由查询创建 Agent”；其余缺口跳转“插件与连接”页。插件连接完成后，工作流
+进入“自由查询创建 Agent”；其余缺口跳转“插件”页。插件连接完成后，工作流
 重新检查会同时比较 Agent 目录与集成目录，并用保存的提案重新编译。
 
 SAP 严格只读链不继承外部集成。Harness Tool Broker 仍只暴露经过批准的 SAP GET
@@ -123,12 +125,14 @@ SAP 严格只读链不继承外部集成。Harness Tool Broker 仍只暴露经�
 不包含共享邮箱、多租户、邮件 webhook、定时收件、等待回复、自动回复和附件上传。
 `codex-runtime` 本地插件 ID 暂时保留兼容；页面将其解释为通用 Agent Runtime Router。
 
+工作流仍使用 `integrationInputs` 与 `outputActions`。编译、校验和执行仅接受已注册的版本化能力；当前只注册 `mail.v1`。未来企业微信需独立消息能力、连接器和审批展示，不能通过规划入口或任意 Runtime 工具自动获得执行权限。已发布邮件工作流的固定连接、工具和 schema hash 保持不变。
+
 ## English user guide
 
-Open Plugins and connections to inspect enabled capabilities and set up external accounts. SAP access remains on the platform's approved read-only path; external integration permissions are separate. For mail, choose a supported Runtime mail App or the custom HTTP MCP setup flow, complete the provider's authentication, refresh discovery and bind each canonical operation to an exact compatible tool. Do not enter raw credentials into setup descriptions. The first version supports disabling connections rather than deleting them; disabled/missing workflow bindings return connection_required.
+Open Plugins to inspect mail connection and operation status. WeCom is marked Planned and cannot be invoked. SAP access remains on the platform's approved read-only path; external integration permissions are separate. For mail, choose a supported Runtime mail App or open Advanced settings for custom HTTP MCP, complete the provider's authentication, refresh discovery and bind each canonical operation to an exact compatible tool. Do not enter raw credentials into setup descriptions. The first version supports disabling connections rather than deleting them; disabled/missing workflow bindings return connection_required.
 
 Mail search and read obtain evidence. A local draft is a platform artifact, not a remote mailbox draft and not a sent message. Sending requires review and confirmation for each send; a successful SAP read does not authorize mail delivery. Tool schema/fingerprint drift blocks use and requires rebinding/review. SDK/model selection belongs in [Runtime settings](runtime-settings.md), not connection credentials.
 
 ## 使用顺序
 
-先在“插件与连接”完成账号与精确能力绑定，再在业务工作流选择连接。邮件读取、本地草稿和发送是不同操作；草稿未发送，每次发送都需明确确认。连接问题不会放宽SAP只读规则。
+先在“插件”完成账号与精确能力绑定，再在业务工作流选择连接。邮件读取、本地草稿和发送是不同操作；草稿未发送，每次发送都需明确确认。连接问题不会放宽SAP只读规则。

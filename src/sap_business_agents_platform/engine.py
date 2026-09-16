@@ -73,6 +73,11 @@ from .workflows import (
     validate_workflow,
     workflow_digest,
 )
+from .workflow_integration_capabilities import (
+    WorkflowIntegrationCapability,
+    WorkflowIntegrationHandler,
+    workflow_integration_capability,
+)
 from .workflow_presentation import (
     compose_workflow_presentation,
     workflow_ap_scopes_csv,
@@ -114,6 +119,27 @@ class InputValidationError(ValueError):
         self.detail = payload
 
 
+class _MailWorkflowIntegrationHandler:
+    def normalize_input(self, operation: str, result: Any) -> Any:
+        return _normalize_mail_integration_result(operation, result)
+
+    def create_output_action(
+        self,
+        run_id: str,
+        item: dict[str, Any],
+        draft: dict[str, Any],
+        integrations: Any,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return integrations.create_mail_draft(
+            run_id,
+            draft,
+            connection_id=item.get("connectionId"),
+            binding_id=(item.get("bindingId") if item.get("operation") == "send" else None),
+            idempotency_key=idempotency_key,
+        )
+
+
 class RunCoordinator:
     def __init__(
         self,
@@ -126,6 +152,7 @@ class RunCoordinator:
         workflows: WorkflowRepository | None = None,
         harness: CodexHarnessController | None = None,
         integrations: Any = None,
+        workflow_integration_handlers: dict[str, WorkflowIntegrationHandler] | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -136,6 +163,10 @@ class RunCoordinator:
         self.workflows = workflows
         self.harness = harness
         self.integrations = integrations
+        self._workflow_integration_handlers: dict[str, WorkflowIntegrationHandler] = {
+            "mail.v1": _MailWorkflowIntegrationHandler(),
+            **(workflow_integration_handlers or {}),
+        }
         self.relationships = RelationshipCatalog.load(
             settings.repository_root / "config" / "business-relationships.json"
         )
@@ -2528,6 +2559,7 @@ class RunCoordinator:
                     "Workflow integration runtime is unavailable.",
                     code="runtime_adapter_unavailable",
                 )
+            _, handler = self._workflow_integration_handler(item, input_operation=True)
             target_port = str(item["targetPort"])
             if target_port in effective:
                 raise IntegrationError(
@@ -2552,9 +2584,7 @@ class RunCoordinator:
             native_result = await self.integrations.invoke_binding(
                 str(item["bindingId"]), arguments
             )
-            normalized = _normalize_mail_integration_result(
-                str(item["operation"]), native_result
-            )
+            normalized = handler.normalize_input(str(item["operation"]), native_result)
             if item.get("resultPointer"):
                 normalized = _json_pointer(
                     normalized, str(item["resultPointer"])
@@ -2596,20 +2626,21 @@ class RunCoordinator:
                     "Workflow integration runtime is unavailable.",
                     code="runtime_adapter_unavailable",
                 )
-            if item.get("operation") == "send":
+            capability, handler = self._workflow_integration_handler(
+                item, input_operation=False
+            )
+            if capability.requires_output_binding(str(item["operation"])):
                 self._verify_workflow_binding(item)
             draft = _render_template(
                 item.get("draftMapping") or {},
                 {"input": workflow_input, "output": workflow_output},
             )
-            action = self.integrations.create_mail_draft(
+            action = handler.create_output_action(
                 run_id,
+                item,
                 draft,
-                connection_id=item.get("connectionId"),
-                binding_id=(
-                    item.get("bindingId") if item.get("operation") == "send" else None
-                ),
-                idempotency_key=_stable_json_digest(
+                self.integrations,
+                _stable_json_digest(
                     {"run_id": run_id, "action_id": item["id"]}
                 ),
             )
@@ -2626,12 +2657,35 @@ class RunCoordinator:
             )
         return actions
 
+    def _workflow_integration_handler(
+        self, item: dict[str, Any], *, input_operation: bool
+    ) -> tuple[WorkflowIntegrationCapability, WorkflowIntegrationHandler]:
+        capability_id = str(item.get("capability") or "")
+        operation = str(item.get("operation") or "")
+        capability = workflow_integration_capability(capability_id)
+        handler = self._workflow_integration_handlers.get(capability_id)
+        allowed = frozenset()
+        if capability is not None:
+            allowed = (
+                capability.input_operations
+                if input_operation
+                else capability.output_operations
+            )
+        if handler is None or operation not in allowed:
+            raise IntegrationError(
+                "Workflow integration capability or operation is unavailable.",
+                code="workflow_integration_operation_invalid",
+            )
+        return capability, handler
+
     def _verify_workflow_binding(self, item: dict[str, Any]) -> None:
         binding = self.integrations.state.get_binding(str(item["bindingId"]))
         connection = self.integrations.state.get_connection(
             str(item["connectionId"])
         )
         expected = {
+            "capability": item["capability"],
+            "operation": item["operation"],
             "connection_id": item["connectionId"],
             "backend_id": item["integrationBackendId"],
             "native_server": item["nativeServer"],
@@ -2639,6 +2693,8 @@ class RunCoordinator:
             "schema_hash": item["schemaHash"],
         }
         actual = {
+            "capability": binding["capability"],
+            "operation": binding["operation"],
             "connection_id": binding["connection_id"],
             "backend_id": connection["backend_id"],
             "native_server": binding["native_server"],
