@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import replace
 from datetime import date
@@ -2252,14 +2253,25 @@ def test_free_query_creates_immutable_session_iterations_and_requeries_for_new_e
 def test_free_query_feedback_returns_before_runtime_review_finishes(
     tmp_path: Path,
 ) -> None:
-    class SlowFeedbackPlanner(FeedbackPlanner):
-        async def review_free_query_feedback(self, **payload: Any) -> dict[str, Any]:
-            await asyncio.sleep(0.35)
-            return await super().review_free_query_feedback(**payload)
+    class HeldFeedbackPlanner(FeedbackPlanner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.review_started = threading.Event()
+            self.review_released = threading.Event()
+            self.review_finished = threading.Event()
 
+        async def review_free_query_feedback(self, **payload: Any) -> dict[str, Any]:
+            self.review_started.set()
+            try:
+                await asyncio.to_thread(self.review_released.wait, 30)
+                return await super().review_free_query_feedback(**payload)
+            finally:
+                self.review_finished.set()
+
+    planner = HeldFeedbackPlanner()
     app = create_app(
         _settings(tmp_path),
-        planner=SlowFeedbackPlanner(),
+        planner=planner,
         embedded_provider=FakeEmbeddedProvider(),
     )
     with TestClient(app) as client:
@@ -2268,27 +2280,31 @@ def test_free_query_feedback_returns_before_runtime_review_finishes(
             json={"mode": "free_query", "query": "查询采购订单 4500000001"},
         ).json()
         _wait(client, created["run_id"])
-        started = time.monotonic()
-        response = client.post(
-            f"/api/free-query-sessions/{created['session_id']}/feedback",
-            json={
-                "baseIteration": 1,
-                "feedback": "需要补充发票证据。",
-                "feedbackTypeHint": "missing_evidence",
-                "locale": "zh",
-            },
-        )
-        elapsed = time.monotonic() - started
-        assert response.status_code == 202
-        assert elapsed < 0.2
-        assert response.json()["status"] == "queued"
-        request_id = response.json()["feedback_request_id"]
-        events = client.get(
-            f"/api/free-query-sessions/{created['session_id']}/feedback-requests/{request_id}/events",
-            headers={"Accept": "text/event-stream"},
-        )
-        assert events.status_code == 200
-        assert "feedback_received" in events.text
+        try:
+            response = client.post(
+                f"/api/free-query-sessions/{created['session_id']}/feedback",
+                json={
+                    "baseIteration": 1,
+                    "feedback": "需要补充发票证据。",
+                    "feedbackTypeHint": "missing_evidence",
+                    "locale": "zh",
+                },
+            )
+            assert response.status_code == 202
+            assert response.json()["status"] == "queued"
+            # Assert ordering, not a runner-dependent wall-clock threshold.
+            assert planner.review_started.wait(15)
+            assert not planner.review_finished.is_set()
+            planner.review_released.set()
+            request_id = response.json()["feedback_request_id"]
+            events = client.get(
+                f"/api/free-query-sessions/{created['session_id']}/feedback-requests/{request_id}/events",
+                headers={"Accept": "text/event-stream"},
+            )
+            assert events.status_code == 200
+            assert "feedback_received" in events.text
+        finally:
+            planner.review_released.set()
 
 
 def test_free_query_presentation_feedback_reuses_validated_evidence_without_sap_get(
