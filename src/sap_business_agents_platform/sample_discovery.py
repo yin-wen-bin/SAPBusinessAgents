@@ -281,7 +281,7 @@ class SampleDiscoveryContext:
             raise SampleDiscoveryError("sample_discovery_closed")
         if tool not in _TOOLS:
             raise SampleDiscoveryError("sample_tool_not_allowed")
-        if time.monotonic() - self.started >= self.max_seconds:
+        if not self.remaining():
             raise SampleDiscoveryError("sample_discovery_timeout")
         if tool not in {"sap_evidence_read", "sap_evidence_assess"} and not self.remaining(external=True):
             self.progress("finalizing")

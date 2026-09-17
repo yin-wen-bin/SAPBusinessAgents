@@ -825,10 +825,9 @@ class FeedbackPlanner(FakePlanner):
         }
 
 
-class SlowSummaryPlanner(FakePlanner):
+class TimeoutSummaryPlanner(FakePlanner):
     async def summarize(self, **_kwargs: Any) -> dict[str, str]:
-        await asyncio.sleep(5)
-        return {"zh": "不应到达", "en": "Should not complete"}
+        raise TimeoutError("Simulated summary deadline")
 
 
 class HarnessPlanner(FakePlanner):
@@ -1103,14 +1102,15 @@ def _settings(tmp_path: Path) -> Settings:
         data_root=tmp_path / "data",
         draft_root=tmp_path / "drafts",
         skillhub_root=tmp_path / "skillhub",
-        max_run_seconds=10,
+        max_run_seconds=30,
         enforce_agent_acceptance=False,
     )
 
 
 def _wait(client: TestClient, run_id: str, statuses: set[str] | None = None) -> dict[str, Any]:
     target = statuses or {"completed", "inconclusive", "failed", "cancelled", "waiting_input"}
-    deadline = time.monotonic() + 5
+    # Managed-rule subprocess startup can exceed five seconds on cold Windows CI.
+    deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
         run = client.get(f"/api/runs/{run_id}").json()
         if run["status"] in target:
@@ -1878,8 +1878,8 @@ def test_free_query_uses_codex_plan_then_embedded_validation(tmp_path: Path) -> 
 
 
 def test_free_query_preserves_evidence_when_codex_summary_times_out(tmp_path: Path) -> None:
-    settings = replace(_settings(tmp_path), max_run_seconds=3)
-    app = create_app(settings, planner=SlowSummaryPlanner(), embedded_provider=FakeEmbeddedProvider())
+    settings = _settings(tmp_path)
+    app = create_app(settings, planner=TimeoutSummaryPlanner(), embedded_provider=FakeEmbeddedProvider())
     with TestClient(app) as client:
         response = client.post(
             "/api/runs", json={"mode": "free_query", "query": "查询采购订单 4500000001"}

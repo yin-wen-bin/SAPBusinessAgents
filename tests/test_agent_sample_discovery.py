@@ -123,6 +123,9 @@ def test_invalid_sample_selection_rejected(selected):
 
 def test_independent_deadline_and_finalization(monkeypatch):
     ctx = context()
+    # This starting value exposes float subtraction rounding just below 600.
+    # Both the hard cutoff and remaining budget must use the same deadline.
+    ctx.started = 4193799.9403939885
     monkeypatch.setattr('sap_business_agents_platform.sample_discovery.time.monotonic', lambda: ctx.started + 540)
     with pytest.raises(SampleDiscoveryError, match='sample_finalization_only'):
         ctx.allow_tool('sap_schema_get', {})

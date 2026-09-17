@@ -850,10 +850,12 @@ def test_workflow_live_validation_auto_discovers_required_array_and_date(tmp_pat
         embedded_provider=WorkflowSapProvider(),
     )
     with TestClient(app) as client:
-        created = client.post(
+        created_response = client.post(
             "/api/authoring/workflows",
             json={"workflow": _p2p_ap_workflow()},
-        ).json()
+        )
+        assert created_response.status_code == 201, created_response.text
+        created = created_response.json()
         validation = client.post(
             f"/api/authoring/workflows/{created['draft_id']}/validate",
             json={"autoDiscover": True, "input": {"purchase_orders": []}},
