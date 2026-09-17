@@ -27,6 +27,9 @@ def test_launcher_contract_includes_cached_preview_and_explicit_dev_mode() -> No
     assert '".local-data\\site-builds"' in source
     assert '"preview", "--host", "127.0.0.1"' in source
     assert '"dev", "--host", "127.0.0.1"' in source
+    # Astro can auto-background in an agent-owned process. The launcher must
+    # retain a foreground PID for health checks and owned-process cleanup.
+    assert source.count('"--ignore-lock"') == 2
     assert '"last-attempt.json"' in source
     assert "GetActiveTcpListeners" in source
     assert source.count("Get-NetTCPConnection") == 1

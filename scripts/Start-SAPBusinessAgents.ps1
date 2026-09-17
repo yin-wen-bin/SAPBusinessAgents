@@ -558,7 +558,7 @@ try {
             }
             $SiteProcess = Invoke-StartupPhase -Name "site_process_start" -Action {
                 Start-LocalProcess -Name "Web UI" -Port $SitePort -FilePath $NodeCommand.Source `
-                    -Arguments @($AstroCli, "dev", "--host", "127.0.0.1", "--port", [string]$SitePort) `
+                    -Arguments @($AstroCli, "dev", "--host", "127.0.0.1", "--port", [string]$SitePort, "--ignore-lock") `
                     -WorkingDirectory $SiteRoot -StdoutPath $SiteStdout -StderrPath $SiteStderr
             }
         }
@@ -600,7 +600,7 @@ try {
             $SiteProcess = Invoke-StartupPhase -Name "site_process_start" -Action {
                 $env:PUBLIC_SITE_BASE = "/"
                 Start-LocalProcess -Name "Web UI" -Port $SitePort -FilePath $NodeCommand.Source `
-                    -Arguments @($AstroCli, "preview", "--host", "127.0.0.1", "--port", [string]$SitePort, "--outDir", $SiteDist) `
+                    -Arguments @($AstroCli, "preview", "--host", "127.0.0.1", "--port", [string]$SitePort, "--outDir", $SiteDist, "--ignore-lock") `
                     -WorkingDirectory $SiteRoot -StdoutPath $SiteStdout -StderrPath $SiteStderr
             }
         }

@@ -2831,7 +2831,11 @@ def _workflow_management_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "managed-repository"
     repository.mkdir()
     for name in ("agents", "config", "workflows"):
-        shutil.copytree(source / name, repository / name)
+        shutil.copytree(
+            source / name,
+            repository / name,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
     # Management tests need a deterministic legacy baseline. Local, uncommitted
     # lifecycle metadata from the developer worktree must not change whether the
     # copied workflow starts active or inactive.

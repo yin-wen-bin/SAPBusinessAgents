@@ -344,7 +344,7 @@ class SiteReleaseManager:
         stdout = (log_root / "candidate.stdout.log").open("w", encoding="utf-8")
         stderr = (log_root / "candidate.stderr.log").open("w", encoding="utf-8")
         process = subprocess.Popen(
-            [node, str(astro), "preview", "--host", "127.0.0.1", "--port", str(port), "--outDir", str(dist)],
+            [node, str(astro), "preview", "--host", "127.0.0.1", "--port", str(port), "--outDir", str(dist), "--ignore-lock"],
             cwd=site_root,
             env={
                 **os.environ,

@@ -147,6 +147,7 @@ def test_manual_restart_builds_before_stopping_services_and_switch_does_not_stop
     assert "Stop-ExpectedListener -Name \"SAPBusinessAgents API\"" in startup
     assert "8765" not in switch
     assert "Stop-Site" in switch
+    assert '"--ignore-lock"' in switch
 
 
 def test_candidate_preview_uses_local_base_and_checks_repository_redirect(
@@ -177,6 +178,7 @@ def test_candidate_preview_uses_local_base_and_checks_repository_redirect(
             return None
 
     def launch(*args: object, **kwargs: object) -> PreviewProcess:
+        captured["command"] = args[0]
         captured.update(kwargs)
         return PreviewProcess()
 
@@ -214,6 +216,7 @@ def test_candidate_preview_uses_local_base_and_checks_repository_redirect(
     )
 
     environment = captured["env"]
+    assert "--ignore-lock" in captured["command"]
     assert isinstance(environment, dict)
     assert environment["PUBLIC_SITE_BASE"] == "/"
     assert environment["PUBLIC_SAPBA_API_URL"] == "http://127.0.0.1:8765"

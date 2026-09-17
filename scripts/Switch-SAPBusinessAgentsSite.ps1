@@ -66,7 +66,7 @@ function Start-Site {
     $stderr = Join-Path $LogRoot "$Timestamp-$Label.stderr.log"
     return Start-Process -FilePath $NodePath -ArgumentList @(
         $AstroPath, "preview", "--host", "127.0.0.1", "--port", [string]$SitePort,
-        "--outDir", $BuildDist
+        "--outDir", $BuildDist, "--ignore-lock"
     ) -WorkingDirectory $SiteRoot -WindowStyle Hidden -RedirectStandardOutput $stdout `
       -RedirectStandardError $stderr -PassThru
 }

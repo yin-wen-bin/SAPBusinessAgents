@@ -282,7 +282,9 @@ def _settings(tmp_path: Path) -> Settings:
         data_root=tmp_path / "data",
         draft_root=tmp_path / "drafts",
         skillhub_root=tmp_path / "skillhub",
-        max_run_seconds=10,
+        # Two managed-rule subprocesses can take longer on a cold Windows CI
+        # runner; this suite tests workflow results, not timeout enforcement.
+        max_run_seconds=45,
         enforce_agent_acceptance=False,
     )
 
@@ -467,9 +469,9 @@ def _o2c_ar_workflow() -> dict[str, Any]:
 
 
 def _wait(client: TestClient, run_id: str) -> dict[str, Any]:
-    # Managed-rule subprocess startup can exceed eight seconds on a busy Windows CI host.
+    # Managed-rule subprocess startup can be slow on a busy Windows CI host.
     # This only bounds the test poll; it does not change any production run deadline.
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         value = client.get(f"/api/runs/{run_id}").json()
         if value["status"] in {"completed", "inconclusive", "failed", "cancelled"}:
@@ -556,6 +558,7 @@ def test_workflow_v2_foreach_grouping_and_aggregates_execute_in_stable_order(
         assert validation.status_code == 202, validation.text
         run = _wait(client, validation.json()["validation_run_id"])
         assert run["status"] == "inconclusive"
+        assert len(run["result"]["node_results"]) == 2, run["result"]
         foreach_result = run["result"]["node_results"][1]
         assert foreach_result["iterations"][0]["iteration_index"] == 0
         assert foreach_result["iterations"][0]["input"]["ap_payment_scopes"][0][
