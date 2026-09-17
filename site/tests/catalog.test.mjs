@@ -4,9 +4,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { loadAgentCatalog, validateAgent } from "../scripts/generate-agent-catalog.mjs";
 
-test("Astro React development runtime stays on supported Vite 7", () => {
+test("Astro 7 uses its supported Vite 8 without a legacy override", () => {
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
-  assert.match(packageJson.overrides?.vite ?? "", /^\^?7\./);
+  const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+  assert.match(packageJson.dependencies.astro, /^\^?7\./);
+  assert.equal(packageJson.overrides?.vite, undefined);
+  assert.match(lock.packages["node_modules/vite"].version, /^8\./);
 });
 
 test("complete management catalog validates thirty-two deterministic agents and one platform assistant", () => {

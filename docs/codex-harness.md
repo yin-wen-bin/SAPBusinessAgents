@@ -1,14 +1,15 @@
-# Codex Harness 自由查询原型
+# Codex Harness 自由查询
 
-“直接询问 SAP”默认由持久 Codex App Server thread 执行；固定 Agent 和已发布工作流仍走现有确定性执行链。Embedded SAP Read Provider是唯一OData执行通道；扩展证据仅使用批准的只读Skill。
+“自由查询”默认由持久 Codex SDK thread 执行；固定 Agent 和已发布工作流仍走确定性执行链。平台管理的 SAP OData 访问通过 Embedded SAP Read Provider，扩展证据仅使用批准的只读 Skill。当前自由查询使用 SDK `full_access`；下述 SAP Broker 约束不能被理解成操作系统沙盒。详见[安全说明](../SECURITY.md)。
 
 ```text
 UI / POST /api/runs
         -> CodexHarnessController
-        -> Codex App Server (--search)
+        -> Codex SDK / App Server (full_access)
              -> SAP Tool Broker MCP
              -> Tool Discovery & Admission MCP
              -> Native Web Search
+             -> SDK file, terminal and other connected tools
 ```
 
 ## Harness 能力
@@ -18,7 +19,7 @@ UI / POST /api/runs
 - Native Web Search 可研究公开产品文档、业务语义、Schema 漂移和候选工具。网络内容始终是不受信任数据，不能证明客户 SAP 业务事实。
 - SAP Broker 提供 Catalog、实时 `$metadata`、计划验证、GET-only 查询、证据读取/评估、受控 Skill 和最终报告验证。
 - 查询结果可被观察并修订；相同工具与请求摘要会幂等复用，不重复访问 SAP。
-- 默认限制为 12 turn、40 次平台工具调用和 600 秒。超限输出 `INCONCLUSIVE`，不会自动回退到旧 Planner。
+- 默认限制为 12 turn、40 次平台工具调用；自由查询最长1800秒，由初始执行、续期与最终报告阶段组成。超限不会自动回退到旧 Planner。
 
 ## 多轮纠错会话
 
@@ -28,11 +29,13 @@ UI / POST /api/runs
 
 用户期望只作为候选断言与SAP证据比较，状态为`confirmed`、`mismatch`或`not_verifiable`，不得覆盖SAP事实、确定性规则或完整性。用户确认满意只记录接受的迭代和结果Digest；`source_complete`和`business_complete`保持原值。
 
-## 能力隔离
+## 权限与工具边界
 
-App Server 子进程只直接加载仓库内的两个 MCP Server。启动参数按通用Allowlist禁用全部继承的MCP，再启用run-scoped SAP Broker与工具准入Gateway。子进程不直接获得Shell、文件修改、Computer Use、任意浏览器或宿主工作区写权限。
+自由查询和 Agent 对话编写显式请求 SDK `full_access`，以当前 Windows 服务账户权限运行，可能使用终端、读写文件及网络。工作副本不是 OS 沙盒；SDK 原生命令不受 SAP Broker 的只读校验约束。只应由可信本地操作员在最小权限账户下运行，不要将本地服务暴露给不可信用户。发布平台补丁和 Agent 仍由独立 Diff 确认及生命周期审批控制；这不等于能拦截 SDK 的所有系统调用。
 
-子进程环境会清除 SAP URL、Client、用户名、密码、证书路径和 `SAP_ADT_*`。SAP 查询只能提交注册的 `service_name`、显式 `odata_version`、实体和 GET-only 计划；原始连接信息留在 Embedded Provider 内。
+平台为自己的 SAP 调用装载 run-scoped Broker 和工具准入 Gateway，并尽量避免继承未授权 MCP 连接。某些原生工具或已连接插件的可用性取决于本机 SDK 和配置；不能将该工具目录视为 OS 级访问控制清单。
+
+平台启动 SDK 时不会主动传递 SAP URL、Client、用户名、密码、证书路径和 `SAP_ADT_*`。通过 SAP Broker 的查询只能提交注册的 `service_name`、显式 `odata_version`、实体和 GET-only 计划；原始连接信息由 Embedded Provider 管理。这并不能保证 SDK 命令无法读取 Windows 账户另有权限访问的本地资料。
 
 动态工具只有在来源、版本、SHA-256、输入输出 Schema 和只读行为可验证，且无需新凭据时才可临时启用。外部 OpenAPI 工具只允许公共 HTTPS 443 的 GET/HEAD、禁止重定向、内网/RFC1918、本机和未声明端点。候选不会写入 Codex 全局配置，完整的不受信任 OpenAPI 文档也不会持久化。纯计算使用 AST allowlist 的 `safe_compute(language="python", code, inputs)`。
 

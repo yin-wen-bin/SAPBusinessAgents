@@ -22,7 +22,7 @@
 
 ### 先找样本，再确认试运行
 
-勾选“自动查找验证数据”后，先输入公司代码、工厂等必要范围，再点击查找。平台使用已通过兼容检查的 `gpt-5.6-sol` 和受控只读能力，在草稿声明的数据源内有界选样（最多300秒、10次数据读取、每次最多100行）。候选值必须来自本次已校验的公开证据；用户已填写的范围不会被覆盖。未能证明完整输入组合、分支不明确或需要敏感参考号时，提示手工补充，不猜测数据。
+勾选“自动查找验证数据”后，先输入公司代码、工厂等必要范围，再点击查找。平台使用已通过兼容检查的模型和受控只读能力，在草稿声明的数据源内有界选样（最长600秒，其中前540秒用于发现与读取；最多10次数据读取、每次最多100行）。候选值必须来自本次已校验的公开证据；用户已填写的范围不会被覆盖。未能证明完整输入组合、分支不明确或需要敏感参考号时，提示手工补充，不猜测数据。
 
 候选参数先回填并显示来源，确认后才能试运行。选样不代表数据源查询完整，也不是正式验收；试运行重新执行草稿快照。修改定义或参数后，旧选样确认失效。查找和对话可取消，刷新后恢复持久化状态；服务器重启中断的非可重放任务不会自动扩大查询或再次执行。
 
@@ -122,7 +122,7 @@ Confirm the technical ID before sample discovery, trials, acceptance or first pu
 
 Each modification turn has a default 3600-second processing budget, separate from queue time and other query/Skill/acceptance limits. The UI records elapsed time, model, effort and safe failure details; missing historical limits are not invented. Shutdown cleanup is bounded to 10 seconds and retains the operation lock if termination cannot be confirmed. Retry prefills the failed message and requires another confirmation, using the current ID/revision and the bound model's latest verified effort. It never overwrites later edits or old failed turns. Only network resends reuse a request ID; a deliberate retry creates a new turn. No automatic retry loop is used.
 
-Optional sample discovery uses compatible `gpt-5.6-sol`, scoped to the draft's approved read-only sources and your supplied company/plant filters. It is bounded to 300 seconds, 10 data reads and 100 rows per read, and every proposed value needs verified public evidence. Confirm proposed inputs before trial execution. Ambiguous input branches, unproven relationships and sensitive references require manual entry. Discovery is not exhaustive evidence or formal acceptance. A successful trial cannot manufacture independent comparison results or unlock publication. Refresh restores saved task state; edits invalidate stale sample confirmations. No SDK upgrade or global model setting is changed.
+Optional sample discovery uses a compatible configured model, scoped to the draft's approved read-only sources and your supplied company/plant filters. It is bounded to 600 seconds (the first 540 seconds for discovery and reads), 10 data reads and 100 rows per read, and every proposed value needs verified public evidence. Confirm proposed inputs before trial execution. Ambiguous input branches, unproven relationships and sensitive references require manual entry. Discovery is not exhaustive evidence or formal acceptance. A successful trial cannot manufacture independent comparison results or unlock publication. Refresh restores saved task state; edits invalidate stale sample confirmations. No SDK upgrade or global model setting is changed.
 
 Draft deletion requires exact Agent ID confirmation and revision checks; published versions use the separate stricter permanent-deletion gate. Validation runs and their evidence survive draft deletion.
 

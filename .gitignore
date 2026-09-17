@@ -5,6 +5,7 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
+.venv*/
 *.egg-info/
 
 # Local runs and generated output

@@ -743,7 +743,13 @@ def test_new_sales_demand_uses_sap_cumulative_balance_without_adding_stock() -> 
     assert output["evidence_complete"] is True
 
 
-def test_new_sales_demand_context_and_unit_conflict() -> None:
+def test_new_sales_demand_context_and_unit_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FixedDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return cls(2026, 9, 1)
+
+    monkeypatch.setattr("sap_business_agents_platform.rules.date", FixedDate)
     context = resolve_new_sales_demand_context(
         {
             "run_input": {

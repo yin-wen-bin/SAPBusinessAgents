@@ -1,0 +1,4 @@
+data/catalog-seed/catalog.json text eol=lf
+data/catalog-seed/migration-report.json text eol=lf
+data/catalog-seed/sha256-manifest.json text eol=lf
+config/odata-services.json text eol=lf

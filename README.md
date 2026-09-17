@@ -6,11 +6,15 @@
 
 ### 产品用途与适用用户
 
-SAP Business Agents 帮助财务、采购、销售、生产及业务支持人员，查询 SAP 业务状态、核对证据并形成可追踪的处理建议。固定 Agent 按已审核规则执行；自然语言功能负责理解和编排，不绕过平台的数据与安全检查。
+`v0.1.0` 为 Windows 本地运行的预览版，采用 GitHub Release 源码安装；GitHub Pages 仅提供静态目录。[版本说明与已知限制](docs/releases/v0.1.0.md) · [MIT 许可证](LICENSE) · [第三方资料署名](data/catalog-seed/NOTICE.md)。
+
+SAP Business Agents 帮助财务、采购、销售、生产及业务支持人员，查询 SAP 业务状态、核对证据并形成可追踪的处理建议。固定 Agent 按已审核规则执行；自然语言功能负责理解和编排，平台管理的 SAP 调用仍接受只读与证据检查。SDK 原生命令的权限边界见下方安全说明。
 
 SAP 访问限于 OData GET 或已批准的语义只读 ADT 查询。查询、催收建议和清账核对都不代表已经完成付款、催收或 SAP 过账。邮件发送是独立外部动作，必须逐次确认。
 
 > 在线静态目录只能浏览能力说明，不能代表已连接你的 SAP。执行查询、管理 Agent 和保存运行记录需要启动下方的本地环境。
+
+> 安全边界：自由查询和 Agent 对话编写使用 Codex SDK `full_access`，以启动服务的 Windows 账户权限运行，可执行命令、读写该账户可访问的文件并访问网络；工作副本不是操作系统沙盒。只在可信的本地账户和受控环境使用，不要把未知文档或网页内容视为可信指令。平台的 SAP Broker 仍限制其注册的 SAP 查询为只读，但不能从操作系统层面阻止 SDK 命令访问其他资源。详见[安全说明](SECURITY.md)。
 
 ### 按任务选择入口
 
@@ -27,14 +31,16 @@ SAP 访问限于 OData GET 或已批准的语义只读 ADT 查询。查询、催
 
 ### 首次安装与启动
 
-Windows 本地运行；Python 最低 **3.11**，推荐与 CI 一致的 **3.13**；Node.js **22.13.0 或以上**（CI 使用 Node 22）。先安装 Git、Python、Node.js，并准备有只读权限的 SAP 连接。
+Windows 本地运行；Python 最低 **3.11**，推荐与 CI 一致的 **3.13**；Node.js **22.13.0 或以上**（CI 使用 Node 22）。先安装 Git、Python、Node.js，并准备有只读权限的 SAP 连接。以下从 Release 标签取得源码并保留 Git 仓库；Agent 发布功能需要干净的本地 `main`，仅解压 GitHub 自动生成的源码 ZIP 不具备这一条件。
 
 在 PowerShell 中：
 
 ```powershell
-git clone https://github.com/yin-wen-bin/SAPBusinessAgents.git
+git clone --branch v0.1.0 https://github.com/yin-wen-bin/SAPBusinessAgents.git
 cd SAPBusinessAgents
+git switch -c main
 python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 cd site
 npm ci
@@ -114,11 +120,15 @@ FI 清账不自动证明银行到账；MRP模拟不等于正式ATP；处理建�
 
 ### Purpose and audience
 
-SAP Business Agents helps finance, procurement, sales, production and support teams inspect SAP status, reconcile evidence and produce traceable follow-up advice. Fixed Agents run reviewed deterministic rules; natural-language features interpret and compose requests without bypassing platform checks.
+`v0.1.0` is a Windows-local preview installed from GitHub Release source. GitHub Pages is only a static catalog. See the [release notes and known limitations](docs/releases/v0.1.0.md), [MIT license](LICENSE) and [third-party attribution](data/catalog-seed/NOTICE.md).
+
+SAP Business Agents helps finance, procurement, sales, production and support teams inspect SAP status, reconcile evidence and produce traceable follow-up advice. Fixed Agents run reviewed deterministic rules; natural-language features interpret and compose requests, while platform-managed SAP calls remain subject to read-only and evidence checks. The SDK's native command permissions are described in the security note below.
 
 SAP access is limited to OData GET or approved semantically read-only ADT queries. Query results, collection advice and reconciliation do not execute payments, dunning or SAP postings. Email sending is a separate external action requiring confirmation each time.
 
 > The hosted static catalog describes capabilities; it is not a connection to your SAP system. Query execution, Agent management and persisted runs require the local environment below.
+
+> Security boundary: free queries and conversational Agent authoring use the Codex SDK in `full_access` under the Windows account that starts the service. It can run commands, read or write files accessible to that account, and use the network; a work copy is not an OS sandbox. Use a trusted local account and environment, and treat external content as untrusted data. The platform SAP Broker limits its registered SAP queries to read-only operations, but cannot prevent SDK commands from accessing other resources at the OS level. See [Security](SECURITY.md).
 
 ### Choose by task
 
@@ -135,14 +145,16 @@ Selected tasks: [AR collection](agents/FI/ar-collection/README.md), [bank reconc
 
 ### First installation and startup
 
-Use Windows locally. Python **3.11** is the minimum; **3.13** is recommended to match CI. Node.js must be **22.13.0 or newer** (CI uses Node 22). Install Git, Python and Node.js, and obtain a read-only SAP connection.
+Use Windows locally. Python **3.11** is the minimum; **3.13** is recommended to match CI. Node.js must be **22.13.0 or newer** (CI uses Node 22). Install Git, Python and Node.js, and obtain a read-only SAP connection. The commands below obtain the Release tag while retaining a Git repository. Agent publication requires a clean local `main`; extracting GitHub's automatic source ZIP alone does not provide one.
 
 In PowerShell:
 
 ```powershell
-git clone https://github.com/yin-wen-bin/SAPBusinessAgents.git
+git clone --branch v0.1.0 https://github.com/yin-wen-bin/SAPBusinessAgents.git
 cd SAPBusinessAgents
+git switch -c main
 python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 cd site
 npm ci
