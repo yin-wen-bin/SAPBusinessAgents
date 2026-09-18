@@ -6,13 +6,13 @@
 
 ### 产品用途与适用用户
 
-`v0.1.0` 为 Windows 本地运行的预览版，采用 GitHub Release 源码安装；GitHub Pages 仅提供静态目录。[版本说明与已知限制](docs/releases/v0.1.0.md) · [MIT 许可证](LICENSE) · [第三方资料署名](data/catalog-seed/NOTICE.md)。
+`v0.1.0` 为 Windows 本地运行的预览版，采用 GitHub Release 源码安装。[在线中文目录](https://yin-wen-bin.github.io/SAPBusinessAgents/zh/)只能浏览能力说明；执行查询仍需安装并启动下方的本地服务。[版本说明与已知限制](docs/releases/v0.1.0.md) · [MIT 许可证](LICENSE) · [第三方资料署名](data/catalog-seed/NOTICE.md)。
 
 SAP Business Agents 帮助财务、采购、销售、生产及业务支持人员，查询 SAP 业务状态、核对证据并形成可追踪的处理建议。固定 Agent 按已审核规则执行；自然语言功能负责理解和编排，平台管理的 SAP 调用仍接受只读与证据检查。SDK 原生命令的权限边界见下方安全说明。
 
 SAP 访问限于 OData GET 或已批准的语义只读 ADT 查询。查询、催收建议和清账核对都不代表已经完成付款、催收或 SAP 过账。邮件发送是独立外部动作，必须逐次确认。
 
-> 在线静态目录只能浏览能力说明，不能代表已连接你的 SAP。执行查询、管理 Agent 和保存运行记录需要启动下方的本地环境。
+> 在线目录没有连接你的 SAP，也不保存你的运行记录；查询和 Agent 管理在本地服务中进行。
 
 > 安全边界：自由查询和 Agent 对话编写使用 Codex SDK `full_access`，以启动服务的 Windows 账户权限运行，可执行命令、读写该账户可访问的文件并访问网络；工作副本不是操作系统沙盒。只在可信的本地账户和受控环境使用，不要把未知文档或网页内容视为可信指令。平台的 SAP Broker 仍限制其注册的 SAP 查询为只读，但不能从操作系统层面阻止 SDK 命令访问其他资源。详见[安全说明](SECURITY.md)。
 
@@ -48,13 +48,104 @@ cd ..
 Copy-Item .env.example .env
 ```
 
-只在首次安装且不存在 `.env` 时执行最后一步。编辑本地 `.env`：填写 SAP 连接；需要已批准 Skill 时配置自己的 `SAPSKILLHUB_ROOT`。不要提交凭据，也不要把密码写入问题文本。
+只在首次安装且不存在 `.env` 时执行最后一步。编辑本地 `.env`，填写只读 OData 连接的 `SAP_BASE_URL`、`SAP_USERNAME`、`SAP_PASSWORD` 和 `SAP_CLIENT`。不要提交凭据，也不要把密码写入问题文本。
+
+#### 安装平台批准的 SAPSkillhub Skill
+
+只运行内置 OData 功能时可以跳过本段。若希望本机识别当前全部已批准 Skill，在 **SAPBusinessAgents 仓库根目录**继续执行；SAPSkillhub 会放在仓库外的同级目录，不要将其复制进本站仓库：
+
+```powershell
+git clone --no-checkout https://github.com/yin-wen-bin/SAPSkillhub.git ..\SAPSkillhub
+git -C ..\SAPSkillhub config core.autocrlf true
+git -C ..\SAPSkillhub checkout --detach 6d6963749796bce7369a3b08420328c6addef01d
+(Resolve-Path ..\SAPSkillhub).Path
+```
+
+此固定提交的两个 FI Skill 使用混合换行，Windows 全新检出会让批准摘要不匹配。在**刚克隆、无本地修改**的 SAPSkillhub 副本上执行以下纯格式准备；命令先核对提交与工作区，最后检查 Git 语义内容没有变化。不要在已有修改的副本上执行：
+
+```powershell
+$skillhubRoot = (Resolve-Path ..\SAPSkillhub).Path
+if ((git -C $skillhubRoot rev-parse HEAD) -ne '6d6963749796bce7369a3b08420328c6addef01d') { throw 'Wrong SAPSkillhub commit' }
+if (@(git -C $skillhubRoot status --porcelain --untracked-files=no).Count) { throw 'SAPSkillhub has local changes' }
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$lfFiles = @(git -C $skillhubRoot ls-files -- 'skills/FI/sap-bank-receipt-evidence') + @(
+  'skills/FI/sap-ar-dunning-history-evidence/README.en.md',
+  'skills/FI/sap-ar-dunning-history-evidence/README.zh-CN.md',
+  'skills/FI/sap-ar-dunning-history-evidence/references/public-output.schema.json',
+  'skills/FI/sap-ar-dunning-history-evidence/references/restricted-row.schema.json'
+)
+foreach ($relative in $lfFiles) {
+  $path = Join-Path $skillhubRoot $relative
+  $value = [IO.File]::ReadAllText($path, $utf8).Replace("`r`n", "`n")
+  [IO.File]::WriteAllText($path, $value, $utf8)
+}
+$manifestPath = Join-Path $skillhubRoot 'skills/FI/sap-ar-dunning-history-evidence/manifest.json'
+$manifest = [IO.File]::ReadAllText($manifestPath, $utf8).Replace("`r`n", "`n").Replace("`n", "`r`n")
+foreach ($field in @('output_schema', 'public_output_schema', 'restricted_row_schema')) {
+  $pattern = '(?m)^([^\r\n]*"' + $field + '"[^\r\n]*)\r\n'
+  if ([regex]::Matches($manifest, $pattern).Count -ne 1) { throw "Missing manifest field: $field" }
+  $manifest = [regex]::Replace($manifest, $pattern, ('$1' + "`n"))
+}
+[IO.File]::WriteAllText($manifestPath, $manifest, $utf8)
+git -c core.safecrlf=false -C $skillhubRoot diff --quiet -- skills/FI/sap-ar-dunning-history-evidence skills/FI/sap-bank-receipt-evidence
+if ($LASTEXITCODE) { throw 'Unexpected Skillhub content change' }
+git -c core.safecrlf=false -C $skillhubRoot add -u -- skills/FI/sap-ar-dunning-history-evidence skills/FI/sap-bank-receipt-evidence
+if ($LASTEXITCODE) { throw 'Could not refresh Skillhub index' }
+if (@(git -C $skillhubRoot status --porcelain --untracked-files=no).Count) { throw 'Skillhub checkout is not clean' }
+```
+
+这一步只还原批准快照所需的换行字节，不访问 SAP、不放宽批准规则。将上面输出的**绝对路径**填入 SAPBusinessAgents 的 `.env`，例如 `SAPSKILLHUB_ROOT=C:/work/SAPSkillhub`；使用自己的实际路径，不保留示例值或空值。Skill 由 SAPBusinessAgents 的 Python 虚拟环境启动；平台已依赖 `requests==2.34.2`，无需另装 SAPSkillhub 网站的 Node 依赖，也无需逐个安装到 Codex App。
+
+平台当前批准以下 5 个 Skill；配置细节以固定提交中的 Skill 文档为准：
+
+| Skill | 用途与配置说明 |
+|---|---|
+| [`sap-adt-table-export`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/Common/sap-adt-table-export/README.zh-CN.md) | 在明确证据缺口下读取有界 ADT 表/CDS 证据；需 Skill 自有连接配置和仓库外的默认 Profile。 |
+| [`sap-ar-dunning-history-evidence`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/FI/sap-ar-dunning-history-evidence/README.zh-CN.md) | 读取已执行的历史催收事件；需目标系统认可的固定来源 Profile。 |
+| [`sap-bank-receipt-evidence`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/FI/sap-bank-receipt-evidence/README.zh-CN.md) | 读取银行来款、冲销及处理证据；还需 Skill 自有的账号 HMAC 密钥。 |
+| [`sap-production-order-cost-analysis`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/CO/sap-production-order-cost-analysis/README.zh-CN.md) | 读取生产订单成本证据；需目标系统的只读成本来源。 |
+| [`sap-wbs-object-resolver`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/CO/sap-wbs-object-resolver/README.zh-CN.md) | 将 WBS 外部编号解析为控制对象；需目标系统认可的固定来源 Profile。 |
+
+OData 连接和 SAPSkillhub 的 ADT 连接是**两套独立配置**。从仓库根目录复制 [ADT Skill 的 `.env.example`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/Common/sap-adt-table-export/.env.example)和[示例 Profile](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/Common/sap-adt-table-export/references/profiles.example.json)；以下命令不会覆盖已有本地配置：
+
+```powershell
+$skillhubRoot = (Resolve-Path ..\SAPSkillhub).Path
+$adtSkillDir = Join-Path $skillhubRoot 'skills\Common\sap-adt-table-export'
+$profileDir = Join-Path $env:LOCALAPPDATA 'SAPBusinessAgents\sap-adt'
+New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+$profileFile = Join-Path $profileDir 'profiles.json'
+if (-not (Test-Path (Join-Path $adtSkillDir '.env'))) { Copy-Item (Join-Path $adtSkillDir '.env.example') (Join-Path $adtSkillDir '.env') }
+if (-not (Test-Path $profileFile)) { Copy-Item (Join-Path $adtSkillDir 'references\profiles.example.json') $profileFile }
+$profileFile
+```
+
+编辑 Skill 目录中被 Git 忽略的 `.env`，填写专用的只读 `SAP_ADT_*` 连接值，保持 `SAP_ADT_VERIFY_SSL=true`，并将 `SAP_ADT_PROFILES_FILE` 改为上面输出的**绝对路径**。编辑仓库外的 `profiles.json`，核对 `default_profile`、系统 ID、来源和权限；示例中的系统、账号和 `supported` 标志并不证明你的 SAP 已通过验证。使用银行来款 Skill 时，还须在其目录被 Git 忽略的 `.env` 中设置 `SAP_BANK_RECEIPT_HMAC_KEY_ID=bank-receipt-hmac-v1` 和由至少 32 个随机字节生成的 Base64 `SAP_BANK_RECEIPT_HMAC_KEY_B64`（不要复用示例或公开密钥）。密钥、Profile 和连接凭据都不得进入 Git。其他固定来源 Skill 也须按照上表各自文档核对目标系统；不要把维护者系统的来源结论直接套用到新系统。
+
+在仓库根目录运行以下**不访问 SAP**的依赖检查；Python 必须是刚安装 SAPBusinessAgents 的虚拟环境：
+
+```powershell
+$skillCheckPython = (Resolve-Path .\.venv\Scripts\python.exe).Path
+Push-Location ..\SAPSkillhub\skills\Common\sap-adt-table-export
+try { & $skillCheckPython .\scripts\check_environment.py } finally { Pop-Location }
+```
+
+`sap-control-object-commitment-evidence`虽在平台清单中，但当前 `validated=false`，不会进入批准目录；安装文件不能使它获得执行资格。Skill 包可用也不等于目标 SAP 权限、Profile、对象和业务证据已验证；缺少依赖 Skill 时，引用它的固定 Agent 会拒绝运行。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-SAPBusinessAgents.ps1
 ```
 
 打开 [本地中文主页](http://127.0.0.1:4321/zh/)；本地 API 默认监听 `127.0.0.1:8765`。自然语言功能还需在“系统配置 → Agent Runtime与SDK”确认登录、刷新模型目录、检查兼容性、选择默认模型、启用并选择默认 Runtime。可选模型以当前 SDK 和账号返回的完整目录为准，不使用固定型号清单。
+
+启动后核对已批准 Skill（只读取本地 API，不访问 SAP）；缺任何一个 ID 都应先检查 `SAPSKILLHUB_ROOT`、固定提交、Schema 和 Skill 依赖，不要仅凭目录存在或 API 健康就开始依赖它的 Agent：
+
+```powershell
+$expectedSkillIds = @('sap-adt-table-export', 'sap-ar-dunning-history-evidence', 'sap-bank-receipt-evidence', 'sap-production-order-cost-analysis', 'sap-wbs-object-resolver')
+$approvedSkills = Invoke-RestMethod http://127.0.0.1:8765/api/tools/skills
+$missingSkillIds = @($expectedSkillIds | Where-Object { $_ -notin $approvedSkills.skill_id })
+if ($missingSkillIds.Count) { throw "Missing approved Skills: $($missingSkillIds -join ', ')" }
+$approvedSkills | Select-Object skill_id
+```
 
 安装细节、端口和常见故障见 [首次使用指南](docs/getting-started.md)，模型与 SDK 更新见 [Runtime 设置](docs/runtime-settings.md)。
 
@@ -120,13 +211,13 @@ FI 清账不自动证明银行到账；MRP模拟不等于正式ATP；处理建�
 
 ### Purpose and audience
 
-`v0.1.0` is a Windows-local preview installed from GitHub Release source. GitHub Pages is only a static catalog. See the [release notes and known limitations](docs/releases/v0.1.0.md), [MIT license](LICENSE) and [third-party attribution](data/catalog-seed/NOTICE.md).
+`v0.1.0` is a Windows-local preview installed from GitHub Release source. The [online English catalog](https://yin-wen-bin.github.io/SAPBusinessAgents/en/) is for browsing only; queries require installing and starting the local service below. See the [release notes and known limitations](docs/releases/v0.1.0.md), [MIT license](LICENSE) and [third-party attribution](data/catalog-seed/NOTICE.md).
 
 SAP Business Agents helps finance, procurement, sales, production and support teams inspect SAP status, reconcile evidence and produce traceable follow-up advice. Fixed Agents run reviewed deterministic rules; natural-language features interpret and compose requests, while platform-managed SAP calls remain subject to read-only and evidence checks. The SDK's native command permissions are described in the security note below.
 
 SAP access is limited to OData GET or approved semantically read-only ADT queries. Query results, collection advice and reconciliation do not execute payments, dunning or SAP postings. Email sending is a separate external action requiring confirmation each time.
 
-> The hosted static catalog describes capabilities; it is not a connection to your SAP system. Query execution, Agent management and persisted runs require the local environment below.
+> The online catalog is not connected to your SAP system and does not store your runs; queries and Agent management use the local service.
 
 > Security boundary: free queries and conversational Agent authoring use the Codex SDK in `full_access` under the Windows account that starts the service. It can run commands, read or write files accessible to that account, and use the network; a work copy is not an OS sandbox. Use a trusted local account and environment, and treat external content as untrusted data. The platform SAP Broker limits its registered SAP queries to read-only operations, but cannot prevent SDK commands from accessing other resources at the OS level. See [Security](SECURITY.md).
 
@@ -162,13 +253,104 @@ cd ..
 Copy-Item .env.example .env
 ```
 
-Run the final command only on first installation when `.env` does not exist. Edit the local `.env` with your SAP connection and, where approved Skills are needed, your own `SAPSKILLHUB_ROOT`. Never commit credentials or put passwords in questions.
+Run the final command only on first installation when `.env` does not exist. Edit the local `.env` with the read-only OData connection values `SAP_BASE_URL`, `SAP_USERNAME`, `SAP_PASSWORD` and `SAP_CLIENT`. Never commit credentials or put passwords in questions.
+
+#### Install platform-approved SAPSkillhub Skills
+
+Skip this section if you only use built-in OData capabilities. To make all currently approved Skills discoverable, continue **from the SAPBusinessAgents repository root**. Keep SAPSkillhub in a sibling directory, outside this repository:
+
+```powershell
+git clone --no-checkout https://github.com/yin-wen-bin/SAPSkillhub.git ..\SAPSkillhub
+git -C ..\SAPSkillhub config core.autocrlf true
+git -C ..\SAPSkillhub checkout --detach 6d6963749796bce7369a3b08420328c6addef01d
+(Resolve-Path ..\SAPSkillhub).Path
+```
+
+Two FI Skills in this pinned commit have mixed line endings; a fresh Windows checkout otherwise fails their approved digests. Run the following format-only preparation on the **new, clean** SAPSkillhub checkout. It checks the commit and Git state first, and verifies that Git content remains unchanged. Do not run it over your own edits:
+
+```powershell
+$skillhubRoot = (Resolve-Path ..\SAPSkillhub).Path
+if ((git -C $skillhubRoot rev-parse HEAD) -ne '6d6963749796bce7369a3b08420328c6addef01d') { throw 'Wrong SAPSkillhub commit' }
+if (@(git -C $skillhubRoot status --porcelain --untracked-files=no).Count) { throw 'SAPSkillhub has local changes' }
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$lfFiles = @(git -C $skillhubRoot ls-files -- 'skills/FI/sap-bank-receipt-evidence') + @(
+  'skills/FI/sap-ar-dunning-history-evidence/README.en.md',
+  'skills/FI/sap-ar-dunning-history-evidence/README.zh-CN.md',
+  'skills/FI/sap-ar-dunning-history-evidence/references/public-output.schema.json',
+  'skills/FI/sap-ar-dunning-history-evidence/references/restricted-row.schema.json'
+)
+foreach ($relative in $lfFiles) {
+  $path = Join-Path $skillhubRoot $relative
+  $value = [IO.File]::ReadAllText($path, $utf8).Replace("`r`n", "`n")
+  [IO.File]::WriteAllText($path, $value, $utf8)
+}
+$manifestPath = Join-Path $skillhubRoot 'skills/FI/sap-ar-dunning-history-evidence/manifest.json'
+$manifest = [IO.File]::ReadAllText($manifestPath, $utf8).Replace("`r`n", "`n").Replace("`n", "`r`n")
+foreach ($field in @('output_schema', 'public_output_schema', 'restricted_row_schema')) {
+  $pattern = '(?m)^([^\r\n]*"' + $field + '"[^\r\n]*)\r\n'
+  if ([regex]::Matches($manifest, $pattern).Count -ne 1) { throw "Missing manifest field: $field" }
+  $manifest = [regex]::Replace($manifest, $pattern, ('$1' + "`n"))
+}
+[IO.File]::WriteAllText($manifestPath, $manifest, $utf8)
+git -c core.safecrlf=false -C $skillhubRoot diff --quiet -- skills/FI/sap-ar-dunning-history-evidence skills/FI/sap-bank-receipt-evidence
+if ($LASTEXITCODE) { throw 'Unexpected Skillhub content change' }
+git -c core.safecrlf=false -C $skillhubRoot add -u -- skills/FI/sap-ar-dunning-history-evidence skills/FI/sap-bank-receipt-evidence
+if ($LASTEXITCODE) { throw 'Could not refresh Skillhub index' }
+if (@(git -C $skillhubRoot status --porcelain --untracked-files=no).Count) { throw 'Skillhub checkout is not clean' }
+```
+
+This only restores the approved snapshot's line-ending bytes; it does not access SAP or relax approval. Set `SAPSKILLHUB_ROOT` in the SAPBusinessAgents `.env` to the **absolute path** printed above, for example `SAPSKILLHUB_ROOT=C:/work/SAPSkillhub`; replace the example with your own path rather than leaving it blank. SAPBusinessAgents starts Skills with its own Python virtual environment and already depends on `requests==2.34.2`. Do not install SAPSkillhub's website Node dependencies or install each Skill separately into Codex App.
+
+The platform currently approves these five Skills; use the linked documentation from the pinned commit for target-specific configuration:
+
+| Skill | Purpose and configuration |
+|---|---|
+| [`sap-adt-table-export`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/Common/sap-adt-table-export/README.en.md) | Bounded ADT table/CDS evidence for a confirmed gap; requires Skill-owned connection settings and an external default profile. |
+| [`sap-ar-dunning-history-evidence`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/FI/sap-ar-dunning-history-evidence/README.en.md) | Executed historical dunning events; requires a source profile validated for the target SAP system. |
+| [`sap-bank-receipt-evidence`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/FI/sap-bank-receipt-evidence/README.en.md) | Bank receipt, reversal and processing evidence; also requires a Skill-owned account HMAC key. |
+| [`sap-production-order-cost-analysis`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/CO/sap-production-order-cost-analysis/README.en.md) | Production-order cost evidence; requires read-only cost sources on the target SAP system. |
+| [`sap-wbs-object-resolver`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/CO/sap-wbs-object-resolver/README.en.md) | Resolves an external WBS ID to a controlling object; requires a validated source profile. |
+
+The SAPBusinessAgents OData connection and SAPSkillhub ADT connection are **separate**. From the repository root, copy the [ADT Skill `.env.example`](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/Common/sap-adt-table-export/.env.example) and [profile example](https://github.com/yin-wen-bin/SAPSkillhub/blob/6d6963749796bce7369a3b08420328c6addef01d/skills/Common/sap-adt-table-export/references/profiles.example.json). These commands do not overwrite existing local settings:
+
+```powershell
+$skillhubRoot = (Resolve-Path ..\SAPSkillhub).Path
+$adtSkillDir = Join-Path $skillhubRoot 'skills\Common\sap-adt-table-export'
+$profileDir = Join-Path $env:LOCALAPPDATA 'SAPBusinessAgents\sap-adt'
+New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+$profileFile = Join-Path $profileDir 'profiles.json'
+if (-not (Test-Path (Join-Path $adtSkillDir '.env'))) { Copy-Item (Join-Path $adtSkillDir '.env.example') (Join-Path $adtSkillDir '.env') }
+if (-not (Test-Path $profileFile)) { Copy-Item (Join-Path $adtSkillDir 'references\profiles.example.json') $profileFile }
+$profileFile
+```
+
+Edit the ignored `.env` in the Skill directory with its own read-only `SAP_ADT_*` connection values, keep `SAP_ADT_VERIFY_SSL=true`, and set `SAP_ADT_PROFILES_FILE` to the **absolute path** printed above. Edit `profiles.json` outside both repositories to verify its `default_profile`, system ID, sources and permissions. The example system, account and `supported` value are not evidence that your SAP system has been validated. For bank receipts, also set `SAP_BANK_RECEIPT_HMAC_KEY_ID=bank-receipt-hmac-v1` and `SAP_BANK_RECEIPT_HMAC_KEY_B64` (Base64 of at least 32 random bytes; do not reuse an example or public key) in that Skill's own ignored `.env`. Never commit keys, profiles or connection credentials. Check each other fixed-source Skill against its linked documentation rather than assuming the maintainer's source validation transfers to another SAP system.
+
+From the repository root, run this dependency check **without accessing SAP**, using the SAPBusinessAgents virtual environment:
+
+```powershell
+$skillCheckPython = (Resolve-Path .\.venv\Scripts\python.exe).Path
+Push-Location ..\SAPSkillhub\skills\Common\sap-adt-table-export
+try { & $skillCheckPython .\scripts\check_environment.py } finally { Pop-Location }
+```
+
+`sap-control-object-commitment-evidence` is listed but remains `validated=false` and is excluded from the approved catalog; installing its files cannot make it executable. A discoverable package does not prove the target SAP permissions, profiles, objects or business evidence. A fixed Agent referencing a missing Skill is rejected before execution.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-SAPBusinessAgents.ps1
 ```
 
 Open the [local English home](http://127.0.0.1:4321/en/); the API listens on `127.0.0.1:8765` by default. For natural-language features, use System settings → Agent Runtime and SDK to confirm login, refresh the model catalog, check compatibility, choose a model, enable the Runtime and select the default Runtime. Model choices come from the installed SDK and account, not a fixed list.
+
+After startup, verify the approved Skills through the local API; this check **does not query SAP**. If any ID is missing, inspect `SAPSKILLHUB_ROOT`, the pinned checkout, schemas and dependencies before using an Agent that needs it. A directory or healthy API alone is insufficient:
+
+```powershell
+$expectedSkillIds = @('sap-adt-table-export', 'sap-ar-dunning-history-evidence', 'sap-bank-receipt-evidence', 'sap-production-order-cost-analysis', 'sap-wbs-object-resolver')
+$approvedSkills = Invoke-RestMethod http://127.0.0.1:8765/api/tools/skills
+$missingSkillIds = @($expectedSkillIds | Where-Object { $_ -notin $approvedSkills.skill_id })
+if ($missingSkillIds.Count) { throw "Missing approved Skills: $($missingSkillIds -join ', ')" }
+$approvedSkills | Select-Object skill_id
+```
 
 See [Getting started](docs/getting-started.md) for installation, ports and troubleshooting, and [Runtime settings](docs/runtime-settings.md) for models and SDK updates.
 
