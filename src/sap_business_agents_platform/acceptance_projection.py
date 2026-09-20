@@ -22,29 +22,45 @@ class AcceptanceProjectionSpec(BaseModel):
     decimal_fields: list[str] = Field(default_factory=list, max_length=100)
     decimal_metrics: list[str] = Field(default_factory=list, max_length=100)
     boolean_fields: list[str] = Field(default_factory=list, max_length=100)
+    integer_fields: list[str] = Field(default_factory=list, max_length=100)
+    enum_values: dict[str, list[str]] = Field(default_factory=dict)
+    nullable_fields: list[str] | None = None
     semantic_profile: Literal["none", "checklist_readiness"] = "none"
     required_limitation_codes: list[str] = Field(default_factory=list, max_length=100)
+    required_assessments: list[Literal["inventory_fifo"]] | None = Field(
+        default=None, max_length=20
+    )
 
     @model_validator(mode="after")
     def check_fields(self) -> "AcceptanceProjectionSpec":
         for names in (self.record_fields, self.metric_fields, self.decimal_fields,
-                      self.decimal_metrics, self.boolean_fields):
+                       self.decimal_metrics, self.boolean_fields, self.integer_fields):
             if len(names) != len(set(names)) or any(
                 not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,99}", name)
                 or name == "evidence_refs" for name in names
             ):
                 raise ValueError("acceptance fields must be unique canonical identifiers")
-        if not set(self.decimal_fields + self.boolean_fields) <= set(self.record_fields):
+        if not set(self.decimal_fields + self.boolean_fields + self.integer_fields) <= set(self.record_fields):
             raise ValueError("typed acceptance fields must be declared record fields")
         if not set(self.decimal_metrics) <= set(self.metric_fields):
             raise ValueError("decimal metrics must be declared metrics")
         if set(self.decimal_fields) & set(self.boolean_fields):
             raise ValueError("acceptance field types conflict")
+        if set(self.integer_fields) & set(self.boolean_fields + self.decimal_fields):
+            raise ValueError("acceptance field types conflict")
+        if not set(self.enum_values) <= set(self.record_fields) or any(not values or len(values) > 100 or any(not v or len(v) > 100 for v in values) for values in self.enum_values.values()):
+            raise ValueError("acceptance enums must be bounded declared record fields")
+        if self.nullable_fields is not None and not set(self.nullable_fields) <= set(self.record_fields):
+            raise ValueError("nullable fields must be declared record fields")
         if len(self.required_limitation_codes) != len(set(self.required_limitation_codes)) or any(
             not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,99}", name)
             for name in self.required_limitation_codes
         ):
             raise ValueError("required limitation codes must be unique canonical identifiers")
+        if self.required_assessments is not None and len(self.required_assessments) != len(
+            set(self.required_assessments)
+        ):
+            raise ValueError("required assessments must be unique supported identifiers")
         if self.semantic_profile == "checklist_readiness" and not {
             "checks_total",
             "checks_passed",
@@ -64,9 +80,12 @@ def _object(properties: dict[str, Any]) -> dict[str, Any]:
 def projection_schema(spec: AcceptanceProjectionSpec) -> dict[str, Any]:
     refs = {"type": "array", "items": {"type": "string"}, "minItems": 1}
     fields = {
-        name: {"type": ["boolean" if name in spec.boolean_fields else "string", "null"]}
+        name: {"type": (["boolean" if name in spec.boolean_fields else "integer" if name in spec.integer_fields else "string"]
+                        + (["null"] if spec.nullable_fields is None or name in spec.nullable_fields else []))}
         for name in spec.record_fields
     }
+    for name, values in spec.enum_values.items():
+        fields[name]["enum"] = list(values) + ([None] if "null" in fields[name]["type"] else [])
     fields["evidence_refs"] = refs
     return _object({
         "records": {"type": "array", "items": _object(fields), "maxItems": 200},
@@ -97,8 +116,56 @@ def output_schema(base: dict[str, Any], raw_spec: Any) -> dict[str, Any]:
 
 def validate_projection(raw_spec: Any, value: Any, known: dict[str, Any]) -> list[dict[str, str]]:
     spec = AcceptanceProjectionSpec.model_validate(raw_spec)
-    if not Draft202012Validator(projection_schema(spec)).is_valid(value):
-        return [{"code": "acceptance_projection_schema_invalid"}]
+    schema = projection_schema(spec)
+    schema_errors = sorted(
+        Draft202012Validator(schema).iter_errors(value),
+        key=lambda item: (list(item.absolute_path), str(item.validator)),
+    )
+    if schema_errors:
+        issues: list[dict[str, str]] = []
+        for error in schema_errors[:50]:
+            path = "/" + "/".join(str(item) for item in error.absolute_path)
+            path = path or "/"
+            if error.validator == "required" and isinstance(error.instance, dict):
+                missing = [
+                    str(item)
+                    for item in error.validator_value or []
+                    if item not in error.instance
+                ]
+                for name in missing:
+                    issues.append({
+                        "code": "acceptance_projection_field_missing",
+                        "path": path.rstrip("/") + "/" + name,
+                        "constraint": "required",
+                        "message": "A required acceptance field is missing.",
+                    })
+                continue
+            if error.validator == "additionalProperties" and isinstance(error.instance, dict):
+                allowed = set((error.schema.get("properties") or {}).keys())
+                for name in sorted(set(error.instance) - allowed):
+                    issues.append({
+                        "code": "acceptance_projection_field_unexpected",
+                        "path": path.rstrip("/") + "/" + str(name),
+                        "constraint": "additionalProperties",
+                        "message": "An undeclared acceptance field was returned.",
+                    })
+                continue
+            code = {
+                "type": "acceptance_projection_type_invalid",
+                "enum": "acceptance_projection_enum_invalid",
+            }.get(str(error.validator), "acceptance_projection_schema_invalid")
+            issues.append({
+                "code": code,
+                "path": path,
+                "constraint": str(error.validator),
+                "message": "The acceptance field does not satisfy its declared constraint.",
+            })
+        return issues or [{
+            "code": "acceptance_projection_schema_invalid",
+            "path": "/",
+            "constraint": "schema",
+            "message": "The acceptance projection does not match its schema.",
+        }]
     references = list(value["evidence_refs"])
     for row in value["records"]:
         references.extend(row["evidence_refs"])

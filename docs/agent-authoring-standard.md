@@ -4,6 +4,55 @@
 
 ## 字段边界 / Field boundaries
 
+### 业务输出与正式验收 / Business output and formal acceptance
+
+新建及改变执行行为的候选必须同时维护业务输出和 `execution.acceptance`，标记
+`contractVersion: "1.0"`（不改变 `schemaVersion`）。明确 `recordScope`、
+`recordDefinition`（一条记录代表什么）、`scopeDefinition`（纳入、排除及证据条件）、
+每个业务键和事实的 `factDefinitions`、指标的 `metricDefinitions`（去重、零值与未知），
+以及 `businessStatusDefinition`。这些说明使用清晰的业务语言；有歧义时先澄清。
+同时必须显式维护 `requiredAssessments`：空数组表示不要求额外专用评估；当前唯一支持值
+为 `inventory_fifo`。排除FIFO、ATP、单位换算等范围仍写入 `scopeDefinition`，不得依靠
+关键词让最终报告临时增加验收要求。
+
+New and behavior-changing candidates author output and `execution.acceptance` together,
+using `contractVersion: "1.0"` independently of `schemaVersion`. Define record grain,
+scope, inclusion/exclusion, evidence requirements, each key/fact, metric counting and
+deduplication, zero versus unknown, and business-status criteria. Clarify ambiguous intent.
+Also declare `requiredAssessments` explicitly: an empty array means no specialized assessment;
+the only currently supported value is `inventory_fifo`. Keep excluded FIFO, ATP, allocation or
+unit-conversion scope in `scopeDefinition`; final-report validation never infers requirements
+by scanning prose.
+
+规范记录必须有输出Schema、稳定业务键、类型和业务状态枚举；完整性与业务状态分别输出。
+页面报告由规范记录和指标生成。执行状态、工具调用次数、`successful_source_count`只作
+诊断，不能代替业务比较。输入字段不是自动生成业务键的依据。正式验收前，平台用当前
+修订的试运行结果离线检查；缺资料仍允许保存、试运行，但不能开始正式验收或发布。
+
+Canonical records have typed schemas, stable keys and business-state enums. Expose independent
+completeness and business status. Derive the report from canonical records and metrics.
+Execution status and source/tool counts are diagnostics, not comparison facts. Input fields
+do not automatically become business keys. Offline preflight checks this revision's actual
+trial before formal acceptance; incomplete drafts remain editable and runnable as trials.
+
+计数校验只支持明确声明的 `metricInvariants`：`{"operation":"count_records"}` 或
+`{"operation":"sum","field":"item_count"}`。不会将自然语言说明当作可执行证明。
+例如候选数等于规范记录数，未知值不得补成零；完整零结果必须同时具备完整证据。
+
+Only declared `metricInvariants` are executed: `{"operation":"count_records"}` or
+`{"operation":"sum","field":"item_count"}`. Narrative definitions do not prove correctness.
+Unknown is not zero; a complete zero result requires complete evidence. Independent Runtime
+runs receive requirements, never the candidate implementation or expected answers. Contract
+violations are NOT_TESTED, missing evidence is BLOCKED, and verified business differences are FAIL.
+
+已发布包和历史验收不迁移；真正不改变执行的旧版本文案升级保留原验收复用。
+Published packages and historical reports remain unchanged; documentation-only legacy upgrades
+retain acceptance reuse when their execution and rules are identical.
+
+CLI使用新版候选快照时需同时提供`--draft-id`，从现有API核对当前候选摘要和已保存试运行的准备状态；不能用来源版本或旧修订的结果代替。受限投影支持字符串、布尔、整数及字符串分类枚举；精确小数继续用声明过的Decimal字符串，不允许任意Schema或计算代码。计数关系只对整数执行。
+
+For v1 candidate snapshots the CLI requires `--draft-id`, checks the current candidate digest and saved trial readiness through the existing API, and never substitutes a source version's trial. The bounded projection supports strings, booleans, integers and string classification enums. Exact decimals remain explicitly declared Decimal strings, not arbitrary schemas or code; count invariants operate on integers.
+
 | 字段 / Field | 含义 / Meaning |
 |---|---|
 | `catalog_module` | 当前目录分组和导航；它不是SAP能力声明。 / Current catalog grouping and navigation; it is not an SAP capability declaration. |

@@ -2135,7 +2135,7 @@ class RunStore:
             if report.get("type") == "trial":
                 connection.execute("BEGIN IMMEDIATE")
                 row = connection.execute(
-                    """SELECT metadata_json FROM agent_authoring_drafts
+                    """SELECT metadata_json, agent_id FROM agent_authoring_drafts
                     WHERE draft_id = ? AND revision = ? AND validation_run_id = ?
                     AND status = 'validating'""", (draft_id, revision, run_id),
                 ).fetchone()
@@ -2147,6 +2147,40 @@ class RunStore:
                     return False
                 metadata = _load(row["metadata_json"], {})
                 metadata["trial"] = report
+                binding_complete = bool(
+                    report.get("run_id") == run_id
+                    and report.get("agent_id") == row["agent_id"]
+                    and int(report.get("revision") or 0) == int(revision)
+                    and report.get("execution_digest")
+                    and report.get("acceptance_contract_digest")
+                )
+                successful = bool(
+                    binding_complete
+                    and report.get("status") in {"completed", "inconclusive"}
+                    and report.get("verdict") in {"PASS", "INCONCLUSIVE"}
+                    and report.get("business_output_available") is True
+                    and report.get("output_schema_valid") is True
+                    and report.get("read_only_audit") is True
+                )
+                errors = report.get("errors") or []
+                error_codes = {
+                    str(item.get("code") or "")
+                    for item in (errors if isinstance(errors, list) else [errors])
+                    if isinstance(item, dict)
+                }
+                noninvalidating = bool(
+                    report.get("status") == "cancelled"
+                    or any(
+                        "timeout" in code or "interrupted" in code or code == "run_cancelled"
+                        for code in error_codes
+                    )
+                )
+                if successful:
+                    metadata["effective_trial"] = report
+                elif not noninvalidating:
+                    # A completed invalid output or an unknown terminal failure
+                    # blocks acceptance; never fall back to an older PASS.
+                    metadata.pop("effective_trial", None)
                 connection.execute(
                     """UPDATE agent_authoring_drafts SET status = ?, metadata_json = ?, updated_at = ?
                     WHERE draft_id = ? AND revision = ? AND validation_run_id = ?""",

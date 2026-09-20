@@ -90,6 +90,7 @@ def test_unapplied_dependency_disables_publishability_even_with_acceptance():
     from sap_business_agents_platform.agent_lifecycle import AgentLifecycleService
     service = SimpleNamespace(
         _formal_acceptance=lambda *_: {'verdict': 'PASS'},
+        _acceptance_readiness=lambda *_: {'status': 'needs_input', 'issues': []},
         _platform_changes_pending=lambda _: True,
         technical_identity=lambda _: {'kind': 'new_agent', 'confirmed': True},
         store=SimpleNamespace(get_agent_operation=lambda _: None),
@@ -100,4 +101,4 @@ def test_unapplied_dependency_disables_publishability_even_with_acceptance():
     }}
     result = AgentLifecycleService._validation_summary(service, {'draft_id': 'draft-example', 'status': 'draft'}, package)
     assert result['publishability'] == {'can_publish': False,
-        'blockers': ['runtime_changeset_integration_verification_required']}
+        'blockers': ['agent_acceptance_contract_not_ready', 'runtime_changeset_integration_verification_required']}

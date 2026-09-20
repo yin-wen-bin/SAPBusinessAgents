@@ -11,6 +11,7 @@ from typing import Any
 
 from .acceptance import CanonicalTestCase, agent_execution_digest, canonical_hash, validate_direct_baseline
 from .acceptance_projection import AcceptanceProjectionSpec
+from .acceptance_contract import BusinessContractError, readiness, normalized_issues
 from .agent_lifecycle import AgentLifecycleError
 from .managed_rules import source_digest
 from .models import RunCreate, RunMode, RunStatus, TERMINAL_STATUSES, utc_now
@@ -27,9 +28,20 @@ TERMINAL_CAMPAIGN_STATUSES = {
 
 
 class AcceptanceCampaignOperationalError(RuntimeError):
-    def __init__(self, code: str, message: str = "Formal acceptance did not complete.") -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str = "Formal acceptance did not complete.",
+        *,
+        failure_category: str = "environment",
+        failure_stage: str | None = None,
+        issues: list[dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.failure_category = failure_category
+        self.failure_stage = failure_stage
+        self.issues = list(issues or [])
 
 
 class AgentAcceptanceJobs:
@@ -118,17 +130,35 @@ class AgentAcceptanceJobs:
                 "This documentation-only revision already reuses the source version PASS acceptance.",
                 code="agent_acceptance_reused",
             )
-        trial = copy.deepcopy((draft.get("metadata") or {}).get("trial") or {})
+        trial = copy.deepcopy((draft.get("metadata") or {}).get("effective_trial") or {})
         trial_revision = trial.get(
             "catalog_metadata_revision",
             trial.get("revision", trial.get("draft_revision")),
         )
         if int(trial_revision or 0) != revision:
             raise AgentLifecycleError("A trial for the current revision is required.", code="agent_trial_required")
+        if (
+            trial.get("agent_id") != draft.get("agent_id")
+            or trial.get("execution_digest") != agent_execution_digest(manifest, package.get("rules"))
+            or trial.get("acceptance_contract_digest")
+            != canonical_hash((manifest.get("execution") or {}).get("acceptance") or {})
+        ):
+            raise AgentLifecycleError("A trial bound to the current contract is required.", code="agent_trial_required")
         if trial.get("verdict") not in {"PASS", "INCONCLUSIVE"}:
             raise AgentLifecycleError("A completed read-only trial is required.", code="agent_trial_required")
         if trial.get("business_output_available") is not True or trial.get("output_schema_valid") is not True or trial.get("read_only_audit") is not True:
             raise AgentLifecycleError("The latest trial has no valid business output.", code="agent_trial_business_output_missing")
+        try:
+            trial_run = self.store.get_run(str(trial.get("run_id") or "")) if trial.get("run_id") else None
+        except KeyError:
+            trial_run = None
+        trial_result = trial_run.result.model_dump(mode="json") if trial_run and trial_run.result else None
+        preflight = readiness(manifest, revision, result=trial_result)
+        if preflight["status"] != "ready":
+            raise AgentLifecycleError(
+                "Complete the business contract and check the current trial output before formal acceptance.",
+                code="agent_acceptance_contract_not_ready", detail=preflight,
+            )
         if self.lifecycle._platform_changes_pending(draft_id):
             raise AgentLifecycleError(
                 "Apply and independently verify the required platform changes first.",
@@ -233,8 +263,21 @@ class AgentAcceptanceJobs:
                 raise AcceptanceCampaignOperationalError("agent_acceptance_revision_conflict")
         except asyncio.CancelledError:
             await self._finish_not_tested(draft_id, campaign_id, operation_id, "cancelled", "agent_acceptance_cancelled")
+        except BusinessContractError as exc:
+            await self._finish_not_tested(draft_id, campaign_id, operation_id, "failed", exc.code,
+                                         failure_category="contract", failure_stage=exc.stage, issues=exc.issues)
         except AcceptanceCampaignOperationalError as exc:
-            await self._finish_not_tested(draft_id, campaign_id, operation_id, "interrupted", exc.code)
+            status = "failed" if exc.failure_category == "contract" else "interrupted"
+            await self._finish_not_tested(
+                draft_id,
+                campaign_id,
+                operation_id,
+                status,
+                exc.code,
+                failure_category=exc.failure_category,
+                failure_stage=exc.failure_stage,
+                issues=exc.issues,
+            )
         except Exception as exc:
             code = str(getattr(exc, "code", "") or "agent_acceptance_internal_error")
             if not code.replace("_", "").isalnum():
@@ -282,6 +325,10 @@ class AgentAcceptanceJobs:
                       acceptanceSpec=AcceptanceProjectionSpec.model_validate(projection_spec),
                       sensitiveInputs=case_value["sensitive_inputs"]),
             runtime=runtime, direct_baseline=True, hard_limit_seconds=BASELINE_SECONDS,
+            acceptance_contract_digest=canonical_hash(
+                (manifest.get("execution") or {}).get("acceptance") or {}
+            ),
+            acceptance_revision=revision,
         )
         self.active_runs[campaign_id] = baseline_id
         self.store.update_agent_acceptance_case(
@@ -297,8 +344,18 @@ class AgentAcceptanceJobs:
                 campaign_id, case_id, baseline_id,
                 code="test_data_gap",
             )
-        baseline_projection = _required_projection(baseline_run, "independent_baseline")
-        baseline_normalized = _normalize_acceptance_projection(baseline_projection, case, contract)
+        baseline_projection = _required_projection(baseline_run, "baseline", contract=contract)
+        try:
+            baseline_normalized = _normalize_acceptance_projection(baseline_projection, case, contract)
+        except BusinessContractError as exc:
+            exc.stage = "baseline"
+            raise
+        if contract.get("contract_version"):
+            issues = normalized_issues(baseline_normalized, contract)
+            if issues:
+                raise BusinessContractError(issues, "independent_baseline")
+            if not all(baseline_normalized.get(name) is True for name in ("source_complete", "evidence_complete", "business_complete")) or baseline_normalized.get("evidence_gap_codes"):
+                return self._complete_blocked_case(campaign_id, case_id, baseline_id, code="independent_baseline_evidence_incomplete")
         baseline_payload = _baseline_payload(baseline_run, baseline_normalized, runtime)
         validate_direct_baseline(baseline_payload, case)
         anchor_before = await self._capture_source_anchor(
@@ -325,6 +382,10 @@ class AgentAcceptanceJobs:
                           acceptanceSpec=AcceptanceProjectionSpec.model_validate(projection_spec),
                           sensitiveInputs=case_value["sensitive_inputs"]),
                 runtime=runtime, direct_baseline=False, hard_limit_seconds=FREE_QUERY_SECONDS,
+                acceptance_contract_digest=canonical_hash(
+                    (manifest.get("execution") or {}).get("acceptance") or {}
+                ),
+                acceptance_revision=revision,
             )
             self.active_runs[campaign_id] = free_id
             self.store.update_agent_acceptance_case(campaign_id, case_id, free_query_run_id=free_id)
@@ -341,11 +402,17 @@ class AgentAcceptanceJobs:
                     differences=({"code": "free_query_waiting_input"},),
                 )
             else:
-                free_normalized = _normalize_run(free_run, case, contract)
+                try:
+                    free_normalized = _normalize_run(free_run, case, contract)
+                except BusinessContractError as exc:
+                    exc.stage = "free_query"
+                    raise
                 free_comparison = _compare(baseline_normalized, free_normalized, contract)
-                projection = _required_projection(free_run, "free_query")
+                projection = _required_projection(free_run, "free_query", contract=contract)
                 visible = _validate_projection_matches_visible_report(free_run, projection, case, contract)
                 if visible.verdict != "MATCH":
+                    if contract.get("contract_version"):
+                        raise BusinessContractError([{"code": "contract_report_records_mismatch", "path": "/acceptance_projection", "message": "Visible report and canonical projection disagree."}], "free_query")
                     free_comparison = _with_difference(
                         free_comparison, {"code": "acceptance_projection_report_mismatch",
                                           "differences": list(visible.differences)}
@@ -405,14 +472,21 @@ class AgentAcceptanceJobs:
             and baseline_normalized.get("evidence_complete", True)
             and baseline_normalized.get("business_complete", True)
         )
+        if contract.get("contract_version"):
+            complete = complete and all(
+                item.get("source_complete") is True and item.get("evidence_complete") is True
+                and item.get("business_complete") is True
+                for item in ([fixed_normalized] + ([free_normalized] if free_run and free_run.get("status") != "waiting_input" else []))
+            )
         verdict = (
-            "BLOCKED" if not anchors_stable
+            "BLOCKED" if not anchors_stable or (contract.get("contract_version") and (not complete or blocking))
             else "FAIL" if "MISMATCH" in comparisons
             else "BLOCKED" if "BLOCKED" in comparisons or blocking or not complete
             else "PASS"
         )
         result = {
             "case_id": case_id, "verdict": verdict,
+            "failure_category": "business" if verdict == "FAIL" else "evidence" if verdict == "BLOCKED" else None,
             "baseline": {"schema_version": baseline_payload["schema_version"],
                          "run_id": baseline_id, "runtime": baseline_payload["runtime"],
                          "runtime_snapshot": baseline_payload["runtime_snapshot"],
@@ -529,7 +603,8 @@ class AgentAcceptanceJobs:
         }
         result = {
             "case_id": case_id, "verdict": "BLOCKED",
-            "baseline": {"run_id": baseline_run_id, "status": "waiting_input"},
+            "failure_category": "evidence", "failure_stage": "baseline",
+            "baseline": {"run_id": baseline_run_id, "status": "waiting_input" if code == "test_data_gap" else "inconclusive"},
             "free_query": {"run_id": None, "status": "not_run", "comparison": blocked_comparison},
             "fixed_agent": {"run_id": None, "status": "not_run", "comparison": blocked_comparison},
             "source_anchors": {"verdict": "UNAVAILABLE", "reason_code": code},
@@ -557,7 +632,15 @@ class AgentAcceptanceJobs:
                 value = record.model_dump(mode="json")
                 if record.status in {RunStatus.failed, RunStatus.cancelled}:
                     code = str((record.error or {}).get("code") or "agent_acceptance_stage_failed")
-                    raise AcceptanceCampaignOperationalError(code)
+                    detail = (record.error or {}).get("detail") or {}
+                    issues = detail.get("validation_issues") if isinstance(detail, dict) else []
+                    category = "contract" if code == "acceptance_report_validation_failed" else "environment"
+                    raise AcceptanceCampaignOperationalError(
+                        code,
+                        failure_category=category,
+                        failure_stage=self.get(draft_id, campaign_id).get("phase"),
+                        issues=list(issues or []),
+                    )
                 return value
             if return_waiting_input and record.status == RunStatus.waiting_input:
                 return record.model_dump(mode="json")
@@ -569,8 +652,15 @@ class AgentAcceptanceJobs:
             else:
                 active_deadline = active_deadline or (now + timeout)
                 if now >= active_deadline:
+                    failure = self.store.get_harness_state(run_id).get(
+                        "acceptance_validation_failure"
+                    ) or {}
                     await self.coordinator.cancel(run_id)
-                    raise AcceptanceCampaignOperationalError("agent_acceptance_stage_timeout")
+                    raise AcceptanceCampaignOperationalError(
+                        "agent_acceptance_stage_timeout",
+                        failure_stage=self.get(draft_id, campaign_id).get("phase"),
+                        issues=list(failure.get("validation_issues") or []),
+                    )
             await asyncio.sleep(0.5)
 
     def _aggregate(
@@ -615,11 +705,14 @@ class AgentAcceptanceJobs:
             "fixedAgentComparison": fixed, "freeQueryComparison": free,
             "blockingLimitations": blockers, "runtime": copy.deepcopy(runtime),
             "case_count": len(results), "cases": results,
+            "failure_category": "business" if verdict == "FAIL" else "evidence" if verdict == "BLOCKED" else None,
             "read_only_audit": True,
         }
 
     async def _finish_not_tested(
         self, draft_id: str, campaign_id: str, operation_id: str, status: str, code: str,
+        *, failure_category: str = "environment", failure_stage: str | None = None,
+        issues: list[dict[str, Any]] | None = None,
     ) -> None:
         active_run = self.active_runs.pop(campaign_id, None)
         if active_run:
@@ -630,10 +723,12 @@ class AgentAcceptanceJobs:
         current = self.get(draft_id, campaign_id)
         completed_at = utc_now()
         for item in current.get("cases") or []:
-            if item.get("status") not in {"pass", "fail", "blocked", "cancelled", "interrupted"}:
+            if item.get("status") not in {"pass", "fail", "failed", "blocked", "cancelled", "interrupted"}:
                 self.store.update_agent_acceptance_case(
                     campaign_id, item["case_id"], status=status, phase="completed",
-                    result={"case_id": item["case_id"], "verdict": "NOT_TESTED", "error": {"code": code}},
+                    result={"case_id": item["case_id"], "verdict": "NOT_TESTED", "error": {"code": code},
+                            "failure_category": failure_category, "failure_stage": failure_stage or item.get("phase"),
+                            "validation_issues": issues or []},
                     completed_at=completed_at,
                 )
         report = {
@@ -643,6 +738,8 @@ class AgentAcceptanceJobs:
             "acceptanceMode": current.get("acceptance_mode"),
             "campaign_id": campaign_id, "verdict": "NOT_TESTED", "executable": False,
             "error": {"code": code}, "completed_at": completed_at,
+            "failure_category": failure_category, "failure_stage": failure_stage or current.get("phase"),
+            "validation_issues": issues or [],
         }
         self._write_artifacts(Path(current["artifact_dir"]), report)
         self.store.update_agent_acceptance_campaign(
@@ -815,71 +912,8 @@ def _validate_case_input(value: dict[str, Any], schema: dict[str, Any]) -> None:
 
 
 def _contract(manifest: dict[str, Any]) -> dict[str, Any]:
-    value = (manifest.get("execution") or {}).get("acceptance") or {}
-    output_schema = (manifest.get("execution") or {}).get("outputSchema") or {}
-    output_properties = output_schema.get("properties") if isinstance(output_schema, dict) else {}
-    output_properties = output_properties if isinstance(output_properties, dict) else {}
-    record_schema = output_properties.get("records") or {}
-    record_items = record_schema.get("items") if isinstance(record_schema, dict) else {}
-    record_properties = record_items.get("properties") if isinstance(record_items, dict) else {}
-    record_properties = record_properties if isinstance(record_properties, dict) else {}
-
-    boolean_fields = list(value.get("booleanFields") or [])
-    for field in value.get("facts") or []:
-        schema = record_properties.get(str(field)) or output_properties.get(str(field)) or {}
-        field_type = schema.get("type") if isinstance(schema, dict) else None
-        declared_types = field_type if isinstance(field_type, list) else [field_type]
-        if "boolean" in declared_types and str(field) not in boolean_fields:
-            boolean_fields.append(str(field))
-
-    status_schema = output_properties.get("business_status") or {}
-    status_values = (
-        list(status_schema.get("enum") or [])
-        if isinstance(status_schema, dict)
-        else []
-    )
-    return {
-        "schema_version": value.get("schemaVersion", "1.0"),
-        "business_keys": list(value.get("businessKeys") or []),
-        "facts": list(value.get("facts") or []),
-        "metrics": list(value.get("metrics") or []),
-        "required_limitations": list(value.get("requiredLimitations") or []),
-        "decimal_fields": list(value.get("decimalFields") or []),
-        "currency_fields": list(value.get("currencyFields") or []),
-        "unit_fields": list(value.get("unitFields") or []),
-        "decimal_metrics": list(value.get("decimalMetricIds") or []),
-        "field_aliases": copy.deepcopy(value.get("fieldAliases") or {}),
-        "field_extractors": copy.deepcopy(value.get("fieldExtractors") or {}),
-        "input_defaults": copy.deepcopy(value.get("inputDefaults") or {}),
-        "constant_defaults": copy.deepcopy(value.get("constantDefaults") or {}),
-        "fact_definitions": copy.deepcopy(value.get("factDefinitions") or {}),
-        "date_fields": list(value.get("dateFields") or []),
-        "code_set_fields": list(value.get("codeSetFields") or []),
-        "zero_pad_fields": copy.deepcopy(value.get("zeroPadFields") or {}),
-        "boolean_fields": boolean_fields,
-        "currency_from_decimal": copy.deepcopy(value.get("currencyFromDecimal") or {}),
-        "value_mappings": copy.deepcopy(value.get("valueMappings") or {}),
-        "limitation_keywords": copy.deepcopy(value.get("limitationKeywords") or {}),
-        "summary_record": value.get("summaryRecord") is True,
-        "business_status_from_metric": copy.deepcopy(value.get("businessStatusFromMetric") or {}),
-        "limitations_from_metrics": copy.deepcopy(value.get("limitationsFromMetrics") or {}),
-        "blank_value_keywords": copy.deepcopy(value.get("blankValueKeywords") or {}),
-        "preserve_literal_values": list(value.get("preserveLiteralValues") or []),
-        "blocking_limitations": list(value.get("blockingLimitations") or []),
-        "ignored_notice_keywords": list(value.get("ignoredNoticeKeywords") or []),
-        "metric_value_mappings": copy.deepcopy(value.get("metricValueMappings") or {}),
-        "zero_fact_when_metric_zero": copy.deepcopy(value.get("zeroFactWhenMetricZero") or {}),
-        "record_scope": value.get("recordScope") or "",
-        "metric_definitions": copy.deepcopy(value.get("metricDefinitions") or {}),
-        "business_status_definition": value.get("businessStatusDefinition") or "",
-        "business_status_from_any_positive_metric": copy.deepcopy(value.get("businessStatusFromAnyPositiveMetric") or {}),
-        "blank_business_key_fields": list(value.get("blankBusinessKeyFields") or []),
-        "composite_blank_fields": list(value.get("compositeBlankFields") or []),
-        "nonblocking_observation_codes": list(value.get("nonBlockingObservationCodes") or []),
-        "test_data_qualification_definition": value.get("testDataQualificationDefinition") or "",
-        "composite_key_parts": copy.deepcopy(value.get("compositeKeyParts") or {}),
-        "business_status_values": [str(item) for item in status_values if str(item)],
-    }
+    from .acceptance_contract import compile_contract
+    return compile_contract(manifest)
 
 
 def _canonical_case(
@@ -908,9 +942,11 @@ def _canonical_case(
     })
 
 
-def _required_projection(run: dict[str, Any], stage: str) -> dict[str, Any]:
+def _required_projection(run: dict[str, Any], stage: str, *, contract: dict[str, Any] | None = None) -> dict[str, Any]:
     projection = ((run.get("result") or {}).get("acceptance_projection"))
     if not isinstance(projection, dict):
+        if contract and contract.get("contract_version"):
+            raise BusinessContractError([{"code": "contract_records_missing", "path": "/acceptance_projection", "message": "No comparable evidence-bound projection was produced."}], stage)
         raise AcceptanceCampaignOperationalError(f"{stage}_acceptance_projection_missing")
     return projection
 

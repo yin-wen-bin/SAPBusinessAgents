@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sap_business_agents_platform.app import create_app
+from sap_business_agents_platform.acceptance_projection import AcceptanceProjectionSpec
 from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.database import RunStore
 from sap_business_agents_platform.engine import _count_free_query_top_bounds
@@ -21,6 +22,7 @@ from sap_business_agents_platform.harness import (
     CodexHarnessController,
     HarnessToolBroker,
     _best_effort_interrupt,
+    classify_required_assessments,
     _evidence_sources_complete,
     _effective_missing_evidence,
     _extract_rows,
@@ -48,6 +50,24 @@ from sap_business_agents_platform.models import (
     RunPresentation,
 )
 from sap_business_agents_platform.sap_read.embedded_odata import EmbeddedODataProvider
+
+
+@pytest.mark.parametrize(
+    "query,intent,required",
+    [
+        ("请按FIFO分析库存账龄", "required", ["inventory_fifo"]),
+        ("检查慢动和呆滞库存", "required", ["inventory_fifo"]),
+        ("Analyze FIFO inventory aging", "required", ["inventory_fifo"]),
+        ("不执行FIFO，只筛查候选销售订单", "not_required", []),
+        ("No stock allocation, FIFO, date cutoff, or ATP calculation.", "not_required", []),
+        ('引用说明“需要FIFO分析”，本轮只查询采购订单', "none", []),
+        ("需要FIFO账龄，但不要执行FIFO", "ambiguous", []),
+    ],
+)
+def test_required_assessment_intent_uses_user_sentence_scope(query, intent, required):
+    result = classify_required_assessments(query)
+    assert result["intent"] == intent
+    assert result["required_assessments"] == required
 
 
 def test_harness_does_not_guess_adt_stable_keys_and_knows_vbuv_sparse_semantics() -> None:
@@ -798,6 +818,124 @@ def test_final_report_validation_is_outside_budget_and_updates_phases(tmp_path: 
         assert recovered is not None
         assert recovered.title.en == "Diagnostic"
         assert recovered.validation_ref == validated["validation_ref"]
+
+    asyncio.run(scenario())
+
+
+def test_acceptance_uses_explicit_assessments_and_stops_repeated_unchanged_failure(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        store = RunStore(settings.database_path)
+        run_id = "run_explicit_assessment"
+        store.create_run(
+            run_id,
+            RunCreate(mode=RunMode.free_query, query="No stock allocation, FIFO, or ATP calculation."),
+        )
+        spec = AcceptanceProjectionSpec(
+            record_fields=["supplier"], required_assessments=[]
+        )
+        store.update_harness_state(run_id, {
+            "acceptance_spec": spec.model_dump(mode="json"),
+            "required_assessments": [],
+            "required_assessments_declared": True,
+        })
+        broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+        token = broker.open_session(run_id)
+        plan = {
+            "service_name": "API_GLACCOUNTLINEITEM",
+            "odata_version": "2.0",
+            "entity_set": "GLAccountLineItem",
+            "http_method": "GET",
+            "select_fields": ["Supplier"],
+        }
+        await broker.handle(run_id, token, "sap_query_validate", {"plan": plan})
+        executed = await broker.handle(run_id, token, "sap_query_execute", {"plan": plan})
+        ref = executed["evidence_ref"]
+        presentation = RunPresentation(
+            title=LocalizedText(zh="供应商", en="Supplier"),
+            blocks=[
+                PresentationBlock(
+                    type="table",
+                    claim_scope="customer_business_fact",
+                    columns=[{
+                        "key": "supplier",
+                        "label": {"zh": "供应商", "en": "Supplier"},
+                    }],
+                    rows=[{
+                        "values": [{"zh": "17300001", "en": "17300001"}],
+                        "evidence_refs": [ref],
+                    }],
+                    source_complete=True,
+                ),
+                PresentationBlock(
+                    type="metrics",
+                    claim_scope="customer_business_fact",
+                    metrics=[
+                        {
+                            "id": name,
+                            "label": {"zh": name, "en": name},
+                            "value": {"zh": value, "en": value},
+                            "evidence_refs": [ref],
+                        }
+                        for name, value in (
+                            ("business_status", "normal"),
+                            ("source_complete", "true"),
+                            ("evidence_complete", "true"),
+                            ("business_complete", "true"),
+                        )
+                    ],
+                ),
+            ],
+        ).model_dump(mode="json")
+        projection = {
+            "records": [{"supplier": "17300001", "evidence_refs": [ref]}],
+            "metrics": {},
+            "business_status": "normal",
+            "source_complete": True,
+            "evidence_complete": True,
+            "business_complete": True,
+            "evidence_gap_codes": [],
+            "evidence_refs": [ref],
+        }
+        valid = await broker.handle(
+            run_id, token, "sap_final_report_validate",
+            {"report": presentation, "acceptance_projection": projection},
+        )
+        assert valid["ok"] is True
+        assert "inventory_fifo_assessment_required" not in {
+            item["code"] for item in valid.get("validation_issues") or []
+        }
+
+        fifo_run = "run_required_assessment"
+        store.create_run(fifo_run, RunCreate(mode=RunMode.free_query, query="Unrelated prompt"))
+        fifo_spec = AcceptanceProjectionSpec(
+            record_fields=["supplier"], required_assessments=["inventory_fifo"]
+        )
+        store.update_harness_state(fifo_run, {
+            "acceptance_spec": fifo_spec.model_dump(mode="json"),
+            "required_assessments": ["inventory_fifo"],
+            "required_assessments_declared": True,
+        })
+        fifo_broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+        fifo_token = fifo_broker.open_session(fifo_run)
+        first = await fifo_broker.handle(
+            fifo_run, fifo_token, "sap_final_report_validate",
+            {"report": presentation, "acceptance_projection": projection},
+        )
+        second = await fifo_broker.handle(
+            fifo_run, fifo_token, "sap_final_report_validate",
+            {"report": presentation, "acceptance_projection": projection},
+        )
+        assert first["code"] == "acceptance_report_validation_failed"
+        assert "inventory_fifo_assessment_required" in {
+            item["code"] for item in first["validation_issues"]
+        }
+        assert second["terminal_validation_failure"] is True
+        failed_events = [
+            item for item in store.events_after(fifo_run, 0)
+            if item.type == "tool_failed"
+        ]
+        assert failed_events[-1].data["validation_issues"]
 
     asyncio.run(scenario())
 

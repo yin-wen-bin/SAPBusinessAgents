@@ -375,6 +375,9 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         self._assert_manageable(package["manifest"])
         apply_advisory_relationship_policy(package["manifest"])
         package["manifest"]["slug"] = self._assert_identity_available(package["manifest"]["slug"])
+        acceptance = package["manifest"]["execution"].setdefault("acceptance", {})
+        acceptance["contractVersion"] = "1.0"
+        acceptance.setdefault("requiredAssessments", [])
         draft_id = f"agent_draft_{uuid.uuid4().hex[:16]}"
         path = self._draft_path(draft_id)
         path.mkdir(parents=True, exist_ok=False)
@@ -462,6 +465,9 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                 package["manifest"]["slug"] = self._assert_identity_available(package["manifest"]["slug"])
                 package["manifest"]["validation"] = _not_tested_validation()
                 apply_advisory_relationship_policy(package["manifest"])
+                acceptance = package["manifest"]["execution"].setdefault("acceptance", {})
+                acceptance["contractVersion"] = "1.0"
+                acceptance.setdefault("requiredAssessments", [])
                 try:
                     source_run = self.store.get_run(source.run_id)
                     source_result = source_run.result
@@ -915,6 +921,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         }
         presentation = inspect_agent_presentation(manifest)
         report["presentation_contract"] = presentation
+        report["acceptance_readiness"] = self._acceptance_readiness(draft, package)
         checks.append({
             "code": "agent_presentation_contract",
             "status": "pass" if presentation.get("status") == "ready" else "needs_input",
@@ -998,7 +1005,26 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             package = self.store.get_agent_authoring_revision(draft_id, revision)["package"]
             run_id = await self.coordinator.submit_agent_snapshot(package["manifest"], copy.deepcopy(input_value), rules_source=package.get("rules"), draft_id=draft_id, revision=revision, sensitive_inputs=sensitive_inputs or {})
             self._assert_operation(draft_id, operation_id, revision)
-            report = {"type": "trial", "run_id": run_id, "revision": revision, "operation_id": operation_id, "execution_digest": _execution_digest(package["manifest"], package.get("rules")), "status": "running", "verdict": "pending", "automatic_checks": (draft.get("metadata", {}).get("static_checks") or {}).get("checks") or [], "sample_source": "user_confirmed", "timeout_seconds": self.settings.deterministic_run_seconds, "business_output_available": None, "business_record_count": None, "business_output_issues": [], "started_at": utc_now()}
+            report = {
+                "type": "trial",
+                "run_id": run_id,
+                "agent_id": draft["agent_id"],
+                "revision": revision,
+                "operation_id": operation_id,
+                "execution_digest": _execution_digest(package["manifest"], package.get("rules")),
+                "acceptance_contract_digest": _json_digest(
+                    (package["manifest"].get("execution") or {}).get("acceptance") or {}
+                ),
+                "status": "running",
+                "verdict": "pending",
+                "automatic_checks": (draft.get("metadata", {}).get("static_checks") or {}).get("checks") or [],
+                "sample_source": "user_confirmed",
+                "timeout_seconds": self.settings.deterministic_run_seconds,
+                "business_output_available": None,
+                "business_record_count": None,
+                "business_output_issues": [],
+                "started_at": utc_now(),
+            }
             self.store.save_agent_validation_attempt(draft_id=draft_id, run_id=run_id, revision=revision, report=report, report_digest=None)
             draft["metadata"] = {**(draft.get("metadata") or {}), "trial": report}
             draft.update(status="validating", validation_run_id=run_id, updated_at=utc_now())
@@ -1029,6 +1055,45 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             response["trial"]["type"] = "trial"
             return response
         result = run.result
+        run_status = str(run.status.value if hasattr(run.status, "value") else run.status)
+        run_errors = copy.deepcopy(run.error or (result.errors if result else []))
+        incomplete_attempt = result is None or run.status not in {RunStatus.completed, RunStatus.inconclusive}
+        if incomplete_attempt:
+            # Cancellation, interruption and timeouts are operational attempt
+            # outcomes.  They must not manufacture business-schema failures or
+            # replace a previously applicable completed trial.
+            report = {
+                **attempt["report"],
+                "type": "trial",
+                "status": run_status,
+                "verdict": "FAIL",
+                "completed_at": run.completed_at or utc_now(),
+                "read_only_audit": None,
+                "output_schema_valid": None,
+                "timeout_seconds": attempt["report"].get(
+                    "timeout_seconds", self.settings.deterministic_run_seconds
+                ),
+                "business_output_available": None,
+                "business_record_count": None,
+                "business_output_issues": [],
+                "source_complete": None,
+                "evidence_complete": None,
+                "business_complete": None,
+                "errors": run_errors,
+                "acceptance_readiness": {
+                    "status": "not_completed",
+                    "revision": int(draft["revision"]),
+                    "issues": [],
+                },
+            }
+            digest = _json_digest(report)
+            report["report_digest"] = digest
+            if not self.store.finish_agent_validation(draft_id, run_id, int(draft["revision"]), report, digest):
+                raise AgentLifecycleError("The draft changed while validation was synchronizing.", code="agent_validation_revision_conflict")
+            if report.get("operation_id"):
+                self._finish_operation(draft_id, report["operation_id"])
+            refreshed = self.store.get_agent_authoring_draft(draft_id)
+            return self._validation_response(refreshed)
         from .workflow_factory import _read_only_audit
 
         tool_read_only = bool(result) and _read_only_audit({"readOnly": True}, result.tool_calls or [])[0]
@@ -1088,7 +1153,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         report = {
             **attempt["report"],
             "type": "trial",
-            "status": str(run.status.value if hasattr(run.status, "value") else run.status),
+            "status": run_status,
             "verdict": verdict,
             "completed_at": run.completed_at or utc_now(),
             "read_only_audit": tool_read_only,
@@ -1100,8 +1165,13 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             "source_complete": bool(result and result.completeness.source_complete),
             "evidence_complete": bool(result and isinstance(result.workflow_output, dict) and result.workflow_output.get("evidence_complete", result.completeness.business_complete)),
             "business_complete": bool(result and result.completeness.business_complete),
-            "errors": copy.deepcopy(run.error or (result.errors if result else [])),
+            "errors": run_errors,
         }
+        from .acceptance_contract import readiness, result_payload
+        report["acceptance_readiness"] = readiness(
+            package["manifest"], int(draft["revision"]),
+            result=result_payload(result),
+        )
         digest = _json_digest(report)
         report["report_digest"] = digest
         if not self.store.finish_agent_validation(draft_id, run_id, int(draft["revision"]), report, digest):
@@ -1127,6 +1197,9 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             if self._risk_class(draft, package) != "metadata_only":
                 return None
             return copy.deepcopy(report)
+        from .acceptance_contract import contract_issues
+        if contract_issues(package["manifest"]):
+            return None
         # A locally executed run is not an independent comparison certificate.
         if report.get("run_id") == draft.get("validation_run_id") and report.get("run_id"):
             return None
@@ -1136,6 +1209,31 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         if validation.get("acceptanceMode") == "three_stage" and validation.get("freeQueryComparison") != "MATCH":
             return None
         return copy.deepcopy(report)
+
+    def _acceptance_readiness(self, draft: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+        from .acceptance_contract import readiness, result_payload
+        if self._risk_class(draft, package) == "metadata_only":
+            return {"status": "reused", "revision": draft["revision"], "issues": []}
+        trial = (draft.get("metadata") or {}).get("effective_trial") or {}
+        result = None
+        expected_execution = _execution_digest(package["manifest"], package.get("rules"))
+        expected_contract = _json_digest(
+            (package["manifest"].get("execution") or {}).get("acceptance") or {}
+        )
+        if (
+            trial.get("catalog_metadata_revision", trial.get("revision", trial.get("draft_revision"))) == draft["revision"]
+            and trial.get("run_id")
+            and trial.get("agent_id") == draft.get("agent_id")
+            and trial.get("execution_digest") == expected_execution
+            and trial.get("acceptance_contract_digest") == expected_contract
+        ):
+            try:
+                run = self.store.get_run(trial["run_id"])
+                if run.result:
+                    result = result_payload(run.result)
+            except KeyError:
+                pass
+        return readiness(package["manifest"], int(draft["revision"]), result=result)
 
     def _validation_summary(self, draft: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
         certificate = self._formal_acceptance(draft, package)
@@ -1158,6 +1256,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             # the publishability gate continues to require _formal_acceptance.
             acceptance = recorded
         trial = copy.deepcopy((draft.get("metadata") or {}).get("trial"))
+        effective_trial = copy.deepcopy((draft.get("metadata") or {}).get("effective_trial"))
         static = copy.deepcopy((draft.get("metadata") or {}).get("static_checks") or {})
         manifest = package.get("manifest")
         presentation = (
@@ -1178,7 +1277,11 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             }
         )
         static["presentation_contract"] = presentation
+        acceptance_readiness = self._acceptance_readiness(draft, package)
+        static["acceptance_readiness"] = acceptance_readiness
         blockers = [] if certificate else ["agent_formal_acceptance_required"]
+        if acceptance_readiness["status"] not in {"ready", "reused"}:
+            blockers.append("agent_acceptance_contract_not_ready")
         if presentation.get("status") != "ready":
             blockers.append("agent_presentation_contract_invalid")
         if self._platform_changes_pending(draft["draft_id"]):
@@ -1195,7 +1298,14 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         active = self.store.get_agent_operation(draft["draft_id"])
         if active and active.get("kind") not in {"publish", "static_validation"}:
             blockers.append("agent_draft_operation_active")
-        return {"static_checks": static, "trial": trial, "acceptance": acceptance or {"verdict": "NOT_TESTED", "requires_formal_acceptance": True}, "publishability": {"can_publish": not blockers, "blockers": blockers}}
+        return {
+            "static_checks": static,
+            "acceptance_readiness": acceptance_readiness,
+            "trial": trial,
+            "effective_trial": effective_trial,
+            "acceptance": acceptance or {"verdict": "NOT_TESTED", "requires_formal_acceptance": True},
+            "publishability": {"can_publish": not blockers, "blockers": blockers},
+        }
 
     def _platform_changes_pending(self, draft_id: str) -> bool:
         return any((turn.get("decision") or {}).get("harness", {}).get("platform_dependency_status") == "awaiting_verification"

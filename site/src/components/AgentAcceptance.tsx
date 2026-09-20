@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Locale } from "../lib/types";
 import { draftStatus } from "../lib/agentDraft";
 import AgentDraftInputs from "./AgentDraftInputs";
+import { ContractIssues } from "./AcceptanceReadiness";
 
 export type AcceptanceCaseDraft = {
   caseId: string;
@@ -166,6 +167,13 @@ const acceptanceIssueLabel = (codeValue: unknown, locale: Locale) => {
     source_anchor_timeout: ["SAP来源稳定性复核超时。", "SAP source stability verification timed out."],
     source_anchor_coverage_missing: ["当前证据无法完成SAP来源前后复核。", "The available evidence cannot support before-and-after SAP source verification."],
     source_anchor_plan_rejected: ["SAP来源复核查询未通过只读计划校验。", "The SAP source replay did not pass read-only plan validation."],
+    acceptance_report_validation_failed: ["验收报告未通过当前业务契约校验。", "The acceptance report did not pass the current business contract."],
+    acceptance_report_schema_invalid: ["验收报告结构与当前契约不一致。", "The acceptance report structure differs from the current contract."],
+    acceptance_projection_field_missing: ["验收结果缺少契约要求的字段。", "The acceptance result is missing a contract field."],
+    acceptance_projection_field_unexpected: ["验收结果包含契约未声明的字段。", "The acceptance result contains an undeclared field."],
+    acceptance_projection_type_invalid: ["验收结果字段类型不符合契约。", "An acceptance result field has the wrong type."],
+    acceptance_projection_enum_invalid: ["验收结果字段值不在契约允许范围内。", "An acceptance result field value is outside the contract enum."],
+    inventory_fifo_assessment_required: ["本次验收要求有效的库存FIFO评估，但尚未取得。", "This acceptance requires a valid inventory FIFO assessment, but none is available."],
   };
   const code = String(codeValue || "acceptance_issue");
   return labels[code]?.[locale === "zh" ? 0 : 1]
@@ -204,13 +212,15 @@ export function AgentAcceptanceProgress(props: ProgressProps) {
       <h2 id="acceptance-progress-title">{terminal ? tr("正式验收结果", "Formal acceptance result") : tr("正在进行正式验收", "Formal acceptance in progress")}</h2>
       {!terminal && <div className="agent-progress-spinner" aria-hidden="true" />}
       <p role="status">{terminal ? draftStatus(verdict, props.locale) : stageLabel(campaign.phase || "preparing", props.locale)}</p>
+      {terminal && campaign.report?.failure_category && <p>{tr("问题类别", "Issue category")}: {({ contract: tr("验收定义或输出不符合契约，尚未完成业务比较", "Contract/output invalid; business comparison not completed"), evidence: tr("证据不足或来源变化", "Evidence gap or source drift"), business: tr("同一口径下的业务差异", "Business difference under the same definition"), environment: tr("执行环境故障", "Execution environment failure") } as Record<string, string>)[campaign.report.failure_category]} · {stageLabel(campaign.report.failure_stage || "comparing", props.locale)}</p>}
+      <ContractIssues issues={campaign.report?.validation_issues || []} locale={props.locale} />
       {!terminal && campaign.current_case_id && <p>{tr("当前案例", "Current case")}: {campaign.current_case_index || "—"}/{campaign.cases?.length || "—"} · <code>{campaign.current_case_id}</code></p>}
       <p>{tr("SAP只读验收，不会发布或启用Agent。", "Read-only SAP acceptance; the Agent will not be published or activated.")}</p>
       <p>{tr("排队耗时", "Queue time")}: {format(queued)} · {tr("实际执行耗时", "Execution time")}: {format(elapsed)} · {tr("动态最长", "Maximum")}: {format(campaign.estimated_max_seconds || 0)}</p>
       {props.connectionError && <p className="agent-alert" role="status">{tr("进度连接异常，正在通过轮询恢复。任务不会重复创建。", "The progress stream is reconnecting with polling. The campaign is not duplicated.")}</p>}
       {terminal && campaign.report?.verdict === "NOT_TESTED" && <p className="agent-alert">{campaignErrorLabel(campaign.report?.error?.code, props.locale)}</p>}
       <ol className="acceptance-progress-cases">{(campaign.cases || []).map((item: any) => {
-        const caseTerminal = ["pass", "fail", "blocked", "cancelled", "interrupted"].includes(item.status);
+        const caseTerminal = ["pass", "fail", "failed", "blocked", "cancelled", "interrupted"].includes(item.status);
         const freeApplicable = campaign.acceptance_mode === "three_stage";
         return <li key={item.case_id}><strong>{item.case_id}</strong><span>{stageLabel(item.phase, props.locale)} · {draftStatus(item.result?.verdict || item.status, props.locale)}</span><dl className="acceptance-stage-grid"><div><dt>{tr("独立基线", "Independent baseline")}</dt><dd>{stageState(item.phase, "baseline", caseTerminal, props.locale)}</dd></div><div><dt>{tr("自由查询", "Free query")}</dt><dd>{freeApplicable ? stageState(item.phase, "free_query", caseTerminal, props.locale) : tr("不适用", "Not applicable")}</dd></div><div><dt>{tr("固定Agent", "Fixed Agent")}</dt><dd>{stageState(item.phase, "fixed_agent", caseTerminal, props.locale)}</dd></div><div><dt>{tr("逐字段比较", "Field comparison")}</dt><dd>{stageState(item.phase, "comparing", caseTerminal, props.locale)}</dd></div></dl></li>;
       })}</ol>

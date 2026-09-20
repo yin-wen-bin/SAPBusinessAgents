@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from sap_business_agents_platform.acceptance import (
     CanonicalTestCase,
+    agent_execution_digest,
     canonical_hash,
     validate_direct_baseline,
 )
@@ -82,6 +83,20 @@ def _seed_runnable(store: RunStore, tmp_path) -> dict:
         },
         "rules": None,
     }
+    from tests.test_acceptance_contract import sample_manifest, sample_result
+    from sap_business_agents_platform.models import RunCreate, RunResult, RunMode
+    package["manifest"]["execution"].update(sample_manifest()["execution"])
+    store.create_run("trial-ready", RunCreate(mode=RunMode.agent, agentId="acceptance-test", input={"company_code": "1710"}))
+    store.update_run("trial-ready", result_json=RunResult(run_id="trial-ready", mode=RunMode.agent, **sample_result()).model_dump(mode="json"), status="completed")
+    draft["metadata"]["trial"]["run_id"] = "trial-ready"
+    draft["metadata"]["trial"].update({
+        "agent_id": draft["agent_id"],
+        "execution_digest": agent_execution_digest(package["manifest"]),
+        "acceptance_contract_digest": canonical_hash(
+            package["manifest"]["execution"]["acceptance"]
+        ),
+    })
+    draft["metadata"]["effective_trial"] = dict(draft["metadata"]["trial"])
     store.save_agent_authoring_draft(draft, package=package)
     return draft
 
@@ -388,6 +403,57 @@ def test_cancelling_before_worker_starts_still_releases_formal_acceptance_lock(t
         assert (tmp_path / "agent-acceptance" / cancelled["campaign_id"] / "report.md").is_file()
         assert store.get_agent_operation(draft["draft_id"]) is None
 
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("invalid_trial", [False, True])
+def test_contract_preflight_refuses_before_runtime_sap_operation_and_campaign(tmp_path, invalid_trial):
+    store = RunStore(tmp_path / "preflight.sqlite3")
+    draft = _seed_runnable(store, tmp_path)
+    if invalid_trial:
+        store.update_run("trial-ready", result_json={"run_id": "trial-ready", "mode": "agent", "workflow_output": {}})
+    else:
+        package = store.get_agent_authoring_revision(draft["draft_id"], 4)["package"]
+        del package["manifest"]["execution"]["acceptance"]["scopeDefinition"]
+        draft["revision"] = 5
+        draft["metadata"]["trial"]["revision"] = 5
+        draft["metadata"]["effective_trial"]["revision"] = 5
+        draft["metadata"]["effective_trial"]["acceptance_contract_digest"] = canonical_hash(
+            package["manifest"]["execution"]["acceptance"]
+        )
+        draft["metadata"]["effective_trial"]["execution_digest"] = agent_execution_digest(
+            package["manifest"]
+        )
+        store.save_agent_authoring_draft(draft, package=package)
+    class NoRuntime:
+        def runtime_snapshot(self):
+            raise AssertionError("A preflight failure cannot call Runtime")
+    jobs = AgentAcceptanceJobs(SimpleNamespace(data_root=tmp_path), store, _Lifecycle(), _Coordinator(), NoRuntime())
+    payload = AgentAcceptanceCampaignRequest.model_validate({"expectedRevision": draft["revision"], "requestId": "invalid", "cases": [{"caseId": "case-1", "input": {"company_code": "1710"}}]})
+    with pytest.raises(Exception) as caught:
+        jobs.start(draft["draft_id"], payload)
+    assert caught.value.code == "agent_acceptance_contract_not_ready"
+    assert caught.value.detail["issues"]
+    assert store.list_agent_acceptance_campaigns(draft["draft_id"]) == []
+    assert store.get_agent_operation(draft["draft_id"]) is None
+
+
+def test_contract_failure_keeps_campaign_not_tested_with_stage_and_no_certificate(tmp_path):
+    from sap_business_agents_platform.acceptance_contract import BusinessContractError
+    async def scenario():
+        store = RunStore(tmp_path / "invalid-output.sqlite3")
+        created, operation = _campaign(store, tmp_path)
+        class Jobs(AgentAcceptanceJobs):
+            async def _run_case(self, *args):
+                raise BusinessContractError([{"code": "contract_field_invalid", "path": "/records/0/assessment"}], "baseline")
+        jobs = Jobs(SimpleNamespace(data_root=tmp_path), store, _Lifecycle(), _Coordinator(), _Runtime())
+        await jobs._run(created["campaign_id"], created["draft_id"], 4, operation["operation_id"], {}, {}, {}, [{"case_id": "case-1"}])
+        result = jobs.get(created["draft_id"], created["campaign_id"])
+        assert result["report"]["verdict"] == "NOT_TESTED"
+        assert result["report"]["failure_category"] == "contract"
+        assert result["report"]["failure_stage"] == "baseline"
+        assert result["report"]["executable"] is False
+        assert store.get_agent_operation(created["draft_id"]) is None
     asyncio.run(scenario())
 
 

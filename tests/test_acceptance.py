@@ -25,6 +25,7 @@ from scripts.run_three_stage_acceptance import (
     _read_fixed_result,
     _read_sensitive_inputs_from_stdin,
     _extract_record_scope,
+    _validate_projection_matches_visible_report,
 )
 from scripts.run_three_stage_campaign import (
     _matched_free_run_id,
@@ -162,6 +163,93 @@ def test_acceptance_projection_enforces_status_domain_and_normalizes_boolean_fac
         _normalize_acceptance_projection(
             {**projection, "business_status": "fully_received"}, case, contract
         )
+
+
+def test_versioned_free_query_visible_report_uses_report_adapter() -> None:
+    case = CanonicalTestCase.from_dict({
+        "schema_version": "2.0",
+        "case_id": "candidate-orders",
+        "agent_id": "po-sales-impact",
+        "question": {"zh": "查找候选销售订单", "en": "Find candidate sales orders"},
+        "input": {"purchase_order": ["4500000114"]},
+        "business_conditions": {},
+        "expected_grain": ["sales_order"],
+        "expected_output": {
+            "record_fields": ["sales_order"],
+            "metric_ids": [],
+            "minimum_primary_evidence_rows": 1,
+            "allow_empty_result": False,
+            "evidence_scope": "complete",
+        },
+    })
+    contract = {
+        "contract_version": "1.0",
+        "schema_version": "2.0",
+        "business_keys": ["sales_order"],
+        "facts": [],
+        "metrics": [],
+        "required_limitations": [],
+        "field_aliases": {},
+        "input_defaults": {},
+        "constant_defaults": {},
+        "record_schemas": {"sales_order": {"type": "string"}},
+        "metric_schemas": {},
+        "business_status_values": ["normal", "attention", "inconclusive"],
+    }
+    projection = {
+        "records": [{"sales_order": "5706"}],
+        "metrics": {},
+        "business_status": "attention",
+        "source_complete": True,
+        "evidence_complete": True,
+        "business_complete": True,
+        "evidence_gap_codes": [],
+        "evidence_refs": ["ev_1"],
+    }
+    run = {
+        "result": {
+            "acceptance_projection": projection,
+            "completeness": {
+                "source_complete": True,
+                "evidence_complete": True,
+                "business_complete": True,
+            },
+            "presentation": {
+                "blocks": [
+                        {
+                            "type": "table",
+                            "columns": [{"key": "sales_order"}],
+                            "rows": [{"values": ["5706"]}],
+                        },
+                        {
+                            "type": "metrics",
+                            "metrics": [
+                                {"id": "business_status", "value": "attention"},
+                                {"id": "source_complete", "value": "true"},
+                                {"id": "evidence_complete", "value": "true"},
+                                {"id": "business_complete", "value": "true"},
+                            ],
+                        },
+                    ]
+                },
+            }
+        }
+
+    comparison = _validate_projection_matches_visible_report(
+        run, projection, case, contract
+    )
+
+    assert comparison.verdict == "MATCH"
+    assert comparison.differences == ()
+
+    run["result"]["presentation"]["blocks"][0]["rows"][0]["values"][0] = "5707"
+    mismatch = _validate_projection_matches_visible_report(
+        run, projection, case, contract
+    )
+    assert mismatch.verdict == "MISMATCH"
+    assert mismatch.differences == (
+        {"code": "acceptance_projection_visible_records_mismatch"},
+    )
 
 
 def test_acceptance_prompt_declares_business_status_domain():

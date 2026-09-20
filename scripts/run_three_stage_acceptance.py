@@ -27,6 +27,7 @@ from sap_business_agents_platform.acceptance import (
 from sap_business_agents_platform.app import create_app
 from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.models import RunCreate, RunMode, TERMINAL_STATUSES
+from sap_business_agents_platform.acceptance_contract import BusinessContractError, normalize_fixed, normalized_issues
 
 
 JsonObject = dict[str, Any]
@@ -82,11 +83,15 @@ def _normalize_run(
     run: JsonObject,
     case: CanonicalTestCase,
     contract: JsonObject,
+    *,
+    fixed_contract_output: bool = True,
 ) -> JsonObject:
     result = run.get("result") if isinstance(run.get("result"), dict) else {}
     projection = result.get("acceptance_projection")
     if isinstance(projection, dict):
         return _normalize_acceptance_projection(projection, case, contract)
+    if contract.get("contract_version") and fixed_contract_output:
+        return normalize_fixed(result, contract)
     rule_results = [item for item in result.get("rule_results") or [] if isinstance(item, dict)]
     reports = [item for item in rule_results if isinstance(item.get("business_report"), dict)]
     if reports:
@@ -387,6 +392,17 @@ def _normalize_acceptance_projection(
     case: CanonicalTestCase,
     contract: JsonObject,
 ) -> JsonObject:
+    try:
+        return _normalize_projection_value(projection, case, contract)
+    except BusinessContractError:
+        raise
+    except (ValueError, TypeError, KeyError) as exc:
+        if contract.get("contract_version"):
+            raise BusinessContractError([{"code": "contract_field_invalid", "path": "/acceptance_projection", "message": "The result does not conform to the declared projection."}], "runtime_projection") from exc
+        raise
+
+
+def _normalize_projection_value(projection: JsonObject, case: CanonicalTestCase, contract: JsonObject) -> JsonObject:
     required = {
         "records",
         "metrics",
@@ -432,8 +448,7 @@ def _normalize_acceptance_projection(
         raise ValueError(
             "acceptance_projection.business_status is outside the declared output contract"
         )
-    return _finalize_normalized(
-        {
+    normalized = {
             "records": [dict(item) for item in projection["records"]],
             "metrics": dict(projection["metrics"]),
             "limitations": limitation_codes,
@@ -442,11 +457,13 @@ def _normalize_acceptance_projection(
             "business_complete": projection["business_complete"],
             "business_status": business_status,
             "evidence_gap_codes": evidence_gap_codes,
-        },
-        case,
-        contract,
-        business_status=business_status,
-    )
+        }
+    if contract.get("contract_version"):
+        issues = normalized_issues(normalized, contract)
+        if issues:
+            raise BusinessContractError(issues, "runtime_projection")
+        return normalized
+    return _finalize_normalized(normalized, case, contract, business_status=business_status)
 
 
 def _field_token(value: Any) -> str:
@@ -846,8 +863,8 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
     )
     instructions = [
         "Acceptance reporting contract (do not alter the business conditions or infer values):",
-        f"- Return every business record at stable grain [{grain}] and include business_status on each record.",
-        "- business_status is the deterministic business conclusion at the declared record grain, never a raw SAP status field. The projection root is the conservative overall conclusion.",
+        f"- Return every business record at stable grain [{grain}].",
+        "- The projection root business_status is the conservative overall conclusion. A record-level business_status is required only when it appears in the canonical record fields below.",
         f"- Use these canonical fact field identifiers exactly: [{facts or 'none'}].",
         f"- Use these canonical metric identifiers exactly and do not omit zero values: [{metrics or 'none'}].",
         "- If a metric cannot be established because required evidence is unavailable, return null; never substitute zero for unknown.",
@@ -858,6 +875,19 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
         "- acceptance_projection must separately report business_status, source_complete, evidence_complete, business_complete, evidence_gap_codes, and only run-scoped verified evidence_refs.",
         "- Never infer acceptance_projection from prose and never omit a required record merely because it is normal, zero, or not_found.",
     ]
+    if contract.get("contract_version"):
+        instructions.extend([
+            "- Record definition: " + str(contract.get("record_definition") or ""),
+            "- Scope (inclusion, exclusion and evidence requirements): " + str(contract.get("scope_definition") or ""),
+            "- Business enum values: " + json.dumps(contract.get("enum_values") or {}, ensure_ascii=False),
+            "- Metric invariants: " + json.dumps(contract.get("metric_invariants") or {}, ensure_ascii=False),
+            "- Execution status and query counts are audit diagnostics, not business conclusions. Do not guess missing evidence or change the scope to obtain agreement.",
+        ])
+    required_assessments = list(contract.get("required_assessments") or [])
+    if "inventory_fifo" in required_assessments:
+        instructions.append(
+            "- A valid inventory_fifo assessment is explicitly required. Complete the approved FIFO assessment and retain its validated run evidence before final report validation."
+        )
     if business_status_values:
         instructions.insert(
             2,
@@ -952,6 +982,9 @@ def _projection_spec(contract: JsonObject) -> JsonObject:
         else "none"
     )
     return AcceptanceProjectionSpec(
+        integer_fields=list(contract.get("integer_fields") or []),
+        enum_values=contract.get("enum_values") or {},
+        nullable_fields=contract.get("nullable_fields") if contract.get("contract_version") else None,
         record_fields=fields,
         metric_fields=metric_fields,
         decimal_fields=list(contract.get("decimal_fields") or []),
@@ -959,6 +992,11 @@ def _projection_spec(contract: JsonObject) -> JsonObject:
         boolean_fields=list(contract.get("boolean_fields") or []),
         semantic_profile=semantic_profile,
         required_limitation_codes=list(contract.get("required_limitations") or []),
+        required_assessments=(
+            list(contract.get("required_assessments") or [])
+            if contract.get("required_assessments_declared")
+            else None
+        ),
     ).model_dump(mode="json")
 
 
@@ -968,11 +1006,40 @@ def _validate_projection_matches_visible_report(
     case: CanonicalTestCase,
     contract: JsonObject,
 ) -> SemanticComparison:
+    if contract.get("contract_version"):
+        from sap_business_agents_platform.acceptance_projection import visible_projection_issues
+
+        result = run.get("result") if isinstance(run.get("result"), dict) else {}
+        presentation = (
+            result.get("presentation")
+            if isinstance(result.get("presentation"), dict)
+            else {}
+        )
+        issues = visible_projection_issues(
+            _projection_spec(contract), projection, presentation
+        )
+        projection_hash = canonical_hash(projection)
+        return SemanticComparison(
+            verdict="MISMATCH" if issues else "MATCH",
+            expected_hash=projection_hash,
+            actual_hash=(canonical_hash(presentation) if issues else projection_hash),
+            differences=tuple(issues),
+        )
+
     visible_run = copy.deepcopy(run)
     result = visible_run.get("result")
     if isinstance(result, dict):
         result.pop("acceptance_projection", None)
-    visible = _normalize_run(visible_run, case, contract)
+    # This is a free-query presentation consistency check.  Once the canonical
+    # acceptance projection is removed, normalize the visible report through
+    # the report adapter rather than treating the free-query result as a fixed
+    # Agent workflow output.
+    visible = _normalize_run(
+        visible_run,
+        case,
+        contract,
+        fixed_contract_output=False,
+    )
     expected = {
         "records": projection.get("records") or [],
         "metrics": projection.get("metrics") or {},
@@ -1126,47 +1193,32 @@ async def _main(args: argparse.Namespace) -> int:
         and acceptance_contract_digest != args.acceptance_contract_digest
     ):
         raise ValueError("candidate Agent acceptance contract digest does not match the campaign pin")
-    contract = {
-        "schema_version": contract_value.get("schemaVersion", "1.0"),
-        "business_keys": contract_value["businessKeys"],
-        "facts": contract_value["facts"],
-        "metrics": contract_value["metrics"],
-        "required_limitations": contract_value["requiredLimitations"],
-        "decimal_fields": contract_value.get("decimalFields") or [],
-        "currency_fields": contract_value.get("currencyFields") or [],
-        "unit_fields": contract_value.get("unitFields") or [],
-        "decimal_metrics": contract_value.get("decimalMetricIds") or [],
-        "field_aliases": contract_value.get("fieldAliases") or {},
-        "field_extractors": contract_value.get("fieldExtractors") or {},
-        "input_defaults": contract_value.get("inputDefaults") or {},
-        "constant_defaults": contract_value.get("constantDefaults") or {},
-        "fact_definitions": contract_value.get("factDefinitions") or {},
-        "date_fields": contract_value.get("dateFields") or [],
-        "code_set_fields": contract_value.get("codeSetFields") or [],
-        "zero_pad_fields": contract_value.get("zeroPadFields") or {},
-        "boolean_fields": contract_value.get("booleanFields") or [],
-        "currency_from_decimal": contract_value.get("currencyFromDecimal") or {},
-        "value_mappings": contract_value.get("valueMappings") or {},
-        "limitation_keywords": contract_value.get("limitationKeywords") or {},
-        "summary_record": contract_value.get("summaryRecord") is True,
-        "business_status_from_metric": contract_value.get("businessStatusFromMetric") or {},
-        "limitations_from_metrics": contract_value.get("limitationsFromMetrics") or {},
-        "blank_value_keywords": contract_value.get("blankValueKeywords") or {},
-        "preserve_literal_values": contract_value.get("preserveLiteralValues") or [],
-        "blocking_limitations": contract_value.get("blockingLimitations") or [],
-        "ignored_notice_keywords": contract_value.get("ignoredNoticeKeywords") or [],
-        "metric_value_mappings": contract_value.get("metricValueMappings") or {},
-        "zero_fact_when_metric_zero": contract_value.get("zeroFactWhenMetricZero") or {},
-        "record_scope": contract_value.get("recordScope") or "",
-        "metric_definitions": contract_value.get("metricDefinitions") or {},
-        "business_status_definition": contract_value.get("businessStatusDefinition") or "",
-        "business_status_from_any_positive_metric": contract_value.get("businessStatusFromAnyPositiveMetric") or {},
-        "blank_business_key_fields": contract_value.get("blankBusinessKeyFields") or [],
-        "composite_blank_fields": contract_value.get("compositeBlankFields") or [],
-        "nonblocking_observation_codes": contract_value.get("nonBlockingObservationCodes") or [],
-        "test_data_qualification_definition": contract_value.get("testDataQualificationDefinition") or "",
-        "composite_key_parts": contract_value.get("compositeKeyParts") or {},
-    }
+    from sap_business_agents_platform.acceptance_contract import compile_contract
+    contract = compile_contract(manifest)
+    if contract.get("contract_version"):
+        from sap_business_agents_platform.acceptance_contract import contract_issues
+        issues = contract_issues(manifest)
+        if issues:
+            raise BusinessContractError(issues, "preflight")
+        if args.agent_snapshot:
+            draft_id = getattr(args, "draft_id", None)
+            if not draft_id:
+                raise BusinessContractError([{"code": "contract_trial_required", "path": "/draft_id", "message": "Use --draft-id to check the saved current-revision trial before accepting a candidate snapshot."}], "preflight")
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(args.api_url.rstrip("/") + "/api/authoring/agents/" + draft_id)
+                response.raise_for_status()
+                draft = response.json()
+            current = draft.get("package") or {}
+            if agent_execution_digest(current.get("manifest") or {}, current.get("rules")) != execution_digest:
+                raise ValueError("agent_acceptance_revision_conflict")
+            ready = draft.get("acceptance_readiness") or {}
+            if ready.get("status") != "ready":
+                raise BusinessContractError(ready.get("issues") or [{"code": "contract_trial_required", "path": "/trial", "message": "Complete a valid current-revision trial."}], "preflight")
+        issues = normalized_issues(baseline, contract)
+        if issues:
+            raise BusinessContractError(issues, "baseline")
+        if not all(baseline.get(name) is True for name in ("source_complete", "evidence_complete", "business_complete")) or baseline.get("evidence_gap_codes"):
+            raise ValueError("independent_baseline_evidence_incomplete")
     contract["required_limitations"] = list(
         dict.fromkeys(
             [
@@ -1453,6 +1505,7 @@ def main() -> int:
     parser.add_argument("--free-timeout", type=int, default=1800)
     parser.add_argument("--fixed-timeout", type=int, default=600)
     parser.add_argument("--agent-snapshot")
+    parser.add_argument("--draft-id", help="For v1 candidate snapshots, bind preflight to the current saved draft and trial.")
     parser.add_argument("--rules-source")
     parser.add_argument("--agent-version")
     parser.add_argument("--agent-execution-digest")

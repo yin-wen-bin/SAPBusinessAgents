@@ -378,7 +378,9 @@ def test_sensitive_trial_without_protector_fails_before_run_creation(tmp_path):
 
 @pytest.mark.parametrize("executable", [None, False, True])
 def test_external_formal_report_requires_explicit_execution_approval(tmp_path, executable):
-    from sap_business_agents_platform.acceptance import agent_execution_digest
+    from sap_business_agents_platform.acceptance import agent_execution_digest, canonical_hash
+    from tests.test_acceptance_contract import sample_manifest, sample_result
+    from sap_business_agents_platform.models import RunCreate, RunResult, RunMode
     service, store, _ = _service(tmp_path)
     draft = create(service)
     manifest = copy.deepcopy(draft["package"]["manifest"])
@@ -388,12 +390,28 @@ def test_external_formal_report_requires_explicit_execution_approval(tmp_path, e
         "zh": ["根据结构化输入执行本地确定性规则并输出完整性状态。"],
         "en": ["Run the local deterministic rule over structured input and emit completeness status."],
     }
+    manifest["execution"].update(sample_manifest()["execution"])
+    for key in manifest["execution"]["outputSchema"]["properties"]:
+        manifest["execution"]["outputMapping"][key] = "{{steps." + manifest["execution"]["steps"][0]["id"] + ".output." + key + "}}"
     draft = service.update(
         draft["draft_id"],
         AgentDraftUpdate(expectedRevision=draft["revision"], manifest=manifest),
     )
     report = {"verdict": "PASS", "execution_digest": agent_execution_digest(draft["package"]["manifest"], None), "fixedAgentComparison": "MATCH", "freeQueryComparison": "MATCH", "acceptanceMode": "three_stage", "executable": executable, "blockingLimitations": []}
     row = store.get_agent_authoring_draft(draft["draft_id"])
+    store.create_run("trial-contract", RunCreate(mode=RunMode.agent, agentId=draft["agent_id"]))
+    store.update_run("trial-contract", result_json=RunResult(run_id="trial-contract", mode=RunMode.agent, **sample_result()).model_dump(mode="json"), status="completed")
+    trial_binding = {
+        "run_id": "trial-contract",
+        "agent_id": draft["agent_id"],
+        "revision": draft["revision"],
+        "execution_digest": report["execution_digest"],
+        "acceptance_contract_digest": canonical_hash(
+            draft["package"]["manifest"]["execution"]["acceptance"]
+        ),
+    }
+    row["metadata"]["trial"] = copy.deepcopy(trial_binding)
+    row["metadata"]["effective_trial"] = copy.deepcopy(trial_binding)
     row["validation"] = report
     store.save_agent_authoring_draft(row)
     result = service.validation_report(draft["draft_id"])

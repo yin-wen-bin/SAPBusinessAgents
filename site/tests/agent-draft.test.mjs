@@ -230,6 +230,9 @@ import { publicValues, validateDraftInput, changedDefinition, clearDiscoveredInp
 // Render the actual TSX without building the catalog or starting a browser/API.
 const require = createRequire(import.meta.url);
 async function component(name, dependencies = {}) {
+  if (["AgentDraftWorkspace", "AgentAcceptance"].includes(name)) {
+    dependencies["./AcceptanceReadiness"] = await component("AcceptanceReadiness");
+  }
   if (name === "AgentDraftWorkspace") {
     dependencies["./AgentSampleProgress"] = await component("AgentSampleProgress");
     dependencies["./AgentTrialProgress"] = await component("AgentTrialProgress");
@@ -250,6 +253,17 @@ async function component(name, dependencies = {}) {
 }
 
 const title = (zh, en) => ({ zh, en });
+
+test("acceptance readiness explains contract gaps without claiming certification", async () => {
+  const Readiness = await component("AcceptanceReadiness");
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Readiness, { locale, value: { status: "needs_input", issues: [{ code: "contract_technical_metric", path: "/execution/acceptance/metrics" }] } }));
+    assert.ok(html.includes(locale === "zh" ? "仍可保存草稿和试运行" : "Saving and trials remain available"));
+    assert.ok(html.includes("/execution/acceptance/metrics"));
+    const ready = renderToStaticMarkup(createElement(Readiness, { locale, value: { status: "ready", issues: [] } }));
+    assert.ok(ready.includes(locale === "zh" ? "不代表业务验收通过" : "not certified"));
+  }
+});
 const schema = {
   type: "object", required: ["company", "quantity", "date_from", "date_to", "description"],
   properties: {
@@ -585,4 +599,30 @@ test("actual workbench gates validation and publication but keeps unconfirmed de
   assert.match(cleanup, /disabled=""[^>]*>Retry this feedback/);
   assert.match(cleanup, /Restart the API service/);
   assert.match(cleanup, /disabled=""[^>]*>Cancel task/);
+});
+
+test("workbench separates the latest trial attempt from the effective trial", async () => {
+  const Workspace = await component("AgentDraftWorkspace", {
+    "./AgentDraftInputs": () => null,
+    "./AgentDraftResult": () => null,
+    "./AgentDraftConversation": () => null,
+  });
+  const draft = {
+    draft_id: "draft-effective", agent_id: "effective-agent", revision: 3,
+    status: "draft", target_version: "0.1.0", conversation: [],
+    package: { manifest: { module: "MM", title: { zh: "示例", en: "Sample" }, version: "0.1.0", execution: { inputSchema: { type: "object", properties: {} } } } },
+    technical_identity: { kind: "new_agent", confirmed: true, locked: false, can_rename: true },
+    trial: { run_id: "trial-cancelled", revision: 3, status: "cancelled", verdict: "FAIL" },
+    effective_trial: { run_id: "trial-pass", revision: 3, status: "completed", verdict: "PASS", business_output_available: true, output_schema_valid: true, read_only_audit: true },
+    acceptance_readiness: { status: "ready", issues: [] },
+    static_checks: { checks: ["manifest"], errors: [], presentation_contract: { status: "ready" } },
+    acceptance: { verdict: "NOT_TESTED" }, publishability: { can_publish: false, blockers: [] },
+  };
+  const html = renderToStaticMarkup(createElement(Workspace, {
+    initialDraft: draft, locale: "en", apiBase: "", runPath: "/runs",
+    onBack() {}, onPublished() {},
+  }));
+  assert.match(html, /Effective trial used for acceptance/);
+  assert.match(html, /trial-pass/);
+  assert.match(html, /latest attempt did not replace this effective result/i);
 });

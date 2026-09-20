@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
+from pydantic import ValidationError
+
 from .config import Settings
 from .agent_rules import evaluate_business_agent
 from .acceptance_projection import output_schema, validate_projection, visible_projection_issues
@@ -257,6 +259,13 @@ class HarnessOutcome:
     extension_count: int = 0
     extension_reasons: list[str] = field(default_factory=list)
     deadline_phase: str = "querying"
+
+
+class AcceptanceReportValidationError(RuntimeError):
+    def __init__(self, issues: list[dict[str, Any]]) -> None:
+        super().__init__("Acceptance report validation failed without material progress.")
+        self.code = "acceptance_report_validation_failed"
+        self.detail = {"validation_issues": _safe_public(issues)}
 
 
 class HarnessToolBroker:
@@ -610,6 +619,22 @@ class HarnessToolBroker:
             ),
             None,
         )
+        # A fresh final-report call must be revalidated against the current
+        # evidence/assessment state even when its payload is byte-identical.
+        # Network replay with the same tool_call_id remains idempotent below.
+        if (
+            existing is not None
+            and tool_name == "sap_final_report_validate"
+            and existing.get("status") == "failed"
+            and existing.get("call_id") != call_id
+        ):
+            # A new SDK tool invocation is another repair attempt even when
+            # the payload is byte-identical.  Give it a distinct persistence
+            # key; replaying the original tool_call_id remains idempotent.
+            request_hash = hashlib.sha256(
+                f"{request_hash}:{call_id}".encode("utf-8")
+            ).hexdigest()
+            existing = None
         if existing is not None:
             if existing.get("status") in {"completed", "failed"} and isinstance(
                 existing.get("output"), dict
@@ -712,6 +737,8 @@ class HarnessToolBroker:
                 "evidence_ref": evidence_ref,
                 "source_complete": output.get("source_complete"),
                 "code": output.get("code"),
+                "validation_issues": _safe_public(output.get("validation_issues") or []),
+                "terminal_validation_failure": output.get("terminal_validation_failure") is True,
             },
         )
         if sample_context is not None:
@@ -1677,14 +1704,26 @@ class HarnessToolBroker:
 
     def _validate_report(self, run_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         report = _require_object(arguments.get("report"), "report")
-        presentation = RunPresentation.model_validate(report)
+        presentation: RunPresentation | None = None
+        issues: list[dict[str, Any]] = []
+        try:
+            presentation = RunPresentation.model_validate(report)
+        except ValidationError as exc:
+            for item in exc.errors(include_url=False, include_input=False)[:50]:
+                path = "/report" + "".join(f"/{part}" for part in item.get("loc") or [])
+                issues.append({
+                    "code": "acceptance_report_schema_invalid",
+                    "path": path,
+                    "constraint": str(item.get("type") or "schema"),
+                    "message": "The report field does not satisfy the declared presentation schema.",
+                })
         known = {
             item["evidence_ref"]: item
             for item in self.snapshot(run_id)[1]
             if item.get("evidence_ref")
         }
-        issues: list[dict[str, Any]] = []
-        spec = self.store.get_harness_state(run_id).get("acceptance_spec")
+        state = self.store.get_harness_state(run_id)
+        spec = state.get("acceptance_spec")
         projection = arguments.get("acceptance_projection")
         if spec is not None:
             issues.extend(validate_projection(spec, projection, known))
@@ -1692,7 +1731,7 @@ class HarnessToolBroker:
                 issues.extend(visible_projection_issues(spec, projection, report))
         elif projection is not None:
             issues.append({"code": "acceptance_projection_not_requested"})
-        if _inventory_health_requested(str(self.store.get_run(run_id).query or "")):
+        if "inventory_fifo" in set(state.get("required_assessments") or []):
             fifo_calls = [
                 call
                 for call in self.store.list_harness_tool_calls(run_id)
@@ -1704,7 +1743,7 @@ class HarnessToolBroker:
             ]
             if not fifo_calls:
                 issues.append({"code": "inventory_fifo_assessment_required"})
-        for block_index, block in enumerate(presentation.blocks):
+        for block_index, block in enumerate(presentation.blocks if presentation else []):
             references = list(block.evidence_refs)
             references.extend(ref for entry in block.entries for ref in entry.evidence_refs)
             references.extend(ref for metric in block.metrics for ref in metric.evidence_refs)
@@ -1733,17 +1772,55 @@ class HarnessToolBroker:
                     issues.append(
                         {"code": "customer_fact_requires_sap_evidence", "block_index": block_index}
                     )
-        report_hash = _presentation_hash(presentation)
-        return {
+        report_hash = (
+            _presentation_hash(presentation)
+            if presentation is not None
+            else _json_fingerprint({"report": report})
+        )
+        output: dict[str, Any] = {
             "ok": not issues,
             "validation_issues": issues,
             "report_hash": report_hash,
             "validation_ref": f"validation_{report_hash.removeprefix('sha256:')[:24]}",
+            **({"code": "acceptance_report_validation_failed"} if issues else {}),
             # Persist the exact validated object with the tool call. It is
             # stripped from the response returned to Codex below.
-            "_validated_report": presentation.model_dump(mode="json"),
+            "_validated_report": presentation.model_dump(mode="json") if presentation else None,
             "_validated_acceptance_projection": projection if spec is not None and not issues else None,
         }
+        if issues and spec is not None:
+            progress = _acceptance_validation_progress(
+                report=report,
+                projection=projection,
+                known=known,
+                assessment_calls=self.store.list_harness_tool_calls(run_id),
+            )
+            issue_digest = _json_fingerprint({"issues": issues})
+            progress_digest = _json_fingerprint(progress)
+            previous = state.get("acceptance_validation_failure") or {}
+            count = (
+                int(previous.get("consecutive") or 0) + 1
+                if previous.get("issue_digest") == issue_digest
+                and previous.get("progress_digest") == progress_digest
+                else 1
+            )
+            failure = {
+                "issue_digest": issue_digest,
+                "progress_digest": progress_digest,
+                "consecutive": count,
+                "validation_issues": _safe_public(issues),
+            }
+            if count >= 2:
+                failure["terminal"] = True
+                output["terminal_validation_failure"] = True
+            self.store.update_harness_state(
+                run_id, {"acceptance_validation_failure": failure}
+            )
+        elif not issues and spec is not None:
+            self.store.update_harness_state(
+                run_id, {"acceptance_validation_failure": None}
+            )
+        return output
 
 
 class CodexHarnessController:
@@ -1805,6 +1882,25 @@ class CodexHarnessController:
         resuming_thread = bool(thread_id)
         state = self.store.get_harness_state(run_id)
         turn_count = int(state.get("turn_count") or 0) + 1
+        assessment_intent = state.get("assessment_intent") or {}
+        if not state.get("acceptance_spec") and assessment_intent.get("intent") == "ambiguous":
+            return HarnessOutcome(
+                thread_id=thread_id,
+                turn_count=turn_count - 1,
+                status="waiting_input",
+                stop_reason="waiting_input",
+                summary={
+                    "zh": "需要确认是否要求库存FIFO评估。",
+                    "en": "Clarification is required about the inventory FIFO assessment.",
+                },
+                clarification_question=(
+                    "您的问题同时包含要求和排除库存FIFO/账龄评估的表述。请明确本轮是否需要执行FIFO库存评估。"
+                    " / The request both includes and excludes an inventory FIFO or aging assessment. "
+                    "Please confirm whether FIFO inventory assessment is required for this run."
+                ),
+                missing_evidence=["assessment_scope_ambiguous"],
+                elapsed_seconds=int(time.monotonic() - run_started),
+            )
         if turn_count > self.settings.max_harness_turns:
             return HarnessOutcome(
                 thread_id=thread_id,
@@ -2007,6 +2103,23 @@ class CodexHarnessController:
                                     {"interrupt_error": interrupt_error},
                                 )
                                 break
+                            failure = self.store.get_harness_state(run_id).get(
+                                "acceptance_validation_failure"
+                            ) or {}
+                            if failure.get("terminal") is True:
+                                interrupt_error = await _best_effort_interrupt(turn)
+                                self.store.append_event(
+                                    run_id,
+                                    "acceptance_report_validation_stopped",
+                                    {
+                                        "code": "acceptance_report_validation_failed",
+                                        "validation_issues": failure.get("validation_issues") or [],
+                                        "interrupt_error": interrupt_error,
+                                    },
+                                )
+                                raise AcceptanceReportValidationError(
+                                    list(failure.get("validation_issues") or [])
+                                )
                     elif item_type == "agentMessage" and event.method == "item/completed":
                         final_response = str(item.get("text") or final_response)
                         self.store.append_event(
@@ -2155,6 +2268,8 @@ class CodexHarnessController:
                 deadline_phase="completed",
             )
         except Exception as exc:
+            if isinstance(exc, AcceptanceReportValidationError):
+                raise
             deadline_budget = self.broker.budget_snapshot(run_id)
             if (
                 deadline_budget["deadline_phase"] == "deadline_exceeded"
@@ -2955,11 +3070,80 @@ def _capability_fingerprint(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _json_fingerprint(value: dict[str, Any]) -> str:
+def _json_fingerprint(value: Any) -> str:
     encoded = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _acceptance_validation_progress(
+    *,
+    report: dict[str, Any],
+    projection: Any,
+    known: dict[str, Any],
+    assessment_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Hash only validation-relevant output, evidence and assessment progress."""
+
+    blocks = []
+    for block in report.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        blocks.append({
+            "type": block.get("type"),
+            "claim_scope": block.get("claim_scope"),
+            "evidence_refs": block.get("evidence_refs") or [],
+            "entries": [
+                {"value": item.get("value"), "evidence_refs": item.get("evidence_refs") or []}
+                for item in block.get("entries") or []
+                if isinstance(item, dict)
+            ],
+            "metrics": [
+                {
+                    "id": item.get("id"),
+                    "value": item.get("value"),
+                    "evidence_refs": item.get("evidence_refs") or [],
+                }
+                for item in block.get("metrics") or []
+                if isinstance(item, dict)
+            ],
+            "columns": [
+                item.get("key")
+                for item in block.get("columns") or []
+                if isinstance(item, dict)
+            ],
+            "rows": [
+                {"values": item.get("values") or [], "evidence_refs": item.get("evidence_refs") or []}
+                for item in block.get("rows") or []
+                if isinstance(item, dict)
+            ],
+        })
+    assessments = [
+        {
+            "call_id": call.get("call_id"),
+            "status": call.get("status"),
+            "ok": (call.get("output") or {}).get("ok"),
+            "assessment_valid": (call.get("output") or {}).get("assessment_valid"),
+            "evidence_ref": call.get("evidence_ref"),
+        }
+        for call in assessment_calls
+        if call.get("tool_name") == "sap_inventory_fifo_assess"
+    ]
+    evidence = [
+        {
+            "evidence_ref": ref,
+            "source_type": item.get("source_type"),
+            "source_complete": item.get("source_complete"),
+        }
+        for ref, item in sorted(known.items())
+    ]
+    return {
+        "projection": projection,
+        "blocks": blocks,
+        "evidence": evidence,
+        "assessments": assessments,
+    }
 
 
 def _presentation_hash(value: RunPresentation | dict[str, Any]) -> str:
@@ -3558,20 +3742,95 @@ def _plan_business_contract_advisories(query: str, plan: dict[str, Any]) -> list
 
 
 def _inventory_health_requested(query: str) -> bool:
-    lowered = str(query or "").casefold()
-    return any(
-        token in lowered
-        for token in (
-            "库存健康",
-            "慢动",
-            "呆滞",
-            "fifo",
-            "inventory health",
-            "slow-moving",
-            "obsolete stock",
-            "stagnant stock",
-        )
+    return classify_required_assessments(query)["intent"] == "required"
+
+
+_INVENTORY_FIFO_TERMS = (
+    "fifo",
+    "库存健康",
+    "库存账龄",
+    "慢动",
+    "呆滞",
+    "inventory health",
+    "inventory aging",
+    "slow-moving",
+    "obsolete stock",
+    "stagnant stock",
+)
+
+
+def classify_required_assessments(query: str) -> dict[str, Any]:
+    """Classify specialized assessment intent from user-authored text only.
+
+    This intentionally ignores quoted examples and treats a requirement as
+    positive only at sentence scope. Platform prompts and tool output must
+    never be passed to this helper.
+    """
+
+    text = str(query or "")
+    # Quoted examples or copied contract text are references, not requests.
+    for pattern in (
+        r'`[^`]*`',
+        r'"[^"\r\n]*"',
+        r"'[^'\r\n]*'",
+        r"“[^”\r\n]*”",
+        r"‘[^’\r\n]*’",
+    ):
+        text = re.sub(pattern, " ", text)
+    sentences = [
+        item.strip().casefold()
+        for item in re.split(r"(?<=[。！？.!?;；])|[\r\n]+", text)
+        if item.strip()
+    ]
+    positive = 0
+    negative = 0
+    term_pattern = "(?:" + "|".join(
+        re.escape(term) for term in sorted(_INVENTORY_FIFO_TERMS, key=len, reverse=True)
+    ) + ")"
+    negative_patterns = (
+        rf"(?:不|无需|不需要|不执行|不进行|不做|排除|不要).{{0,24}}{term_pattern}",
+        rf"(?:no|not|without|exclude|excluding|do\s+not|does\s+not|need\s+not|isn't|is\s+not).{{0,64}}{term_pattern}",
+        rf"{term_pattern}.{{0,32}}(?:不需要|不执行|不进行|不做|排除|无需)",
     )
+    for sentence in sentences:
+        # Contrast markers usually separate a requested assessment from an
+        # explicit exclusion.  Do not split ordinary commas: lists such as
+        # "No stock allocation, FIFO, date cutoff" are one negative scope.
+        clauses = [
+            item.strip()
+            for item in re.split(
+                r"(?:，?\s*(?:但|但是|不过)|,?\s*\b(?:but|however)\b)",
+                sentence,
+                flags=re.IGNORECASE,
+            )
+            if item.strip()
+        ]
+        for clause in clauses:
+            if not any(term in clause for term in _INVENTORY_FIFO_TERMS):
+                continue
+            if any(re.search(pattern, clause, flags=re.IGNORECASE) for pattern in negative_patterns):
+                negative += 1
+            else:
+                positive += 1
+    if positive and negative:
+        intent = "ambiguous"
+        required: list[str] = []
+    elif positive:
+        intent = "required"
+        required = ["inventory_fifo"]
+    elif negative:
+        intent = "not_required"
+        required = []
+    else:
+        intent = "none"
+        required = []
+    return {
+        "intent": intent,
+        "required_assessments": required,
+        "source": "user_query",
+        "positive_sentence_count": positive,
+        "negative_sentence_count": negative,
+    }
 
 
 def _safe_tool_input(value: Any, *, depth: int = 0) -> Any:

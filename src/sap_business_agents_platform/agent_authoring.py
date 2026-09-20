@@ -197,6 +197,10 @@ class AgentAuthoringMixin:
         # Any explicit edit adopts the current controlled relationship policy.
         # Existing persisted drafts are not rewritten until such a revision occurs.
         apply_advisory_relationship_policy(manifest)
+        if not preserve_validation and self._risk_class(draft, package) != "metadata_only":
+            acceptance = manifest["execution"].setdefault("acceptance", {})
+            acceptance["contractVersion"] = "1.0"
+            acceptance.setdefault("requiredAssessments", [])
         # A user/Runtime must never author its own PASS certificate.
         manifest["validation"] = copy.deepcopy(previous["manifest"].get("validation") or {})
         if identity_changed:

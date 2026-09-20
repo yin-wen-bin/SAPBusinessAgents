@@ -777,6 +777,8 @@ Return JSON only.
 """.strip()
         from .agent_presentation import authoring_presentation_guidance
         prompt += "\n\n" + authoring_presentation_guidance()
+        from .acceptance_contract import authoring_contract_guidance
+        prompt += "\n\n" + authoring_contract_guidance()
         if tool_workspace:
             prompt += """
 

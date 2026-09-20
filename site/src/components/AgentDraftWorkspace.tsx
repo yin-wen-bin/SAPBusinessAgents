@@ -11,6 +11,7 @@ import AgentFeedbackProgress, { FeedbackProgressSummary } from "./AgentFeedbackP
 import AgentPublicationProgress, { PublicationProgressSummary } from "./AgentPublicationProgress";
 import { AcceptanceSummary, AgentAcceptanceProgress, AgentAcceptanceSetup } from "./AgentAcceptance";
 import AgentDefinitionDetails from "./AgentDefinitionDetails";
+import AcceptanceReadiness from "./AcceptanceReadiness";
 import type { AcceptanceCaseDraft } from "./AgentAcceptance";
 import { sampleFieldOptions } from "../lib/agentDraft";
 import "../styles/agent-draft.css";
@@ -117,6 +118,8 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const acceptance = report?.acceptance || draft.acceptance;
   const staticChecks = report?.static_checks || draft.static_checks || {};
   const presentation = staticChecks.presentation_contract || draft.presentation || {};
+  const acceptanceReadiness = draft.acceptance_readiness || staticChecks.acceptance_readiness;
+  const effectiveTrial = report?.effective_trial || draft.effective_trial;
   const presentationReady = presentation.status === "ready";
   const staticLabel = staticChecks.errors?.length
     ? tr("自动检查未通过", "Automatic checks failed")
@@ -126,13 +129,14 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         ? tr("自动检查通过", "Automatic checks passed")
         : tr("尚未检查", "Not checked");
   const formalAcceptanceReady = validationActionable
+    && acceptanceReadiness?.status === "ready"
     && acceptance?.reused_validation !== true
     && !staticChecks.errors?.length
     && presentationReady
-    && ["PASS", "INCONCLUSIVE"].includes(String(trial?.verdict || draft.trial?.verdict || ""))
-    && (trial?.business_output_available ?? draft.trial?.business_output_available) === true
-    && (trial?.output_schema_valid ?? draft.trial?.output_schema_valid) === true
-    && (trial?.read_only_audit ?? draft.trial?.read_only_audit) === true;
+    && ["PASS", "INCONCLUSIVE"].includes(String(effectiveTrial?.verdict || ""))
+    && effectiveTrial?.business_output_available === true
+    && effectiveTrial?.output_schema_valid === true
+    && effectiveTrial?.read_only_audit === true;
   const publishability = report?.publishability || draft.publishability;
   const canPublish = identityReady && (publishability?.can_publish === true || publishability?.allowed === true);
   const sampleFingerprint = discoveryFingerprint(draft.revision, input);
@@ -198,6 +202,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         agent_trial_business_output_missing: ["SAP查询已执行，但没有生成可展示的业务结果。请完善业务规则和展示定义后重试。", "The SAP query ran, but no displayable business result was generated. Complete the business rule and presentation, then retry."],
         agent_trial_required: ["请先完成一次具备业务结果的只读试运行。", "Complete a read-only trial with business output first."],
         agent_acceptance_contract_missing: ["当前定义缺少正式验收比较契约。", "The definition has no formal acceptance comparison contract."],
+        agent_acceptance_contract_not_ready: ["验收定义或当前试运行输出尚未就绪，请查看验收准备检查。", "The contract or current trial output is not ready; review acceptance readiness."],
         agent_acceptance_request_conflict: ["该验收请求编号已用于其他案例，请重新开始。", "This acceptance request ID was already used for different cases. Start again."],
         agent_acceptance_reused: ["此纯文案修订已复用来源版本的PASS验收，无需再次访问SAP。", "This documentation-only revision already reuses the source version PASS acceptance; SAP does not need to be queried again."],
         agent_presentation_contract_invalid: ["请先补齐业务域、SAP业务组件和业务步骤详细说明。", "Complete the business domain, SAP components and business-step detail first."],
@@ -702,8 +707,10 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       </section>
       <section className="agent-panel" ref={acceptanceResultRef} tabIndex={-1}><h2>{tr("试运行与验收", "Trial and acceptance")}</h2><p>{tr("自动检查、试运行和正式验收分别记录，不相互替代。正式验收支持1–5组必选案例，全部通过才会解锁发布。", "Automatic checks, trials and formal acceptance are recorded separately. Formal acceptance supports 1–5 required cases; every case must pass before publication is unlocked.")}</p><dl><dt>{tr("自动检查", "Automatic checks")}</dt><dd>{staticLabel}</dd><dt>{tr("正式验收", "Formal acceptance")}</dt><dd>{draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</dd></dl>{(acceptance?.source_version || acceptance?.reused_from_version) && <p>{tr("复用原版本验收：", "Acceptance reused from version: ")}{acceptance.source_version || acceptance.reused_from_version}</p>}{publishability?.blockers?.length > 0 && <ul className="draft-blockers">{publishability.blockers.map((item: any, index: number) => <li key={index}>{localText(item.message || item.description, locale) || tr("正式验收或发布条件尚未满足。", "Formal acceptance or publication conditions remain unmet.")}<details><summary>{tr("技术原因", "Technical reason")}</summary><code>{typeof item === "string" ? item : item.code}</code></details></li>)}</ul>}
         {trialRunId ? <><p>{tr("试运行修订", "Trial revision")}: {trial?.revision ?? trial?.draft_revision ?? "—"} · {draftStatus(run?.status || trial?.status, locale)}{(trial?.revision ?? trial?.draft_revision) !== undefined && (trial?.revision ?? trial?.draft_revision) !== draft.revision && <strong> · {tr("历史修订结果，不适用于当前定义", "Historical result; not acceptance for this revision")}</strong>}</p>{run && !draftTerminal.has(run.status) && <><TrialProgressSummary run={run} trial={trial} locale={locale} connectionError={trialConnectionError} /><button type="button" className="agent-secondary-action" onClick={() => setTrialDialogOpen(true)}>{tr("查看试运行进度", "View trial progress")}</button></>}{run && draftTerminal.has(run.status) && <div ref={trialResultRef} tabIndex={-1}><AgentDraftResult run={run} trial={trial} locale={locale} runPath={runPath} apiBase={apiBase} /></div>}{!run && <a href={`${runPath}?run=${encodeURIComponent(trialRunId)}`} target="_blank" rel="noreferrer">{tr("查看试运行记录", "Open trial run")}</a>}</> : <p>{tr("当前没有试运行记录。", "No trial has been run yet.")}</p>}
-        {trial?.verdict === "INCONCLUSIVE" && <p className="agent-alert">{tr("当前试运行证据不完整。允许继续正式验收，但最终结果很可能为BLOCKED。", "The current trial has incomplete evidence. Formal acceptance may continue, but is likely to be BLOCKED.")}</p>}
+        {effectiveTrial?.run_id && <p>{tr("当前验收使用的有效试运行：", "Effective trial used for acceptance: ")}<a href={`${runPath}?run=${encodeURIComponent(effectiveTrial.run_id)}`} target="_blank" rel="noreferrer"><code>{effectiveTrial.run_id}</code></a>{effectiveTrial.run_id !== trialRunId && <span> · {tr("最近一次尝试未覆盖这条有效结果", "The latest attempt did not replace this effective result")}</span>}</p>}
+        {effectiveTrial?.verdict === "INCONCLUSIVE" && <p className="agent-alert">{tr("当前有效试运行的证据不完整。允许继续正式验收，但最终结果很可能为BLOCKED。", "The effective trial has incomplete evidence. Formal acceptance may continue, but is likely to be BLOCKED.")}</p>}
         <AcceptanceSummary campaign={acceptanceCampaign} locale={locale} onOpen={() => setAcceptanceProgressOpen(true)} />
+        <AcceptanceReadiness value={acceptanceReadiness} locale={locale} />
         <div className="agent-actions"><button type="button" disabled={!formalAcceptanceReady || campaignActive} onClick={openAcceptance}>{tr(acceptanceCampaign ? "更换案例并重新验收" : "开始正式验收", acceptanceCampaign ? "Change cases and run again" : "Start formal acceptance")}</button><button className="agent-secondary-action" disabled={busy} onClick={() => action(async () => { setReport(await call(`${base}/validation-report`)); await refresh(false); })}>{tr("刷新验证状态", "Refresh validation status")}</button></div>
         {!formalAcceptanceReady && <p>{acceptance?.reused_validation ? tr("此纯文案修订已复用来源版本的PASS验收，无需再次访问SAP。", "This documentation-only revision already reuses the source version PASS acceptance; SAP does not need to be queried again.") : tr("请先确认技术ID、保存修改、通过自动检查，并完成一次具备业务结果且只读审计通过的试运行。", "Confirm the technical ID, save edits, pass automatic checks, and complete a trial with business output and a passing read-only audit.")}</p>}
         <AgentAcceptanceSetup open={acceptanceSetupOpen} locale={locale} schema={schema} mode={manifest.validation?.acceptanceMode || "three_stage"} runtime={draft.formal_acceptance_runtime} cases={acceptanceCases} currentInput={acceptanceDefaultInput} currentSecrets={secrets} sampleInput={discovery?.input} canUseSample={sampleConfirmed} disabled={!formalAcceptanceReady} onCases={setAcceptanceCases} onFindSample={findAcceptanceSample} onClose={() => setAcceptanceSetupOpen(false)} onStart={startAcceptance} />

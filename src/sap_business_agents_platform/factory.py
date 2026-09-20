@@ -566,6 +566,8 @@ def _manifest_from_run(
                 "successful_source_count": "{{steps.validate_evidence.output.successful_source_count}}",
             },
             "acceptance": {
+                "contractVersion": "1.0",
+                "requiredAssessments": [],
                 "comparisonMode": "business_semantic",
                 "businessKeys": ["query"],
                 "facts": ["status"],
@@ -655,9 +657,9 @@ def _parameterize_session_draft(path: Path, source_plan: dict[str, Any]) -> None
             "required": list(properties),
             "additionalProperties": False,
         }
-        acceptance = execution.get("acceptance")
-        if isinstance(acceptance, dict):
-            acceptance["businessKeys"] = list(properties)
+        # Inputs describe query scope, not the grain of business result records.
+        # A generated scaffold remains review-required until a business output
+        # and its corresponding acceptance contract are authored together.
         manifest["inputs"] = {
             "zh": [str(spec["title"]["zh"]) for spec in specs.values()],
             "en": [str(spec["title"]["en"]) for spec in specs.values()],

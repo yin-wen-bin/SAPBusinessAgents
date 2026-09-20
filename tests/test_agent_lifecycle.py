@@ -171,6 +171,56 @@ def test_list_keeps_sync_gap_and_stale_run_cannot_update_revision(tmp_path: Path
     assert current["revision"] == 2 and current["validation"]["verdict"] == "pending"
 
 
+def test_latest_cancelled_trial_preserves_effective_trial_and_completed_failure_clears_it(tmp_path: Path) -> None:
+    service, store, _ = _service(tmp_path)
+    draft = asyncio.run(service.create(AgentAuthoringCreate(
+        source="blank", agentId="effective-trial-agent", module="SD"
+    )))
+
+    def finish(run_id: str, report: dict) -> None:
+        current = store.get_agent_authoring_draft(draft["draft_id"])
+        current.update(status="validating", validation_run_id=run_id)
+        store.save_agent_authoring_draft(current)
+        store.save_agent_validation_attempt(
+            draft_id=draft["draft_id"], run_id=run_id, revision=1,
+            report={"type": "trial", "run_id": run_id}, report_digest=None,
+        )
+        value = {
+            "type": "trial", "run_id": run_id, "agent_id": draft["agent_id"],
+            "revision": 1, "execution_digest": "sha256:execution",
+            "acceptance_contract_digest": "sha256:contract",
+            "completed_at": "2026-09-20T00:00:00Z",
+            **report,
+        }
+        assert store.finish_agent_validation(
+            draft["draft_id"], run_id, 1, value, "sha256:report"
+        )
+
+    finish("trial_pass", {
+        "status": "completed", "verdict": "PASS", "business_output_available": True,
+        "output_schema_valid": True, "read_only_audit": True,
+    })
+    metadata = store.get_agent_authoring_draft(draft["draft_id"])["metadata"]
+    assert metadata["effective_trial"]["run_id"] == "trial_pass"
+
+    finish("trial_cancelled", {
+        "status": "cancelled", "verdict": "FAIL", "business_output_available": False,
+        "output_schema_valid": False, "read_only_audit": False,
+        "errors": [{"code": "run_cancelled"}],
+    })
+    metadata = store.get_agent_authoring_draft(draft["draft_id"])["metadata"]
+    assert metadata["trial"]["run_id"] == "trial_cancelled"
+    assert metadata["effective_trial"]["run_id"] == "trial_pass"
+
+    finish("trial_bad_output", {
+        "status": "completed", "verdict": "FAIL", "business_output_available": False,
+        "output_schema_valid": False, "read_only_audit": True,
+    })
+    metadata = store.get_agent_authoring_draft(draft["draft_id"])["metadata"]
+    assert metadata["trial"]["run_id"] == "trial_bad_output"
+    assert "effective_trial" not in metadata
+
+
 def _service(
     tmp_path: Path, *, skills: object | None = None
 ) -> tuple[AgentLifecycleService, RunStore, Settings]:
@@ -884,6 +934,8 @@ def test_published_catalog_module_changes_without_touching_agent_or_acceptance(t
 
 
 def test_new_agent_draft_module_revision_preserves_validation_evidence(tmp_path: Path) -> None:
+    from tests.test_acceptance_contract import sample_manifest, sample_result
+    from sap_business_agents_platform.models import RunResult, RunMode
     service, store, _settings = _service(tmp_path)
     draft = asyncio.run(
         service.create(
@@ -891,6 +943,10 @@ def test_new_agent_draft_module_revision_preserves_validation_evidence(tmp_path:
         )
     )
     package = draft["package"]
+    package["manifest"]["execution"].update(sample_manifest()["execution"])
+    for key in package["manifest"]["execution"]["outputSchema"]["properties"]:
+        package["manifest"]["execution"]["outputMapping"][key] = "{{steps." + package["manifest"]["execution"]["steps"][0]["id"] + ".output." + key + "}}"
+    package["manifest"]["outputs"] = {locale: [schema["title"][locale] for schema in package["manifest"]["execution"]["outputSchema"]["properties"].values()] for locale in ("zh", "en")}
     package["manifest"]["owner"] = "Test business domain"
     package["manifest"]["workflow"][0]["operations"] = {
         "zh": ["核对输入并生成确定性业务结果。"],
@@ -906,6 +962,8 @@ def test_new_agent_draft_module_revision_preserves_validation_evidence(tmp_path:
         ),
     )
     stored = store.get_agent_authoring_draft(draft["draft_id"])
+    store.create_run("module-trial", RunCreate(mode=RunMode.agent, agentId=draft["agent_id"]))
+    store.update_run("module-trial", result_json=RunResult(run_id="module-trial", mode=RunMode.agent, **sample_result()).model_dump(mode="json"), status="completed")
     stored["status"] = "validated"
     stored["validation"] = {
         "type": "formal_acceptance",
@@ -922,6 +980,7 @@ def test_new_agent_draft_module_revision_preserves_validation_evidence(tmp_path:
     stored["metadata"] = {
         **stored.get("metadata", {}),
         "trial": {
+            "run_id": "module-trial",
             "revision": 2,
             "verdict": "PASS",
             "business_output_available": True,

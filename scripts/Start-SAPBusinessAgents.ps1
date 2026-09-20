@@ -115,7 +115,11 @@ function Test-PlatformHealth {
     try {
         # The health response includes validated Agent, workflow, Skill, and plugin
         # catalog state and can legitimately take more than one second to assemble.
-        $health = Invoke-RestMethod -Uri "$ApiUrl/api/health" -TimeoutSec 5
+        # Catalog, plugin and SDK status checks can take more than five seconds
+        # on a cold Windows process.  A short client timeout caused the server
+        # to log HTTP 200 while the launcher still treated every probe as a
+        # failure and stopped an otherwise healthy service.
+        $health = Invoke-RestMethod -Uri "$ApiUrl/api/health" -TimeoutSec 20
         return ($health.ok -eq $true -and $health.loopback_only -eq $true -and
             $health.sap_read.selected_provider -eq "embedded" -and $health.sap_read.data.read_only -eq $true)
     }

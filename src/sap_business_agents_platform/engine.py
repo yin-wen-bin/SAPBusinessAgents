@@ -20,7 +20,7 @@ from . import rules
 from .codex_planner import Planner
 from .config import Settings
 from .database import RunStore
-from .harness import CodexHarnessController
+from .harness import CodexHarnessController, classify_required_assessments
 from .integrations import IntegrationError
 from .manifests import AgentRepository, ManifestError, is_agent_executable, validate_execution
 from .managed_rules import ManagedRuleError, execute_managed_rule
@@ -478,10 +478,22 @@ class RunCoordinator:
                         code=str(getattr(exc, "code", "runtime_not_selectable")),
                     ) from exc
         self.store.create_run(run_id, request, runtime=runtime_snapshot)
-        if request.acceptance_spec is not None:
-            self.store.update_harness_state(run_id, {
-                "acceptance_spec": request.acceptance_spec.model_dump(mode="json")
-            })
+        if request.mode == RunMode.free_query:
+            if request.acceptance_spec is not None:
+                self.store.update_harness_state(run_id, {
+                    "acceptance_spec": request.acceptance_spec.model_dump(mode="json"),
+                    "required_assessments": list(request.acceptance_spec.required_assessments or []),
+                    "required_assessments_declared": request.acceptance_spec.required_assessments is not None,
+                    "required_assessments_source": "acceptance_spec",
+                })
+            else:
+                assessment_intent = classify_required_assessments(str(request.query or ""))
+                self.store.update_harness_state(run_id, {
+                    "assessment_intent": assessment_intent,
+                    "required_assessments": assessment_intent["required_assessments"],
+                    "required_assessments_declared": True,
+                    "required_assessments_source": "user_query",
+                })
         for field, secret_ref, protected, descriptor in protected_secrets:
             self.store.save_run_secret(
                 secret_ref=secret_ref,
@@ -604,6 +616,8 @@ class RunCoordinator:
         runtime: dict[str, Any],
         direct_baseline: bool = False,
         hard_limit_seconds: int | None = None,
+        acceptance_contract_digest: str | None = None,
+        acceptance_revision: int | None = None,
     ) -> str:
         """Submit a Runtime-pinned acceptance query without exposing baseline facts.
 
@@ -643,6 +657,11 @@ class RunCoordinator:
         state: dict[str, Any] = {
             "acceptance_spec": request.acceptance_spec.model_dump(mode="json"),
             "acceptance_direct_baseline": direct_baseline,
+            "required_assessments": list(request.acceptance_spec.required_assessments or []),
+            "required_assessments_declared": request.acceptance_spec.required_assessments is not None,
+            "required_assessments_source": "formal_acceptance_contract",
+            "acceptance_contract_digest": acceptance_contract_digest,
+            "acceptance_revision": acceptance_revision,
         }
         if hard_limit_seconds:
             reserved = min(60, max(1, hard_limit_seconds // 10))
@@ -891,6 +910,14 @@ class RunCoordinator:
         if record.status != RunStatus.waiting_input:
             raise RunExecutionError("This run is not waiting for input.", code="run_not_waiting_input")
         query = f"{record.query or ''}\nAdditional user information / 用户补充：{value}".strip()
+        if record.mode == RunMode.free_query:
+            assessment_intent = classify_required_assessments(query)
+            self.store.update_harness_state(run_id, {
+                "assessment_intent": assessment_intent,
+                "required_assessments": assessment_intent["required_assessments"],
+                "required_assessments_declared": True,
+                "required_assessments_source": "user_query_with_clarification",
+            })
         self.store.update_run(run_id, query=query, status=RunStatus.queued, error_json=None)
         event_payload = {"mode": "clarification"}
         if sensitive_inputs:
@@ -1214,6 +1241,22 @@ class RunCoordinator:
         self.store.create_run(run_id, run_request, runtime=session["runtime"])
         self.store.update_run(run_id, thread_id=previous.thread_id)
         source_run_id = previous.run_id if action == "reinterpret" else None
+        if action == "reinterpret":
+            previous_state = self.store.get_harness_state(previous.run_id)
+            self.store.update_harness_state(run_id, {
+                "assessment_intent": copy.deepcopy(previous_state.get("assessment_intent") or {}),
+                "required_assessments": list(previous_state.get("required_assessments") or []),
+                "required_assessments_declared": bool(previous_state.get("required_assessments_declared", True)),
+                "required_assessments_source": "reused_evidence_iteration",
+            })
+        else:
+            assessment_intent = classify_required_assessments(query)
+            self.store.update_harness_state(run_id, {
+                "assessment_intent": assessment_intent,
+                "required_assessments": assessment_intent["required_assessments"],
+                "required_assessments_declared": True,
+                "required_assessments_source": "feedback_requery",
+            })
         self.store.create_free_query_iteration(
             session_id=session_id,
             iteration=iteration,
