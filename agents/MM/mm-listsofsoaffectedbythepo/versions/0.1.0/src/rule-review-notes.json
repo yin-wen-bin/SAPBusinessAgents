@@ -1,0 +1,17 @@
+[
+  "R01 — 输入约束 / Input constraint：必须提供一个或多个精确采购订单号；可选物料与销售订单只允许收窄完整 SAP 证据范围，工厂及最终候选销售订单必须从返回证据派生，不得预置或猜测。",
+  "R02 — 直接关系 / Direct relationship：只有非删除的科目分配行明确包含 SalesOrder、SalesOrderItem（必要时包括 SalesOrderScheduleLine）时，才可标记为“直接绑定”；完整的 0 行结果只能证明无直接分配，不能证明无间接库存影响。",
+  "R03 — 采购订单范围 / PO scope：必须完整读取全部采购订单项目和计划行，并保留采购订单、项目、计划行、删除标识、物料、工厂、数量、单位、交货完成状态和计划到货日。",
+  "R04 — 多项目处理 / Multiple-item handling：若采购订单包含多个未删除项目，必须按每个不同的物料与工厂组合分别执行影响分析，再以稳定业务键合并结果。",
+  "R05 — MRP 完整性 / MRP completeness：SupplyDemandItems 查询不得设置显式 top 或任意日期下限；任何截断、分页未完成或 source_complete=false 的结果均不得用于完整影响结论。",
+  "R06 — 候选订单规则 / Candidate-order rule：潜在暴露集合必须来自同一物料、同一工厂且 MRPElementCategory=`VC` 的完整需求结果；仅凭销售订单中出现相同物料不得建立采购订单因果关系。",
+  "R07 — 复核键 / Verification keys：候选销售订单必须使用 SalesOrder + SalesOrderItem 复核物料和生产工厂；计划行必须使用 SalesOrder + SalesOrderItem + ScheduleLine 组合键关联。",
+  "R08 — 数量情景 / Quantity scenario：只有在采购订单未清数量及其配对单位明确、完整 MRP 余额可用时，才允许计算剔除供给后的余额；不得混用不同计量单位。",
+  "R09 — MRP 顺序 / MRP ordering：不得自行按日期重排并重建 SAP 的累计可用量。若服务不支持稳定 order_by，应直接使用 SAP 返回的 MRPAvailableQuantity；依赖“后续行”顺序的推导必须降级为诊断性情景。",
+  "R10 — 影响分类 / Impact classification：直接分配证据可支持“直接影响”；同一库存池中的 VC 需求只能支持“潜在暴露”。没有明确 pegging 或延期后的 ATP/后处理结果时，不得将潜在暴露升级为确定受影响。",
+  "R11 — ATP 语义 / ATP semantics：确认数量为 0 或 ConfirmedDeliveryDate 为空只能说明计划行尚未确认，不能单独证明其原因是采购订单延期。",
+  "R12 — 状态代码 / Status codes：SDProcessStatus、DeliveryStatus 等代码必须保留原值；只有存在受信任的代码映射时才可翻译业务含义，不得仅凭熟悉度解释代码 `A`。",
+  "R13 — 完整性声明 / Completeness statement：仅当所有支撑来源均 source_complete=true 且结果未截断时，才可声明查询范围完整；该声明不得扩展为“已证明供应与需求的因果分配”。",
+  "R14 — 证据引用 / Evidence citation：直接分配、采购订单事实、MRP 范围、销售订单项目和计划行声明必须分别引用对应的运行内 evidence_ref；派生汇总必须同时引用其全部输入证据。",
+  "R15 — 只读不变量 / Read-only invariant：所有固定步骤必须保持 HTTP GET；规则不得授权 POST、PATCH、DELETE、收货过账、交货创建、ATP 更新或后处理执行。"
+]

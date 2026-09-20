@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "agent_id": "mm-listsofsoaffectedbythepo",
+  "lifecycle_state": "active",
+  "state": "active",
+  "active_version": "0.1.0",
+  "latest_version": "0.1.0",
+  "active_digest": "sha256:60eb79a1516d8e7f2a68982d9765bda3fcc144726cdb3c450ae30e24d09e8405",
+  "catalog_module": "MM",
+  "catalog_revision": 1,
+  "published_at": "2026-09-20T11:51:48.775130+00:00",
+  "git_branch": "codex/agent-mm-listsofsoaffectedbythepo-publish-v0.1.0-4d388b56",
+  "git_commit": "recorded_in_agent_management_events",
+  "activated_at": "2026-09-20T11:51:48.788370+00:00",
+  "deactivated_at": null
+}

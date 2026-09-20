@@ -182,6 +182,7 @@ FI 清账不自动证明银行到账；MRP模拟不等于正式ATP；处理建�
 | MM | [智能寻源与 RFQ 评估助手](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.1 | 使用中 | 验收通过 |
 | MM | [库存健康检查](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | 使用中 | 验收通过 |
 | MM | [外购件短缺采购响应助手](agents/MM/material-shortage-procurement-response/README.md) | 0.2.1 | 使用中 | 验收通过 |
+| MM | [采购订单延期的销售订单潜在影响分析](agents/MM/mm-listsofsoaffectedbythepo/README.md) | 0.1.0 | 使用中 | 验收通过 |
 | MM | [采购订单入库状态检查](agents/Common/mm-po-gr-status/README.md) | 0.1.1 | 使用中 | 验收通过 |
 | MM | [采购到付款状态助手](agents/MM/procure-to-pay-status/README.md) | 0.3.2 | 使用中 | 验收通过 |
 | MM | [供应商绩效与交付风险助手](agents/MM/supplier-performance-risk/README.md) | 0.2.3 | 使用中 | 验收通过 |
@@ -387,6 +388,7 @@ This index is generated from current manifests and lifecycle records. Active lif
 | MM | [Intelligent Sourcing and RFQ Evaluation Assistant](agents/MM/intelligent-sourcing-rfq/README.md) | 0.1.1 | Active | Passed |
 | MM | [Inventory Health Check](agents/MM/inventory-health-balancing/README.md) | 0.4.0 | Active | Passed |
 | MM | [Material Shortage Procurement Response Assistant](agents/MM/material-shortage-procurement-response/README.md) | 0.2.1 | Active | Passed |
+| MM | [Potential Sales Order Impact Analysis for Delayed Purchase Orders](agents/MM/mm-listsofsoaffectedbythepo/README.md) | 0.1.0 | Active | Passed |
 | MM | [Purchase order receipt status check](agents/Common/mm-po-gr-status/README.md) | 0.1.1 | Active | Passed |
 | MM | [Procure-to-Pay Status Assistant](agents/MM/procure-to-pay-status/README.md) | 0.3.2 | Active | Passed |
 | MM | [Supplier Performance and Delivery Risk Assistant](agents/MM/supplier-performance-risk/README.md) | 0.2.3 | Active | Passed |

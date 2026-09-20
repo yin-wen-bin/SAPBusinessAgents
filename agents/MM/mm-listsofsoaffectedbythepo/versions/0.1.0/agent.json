@@ -1,0 +1,1211 @@
+{
+  "schemaVersion": 2,
+  "slug": "mm-listsofsoaffectedbythepo",
+  "module": "MM",
+  "title": {
+    "zh": "采购订单延期的销售订单潜在影响分析",
+    "en": "Potential Sales Order Impact Analysis for Delayed Purchase Orders"
+  },
+  "summary": {
+    "zh": "沿“采购订单 → 物料/工厂 → MRP 供需 → 销售订单项目与计划行”的只读 SAP 证据链，生成待复核的潜在暴露销售订单清单，并报告查询源完整性。",
+    "en": "Follows a read-only SAP evidence chain from purchase orders through material/plant and MRP supply and demand to sales-order items and schedule lines, producing potentially exposed sales orders for review and reporting query-source completeness."
+  },
+  "status": "Three-stage live acceptance passed",
+  "version": "0.1.0",
+  "owner": "采购与订单履约 / Procurement and Order Fulfillment",
+  "tags": [
+    "Generated draft",
+    "Read-only"
+  ],
+  "sapModules": [
+    "MM-PUR",
+    "PP-MRP",
+    "SD-SLS"
+  ],
+  "transactions": [],
+  "tables": [],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "采购订单",
+      "物料",
+      "销售订单"
+    ],
+    "en": [
+      "Purchase Order",
+      "Material",
+      "Sales Order"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "执行状态",
+      "查询源完整性",
+      "成功数据源数量",
+      "待复核候选销售订单",
+      "待复核候选销售订单数量",
+      "业务报告",
+      "候选销售订单明细",
+      "已核实项目数",
+      "已核实计划行数",
+      "业务状态",
+      "业务证据完整性",
+      "业务检查完整性",
+      "证据缺口"
+    ],
+    "en": [
+      "Execution status",
+      "Query-source completeness",
+      "Successful source count",
+      "Candidate sales orders for review",
+      "Candidate sales order count",
+      "Business report",
+      "Candidate sales-order records",
+      "Verified items",
+      "Verified schedule lines",
+      "Business status",
+      "Evidence completeness",
+      "Business completeness",
+      "Evidence gaps"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "严格只读；发布前必须由业务与SAP负责人复核。"
+    ],
+    "en": [
+      "Strictly read-only; requires business and SAP review before publication."
+    ]
+  },
+  "workflow": [
+    {
+      "id": "read-procurement-scope",
+      "title": {
+        "zh": "读取采购订单范围",
+        "en": "Read purchase-order scope"
+      },
+      "description": {
+        "zh": "使用一个或多个采购订单执行三项 GET-only 采购证据查询。",
+        "en": "Run three GET-only procurement evidence queries for one or more purchase orders."
+      },
+      "operations": {
+        "zh": [
+          "以必填采购订单集合读取科目分配、采购订单项目和计划行，每批最多使用 20 个筛选值。",
+          "可选物料仅用于收窄采购订单项目；A_PurchaseOrderScheduleLine.PurchasingDocument 复用同一采购订单集合。",
+          "保留空结果、失败、截断和 source_complete 状态供后续判断。"
+        ],
+        "en": [
+          "Read account assignments, purchase-order items, and schedule lines for the required purchase-order set, using at most 20 filter values per chunk.",
+          "Use the optional material only to narrow purchase-order items; A_PurchaseOrderScheduleLine.PurchasingDocument reuses the same purchase-order set.",
+          "Preserve empty results, failures, truncation, and source_complete for downstream decisions."
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap_read_execute_plan",
+          "kind": "SAP Read Provider",
+          "purpose": {
+            "zh": "执行采购订单范围 GET 查询。",
+            "en": "Execute purchase-order scope GET queries."
+          }
+        }
+      ],
+      "executionStepIds": [
+        "sap_query_1",
+        "sap_query_2",
+        "sap_query_3"
+      ]
+    },
+    {
+      "id": "analyze-demand-exposure",
+      "title": {
+        "zh": "派生物料与工厂并分析需求暴露",
+        "en": "Derive material and plant and analyze demand exposure"
+      },
+      "description": {
+        "zh": "从采购订单项目证据派生物料与工厂，再执行有界 MRP 和销售订单 GET-only 查询。",
+        "en": "Derive material and plant from purchase-order item evidence, then run bounded GET-only MRP and sales-order queries."
+      },
+      "operations": {
+        "zh": [
+          "本地规则仅从完整 sap_query_3 结构化结果提取 Material 与 Plant，各最多 100 个值；可选物料只收窄该证据范围。",
+          "按派生物料集合、派生 MRPPlant 与 MRPElementCategory=VC 读取 MRP 供需和候选需求；可选销售订单以 MRPElement 精确收窄候选需求。",
+          "从完整候选需求派生销售订单集合，按派生销售订单、物料和 ProductionPlant 复核订单项目，再按已复核销售订单读取计划行。",
+          "不得发送空值或无界派生筛选；物料/工厂来源不完整时跳过依赖查询，完整空候选不会触发无界销售订单查询。"
+        ],
+        "en": [
+          "Local rules extract at most 100 Material and 100 Plant values only from complete structured sap_query_3 evidence; the optional material only narrows that evidence scope.",
+          "Read MRP supply/demand and candidate demand by the derived material set, derived MRPPlant, and MRPElementCategory=VC; an optional sales order narrows candidate demand by exact MRPElement.",
+          "Derive the sales-order set from complete candidate demand, verify order items by derived sales orders, material, and ProductionPlant, then read schedule lines for verified sales orders.",
+          "Never send empty or unbounded derived filters; skip dependent queries when material or plant evidence is unavailable, and never issue an unbounded sales-order query for a complete empty candidate set."
+        ]
+      },
+      "tools": [
+        {
+          "name": "managed_agent_rule",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "从结构化证据派生有界物料、工厂和销售订单集合。",
+            "en": "Derive bounded material, plant, and sales-order sets from structured evidence."
+          }
+        },
+        {
+          "name": "sap_read_execute_plan",
+          "kind": "SAP Read Provider",
+          "purpose": {
+            "zh": "执行 MRP 与销售订单 GET 查询。",
+            "en": "Execute MRP and sales-order GET queries."
+          }
+        }
+      ],
+      "executionStepIds": [
+        "derive_plant_scope",
+        "derive_material_scope",
+        "sap_query_4",
+        "sap_query_5",
+        "derive_sales_order_scope",
+        "sap_query_6",
+        "extract_candidate_sales_orders",
+        "sap_query_7"
+      ]
+    },
+    {
+      "id": "summarize-business-evidence",
+      "title": {
+        "zh": "汇总候选订单与完整性",
+        "en": "Summarize candidates and completeness"
+      },
+      "description": {
+        "zh": "汇总已复核候选销售订单及七个 SAP 来源的完整性。",
+        "en": "Summarize verified candidate sales orders and completeness across seven SAP sources."
+      },
+      "operations": {
+        "zh": [
+          "核对采购订单物料与工厂的实际配对；按订单、物料、工厂对应MRP需求核实销售订单项目，不交叉拼接独立集合。",
+          "按销售订单去重形成规范记录；项目和计划行按组合键去重计数，报告由同一份记录生成。",
+          "完整零结果、候选待复核和证据不足分别显示；仅输出潜在关联，不证明实际延期影响。"
+        ],
+        "en": [
+          "Verify actual material/plant pairs from the purchase order, then verify sales-order items against matching order/material/plant MRP demand without crossing independent sets.",
+          "Build one canonical record per sales order; deduplicate items and schedule lines by their stable composite keys, and derive the report from those same records.",
+          "Separate complete zero, candidates for review, and incomplete evidence. Report potential association only and do not claim actual delay impact."
+        ]
+      },
+      "tools": [
+        {
+          "name": "evidence_summary",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "汇总查询源完整性。",
+            "en": "Summarize query-source completeness."
+          }
+        },
+        {
+          "name": "managed_agent_rule",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "生成候选订单业务报告。",
+            "en": "Build the candidate-order business report."
+          }
+        }
+      ],
+      "executionStepIds": [
+        "validate_evidence",
+        "build_business_report"
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "purchase_order": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "zh": "采购订单",
+            "en": "Purchase Order"
+          }
+        },
+        "material": {
+          "type": "string",
+          "minLength": 1,
+          "title": {
+            "zh": "物料",
+            "en": "Material"
+          }
+        },
+        "sales_order": {
+          "type": "string",
+          "minLength": 1,
+          "title": {
+            "zh": "销售订单",
+            "en": "Sales Order"
+          }
+        }
+      },
+      "required": [
+        "purchase_order"
+      ],
+      "additionalProperties": false
+    },
+    "steps": [
+      {
+        "id": "sap_query_1",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_PurOrdAccountAssignment",
+            "http_method": "GET",
+            "filters": [
+              {
+                "field": "PurchaseOrder",
+                "operator": "in",
+                "value": "{{input.purchase_order}}",
+                "chunk_size": 20
+              }
+            ],
+            "select_fields": [
+              "PurchaseOrder",
+              "PurchaseOrderItem",
+              "AccountAssignmentNumber",
+              "IsDeleted",
+              "Quantity",
+              "PurchaseOrderQuantityUnit",
+              "SalesOrder",
+              "SalesOrderItem",
+              "SalesOrderScheduleLine"
+            ],
+            "order_by": [
+              "PurchaseOrder",
+              "PurchaseOrderItem",
+              "AccountAssignmentNumber"
+            ],
+            "response_summary_fields": [
+              "PurchaseOrder",
+              "PurchaseOrderItem",
+              "AccountAssignmentNumber",
+              "IsDeleted",
+              "Quantity",
+              "PurchaseOrderQuantityUnit",
+              "SalesOrder",
+              "SalesOrderItem",
+              "SalesOrderScheduleLine"
+            ]
+          }
+        }
+      },
+      {
+        "id": "sap_query_2",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_PurchaseOrderScheduleLine",
+            "http_method": "GET",
+            "filters": [
+              {
+                "field": "PurchasingDocument",
+                "operator": "in",
+                "value": "{{input.purchase_order}}",
+                "chunk_size": 20
+              }
+            ],
+            "select_fields": [
+              "PurchasingDocument",
+              "PurchasingDocumentItem",
+              "ScheduleLine",
+              "ScheduleLineDeliveryDate",
+              "ScheduleLineOrderQuantity",
+              "PurchaseOrderQuantityUnit",
+              "ScheduleLineCommittedQuantity",
+              "PurchaseRequisition",
+              "PurchaseRequisitionItem"
+            ],
+            "order_by": [
+              "PurchasingDocument",
+              "PurchasingDocumentItem",
+              "ScheduleLine"
+            ],
+            "response_summary_fields": [
+              "PurchasingDocument",
+              "PurchasingDocumentItem",
+              "ScheduleLine",
+              "ScheduleLineDeliveryDate",
+              "ScheduleLineOrderQuantity",
+              "PurchaseOrderQuantityUnit",
+              "ScheduleLineCommittedQuantity",
+              "PurchaseRequisition",
+              "PurchaseRequisitionItem"
+            ]
+          }
+        }
+      },
+      {
+        "id": "sap_query_3",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_PURCHASEORDER_PROCESS_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_PurchaseOrderItem",
+            "http_method": "GET",
+            "filters": [
+              {
+                "field": "PurchaseOrder",
+                "operator": "in",
+                "value": "{{input.purchase_order}}",
+                "chunk_size": 20
+              },
+              {
+                "field": "Material",
+                "operator": "eq",
+                "value": "{{input.material}}",
+                "omitIfEmpty": "{{input.material?}}"
+              }
+            ],
+            "select_fields": [
+              "PurchaseOrder",
+              "PurchaseOrderItem",
+              "Material",
+              "Plant",
+              "OrderQuantity",
+              "PurchaseOrderQuantityUnit",
+              "PurchasingDocumentDeletionCode",
+              "IsCompletelyDelivered",
+              "GoodsReceiptIsExpected",
+              "PurchaseOrderItemCategory",
+              "AccountAssignmentCategory",
+              "PurchaseRequisition",
+              "PurchaseRequisitionItem"
+            ],
+            "order_by": [
+              "PurchaseOrder",
+              "PurchaseOrderItem"
+            ],
+            "response_summary_fields": [
+              "PurchaseOrder",
+              "PurchaseOrderItem",
+              "Material",
+              "Plant",
+              "OrderQuantity",
+              "PurchaseOrderQuantityUnit",
+              "PurchasingDocumentDeletionCode",
+              "IsCompletelyDelivered",
+              "GoodsReceiptIsExpected",
+              "PurchaseOrderItemCategory",
+              "AccountAssignmentCategory",
+              "PurchaseRequisition",
+              "PurchaseRequisitionItem"
+            ]
+          }
+        }
+      },
+      {
+        "id": "derive_plant_scope",
+        "executor": "rule",
+        "operation": "managed_agent_rule",
+        "inputMapping": {
+          "payload": "{{steps.sap_query_3.output}}",
+          "field": "Plant",
+          "max_values": 100
+        }
+      },
+      {
+        "id": "derive_material_scope",
+        "executor": "rule",
+        "operation": "managed_agent_rule",
+        "inputMapping": {
+          "payload": {
+            "purchase_order_items": "{{steps.sap_query_3.output}}",
+            "plant_scope": {
+              "source_complete": "{{steps.derive_plant_scope.output.can_query}}"
+            }
+          },
+          "field": "Material",
+          "max_values": 100
+        }
+      },
+      {
+        "id": "sap_query_4",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
+            "entity_set": "SupplyDemandItems",
+            "http_method": "GET",
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "in",
+                "value": "{{steps.derive_material_scope.output.values}}",
+                "chunk_size": 20
+              },
+              {
+                "field": "MRPPlant",
+                "operator": "in",
+                "value": "{{steps.derive_plant_scope.output.values}}"
+              }
+            ],
+            "select_fields": [
+              "Material",
+              "MRPPlant",
+              "MRPArea",
+              "MRPPlanningSegment",
+              "MRPPlanningSegmentType",
+              "MaterialShortageProfile",
+              "DemandCategoryGroup",
+              "DemandCategoryGroupName",
+              "ReceiptCategoryGroup",
+              "ReceiptCategoryGroupName",
+              "MaterialBaseUnit",
+              "MRPElementOpenQuantity",
+              "MRPAvailableQuantity",
+              "MRPElement",
+              "MRPElementAvailyOrRqmtDate",
+              "MRPElementBusinessPartner",
+              "MRPElementBusinessPartnerName",
+              "MRPElementBusinessPartnerType",
+              "MRPElementCategory",
+              "MRPElementCategoryShortName",
+              "MRPElementCategoryName",
+              "MRPElementDocumentType",
+              "MRPElementDocumentTypeName",
+              "MRPElementIsPartiallyDelivered",
+              "MRPElementIsReleased",
+              "MRPElementItem",
+              "MRPElementQuantityIsFirm",
+              "MRPElementScheduleLine",
+              "SourceMRPElement",
+              "SourceMRPElementCategory",
+              "SourceMRPElementItem",
+              "SourceMRPElementScheduleLine",
+              "StorageLocation",
+              "ExceptionMessageNumber",
+              "ExceptionMessageText"
+            ],
+            "order_by": [],
+            "response_summary_fields": [
+              "Material",
+              "MRPPlant",
+              "MRPArea",
+              "MRPElement",
+              "MRPElementItem",
+              "MRPElementScheduleLine",
+              "MRPElementCategory",
+              "MRPElementCategoryShortName",
+              "MRPElementCategoryName",
+              "MRPElementAvailyOrRqmtDate",
+              "MRPElementOpenQuantity",
+              "MRPAvailableQuantity",
+              "DemandCategoryGroup",
+              "ReceiptCategoryGroup",
+              "SourceMRPElement",
+              "SourceMRPElementCategory",
+              "SourceMRPElementItem",
+              "SourceMRPElementScheduleLine",
+              "ExceptionMessageNumber",
+              "ExceptionMessageText"
+            ]
+          }
+        },
+        "when": {
+          "source": "{{steps.derive_material_scope.output.can_query}}",
+          "equals": true
+        },
+        "onSkip": {
+          "output": {
+            "ok": false,
+            "source_complete": false,
+            "status": "inconclusive",
+            "data": {
+              "results": []
+            },
+            "evidence_gap_codes": [
+              "derived_material_or_plant_scope_unavailable"
+            ]
+          }
+        }
+      },
+      {
+        "id": "sap_query_5",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_MRP_MATERIALS_SRV_01",
+            "odata_version": "2.0",
+            "entity_set": "SupplyDemandItems",
+            "http_method": "GET",
+            "filters": [
+              {
+                "field": "Material",
+                "operator": "in",
+                "value": "{{steps.derive_material_scope.output.values}}",
+                "chunk_size": 20
+              },
+              {
+                "field": "MRPPlant",
+                "operator": "in",
+                "value": "{{steps.derive_plant_scope.output.values}}"
+              },
+              {
+                "field": "MRPElementCategory",
+                "operator": "eq",
+                "value": "VC"
+              },
+              {
+                "field": "MRPElement",
+                "operator": "eq",
+                "value": "{{input.sales_order}}",
+                "omitIfEmpty": "{{input.sales_order?}}"
+              }
+            ],
+            "select_fields": [
+              "Material",
+              "MRPPlant",
+              "MRPArea",
+              "MaterialBaseUnit",
+              "MRPElement",
+              "MRPElementItem",
+              "MRPElementScheduleLine",
+              "MRPElementAvailyOrRqmtDate",
+              "MRPElementOpenQuantity",
+              "MRPAvailableQuantity",
+              "MRPElementCategory",
+              "MRPElementCategoryShortName",
+              "MRPElementCategoryName",
+              "MRPElementBusinessPartner",
+              "MRPElementBusinessPartnerName",
+              "MRPElementBusinessPartnerType"
+            ],
+            "order_by": [],
+            "response_summary_fields": [
+              "MRPElement",
+              "MRPElementItem",
+              "MRPElementScheduleLine",
+              "MRPElementAvailyOrRqmtDate",
+              "MRPElementOpenQuantity",
+              "MRPAvailableQuantity",
+              "MRPElementBusinessPartner",
+              "MRPElementBusinessPartnerName"
+            ]
+          }
+        },
+        "when": {
+          "source": "{{steps.derive_material_scope.output.can_query}}",
+          "equals": true
+        },
+        "onSkip": {
+          "output": {
+            "ok": false,
+            "source_complete": false,
+            "status": "inconclusive",
+            "data": {
+              "results": []
+            },
+            "evidence_gap_codes": [
+              "derived_material_or_plant_scope_unavailable"
+            ]
+          }
+        }
+      },
+      {
+        "id": "derive_sales_order_scope",
+        "executor": "rule",
+        "operation": "managed_agent_rule",
+        "inputMapping": {
+          "payload": "{{steps.sap_query_5.output}}",
+          "field": "MRPElement",
+          "max_values": 100
+        }
+      },
+      {
+        "id": "sap_query_6",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_SALES_ORDER_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_SalesOrderItem",
+            "http_method": "GET",
+            "filters": [
+              {
+                "field": "SalesOrder",
+                "operator": "in",
+                "value": "{{steps.derive_sales_order_scope.output.values}}",
+                "chunk_size": 20
+              },
+              {
+                "field": "Material",
+                "operator": "in",
+                "value": "{{steps.derive_material_scope.output.values}}"
+              },
+              {
+                "field": "ProductionPlant",
+                "operator": "in",
+                "value": "{{steps.derive_plant_scope.output.values}}"
+              }
+            ],
+            "select_fields": [
+              "SalesOrder",
+              "SalesOrderItem",
+              "Material",
+              "ProductionPlant",
+              "SalesOrderItemText",
+              "RequestedQuantity",
+              "RequestedQuantityUnit",
+              "ConfdDelivQtyInOrderQtyUnit",
+              "SalesDocumentRjcnReason",
+              "SDProcessStatus",
+              "DeliveryStatus"
+            ],
+            "order_by": [
+              "SalesOrder",
+              "SalesOrderItem"
+            ],
+            "response_summary_fields": [
+              "SalesOrder",
+              "SalesOrderItem",
+              "Material",
+              "ProductionPlant",
+              "RequestedQuantity",
+              "RequestedQuantityUnit",
+              "ConfdDelivQtyInOrderQtyUnit",
+              "SalesDocumentRjcnReason",
+              "SDProcessStatus",
+              "DeliveryStatus"
+            ]
+          }
+        },
+        "when": {
+          "source": "{{steps.derive_sales_order_scope.output.can_query}}",
+          "equals": true
+        },
+        "onSkip": {
+          "output": {
+            "ok": false,
+            "source_complete": true,
+            "status": "complete",
+            "data": {
+              "results": []
+            },
+            "evidence_gap_codes": []
+          }
+        }
+      },
+      {
+        "id": "extract_candidate_sales_orders",
+        "executor": "rule",
+        "operation": "managed_agent_rule",
+        "inputMapping": {
+          "payload": "{{steps.sap_query_6.output}}",
+          "field": "SalesOrder",
+          "max_values": 100
+        }
+      },
+      {
+        "id": "sap_query_7",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "request": {
+          "plan": {
+            "service_name": "API_SALES_ORDER_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_SalesOrderScheduleLine",
+            "http_method": "GET",
+            "filters": [
+              {
+                "field": "SalesOrder",
+                "operator": "in",
+                "value": "{{steps.extract_candidate_sales_orders.output.values}}",
+                "chunk_size": 20
+              }
+            ],
+            "select_fields": [
+              "SalesOrder",
+              "SalesOrderItem",
+              "ScheduleLine",
+              "RequestedDeliveryDate",
+              "ConfirmedDeliveryDate",
+              "OrderQuantityUnit",
+              "ScheduleLineOrderQuantity",
+              "ConfdOrderQtyByMatlAvailCheck",
+              "DeliveredQtyInOrderQtyUnit",
+              "OpenConfdDelivQtyInOrdQtyUnit",
+              "CorrectedQtyInOrderQtyUnit",
+              "DelivBlockReasonForSchedLine"
+            ],
+            "order_by": [
+              "SalesOrder",
+              "SalesOrderItem",
+              "ScheduleLine"
+            ],
+            "response_summary_fields": [
+              "SalesOrder",
+              "SalesOrderItem",
+              "ScheduleLine",
+              "RequestedDeliveryDate",
+              "ConfirmedDeliveryDate",
+              "OrderQuantityUnit",
+              "ScheduleLineOrderQuantity",
+              "ConfdOrderQtyByMatlAvailCheck",
+              "DeliveredQtyInOrderQtyUnit",
+              "OpenConfdDelivQtyInOrdQtyUnit",
+              "DelivBlockReasonForSchedLine"
+            ]
+          }
+        },
+        "when": {
+          "source": "{{steps.extract_candidate_sales_orders.output.can_query}}",
+          "equals": true
+        },
+        "onSkip": {
+          "output": {
+            "ok": false,
+            "source_complete": true,
+            "status": "complete",
+            "data": {
+              "results": []
+            },
+            "evidence_gap_codes": []
+          }
+        }
+      },
+      {
+        "id": "validate_evidence",
+        "executor": "rule",
+        "operation": "evidence_summary",
+        "inputMapping": {
+          "sap_query_1": "{{steps.sap_query_1.output}}",
+          "sap_query_2": "{{steps.sap_query_2.output}}",
+          "sap_query_3": "{{steps.sap_query_3.output}}",
+          "sap_query_4": "{{steps.sap_query_4.output}}",
+          "sap_query_5": "{{steps.sap_query_5.output}}",
+          "sap_query_6": "{{steps.sap_query_6.output}}",
+          "sap_query_7": "{{steps.sap_query_7.output}}"
+        }
+      },
+      {
+        "id": "build_business_report",
+        "executor": "rule",
+        "operation": "managed_agent_rule",
+        "inputMapping": {
+          "mode": "business_report",
+          "candidate_sales_orders": "{{steps.extract_candidate_sales_orders.output.values}}",
+          "candidate_source_complete": "{{steps.extract_candidate_sales_orders.output.source_complete}}",
+          "sales_order_items": "{{steps.sap_query_6.output}}",
+          "schedule_lines": "{{steps.sap_query_7.output}}",
+          "evidence_summary": "{{steps.validate_evidence.output}}",
+          "purchase_order_items": "{{steps.sap_query_3.output}}",
+          "mrp_candidates": "{{steps.sap_query_5.output}}"
+        }
+      }
+    ],
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "title": {
+            "zh": "执行状态",
+            "en": "Execution status"
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "successful_source_count": {
+          "type": "integer",
+          "title": {
+            "zh": "成功数据源数量",
+            "en": "Successful source count"
+          }
+        },
+        "candidate_sales_orders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": {
+            "zh": "待复核候选销售订单",
+            "en": "Candidate sales orders for review"
+          }
+        },
+        "candidate_sales_order_count": {
+          "type": "integer",
+          "minimum": 0,
+          "title": {
+            "zh": "待复核候选销售订单数量",
+            "en": "Candidate sales order count"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "业务报告",
+            "en": "Business report"
+          }
+        },
+        "records": {
+          "type": "array",
+          "title": {
+            "zh": "候选销售订单明细",
+            "en": "Candidate sales-order records"
+          },
+          "items": {
+            "type": "object",
+            "properties": {
+              "sales_order": {
+                "type": "string",
+                "title": {
+                  "zh": "销售订单",
+                  "en": "Sales order"
+                },
+                "minLength": 1
+              },
+              "verified_item_count": {
+                "type": "integer",
+                "title": {
+                  "zh": "已核实项目数",
+                  "en": "Verified items"
+                },
+                "minimum": 0
+              },
+              "schedule_line_count": {
+                "type": "integer",
+                "title": {
+                  "zh": "已核实计划行数",
+                  "en": "Verified schedule lines"
+                },
+                "minimum": 0
+              },
+              "assessment": {
+                "type": "string",
+                "title": {
+                  "zh": "业务评估",
+                  "en": "Business assessment"
+                },
+                "enum": [
+                  "candidate_for_review",
+                  "inconclusive"
+                ],
+                "x-sapba-display": {
+                  "format": "enum",
+                  "labels": {
+                    "candidate_for_review": {
+                      "zh": "候选待复核",
+                      "en": "Candidate for review"
+                    },
+                    "inconclusive": {
+                      "zh": "证据不足",
+                      "en": "Inconclusive"
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "sales_order",
+              "verified_item_count",
+              "schedule_line_count",
+              "assessment"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "verified_item_count": {
+          "type": "integer",
+          "title": {
+            "zh": "已核实项目数",
+            "en": "Verified items"
+          },
+          "minimum": 0
+        },
+        "schedule_line_count": {
+          "type": "integer",
+          "title": {
+            "zh": "已核实计划行数",
+            "en": "Verified schedule lines"
+          },
+          "minimum": 0
+        },
+        "business_status": {
+          "type": "string",
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          },
+          "enum": [
+            "normal",
+            "attention",
+            "inconclusive"
+          ],
+          "x-sapba-display": {
+            "format": "enum",
+            "labels": {
+              "normal": {
+                "zh": "正常",
+                "en": "Normal"
+              },
+              "attention": {
+                "zh": "需关注",
+                "en": "Needs attention"
+              },
+              "inconclusive": {
+                "zh": "证据不足",
+                "en": "Inconclusive"
+              }
+            }
+          }
+        },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务证据完整性",
+            "en": "Evidence completeness"
+          }
+        },
+        "business_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务检查完整性",
+            "en": "Business completeness"
+          }
+        },
+        "evidence_gap_codes": {
+          "type": "array",
+          "title": {
+            "zh": "证据缺口",
+            "en": "Evidence gaps"
+          },
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "status",
+        "source_complete",
+        "successful_source_count",
+        "candidate_sales_orders",
+        "candidate_sales_order_count",
+        "business_report",
+        "records",
+        "verified_item_count",
+        "schedule_line_count",
+        "business_status",
+        "evidence_complete",
+        "business_complete",
+        "evidence_gap_codes"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "status": "{{steps.validate_evidence.output.status}}",
+      "source_complete": "{{steps.build_business_report.output.workflow_output.source_complete}}",
+      "successful_source_count": "{{steps.validate_evidence.output.successful_source_count}}",
+      "candidate_sales_orders": "{{steps.build_business_report.output.workflow_output.candidate_sales_orders}}",
+      "candidate_sales_order_count": "{{steps.build_business_report.output.workflow_output.candidate_sales_order_count}}",
+      "business_report": "{{steps.build_business_report.output.workflow_output.business_report}}",
+      "records": "{{steps.build_business_report.output.workflow_output.records}}",
+      "verified_item_count": "{{steps.build_business_report.output.workflow_output.verified_item_count}}",
+      "schedule_line_count": "{{steps.build_business_report.output.workflow_output.schedule_line_count}}",
+      "business_status": "{{steps.build_business_report.output.workflow_output.business_status}}",
+      "evidence_complete": "{{steps.build_business_report.output.workflow_output.evidence_complete}}",
+      "business_complete": "{{steps.build_business_report.output.workflow_output.business_complete}}",
+      "evidence_gap_codes": "{{steps.build_business_report.output.workflow_output.evidence_gap_codes}}"
+    },
+    "acceptance": {
+      "contractVersion": "1.0",
+      "comparisonMode": "business_semantic",
+      "recordScope": "records",
+      "recordDefinition": "One unique sales order with verified material/plant association to the confirmed purchase order scope.",
+      "scopeDefinition": "Screen potential-association candidates only, not causal delay impact, shortage quantity or delivery changes. Start from the confirmed purchase_order's items, narrowed by optional material. Preserve each actual Material/Plant pair; never form a Cartesian product. For those exact pairs use sales-order demand (MRPElementCategory VC); optional sales_order restricts MRPElement. Include a sales order only when at least one sales-order item has that same order, material and production plant in the corresponding MRP demand. Deduplicate verified items by SalesOrder/SalesOrderItem and schedule lines by SalesOrder/SalesOrderItem/ScheduleLine; count only schedule lines of verified items. Read complete evidence before claiming exhaustive results. Complete empty scope is zero; missing, bounded or conflicting required evidence is inconclusive. No stock allocation, FIFO, date cutoff, unit conversion, ATP or pegging is performed. Counts in incomplete output describe observed verified records only.",
+      "businessKeys": [
+        "sales_order"
+      ],
+      "facts": [
+        "assessment",
+        "verified_item_count",
+        "schedule_line_count"
+      ],
+      "metrics": [
+        "candidate_sales_order_count",
+        "verified_item_count",
+        "schedule_line_count"
+      ],
+      "factDefinitions": {
+        "sales_order": "Canonical SAP SalesOrder ID, verified against sales-order item evidence for the matching MRP order/material/plant triple.",
+        "assessment": "candidate_for_review if required source and association evidence is complete; inconclusive if required evidence is incomplete. Neither code proves causal delay impact.",
+        "verified_item_count": "Count unique SalesOrderItem values for this order whose material/plant triple is verified by PO scope and MRP demand. Integer, no double-counting repeated rows.",
+        "schedule_line_count": "Count unique SalesOrderItem/ScheduleLine pairs belonging only to this order's verified items. A complete query with no rows is zero."
+      },
+      "metricDefinitions": {
+        "candidate_sales_order_count": "Count unique sales_order records at the defined grain. Complete empty scope is zero. In incomplete output this is the observed count, never a claim of completeness.",
+        "verified_item_count": "Sum the record verified_item_count values: unique verified SalesOrder/SalesOrderItem keys in this scope.",
+        "schedule_line_count": "Sum the record schedule_line_count values: unique verified SalesOrder/SalesOrderItem/ScheduleLine keys in this scope."
+      },
+      "metricInvariants": {
+        "candidate_sales_order_count": {
+          "operation": "count_records"
+        },
+        "verified_item_count": {
+          "operation": "sum",
+          "field": "verified_item_count"
+        },
+        "schedule_line_count": {
+          "operation": "sum",
+          "field": "schedule_line_count"
+        }
+      },
+      "businessStatusDefinition": "attention when complete evidence yields candidates; normal for complete zero candidates; inconclusive when required evidence is missing, incomplete, truncated or conflicting. Source/evidence/business completeness are separate explicit booleans.",
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [
+        "POTENTIAL_EXPOSURE_ONLY"
+      ],
+      "requiredAssessments": []
+    },
+    "relationshipPolicy": "advisory"
+  },
+  "authoring": {
+    "source": "validated_free_query",
+    "correction": "",
+    "freeQuerySession": {
+      "source_session_id": "fq_8c826d51b9e244d2",
+      "accepted_iteration": 1,
+      "result_digest": "sha256:9a2b323a7501dbef5a2e2572da07d92b5f442c7a666f34af750ccba084a0c6fc",
+      "feedback_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "feedback_trace": [],
+      "plan_digest": "sha256:3f4059b6bf173e2b6af2ae650043c7723eded4461998e5f6aa38043bd471510f",
+      "accepted_iteration_plan_digest": "sha256:baa3d1c5a779f08a17e102f782f20c8ffa001e6df56394ff8aa95987b10833fc",
+      "execution_source_run_id": "run_820479b4b01b4add",
+      "runtime": {
+        "provider_id": "codex",
+        "sdk_id": "codex-python-sdk",
+        "version": "0.147.0",
+        "cli_version": "0.147.0",
+        "model": "gpt-5.6-sol",
+        "model_source": "system_settings",
+        "reasoning_effort": "max",
+        "reasoning_effort_source": "system_settings",
+        "model_catalog_digest": "26da4f344b32be72205ab275f0de910b375a3d5b61cb12f8f20a89184a45e717",
+        "model_check_digest": "4833e11bbc7d64a80c5eb0386cc204abe6a2735b6ff0a1eb525531162f0453cd",
+        "runtime_configuration_revision": 24,
+        "configuration_digest": "83128380125109489494086efe36ac209cb110a303ea36806f60ee7418ff8c76",
+        "capabilities": [
+          "planning",
+          "tool_calling",
+          "mcp",
+          "streaming",
+          "resume",
+          "structured_output",
+          "cancel",
+          "authoring",
+          "workflow_authoring",
+          "role_matching"
+        ],
+        "integration_runtime": {
+          "adapter_id": "codex-app-server",
+          "resource_kinds": [
+            "app",
+            "mcp_server"
+          ],
+          "features": {
+            "catalog": true,
+            "configured_discovery": true,
+            "status": true,
+            "authentication": true,
+            "configuration": true,
+            "direct_tool_call": true
+          },
+          "credential_owner": "runtime",
+          "readiness": "production",
+          "blockers": []
+        },
+        "selected_at": "2026-09-17T19:18:25.710404+08:00"
+      },
+      "thread_id": "01a0af16-ee00-7440-aa27-36574557a94c",
+      "expectation_statuses": [],
+      "evidence_gaps": [],
+      "source_complete": true,
+      "business_complete": true,
+      "requires_parameterization_review": true
+    },
+    "parameterization": {
+      "status": "needs_review",
+      "input_fields": [
+        "purchase_order",
+        "material",
+        "sales_order"
+      ],
+      "source_plan_digest": "sha256:3f4059b6bf173e2b6af2ae650043c7723eded4461998e5f6aa38043bd471510f",
+      "sample_value_hashes": {
+        "purchase_order": "sha256:df1a0036ded8440609e7697a5df7f19c675c7682aacd4ede5d11d0c9784281a1",
+        "material": "sha256:93c0291b4d3eab3cfc99a2238a0f6aa3d6b44d66a857f26314ceabef0763a822",
+        "sales_order": "sha256:7428b24b0906c0eeea56ab690d005f4aa9b27cfe6bfd393235190c77b5022a69"
+      }
+    }
+  },
+  "validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-09-20T11:16:18.573995+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-sdk-direct-sap",
+      "free-query",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "独立SAP基线、自由查询和固定Agent的业务语义一致。",
+      "en": "The independent SAP baseline, free query, and fixed Agent are semantically consistent."
+    },
+    "reportPath": "docs/formal-acceptance.md",
+    "executable": true,
+    "acceptanceMode": "three_stage",
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "blockingLimitations": [],
+    "baselineRuntime": "codex_sdk_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "campaignId": "campaign_6e3997be017c4f5998dd",
+    "reportDigest": "sha256:4a67e412c825218f4a401e602adb11a59da5240486df36639fadabd92d3cd68b"
+  },
+  "managedRule": {
+    "entrypoint": "evaluate",
+    "sha256": "sha256:581920ecb1bc4e017286b9a95f03894dad7f94f9698b144812323c61271afb3e"
+  },
+  "purpose": {
+    "zh": "按采购订单实际物料与工厂配对、销售订单类MRP需求及订单项目筛查潜在关联候选，不计算实际短缺或交期推迟。",
+    "en": "Screen potential-association candidates only, not causal delay impact, shortage quantity or delivery changes. Start from the confirmed purchase_order's items, narrowed by optional material. Preserve each actual Material/Plant pair; never form a Cartesian product. For those exact pairs use sales-order demand (MRPElementCategory VC); optional sales_order restricts MRPElement. Include a sales order only when at least one sales-order item has that same order, material and production plant in the corresponding MRP demand. Deduplicate verified items by SalesOrder/SalesOrderItem and schedule lines by SalesOrder/SalesOrderItem/ScheduleLine; count only schedule lines of verified items. Read complete evidence before claiming exhaustive results. Complete empty scope is zero; missing, bounded or conflicting required evidence is inconclusive. No stock allocation, FIFO, date cutoff, unit conversion, ATP or pegging is performed. Counts in incomplete output describe observed verified records only."
+  }
+}
