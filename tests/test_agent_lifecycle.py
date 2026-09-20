@@ -1071,6 +1071,36 @@ def test_documentation_package_requires_full_catalog_and_report(tmp_path: Path):
     assert error.value.code == "agent_package_invalid"
 
 
+def test_first_publication_adds_missing_generated_facts_block_without_rewriting_readme():
+    original = "# New Agent\n\nHuman-authored usage notes.\n"
+
+    prepared = AgentLifecycleService._publication_readme_with_facts_block(original)
+
+    assert prepared.startswith(original)
+    assert prepared.count("<!-- generated:facts:start -->") == 1
+    assert prepared.count("<!-- generated:facts:end -->") == 1
+    assert AgentLifecycleService._publication_readme_with_facts_block(prepared) == prepared
+
+
+@pytest.mark.parametrize(
+    "readme",
+    [
+        "# Agent\n\n<!-- generated:facts:start -->\n",
+        "# Agent\n\n<!-- generated:facts:end -->\n",
+        (
+            "# Agent\n\n<!-- generated:facts:start -->\n"
+            "<!-- generated:facts:start -->\n<!-- generated:facts:end -->\n"
+        ),
+        "# Agent\n\n<!-- generated:facts:end -->\n<!-- generated:facts:start -->\n",
+    ],
+)
+def test_publication_rejects_incomplete_duplicate_or_reversed_facts_blocks(readme: str):
+    with pytest.raises(AgentLifecycleError) as error:
+        AgentLifecycleService._publication_readme_with_facts_block(readme)
+
+    assert error.value.code == "agent_documentation_block_invalid"
+
+
 def test_publication_capture_excludes_runtime_cache_and_local_environment(tmp_path: Path):
     service, _, _ = _service(tmp_path)
     _write_active_agent(service, tmp_path)

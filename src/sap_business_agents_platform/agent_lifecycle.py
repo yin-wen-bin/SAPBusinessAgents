@@ -1566,6 +1566,10 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         if bool(payload.activate):
             self._require_skill_dependencies(manifest)
         package = self._publication_package(draft, package)
+        package = copy.deepcopy(package)
+        package["readme"] = self._publication_readme_with_facts_block(
+            package.get("readme")
+        )
         # Every published package must satisfy the same catalog contract as the
         # site build.  This also verifies that the projected validation summary
         # points to a bundled Markdown acceptance report before Git is touched.
@@ -2374,6 +2378,28 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         public["files"] = {name: value for name, value in package.get("files", {}).items() if name in _GENERATED_PUBLIC_FILES}
         public.pop("binary_files", None)
         return public
+
+    @staticmethod
+    def _publication_readme_with_facts_block(readme: Any) -> str:
+        """Ensure documentation.py can refresh a newly published Agent README."""
+
+        start = "<!-- generated:facts:start -->"
+        end = "<!-- generated:facts:end -->"
+        text = str(readme or "# Agent\n")
+        start_count = text.count(start)
+        end_count = text.count(end)
+        if start_count == 1 and end_count == 1 and text.index(start) < text.index(end):
+            return text
+        if start_count or end_count:
+            raise AgentLifecycleError(
+                "The Agent README has an incomplete or duplicate generated facts block.",
+                code="agent_documentation_block_invalid",
+            )
+        if not text.endswith("\n"):
+            text += "\n"
+        if not text.endswith("\n\n"):
+            text += "\n"
+        return f"{text}{start}\n{end}\n"
 
     def _capture_package(self, directory: Path) -> dict[str, Any]:
         excluded = {"versions", "__pycache__", ".pytest_cache", ".git", ".venv", "node_modules"}
