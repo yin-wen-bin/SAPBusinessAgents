@@ -229,6 +229,7 @@ class SiteReleaseManager:
             "-ExpectedVersion", version,
             "-ExpectedModule", catalog_module,
             "-ResultPath", str(result_path),
+            "-ApiUrl", self._api_url(),
         ]
         try:
             subprocess.run(

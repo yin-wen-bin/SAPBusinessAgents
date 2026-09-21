@@ -145,9 +145,21 @@ def test_manual_restart_builds_before_stopping_services_and_switch_does_not_stop
     )
     assert startup.index('Name "site_build_before_restart"') < startup.index('Name "port_detection"')
     assert "Stop-ExpectedListener -Name \"SAPBusinessAgents API\"" in startup
-    assert "8765" not in switch
+    assert 'Stop-Site -ProcessId $oldPid' in switch
+    assert "Stop-ExpectedListener" not in switch
     assert "Stop-Site" in switch
     assert '"--ignore-lock"' in switch
+    assert "$listenerPid = [int]$Matches.pid" in switch
+    assert "return $listenerPid" in switch
+    assert "$managedByCurrentPointer" in switch
+    assert "$oldPointerPid -eq $oldPid" in switch
+    assert "if (-not $managedByCurrentPointer)" in switch
+    assert '$env:PUBLIC_SITE_BASE = "/"' in switch
+    assert "$env:PUBLIC_SAPBA_API_URL = $ApiUrl" in switch
+    assert '"-ApiUrl", self._api_url()' in (
+        root / "src" / "sap_business_agents_platform" / "site_release.py"
+    ).read_text(encoding="utf-8")
+    assert '$result.failure_detail = [string]$_.Exception.Message' in switch
 
 
 def test_candidate_preview_uses_local_base_and_checks_repository_redirect(

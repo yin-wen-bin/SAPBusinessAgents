@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory = $true)] [string]$ExpectedVersion,
     [Parameter(Mandatory = $true)] [string]$ExpectedModule,
     [Parameter(Mandatory = $true)] [string]$ResultPath,
+    [string]$ApiUrl = "",
     [ValidateRange(1, 65535)] [int]$SitePort = 4321
 )
 
@@ -37,9 +38,12 @@ function Get-ListenerProcessId {
     param([int]$Port)
     $netstatPath = Join-Path $env:SystemRoot "System32\netstat.exe"
     foreach ($line in (& $netstatPath -ano -p TCP)) {
-        if ($line -match '^\s*TCP\s+(?<local>\S+)\s+\S+\s+LISTENING\s+(?<pid>\d+)\s*$' -and
-            $Matches.local -match ':(?<port>\d+)$' -and [int]$Matches.port -eq $Port) {
-            return [int]$Matches.pid
+        if ($line -match '^\s*TCP\s+(?<local>\S+)\s+\S+\s+LISTENING\s+(?<pid>\d+)\s*$') {
+            $listenerPid = [int]$Matches.pid
+            $localEndpoint = [string]$Matches.local
+            if ($localEndpoint -match ':(?<port>\d+)$' -and [int]$Matches.port -eq $Port) {
+                return $listenerPid
+            }
         }
     }
     return $null
@@ -64,11 +68,23 @@ function Start-Site {
     param([string]$BuildDist, [string]$Label)
     $stdout = Join-Path $LogRoot "$Timestamp-$Label.stdout.log"
     $stderr = Join-Path $LogRoot "$Timestamp-$Label.stderr.log"
-    return Start-Process -FilePath $NodePath -ArgumentList @(
-        $AstroPath, "preview", "--host", "127.0.0.1", "--port", [string]$SitePort,
-        "--outDir", $BuildDist, "--ignore-lock"
-    ) -WorkingDirectory $SiteRoot -WindowStyle Hidden -RedirectStandardOutput $stdout `
-      -RedirectStandardError $stderr -PassThru
+    $oldSiteBase = [Environment]::GetEnvironmentVariable("PUBLIC_SITE_BASE", "Process")
+    $oldApiUrl = [Environment]::GetEnvironmentVariable("PUBLIC_SAPBA_API_URL", "Process")
+    try {
+        $env:PUBLIC_SITE_BASE = "/"
+        $env:PUBLIC_SAPBA_API_URL = $ApiUrl
+        return Start-Process -FilePath $NodePath -ArgumentList @(
+            $AstroPath, "preview", "--host", "127.0.0.1", "--port", [string]$SitePort,
+            "--outDir", $BuildDist, "--ignore-lock"
+        ) -WorkingDirectory $SiteRoot -WindowStyle Hidden -RedirectStandardOutput $stdout `
+          -RedirectStandardError $stderr -PassThru
+    }
+    finally {
+        if ($null -eq $oldSiteBase) { Remove-Item Env:PUBLIC_SITE_BASE -ErrorAction SilentlyContinue }
+        else { $env:PUBLIC_SITE_BASE = $oldSiteBase }
+        if ($null -eq $oldApiUrl) { Remove-Item Env:PUBLIC_SAPBA_API_URL -ErrorAction SilentlyContinue }
+        else { $env:PUBLIC_SAPBA_API_URL = $oldApiUrl }
+    }
 }
 
 function Wait-Site {
@@ -120,12 +136,17 @@ $result = [ordered]@{
     status = "failed"
     fingerprint = $Fingerprint
     failure_code = $null
+    failure_detail = $null
     rolled_back = $false
     previous_fingerprint = $null
     completed_at = $null
 }
 $lock = $null
 try {
+    if ([string]::IsNullOrWhiteSpace($ApiUrl)) {
+        $ApiUrl = [Environment]::GetEnvironmentVariable("PUBLIC_SAPBA_API_URL", "Process")
+    }
+    if ([string]::IsNullOrWhiteSpace($ApiUrl)) { $ApiUrl = "http://127.0.0.1:8765" }
     $prefix = $BuildRoot.TrimEnd('\') + [System.IO.Path]::DirectorySeparatorChar
     if (-not $ResolvedDist.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Prepared Web UI is outside the immutable build root."
@@ -153,18 +174,35 @@ try {
     $oldPid = Get-ListenerProcessId -Port $SitePort
     $oldDist = $null
     $oldFingerprint = $null
+    $oldPointerPid = $null
     if (Test-Path -LiteralPath $CurrentPath -PathType Leaf) {
         $current = Get-Content -LiteralPath $CurrentPath -Raw | ConvertFrom-Json
         $oldDist = [string]$current.dist_path
         $oldFingerprint = [string]$current.fingerprint
+        if ($current.PSObject.Properties.Name -contains "pid" -and $null -ne $current.pid) {
+            $oldPointerPid = [int]$current.pid
+        }
     }
     if ($null -ne $oldPid) {
-        $oldCommand = Get-ProcessCommandLine -ProcessId $oldPid
-        if ($oldCommand.IndexOf($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -and
-            $oldCommand.IndexOf($BuildRoot, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
-            throw "Port $SitePort is owned by an unexpected process."
+        $managedByCurrentPointer = $false
+        if ($null -ne $oldPointerPid -and $oldPointerPid -eq $oldPid -and
+            -not [string]::IsNullOrWhiteSpace($oldDist)) {
+            $resolvedOldDist = [System.IO.Path]::GetFullPath($oldDist)
+            $managedByCurrentPointer = $resolvedOldDist.StartsWith(
+                $prefix, [System.StringComparison]::OrdinalIgnoreCase
+            ) -and (Test-Path -LiteralPath $resolvedOldDist -PathType Container)
+            if ($managedByCurrentPointer) { $oldDist = $resolvedOldDist }
         }
-        if ([string]::IsNullOrWhiteSpace($oldDist)) { $oldDist = Get-OutDirFromCommandLine -CommandLine $oldCommand }
+        if (-not $managedByCurrentPointer) {
+            $oldCommand = Get-ProcessCommandLine -ProcessId $oldPid
+            if ($oldCommand.IndexOf($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -and
+                $oldCommand.IndexOf($BuildRoot, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                throw "Port $SitePort is owned by an unexpected process."
+            }
+            if ([string]::IsNullOrWhiteSpace($oldDist)) {
+                $oldDist = Get-OutDirFromCommandLine -CommandLine $oldCommand
+            }
+        }
         Stop-Site -ProcessId $oldPid
     }
 
@@ -206,6 +244,7 @@ try {
     $result.previous_fingerprint = $oldFingerprint
 }
 catch {
+    $result.failure_detail = [string]$_.Exception.Message
     if ([string]::IsNullOrWhiteSpace([string]$result.failure_code)) {
         $result.failure_code = "site_refresh_failed"
     }
