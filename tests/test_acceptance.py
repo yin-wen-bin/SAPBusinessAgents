@@ -15,6 +15,7 @@ from sap_business_agents_platform.acceptance import (
     runtime_acceptance_identity,
     validate_direct_baseline,
 )
+from sap_business_agents_platform.acceptance_contract import contract_issues
 from scripts.run_three_stage_acceptance import (
     _acceptance_prompt,
     _finalize_normalized,
@@ -1816,7 +1817,7 @@ def test_campaign_certification_requires_agent_aggregate_and_pinned_case_artifac
     assert any(item["code"] == "candidate_snapshot_required" for item in certification["blockers"])
 
 
-def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
+def test_deterministic_agents_use_supported_acceptance_contracts() -> None:
     root = Path(__file__).resolve().parents[1]
     manifests = [
         json.loads(path.read_text(encoding="utf-8"))
@@ -1824,9 +1825,11 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
         if path.parent.name not in {"ap-payment", "mm-po-gr-status", "role-agent-matching"}
     ]
 
-    assert len(manifests) == 30
     for manifest in manifests:
         acceptance = manifest["execution"]["acceptance"]
+        if acceptance.get("contractVersion") == "1.0":
+            assert contract_issues(manifest) == []
+            continue
         assert acceptance["schemaVersion"] == "2.0"
         assert acceptance["businessKeys"]
         assert acceptance["metrics"]
@@ -1877,6 +1880,15 @@ def test_remaining_agents_use_non_placeholder_acceptance_v2_contracts() -> None:
         assert isinstance(acceptance["blockingLimitations"], list)
         assert isinstance(acceptance["ignoredNoticeKeywords"], list)
 
+    purchase_order_impact = next(
+        item for item in manifests if item["slug"] == "mm-listsofsoaffectedbythepo"
+    )
+    acceptance = purchase_order_impact["execution"]["acceptance"]
+    assert acceptance["contractVersion"] == "1.0"
+    assert acceptance["requiredLimitations"] == ["POTENTIAL_EXPOSURE_ONLY"]
+    assert "business_status" not in acceptance["facts"]
+    assert "business_status" in purchase_order_impact["execution"]["outputSchema"]["properties"]
+
 
 def test_agent_status_matches_terminal_three_stage_verdict() -> None:
     root = Path(__file__).resolve().parents[1]
@@ -1886,7 +1898,7 @@ def test_agent_status_matches_terminal_three_stage_verdict() -> None:
     ]
 
     deterministic = [item for item in manifests if item.get("kind") != "platform_assistant"]
-    assert len(deterministic) == 32
+    assert deterministic
     for manifest in deterministic:
         verdict = manifest["validation"]["verdict"]
         expected = "passed" if verdict == "PASS" else verdict.lower()

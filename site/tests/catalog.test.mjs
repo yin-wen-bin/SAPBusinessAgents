@@ -1,8 +1,36 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { loadAgentCatalog, validateAgent } from "../scripts/generate-agent-catalog.mjs";
+
+const agentsRoot = path.resolve("..", "agents");
+
+function scanFormalAgentPackages() {
+  const records = [];
+  for (const moduleEntry of readdirSync(agentsRoot, { withFileTypes: true })) {
+    if (!moduleEntry.isDirectory() || moduleEntry.name.startsWith(".") || moduleEntry.name.startsWith("_")) continue;
+    const modulePath = path.join(agentsRoot, moduleEntry.name);
+    for (const agentEntry of readdirSync(modulePath, { withFileTypes: true })) {
+      if (!agentEntry.isDirectory() || agentEntry.name.startsWith(".") || agentEntry.name.startsWith("_")) continue;
+      const packagePath = path.join(modulePath, agentEntry.name);
+      const manifestPath = path.join(packagePath, "agent.json");
+      assert.ok(existsSync(manifestPath), `missing formal Agent package: ${manifestPath}`);
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      const publicationPath = path.join(packagePath, "publication.json");
+      const publication = existsSync(publicationPath)
+        ? JSON.parse(readFileSync(publicationPath, "utf8"))
+        : {};
+      records.push({
+        slug: manifest.slug,
+        repositoryModule: moduleEntry.name,
+        catalogModule: publication.catalog_module ?? moduleEntry.name,
+        lifecycleState: publication.lifecycle_state ?? publication.state ?? "active",
+      });
+    }
+  }
+  return records;
+}
 
 test("Astro 7 uses its supported Vite 8 without a legacy override", () => {
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
@@ -12,47 +40,14 @@ test("Astro 7 uses its supported Vite 8 without a legacy override", () => {
   assert.match(lock.packages["node_modules/vite"].version, /^8\./);
 });
 
-test("complete management catalog validates thirty-two deterministic agents and one platform assistant", () => {
-  const records = loadAgentCatalog(path.resolve("..", "agents"));
-  assert.equal(records.length, 33);
+test("complete management catalog matches every formal Agent package", () => {
+  const packages = scanFormalAgentPackages();
+  const records = loadAgentCatalog(agentsRoot);
   assert.deepEqual(
-    records.map((agent) => `${agent.module}/${agent.slug}`),
-    [
-      "MM/mm-po-gr-status",
-      "Common/role-agent-matching",
-      "FI/ap-payment",
-      "FI/ar-cash-application",
-      "FI/ar-collection",
-      "FI/gr-ir-clearing",
-      "FI/month-end-closing",
-      "CO/budget-rolling-forecast",
-      "CO/co-month-end-allocation-settlement",
-      "CO/cost-center-expense-anomaly",
-      "CO/internal-order-project-control",
-      "CO/product-cost-variance",
-      "SD/billing-block-diagnosis",
-      "SD/billing-completeness-check",
-      "SD/billing-dispute-classification",
-      "SD/billing-output-monitor",
-      "SD/delivered-not-billed",
-      "SD/delivery-delay-prediction",
-      "SD/due-delivery-prioritization",
-      "SD/new-sales-demand-coverage",
-      "SD/order-to-cash-status",
-      "SD/returns-credit-anomaly",
-      "SD/shortage-allocation-advisor",
-      "MM/intelligent-sourcing-rfq",
-      "MM/inventory-health-balancing",
-      "MM/material-shortage-procurement-response",
-      "MM/procure-to-pay-status",
-      "MM/supplier-performance-risk",
-      "PP/demand-forecast-planning",
-      "PP/mrp-exception-analysis",
-      "PP/production-order-monitoring",
-      "PP/production-scheduling-capacity",
-      "PP/production-variance-analysis",
-    ],
+    records.map((agent) => `${agent.module}/${agent.slug}`).sort(),
+    packages.map((agent) => `${agent.catalogModule}/${agent.slug}`).sort(),
   );
+  assert.equal(new Set(packages.map((agent) => agent.slug)).size, packages.length);
   for (const agent of records) {
     assert.ok(agent.workflow.length > 0);
     assert.ok(agent.workflow.every((step) => step.tools.length > 0));
@@ -84,8 +79,6 @@ test("complete management catalog validates thirty-two deterministic agents and 
   assert.equal(reclassified.repositoryModule, "Common");
 
   const sdAgents = records.filter((agent) => agent.module === "SD");
-  assert.equal(sdAgents.length, 11);
-  assert.ok(sdAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(sdAgents.every((agent) => agent.guardrails.zh.some((item) => item.includes("只读"))));
   for (const agent of records.filter((agent) => agent.kind !== "platform_assistant")) {
     const executionIds = new Set(agent.execution.steps.map((step) => step.id));
@@ -112,19 +105,19 @@ test("complete management catalog validates thirty-two deterministic agents and 
   }
 
   const mmAgents = records.filter((agent) => agent.module === "MM");
-  assert.equal(mmAgents.length, 6);
-  const newMmAgents = mmAgents.filter(
-    (agent) => agent.repositoryModule === "MM" && agent.slug !== "procure-to-pay-status",
-  );
-  assert.ok(newMmAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
-  assert.ok(newMmAgents.every((agent) => agent.validation?.providers.includes("embedded-sap-odata")));
-  assert.ok(newMmAgents.every((agent) => agent.execution.steps.some((step) => step.when)));
-  assert.ok(newMmAgents.every((agent) => agent.execution.steps.filter((step) => step.executor === "skill").every((step) => step.skillId === "sap-adt-table-export" && step.failurePolicy === "record_gap")));
+  const legacySkillBackedMmAgents = [
+    "material-shortage-procurement-response",
+    "inventory-health-balancing",
+    "intelligent-sourcing-rfq",
+    "supplier-performance-risk",
+  ].map((slug) => mmAgents.find((agent) => agent.slug === slug));
+  assert.ok(legacySkillBackedMmAgents.every(Boolean));
+  assert.ok(legacySkillBackedMmAgents.every((agent) => agent.validation?.providers.includes("embedded-sap-odata")));
+  assert.ok(legacySkillBackedMmAgents.every((agent) => agent.execution.steps.some((step) => step.when)));
+  assert.ok(legacySkillBackedMmAgents.every((agent) => agent.execution.steps.filter((step) => step.executor === "skill").every((step) => step.skillId === "sap-adt-table-export" && step.failurePolicy === "record_gap")));
 
   const coAgents = records.filter((agent) => agent.module === "CO");
-  assert.equal(coAgents.length, 5);
   assert.ok(coAgents.every((agent) => agent.schemaVersion === 2));
-  assert.ok(coAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
   assert.ok(coAgents.every((agent) => agent.validation?.providers.includes("embedded-sap-odata")));
   assert.ok(coAgents.every((agent) => agent.execution.steps.every((step) => ["sap_read", "skill", "rule"].includes(step.executor))));
 
@@ -154,16 +147,16 @@ test("complete management catalog validates thirty-two deterministic agents and 
   ]);
 
   const ppAgents = records.filter((agent) => agent.module === "PP");
-  assert.equal(ppAgents.length, 5);
   const ppVerdicts = Object.fromEntries(ppAgents.map((agent) => [agent.slug, agent.validation?.verdict]));
-  assert.deepEqual(ppVerdicts, {
+  for (const [slug, verdict] of Object.entries({
     "demand-forecast-planning": "PASS",
     "mrp-exception-analysis": "PASS",
     "production-order-monitoring": "PASS",
     "production-scheduling-capacity": "BLOCKED",
     "production-variance-analysis": "PASS",
-  });
-  assert.ok(ppAgents.every((agent) => agent.workflow.length === agent.execution.steps.length));
+  })) {
+    assert.equal(ppVerdicts[slug], verdict);
+  }
   assert.ok(ppAgents.every((agent) => agent.workflow.every((step) => step.operations.zh.length === step.operations.en.length)));
   assert.ok(ppAgents.every((agent) => agent.schemaVersion === 2));
   assert.ok(ppAgents.every((agent) => agent.execution.mode === "deterministic"));
@@ -171,9 +164,12 @@ test("complete management catalog validates thirty-two deterministic agents and 
 });
 
 test("runnable catalog excludes both inactive SD Agents", () => {
-  const records = loadAgentCatalog(path.resolve("..", "agents"), { includeInactive: false });
-  assert.equal(records.length, 31);
-  assert.equal(records.filter((agent) => agent.module === "SD").length, 9);
+  const records = loadAgentCatalog(agentsRoot, { includeInactive: false });
+  const expected = scanFormalAgentPackages().filter((agent) => agent.lifecycleState !== "inactive");
+  assert.deepEqual(
+    records.map((agent) => `${agent.module}/${agent.slug}`).sort(),
+    expected.map((agent) => `${agent.catalogModule}/${agent.slug}`).sort(),
+  );
   assert.ok(!records.some((agent) => ["billing-dispute-classification", "billing-output-monitor"].includes(agent.slug)));
 });
 

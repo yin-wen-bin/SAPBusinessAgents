@@ -23,8 +23,14 @@ def _manifest(module: str, agent_id: str) -> dict[str, object]:
 
 def test_all_agent_manifests_have_locale_consistent_public_input_titles() -> None:
     manifests = AgentRepository(ROOT / "agents").list_all()
+    package_paths = sorted((ROOT / "agents").glob("*/*/agent.json"))
+    package_slugs = [
+        json.loads(path.read_text(encoding="utf-8"))["slug"] for path in package_paths
+    ]
 
-    assert len(manifests) == 33
+    assert len(package_slugs) == len(set(package_slugs))
+    assert {item["slug"] for item in manifests} == set(package_slugs)
+    assert all(path.parent.name == slug for path, slug in zip(package_paths, package_slugs))
 
 
 def test_manifest_rejects_english_label_in_chinese_input_title() -> None:

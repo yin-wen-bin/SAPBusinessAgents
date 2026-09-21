@@ -27,7 +27,12 @@ from sap_business_agents_platform.engine import (
     _validate_input,
 )
 from sap_business_agents_platform.factory import infer_catalog_module
-from sap_business_agents_platform.manifests import AgentRepository, ManifestError, validate_execution
+from sap_business_agents_platform.manifests import (
+    AgentRepository,
+    ManifestError,
+    is_agent_executable,
+    validate_execution,
+)
 from sap_business_agents_platform.models import (
     HarnessResult,
     LocalizedText,
@@ -1193,70 +1198,24 @@ def test_repository_separates_active_and_inactive_schema_v2_agents() -> None:
     root = Path(__file__).resolve().parents[1]
     repository = AgentRepository(root / "agents")
     records = repository.list()
-    assert [record["slug"] for record in repository.executable()] == [
-        "product-cost-variance",
-        "mm-po-gr-status",
-        "ap-payment",
-        "ar-cash-application",
-        "ar-collection",
-        "gr-ir-clearing",
-        "month-end-closing",
-        "intelligent-sourcing-rfq",
-        "inventory-health-balancing",
-        "material-shortage-procurement-response",
-        "procure-to-pay-status",
-        "supplier-performance-risk",
-        "demand-forecast-planning",
-        "mrp-exception-analysis",
-        "production-order-monitoring",
-        "production-variance-analysis",
-        "billing-block-diagnosis",
-        "billing-completeness-check",
-        "delivered-not-billed",
-        "delivery-delay-prediction",
-        "due-delivery-prioritization",
-        "new-sales-demand-coverage",
-        "order-to-cash-status",
-    ]
-    assert {record["slug"] for record in records} == {
-        "ap-payment",
-        "ar-cash-application",
-        "ar-collection",
-        "billing-block-diagnosis",
-        "billing-completeness-check",
-        "budget-rolling-forecast",
-        "co-month-end-allocation-settlement",
-        "cost-center-expense-anomaly",
-        "delivered-not-billed",
-        "delivery-delay-prediction",
-        "demand-forecast-planning",
-        "due-delivery-prioritization",
-        "gr-ir-clearing",
-        "intelligent-sourcing-rfq",
-        "inventory-health-balancing",
-        "internal-order-project-control",
-        "material-shortage-procurement-response",
-        "mm-po-gr-status",
-        "month-end-closing",
-        "mrp-exception-analysis",
-        "new-sales-demand-coverage",
-        "procure-to-pay-status",
-        "order-to-cash-status",
-        "production-order-monitoring",
-        "production-scheduling-capacity",
-        "production-variance-analysis",
-        "product-cost-variance",
-        "returns-credit-anomaly",
-        "role-agent-matching",
-        "shortage-allocation-advisor",
-        "supplier-performance-risk",
+    all_records = repository.list_all()
+    package_slugs = {
+        json.loads(path.read_text(encoding="utf-8"))["slug"]
+        for path in (root / "agents").glob("*/*/agent.json")
     }
+    assert {record["slug"] for record in all_records} == package_slugs
     inactive = {
         record["slug"]
-        for record in repository.list_all()
+        for record in all_records
         if repository.lifecycle(record["slug"])["state"] == "inactive"
     }
     assert inactive == {"billing-dispute-classification", "billing-output-monitor"}
+    assert {record["slug"] for record in records} == package_slugs - inactive
+    executable = repository.executable()
+    assert {record["slug"] for record in executable} == {
+        record["slug"] for record in records if is_agent_executable(record)
+    }
+    assert "mm-listsofsoaffectedbythepo" in {record["slug"] for record in executable}
     for record in records:
         assert record["schemaVersion"] == 2
         if record.get("kind") == "platform_assistant":
@@ -1269,6 +1228,47 @@ def test_repository_separates_active_and_inactive_schema_v2_agents() -> None:
             for step in record["execution"]["steps"]
             if step["executor"] in {"sap_read", "skill"}
         )
+
+
+def test_repository_execution_eligibility_uses_lifecycle_and_validation(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    cases = [
+        ("Common", "mm-po-gr-status", "active"),
+        ("PP", "production-scheduling-capacity", "active"),
+        ("FI", "ap-payment", "inactive"),
+        ("SD", "billing-output-monitor", "inactive"),
+        ("Common", "role-agent-matching", "active"),
+    ]
+    agents_root = tmp_path / "agents"
+    for module, slug, state in cases:
+        source = root / "agents" / module / slug / "agent.json"
+        target = agents_root / module / slug
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target / "agent.json")
+        (target / "publication.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "agent_id": slug,
+                    "lifecycle_state": state,
+                    "state": state,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    repository = AgentRepository(agents_root)
+    assert {item["slug"] for item in repository.list_all()} == {
+        item[1] for item in cases
+    }
+    assert {item["slug"] for item in repository.list()} == {
+        "mm-po-gr-status",
+        "production-scheduling-capacity",
+        "role-agent-matching",
+    }
+    assert [item["slug"] for item in repository.executable()] == ["mm-po-gr-status"]
 
 
 @pytest.mark.parametrize("agent_id", ["billing-dispute-classification", "billing-output-monitor"])
@@ -2863,6 +2863,11 @@ def _workflow_management_repository(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.name", "Workflow Test"], cwd=repository, check=True)
     subprocess.run(
         ["git", "config", "user.email", "workflow@example.invalid"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "core.longpaths", "true"],
         cwd=repository,
         check=True,
     )

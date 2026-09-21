@@ -25,31 +25,26 @@ test("acceptance labels use recorded mode and preserve documentation-reuse prove
   }
 });
 
-test("static catalog contains all agents and the GitHub Pages base path", async () => {
-  const html = await readPage("zh");
-  for (const slug of [
-    "ap-payment",
-    "ar-cash-application",
-    "ar-collection",
-    "gr-ir-clearing",
-    "month-end-closing",
-    "procure-to-pay-status",
-  ]) {
-    assert.match(html, new RegExp(`/SAPBusinessAgents/zh/agents/(?:FI|MM)/${slug}/`));
+test("static catalog renders every active Agent in both languages", async () => {
+  const activeAgents = loadAgentCatalog(undefined, { includeInactive: false });
+  for (const lang of ["zh", "en"]) {
+    const html = await readPage(lang);
+    assert.equal((html.match(/data-agent-id="/g) ?? []).length, activeAgents.length);
+    for (const agent of activeAgents) {
+      assert.ok(html.includes(`data-agent-id="${agent.module}/${agent.slug}"`), `${lang} catalog is missing ${agent.slug}`);
+      assert.ok(html.includes(`/SAPBusinessAgents/${lang}/agents/${agent.module}/${agent.slug}/`), `${lang} catalog link is missing ${agent.slug}`);
+      await assert.doesNotReject(() => readPage(lang, "agents", agent.module, agent.slug));
+    }
+    assert.match(html, /class="odata-version-tag">V2</);
+    assert.doesNotMatch(html, new RegExp(`href="/${lang}/`));
   }
-  assert.equal((html.match(/data-agent-id="FI\//g) ?? []).length, 5);
-  assert.equal((html.match(/data-agent-id="Common\//g) ?? []).length, 1);
-  assert.equal((html.match(/data-agent-id="CO\//g) ?? []).length, 5);
-  assert.equal((html.match(/data-agent-id="MM\//g) ?? []).length, 6);
-  assert.equal((html.match(/data-agent-id="SD\//g) ?? []).length, 9);
-  assert.match(html, /class="odata-version-tag">V2</);
-  assert.doesNotMatch(html, /href="\/zh\//);
+  const zh = await readPage("zh");
   assert.match(
-    html,
+    zh,
     /<div class="sidebar-footer">\s*<a href="https:\/\/github\.com\/yin-wen-bin\/SAPBusinessAgents"[^>]*aria-label="GitHub">\s*GitHub\s*<\/a>/,
   );
-  assert.doesNotMatch(html, /贡献指南/);
-  assert.doesNotMatch(html, /<a class="header-link"[^>]*aria-label="GitHub"/);
+  assert.doesNotMatch(zh, /贡献指南/);
+  assert.doesNotMatch(zh, /<a class="header-link"[^>]*aria-label="GitHub"/);
 });
 
 test("CO detail pages render the exact manifest execution workflows", async () => {

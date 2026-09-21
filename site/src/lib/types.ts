@@ -127,7 +127,7 @@ export interface AgentValidation {
   executable?: boolean;
   acceptanceMode?: "three_stage" | "deterministic_runtime";
   caseId?: string;
-  baselineRuntime?: "codex_app_direct_sap" | "embedded-odata" | "embedded_direct_sap";
+  baselineRuntime?: "codex_app_direct_sap" | "codex_sdk_direct_sap" | "embedded-odata" | "embedded_direct_sap";
   runtimeCaseIds?: string[];
   workflowRunIds?: string[];
   usedSapBusinessAgentsForBaseline?: boolean;
@@ -160,6 +160,7 @@ export interface AgentValidation {
 }
 
 export interface AgentAcceptance {
+  contractVersion?: "1.0";
   schemaVersion?: "1.0" | "2.0";
   comparisonMode: "business_semantic";
   businessKeys: string[];
@@ -193,9 +194,16 @@ export interface AgentAcceptance {
   ignoredNoticeKeywords?: string[];
   zeroFactWhenMetricZero?: Record<string, string>;
   recordScope?: string;
+  recordDefinition?: string;
+  scopeDefinition?: string;
   metricDefinitions?: Record<string, string>;
+  metricInvariants?: Record<string, {
+    operation: "count_records" | "sum";
+    field?: string;
+  }>;
   factDefinitions?: Record<string, string>;
   businessStatusDefinition?: string;
+  requiredAssessments?: string[];
   businessStatusFromAnyPositiveMetric?: {
     metrics?: string[];
     positive?: string;
@@ -438,6 +446,7 @@ export interface AgentDefinition {
   repositoryModule?: SapModule;
   title: LocalizedText;
   summary: LocalizedText;
+  purpose?: LocalizedText;
   status: string;
   version: string;
   owner: string;

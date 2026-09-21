@@ -42,6 +42,16 @@ def sha256_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def canonical_text_bytes(value: bytes) -> bytes:
+    """Return UTF-8 text with platform-neutral LF line endings."""
+    text = value.decode("utf-8")
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
+def canonical_text_file_hash(path: Path) -> str:
+    return sha256_bytes(canonical_text_bytes(path.read_bytes()))
+
+
 def file_hash(path: Path) -> str:
     return sha256_bytes(path.read_bytes())
 

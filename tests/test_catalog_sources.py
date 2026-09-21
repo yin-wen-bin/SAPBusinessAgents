@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts.import_sapclaw_catalog import build_outputs, json_bytes, sha256_bytes
+from scripts.import_sapclaw_catalog import (
+    build_outputs,
+    canonical_text_bytes,
+    canonical_text_file_hash,
+    json_bytes,
+    sha256_bytes,
+)
 from scripts.sync_sap_bah_catalog import detected_odata_version, load_spec, normalize
 from sap_business_agents_platform.sap_read.odata_catalog import (
     ODataCatalogError,
@@ -274,4 +280,12 @@ def test_committed_catalog_sha256_manifest_matches_every_generated_output() -> N
     )
     assert manifest["algorithm"] == "SHA-256"
     for relative, expected in manifest["files"].items():
-        assert sha256_bytes((ROOT / relative).read_bytes()) == expected
+        assert canonical_text_file_hash(ROOT / relative) == expected
+
+
+def test_catalog_text_hash_is_independent_of_platform_line_endings() -> None:
+    lf = b'{\n  "status": "ready"\n}\n'
+    crlf = lf.replace(b"\n", b"\r\n")
+
+    assert canonical_text_bytes(crlf) == lf
+    assert sha256_bytes(canonical_text_bytes(crlf)) == sha256_bytes(lf)
