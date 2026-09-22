@@ -172,13 +172,29 @@ class AgentAuthoringMixin:
         if not self.store.assert_agent_operation(draft_id, operation_id, expected_revision=expected_revision):
             raise self._authoring_error("The draft operation is stale.", "agent_draft_conflict")
 
-    def get_diff(self, draft_id: str, from_revision: int | None = None, to_revision: int | None = None) -> dict[str, Any]:
+    def get_diff(self, draft_id: str, from_revision: int | None = None, to_revision: int | None = None, *, baseline: str = "revision") -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
         target = int(to_revision if to_revision is not None else draft["revision"])
+        after = self.store.get_agent_authoring_revision(draft_id, target)["package"]
+        if baseline == "source":
+            if draft.get("source_version"):
+                try:
+                    published = self.agents.package(
+                        draft["agent_id"], draft["source_version"], draft.get("source_hash")
+                    )
+                    before = self._capture_package(Path(published["directory"]))
+                except Exception as exc:
+                    raise self._authoring_error("The pinned source version is unavailable.", "agent_source_baseline_unavailable") from exc
+                source_label: int | str = str(draft["source_version"])
+            else:
+                before = {}
+                source_label = "new_agent"
+            return {"draft_id": draft_id, "baseline": "source", "from_revision": source_label,
+                    "to_revision": target, "changes": package_changes(before, after)}
         source = int(from_revision if from_revision is not None else max(1, target - 1))
         before = self.store.get_agent_authoring_revision(draft_id, source)["package"]
-        after = self.store.get_agent_authoring_revision(draft_id, target)["package"]
-        return {"draft_id": draft_id, "from_revision": source, "to_revision": target, "changes": package_changes(before, after)}
+        return {"draft_id": draft_id, "baseline": "revision", "from_revision": source,
+                "to_revision": target, "changes": package_changes(before, after)}
 
     def _apply_package(self, draft_id: str, expected_revision: int, package: dict[str, Any], *, kind: str, operation_id: str, record_turn: bool = True, decision: dict[str, Any] | None = None, safe_runtime: bool = False, deadline_check: Any = None, runtime_thread_id: str | None = None, allow_catalog_module_change: bool = False, preserve_validation: bool = False) -> dict[str, Any]:
         self._assert_operation(draft_id, operation_id, expected_revision)
@@ -434,7 +450,14 @@ class AgentAuthoringMixin:
         turns = self.store.list_agent_conversation_turns(draft_id)
         latest_turn = max((int(turn["turn"]) for turn in turns), default=0)
         retry_of_turn = getattr(payload, "retry_of_turn", None)
-        fingerprint = hashlib.sha256(json.dumps({"revision": revision, "feedback": str(payload.feedback), "base_turn": int(payload.base_turn), "locale": str(payload.locale), "retry_of_turn": retry_of_turn}, sort_keys=True).encode()).hexdigest()
+        intent = str(getattr(payload, "intent", "revise") or "revise")
+        feedback_context = {key: value for key, value in {
+            "step": getattr(payload, "step", None),
+            "field_path": getattr(payload, "field_path", None),
+            "run_id": getattr(payload, "run_id", None),
+            "acceptance_campaign_id": getattr(payload, "acceptance_campaign_id", None),
+        }.items() if value is not None}
+        fingerprint = hashlib.sha256(json.dumps({"revision": revision, "feedback": str(payload.feedback), "base_turn": int(payload.base_turn), "locale": str(payload.locale), "retry_of_turn": retry_of_turn, "intent": intent, "context": feedback_context}, sort_keys=True).encode()).hexdigest()
         operation = self._reserve_operation(draft_id, revision, "feedback", getattr(payload, "request_id", None), fingerprint)
         if operation.get("reused"):
             match = next((item for item in turns if item.get("decision", {}).get("task_id") == operation["operation_id"]), None)
@@ -457,8 +480,9 @@ class AgentAuthoringMixin:
                 binding_error = "agent_runtime_snapshot_failed"
         decision = {"task_id": operation["operation_id"], "runtime_snapshot": snapshot,
                     "agent_id": draft["agent_id"], "retry_of_turn": retry_of_turn,
+                    "intent": intent, "context": feedback_context,
                     "execution": {"timeout_seconds": float(self.feedback_timeout_seconds), "elapsed_seconds": 0}}
-        if snapshot.get("provider_id") == "codex":
+        if intent == "revise" and snapshot.get("provider_id") == "codex":
             # New submissions only. Existing persisted/offline operations retain
             # their original permissions. The user accepted loopback reachability;
             # do not translate that into a successful network-isolation claim.
@@ -542,7 +566,8 @@ class AgentAuthoringMixin:
                     raise self._authoring_error("The Runtime does not support Agent authoring.", "runtime_agent_feedback_unavailable")
                 tool_options = {"tool_policy": copy.deepcopy(turn["decision"]["authoring_policy"])} if turn["decision"].get("authoring_policy") else {}
                 progress("generating_revision", 1)
-                decision = await self._await_feedback_runtime(self.runtime.review_agent_feedback(feedback=str(payload.feedback), locale=str(payload.locale), package=runtime_package, history=history, thread_id=None if turn["decision"].get("retry_of_turn") else draft.get("thread_id"), operation_id=operation_id, **tool_options), draft_id=draft_id, operation_id=operation_id, timeout=budget - (monotonic() - started))
+                explanation = turn["decision"].get("intent") == "explain"
+                decision = await self._await_feedback_runtime(self.runtime.review_agent_feedback(feedback=str(payload.feedback), locale=str(payload.locale), package=runtime_package, history=history, thread_id=None if explanation or turn["decision"].get("retry_of_turn") else draft.get("thread_id"), operation_id=operation_id, intent=turn["decision"].get("intent", "revise"), feedback_context=copy.deepcopy(turn["decision"].get("context") or {}), **({} if explanation else tool_options)), draft_id=draft_id, operation_id=operation_id, timeout=budget - (monotonic() - started))
             check_deadline()
             self._assert_operation(draft_id, operation_id, int(turn["base_revision"]))
             progress("validating_response", 2)
@@ -551,6 +576,8 @@ class AgentAuthoringMixin:
             action = decision.get("action")
             if action not in {"clarify", "reply", "revise_agent"} or not isinstance(decision.get("summary"), dict) or not all(isinstance(decision["summary"].get(lang), str) for lang in ("zh", "en")):
                 raise self._authoring_error("The Runtime response is invalid.", "runtime_agent_feedback_invalid")
+            if turn["decision"].get("intent") == "explain" and action == "revise_agent":
+                raise self._authoring_error("Explanation mode cannot modify the Agent.", "agent_explanation_write_rejected")
             result = None
             if action == "revise_agent":
                 if "edits" in decision and decision.get("package") is not None:

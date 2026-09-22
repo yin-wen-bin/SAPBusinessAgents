@@ -107,6 +107,8 @@ const stageLabel = (stage: string, locale: Locale) => {
     preparing: ["准备并校验", "Preparing and checking"], baseline: ["独立SAP基线", "Independent SAP baseline"],
     free_query: ["自由查询比较", "Free-query comparison"], fixed_agent: ["固定Agent快照", "Fixed-Agent snapshot"],
     comparing: ["逐字段比较", "Field comparison"], completed: ["已完成", "Completed"],
+    cleanup: ["清理尚未确认完成，请检查服务状态，当前草稿仍保持锁定", "Cleanup is unconfirmed. Check service health; this draft remains locked"],
+    source_anchor_before: ["基线来源复核", "Baseline source verification"],
   };
   return (labels[stage] || [stage, stage])[locale === "zh" ? 0 : 1];
 };
@@ -150,7 +152,11 @@ const campaignErrorLabel = (codeValue: unknown, locale: Locale) => {
     agent_acceptance_interrupted: ["服务在验收期间重启或中断，请重新验收。", "The service restarted or stopped during acceptance. Run acceptance again."],
     agent_acceptance_queue_timeout: ["任务排队时间过长，尚未完成验收。", "The campaign remained queued too long and was not tested."],
     agent_acceptance_stage_timeout: ["当前验收阶段超时，未生成发布证书。", "The current acceptance stage timed out; no publication certificate was created."],
+    agent_acceptance_stage_interrupted: ["当前验收阶段中断，尚未完成业务比较。", "The acceptance stage was interrupted before business comparison completed."],
+    agent_acceptance_business_input_required: ["独立基线仍需确认业务信息，验收未完成。", "The independent baseline still needs business input; acceptance is incomplete."],
+    independent_baseline_gap_unverified: ["基线未完成取证，所声明的缺口尚未得到可靠证据确认。", "Baseline investigation is incomplete; the stated gap has not been verified by reliable evidence."],
     agent_acceptance_internal_error: ["验收服务发生内部错误，请核对服务状态后重试。", "The acceptance service failed internally. Check service health and retry."],
+    agent_acceptance_mode_invalid: ["当前Agent的验收模式无效，请选择三级验收或确定性运行验收。", "The Agent acceptance mode is invalid. Select three-stage or deterministic-runtime acceptance."],
     runtime_model_authentication_failed: ["Runtime认证失败，请在系统配置中重新登录。", "Runtime authentication failed. Sign in again in system settings."],
     runtime_model_check_required: ["模型与推理强度尚未通过兼容检查。", "The model and reasoning effort have not passed compatibility checking."],
   };
@@ -214,6 +220,13 @@ export function AgentAcceptanceProgress(props: ProgressProps) {
       <p role="status">{terminal ? draftStatus(verdict, props.locale) : stageLabel(campaign.phase || "preparing", props.locale)}</p>
       {terminal && campaign.report?.failure_category && <p>{tr("问题类别", "Issue category")}: {({ contract: tr("验收定义或输出不符合契约，尚未完成业务比较", "Contract/output invalid; business comparison not completed"), evidence: tr("证据不足或来源变化", "Evidence gap or source drift"), business: tr("同一口径下的业务差异", "Business difference under the same definition"), environment: tr("执行环境故障", "Execution environment failure") } as Record<string, string>)[campaign.report.failure_category]} · {stageLabel(campaign.report.failure_stage || "comparing", props.locale)}</p>}
       <ContractIssues issues={campaign.report?.validation_issues || []} locale={props.locale} />
+      {campaign.report?.diagnostics && <details className="acceptance-diagnostics"><summary>{tr("查看执行诊断", "Execution diagnostics")}</summary>
+        <dl><dt>{tr("最后失败工具", "Last failed tool")}</dt><dd>{campaign.report.diagnostics.last_failed_tool || tr("未记录", "Not recorded")}</dd>
+          <dt>{tr("安全错误代码", "Safe error code")}</dt><dd>{campaign.report.diagnostics.last_error_code || tr("未记录", "Not recorded")}</dd>
+          <dt>{tr("最后完成工具", "Last completed tool")}</dt><dd>{campaign.report.diagnostics.last_completed_tool || tr("未记录", "Not recorded")}</dd></dl>
+        <ContractIssues issues={campaign.report.diagnostics.unresolved_issues || []} locale={props.locale} />
+        {campaign.report.diagnostics.cleanup_complete === false && <p role="alert">{tr("未能确认后台清理完成，草稿操作锁仍然保留。请检查服务状态后再重试。", "Background cleanup could not be confirmed. The draft remains locked; check service health before retrying.")}</p>}
+      </details>}
       {!terminal && campaign.current_case_id && <p>{tr("当前案例", "Current case")}: {campaign.current_case_index || "—"}/{campaign.cases?.length || "—"} · <code>{campaign.current_case_id}</code></p>}
       <p>{tr("SAP只读验收，不会发布或启用Agent。", "Read-only SAP acceptance; the Agent will not be published or activated.")}</p>
       <p>{tr("排队耗时", "Queue time")}: {format(queued)} · {tr("实际执行耗时", "Execution time")}: {format(elapsed)} · {tr("动态最长", "Maximum")}: {format(campaign.estimated_max_seconds || 0)}</p>

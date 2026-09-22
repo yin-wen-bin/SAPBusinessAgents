@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -99,6 +102,9 @@ class EmbeddedODataProvider:
         self.normalizer = SapValueNormalizer(normalization_catalog_path)
         self._cases: dict[str, dict[str, Any]] = {}
         self._metadata_cache: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        self._run_metadata: dict[tuple[str, str, str, str], tuple[Any, str]] = {}
+        self._run_metadata_locks: dict[tuple[str, str, str, str], asyncio.Lock] = {}
+        self._metadata_scope: ContextVar[str | None] = ContextVar("sap_schema_scope", default=None)
         self._service_registry = ODataServiceRegistry.load(service_registry_path)
         self._catalog_seed = self._load_catalog_seed(catalog_seed_path)
         self._merge_curated_catalog(curated_catalog_path)
@@ -154,6 +160,7 @@ class EmbeddedODataProvider:
         public_registry = {
             (item["service_name"], item["odata_version"]): item
             for item in self._service_registry.public_services()
+            if item.get("enabled") is True and item.get("status") != "blocked"
         }
         for service_record in self._catalog_seed.get("services") or []:
             if not isinstance(service_record, dict):
@@ -291,11 +298,36 @@ class EmbeddedODataProvider:
                     )
                 )
             items = [item for _score, _service, _entity, item in sorted(ranked)]
+        # Registered services remain discoverable even without an entity seed.
+        # Search is entirely local; it never probes a customer's SAP system.
+        candidates = []
+        for key, service in public_registry.items():
+            related = [entry for entry in entries.values()
+                       if (entry["service_name"], entry["odata_version"]) == key]
+            terms = list(dict.fromkeys(term for entry in related
+                                       for term in entry.get("business_terms", [])))
+            searchable = _catalog_searchable_text([service["service_name"], terms])
+            if needle and needle not in searchable and not any(
+                token in searchable for token in _catalog_query_tokens(needle)
+            ):
+                continue
+            candidates.append({
+                "service_name": key[0], "odata_version": key[1],
+                "discovery_source": "configured_service",
+                "metadata_status": "not_checked",
+                "business_aliases": terms[:40],
+            })
+        candidates.sort(key=lambda item: (
+            item["service_name"].casefold() != needle,
+            item["service_name"], item["odata_version"],
+        ))
         page = items[max(0, skip) : max(0, skip) + max(1, limit)]
         return {
             "ok": True,
             "data": {
                 "items": page,
+                "service_candidates": candidates[max(0, skip):max(0, skip) + max(1, limit)],
+                "service_candidate_count": len(candidates),
                 "total_count": len(items),
                 "provider_id": self.provider_id,
                 "catalog_scope": "sanitized_seed_and_advisory_relationship_entities",
@@ -344,6 +376,10 @@ class EmbeddedODataProvider:
         odata_version: str,
         include_fields: bool = True,
         max_fields: int = 5000,
+        mode: str = "fields",
+        offset: int = 0,
+        limit: int = 100,
+        cache_scope: str | None = None,
     ) -> dict[str, Any]:
         del query
         self._require_configured()
@@ -352,51 +388,22 @@ class EmbeddedODataProvider:
         binding = self._resolve_binding(service, version)
         requested = [entity_sets] if isinstance(entity_sets, str) else list(entity_sets)
         requested = list(dict.fromkeys(str(item) for item in requested))
-        if not requested:
+        if mode not in {"fields", "entities"}:
+            raise SapReadError("Unknown schema mode.", code="sap_schema_mode_invalid")
+        if not requested and mode == "fields":
             raise SapReadError("At least one entity set is required.", code="sap_schema_entity_missing")
         for entity in requested:
             self._validate_identifier(entity, "entity_set")
 
         started = time.perf_counter()
-        response = await self._request(
-            binding.metadata_path,
-            params={},
-            accept="application/xml",
-        )
-        try:
-            detected_version, parsed = self._parse_metadata(response.text)
-        except (ET.ParseError, ValueError) as exc:
-            raise SapReadError(
-                "SAP returned invalid OData metadata.",
-                code="sap_metadata_invalid",
-                detail={"service_name": service, "odata_version": version, "message": str(exc)},
-            ) from exc
-        header_version = str(response.headers.get("OData-Version") or response.headers.get("DataServiceVersion") or "").strip()
-        header_observed_version = self._normalize_observed_version(header_version)
-        if header_observed_version and header_observed_version != detected_version:
-            raise SapReadError(
-                "Live OData metadata and response headers declare conflicting versions.",
-                code="odata_version_mismatch",
-                detail={
-                    "service_name": service,
-                    "declared_odata_version": version,
-                    "metadata_odata_version": detected_version,
-                    "header_odata_version": header_observed_version,
-                },
-            )
-        observed_version = header_observed_version or detected_version
-        if observed_version != version:
-            raise SapReadError(
-                "Registered OData version does not match live metadata.",
-                code="odata_version_mismatch",
-                detail={
-                    "service_name": service,
-                    "declared_odata_version": version,
-                    "observed_odata_version": observed_version,
-                },
-            )
+        parsed, metadata_timestamp = await self._schema_metadata(binding, cache_scope or self._metadata_scope.get())
         cache_key = (service, version)
         self._metadata_cache[cache_key] = parsed
+        if mode == "entities":
+            offset, limit = max(0, offset), min(max(1, limit), 100)
+            discoverable = sorted(name for name, descriptor in parsed.items() if descriptor.get("kind", "entity_set") == "entity_set")
+            requested = discoverable[offset:offset + limit]
+            include_fields = False
 
         issues: list[dict[str, Any]] = []
         entities: list[dict[str, Any]] = []
@@ -412,6 +419,11 @@ class EmbeddedODataProvider:
                         "entity_set": entity,
                     }
                 )
+                continue
+            if mode == "entities":
+                entities.append({"service_name": service, "odata_version": version,
+                                 "entity_set": entity, "entity_kind": descriptor.get("kind", "entity_set"),
+                                 "metadata_status": "live_validated"})
                 continue
             entities.append(
                 {
@@ -472,7 +484,10 @@ class EmbeddedODataProvider:
                 "schema_authority": True,
                 "fields_truncated": fields_truncated,
                 "compatibility_status": "compatible" if not issues else "incompatible",
-                "metadata_timestamp": datetime.now(timezone.utc).isoformat(),
+                "metadata_timestamp": metadata_timestamp,
+                **({"mode": "entities", "offset": offset, "limit": limit,
+                    "total_count": len(discoverable), "has_more": offset + limit < len(discoverable)}
+                   if mode == "entities" else {}),
                 "provider_id": self.provider_id,
                 "business_relationship_knowledge": self._relationship_knowledge(
                     {(service, version, entity) for entity in requested}
@@ -481,6 +496,55 @@ class EmbeddedODataProvider:
             },
             "validation_issues": issues,
         }
+
+    async def _schema_metadata(self, binding: Any, scope: str | None) -> tuple[Any, str]:
+        connection_digest = hashlib.sha256(json.dumps([
+            self.base_url, self.username, self.password, self.client, self.auth_type,
+            self.verify_ssl, binding.metadata_path,
+        ]).encode()).hexdigest()
+        key = (scope or "", connection_digest, binding.service_name, binding.odata_version)
+        # Only Harness requests opt into run-scoped reuse. Fixed execution keeps
+        # its existing live-schema behavior, including the same validation errors.
+        lock = self._run_metadata_locks.setdefault(key, asyncio.Lock()) if scope else asyncio.Lock()
+        async with lock:
+            if scope and key in self._run_metadata:
+                return self._run_metadata[key]
+            response = await self._request(binding.metadata_path, params={}, accept="application/xml")
+            try:
+                detected, parsed = self._parse_metadata(response.text)
+            except (ET.ParseError, ValueError) as exc:
+                raise SapReadError("SAP returned invalid OData metadata.", code="sap_metadata_invalid",
+                    detail={"service_name": binding.service_name,
+                            "odata_version": binding.odata_version, "message": str(exc)}) from exc
+            header = self._normalize_observed_version(str(response.headers.get("OData-Version")
+                or response.headers.get("DataServiceVersion") or "").strip())
+            if header and header != detected:
+                raise SapReadError("Live OData metadata and response headers declare conflicting versions.",
+                    code="odata_version_mismatch", detail={"service_name": binding.service_name,
+                    "declared_odata_version": binding.odata_version,
+                    "metadata_odata_version": detected, "header_odata_version": header})
+            if (header or detected) != binding.odata_version:
+                raise SapReadError("Registered OData version does not match live metadata.",
+                    code="odata_version_mismatch", detail={"service_name": binding.service_name,
+                    "declared_odata_version": binding.odata_version, "observed_odata_version": header or detected})
+            result = (parsed, datetime.now(timezone.utc).isoformat())
+            if scope:
+                self._run_metadata[key] = result
+            return result
+
+    def clear_schema_scope(self, scope: str) -> None:
+        for mapping in (self._run_metadata, self._run_metadata_locks):
+            for key in list(mapping):
+                if key[0] == scope:
+                    mapping.pop(key, None)
+
+    @contextmanager
+    def metadata_scope(self, scope: str):
+        token = self._metadata_scope.set(scope)
+        try:
+            yield
+        finally:
+            self._metadata_scope.reset(token)
 
     async def validate_plan(
         self, plan: dict[str, Any], query: str = ""
@@ -509,10 +573,12 @@ class EmbeddedODataProvider:
                 refs_by_service[(service, version)].append(entity)
 
         schema_fields: dict[tuple[str, str, str], dict[str, dict[str, Any]]] = {}
+        metadata_failed = False
         for (service, version), entities in refs_by_service.items():
             try:
                 response = await self.schema(service, entities, odata_version=version)
             except SapReadError as exc:
+                metadata_failed = True
                 issues.append(
                     {
                         "code": exc.code,
@@ -532,6 +598,11 @@ class EmbeddedODataProvider:
                     str(field.get("entity_set") or ""),
                 )
                 schema_fields.setdefault(key, {})[str(field.get("field_name") or "")] = field
+
+        if metadata_failed and self._metadata_scope.get():
+            # Harness must retry the actual access error, not inferred field
+            # absence. Legacy fixed-plan diagnostics remain unchanged.
+            return {"ok": False, "status": "rejected", "validation_issues": issues}
 
         metadata_rules = {
             (*key, field_name): descriptor

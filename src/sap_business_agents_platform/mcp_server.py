@@ -91,21 +91,24 @@ _SAP_TOOLS = [
     },
     {
         "name": "sap_schema_get",
-        "description": "Read authoritative live $metadata for a registered service/version and entity set list.",
+        "description": "Read authoritative live $metadata. Use mode=entities with a registered service/version to discover entity names (no business reads), then mode=fields with entity_sets to inspect fields. Entity discovery supports offset/limit pagination.",
         "inputSchema": _schema(
             {
                 "service_name": {"type": "string"},
                 "odata_version": {"type": "string", "enum": ["2.0", "4.0"]},
                 "entity_sets": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "mode": {"type": "string", "enum": ["fields", "entities"]},
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 "query": {"type": "string"},
                 "max_fields": {"type": "integer", "minimum": 1, "maximum": 5000},
             },
-            ["service_name", "odata_version", "entity_sets"],
+            ["service_name", "odata_version"],
         ),
     },
     {
         "name": "sap_query_validate",
-        "description": "Validate a strict GET-only SAP query plan against the registered service and live schema.",
+        "description": "Validate a strict GET-only SAP query plan against the registered service and live schema. order_by uses bare field names (ascending); descending is unsupported.",
         "inputSchema": _schema(
             {"plan": {"type": "object"}, "query": {"type": "string"}}, ["plan"]
         ),
@@ -119,7 +122,7 @@ _SAP_TOOLS = [
     },
     {
         "name": "sap_evidence_read",
-        "description": "Read a bounded page of normalized rows from an evidence reference already stored by the platform.",
+        "description": "Read a bounded page of public normalized rows from stored evidence. Restricted rows return evidence_rows_restricted, not an empty business result; do not retry to reveal them.",
         "inputSchema": _schema(
             {
                 "evidence_ref": {"type": "string"},

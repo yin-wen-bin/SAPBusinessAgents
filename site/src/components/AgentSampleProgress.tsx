@@ -10,6 +10,11 @@ const phases: Record<string, [string, string]> = {
 };
 const activeStates = new Set(["starting", "queued", "running", "cancelling"]);
 const formatTime = (seconds: number) => `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
+const sampleCodeText: Record<string, [string, string]> = {
+  sample_live_stable_key_unproven: ["SAP元数据无法证明候选查询具有稳定排序，未读取候选数据。", "SAP metadata could not prove a stable candidate-query order, so candidate data was not read."],
+  sample_combination_unproven: ["来自不同SAP对象的参数无法通过共同业务键证明属于同一组样本。", "Inputs from different SAP objects could not be linked into one sample through shared business keys."],
+  schema_field_not_sortable: ["候选查询使用了SAP元数据标记为不可排序的字段。", "The candidate query used a field that SAP metadata marks as non-sortable."],
+};
 
 export function SampleProgressSummary({ value, locale }: { value: any; locale: Locale }) {
   const [now, setNow] = useState(Date.now());
@@ -39,7 +44,8 @@ export function SampleProgressSummary({ value, locale }: { value: any; locale: L
     {reason && <p role="status">{reason}</p>}
     {failedPhase && <p>{tr("未完成阶段", "Unfinished stage")}: {failedPhase[locale === "zh" ? 0 : 1]}</p>}
     {value.connection_error && <p role="alert">{tr("进度连接异常，正在重连；不代表任务已失败。", "Progress connection lost. Reconnecting; this does not mean the task failed.")}</p>}
-    {(value.codes || []).map((code: string) => <p key={code}><code>{code}</code></p>)}
+    {(value.codes || []).map((code: string) => <p key={code}>{sampleCodeText[code]?.[locale === "zh" ? 0 : 1] || <code>{code}</code>}{sampleCodeText[code] && <> <code>({code})</code></>}</p>)}
+    {(value.validation_issues || []).filter((issue: any) => sampleCodeText[issue.code]).map((issue: any, index: number) => <p key={`${issue.code}-${index}`}>{sampleCodeText[issue.code][locale === "zh" ? 0 : 1]} <code>({issue.code})</code></p>)}
     {value.validation_issues?.some((issue: any) => issue.code === "invalid_order_by_expression") && <p>{tr("查询排序格式不正确，排序项必须为字段名。", "Invalid query ordering: use bare field names.")}</p>}
   </div>;
 }

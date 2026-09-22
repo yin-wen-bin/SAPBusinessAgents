@@ -7,6 +7,23 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as draftHelpers from "../src/lib/agentDraft.ts";
 
+test("acceptance timeout diagnosis is distinct from business mismatch and protects cleanup", async () => {
+  const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
+  for (const locale of ["zh", "en"]) {
+    const markup = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceProgress, {
+      open: true, locale, apiBase: "", draftId: "test",
+      campaign: { status: "cancelling", phase: "cleanup", cases: [], report: {
+        verdict: "NOT_TESTED", error: { code: "agent_acceptance_stage_timeout" },
+        diagnostics: { last_failed_tool: "sap_evidence_read", last_error_code: "evidence_rows_restricted", cleanup_complete: false },
+      } }, onClose() {}, onCancel() {}, onAdjust() {}, onRetry() {},
+    }));
+    assert.match(markup, /sap_evidence_read/);
+    assert.match(markup, /evidence_rows_restricted/);
+    assert.match(markup, locale === "zh" ? /草稿操作锁仍然保留/ : /draft remains locked/);
+    assert.doesNotMatch(markup, /Change cases and retry|更换案例并重新验收/);
+  }
+});
+
 test("publication progress separates the Git result from the page refresh", async () => {
   const Publication = await component("AgentPublicationProgress");
   const running = renderToStaticMarkup(createElement(Publication.default, {
@@ -51,6 +68,15 @@ test("formal acceptance setup and progress expose the multi-case read-only workf
   assert.match(progress, /Independent SAP baseline/);
   assert.match(progress, /Continue in background/);
   assert.match(progress, /Cancel acceptance/);
+  const invalidMode = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceProgress, {
+    open: true, locale: "zh", apiBase: "http://127.0.0.1:8765", draftId: "draft-1",
+    campaign: { status: "interrupted", phase: "completed",
+      report: { verdict: "NOT_TESTED", error: { code: "agent_acceptance_mode_invalid" } }, cases: [] },
+    onClose() {}, onCancel() {}, onAdjust() {}, onRetry() {},
+  }));
+  assert.match(invalidMode, /验收模式无效/);
+  const workspaceSource = await readFile(new URL("../src/components/AgentDraftWorkspace.tsx", import.meta.url), "utf8");
+  assert.match(workspaceSource, /report: \{ verdict: "NOT_TESTED", error: \{ code \} \}/);
 });
 
 test("sample field selection lists visible optional inputs and preserves entered scope", async () => {
@@ -281,8 +307,11 @@ const schema = {
 };
 const valid = { company: "1710", quantity: 100000, date_from: "2026-09-01", date_to: "2026-09-09" };
 
-test("only three management stages; localizations never fall back to the wrong language", () => {
-  assert.deepEqual(draftStepNames, ["compose", "review", "publish"]);
+test("six management stages and legacy links are stable; localizations never fall back to the wrong language", () => {
+  assert.deepEqual(draftStepNames, ["purpose", "io", "logic", "trial", "acceptance", "publish"]);
+  assert.equal(draftHelpers.legacyDraftStep("compose"), "purpose");
+  assert.equal(draftHelpers.legacyDraftStep("review"), "publish");
+  assert.equal(draftHelpers.legacyDraftStep("validate"), "acceptance");
   assert.equal(localText({ en: "English only" }, "zh"), "");
   assert.equal(draftTerminal.has("ready"), true);
   assert.equal(draftTerminal.has("needs_input"), true);
@@ -385,20 +414,17 @@ test("public presentation rows read localized cells from the validated values ar
 
 test("workbench uses confirmed live discovery, protected inputs and formal publishability", async () => {
   const source = await readFile(new URL("../src/components/AgentDraftWorkspace.tsx", import.meta.url), "utf8");
-  assert.match(source, /您的修改意见是？/);
-  assert.ok(source.indexOf('draft-conversation') > source.indexOf('draft-advanced'));
+  assert.match(source, /解释问题/);
+  assert.match(source, /修改草稿/);
+  assert.match(source, /\/ui-state/);
   assert.match(source, /autoDiscover: false/);
   assert.match(source, /sensitiveInputs: secrets/);
   assert.match(source, /publishability\?\.can_publish === true/);
-  assert.match(source, /\/diff\?fromRevision=/);
+  assert.match(source, /baseline=source/);
   assert.match(source, /restoreDiscoveredInput/);
   assert.match(source, /requiresSampleConfirmation && !sampleConfirmed/);
-  assert.match(source, /样本来源详情/);
-  assert.match(source, /source\.source_field/);
-  assert.match(source, /source\.evidence_ref/);
   assert.match(source, /acceptance\.source_version \|\| acceptance\.reused_from_version/);
   assert.match(source, /change\[`\$\{side\}_exists`\] === false/);
-  assert.match(source, /gpt-5\.6-sol/);
   assert.doesNotMatch(source, /gpt-6-astra|localStorage|sessionStorage|dangerouslySetInnerHTML/);
   assert.doesNotMatch(source, /trial\?\.verdict === "PASS"/);
   assert.match(source, /\["before", "after"\]/);
@@ -511,10 +537,10 @@ test("input overview derives names from Schema and keeps requirement badges sepa
   const Workspace = await component("AgentDraftWorkspace", { "./AgentDraftInputs": () => null, "./AgentDraftResult": () => null, "./AgentDraftConversation": () => null });
   const draft = { draft_id: "test", agent_id: "test-agent", revision: 1, status: "draft", package: { manifest: { title: title("示例", "Example"), version: "0.1.0", inputs: { zh: ["错误旧展示"], en: ["Stale display"] }, execution: { inputSchema: definition } } } };
   for (const locale of ["zh", "en"]) {
-    const html = renderToStaticMarkup(createElement(Workspace, { initialDraft: draft, locale, apiBase: "", runPath: "/runs", onBack: () => {}, onPublished: () => {} }));
-    const overview = html.slice(html.indexOf(locale === "zh" ? "输入与输出" : "Inputs and outputs"), html.indexOf(locale === "zh" ? "高级编辑" : "Advanced editing"));
-    assert.match(overview, locale === "zh" ? /交货日期<span[^>]*>必填/ : /Delivery date<span[^>]*>Required/);
-    assert.doesNotMatch(overview.split("</section>")[0], /错误旧展示|Stale display/);
+    const html = renderToStaticMarkup(createElement(Workspace, { initialDraft: draft, initialStep: "io", locale, apiBase: "", runPath: "/runs", onBack: () => {}, onPublished: () => {} }));
+    assert.match(html, locale === "zh" ? /中文名称<input[^>]*value="交货日期"/ : /English name<input[^>]*value="Delivery date"/);
+    assert.match(html, /<code>date<\/code> · string/);
+    assert.doesNotMatch(html, /错误旧展示|Stale display/);
   }
 });
 
@@ -584,20 +610,18 @@ test("actual workbench gates validation and publication but keeps unconfirmed de
   const props = { initialDraft: draft, locale: "en", apiBase: "", runPath: "/runs", onBack: () => {}, onPublished: () => {} };
   const html = renderToStaticMarkup(createElement(Workspace, props));
   assert.match(html, /Check availability/);
-  assert.match(html, /disabled=""[^>]*>Run read-only trial/);
-  assert.doesNotMatch(html, /disabled=""[^>]*>Check definition/);
-  assert.doesNotMatch(html.match(/<textarea[^>]*id="draft-feedback"[^>]*>/)?.[0] || "", /disabled/);
+  const trial = renderToStaticMarkup(createElement(Workspace, { ...props, initialStep: "trial" }));
+  assert.match(trial, /disabled=""[^>]*>Run read-only trial/);
+  const logic = renderToStaticMarkup(createElement(Workspace, { ...props, initialStep: "logic" }));
+  assert.doesNotMatch(logic, /disabled=""[^>]*>Run automatic checks again/);
   const publish = renderToStaticMarkup(createElement(Workspace, { ...props, initialStep: "publish" }));
   assert.match(publish, /disabled=""[^>]*>Publish inactive/);
-  assert.match(publish, /Return to confirm technical ID/);
+  assert.match(publish, /Publication requirements are not met/);
   const upgrade = renderToStaticMarkup(createElement(Workspace, { ...props, initialDraft: { ...draft, technical_identity: { kind: "version_upgrade", confirmed: true, locked: true, can_rename: false } } }));
   assert.match(upgrade, /version upgrade/);
   assert.doesNotMatch(upgrade, /id="draft-technical-id"/);
   const cleanup = renderToStaticMarkup(createElement(Workspace, { ...props, initialDraft: { ...draft, active_operation: { status: "cancelling", kind: "feedback" }, conversation: [{ turn: 2, kind: "feedback", status: "failed", user_message: "Retry me", decision: { error_code: "agent_feedback_cleanup_failed" } }] } }));
   assert.match(cleanup, /id="draft-technical-id"[^>]*disabled=""/);
-  assert.match(cleanup, /id="draft-feedback"[^>]*disabled=""/);
-  assert.match(cleanup, /disabled=""[^>]*>Retry this feedback/);
-  assert.match(cleanup, /Restart the API service/);
   assert.match(cleanup, /disabled=""[^>]*>Cancel task/);
 });
 
@@ -620,9 +644,9 @@ test("workbench separates the latest trial attempt from the effective trial", as
   };
   const html = renderToStaticMarkup(createElement(Workspace, {
     initialDraft: draft, locale: "en", apiBase: "", runPath: "/runs",
-    onBack() {}, onPublished() {},
+    initialStep: "trial", onBack() {}, onPublished() {},
   }));
-  assert.match(html, /Effective trial used for acceptance/);
+  assert.match(html, /Effective trial for acceptance/);
   assert.match(html, /trial-pass/);
   assert.match(html, /latest attempt did not replace this effective result/i);
 });

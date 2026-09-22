@@ -212,16 +212,51 @@ def test_limit_does_not_count_metadata_and_caps_actual_reads_and_concurrency():
         ctx.allow_tool("sap_query_execute", {"plan": plan()})
 
 
-def test_stable_keys_must_come_from_live_untruncated_metadata():
+def test_stable_keys_accept_complete_sortable_key_metadata_even_when_other_fields_are_truncated():
     ctx = context()
     with pytest.raises(SampleDiscoveryError, match="sample_live_stable_key_unproven"):
         ctx.check_stable_keys(plan())
-    schema = {"ok": True, "data": {"schema_authority": True, "fields_truncated": False, "entities": [
-        {"service_name": "API_TEST", "odata_version": "2.0", "entity_set": "Items", "key_fields": ["CompanyCode", "Item"]}]}}
+    source = {"service_name": "API_TEST", "odata_version": "2.0", "entity_set": "Items"}
+    schema = {"ok": True, "data": {"schema_authority": True, "fields_truncated": True, "entities": [
+        {**source, "key_fields": ["CompanyCode", "Item"]}], "fields": [
+            {**source, "field_name": "CompanyCode", "selectable": True, "sortable": True},
+            {**source, "field_name": "Item", "selectable": True, "sortable": True},
+        ]}}
     ctx.record_schema(schema)
     ctx.check_stable_keys(plan())
+    assert ctx.stable_fields[("API_TEST", "2.0", "Items")] == ["CompanyCode", "Item"]
     with pytest.raises(SampleDiscoveryError, match="sample_live_stable_key_unproven"):
         ctx.check_stable_keys({**plan(), "order_by": ["CompanyCode"]})
+
+
+def test_truncated_schema_does_not_trust_missing_or_unsortable_key_metadata():
+    source = {"service_name": "API_TEST", "odata_version": "2.0", "entity_set": "Items"}
+    for fields in (
+        [{**source, "field_name": "CompanyCode", "selectable": True, "sortable": True}],
+        [{**source, "field_name": "CompanyCode", "selectable": True, "sortable": True},
+         {**source, "field_name": "Item", "selectable": True, "sortable": False}],
+    ):
+        ctx = context()
+        ctx.record_schema({"ok": True, "data": {"schema_authority": True, "fields_truncated": True,
+            "entities": [{**source, "key_fields": ["CompanyCode", "Item"]}], "fields": fields}})
+        with pytest.raises(SampleDiscoveryError, match="sample_live_stable_key_unproven"):
+            ctx.check_stable_keys(plan())
+
+
+def test_unsortable_entity_key_can_use_stable_requested_input_projection():
+    ctx = context()
+    source = {"service_name": "API_TEST", "odata_version": "2.0", "entity_set": "Items"}
+    ctx.record_schema({"ok": True, "data": {"schema_authority": True, "fields_truncated": False,
+        "entities": [{**source, "key_fields": ["ID"]}], "fields": [
+            {**source, "field_name": "ID", "selectable": True, "sortable": False},
+            {**source, "field_name": "CompanyCode", "selectable": True, "sortable": True},
+            {**source, "field_name": "Customer", "selectable": True, "sortable": True},
+            {**source, "field_name": "FinancialAccountType", "selectable": True, "sortable": True},
+        ]}})
+    projection = {**plan(), "select_fields": ["CompanyCode", "Customer", "FinancialAccountType"],
+                  "order_by": ["CompanyCode", "Customer"]}
+    assert ctx.check_stable_keys(projection) == ["CompanyCode", "Customer"]
+    assert ctx.stable_fields[("API_TEST", "2.0", "Items")] == ["CompanyCode", "Customer"]
 
 
 def test_simple_array_values_keep_per_row_evidence():
@@ -291,6 +326,69 @@ def test_linked_scalar_fields_cannot_be_combined_from_unrelated_rows():
     ctx.remember("ev_a", plan=query)
     with pytest.raises(SampleDiscoveryError, match="sample_combination_unproven"):
         ctx.validate_result({"suggestions": [proof(), proof(name="company_code", field="CompanyCode", value="1710", indexes=[1])]}, reader)
+
+
+def test_linked_scalar_fields_can_be_combined_across_sources_with_shared_input_proof():
+    data = manifest()
+    schema = data["execution"]["inputSchema"]
+    schema["required"] = ["company_code", "controlling_area", "cost_center", "fiscal_year", "planning_category"]
+    schema["properties"] = {name: {"type": "string"} for name in schema["required"]}
+    master = {
+        "service_name": "API_MASTER", "odata_version": "2.0", "entity_set": "CostCenters", "http_method": "GET",
+        "select_fields": ["CompanyCode", "ControllingArea", "CostCenter"],
+        "order_by": ["CompanyCode", "ControllingArea", "CostCenter"], "top": 100,
+        "filters": [
+            {"field": "CompanyCode", "operator": "eq", "value": "{{input.company_code}}"},
+            {"field": "ControllingArea", "operator": "eq", "value": "{{input.controlling_area}}"},
+            {"field": "CostCenter", "operator": "eq", "value": "{{input.cost_center}}"},
+        ],
+    }
+    planning = {
+        "service_name": "API_PLAN", "odata_version": "2.0", "entity_set": "PlanItems", "http_method": "GET",
+        "select_fields": ["CompanyCode", "ControllingArea", "CostCenter", "FiscalYear", "PlanningCategory"],
+        "order_by": ["CompanyCode", "ControllingArea", "CostCenter", "FiscalYear", "PlanningCategory"], "top": 100,
+        "filters": [
+            {"field": "CompanyCode", "operator": "eq", "value": "{{input.company_code}}"},
+            {"field": "ControllingArea", "operator": "eq", "value": "{{input.controlling_area}}"},
+            {"field": "CostCenter", "operator": "eq", "value": "{{input.cost_center}}"},
+            {"field": "FiscalYear", "operator": "eq", "value": "{{input.fiscal_year}}"},
+            {"field": "PlanningCategory", "operator": "eq", "value": "{{input.planning_category}}"},
+        ],
+    }
+    data["execution"]["steps"] = [
+        {"id": "master", "executor": "sap", "inputMapping": {"plan": master}},
+        {"id": "plan", "executor": "sap", "inputMapping": {"plan": planning}},
+    ]
+    ctx = SampleDiscoveryContext(data, {"company_code": "1710"}, 0)
+    master_execution = {**master, "filters": [{"field": "CompanyCode", "operator": "eq", "value": "1710"}]}
+    planning_execution = {**planning, "filters": [{"field": "CompanyCode", "operator": "eq", "value": "1710"}]}
+    ctx.evidence_sources = {
+        "ev_master": {"plan": master_execution, "key_fields": ["CompanyCode", "ControllingArea", "CostCenter"]},
+        "ev_plan": {"plan": planning_execution, "key_fields": ["CompanyCode", "ControllingArea", "CostCenter", "FiscalYear", "PlanningCategory"]},
+    }
+    evidence = {
+        "ev_master": {"rows": [{"CompanyCode": "1710", "ControllingArea": "A000", "CostCenter": "C100"}]},
+        "ev_plan": {"rows": [{"CompanyCode": "1710", "ControllingArea": "A000", "CostCenter": "C100",
+                                 "FiscalYear": "2026", "PlanningCategory": "PLAN"}]},
+    }
+    linked_reader = lambda ref: (evidence[ref], {"source_type": "sap_live"})
+    result = ctx.validate_result({"suggestions": [
+        proof(name="controlling_area", field="ControllingArea", value="A000", ref="ev_master"),
+        proof(name="cost_center", field="CostCenter", value="C100", ref="ev_master"),
+        proof(name="fiscal_year", field="FiscalYear", value="2026", ref="ev_plan"),
+        proof(name="planning_category", field="PlanningCategory", value="PLAN", ref="ev_plan"),
+    ]}, linked_reader)
+    assert result["status"] == "ready"
+    assert set(result["evidence_refs"]) == {"ev_master", "ev_plan"}
+
+    evidence["ev_plan"]["rows"][0]["CostCenter"] = "OTHER"
+    with pytest.raises(SampleDiscoveryError, match="sample_combination_unproven"):
+        ctx.validate_result({"suggestions": [
+            proof(name="controlling_area", field="ControllingArea", value="A000", ref="ev_master"),
+            proof(name="cost_center", field="CostCenter", value="C100", ref="ev_master"),
+            proof(name="fiscal_year", field="FiscalYear", value="2026", ref="ev_plan"),
+            proof(name="planning_category", field="PlanningCategory", value="PLAN", ref="ev_plan"),
+        ]}, linked_reader)
 
 
 def test_empty_result_requires_manual_input_not_fake_default():

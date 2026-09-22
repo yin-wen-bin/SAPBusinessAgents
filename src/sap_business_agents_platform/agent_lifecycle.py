@@ -84,6 +84,78 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             settings.repository_root, settings.data_root
         )
 
+    @staticmethod
+    def _wizard_projection(
+        draft: dict[str, Any], identity: dict[str, Any], assessment: dict[str, Any],
+        active_operation: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Return one server-authored view of progress; it never grants acceptance."""
+        static = assessment.get("static_checks") or {}
+        errors = static.get("errors") or []
+        presentation = static.get("presentation_contract") or {}
+        effective_trial = assessment.get("effective_trial") or {}
+        latest_trial = assessment.get("trial") or {}
+        acceptance = assessment.get("acceptance") or {}
+        publishability = assessment.get("publishability") or {}
+        active_kind = str((active_operation or {}).get("kind") or "")
+        active_status = str((active_operation or {}).get("status") or "")
+        running = active_status in {"queued", "running", "cancelling"}
+
+        input_error = any(
+            str(item.get("code") or "").startswith(("agent_input_", "input_"))
+            or "inputSchema" in str(item.get("path") or "")
+            for item in errors if isinstance(item, dict)
+        )
+        purpose_status = "completed" if identity.get("confirmed") else "needs_action"
+        io_status = "needs_action" if input_error else ("completed" if static.get("checks") else "available")
+        logic_status = "needs_action" if errors or presentation.get("status") not in {None, "ready"} else ("completed" if static.get("checks") else "available")
+        effective_trial_revision = effective_trial.get("revision") or effective_trial.get("draft_revision") or -1
+        trial_current = (
+            int(effective_trial_revision) == int(draft["revision"])
+            and effective_trial.get("business_output_available") is True
+            and effective_trial.get("output_schema_valid") is True
+            and effective_trial.get("read_only_audit") is True
+        )
+        trial_status = "running" if running and active_kind in {"trial", "sample_discovery"} else (
+            "completed" if trial_current else "needs_action" if latest_trial else "available"
+        )
+        acceptance_verdict = str(acceptance.get("verdict") or "NOT_TESTED").upper()
+        acceptance_status = "running" if running and active_kind == "formal_acceptance" else (
+            "reused" if acceptance.get("reused_validation") is True
+            else "completed" if acceptance_verdict == "PASS"
+            else "needs_action" if acceptance_verdict in {"FAIL", "BLOCKED"}
+            else "available"
+        )
+        publish_status = "running" if running and active_kind in {"publish", "site_refresh"} else (
+            "completed" if draft.get("status") == "published"
+            else "available" if publishability.get("can_publish") is True
+            else "needs_action"
+        )
+        steps = {
+            "purpose": purpose_status, "io": io_status, "logic": logic_status,
+            "trial": trial_status, "acceptance": acceptance_status, "publish": publish_status,
+        }
+        active_steps = {
+            "trial": "trial", "sample_discovery": "trial", "formal_acceptance": "acceptance",
+            "publish": "publish", "site_refresh": "publish", "feedback": "logic",
+            "static_validation": "logic",
+        }
+        if running and active_kind in active_steps:
+            recommended = active_steps[active_kind]
+        elif not identity.get("confirmed"):
+            recommended = "purpose"
+        elif io_status == "needs_action":
+            recommended = "io"
+        elif logic_status == "needs_action":
+            recommended = "logic"
+        elif not trial_current and acceptance.get("reused_validation") is not True:
+            recommended = "trial"
+        elif acceptance_status in {"available", "needs_action"} and acceptance.get("reused_validation") is not True:
+            recommended = "acceptance"
+        else:
+            recommended = "publish"
+        return {"steps": steps, "recommended_step": recommended}
+
     def _require_skill_dependencies(self, manifest: dict[str, Any]) -> list[str]:
         if self.skills is None:
             return []
@@ -594,9 +666,12 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             if publication_candidates
             else None
         )
+        identity = self.technical_identity(draft)
+        active_operation = self.store.get_agent_operation(draft_id)
+        wizard = self._wizard_projection(draft, identity, assessment, active_operation)
         return {
             **draft,
-            "technical_identity": self.technical_identity(draft),
+            "technical_identity": identity,
             "catalog_module": catalog_module,
             "catalog_revision": catalog_revision,
             "repository_module": repository_module,
@@ -608,9 +683,11 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             "diff": revision["diff"],
             "revisions": self.store.list_agent_authoring_revisions(draft_id),
             "conversation": [self._public_feedback_turn(turn) for turn in self.store.list_agent_conversation_turns(draft_id)],
-            "active_operation": self.store.get_agent_operation(draft_id),
+            "active_operation": active_operation,
             "publication_operation": publication_operation,
             "sample_discovery": sample,
+            "ui_state": self.store.get_agent_authoring_ui_state(draft_id),
+            "wizard": wizard,
             **assessment,
         }
 
@@ -639,6 +716,9 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             except KeyError:
                 package = {}
             manifest = package.get("manifest") if isinstance(package, dict) else {}
+            assessment = self._validation_summary(draft, package) if manifest else {}
+            identity = self.technical_identity(draft)
+            active_operation = self.store.get_agent_operation(draft["draft_id"])
             catalog_module, catalog_revision, repository_module = self._draft_catalog_metadata(
                 draft, package
             )
@@ -647,7 +727,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                 {
                     **draft,
                     "sync_error": sync_error,
-                    "technical_identity": self.technical_identity(draft),
+                    "technical_identity": identity,
                     "title": copy.deepcopy((manifest or {}).get("title") or {}),
                     "module": catalog_module,
                     "catalog_module": catalog_module,
@@ -657,9 +737,20 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                         "can_delete": not blockers,
                         "delete_blockers": blockers,
                     },
+                    "ui_state": self.store.get_agent_authoring_ui_state(draft["draft_id"]),
+                    "wizard": self._wizard_projection(draft, identity, assessment, active_operation),
+                    "active_operation": active_operation,
                 }
             )
         return items
+
+    def set_draft_ui_state(self, draft_id: str, last_step: str) -> dict[str, Any]:
+        if last_step not in {"purpose", "io", "logic", "trial", "acceptance", "publish"}:
+            raise AgentLifecycleError("Unknown Agent wizard step.", code="agent_wizard_step_invalid")
+        draft = self.store.get_agent_authoring_draft(draft_id)
+        if draft.get("status") in {"published", "cancelled"}:
+            raise AgentLifecycleError("The Agent draft is no longer editable.", code="agent_draft_published")
+        return self.store.save_agent_authoring_ui_state(draft_id, last_step)
 
     def set_draft_catalog_module(self, draft_id: str, payload: Any) -> dict[str, Any]:
         operation = self._reserve_operation(

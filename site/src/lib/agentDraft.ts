@@ -1,7 +1,15 @@
 import type { ExecutionInputProperty, ExecutionInputSchema, Locale } from "./types";
 
 export const draftTerminal = new Set(["completed", "inconclusive", "failed", "cancelled", "expired", "ready", "needs_input", "timed_out", "unavailable", "interrupted"]);
-export const draftStepNames = ["compose", "review", "publish"] as const;
+export const draftStepNames = ["purpose", "io", "logic", "trial", "acceptance", "publish"] as const;
+export type DraftStep = typeof draftStepNames[number];
+export const legacyDraftStep = (value: unknown): DraftStep | undefined => {
+  const aliases: Record<string, DraftStep> = {
+    compose: "purpose", review: "publish", validate: "acceptance", publish: "publish",
+  };
+  const key = String(value || "");
+  return draftStepNames.includes(key as DraftStep) ? key as DraftStep : aliases[key];
+};
 export const localText = (value: any, locale: Locale): string => typeof value === "object" && value !== null ? String(value[locale] ?? "") : String(value ?? "");
 export const publicInput = (property: ExecutionInputProperty) => property["x-sapba-internal"] !== true && property["x-sapba-workflow-only"] !== true;
 export const inputType = (property: ExecutionInputProperty) => Array.isArray(property.type) ? property.type.find((value) => value !== "null") : property.type;
@@ -101,10 +109,18 @@ export function canRetryFeedback(turn: any): boolean {
   return turn?.kind === "feedback" && ["failed", "cancelled", "interrupted", "timed_out", "expired"].includes(turn.status) && Number.isInteger(turn.turn ?? turn.turn_number) && (turn.turn ?? turn.turn_number) > 0 && typeof (turn.user_message ?? turn.feedback) === "string" && Boolean((turn.user_message ?? turn.feedback).trim());
 }
 
-export type FeedbackRequest = { baseTurn: number; baseRevision: number; feedback: string; locale: Locale; retryOfTurn?: number; requestId: string };
+export type FeedbackRequest = {
+  baseTurn: number; baseRevision: number; feedback: string; locale: Locale;
+  intent: "explain" | "revise"; step?: DraftStep; fieldPath?: string;
+  runId?: string; acceptanceCampaignId?: string; retryOfTurn?: number; requestId: string;
+};
 /** An uncertain network response is a retransmission, not a new logical conversation. */
 export function prepareFeedbackRequest(previous: FeedbackRequest | null, next: Omit<FeedbackRequest, "requestId">, createId: () => string): FeedbackRequest {
-  if (previous && previous.feedback === next.feedback && previous.locale === next.locale && previous.retryOfTurn === next.retryOfTurn) return previous;
+  if (previous && previous.feedback === next.feedback && previous.locale === next.locale
+    && previous.intent === next.intent && previous.step === next.step
+    && previous.fieldPath === next.fieldPath && previous.runId === next.runId
+    && previous.acceptanceCampaignId === next.acceptanceCampaignId
+    && previous.retryOfTurn === next.retryOfTurn) return previous;
   return { ...next, requestId: createId() };
 }
 export function presentationCell(row: any, index: number, key: string): any {

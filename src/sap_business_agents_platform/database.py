@@ -299,6 +299,12 @@ class RunStore:
                     PRIMARY KEY(draft_id, revision),
                     FOREIGN KEY(draft_id) REFERENCES agent_authoring_drafts(draft_id)
                 );
+                CREATE TABLE IF NOT EXISTS agent_authoring_ui_state (
+                    draft_id TEXT PRIMARY KEY,
+                    last_step TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(draft_id) REFERENCES agent_authoring_drafts(draft_id)
+                );
                 CREATE TABLE IF NOT EXISTS agent_conversation_turns (
                     draft_id TEXT NOT NULL,
                     turn INTEGER NOT NULL,
@@ -2665,6 +2671,7 @@ class RunStore:
             connection.execute(
                 "DELETE FROM agent_conversation_turns WHERE draft_id = ?", (draft_id,)
             )
+            connection.execute("DELETE FROM agent_authoring_ui_state WHERE draft_id = ?", (draft_id,))
             connection.execute(
                 "DELETE FROM agent_authoring_revisions WHERE draft_id = ?", (draft_id,)
             )
@@ -2680,6 +2687,32 @@ class RunStore:
                 (audit_event_id, agent_id, _dump(detail), utc_now()),
             )
         return retained_run_ids
+
+    def get_agent_authoring_ui_state(self, draft_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT last_step, updated_at FROM agent_authoring_ui_state WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()
+        return None if row is None else {
+            "last_step": str(row["last_step"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def save_agent_authoring_ui_state(self, draft_id: str, last_step: str) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM agent_authoring_drafts WHERE draft_id = ?", (draft_id,)
+            ).fetchone() is None:
+                raise KeyError(draft_id)
+            connection.execute(
+                """INSERT INTO agent_authoring_ui_state (draft_id, last_step, updated_at)
+                VALUES (?, ?, ?) ON CONFLICT(draft_id) DO UPDATE SET
+                last_step = excluded.last_step, updated_at = excluded.updated_at""",
+                (draft_id, last_step, now),
+            )
+        return {"last_step": last_step, "updated_at": now}
 
     def get_agent_authoring_revision(self, draft_id: str, revision: int) -> dict[str, Any]:
         with self._connect() as connection:

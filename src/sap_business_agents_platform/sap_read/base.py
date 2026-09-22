@@ -34,6 +34,10 @@ class SapReadProvider(Protocol):
         odata_version: str,
         include_fields: bool = True,
         max_fields: int = 5000,
+        mode: str = "fields",
+        offset: int = 0,
+        limit: int = 100,
+        cache_scope: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def validate_plan(

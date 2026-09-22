@@ -59,6 +59,7 @@ from .relationships import (
     relationship_policy,
 )
 from .scheduler import LocalRunScheduler, WorkloadClass
+from .harness_diagnostics import run_diagnostics
 from .sap_read import SapReadError
 from .skills import SkillError, SkillRegistry
 from .security import LocalSecretProtector, SensitiveDataError, secret_domain, sensitive_input_properties
@@ -180,6 +181,7 @@ class RunCoordinator:
             retention_days=settings.restricted_artifact_retention_days,
         )
         self._acceptance_runs: set[str] = set()
+        self._active_execution_tasks: dict[str, asyncio.Task[Any]] = {}
         self._free_query_session_locks: dict[str, asyncio.Lock] = {}
         self.scheduler = LocalRunScheduler(
             store,
@@ -1479,8 +1481,10 @@ class RunCoordinator:
             if record.mode == RunMode.free_query
             else self.settings.deterministic_run_seconds
         )
+        execution_task = asyncio.create_task(self._execute(run_id))
+        self._active_execution_tasks[run_id] = execution_task
         try:
-            await asyncio.wait_for(self._execute(run_id), timeout=timeout)
+            await asyncio.wait_for(execution_task, timeout=timeout)
         except asyncio.CancelledError:
             if self.store.get_run(run_id).status != RunStatus.cancelled:
                 raise
@@ -1499,9 +1503,41 @@ class RunCoordinator:
             if latest.status not in TERMINAL_STATUSES:
                 self._finish_error(run_id, exc, RunStatus.failed)
         finally:
+            self._active_execution_tasks.pop(run_id, None)
             self._acceptance_runs.discard(run_id)
             if self.store.get_run(run_id).status in TERMINAL_STATUSES:
                 self.store.delete_run_secrets(run_id)
+
+    async def cancel_acceptance_run(self, run_id: str, *, timeout: float = 10) -> bool:
+        """Revoke writes immediately and bound cleanup of this campaign's tasks."""
+        record = self.store.get_run(run_id)
+        self.store.update_run(run_id, cancel_requested=True)
+        if record.status not in TERMINAL_STATUSES:
+            self._finish_cancelled(run_id)
+        task = self._active_execution_tasks.get(run_id)
+        broker = getattr(self.harness, "broker", None)
+        pending_tasks = set()
+        if broker is not None:
+            broker.close_session(run_id)
+            pending_tasks.add(asyncio.create_task(broker.cancel_tools(run_id, timeout=timeout)))
+        if task and not task.done():
+            task.cancel()
+            pending_tasks.add(task)
+        if pending_tasks:
+            done, pending = await asyncio.wait(pending_tasks, timeout=max(0, timeout))
+            if pending:
+                return False
+            for finished in done:
+                if finished.cancelled():
+                    continue
+                try:
+                    if finished.result() is False:
+                        return False
+                except Exception:
+                    return False
+        if self.store.get_harness_state(run_id).get("cleanup_incomplete"):
+            return False
+        return True
 
     async def _execute(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
@@ -3382,6 +3418,7 @@ class RunCoordinator:
             ),
             thread_id=outcome.thread_id,
             harness=HarnessResult(
+                diagnostics=run_diagnostics(self.store, run_id),
                 thread_id=outcome.thread_id,
                 turn_count=outcome.turn_count,
                 tool_call_count=len(outcome.tool_calls),
@@ -3402,7 +3439,7 @@ class RunCoordinator:
                         reached=outcome.limit_kind == "turns",
                     ),
                     runtime_seconds=HarnessLimitUsage(
-                        limit=self.settings.free_query_run_seconds,
+                        limit=outcome.hard_limit_seconds or self.settings.free_query_run_seconds,
                         used=outcome.elapsed_seconds,
                         reached=outcome.limit_kind == "runtime_seconds",
                     ),

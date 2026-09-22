@@ -337,6 +337,7 @@ class RuntimeSnapshot(BaseModel):
 
 
 class HarnessResult(BaseModel):
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
     runtime: Literal["codex_app_server"] = "codex_app_server"
     protocol: Literal["agent_runtime.v2"] = "agent_runtime.v2"
     thread_id: str | None = None
@@ -508,6 +509,14 @@ class AgentDraftCatalogModuleUpdate(BaseModel):
     )
 
 
+class AgentDraftUiStateUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    last_step: Literal["purpose", "io", "logic", "trial", "acceptance", "publish"] = Field(
+        alias="lastStep"
+    )
+
+
 class AgentDraftDeleteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -522,6 +531,11 @@ class AgentFeedbackRequest(BaseModel):
     base_revision: int = Field(alias="baseRevision", ge=1)
     feedback: str = Field(min_length=1, max_length=12_000)
     locale: Literal["zh", "en"] = "zh"
+    intent: Literal["explain", "revise"] = "revise"
+    step: Literal["purpose", "io", "logic", "trial", "acceptance", "publish"] | None = None
+    field_path: str | None = Field(default=None, alias="fieldPath", max_length=512, pattern=r"^/manifest(?:/[A-Za-z0-9_~.-]+)*$")
+    run_id: str | None = Field(default=None, alias="runId", min_length=1, max_length=100)
+    acceptance_campaign_id: str | None = Field(default=None, alias="acceptanceCampaignId", min_length=1, max_length=100)
     request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
     retry_of_turn: int | None = Field(default=None, alias="retryOfTurn", ge=1)
 

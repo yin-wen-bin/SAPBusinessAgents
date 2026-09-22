@@ -1,16 +1,47 @@
-.agent-draft-workspace { max-width: 1100px; }
+.agent-draft-workspace { max-width: 1440px; }
 .agent-draft-workspace button, .agent-draft-workspace summary { min-height: 44px; }
 .agent-draft-workspace summary { cursor: pointer; display: flex; align-items: center; font-weight: 600; }
 .agent-draft-workspace :is(input, select, textarea) { box-sizing: border-box; }
 .agent-draft-workspace textarea { font-family: inherit; }
 .agent-draft-workspace :is(input, select):not([type=checkbox]) { min-height: 46px; }
 .agent-draft-workspace :is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
-.agent-draft-workspace .agent-document-body > section { margin-block-start: 42px; }
+.agent-draft-workspace .agent-document-body { display: grid; gap: 24px; }
+.agent-draft-workspace .agent-document-body > section { margin-block-start: 0; }
 .agent-draft-workspace .agent-panel, .agent-draft-workspace .agent-run-panel { display: grid; gap: 18px; min-width: 0; }
 .agent-draft-workspace .agent-panel p { margin-block: 0; }
 .agent-draft-workspace .agent-panel h3 { margin-block: 12px 4px; }
 .draft-meta, .draft-basic-grid { display: grid; gap: 18px; }
 .draft-meta { display: flex; flex-wrap: wrap; color: var(--color-text-muted); }
+.draft-workspace-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 20px; }
+.draft-workspace-header h1 { margin-block: 4px; }
+.draft-save-pending { color: #8a5b00; font-weight: 700; }
+.draft-save-complete { color: #17643a; font-weight: 700; }
+.draft-wizard-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; margin-top: 24px; }
+.agent-draft-workspace.assistant-open .draft-wizard-layout { grid-template-columns: 220px minmax(0, 1fr) minmax(300px, 360px); }
+.draft-wizard-nav { position: sticky; top: 16px; display: grid; gap: 8px; }
+.draft-wizard-nav button { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; align-items: center; width: 100%; padding: 10px; border: 1px solid transparent; border-radius: 9px; color: inherit; background: transparent; text-align: left; }
+.draft-wizard-nav button > span:last-child { display: grid; gap: 2px; min-width: 0; }
+.draft-wizard-nav small { color: var(--color-text-muted); }
+.draft-wizard-nav button.active { border-color: #7aa5dd; background: #edf5ff; }
+.wizard-step-number { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #e7edf5; font-weight: 800; }
+.wizard-completed .wizard-step-number, .wizard-reused .wizard-step-number { color: white; background: #18734a; }
+.wizard-needs_action .wizard-step-number { color: #6d4700; background: #ffe0a3; }
+.wizard-running .wizard-step-number { color: #064b91; background: #cfe7ff; }
+.draft-wizard-main { min-width: 0; display: grid; gap: 20px; }
+.draft-mobile-step { display: none; }
+.draft-section-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.draft-input-definition-list { display: grid; gap: 16px; }
+.draft-input-definition { display: grid; gap: 14px; min-width: 0; padding: 18px; border: 1px solid var(--color-border); border-radius: 10px; }
+.draft-input-definition legend { padding-inline: 8px; font-weight: 700; }
+.draft-input-definition > label:not(.draft-checkbox), .draft-assistant > label { display: grid; gap: 7px; }
+.draft-assistant { position: sticky; top: 16px; display: grid; gap: 16px; max-height: calc(100dvh - 32px); overflow: auto; padding: 18px; border: 1px solid var(--color-border); border-radius: 12px; background: white; box-shadow: 0 12px 32px rgb(15 45 55 / 10%); }
+.draft-assistant header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.draft-assistant header h2, .draft-assistant header p { margin: 0; }
+.draft-assistant-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.draft-assistant-modes button.active { color: white; background: var(--color-primary); }
+.draft-wizard-footer { position: sticky; bottom: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 28px; padding: 12px 16px; border: 1px solid var(--color-border); border-radius: 12px 12px 0 0; background: rgb(255 255 255 / 96%); box-shadow: 0 -8px 24px rgb(15 45 55 / 8%); }
+.draft-leave-dialog { z-index: 20; inset: 0; margin: auto; }
+.draft-leave-dialog::backdrop { background: rgb(10 25 45 / 45%); }
 .draft-basic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .draft-basic-grid > div { display: grid; gap: 14px; align-content: start; }
 .draft-input-field { display: grid; gap: 6px; align-content: start; min-width: 0; }
@@ -72,13 +103,22 @@
 @media (max-width: 820px) {
   .draft-basic-grid, .draft-diff-values { grid-template-columns: 1fr; }
   .agent-draft-workspace .runtime-field-grid { grid-template-columns: 1fr; }
-  .agent-draft-workspace .agent-steps { flex-wrap: wrap; }
+  .draft-workspace-header { grid-template-columns: 1fr auto; }
+  .draft-workspace-header > button:first-child { grid-column: 1 / -1; justify-self: start; }
+  .draft-wizard-layout, .agent-draft-workspace.assistant-open .draft-wizard-layout { grid-template-columns: minmax(0, 1fr); }
+  .draft-wizard-nav { display: none; }
+  .draft-mobile-step { display: block; }
+  .draft-mobile-step label { display: grid; gap: 6px; }
+  .draft-assistant { position: fixed; inset: 12px; z-index: 12; max-height: none; overflow: auto; }
+  .draft-assistant::before { content: ""; position: fixed; inset: 0; z-index: -1; background: rgb(10 25 45 / 45%); }
+  .draft-section-heading { display: grid; }
   .agent-draft-workspace .agent-actions { flex-wrap: wrap; }
   .agent-draft-workspace .agent-panel, .agent-draft-workspace .agent-run-panel { padding: 18px; }
 }
 @media (max-width: 430px) {
   .agent-draft-workspace .agent-actions > button { width: 100%; }
-  .agent-draft-workspace .agent-steps > button { flex: 1 1 100%; }
+  .draft-assistant-toggle { justify-self: end; }
+  .draft-wizard-footer span { display: none; }
   .agent-draft-workspace dl { grid-template-columns: 1fr; gap: 4px; }
   .agent-draft-workspace dd { margin: 0 0 10px; }
 }

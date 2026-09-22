@@ -47,6 +47,7 @@ from .models import (
     AgentDeleteRequest,
     AgentDraftDeleteRequest,
     AgentDraftUpdate,
+    AgentDraftUiStateUpdate,
     AgentDraftCatalogModuleUpdate,
     AgentFeedbackRequest,
     AgentTechnicalIdCheck,
@@ -2163,6 +2164,15 @@ def create_app(
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
+    @app.put("/api/authoring/agents/{draft_id}/ui-state")
+    def update_agent_draft_ui_state(
+        draft_id: str, payload: AgentDraftUiStateUpdate
+    ) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.set_draft_ui_state(draft_id, payload.last_step)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
     @app.put("/api/authoring/agents/{draft_id}/catalog-module")
     def update_agent_draft_catalog_module(
         draft_id: str, payload: AgentDraftCatalogModuleUpdate
@@ -2200,9 +2210,10 @@ def create_app(
         draft_id: str,
         from_revision: int | None = Query(default=None, alias="fromRevision", ge=1),
         to_revision: int | None = Query(default=None, alias="toRevision", ge=1),
+        baseline: str = Query(default="revision", pattern="^(revision|source)$"),
     ) -> dict[str, Any]:
         try:
-            return agent_lifecycle.get_diff(draft_id, from_revision, to_revision)
+            return agent_lifecycle.get_diff(draft_id, from_revision, to_revision, baseline=baseline)
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 

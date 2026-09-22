@@ -7,6 +7,7 @@ import json
 import time
 import uuid
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 from .acceptance import CanonicalTestCase, agent_execution_digest, canonical_hash, validate_direct_baseline
@@ -16,6 +17,7 @@ from .agent_lifecycle import AgentLifecycleError
 from .managed_rules import source_digest
 from .models import RunCreate, RunMode, RunStatus, TERMINAL_STATUSES, utc_now
 from .security import secret_domain, sensitive_input_properties
+from .harness_diagnostics import run_diagnostics
 
 
 BASELINE_SECONDS = 600
@@ -27,6 +29,27 @@ TERMINAL_CAMPAIGN_STATUSES = {
 }
 
 
+def _acceptance_mode(manifest: dict[str, Any]) -> str:
+    """Resolve the campaign mode without weakening legacy candidates.
+
+    Older Agent packages predate the explicit acceptanceMode field.  The
+    authoring UI has always presented those candidates as three-stage
+    acceptance, which is the stricter option because it includes the free-query
+    comparison.  Keep that compatibility default in the controller as well;
+    an explicitly supplied unknown value remains an error.
+    """
+    raw = (manifest.get("validation") or {}).get("acceptanceMode")
+    if raw is None or raw == "":
+        return "three_stage"
+    mode = str(raw)
+    if mode not in {"three_stage", "deterministic_runtime"}:
+        raise AgentLifecycleError(
+            "The Agent acceptance mode is invalid.",
+            code="agent_acceptance_mode_invalid",
+        )
+    return mode
+
+
 class AcceptanceCampaignOperationalError(RuntimeError):
     def __init__(
         self,
@@ -36,12 +59,14 @@ class AcceptanceCampaignOperationalError(RuntimeError):
         failure_category: str = "environment",
         failure_stage: str | None = None,
         issues: list[dict[str, Any]] | None = None,
+        diagnostics: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.failure_category = failure_category
         self.failure_stage = failure_stage
         self.issues = list(issues or [])
+        self.diagnostics = dict(diagnostics or {})
 
 
 class AgentAcceptanceJobs:
@@ -64,9 +89,7 @@ class AgentAcceptanceJobs:
             raise AgentLifecycleError("The Agent draft is already published.", code="agent_draft_published")
         package = self.store.get_agent_authoring_revision(draft_id, revision)["package"]
         manifest = copy.deepcopy(package["manifest"])
-        mode = str((manifest.get("validation") or {}).get("acceptanceMode") or "")
-        if mode not in {"three_stage", "deterministic_runtime"}:
-            raise AgentLifecycleError("The Agent acceptance mode is invalid.", code="agent_acceptance_mode_invalid")
+        mode = _acceptance_mode(manifest)
         contract = _contract(manifest)
         if not contract.get("business_keys"):
             raise AgentLifecycleError("The Agent acceptance contract is missing.", code="agent_acceptance_contract_missing")
@@ -277,6 +300,7 @@ class AgentAcceptanceJobs:
                 failure_category=exc.failure_category,
                 failure_stage=exc.failure_stage,
                 issues=exc.issues,
+                diagnostics=exc.diagnostics,
             )
         except Exception as exc:
             code = str(getattr(exc, "code", "") or "agent_acceptance_internal_error")
@@ -340,10 +364,9 @@ class AgentAcceptanceJobs:
             return_waiting_input=True,
         )
         if baseline_run.get("status") == RunStatus.waiting_input.value:
-            return self._complete_blocked_case(
-                campaign_id, case_id, baseline_id,
-                code="test_data_gap",
-            )
+            if self._proven_evidence_gap(baseline_id):
+                return self._complete_blocked_case(campaign_id, case_id, baseline_id, code="independent_baseline_evidence_incomplete")
+            raise AcceptanceCampaignOperationalError("agent_acceptance_business_input_required", failure_stage="baseline")
         baseline_projection = _required_projection(baseline_run, "baseline", contract=contract)
         try:
             baseline_normalized = _normalize_acceptance_projection(baseline_projection, case, contract)
@@ -355,16 +378,25 @@ class AgentAcceptanceJobs:
             if issues:
                 raise BusinessContractError(issues, "independent_baseline")
             if not all(baseline_normalized.get(name) is True for name in ("source_complete", "evidence_complete", "business_complete")) or baseline_normalized.get("evidence_gap_codes"):
-                return self._complete_blocked_case(campaign_id, case_id, baseline_id, code="independent_baseline_evidence_incomplete")
+                if self._proven_evidence_gap(baseline_id):
+                    return self._complete_blocked_case(campaign_id, case_id, baseline_id, code="independent_baseline_evidence_incomplete")
+                raise AcceptanceCampaignOperationalError("independent_baseline_gap_unverified", failure_stage="baseline",
+                                                        diagnostics=self._run_diagnostics(baseline_id))
         baseline_payload = _baseline_payload(baseline_run, baseline_normalized, runtime)
         validate_direct_baseline(baseline_payload, case)
         anchor_before = await self._capture_source_anchor(
             draft_id, campaign_id, baseline_id, baseline_run, position="before",
         )
+        if anchor_before.get("verdict") != "PASS":
+            code = str(anchor_before.get("reason_code") or "sap_source_changed_during_acceptance")
+            if code in {"source_anchor_coverage_missing", "source_anchor_method_not_supported", "sap_source_changed_during_acceptance"}:
+                return self._complete_blocked_case(campaign_id, case_id, baseline_id, code=code)
+            raise AcceptanceCampaignOperationalError(code, failure_stage="source_anchor_before",
+                                                    diagnostics=self._run_diagnostics(baseline_id))
 
         free_run: dict[str, Any] | None = None
         free_comparison = None
-        if str((manifest.get("validation") or {}).get("acceptanceMode")) == "three_stage":
+        if _acceptance_mode(manifest) == "three_stage":
             self.store.update_agent_acceptance_campaign(
                 draft_id, campaign_id, phase="free_query",
             )
@@ -444,6 +476,11 @@ class AgentAcceptanceJobs:
         anchor_after = await self._capture_source_anchor(
             draft_id, campaign_id, baseline_id, baseline_run, position="after",
         )
+        if anchor_after.get("verdict") == "UNAVAILABLE" and anchor_after.get("reason_code") not in {
+            "source_anchor_coverage_missing", "source_anchor_method_not_supported"
+        }:
+            raise AcceptanceCampaignOperationalError(str(anchor_after.get("reason_code") or "source_anchor_read_failed"),
+                                                    failure_stage="source_anchor_after", diagnostics=self._run_diagnostics(baseline_id))
         anchors_stable = bool(
             anchor_before.get("verdict") == "PASS"
             and anchor_after.get("verdict") == "PASS"
@@ -548,8 +585,14 @@ class AgentAcceptanceJobs:
             return {"verdict": "UNAVAILABLE", "reason_code": "source_anchor_runtime_unavailable"}
         expected: list[dict[str, Any]] = []
         observed: list[dict[str, Any]] = []
+        # Check full coverage before replaying even one source or starting the
+        # expensive comparison stages. Skill anchors are not implemented yet.
+        source_calls = [call for call in result.get("tool_calls") or []
+                        if isinstance(call, dict) and call.get("evidence_ref") and call.get("tool") != "sap_evidence_read"]
+        if not source_calls or any(call.get("tool") != "sap_query_execute" for call in source_calls):
+            return {"verdict": "UNAVAILABLE", "reason_code": "source_anchor_coverage_missing"}
         try:
-            for call in result.get("tool_calls") or []:
+            for call in source_calls:
                 if not isinstance(call, dict) or not call.get("evidence_ref"):
                     continue
                 if call.get("tool") != "sap_query_execute":
@@ -630,6 +673,12 @@ class AgentAcceptanceJobs:
             record = self.store.get_run(run_id)
             if record.status in TERMINAL_STATUSES:
                 value = record.model_dump(mode="json")
+                result = value.get("result") or {}
+                stop_reason = (result.get("harness") or {}).get("stop_reason")
+                if stop_reason in {"limit_reached", "interrupted", "capability_unavailable"}:
+                    raise AcceptanceCampaignOperationalError(
+                        "agent_acceptance_stage_timeout" if stop_reason == "limit_reached" else "agent_acceptance_stage_interrupted",
+                        failure_stage=self.get(draft_id, campaign_id).get("phase"), diagnostics=self._run_diagnostics(run_id))
                 if record.status in {RunStatus.failed, RunStatus.cancelled}:
                     code = str((record.error or {}).get("code") or "agent_acceptance_stage_failed")
                     detail = (record.error or {}).get("detail") or {}
@@ -640,6 +689,7 @@ class AgentAcceptanceJobs:
                         failure_category=category,
                         failure_stage=self.get(draft_id, campaign_id).get("phase"),
                         issues=list(issues or []),
+                        diagnostics=self._run_diagnostics(run_id),
                     )
                 return value
             if return_waiting_input and record.status == RunStatus.waiting_input:
@@ -647,21 +697,48 @@ class AgentAcceptanceJobs:
             now = time.monotonic()
             if record.status == RunStatus.queued:
                 if now >= queue_deadline:
-                    await self.coordinator.cancel(run_id)
                     raise AcceptanceCampaignOperationalError("agent_acceptance_queue_timeout")
             else:
-                active_deadline = active_deadline or (now + timeout)
-                if now >= active_deadline:
+                broker = getattr(getattr(self.coordinator, "harness", None), "broker", None)
+                if broker and record.mode == RunMode.free_query:
+                    budget = broker.review_deadline(run_id)
+                    expired = budget["elapsed_seconds"] >= budget["hard_limit_seconds"]
+                else:
+                    if active_deadline is None:
+                        elapsed = 0
+                        if record.started_at:
+                            started = datetime.fromisoformat(str(record.started_at).replace("Z", "+00:00"))
+                            elapsed = max(0, (datetime.now(timezone.utc) - started).total_seconds())
+                        active_deadline = now + max(0, timeout - elapsed)
+                    expired = now >= active_deadline
+                if expired:
                     failure = self.store.get_harness_state(run_id).get(
                         "acceptance_validation_failure"
                     ) or {}
-                    await self.coordinator.cancel(run_id)
                     raise AcceptanceCampaignOperationalError(
                         "agent_acceptance_stage_timeout",
                         failure_stage=self.get(draft_id, campaign_id).get("phase"),
                         issues=list(failure.get("validation_issues") or []),
+                        diagnostics=self._run_diagnostics(run_id),
                     )
             await asyncio.sleep(0.5)
+
+    def _run_diagnostics(self, run_id: str) -> dict[str, Any]:
+        return run_diagnostics(self.store, run_id)
+
+    def _proven_evidence_gap(self, run_id: str) -> bool:
+        broker = getattr(getattr(self.coordinator, "harness", None), "broker", None)
+        for call in self.store.list_harness_tool_calls(run_id):
+            if call.get("tool_name") not in {"sap_query_execute", "sap_skill_execute"}:
+                continue
+            output = call.get("output") or {}
+            if output.get("code") == "sap_read_http_error" and (output.get("detail") or {}).get("http_status") in {401, 403}:
+                return True
+            if broker and call.get("evidence_ref"):
+                raw, metadata = broker._read_evidence(run_id, call["evidence_ref"])
+                if metadata.get("source_complete") is False and raw.get("ok") is not False:
+                    return True
+        return False
 
     def _aggregate(
         self, campaign_id: str, draft_id: str, revision: int, package: dict[str, Any],
@@ -669,7 +746,7 @@ class AgentAcceptanceJobs:
         started_at: str,
     ) -> dict[str, Any]:
         manifest = package["manifest"]
-        mode = str((manifest.get("validation") or {}).get("acceptanceMode"))
+        mode = _acceptance_mode(manifest)
         verdicts = {item["verdict"] for item in results}
         verdict = "FAIL" if "FAIL" in verdicts else "BLOCKED" if "BLOCKED" in verdicts else "PASS"
         fixed_verdicts = {
@@ -713,13 +790,24 @@ class AgentAcceptanceJobs:
         self, draft_id: str, campaign_id: str, operation_id: str, status: str, code: str,
         *, failure_category: str = "environment", failure_stage: str | None = None,
         issues: list[dict[str, Any]] | None = None,
+        diagnostics: dict[str, Any] | None = None,
     ) -> None:
-        active_run = self.active_runs.pop(campaign_id, None)
+        active_run = self.active_runs.get(campaign_id)
+        cleanup_complete = True
         if active_run:
+            diagnostics = diagnostics or self._run_diagnostics(active_run)
             try:
-                await self.coordinator.cancel(active_run)
+                cleanup = getattr(self.coordinator, "cancel_acceptance_run", None)
+                if callable(cleanup):
+                    cleanup_complete = await cleanup(active_run, timeout=10)
+                else:
+                    async with asyncio.timeout(10):
+                        await self.coordinator.cancel(active_run)
             except Exception:
-                pass
+                cleanup_complete = False
+        diagnostics = {**(diagnostics or {}), "cleanup_complete": cleanup_complete}
+        if cleanup_complete:
+            self.active_runs.pop(campaign_id, None)
         current = self.get(draft_id, campaign_id)
         completed_at = utc_now()
         for item in current.get("cases") or []:
@@ -728,7 +816,7 @@ class AgentAcceptanceJobs:
                     campaign_id, item["case_id"], status=status, phase="completed",
                     result={"case_id": item["case_id"], "verdict": "NOT_TESTED", "error": {"code": code},
                             "failure_category": failure_category, "failure_stage": failure_stage or item.get("phase"),
-                            "validation_issues": issues or []},
+                            "validation_issues": issues or [], "diagnostics": diagnostics},
                     completed_at=completed_at,
                 )
         report = {
@@ -740,15 +828,17 @@ class AgentAcceptanceJobs:
             "error": {"code": code}, "completed_at": completed_at,
             "failure_category": failure_category, "failure_stage": failure_stage or current.get("phase"),
             "validation_issues": issues or [],
+            "diagnostics": diagnostics,
         }
         self._write_artifacts(Path(current["artifact_dir"]), report)
         self.store.update_agent_acceptance_campaign(
-            draft_id, campaign_id, status=status, phase="completed", report=report,
+            draft_id, campaign_id, status=status if cleanup_complete else "cancelling", phase="completed" if cleanup_complete else "cleanup", report=report,
             report_digest=canonical_hash(report), completed_at=report["completed_at"],
             event_type="campaign_finished_without_certificate", event_data={"code": code},
         )
         try:
-            self.store.finish_agent_operation(draft_id, operation_id, status)
+            if cleanup_complete:
+                self.store.finish_agent_operation(draft_id, operation_id, status)
         except Exception:
             pass
 
@@ -797,18 +887,12 @@ class AgentAcceptanceJobs:
             draft_id, campaign_id, status="cancelling", cancel_requested=True,
             event_type="campaign_cancelling", event_data={},
         )
-        run_id = self.active_runs.get(campaign_id)
-        if run_id:
-            try:
-                await self.coordinator.cancel(run_id)
-            except Exception:
-                pass
         task = self.tasks.get(campaign_id)
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         latest = self.get(draft_id, campaign_id)
-        if latest["active"]:
+        if latest["active"] and latest.get("phase") != "cleanup":
             await self._finish_not_tested(
                 draft_id, campaign_id, current["operation_id"],
                 "cancelled", "agent_acceptance_cancelled",
@@ -856,6 +940,17 @@ class AgentAcceptanceJobs:
             f"- Mode: `{report.get('acceptanceMode')}`",
             f"- Verdict: **{report.get('verdict')}**", "", "## Cases", "",
         ]
+        if report.get("error") or report.get("diagnostics"):
+            diagnostics = report.get("diagnostics") or {}
+            lines[6:6] = [
+                f"- Failure code: `{(report.get('error') or {}).get('code') or 'not_recorded'}`",
+                f"- Actual stage: `{report.get('failure_stage') or 'not_recorded'}`",
+                f"- Last failed tool: `{diagnostics.get('last_failed_tool') or 'not_recorded'}`",
+                f"- Last tool error: `{diagnostics.get('last_error_code') or 'not_recorded'}`",
+                f"- Last completed tool: `{diagnostics.get('last_completed_tool') or 'not_recorded'}`",
+                f"- Cleanup confirmed: `{diagnostics.get('cleanup_complete', 'not_recorded')}`",
+                "- Unresolved issues: " + ", ".join(str(item.get("code")) for item in diagnostics.get("unresolved_issues") or []),
+            ]
         for item in report.get("cases") or []:
             lines.extend([
                 f"### `{item.get('case_id')}`", "",

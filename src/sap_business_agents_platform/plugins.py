@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -647,6 +648,20 @@ class SapReadCapability:
     async def guidance(self, query: str) -> dict[str, Any]:
         return await self.manager.invoke(self.capability, "guidance", query)
 
+    def metadata_scope(self, scope: str):
+        provider = self.manager.resolve(self.capability, "schema").provider
+        factory = getattr(provider, "metadata_scope", None)
+        return factory(scope) if callable(factory) else nullcontext()
+
+    def clear_schema_scope(self, scope: str) -> None:
+        try:
+            provider = self.manager.resolve(self.capability, "schema").provider
+        except PluginError:
+            return
+        clear = getattr(provider, "clear_schema_scope", None)
+        if callable(clear):
+            clear(scope)
+
     async def schema(
         self,
         service_name: str,
@@ -656,16 +671,33 @@ class SapReadCapability:
         odata_version: str,
         include_fields: bool = True,
         max_fields: int = 5000,
+        mode: str = "fields",
+        offset: int = 0,
+        limit: int = 100,
+        cache_scope: str | None = None,
     ) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "odata_version": odata_version,
+            "include_fields": include_fields,
+            "max_fields": max_fields,
+        }
+        if mode != "fields" or cache_scope is not None:
+            provider = self.manager.resolve(self.capability, "schema").provider
+            parameters = inspect.signature(provider.schema).parameters
+            if {"mode", "offset", "limit", "cache_scope"}.issubset(parameters):
+                options.update(mode=mode, offset=offset, limit=limit, cache_scope=cache_scope)
+            elif mode != "fields":
+                raise PluginError(
+                    "The selected SAP provider does not support entity discovery.",
+                    code="schema_entity_discovery_unavailable",
+                )
         return await self.manager.invoke(
             self.capability,
             "schema",
             service_name,
             entity_sets,
             query,
-            odata_version=odata_version,
-            include_fields=include_fields,
-            max_fields=max_fields,
+            **options,
         )
 
     async def validate_plan(self, plan: dict[str, Any], query: str = "") -> dict[str, Any]:

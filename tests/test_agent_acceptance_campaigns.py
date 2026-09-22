@@ -41,7 +41,7 @@ def _seed(store: RunStore, tmp_path) -> dict:
     return draft
 
 
-def _seed_runnable(store: RunStore, tmp_path) -> dict:
+def _seed_runnable(store: RunStore, tmp_path, *, acceptance_mode: str | None = "three_stage") -> dict:
     draft = {
         "draft_id": "draft-runnable",
         "agent_id": "acceptance-test",
@@ -59,12 +59,10 @@ def _seed_runnable(store: RunStore, tmp_path) -> dict:
             }
         },
     }
-    package = {
-        "manifest": {
+    manifest = {
             "slug": "acceptance-test",
             "module": "FI",
             "version": "0.1.0",
-            "validation": {"acceptanceMode": "three_stage"},
             "execution": {
                 "inputSchema": {
                     "type": "object",
@@ -80,7 +78,11 @@ def _seed_runnable(store: RunStore, tmp_path) -> dict:
                 },
                 "steps": [],
             },
-        },
+        }
+    if acceptance_mode is not None:
+        manifest["validation"] = {"acceptanceMode": acceptance_mode}
+    package = {
+        "manifest": manifest,
         "rules": None,
     }
     from tests.test_acceptance_contract import sample_manifest, sample_result
@@ -436,6 +438,30 @@ def test_contract_preflight_refuses_before_runtime_sap_operation_and_campaign(tm
     assert caught.value.detail["issues"]
     assert store.list_agent_acceptance_campaigns(draft["draft_id"]) == []
     assert store.get_agent_operation(draft["draft_id"]) is None
+
+
+def test_legacy_candidate_without_acceptance_mode_uses_strict_three_stage_default(tmp_path) -> None:
+    async def scenario():
+        store = RunStore(tmp_path / "legacy-mode.sqlite3")
+        draft = _seed_runnable(store, tmp_path, acceptance_mode=None)
+        jobs = AgentAcceptanceJobs(
+            SimpleNamespace(data_root=tmp_path), store,
+            _Lifecycle(), _Coordinator(), _Runtime(),
+        )
+        payload = AgentAcceptanceCampaignRequest.model_validate(
+            {
+                "expectedRevision": 4,
+                "requestId": "legacy-mode-request",
+                "cases": [{"caseId": "case-1", "input": {"company_code": "1710"}}],
+            }
+        )
+
+        started = jobs.start(draft["draft_id"], payload)
+
+        assert started["acceptance_mode"] == "three_stage"
+        await jobs.cancel(draft["draft_id"], started["campaign_id"])
+
+    asyncio.run(scenario())
 
 
 def test_contract_failure_keeps_campaign_not_tested_with_stage_and_no_certificate(tmp_path):

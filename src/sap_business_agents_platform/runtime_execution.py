@@ -28,7 +28,7 @@ class RuntimeExecutionError(RuntimeError):
 
 
 @asynccontextmanager
-async def owned_client(client: Any):
+async def owned_client(client: Any, *, cleanup_timeout: float | None = None, cleanup_state: dict[str, Any] | None = None):
     """Own startup and shutdown, including the SDK's background startup thread."""
     start = asyncio.create_task(client.__aenter__())
     try:
@@ -38,6 +38,8 @@ async def owned_client(client: Any):
             raise RuntimeExecutionError("runtime_sdk_initialization_timeout") from None
         yield active
     finally:
+        if cleanup_state is not None:
+            cleanup_state.update({"started": True, "complete": False})
         async def cleanup():
             proc = getattr(getattr(getattr(client, "_client", None), "_sync", None), "_proc", None)
             if proc is not None and proc.poll() is None:
@@ -54,8 +56,18 @@ async def owned_client(client: Any):
             await asyncio.wait_for(client.close(), timeout=5)
             if not start.done() or (proc is not None and proc.poll() is None):
                 raise RuntimeExecutionError("runtime_cleanup_incomplete")
+            if cleanup_state is not None:
+                cleanup_state["complete"] = True
         task = asyncio.create_task(cleanup())
-        await asyncio.shield(task)
+        if cleanup_timeout is None:
+            await asyncio.shield(task)
+        else:
+            done, pending = await asyncio.wait({task}, timeout=cleanup_timeout)
+            if pending:
+                task.cancel()
+                task.add_done_callback(lambda finished: None if finished.cancelled() else finished.exception())
+                raise RuntimeExecutionError("runtime_cleanup_incomplete")
+            await task
 
 
 def sandbox() -> Any:

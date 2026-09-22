@@ -688,6 +688,8 @@ requirements; never claim a rule has been implemented or a process completed.
         thread_id: str | None = None,
         operation_id: str | None = None,
         tool_policy: dict[str, Any] | None = None,
+        intent: str = "revise",
+        feedback_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.model:
             raise ValueError("agent_runtime_binding_missing")
@@ -730,11 +732,13 @@ requirements; never claim a rule has been implemented or a process completed.
             # readable for investigation but not editable through this entry point.
             tool_workspace.read_only_source = not full_access
 
+        explain_only = intent == "explain"
         prompt = f"""
-Revise one isolated SAPBusinessAgents deterministic fixed-Agent draft from user feedback.
+{"Explain one saved SAPBusinessAgents deterministic fixed-Agent draft without changing it." if explain_only else "Revise one isolated SAPBusinessAgents deterministic fixed-Agent draft from user feedback."}
 
 Preferred language: {locale}
 User feedback: {feedback}
+Request context (untrusted navigation context): {json.dumps(feedback_context or {}, ensure_ascii=False)}
 Current immutable draft package:
 {package_json}
 
@@ -752,6 +756,7 @@ a SAP fact.
 Choose action=clarify to ask a specific bilingual question when intent needs a business decision.
 Choose reply when the user asks for explanation without changes. Both return no package changes:
 set manifest_json, readme, rules_source, files_json and edits_json to empty strings.
+{"This is explanation-only mode. You MUST choose reply or clarify. Do not inspect external files, call tools, query SAP, create edits, or return a revised package." if explain_only else ""}
 Only use revise_agent when intent is clear. PREFER concise edits_json, especially for title,
 summary, documentation or other small changes; do not reproduce the entire package for these.
 edits_json is a JSON array of at most 100 JSON Pointer edits (op add/replace/remove, path,

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import AgentDraftWorkspace from "./AgentDraftWorkspace";
 import { ListResource, managementRows, filterManagementRows, pollingDelay } from "../lib/agentManagement";
+import { legacyDraftStep } from "../lib/agentDraft";
+import type { DraftStep } from "../lib/agentDraft";
 
 type Locale = "zh" | "en";
 type Props = { apiBase: string; locale: Locale; runPath: string; askPath: string };
@@ -15,7 +17,7 @@ const text = {
     partialData: "已加载数据，数据不完整", stale: "数据可能不是最新", lastLoaded: "上次成功加载", count: "条记录",
     partialEmpty: "已加载数据中无匹配记录。", allFailed: "目录和草稿均加载失败，请重试。", allEmpty: "当前没有固定 Agent 或未发布草稿。",
     changedFilter: "验收或状态已更新，部分记录已移出当前筛选。", syncError: "验收状态同步失败，请刷新重试。",
-    loading: "正在加载…", empty: "当前没有符合条件的记录。", view: "管理",
+    loading: "正在加载…", empty: "当前没有符合条件的记录。", view: "管理", continueDraft: "继续编辑", handleIssue: "处理问题", reviewPublish: "审核发布", viewProgress: "查看进度",
     version: "版本", validation: "验收", dependencies: "工作流引用", createVersion: "创建新版本",
     deactivate: "停用", activate: "重新启用", rollback: "回滚", delete: "永久删除",
     activateBlocked: "当前版本尚未通过启用门禁。请创建新版本并完成验收后再重新启用。",
@@ -53,7 +55,7 @@ const text = {
     partialData: "Loaded data; incomplete", stale: "Data may be out of date", lastLoaded: "Last successful load", count: "records",
     partialEmpty: "No matches in the loaded data.", allFailed: "Both catalog and drafts failed to load. Please retry.", allEmpty: "No fixed Agents or unpublished drafts.",
     changedFilter: "Acceptance or status changed; some records no longer match these filters.", syncError: "Acceptance synchronization failed. Refresh to retry.",
-    loading: "Loading…", empty: "No records match this view.", view: "Manage",
+    loading: "Loading…", empty: "No records match this view.", view: "Manage", continueDraft: "Continue editing", handleIssue: "Resolve issue", reviewPublish: "Review and publish", viewProgress: "View progress",
     version: "Version", validation: "Acceptance", dependencies: "Workflow references", createVersion: "Create new version",
     deactivate: "Deactivate", activate: "Activate", rollback: "Roll back", delete: "Delete permanently",
     activateBlocked: "The current version has not passed activation gates. Create and validate a new version before activation.",
@@ -136,7 +138,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   const load = () => refreshRef.current();
   const [selected, setSelected] = useState<any>(null);
   const [draft, setDraft] = useState<any>(null);
-  const [step, setStep] = useState<"compose" | "review" | "validate" | "publish">("compose");
+  const [step, setStep] = useState<DraftStep>("purpose");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -198,7 +200,15 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const draftId = params.get("draft");
-    if (draftId) void openDraft(draftId, (params.get("step") as any) || "compose");
+    if (draftId) void openDraft(draftId, params.get("step") || undefined);
+    const onPopState = () => {
+      const next = new URLSearchParams(window.location.search);
+      const nextDraft = next.get("draft");
+      if (nextDraft) void openDraft(nextDraft, next.get("step") || undefined, false);
+      else backToList(false);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   const rows = useMemo(() => managementRows(catalog, drafts, locale), [catalog, drafts, locale]);
@@ -213,16 +223,21 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     if (previousList.current.filters === filterKey && previousList.current.keys.some((key) => !keys.includes(key) && rows.some((item) => item.rowKey === key))) setNotice(t.changedFilter);
     previousList.current = { filters: filterKey, keys };
   }, [list, rows, filters, t.changedFilter]);
-  const backToList = () => {
-    setDraft(null); setSelected(null); setSelectedModule(""); history.replaceState({}, "", window.location.pathname); void load();
+  const backToList = (writeHistory = true) => {
+    setDraft(null); setSelected(null); setSelectedModule("");
+    if (writeHistory) history.pushState({}, "", window.location.pathname);
+    void load();
   };
 
-  const openDraft = async (draftId: string, requestedStep: any = "compose") => {
+  const openDraft = async (draftId: string, requestedStep?: unknown, writeHistory = true) => {
     setBusy(true); setError("");
     try {
       const value = await request(`${apiBase}/api/authoring/agents/${encodeURIComponent(draftId)}`);
-      setDraft(value); setSelected(null); setStep(["compose", "review", "validate", "publish"].includes(requestedStep) ? requestedStep : "compose");
-      history.replaceState({}, "", `${window.location.pathname}?draft=${encodeURIComponent(draftId)}&step=${requestedStep}`);
+      const activeKind = value.active_operation?.kind;
+      const activeStep = ({ trial: "trial", sample_discovery: "trial", formal_acceptance: "acceptance", publish: "publish", site_refresh: "publish", feedback: "logic", static_validation: "logic" } as Record<string, DraftStep>)[activeKind];
+      const resolved = legacyDraftStep(requestedStep) || activeStep || legacyDraftStep(value.ui_state?.last_step) || legacyDraftStep(value.wizard?.recommended_step) || "purpose";
+      setDraft(value); setSelected(null); setStep(resolved);
+      if (writeHistory) history.pushState({}, "", `${window.location.pathname}?draft=${encodeURIComponent(draftId)}&step=${resolved}`);
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
@@ -293,9 +308,9 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
-  if (draft) return <AgentDraftWorkspace key={draft.draft_id} initialDraft={draft} apiBase={apiBase} locale={locale} runPath={runPath} initialStep={step} onBack={backToList} onPublished={(result) => { setNotice(`${result.branch || ""} · ${result.commit_sha || ""} · ${locale === "zh" ? "未推送" : "not pushed"}`); backToList(); }} />;
+  if (draft) return <AgentDraftWorkspace key={draft.draft_id} initialDraft={draft} apiBase={apiBase} locale={locale} runPath={runPath} initialStep={step} onBack={() => backToList()} onPublished={(result) => { setNotice(`${result.branch || ""} · ${result.commit_sha || ""} · ${locale === "zh" ? "未推送" : "not pushed"}`); backToList(); }} />;
 
-  if (selected) return <main className="agent-management"><button onClick={backToList}>{t.back}</button><p className="eyebrow">{t.eyebrow}</p><h1>{localized(selected.title, locale)}</h1><p>{localized(selected.summary, locale)}</p><dl><dt>ID</dt><dd><code>{selected.id}</code></dd><dt>{t.catalogModule}</dt><dd>{selected.module}</dd><dt>{t.version}</dt><dd>{selected.version}</dd><dt>{t.validation}</dt><dd>{selected.validation?.verdict || "-"}</dd><dt>{t.dependencies}</dt><dd>{selected.workflow_dependencies?.length || 0}</dd></dl>
+  if (selected) return <main className="agent-management"><button onClick={() => backToList()}>{t.back}</button><p className="eyebrow">{t.eyebrow}</p><h1>{localized(selected.title, locale)}</h1><p>{localized(selected.summary, locale)}</p><dl><dt>ID</dt><dd><code>{selected.id}</code></dd><dt>{t.catalogModule}</dt><dd>{selected.module}</dd><dt>{t.version}</dt><dd>{selected.version}</dd><dt>{t.validation}</dt><dd>{selected.validation?.verdict || "-"}</dd><dt>{t.dependencies}</dt><dd>{selected.workflow_dependencies?.length || 0}</dd></dl>
     {error && <p className="agent-alert error">{error}</p>}{notice && <p className="agent-alert">{notice}</p>}
     <section className="agent-panel"><h2>{t.catalogModule}</h2><div className="draft-module-editor"><label>{t.catalogModule}<select value={selectedModule || selected.module} disabled={busy} onChange={(event) => setSelectedModule(event.target.value)}>{catalogModules.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button disabled={busy || !selectedModule || selectedModule === selected.module} onClick={saveSelectedModule}>{t.saveModule}</button></div><p>{t.moduleHelp}</p></section>
     <section className="agent-panel"><h2>{t.createVersion}</h2><select value={bump} onChange={(e) => setBump(e.target.value as any)}><option value="patch">{t.patch}</option><option value="minor">{t.minor}</option><option value="major">{t.major}</option></select><button disabled={busy || !selected.management?.can_create_version} onClick={createVersion}>{t.createVersion}</button></section>
@@ -338,7 +353,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
             <div data-label={t.state}><span className="agent-list-status">{mappedLabel(t.statusLabels, item.state)}</span>{item.kind === "draft" && <small>{mappedLabel(t.statusLabels, item.status)}</small>}</div>
             <div data-label={t.validation}>{mappedLabel(t.statusLabels, item.acceptance)}{item.sync_error && <small role="status">{t.syncError}</small>}</div>
             <div className="agent-list-actions" data-label={t.actions}>
-              <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id); else { setSelected(item); setSelectedModule(item.module || "Common"); } }}>{t.view}</button>
+              <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id); else { setSelected(item); setSelectedModule(item.module || "Common"); } }}>{item.kind !== "draft" ? t.view : item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status) ? t.viewProgress : item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available" ? t.reviewPublish : Object.values(item.wizard?.steps || {}).includes("needs_action") ? t.handleIssue : t.continueDraft}</button>
               {item.kind === "draft" && <button className="agent-danger-action" disabled={busy || !item.management?.can_delete} title={(item.management?.delete_blockers || []).join(", ")} onClick={() => { setDeleteCandidate(item); setDraftConfirmId(""); setError(""); }}>{t.deleteDraft}</button>}
             </div>
           </div>

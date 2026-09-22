@@ -2,6 +2,21 @@
   "schema_version": "2.0",
   "entries": [
     {
+      "topic": "financial-planning-entry-items",
+      "service_name": "API_FINPLANNINGENTRYITEM_SRV",
+      "odata_version": "2.0",
+      "entity_set": "A_FinPlanningEntryItem",
+      "terms": {
+        "zh": ["计划费用", "财务计划条目", "计划类别", "成本中心计划", "实际与计划费用"],
+        "en": ["financial planning entry item", "planned expenses", "planning category", "cost center plan", "actual versus plan expenses"]
+      },
+      "purpose": {
+        "zh": "发现财务计划条目；公司、控制范围、成本中心、年度、期间、计划类别及金额币种字段均须经实时元数据确认。",
+        "en": "Discover financial plan items; validate company, controlling area, cost center, year, period, planning category and paired amount/currency fields against live metadata."
+      },
+      "candidate_fields": ["CompanyCode", "ControllingArea", "CostCenter", "LedgerFiscalYear", "FiscalPeriod", "PlanningCategory", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency"]
+    },
+    {
       "topic": "supplier-ap-open-items-payment-status",
       "service_name": "API_GLACCOUNTLINEITEM",
       "odata_version": "2.0",
