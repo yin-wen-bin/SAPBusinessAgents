@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Locale } from "../lib/types";
-import { canRetryFeedback, changedDefinition, clearDiscoveredInput, discoveryFingerprint, diffBusinessLabel, draftStatus, draftStepNames, draftTerminal, localText, prepareFeedbackRequest, publicInput, publicValues, restoreDiscoveredInput, retainCompatibleInput, technicalIdentity, technicalIdError, validateDraftInput } from "../lib/agentDraft";
+import { canRetryFeedback, changedDefinition, clearDiscoveredInput, discoveryFingerprint, diffBusinessLabel, draftStatus, draftStepNames, draftTerminal, legacyDraftStep, localText, prepareFeedbackRequest, publicInput, publicValues, restoreDiscoveredInput, retainCompatibleInput, technicalIdentity, technicalIdError, validateDraftInput } from "../lib/agentDraft";
 import type { FeedbackRequest } from "../lib/agentDraft";
 import AgentDraftInputs from "./AgentDraftInputs";
 import AgentDraftResult from "./AgentDraftResult";
@@ -98,8 +98,11 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [uiStateUnsynced, setUiStateUnsynced] = useState(false);
   const uiStateQueue = useRef<Promise<void>>(Promise.resolve());
+  const stepHistoryReady = useRef(false);
+  const restoringStepHistory = useRef(false);
   const chatRef = useRef<HTMLTextAreaElement>(null);
   const assistantToggleRef = useRef<HTMLButtonElement>(null);
+  const assistantWasOpen = useRef(false);
   const progressRef = useRef<HTMLParagraphElement>(null);
   const pendingFocus = useRef(false);
   const base = `${apiBase}/api/authoring/agents/${encodeURIComponent(draft.draft_id)}`;
@@ -168,7 +171,11 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     const url = new URL(window.location.href);
     url.searchParams.set("draft", draft.draft_id);
     url.searchParams.set("step", step);
-    history.replaceState({}, "", `${url.pathname}${url.search}`);
+    const location = `${url.pathname}${url.search}`;
+    if (!stepHistoryReady.current || restoringStepHistory.current) history.replaceState({}, "", location);
+    else history.pushState({}, "", location);
+    stepHistoryReady.current = true;
+    restoringStepHistory.current = false;
     uiStateQueue.current = uiStateQueue.current.then(async () => {
       try {
         await call(`${base}/ui-state`, { lastStep: step }, "PUT");
@@ -178,6 +185,19 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       }
     });
   }, [base, draft.draft_id, step]);
+
+  useEffect(() => {
+    const restoreStep = () => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("draft") !== draft.draft_id) return;
+      const restored = legacyDraftStep(params.get("step"));
+      if (!restored || restored === step) return;
+      restoringStepHistory.current = true;
+      setStep(restored);
+    };
+    window.addEventListener("popstate", restoreStep);
+    return () => window.removeEventListener("popstate", restoreStep);
+  }, [draft.draft_id, step]);
 
   const replace = (value: any, replaceEditor = true) => {
     if (!value?.package?.manifest) return;
@@ -231,6 +251,8 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         agent_acceptance_reused: ["此纯文案修订已复用来源版本的PASS验收，无需再次访问SAP。", "This documentation-only revision already reuses the source version PASS acceptance; SAP does not need to be queried again."],
         agent_presentation_contract_invalid: ["请先补齐业务域、SAP业务组件和业务步骤详细说明。", "Complete the business domain, SAP components and business-step detail first."],
         runtime_not_selectable: ["请先在系统配置中启用Runtime，并检查模型与推理强度。", "Enable the Runtime and check its model and reasoning effort in system settings."],
+        runtime_agent_explanation_unavailable: ["当前 Runtime 无法保障只读解释模式，请更换受支持的 Runtime。", "The current Runtime cannot guarantee read-only explanation mode. Select a supported Runtime."],
+        agent_feedback_context_invalid: ["引用的字段或运行记录不属于当前草稿，请刷新后重试。", "The referenced field or run record does not belong to this draft. Refresh and retry."],
       };
       setError(labels[code]?.[locale === "zh" ? 0 : 1] || `${tr("操作未完成，请核对输入或重试。", "The operation did not complete. Check inputs or retry.")}${/^[a-z][a-z0-9_]{0,79}$/.test(code) ? ` (${code})` : ""}`);
     } finally { setBusy(false); }
@@ -250,6 +272,12 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [assistantOpen]);
+  useEffect(() => {
+    if (assistantWasOpen.current && !assistantOpen) {
+      requestAnimationFrame(() => assistantToggleRef.current?.focus());
+    }
+    assistantWasOpen.current = assistantOpen;
   }, [assistantOpen]);
   useEffect(() => { if (pendingFocus.current && active) { progressRef.current?.focus(); pendingFocus.current = false; } }, [active]);
   useEffect(() => {
@@ -381,7 +409,12 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     const controller = new AbortController();
     setDiff(null);
     const query = compareBaseline === "source" ? `baseline=source&toRevision=${compareTo}` : `baseline=revision&fromRevision=${compareFrom}&toRevision=${compareTo}`;
-    call(`${base}/diff?${query}`, undefined, "GET", controller.signal).then(setDiff).catch((failure) => { if (failure.name !== "AbortError") setError(tr("无法加载修改对比，请重试。", "Cannot load revision comparison. Retry.")); });
+    call(`${base}/diff?${query}`, undefined, "GET", controller.signal).then(setDiff).catch((failure) => {
+      if (failure.name === "AbortError") return;
+      setError(failure.message === "agent_source_baseline_unavailable"
+        ? tr("无法读取创建草稿时绑定的来源版本，当前不会用相邻修订冒充全部发布变更。", "The source version pinned at draft creation is unavailable. Adjacent revisions are not being presented as the full publication change.")
+        : tr("无法加载修改对比，请重试。", "Cannot load revision comparison. Retry."));
+    });
     return () => controller.abort();
   }, [base, step, compareBaseline, compareFrom, compareTo]);
 
@@ -750,7 +783,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     acceptance: tr("正式验收", "Acceptance"), publish: tr("审核与发布", "Review and publish"),
   };
   const statusLabels: Record<string, string> = {
-    needs_action: tr("需处理", "Needs attention"), available: tr("可继续", "Available"),
+    incomplete: tr("待完善", "Incomplete"), needs_action: tr("需处理", "Needs attention"), available: tr("可继续", "Available"),
     running: tr("执行中", "Running"), completed: tr("已完成", "Completed"), reused: tr("已复用", "Reused"),
   };
   const localStepStatus = (name: Step) => dirty && ["purpose", "io", "logic"].includes(name) ? "needs_action" : draft.wizard?.steps?.[name] || "available";
@@ -780,6 +813,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       <nav className="agent-steps draft-wizard-nav" aria-label={tr("Agent 编辑步骤", "Agent editing steps")}>{draftStepNames.map((name, index) => { const state = localStepStatus(name); return <button key={name} className={`${step === name ? "active " : ""}wizard-${state}`} aria-current={step === name ? "step" : undefined} onClick={() => setStep(name)}><span className="wizard-step-number">{index + 1}</span><span><strong>{stepLabels[name]}</strong><small>{statusLabels[state] || state}</small></span></button>; })}</nav>
 
       <div className="draft-wizard-main">
+        {step === "io" && (schema.oneOf?.length || Object.keys(schema.dependentRequired || {}).length) > 0 && <aside className="agent-panel draft-conditional-rules"><h2>{tr("条件必填规则", "Conditional requirement rules")}</h2><p>{tr("以下为当前定义中的实际关系。首版表单只展示这些关系，修改请使用 AI 助手或高级编辑。", "These are the actual relationships in the current definition. The initial form displays them; use the AI assistant or advanced editor to change them.")}</p><ul>{(schema.oneOf || []).map((branch: any, index: number) => <li key={`oneof-${index}`}>{tr(`备选条件 ${index + 1} 必填：`, `Alternative ${index + 1} requires: `)}<code>{(branch.required || []).join(", ") || tr("无", "none")}</code></li>)}{Object.entries(schema.dependentRequired || {}).map(([trigger, fields]: [string, any]) => <li key={`dependent-${trigger}`}><code>{trigger}</code>{tr(" 有值时必填：", " requires when supplied: ")}<code>{(fields || []).join(", ")}</code></li>)}</ul></aside>}
         <div className="draft-mobile-step"><label>{tr("当前步骤", "Current step")}<select value={step} onChange={(event) => setStep(event.target.value as Step)}>{draftStepNames.map((name, index) => <option value={name} key={name}>{index + 1}. {stepLabels[name]} · {statusLabels[localStepStatus(name)]}</option>)}</select></label></div>
         {dirty && <aside className="agent-alert draft-unsaved"><p>{tr("有尚未保存的定义修改。保存后系统会自动检查定义；选样、试运行、AI 助手和发布暂不可用。", "There are unsaved definition changes. Saving automatically checks the definition; discovery, trials, AI and publication are unavailable until then.")}</p><div className="agent-actions"><button disabled={locked || remoteConflict} onClick={save}>{tr("保存并检查", "Save and check")}</button><button className="agent-secondary-action" disabled={locked} onClick={discard}>{tr("放弃未保存修改", "Discard unsaved edits")}</button></div></aside>}
 

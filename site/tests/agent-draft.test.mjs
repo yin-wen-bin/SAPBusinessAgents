@@ -488,7 +488,7 @@ test("retry requires a terminal failed feedback record with a recorded request",
 test("an uncertain send retains its exact request while a confirmed retry gets a new identity", () => {
   let count = 0;
   const id = () => `request-${++count}`;
-  const next = { feedback: "Original request", locale: "zh", baseTurn: 2, baseRevision: 1, retryOfTurn: 2 };
+  const next = { feedback: "Original request", locale: "zh", baseTurn: 2, baseRevision: 1, retryOfTurn: 2, intent: "revise", step: "logic" };
   const first = prepareFeedbackRequest(null, next, id);
   assert.equal(first.requestId, "request-1");
   const retransmit = prepareFeedbackRequest(first, { ...next, baseTurn: 3, baseRevision: 2 }, id);
@@ -499,6 +499,8 @@ test("an uncertain send retains its exact request while a confirmed retry gets a
   assert.equal(retry.baseRevision, 2);
   assert.equal(retry.retryOfTurn, 2);
   assert.notEqual(prepareFeedbackRequest(first, { ...next, feedback: "Edited request" }, id).requestId, first.requestId);
+  assert.notEqual(prepareFeedbackRequest(first, { ...next, intent: "explain" }, id).requestId, first.requestId);
+  assert.notEqual(prepareFeedbackRequest(first, { ...next, fieldPath: "/manifest/execution" }, id).requestId, first.requestId);
 });
 
 test("configuration resolution failures are distinct from unset model settings in both languages", () => {
@@ -648,5 +650,5 @@ test("workbench separates the latest trial attempt from the effective trial", as
   }));
   assert.match(html, /Effective trial for acceptance/);
   assert.match(html, /trial-pass/);
-  assert.match(html, /latest attempt did not replace this effective result/i);
+  assert.match(html, /latest attempt did not replace this result/i);
 });

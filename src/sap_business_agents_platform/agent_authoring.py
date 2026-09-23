@@ -172,6 +172,80 @@ class AgentAuthoringMixin:
         if not self.store.assert_agent_operation(draft_id, operation_id, expected_revision=expected_revision):
             raise self._authoring_error("The draft operation is stale.", "agent_draft_conflict")
 
+    @staticmethod
+    def _limited_feedback_report(report: Any) -> dict[str, Any]:
+        """Keep useful prior evidence while excluding submitted parameters and credentials."""
+        if not isinstance(report, dict):
+            return {}
+        allowed = {
+            "type", "status", "verdict", "completed_at", "business_output_available",
+            "output_schema_valid", "read_only_audit", "source_complete", "evidence_complete",
+            "errors", "business_report", "presentation", "blocking_limitations",
+            "report_digest", "case_count", "passed_cases", "failed_cases",
+        }
+        blocked_tokens = {"input", "secret", "credential", "password", "token", "authorization"}
+
+        def clean(value: Any, depth: int = 0) -> Any:
+            if depth > 8:
+                return None
+            if isinstance(value, dict):
+                return {
+                    str(key): clean(item, depth + 1)
+                    for key, item in list(value.items())[:200]
+                    if not any(token in str(key).lower() for token in blocked_tokens)
+                }
+            if isinstance(value, list):
+                return [clean(item, depth + 1) for item in value[:200]]
+            if isinstance(value, str):
+                return value[:10_000]
+            if isinstance(value, (int, float, bool)) or value is None:
+                return value
+            return str(value)
+
+        return {key: clean(report[key]) for key in allowed if key in report}
+
+    def _feedback_context(self, draft_id: str, revision: int, payload: Any) -> dict[str, Any]:
+        context = {key: value for key, value in {
+            "step": getattr(payload, "step", None),
+            "field_path": getattr(payload, "field_path", None),
+            "run_id": getattr(payload, "run_id", None),
+            "acceptance_campaign_id": getattr(payload, "acceptance_campaign_id", None),
+        }.items() if value is not None}
+        field_path = context.get("field_path")
+        if field_path:
+            if not isinstance(field_path, str) or not field_path.startswith("/manifest/"):
+                raise self._authoring_error("The feedback field path is invalid.", "agent_feedback_context_invalid")
+            current: Any = self.store.get_agent_authoring_revision(draft_id, revision)["package"]
+            try:
+                for raw in field_path.split("/")[1:]:
+                    key = raw.replace("~1", "/").replace("~0", "~")
+                    current = current[int(key)] if isinstance(current, list) else current[key]
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                raise self._authoring_error("The feedback field path does not exist.", "agent_feedback_context_invalid") from exc
+        run_id = context.get("run_id")
+        if run_id:
+            try:
+                attempt = self.store.get_agent_validation_attempt(draft_id, str(run_id))
+            except KeyError as exc:
+                raise self._authoring_error("The referenced run does not belong to this draft.", "agent_feedback_context_invalid") from exc
+            context["run_evidence"] = self._limited_feedback_report(attempt.get("report"))
+        campaign_id = context.get("acceptance_campaign_id")
+        if campaign_id:
+            try:
+                campaign = self.store.get_agent_acceptance_campaign(draft_id, str(campaign_id))
+            except KeyError as exc:
+                raise self._authoring_error("The referenced acceptance campaign does not belong to this draft.", "agent_feedback_context_invalid") from exc
+            context["acceptance_evidence"] = {
+                "status": campaign.get("status"),
+                "phase": campaign.get("phase"),
+                "report": self._limited_feedback_report(campaign.get("report")),
+                "cases": [
+                    {key: item.get(key) for key in ("case_id", "status", "verdict", "error_code") if item.get(key) is not None}
+                    for item in campaign.get("cases") or []
+                ],
+            }
+        return context
+
     def get_diff(self, draft_id: str, from_revision: int | None = None, to_revision: int | None = None, *, baseline: str = "revision") -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
         target = int(to_revision if to_revision is not None else draft["revision"])
@@ -451,13 +525,13 @@ class AgentAuthoringMixin:
         latest_turn = max((int(turn["turn"]) for turn in turns), default=0)
         retry_of_turn = getattr(payload, "retry_of_turn", None)
         intent = str(getattr(payload, "intent", "revise") or "revise")
-        feedback_context = {key: value for key, value in {
-            "step": getattr(payload, "step", None),
-            "field_path": getattr(payload, "field_path", None),
-            "run_id": getattr(payload, "run_id", None),
-            "acceptance_campaign_id": getattr(payload, "acceptance_campaign_id", None),
-        }.items() if value is not None}
-        fingerprint = hashlib.sha256(json.dumps({"revision": revision, "feedback": str(payload.feedback), "base_turn": int(payload.base_turn), "locale": str(payload.locale), "retry_of_turn": retry_of_turn, "intent": intent, "context": feedback_context}, sort_keys=True).encode()).hexdigest()
+        feedback_context = self._feedback_context(draft_id, revision, payload)
+        fingerprint_context = {
+            key: feedback_context[key]
+            for key in ("step", "field_path", "run_id", "acceptance_campaign_id")
+            if key in feedback_context
+        }
+        fingerprint = hashlib.sha256(json.dumps({"revision": revision, "feedback": str(payload.feedback), "base_turn": int(payload.base_turn), "locale": str(payload.locale), "retry_of_turn": retry_of_turn, "intent": intent, "context": fingerprint_context}, sort_keys=True).encode()).hexdigest()
         operation = self._reserve_operation(draft_id, revision, "feedback", getattr(payload, "request_id", None), fingerprint)
         if operation.get("reused"):
             match = next((item for item in turns if item.get("decision", {}).get("task_id") == operation["operation_id"]), None)
@@ -478,6 +552,8 @@ class AgentAuthoringMixin:
             binding_error = self._feedback_error_code(exc)
             if binding_error == "runtime_agent_feedback_failed":
                 binding_error = "agent_runtime_snapshot_failed"
+        if intent == "explain" and snapshot.get("provider_id") != "codex":
+            binding_error = "runtime_agent_explanation_unavailable"
         decision = {"task_id": operation["operation_id"], "runtime_snapshot": snapshot,
                     "agent_id": draft["agent_id"], "retry_of_turn": retry_of_turn,
                     "intent": intent, "context": feedback_context,

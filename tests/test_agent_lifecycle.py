@@ -495,6 +495,61 @@ def test_structured_edit_creates_new_revision_and_diff(tmp_path: Path) -> None:
     assert service.store.get_agent_authoring_revision(draft["draft_id"], 1)["package"]["manifest"]["summary"]["zh"] != "更新后的说明"
 
 
+def test_wizard_position_is_persistent_and_does_not_change_content_revision(tmp_path: Path) -> None:
+    service, store, _settings = _service(tmp_path)
+    draft = asyncio.run(
+        service.create(
+            AgentAuthoringCreate(source="blank", agentId="wizard-position-agent", module="Common")
+        )
+    )
+    stored_before = store.get_agent_authoring_draft(draft["draft_id"])
+
+    saved = service.set_draft_ui_state(draft["draft_id"], "trial")
+    detail = service.get_draft(draft["draft_id"])
+    listed = service.list_drafts("unpublished")[0]
+    stored_after = store.get_agent_authoring_draft(draft["draft_id"])
+
+    assert saved["last_step"] == "trial"
+    assert detail["ui_state"]["last_step"] == "trial"
+    assert listed["ui_state"]["last_step"] == "trial"
+    assert stored_after["revision"] == stored_before["revision"]
+    assert stored_after["updated_at"] == stored_before["updated_at"]
+    with pytest.raises(AgentLifecycleError) as invalid:
+        service.set_draft_ui_state(draft["draft_id"], "compose")
+    assert invalid.value.code == "agent_wizard_step_invalid"
+
+
+def test_source_diff_uses_the_pinned_complete_published_package(tmp_path: Path) -> None:
+    service, _store, _settings = _service(tmp_path)
+    current = _write_active_agent(service, tmp_path)
+    draft = service.create_version_draft(
+        current["slug"],
+        bump="patch",
+        expected_version=current["version"],
+        expected_hash=agent_digest(current),
+    )
+    revised = service.update(
+        draft["draft_id"],
+        AgentDraftUpdate(
+            expectedRevision=draft["revision"],
+            manifest=draft["package"]["manifest"],
+            readme=draft["package"]["readme"] + "\nReviewer note.\n",
+            rules=draft["package"].get("rules") or "",
+        ),
+    )
+
+    diff = service.get_diff(
+        draft["draft_id"], to_revision=revised["revision"], baseline="source"
+    )
+    paths = {item["path"] for item in diff["changes"]}
+
+    assert diff["from_revision"] == "1.0.0"
+    assert "/readme" in paths
+    assert "/manifest/version" in paths
+    assert "/directory" not in paths
+    assert "/rules_source" not in paths
+
+
 def test_unpublished_draft_delete_removes_authoring_state_and_preserves_validation_run(
     tmp_path: Path,
 ) -> None:

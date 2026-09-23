@@ -106,7 +106,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             or "inputSchema" in str(item.get("path") or "")
             for item in errors if isinstance(item, dict)
         )
-        purpose_status = "completed" if identity.get("confirmed") else "needs_action"
+        purpose_status = "completed" if identity.get("confirmed") else "incomplete"
         io_status = "needs_action" if input_error else ("completed" if static.get("checks") else "available")
         logic_status = "needs_action" if errors or presentation.get("status") not in {None, "ready"} else ("completed" if static.get("checks") else "available")
         effective_trial_revision = effective_trial.get("revision") or effective_trial.get("draft_revision") or -1

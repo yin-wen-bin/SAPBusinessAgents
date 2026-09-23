@@ -124,6 +124,87 @@ def test_new_codex_turn_pins_tool_policy_without_changing_past_turns(tmp_path):
     assert result['conversation'][:-1] == before
 
 
+def test_explanation_feedback_is_tool_free_context_bound_and_does_not_create_revision(tmp_path):
+    service, store, _ = _service(tmp_path)
+    service.runtime = Runtime("reply")
+    draft = create(service)
+    store.save_agent_validation_attempt(
+        draft_id=draft["draft_id"], run_id="run-123", revision=draft["revision"],
+        report={"status": "failed", "verdict": "FAIL", "input": {"secret": "hidden"}},
+        report_digest=None,
+    )
+    payload = AgentFeedbackRequest(
+        baseTurn=max(item["turn"] for item in draft["conversation"]),
+        baseRevision=draft["revision"],
+        feedback="Explain the trial result without changing the Agent.",
+        requestId="explain-1",
+        intent="explain",
+        step="trial",
+        runId="run-123",
+    )
+
+    submitted, result = asyncio.run(send_and_wait(service, draft, payload))
+
+    assert submitted["status"] == "queued"
+    assert result["revision"] == draft["revision"]
+    assert result["conversation"][-1]["decision"]["intent"] == "explain"
+    call = service.runtime.calls[-1]
+    assert call["intent"] == "explain"
+    assert call["feedback_context"] == {
+        "step": "trial", "run_id": "run-123",
+        "run_evidence": {"status": "failed", "verdict": "FAIL"},
+    }
+    assert call["thread_id"] is None
+    assert "tool_policy" not in call
+
+
+def test_explanation_feedback_rejects_a_runtime_revision(tmp_path):
+    service, _, _ = _service(tmp_path)
+    service.runtime = Runtime(
+        "revise_agent",
+        lambda package: package["manifest"]["title"].update(en="Unexpected change"),
+    )
+    draft = create(service)
+    payload = AgentFeedbackRequest(
+        baseTurn=max(item["turn"] for item in draft["conversation"]),
+        baseRevision=draft["revision"],
+        feedback="Explain this definition.",
+        requestId="explain-write-1",
+        intent="explain",
+        step="logic",
+    )
+
+    _, result = asyncio.run(send_and_wait(service, draft, payload))
+
+    assert result["revision"] == draft["revision"]
+    assert result["package"] == draft["package"]
+    assert result["conversation"][-1]["status"] == "failed"
+    assert result["conversation"][-1]["decision"]["error_code"] == "agent_explanation_write_rejected"
+
+
+def test_feedback_context_rejects_records_from_another_draft(tmp_path):
+    service, store, _ = _service(tmp_path)
+    draft = create(service)
+    other = asyncio.run(
+        service.create(AgentAuthoringCreate(source="blank", agentId="other-author-test", module="SD"))
+    )
+    store.save_agent_validation_attempt(
+        draft_id=other["draft_id"], run_id="other-run", revision=other["revision"],
+        report={"status": "completed", "verdict": "PASS"}, report_digest=None,
+    )
+    payload = AgentFeedbackRequest(
+        baseTurn=max(item["turn"] for item in draft["conversation"]),
+        baseRevision=draft["revision"], feedback="Explain this run.",
+        requestId="foreign-context", intent="explain", runId="other-run",
+    )
+
+    with pytest.raises(AgentLifecycleError) as invalid:
+        asyncio.run(service.submit_feedback(draft["draft_id"], payload))
+
+    assert invalid.value.code == "agent_feedback_context_invalid"
+    assert store.get_agent_operation(draft["draft_id"]) is None
+
+
 def test_feedback_operation_persists_public_progress_phases(tmp_path):
     service, store, _ = _service(tmp_path)
     draft = create(service)

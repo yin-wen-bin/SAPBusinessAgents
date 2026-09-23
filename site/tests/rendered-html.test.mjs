@@ -149,7 +149,8 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   assert.match(component, /\/catalog-module/);
   assert.match(component, /expectedCatalogRevision/);
   assert.match(workbench, /保存所属模块/);
-  assert.match(workbench, /当前草稿没有需要发布的业务变更/);
+  for (const label of ["明确用途", "设置输入与结果", "确认处理逻辑", "试运行", "正式验收", "审核与发布"]) assert.match(workbench, new RegExp(label));
+  assert.match(workbench, /结果结构预览/);
   assert.match(component, /创建新版本/);
   assert.match(component, /GET-only 真机验证/);
   assert.match(component, /发布并启用/);
@@ -157,8 +158,9 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   assert.match(workbench, /validation-report/);
   assert.match(component, /expectedAgentHash/);
   assert.match(workbench, /validationReportDigest/);
-  assert.match(workbench, /检查修改内容/);
-  assert.match(workbench, /您的修改意见是？/);
+  assert.match(workbench, /变更审核/);
+  assert.match(workbench, /需要解释什么/);
+  assert.match(workbench, /需要修改什么/);
   assert.match(workbench, /sampleConfirmed/);
   assert.match(component, /agent-management-list/);
   assert.match(component, /state=unpublished/);

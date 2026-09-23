@@ -858,7 +858,8 @@ Never claim that a platform changeset was applied or that a dependent draft is r
                             tool_workspace.write_package(candidate)
                             result = await self._run_agent_feedback(codex,
                                 prompt + ("\nController check failures: " + json.dumps(issues) if issues else ""),
-                                candidate, None, str(tool_workspace.source), tool_workspace=tool_workspace)
+                                candidate, None, str(tool_workspace.source), tool_workspace=tool_workspace,
+                                explain_only=explain_only)
                             if result.get("action") == "revise_agent" and "edits" in result:
                                 from .agent_authoring import apply_package_edits
                                 result = {**result, "package": apply_package_edits(candidate, result.pop("edits"))}
@@ -870,7 +871,8 @@ Never claim that a platform changeset was applied or that a dependent draft is r
                                                           checkpoint=checks.append, assert_current=lambda: None)
                     else:
                         decision = await self._run_agent_feedback(codex, prompt, package, None,
-                            str(tool_workspace.source), tool_workspace=tool_workspace)
+                            str(tool_workspace.source), tool_workspace=tool_workspace,
+                            explain_only=explain_only)
                     decision["harness"] = {"mode": "full_access" if full_access else "isolated_tools", "workspace_id": tool_workspace.root.name,
                         "base_commit": tool_workspace.base_commit, "preflight": preflight,
                         "live_testing": "not_performed", "platform_apply": "not_performed"}
@@ -885,7 +887,9 @@ Never claim that a platform changeset was applied or that a dependent draft is r
                             decision["harness"]["change_set_id"] = change_set["change_set_id"]
                             decision["harness"]["platform_dependency_status"] = "awaiting_verification"
                     return decision
-                return await self._run_agent_feedback(codex, prompt, package, thread_id, isolated)
+                return await self._run_agent_feedback(
+                    codex, prompt, package, thread_id, isolated, explain_only=explain_only
+                )
             finally:
                 cleanup = asyncio.create_task(self._close_authoring_client(key, state))
                 state["cleanup"] = cleanup
@@ -979,7 +983,7 @@ Never claim that a platform changeset was applied or that a dependent draft is r
         return bool(proc.poll() is not None and start is not None and start.done() and not start.cancelled()
                     and cleanup is not None and cleanup.done())
 
-    async def _run_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str, *, tool_workspace: Any = None) -> dict[str, Any]:
+    async def _run_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str, *, tool_workspace: Any = None, explain_only: bool = False) -> dict[str, Any]:
         from openai_codex import ApprovalMode, Sandbox
 
         full_access = bool(tool_workspace and getattr(tool_workspace, "full_access", False))
@@ -1011,8 +1015,11 @@ Never claim that a platform changeset was applied or that a dependent draft is r
                 approval_mode=ApprovalMode.deny_all, model=self.model,
                 service_name="sap_business_agents_agent_authoring",
                 developer_instructions=(
-                    "Revise only the supplied isolated Agent package. Never call tools, inspect "
-                    "files, run commands, contact SAP, or edit the repository."
+                    ("Explain only the supplied saved Agent definition and existing evidence. "
+                     "Return reply or clarify and never propose or apply package changes. "
+                     if explain_only else
+                     "Revise only the supplied isolated Agent package. ")
+                    + "Never call tools, inspect files, run commands, contact SAP, or edit the repository."
                 ),
             )
         turn_options = {"sandbox": Sandbox.full_access, "model": self.model,

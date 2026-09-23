@@ -107,6 +107,15 @@ function formattedDate(value: unknown, locale: Locale): string {
       });
 }
 
+function draftPrimaryStep(item: any): DraftStep | undefined {
+  if (item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status)) {
+    return ({ trial: "trial", sample_discovery: "trial", formal_acceptance: "acceptance", publish: "publish", site_refresh: "publish", feedback: "logic", static_validation: "logic" } as Record<string, DraftStep>)[item.active_operation.kind];
+  }
+  if (item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available") return "publish";
+  if (Object.values(item.wizard?.steps || {}).includes("needs_action")) return legacyDraftStep(item.wizard?.recommended_step);
+  return undefined;
+}
+
 async function request(url: string, init?: RequestInit) {
   const response = await fetch(url, { headers: { "Content-Type": "application/json", ...(init?.headers || {}) }, ...init });
   const body = await response.json().catch(() => ({}));
@@ -353,7 +362,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
             <div data-label={t.state}><span className="agent-list-status">{mappedLabel(t.statusLabels, item.state)}</span>{item.kind === "draft" && <small>{mappedLabel(t.statusLabels, item.status)}</small>}</div>
             <div data-label={t.validation}>{mappedLabel(t.statusLabels, item.acceptance)}{item.sync_error && <small role="status">{t.syncError}</small>}</div>
             <div className="agent-list-actions" data-label={t.actions}>
-              <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id); else { setSelected(item); setSelectedModule(item.module || "Common"); } }}>{item.kind !== "draft" ? t.view : item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status) ? t.viewProgress : item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available" ? t.reviewPublish : Object.values(item.wizard?.steps || {}).includes("needs_action") ? t.handleIssue : t.continueDraft}</button>
+              <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id, draftPrimaryStep(item)); else { setSelected(item); setSelectedModule(item.module || "Common"); } }}>{item.kind !== "draft" ? t.view : item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status) ? t.viewProgress : item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available" ? t.reviewPublish : Object.values(item.wizard?.steps || {}).includes("needs_action") ? t.handleIssue : t.continueDraft}</button>
               {item.kind === "draft" && <button className="agent-danger-action" disabled={busy || !item.management?.can_delete} title={(item.management?.delete_blockers || []).join(", ")} onClick={() => { setDeleteCandidate(item); setDraftConfirmId(""); setError(""); }}>{t.deleteDraft}</button>}
             </div>
           </div>
