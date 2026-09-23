@@ -1,0 +1,1291 @@
+{
+  "schemaVersion": 2,
+  "slug": "cost-center-expense-anomaly",
+  "module": "CO",
+  "title": {
+    "zh": "成本中心费用异常助手",
+    "en": "Cost Center Expense Anomaly Assistant"
+  },
+  "summary": {
+    "zh": "比较成本中心实际与计划费用，识别超阈值偏差和主数据冻结。",
+    "en": "Compares cost-center actual and plan expense to identify threshold breaches and master-data blocks."
+  },
+  "status": "Three-stage live acceptance passed",
+  "version": "1.0.0",
+  "owner": "CO-OM-CCA / Cost Center Accounting",
+  "tags": [
+    "Cost Center",
+    "Expense",
+    "Variance",
+    "Anomaly"
+  ],
+  "sapModules": [
+    "CO-OM-CCA",
+    "FI-GL"
+  ],
+  "transactions": [],
+  "tables": [
+    "CSKS",
+    "ACDOCA",
+    "ACDOCP"
+  ],
+  "systems": [
+    "SAP S/4HANA"
+  ],
+  "inputs": {
+    "zh": [
+      "公司代码",
+      "会计年度",
+      "控制范围",
+      "成本中心",
+      "起始期间",
+      "结束期间",
+      "计划类别",
+      "差异阈值（%）"
+    ],
+    "en": [
+      "Company code",
+      "Fiscal Year",
+      "Controlling Area",
+      "Cost Center",
+      "Period From",
+      "Period To",
+      "Planning Category",
+      "Variance Threshold Pct"
+    ]
+  },
+  "outputs": {
+    "zh": [
+      "规范业务记录",
+      "业务状态",
+      "查询源完整性",
+      "证据完整性",
+      "业务完整性",
+      "实际金额",
+      "计划金额",
+      "差异金额",
+      "差异比例",
+      "证据缺口代码",
+      "结构化业务报告"
+    ],
+    "en": [
+      "Canonical business records",
+      "Business status",
+      "Query-source completeness",
+      "Evidence completeness",
+      "Business completeness",
+      "Actual amount",
+      "Plan amount",
+      "Variance amount",
+      "Variance percentage",
+      "Evidence gap codes",
+      "Structured business report"
+    ]
+  },
+  "guardrails": {
+    "zh": [
+      "全部 SAP 访问严格只读",
+      "Embedded OData 为唯一主 provider",
+      "仅 schema 能力缺口触发 ADT",
+      "不启用自动 Provider 回退或 SE16N",
+      "不完整证据不得生成确定结论"
+    ],
+    "en": [
+      "All SAP access is strictly read-only",
+      "Embedded OData is the sole primary provider",
+      "Only schema capability gaps trigger ADT",
+      "Never use automatic Provider fallback or SE16N",
+      "Incomplete evidence cannot produce a confirmed conclusion"
+    ]
+  },
+  "managedRule": {
+    "entrypoint": "evaluate",
+    "sha256": "sha256:41f4de7eb8fb93b8425b54b593aa121415593375f0429af2e31c67dd51fa7064"
+  },
+  "workflow": [
+    {
+      "id": "execute-read_master",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `read_master`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_master` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_COSTCENTER_SRV@2.0/A_CostCenter"
+        ],
+        "en": [
+          "GET API_COSTCENTER_SRV@2.0/A_CostCenter"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_master` / `execute_plan`",
+            "en": "Execute `read_master` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_master"
+      ]
+    },
+    {
+      "id": "execute-read_actual",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `read_actual`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_actual` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
+        ],
+        "en": [
+          "GET API_OPLACCTGDOCITEMCUBE_SRV@2.0/A_OperationalAcctgDocItemCube"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_actual` / `execute_plan`",
+            "en": "Execute `read_actual` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_actual"
+      ]
+    },
+    {
+      "id": "execute-read_plan",
+      "title": {
+        "zh": "读取 SAP 证据",
+        "en": "Read SAP evidence"
+      },
+      "description": {
+        "zh": "执行清单步骤 `read_plan`，通过实时 Schema 校验后的 GET 请求读取证据。",
+        "en": "Run manifest step `read_plan` using GET requests validated against live schema."
+      },
+      "operations": {
+        "zh": [
+          "GET API_FINPLANNINGENTRYITEM_SRV@2.0/A_FinPlanningEntryItem"
+        ],
+        "en": [
+          "GET API_FINPLANNINGENTRYITEM_SRV@2.0/A_FinPlanningEntryItem"
+        ]
+      },
+      "tools": [
+        {
+          "name": "Embedded SAP OData Provider",
+          "kind": "GET-only SAP Provider",
+          "purpose": {
+            "zh": "执行 `read_plan` / `execute_plan`",
+            "en": "Execute `read_plan` / `execute_plan`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "read_plan"
+      ]
+    },
+    {
+      "id": "execute-assess",
+      "title": {
+        "zh": "评估证据完整性",
+        "en": "Assess evidence completeness"
+      },
+      "description": {
+        "zh": "执行清单步骤 `assess`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `assess` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.assess_api_evidence"
+        ],
+        "en": [
+          "rule.assess_api_evidence"
+        ]
+      },
+      "tools": [
+        {
+          "name": "assess_api_evidence",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `assess` / `assess_api_evidence`",
+            "en": "Execute `assess` / `assess_api_evidence`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "assess"
+      ]
+    },
+    {
+      "id": "execute-adt_master",
+      "title": {
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
+      },
+      "description": {
+        "zh": "仅在清单条件成立时执行 `adt_master`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_master` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+      },
+      "operations": {
+        "zh": [
+          "sap-adt-table-export.execute"
+        ],
+        "en": [
+          "sap-adt-table-export.execute"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "执行 `adt_master` / `execute`",
+            "en": "Execute `adt_master` / `execute`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_master"
+      ]
+    },
+    {
+      "id": "execute-adt_actual",
+      "title": {
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
+      },
+      "description": {
+        "zh": "仅在清单条件成立时执行 `adt_actual`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_actual` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+      },
+      "operations": {
+        "zh": [
+          "sap-adt-table-export.execute"
+        ],
+        "en": [
+          "sap-adt-table-export.execute"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "执行 `adt_actual` / `execute`",
+            "en": "Execute `adt_actual` / `execute`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_actual"
+      ]
+    },
+    {
+      "id": "execute-adt_plan",
+      "title": {
+        "zh": "按条件补充表级证据",
+        "en": "Conditionally supplement table evidence"
+      },
+      "description": {
+        "zh": "仅在清单条件成立时执行 `adt_plan`；条件为假时记录 skipped，不连接 Skill。",
+        "en": "Run `adt_plan` only when its manifest condition is true; otherwise record skipped without calling the Skill."
+      },
+      "operations": {
+        "zh": [
+          "sap-adt-table-export.execute"
+        ],
+        "en": [
+          "sap-adt-table-export.execute"
+        ]
+      },
+      "tools": [
+        {
+          "name": "sap-adt-table-export",
+          "kind": "Read-only SAPSkillhub Skill",
+          "purpose": {
+            "zh": "执行 `adt_plan` / `execute`",
+            "en": "Execute `adt_plan` / `execute`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "adt_plan"
+      ]
+    },
+    {
+      "id": "execute-evaluate",
+      "title": {
+        "zh": "执行确定性业务规则",
+        "en": "Run deterministic business rules"
+      },
+      "description": {
+        "zh": "执行清单步骤 `evaluate`，只解释已经取得的证据，不访问或修改 SAP。",
+        "en": "Run manifest step `evaluate` and interpret collected evidence without accessing or changing SAP."
+      },
+      "operations": {
+        "zh": [
+          "rule.evaluate_business_agent"
+        ],
+        "en": [
+          "rule.evaluate_business_agent"
+        ]
+      },
+      "tools": [
+        {
+          "name": "evaluate_business_agent",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `evaluate` / `evaluate_business_agent`",
+            "en": "Execute `evaluate` / `evaluate_business_agent`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "evaluate"
+      ]
+    },
+    {
+      "id": "execute-project_output",
+      "title": {
+        "zh": "构建规范业务输出",
+        "en": "Build canonical business output"
+      },
+      "description": {
+        "zh": "执行清单步骤 `project_output`，仅将既有确定性评估结果投影为可验收的规范记录、标量指标和完整性字段。",
+        "en": "Run manifest step `project_output` to project the existing deterministic assessment into acceptance-ready canonical records, scalar metrics, and completeness fields."
+      },
+      "operations": {
+        "zh": [
+          "读取 `evaluate` 的结构化规则结果及已经校验的运行输入，不再次访问 SAP。",
+          "按公司代码、控制范围、成本中心、会计年度和期间范围生成一条规范汇总记录；未知金额保持 null，不补零。",
+          "分别输出查询源、证据和业务完整性，并保留计划证据缺失等限制代码。",
+          "用同一组规范记录和标量指标构建结构化业务报告。"
+        ],
+        "en": [
+          "Read the structured `evaluate` result and validated run input without accessing SAP again.",
+          "Build one canonical summary record for company code, controlling area, cost center, fiscal year, and period range; keep unknown amounts null instead of substituting zero.",
+          "Expose source, evidence, and business completeness separately while preserving limitation codes such as missing plan evidence.",
+          "Build the structured business report from the same canonical records and scalar metrics."
+        ]
+      },
+      "tools": [
+        {
+          "name": "managed_agent_rule",
+          "kind": "Local deterministic rule",
+          "purpose": {
+            "zh": "执行 `project_output` / `managed_agent_rule`",
+            "en": "Execute `project_output` / `managed_agent_rule`"
+          }
+        }
+      ],
+      "executionStepIds": [
+        "project_output"
+      ]
+    }
+  ],
+  "execution": {
+    "mode": "deterministic",
+    "timeoutSeconds": 600,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "company_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "公司代码",
+            "en": "Company code"
+          }
+        },
+        "fiscal_year": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 4,
+          "pattern": "^[0-9]{4}$",
+          "title": {
+            "zh": "会计年度",
+            "en": "Fiscal Year"
+          }
+        },
+        "controlling_area": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "控制范围",
+            "en": "Controlling Area"
+          }
+        },
+        "cost_center": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9A-Za-z_-]+$",
+          "title": {
+            "zh": "成本中心",
+            "en": "Cost Center"
+          }
+        },
+        "period_from": {
+          "type": "string",
+          "pattern": "^[0-9]{1,3}$",
+          "title": {
+            "zh": "起始期间",
+            "en": "Period From"
+          }
+        },
+        "period_to": {
+          "type": "string",
+          "pattern": "^[0-9]{1,3}$",
+          "title": {
+            "zh": "结束期间",
+            "en": "Period To"
+          }
+        },
+        "planning_category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10,
+          "title": {
+            "zh": "计划类别",
+            "en": "Planning Category"
+          }
+        },
+        "variance_threshold_pct": {
+          "type": "number",
+          "default": 20,
+          "title": {
+            "zh": "差异阈值（%）",
+            "en": "Variance Threshold Pct"
+          }
+        }
+      },
+      "required": [
+        "controlling_area",
+        "company_code",
+        "cost_center",
+        "fiscal_year",
+        "period_from",
+        "period_to",
+        "planning_category"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "title": {
+            "zh": "规范业务记录",
+            "en": "Canonical business records"
+          },
+          "items": {
+            "type": "object",
+            "properties": {
+              "company_code": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4,
+                "title": {
+                  "zh": "公司代码",
+                  "en": "Company code"
+                }
+              },
+              "controlling_area": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4,
+                "title": {
+                  "zh": "控制范围",
+                  "en": "Controlling area"
+                }
+              },
+              "cost_center": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 10,
+                "title": {
+                  "zh": "成本中心",
+                  "en": "Cost center"
+                }
+              },
+              "fiscal_year": {
+                "type": "string",
+                "pattern": "^[0-9]{4}$",
+                "title": {
+                  "zh": "会计年度",
+                  "en": "Fiscal year"
+                }
+              },
+              "period_from": {
+                "type": "string",
+                "pattern": "^[0-9]{1,3}$",
+                "title": {
+                  "zh": "起始期间",
+                  "en": "Period from"
+                }
+              },
+              "period_to": {
+                "type": "string",
+                "pattern": "^[0-9]{1,3}$",
+                "title": {
+                  "zh": "结束期间",
+                  "en": "Period to"
+                }
+              },
+              "business_status": {
+                "type": "string",
+                "enum": [
+                  "normal",
+                  "attention",
+                  "capability_blocked"
+                ],
+                "title": {
+                  "zh": "业务状态",
+                  "en": "Business status"
+                },
+                "x-sapba-display": {
+                  "format": "status",
+                  "labels": {
+                    "normal": {
+                      "zh": "正常",
+                      "en": "Normal"
+                    },
+                    "attention": {
+                      "zh": "需关注",
+                      "en": "Attention"
+                    },
+                    "capability_blocked": {
+                      "zh": "证据受阻",
+                      "en": "Evidence blocked"
+                    }
+                  }
+                }
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 5,
+                "title": {
+                  "zh": "币种",
+                  "en": "Currency"
+                }
+              }
+            },
+            "required": [
+              "company_code",
+              "controlling_area",
+              "cost_center",
+              "fiscal_year",
+              "period_from",
+              "period_to",
+              "business_status",
+              "currency"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "business_status": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "attention",
+            "capability_blocked"
+          ],
+          "title": {
+            "zh": "业务状态",
+            "en": "Business status"
+          },
+          "x-sapba-display": {
+            "format": "status",
+            "labels": {
+              "normal": {
+                "zh": "正常",
+                "en": "Normal"
+              },
+              "attention": {
+                "zh": "需关注",
+                "en": "Attention"
+              },
+              "capability_blocked": {
+                "zh": "证据受阻",
+                "en": "Evidence blocked"
+              }
+            }
+          }
+        },
+        "source_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "查询源完整性",
+            "en": "Query-source completeness"
+          }
+        },
+        "evidence_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "证据完整性",
+            "en": "Evidence completeness"
+          }
+        },
+        "business_complete": {
+          "type": "boolean",
+          "title": {
+            "zh": "业务完整性",
+            "en": "Business completeness"
+          }
+        },
+        "actual_amount": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "实际金额",
+            "en": "Actual amount"
+          }
+        },
+        "plan_amount": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "计划金额",
+            "en": "Plan amount"
+          }
+        },
+        "variance_amount": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "差异金额",
+            "en": "Variance amount"
+          }
+        },
+        "variance_pct": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "title": {
+            "zh": "差异比例",
+            "en": "Variance percentage"
+          }
+        },
+        "evidence_gap_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "title": {
+            "zh": "证据缺口代码",
+            "en": "Evidence gap codes"
+          }
+        },
+        "business_report": {
+          "type": "object",
+          "title": {
+            "zh": "结构化业务报告",
+            "en": "Structured business report"
+          }
+        }
+      },
+      "required": [
+        "records",
+        "business_status",
+        "source_complete",
+        "evidence_complete",
+        "business_complete",
+        "actual_amount",
+        "plan_amount",
+        "variance_amount",
+        "variance_pct",
+        "evidence_gap_codes",
+        "business_report"
+      ],
+      "additionalProperties": false
+    },
+    "outputMapping": {
+      "records": "{{steps.project_output.output.workflow_output.records}}",
+      "business_status": "{{steps.project_output.output.workflow_output.business_status}}",
+      "source_complete": "{{steps.project_output.output.workflow_output.source_complete}}",
+      "evidence_complete": "{{steps.project_output.output.workflow_output.evidence_complete}}",
+      "business_complete": "{{steps.project_output.output.workflow_output.business_complete}}",
+      "actual_amount": "{{steps.project_output.output.workflow_output.actual_amount}}",
+      "plan_amount": "{{steps.project_output.output.workflow_output.plan_amount}}",
+      "variance_amount": "{{steps.project_output.output.workflow_output.variance_amount}}",
+      "variance_pct": "{{steps.project_output.output.workflow_output.variance_pct}}",
+      "evidence_gap_codes": "{{steps.project_output.output.workflow_output.evidence_gap_codes}}",
+      "business_report": "{{steps.project_output.output.workflow_output.business_report}}"
+    },
+    "steps": [
+      {
+        "id": "read_master",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_COSTCENTER_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_CostCenter",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "ControllingArea",
+              "CostCenter",
+              "ValidityStartDate",
+              "ValidityEndDate",
+              "CompanyCode",
+              "CostCenterCurrency",
+              "ProfitCenter",
+              "IsBlkdForPrimaryCostsPosting",
+              "IsBlkdForSecondaryCostsPosting"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "ControllingArea",
+                "operator": "eq",
+                "value": "{{input.controlling_area}}",
+                "value_type": "string"
+              },
+              {
+                "field": "CostCenter",
+                "operator": "eq",
+                "value": "{{input.cost_center}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read bounded cost-center master evidence."
+          }
+        }
+      },
+      {
+        "id": "read_actual",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_OperationalAcctgDocItemCube",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "CompanyCode",
+              "FiscalYear",
+              "FiscalPeriod",
+              "AccountingDocument",
+              "AccountingDocumentItem",
+              "ControllingArea",
+              "CostCenter",
+              "OrderID",
+              "WBSElementInternalID",
+              "Material",
+              "Plant",
+              "GLAccount",
+              "PostingDate",
+              "AmountInCompanyCodeCurrency",
+              "CompanyCodeCurrency"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "ControllingArea",
+                "operator": "eq",
+                "value": "{{input.controlling_area}}",
+                "value_type": "string"
+              },
+              {
+                "field": "FiscalYear",
+                "operator": "eq",
+                "value": "{{input.fiscal_year}}",
+                "value_type": "string"
+              },
+              {
+                "field": "CostCenter",
+                "operator": "eq",
+                "value": "{{input.cost_center}}",
+                "value_type": "string"
+              },
+              {
+                "field": "FiscalPeriod",
+                "operator": "ge",
+                "value": "{{input.period_from}}",
+                "value_type": "string"
+              },
+              {
+                "field": "FiscalPeriod",
+                "operator": "le",
+                "value": "{{input.period_to}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read complete actual expense evidence for one cost center and period range."
+          }
+        }
+      },
+      {
+        "id": "read_plan",
+        "executor": "sap_read",
+        "operation": "execute_plan",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "request": {
+          "plan": {
+            "service_name": "API_FINPLANNINGENTRYITEM_SRV",
+            "odata_version": "2.0",
+            "entity_set": "A_FinPlanningEntryItem",
+            "http_method": "GET",
+            "plan_kind": "direct",
+            "select_fields": [
+              "ID",
+              "Ledger",
+              "PlanningCategory",
+              "LedgerFiscalYear",
+              "FiscalPeriod",
+              "CompanyCode",
+              "ControllingArea",
+              "CostCenter",
+              "OrderID",
+              "WBSElementExternalID",
+              "Plant",
+              "GLAccount",
+              "AmountInCompanyCodeCurrency",
+              "CompanyCodeCurrency"
+            ],
+            "filters": [
+              {
+                "field": "CompanyCode",
+                "operator": "eq",
+                "value": "{{input.company_code}}",
+                "value_type": "string"
+              },
+              {
+                "field": "ControllingArea",
+                "operator": "eq",
+                "value": "{{input.controlling_area}}",
+                "value_type": "string"
+              },
+              {
+                "field": "LedgerFiscalYear",
+                "operator": "eq",
+                "value": "{{input.fiscal_year}}",
+                "value_type": "string"
+              },
+              {
+                "field": "CostCenter",
+                "operator": "eq",
+                "value": "{{input.cost_center}}",
+                "value_type": "string"
+              },
+              {
+                "field": "PlanningCategory",
+                "operator": "eq",
+                "value": "{{input.planning_category}}",
+                "value_type": "string"
+              },
+              {
+                "field": "FiscalPeriod",
+                "operator": "ge",
+                "value": "{{input.period_from}}",
+                "value_type": "string"
+              },
+              {
+                "field": "FiscalPeriod",
+                "operator": "le",
+                "value": "{{input.period_to}}",
+                "value_type": "string"
+              }
+            ],
+            "rationale": "Read complete planned expense evidence for the same scope."
+          }
+        }
+      },
+      {
+        "id": "assess",
+        "executor": "rule",
+        "operation": "assess_api_evidence",
+        "inputMapping": {
+          "checks": {
+            "master": "{{steps.read_master.output}}",
+            "actual": "{{steps.read_actual.output}}",
+            "plan": "{{steps.read_plan.output}}"
+          }
+        }
+      },
+      {
+        "id": "adt_master",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.master}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "CSKS",
+          "fields": [
+            "KOKRS",
+            "KOSTL",
+            "DATAB",
+            "DATBI",
+            "BUKRS",
+            "WAERS",
+            "BKZKP"
+          ],
+          "filters": [
+            {
+              "field": "KOKRS",
+              "operator": "eq",
+              "value": "{{input.controlling_area}}"
+            },
+            {
+              "field": "KOSTL",
+              "operator": "eq",
+              "value": "{{input.cost_center}}"
+            }
+          ],
+          "order_by": [
+            "KOKRS",
+            "KOSTL",
+            "DATBI"
+          ],
+          "max_rows": 100
+        }
+      },
+      {
+        "id": "adt_actual",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.actual}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "ACDOCA",
+          "fields": [
+            "RLDNR",
+            "RBUKRS",
+            "GJAHR",
+            "BELNR",
+            "DOCLN",
+            "POPER",
+            "KOSTL",
+            "RACCT",
+            "HSL",
+            "RHCUR"
+          ],
+          "filters": [
+            {
+              "field": "RBUKRS",
+              "operator": "eq",
+              "value": "{{input.company_code}}"
+            },
+            {
+              "field": "GJAHR",
+              "operator": "eq",
+              "value": "{{input.fiscal_year}}"
+            },
+            {
+              "field": "KOSTL",
+              "operator": "eq",
+              "value": "{{input.cost_center}}"
+            },
+            {
+              "field": "POPER",
+              "operator": "bt",
+              "low": "{{input.period_from}}",
+              "high": "{{input.period_to}}"
+            }
+          ],
+          "order_by": [
+            "RLDNR",
+            "RBUKRS",
+            "GJAHR",
+            "BELNR",
+            "DOCLN"
+          ],
+          "max_rows": 10000
+        }
+      },
+      {
+        "id": "adt_plan",
+        "executor": "skill",
+        "operation": "execute",
+        "skillId": "sap-adt-table-export",
+        "readOnly": true,
+        "failurePolicy": "record_gap",
+        "when": {
+          "source": "{{steps.assess.output.needs_adt.plan}}",
+          "equals": true
+        },
+        "inputMapping": {
+          "schema_version": 1,
+          "source_type": "table",
+          "object": "ACDOCP",
+          "fields": [
+            "RLDNR",
+            "RBUKRS",
+            "GJAHR",
+            "BELNR",
+            "DOCLN",
+            "POPER",
+            "KOSTL",
+            "RACCT",
+            "HSL",
+            "RHCUR"
+          ],
+          "filters": [
+            {
+              "field": "RBUKRS",
+              "operator": "eq",
+              "value": "{{input.company_code}}"
+            },
+            {
+              "field": "GJAHR",
+              "operator": "eq",
+              "value": "{{input.fiscal_year}}"
+            },
+            {
+              "field": "KOSTL",
+              "operator": "eq",
+              "value": "{{input.cost_center}}"
+            },
+            {
+              "field": "POPER",
+              "operator": "bt",
+              "low": "{{input.period_from}}",
+              "high": "{{input.period_to}}"
+            }
+          ],
+          "order_by": [
+            "RLDNR",
+            "RBUKRS",
+            "GJAHR",
+            "BELNR",
+            "DOCLN"
+          ],
+          "max_rows": 10000
+        }
+      },
+      {
+        "id": "evaluate",
+        "executor": "rule",
+        "operation": "evaluate_business_agent",
+        "inputMapping": {
+          "agent_id": "cost-center-expense-anomaly",
+          "run_input": "{{input}}",
+          "assessment": "{{steps.assess.output}}",
+          "evidence": {
+            "cost_centers": "{{steps.read_master.output}}",
+            "actual_items": "{{steps.read_actual.output}}",
+            "plan_items": "{{steps.read_plan.output}}"
+          },
+          "fallbacks": {
+            "master": "{{steps.adt_master.output}}",
+            "actual": "{{steps.adt_actual.output}}",
+            "plan": "{{steps.adt_plan.output}}"
+          },
+          "known_gaps": []
+        }
+      },
+      {
+        "id": "project_output",
+        "executor": "rule",
+        "operation": "managed_agent_rule",
+        "inputMapping": {
+          "run_input": "{{input}}",
+          "evaluation": "{{steps.evaluate.output}}"
+        }
+      }
+    ],
+    "acceptance": {
+      "contractVersion": "1.0",
+      "schemaVersion": "2.0",
+      "comparisonMode": "business_semantic",
+      "businessKeys": [
+        "company_code",
+        "controlling_area",
+        "cost_center",
+        "fiscal_year",
+        "period_from",
+        "period_to"
+      ],
+      "facts": [
+        "business_status",
+        "currency"
+      ],
+      "metrics": [
+        "actual_amount",
+        "plan_amount",
+        "variance_amount",
+        "variance_pct"
+      ],
+      "decimalFields": [],
+      "decimalMetricIds": [
+        "actual_amount",
+        "plan_amount",
+        "variance_amount",
+        "variance_pct"
+      ],
+      "currencyFields": [
+        "currency"
+      ],
+      "unitFields": [],
+      "dateFields": [],
+      "codeSetFields": [],
+      "zeroPadFields": {},
+      "booleanFields": [],
+      "inputDefaults": {
+        "company_code": "company_code",
+        "controlling_area": "controlling_area",
+        "cost_center": "cost_center",
+        "fiscal_year": "fiscal_year",
+        "period_from": "period_from",
+        "period_to": "period_to"
+      },
+      "constantDefaults": {},
+      "fieldAliases": {},
+      "fieldExtractors": {},
+      "currencyFromDecimal": {},
+      "valueMappings": {},
+      "limitationKeywords": {
+        "source_incomplete": [
+          "source incomplete",
+          "paging incomplete",
+          "range limited",
+          "范围限制",
+          "分页未完成"
+        ],
+        "bank_settlement_not_proven": [
+          "bank settlement",
+          "bank receipt",
+          "银行结算",
+          "银行到账"
+        ],
+        "capability_gap": [
+          "capability gap",
+          "evidence unavailable",
+          "inconclusive",
+          "能力缺口",
+          "证据不足",
+          "无法确认"
+        ],
+        "plan_evidence_missing": [
+          "plan evidence",
+          "plan base missing",
+          "planned expense",
+          "计划证据",
+          "计划基数"
+        ]
+      },
+      "summaryRecord": true,
+      "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+      "requiredLimitations": [],
+      "businessStatusFromMetric": {},
+      "limitationsFromMetrics": {},
+      "blankValueKeywords": {},
+      "blockingLimitations": [
+        "plan_evidence_missing"
+      ],
+      "ignoredNoticeKeywords": [],
+      "zeroFactWhenMetricZero": {},
+      "recordScope": "records",
+      "recordDefinition": "每次运行生成一条成本中心期间汇总记录，由公司代码、控制范围、成本中心、会计年度、起始期间和结束期间唯一标识；币种和业务状态来自已取得的结构化证据与确定性评估。 / One summary record per run, uniquely identified by company code, controlling area, cost center, fiscal year, period from, and period to; currency and business status come from collected structured evidence and deterministic assessment.",
+      "scopeDefinition": "纳入严格按必填输入过滤并由完整分页的 Embedded OData 或经条件门禁验证的只读 ADT 补证返回的成本中心主数据、实际费用和指定计划类别的计划费用。排除范围外成本中心、年度或期间；不执行币种换算，不把缺失计划、截断或失败读取当作零。 / Include cost-center master, actual expense, and the selected planning category returned by fully paged Embedded OData or condition-gated validated read-only ADT evidence under the required filters. Exclude other cost centers, fiscal years, or periods; perform no currency conversion, and never treat missing plan, truncated, or failed reads as zero.",
+      "factDefinitions": {
+        "company_code": "经输入 Schema 校验并用于实际和计划读取过滤的公司代码；它定义本次汇总范围，不从缺失证据推断。 / Schema-validated company code applied to actual and plan read filters; it defines this summary scope and is never inferred from missing evidence.",
+        "controlling_area": "经输入 Schema 校验并用于成本中心主数据读取过滤的控制范围。 / Schema-validated controlling area applied to the cost-center master filter.",
+        "cost_center": "经输入 Schema 校验并同时用于主数据、实际和计划读取过滤的成本中心。 / Schema-validated cost center applied to master, actual, and plan filters.",
+        "fiscal_year": "经输入 Schema 校验并用于实际会计年度与计划分类账会计年度过滤的会计年度。 / Schema-validated fiscal year applied to actual fiscal-year and planning-ledger fiscal-year filters.",
+        "period_from": "经输入 Schema 校验并作为实际和计划期间下界的起始期间。 / Schema-validated inclusive lower period bound applied to actual and plan reads.",
+        "period_to": "经输入 Schema 校验并作为实际和计划期间上界的结束期间。 / Schema-validated inclusive upper period bound applied to actual and plan reads.",
+        "business_status": "确定性规则基于完整性、主数据冻结、计划可用性、币种可比性及阈值结果生成；只允许 normal、attention 或 capability_blocked。 / Deterministic status derived from completeness, master-data blocks, plan availability, currency comparability, and threshold results; allowed values are normal, attention, or capability_blocked.",
+        "currency": "实际和计划证据中的唯一公司代码币种；缺失或多币种不可比时为 null。 / The single company-code currency evidenced by actual and plan rows; null when absent or when multiple currencies are not comparable."
+      },
+      "metricDefinitions": {
+        "actual_amount": "对本次范围内规则消费的实际费用证据行各计一次后求和；完整空结果为 Decimal 字符串 0，查询源不完整时为 null。 / Sum each actual-expense evidence row consumed by the rule once; a complete empty result is Decimal string 0, while an incomplete source is null.",
+        "plan_amount": "对本次范围和计划类别内规则消费的计划费用证据行各计一次后求和；存在完整计划行时可为 0，计划证据缺失或查询源不完整时为 null。 / Sum each planned-expense evidence row consumed for the selected scope and planning category once; complete evidenced rows may sum to 0, while missing plan evidence or an incomplete source is null.",
+        "variance_amount": "仅在计划证据存在时计算 actual_amount 减 plan_amount；无计划证据或查询源不完整时为 null，不补零。 / Compute actual_amount minus plan_amount only when plan evidence exists; null, never zero-filled, when plan evidence is missing or the source is incomplete.",
+        "variance_pct": "仅在证据完整、币种可比且计划金额非零时，以 variance_amount 除以计划金额绝对值乘 100；否则为 null。 / Compute variance_amount divided by the absolute plan amount times 100 only with complete evidence, comparable currency, and a nonzero plan amount; otherwise null."
+      },
+      "businessStatusDefinition": "capability_blocked 表示计划或其他必需证据缺失，不能形成确定结论；attention 表示证据已取得但存在主数据冻结、币种不可比、计划基数为零或差异达到阈值；normal 表示证据完整且未触发这些规则。 / capability_blocked means required plan or other evidence is missing; attention means evidence was obtained but a posting block, currency mismatch, zero plan base, or threshold breach was found; normal means evidence is complete and none of those rules fired.",
+      "requiredAssessments": [],
+      "businessStatusFromAnyPositiveMetric": {}
+    },
+    "relationshipPolicy": "advisory"
+  },
+  "validation": {
+    "verdict": "PASS",
+    "testedAt": "2026-09-22T15:08:09.656701+00:00",
+    "evidenceScope": "complete",
+    "providers": [
+      "codex-sdk-direct-sap",
+      "free-query",
+      "embedded-sap-odata"
+    ],
+    "summary": {
+      "zh": "独立SAP基线、自由查询和固定Agent的业务语义一致。",
+      "en": "The independent SAP baseline, free query, and fixed Agent are semantically consistent."
+    },
+    "reportPath": "docs/formal-acceptance.md",
+    "executable": true,
+    "acceptanceMode": "three_stage",
+    "freeQueryComparison": "MATCH",
+    "fixedAgentComparison": "MATCH",
+    "blockingLimitations": [],
+    "baselineRuntime": "codex_sdk_direct_sap",
+    "usedSapBusinessAgentsForBaseline": false,
+    "campaignId": "campaign_434c3726e6ab4aa6ab5b",
+    "reportDigest": "sha256:0938b5cc53561856e2ce77ed86bf5f68653c606dccce01727f799fd6eb053df0"
+  }
+}
