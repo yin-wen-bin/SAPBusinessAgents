@@ -138,6 +138,7 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   const component = await readFile(path.join("src", "components", "AgentManagementCenter.tsx"), "utf8");
   const workbench = await readFile(path.join("src", "components", "AgentDraftWorkspace.tsx"), "utf8");
   const globalStyles = await readFile(path.join("src", "styles", "global.css"), "utf8");
+  const draftStyles = await readFile(path.join("src", "styles", "agent-draft.css"), "utf8");
   assert.match(zh, /Agent 管理中心/);
   assert.match(en, /Agent management center/);
   for (const [locale, html] of [["zh", zh], ["en", en]]) {
@@ -159,6 +160,7 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   assert.match(component, /expectedAgentHash/);
   assert.match(workbench, /validationReportDigest/);
   assert.match(workbench, /详细变更信息/);
+  assert.match(draftStyles, /\.agent-steps\.draft-wizard-nav button\.active\s*\{[^}]*color: var\(--color-text\);/);
   assert.match(workbench, /需要解释什么/);
   assert.match(workbench, /需要修改什么/);
   assert.match(workbench, /sampleConfirmed/);
