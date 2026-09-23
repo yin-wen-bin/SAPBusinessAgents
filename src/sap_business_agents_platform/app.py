@@ -42,6 +42,7 @@ from .integrations import (
 from .manifests import AgentRepository
 from .models import (
     AgentActivateRequest,
+    AgentDraftActivationRequest,
     AgentAuthoringCreate,
     AgentCatalogModuleUpdate,
     AgentDeleteRequest,
@@ -2400,6 +2401,15 @@ def create_app(
                     "Agent draft revision changed.", code="agent_draft_conflict"
                 )
             return agent_lifecycle.start_publish(draft_id, payload)
+        except (AgentLifecycleError, KeyError, subprocess.CalledProcessError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/activate", status_code=202)
+    async def activate_published_agent_draft(
+        draft_id: str, payload: AgentDraftActivationRequest
+    ) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.start_activation(draft_id, payload)
         except (AgentLifecycleError, KeyError, subprocess.CalledProcessError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 

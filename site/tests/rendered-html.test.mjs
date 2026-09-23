@@ -64,7 +64,7 @@ test("CO detail pages render the exact manifest execution workflows", async () =
     for (const skillStep of manifest.execution.steps.filter((step) => step.executor === "skill")) {
       assert.match(zh, new RegExp(skillStep.skillId));
     }
-    assert.match(zh, /three-stage-live-acceptance\.md/);
+    assert.ok(zh.includes(manifest.validation.reportPath), `${slug} acceptance report link is missing`);
   }
 });
 

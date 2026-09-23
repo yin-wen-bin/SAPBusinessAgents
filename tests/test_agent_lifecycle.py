@@ -26,12 +26,14 @@ from sap_business_agents_platform.managed_rules import (
 from sap_business_agents_platform.manifests import AgentRepository
 from sap_business_agents_platform.models import (
     AgentActivateRequest,
+    AgentDraftActivationRequest,
     AgentAuthoringCreate,
     AgentCatalogModuleUpdate,
     AgentDraftDeleteRequest,
     AgentDraftCatalogModuleUpdate,
     AgentDraftUpdate,
     AgentPublishRequest,
+    AgentSiteRefreshRequest,
     AgentVersionDraftRequest,
     DraftRecord,
     RunCreate,
@@ -867,6 +869,180 @@ def test_metadata_only_version_reuses_pass_acceptance_and_publishes_local_commit
     assert validated["validation"]["sap_get_count"] == 0
     assert (tmp_path / "agents" / "Common" / "managed-test-agent" / "versions" / "1.0.0" / "agent.json").is_file()
     assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout == ""
+
+
+def _pending_inactive_version(tmp_path: Path, monkeypatch, *, publication_version: str = "1.0.1"):
+    service, store, _settings = _service(tmp_path)
+    current = _write_active_agent(service, tmp_path)
+    draft = service.create_version_draft(
+        current["slug"], bump="patch", expected_version="1.0.0",
+        expected_hash=agent_digest(current),
+    )
+    directory = tmp_path / "agents" / "Common" / current["slug"]
+    package = service._capture_package(directory)
+    package["manifest"]["version"] = "1.0.1"
+    service._write_package(directory / "versions" / "1.0.1", package)
+    service._write_json(directory / "publication.json", {
+        "schemaVersion": 1, "agent_id": current["slug"], "state": "active",
+        "lifecycle_state": "active", "active_version": "1.0.0",
+        "latest_version": "1.0.1", "active_digest": agent_digest(current),
+    })
+    stored = store.get_agent_authoring_draft(draft["draft_id"])
+    stored.update(status="published", target_version="1.0.1")
+    store.save_agent_authoring_draft(stored)
+    publication = store.reserve_agent_operation(draft["draft_id"], 1, "publish", "publish-test", "publish-hash", allow_published=True)
+    store.update_agent_operation(draft["draft_id"], publication["operation_id"], status="completed", detail={
+        "result": {"publication_status": "published", "active": False, "version": publication_version, "commit_sha": "a" * 40}
+    })
+    (tmp_path / ".gitignore").write_text(".local-data/\n.prototype/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, check=True, capture_output=True)
+    monkeypatch.setattr(service, "_validate_documentation_package", lambda _package: None)
+    monkeypatch.setattr(service._site_release, "prepare", lambda *_args, **_kwargs: {"fingerprint": "test-build", "dist_path": "test"})
+    monkeypatch.setattr(service._site_release, "switch", lambda *_args, **_kwargs: {"status": "completed"})
+    return service, store, draft, current
+
+
+def test_pending_activation_requires_matching_publication_and_blocks_uncertain_retry(tmp_path: Path, monkeypatch) -> None:
+    mismatched = tmp_path / "mismatched"
+    mismatched.mkdir()
+    service, _store, _draft, _current = _pending_inactive_version(mismatched, monkeypatch, publication_version="9.9.9")
+    assert service.catalog("active")[0]["pending_activation"] is None
+
+    confirmed = tmp_path / "confirmed"
+    confirmed.mkdir()
+    service, store, draft, current = _pending_inactive_version(confirmed, monkeypatch)
+    pending = service.catalog("active")[0]["pending_activation"]
+    operation = store.reserve_agent_operation(draft["draft_id"], 1, "activate", "prior-activation", "prior-hash", allow_published=True)
+    store.update_agent_operation(draft["draft_id"], operation["operation_id"], status="failed", detail={
+        "activation_status": "unknown", "candidate_commit_sha": "b" * 40,
+    })
+    assert service.catalog("active")[0]["pending_activation"]["blockers"] == ["agent_activation_state_unconfirmed"]
+    with pytest.raises(AgentLifecycleError, match="not confirmed") as exc:
+        service.start_activation(draft["draft_id"], AgentDraftActivationRequest(
+            requestId="different-request", expectedRevision=1,
+            expectedVersion="1.0.0", expectedAgentHash=agent_digest(current),
+            targetVersion="1.0.1", expectedTargetDigest=pending["digest"],
+        ))
+    assert exc.value.code == "agent_activation_state_unconfirmed"
+
+
+def test_published_inactive_upgrade_is_visible_and_activates_without_switching_main(tmp_path: Path, monkeypatch) -> None:
+    service, store, draft, current = _pending_inactive_version(tmp_path, monkeypatch)
+    item = service.catalog("active")[0]
+    pending = item["pending_activation"]
+    assert pending["version"] == "1.0.1"
+    assert pending["draft_id"] == draft["draft_id"]
+    assert pending["can_activate"] is True
+    payload = AgentDraftActivationRequest(
+        requestId="activate-test", expectedRevision=1,
+        expectedVersion="1.0.0", expectedAgentHash=agent_digest(current),
+        targetVersion="1.0.1", expectedTargetDigest=pending["digest"],
+    )
+
+    async def activate():
+        first = service.start_activation(draft["draft_id"], payload)
+        duplicate = service.start_activation(draft["draft_id"], payload)
+        assert duplicate["operation_id"] == first["operation_id"]
+        await service._publication_tasks[first["operation_id"]]
+
+    asyncio.run(activate())
+    operation = store.latest_agent_operation(draft["draft_id"], "activate")
+    assert operation["detail"]["result"]["site_refresh_status"] == "completed"
+    assert service.agents.get(current["slug"])["version"] == "1.0.1"
+    assert service.agents.lifecycle(current["slug"])["active_version"] == "1.0.1"
+    assert service.agents.get_version(current["slug"], "1.0.0")["version"] == "1.0.0"
+    assert service.catalog("active")[0]["pending_activation"] is None
+    assert service.catalog("active")[0]["latest_activation"]["activation_status"] == "active"
+    assert subprocess.run(["git", "branch", "--show-current"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == "main"
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout == ""
+
+
+def test_published_inactive_agent_without_active_version_can_be_activated(tmp_path: Path, monkeypatch) -> None:
+    service, _store, draft, current = _pending_inactive_version(tmp_path, monkeypatch)
+    directory = tmp_path / "agents" / "Common" / current["slug"]
+    lifecycle = service.agents.lifecycle(current["slug"])
+    service._activate_package(directory, directory / "versions" / "1.0.1", lifecycle)
+    lifecycle.update(state="inactive", lifecycle_state="inactive", active_version=None, active_digest=None)
+    service._write_json(directory / "publication.json", lifecycle)
+    subprocess.run(["git", "add", "agents"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "Published inactive version"], cwd=tmp_path, check=True, capture_output=True)
+    item = service.catalog("inactive")[0]
+    pending = item["pending_activation"]
+    assert pending["can_activate"] is True
+    payload = AgentDraftActivationRequest(
+        requestId="activate-first-version", expectedRevision=1,
+        expectedVersion="1.0.1", expectedAgentHash=item["digest"],
+        targetVersion="1.0.1", expectedTargetDigest=pending["digest"],
+    )
+
+    async def activate():
+        operation = service.start_activation(draft["draft_id"], payload)
+        await service._publication_tasks[operation["operation_id"]]
+
+    asyncio.run(activate())
+    assert service.agents.lifecycle(current["slug"])["active_version"] == "1.0.1"
+    assert service.agents.lifecycle(current["slug"])["state"] == "active"
+
+
+def test_activation_build_failure_keeps_old_version_and_main(tmp_path: Path, monkeypatch) -> None:
+    from sap_business_agents_platform.site_release import SiteReleaseError
+
+    service, store, draft, current = _pending_inactive_version(tmp_path, monkeypatch)
+    monkeypatch.setattr(service._site_release, "prepare", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        SiteReleaseError("Build failed", code="site_build_failed", phase="building_site")
+    ))
+    before = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+    pending = service.catalog("active")[0]["pending_activation"]
+    payload = AgentDraftActivationRequest(
+        requestId="activate-build-failure", expectedRevision=1,
+        expectedVersion="1.0.0", expectedAgentHash=agent_digest(current),
+        targetVersion="1.0.1", expectedTargetDigest=pending["digest"],
+    )
+
+    async def activate():
+        operation = service.start_activation(draft["draft_id"], payload)
+        with pytest.raises(SiteReleaseError):
+            await service._publication_tasks[operation["operation_id"]]
+
+    asyncio.run(activate())
+    assert store.latest_agent_operation(draft["draft_id"], "activate")["detail"]["failure_code"] == "site_build_failed"
+    assert service.agents.get(current["slug"])["version"] == "1.0.0"
+    assert service.agents.lifecycle(current["slug"])["active_version"] == "1.0.0"
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == before
+    assert subprocess.run(["git", "branch", "--show-current"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == "main"
+
+
+def test_activation_site_failure_keeps_activated_version_and_refresh_only_retries_site(tmp_path: Path, monkeypatch) -> None:
+    service, _store, draft, current = _pending_inactive_version(tmp_path, monkeypatch)
+    monkeypatch.setattr(service._site_release, "switch", lambda *_args, **_kwargs: {"status": "failed", "failure_code": "site_start_failed"})
+    pending = service.catalog("active")[0]["pending_activation"]
+    payload = AgentDraftActivationRequest(
+        requestId="activate-site-failure", expectedRevision=1,
+        expectedVersion="1.0.0", expectedAgentHash=agent_digest(current),
+        targetVersion="1.0.1", expectedTargetDigest=pending["digest"],
+    )
+
+    async def activate():
+        operation = service.start_activation(draft["draft_id"], payload)
+        await service._publication_tasks[operation["operation_id"]]
+
+    asyncio.run(activate())
+    assert service.agents.lifecycle(current["slug"])["active_version"] == "1.0.1"
+    assert service.get_draft(draft["draft_id"])["activation_operation"]["site_refresh_status"] == "failed"
+    activation_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+    monkeypatch.setattr(service._site_release, "switch", lambda *_args, **_kwargs: {"status": "completed"})
+
+    async def refresh():
+        operation = service.start_site_refresh(draft["draft_id"], AgentSiteRefreshRequest(requestId="refresh-activated-site"))
+        await service._publication_tasks[operation["operation_id"]]
+
+    asyncio.run(refresh())
+    assert service.get_draft(draft["draft_id"])["publication_operation"]["site_refresh_status"] == "completed"
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == activation_sha
 
 
 def test_presentation_gap_is_separate_from_execution_errors_and_blocks_acceptance_reuse(tmp_path: Path) -> None:

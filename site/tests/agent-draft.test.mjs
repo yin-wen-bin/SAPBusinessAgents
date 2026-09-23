@@ -42,6 +42,32 @@ test("publication progress separates the Git result from the page refresh", asyn
   assert.match(refreshFailed, /Agent已发布，页面待刷新/);
   assert.match(refreshFailed, /当前前台仍显示上一可用页面/);
   assert.match(refreshFailed, /重试刷新页面/);
+  const inactive = renderToStaticMarkup(createElement(Publication.default, {
+    open: true, locale: "en", connectionError: false,
+    value: { status: "completed", phase: "completed", publication_status: "published", site_refresh_status: "not_required", result: { active: false, version: "1.2.3" } },
+    onClose() {}, onRetrySite() {}, onComplete() {}, onActivate() {},
+  }));
+  assert.match(inactive, /Activate this version/);
+});
+
+test("published inactive versions expose an explicit bilingual activation action and confirmation", async () => {
+  const Activation = await component("AgentActivationDialog");
+  const zh = renderToStaticMarkup(createElement(Activation.default, {
+    open: true, confirming: true, locale: "zh", pending: { version: "1.0.1", can_activate: true },
+    currentVersion: "1.0.0", value: null, connectionError: false,
+    onClose() {}, onConfirm() {}, onRetrySite() {},
+  }));
+  assert.match(zh, /当前活动版本 1\.0\.0/);
+  assert.match(zh, /待启用版本 1\.0\.1/);
+  assert.match(zh, /已有工作流继续固定引用原版本/);
+  assert.match(zh, /确认启用/);
+  const en = renderToStaticMarkup(createElement(Activation.default, {
+    open: true, confirming: false, locale: "en", pending: null,
+    value: { status: "completed", phase: "completed", version: "1.0.1", activation_status: "active", site_refresh_status: "failed" },
+    connectionError: false, onClose() {}, onConfirm() {}, onRetrySite() {},
+  }));
+  assert.match(en, /Version activated; page refresh failed/);
+  assert.match(en, /Retry page refresh/);
 });
 
 test("formal acceptance setup and progress expose the multi-case read-only workflow", async () => {
@@ -626,6 +652,14 @@ test("actual workbench gates validation and publication but keeps unconfirmed de
   assert.match(publish, /Publication requirements are not met/);
   const publishZh = renderToStaticMarkup(createElement(Workspace, { ...props, initialStep: "publish", locale: "zh" }));
   assert.match(publishZh, /<summary>详细变更信息<\/summary>/);
+  const publishedInactive = renderToStaticMarkup(createElement(Workspace, {
+    ...props, initialStep: "publish", onActivatePublished() {},
+    initialDraft: { ...draft, status: "published", publication_operation: {
+      status: "completed", phase: "completed", publication_status: "published",
+      site_refresh_status: "not_required", result: { agent_id: "sample-test", version: "0.1.0", active: false },
+    } },
+  }));
+  assert.match(publishedInactive, /Activate this version/);
   const upgrade = renderToStaticMarkup(createElement(Workspace, { ...props, initialDraft: { ...draft, technical_identity: { kind: "version_upgrade", confirmed: true, locked: true, can_rename: false } } }));
   assert.match(upgrade, /version upgrade/);
   assert.doesNotMatch(upgrade, /id="draft-technical-id"/);

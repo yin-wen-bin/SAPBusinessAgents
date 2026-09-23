@@ -676,6 +676,18 @@ class AgentActivateRequest(AgentLifecycleRequest):
     version: str | None = Field(default=None, pattern=r"^\d+\.\d+\.\d+$")
 
 
+class AgentDraftActivationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    request_id: str = Field(alias="requestId", min_length=1, max_length=100)
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+    expected_version: str = Field(alias="expectedVersion", pattern=r"^\d+\.\d+\.\d+$")
+    expected_agent_hash: str = Field(alias="expectedAgentHash", pattern=r"^sha256:[0-9a-f]{64}$")
+    target_version: str = Field(alias="targetVersion", pattern=r"^\d+\.\d+\.\d+$")
+    expected_target_digest: str = Field(alias="expectedTargetDigest", pattern=r"^sha256:[0-9a-f]{64}$")
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class AgentDeleteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

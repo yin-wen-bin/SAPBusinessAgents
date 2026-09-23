@@ -51,9 +51,9 @@ export function PublicationProgressSummary({ value, locale, connectionError = fa
   </div>;
 }
 
-export default function AgentPublicationProgress({ open, value, locale, connectionError, onClose, onRetrySite, onComplete }: {
+export default function AgentPublicationProgress({ open, value, locale, connectionError, onClose, onRetrySite, onComplete, onActivate }: {
   open: boolean; value: any; locale: Locale; connectionError?: boolean;
-  onClose: () => void; onRetrySite: () => void; onComplete: () => void;
+  onClose: () => void; onRetrySite: () => void; onComplete: () => void; onActivate?: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const tr = (zh: string, en: string) => locale === "zh" ? zh : en;
@@ -76,7 +76,7 @@ export default function AgentPublicationProgress({ open, value, locale, connecti
     <PublicationProgressSummary value={value} locale={locale} connectionError={connectionError} />
     <footer>{active ? <button type="button" className="agent-secondary-action" onClick={onClose}>{tr("后台继续", "Continue in background")}</button>
       : publication === "published" && site === "failed" ? <><button type="button" className="agent-secondary-action" onClick={onComplete}>{tr("返回管理列表", "Back to management")}</button><button type="button" onClick={onRetrySite}>{tr("重试刷新页面", "Retry page refresh")}</button></>
-      : publication === "published" ? <button type="button" onClick={onComplete}>{tr("完成", "Done")}</button>
+      : publication === "published" ? <><button type="button" onClick={onComplete}>{tr("完成", "Done")}</button>{(value?.result?.active === false || value?.activate === false) && onActivate && <button type="button" onClick={onActivate}>{tr("启用此版本", "Activate this version")}</button>}</>
       : <button type="button" onClick={onClose}>{tr("返回发布页面", "Return to publication")}</button>}</footer>
   </dialog>;
 }

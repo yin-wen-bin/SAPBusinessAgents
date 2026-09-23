@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import AgentDraftWorkspace from "./AgentDraftWorkspace";
+import AgentActivationDialog from "./AgentActivationDialog";
 import { ListResource, managementRows, filterManagementRows, pollingDelay } from "../lib/agentManagement";
 import { legacyDraftStep } from "../lib/agentDraft";
 import type { DraftStep } from "../lib/agentDraft";
@@ -21,7 +22,7 @@ const text = {
     version: "版本", validation: "验收", dependencies: "工作流引用", createVersion: "创建新版本",
     deactivate: "停用", activate: "重新启用", rollback: "回滚", delete: "永久删除",
     activateBlocked: "当前版本尚未通过启用门禁。请创建新版本并完成验收后再重新启用。",
-    activationBlockerLabels: { agent_must_be_inactive: "只有已停用Agent可以重新启用", agent_validation_pass_required: "当前版本未通过验收", agent_version_not_found: "找不到可启用的版本" },
+    activationBlockerLabels: { agent_must_be_inactive: "只有已停用Agent可以重新启用", agent_validation_pass_required: "当前版本未通过验收", agent_version_not_found: "找不到可启用的版本", agent_activation_state_unconfirmed: "上次启用的提交结果尚未确认，请先核对 Git 状态" },
     deleteBlocked: "当前不能永久删除", back: "返回目录", source: "创建方式", blank: "从空白模板",
     clone: "复制现有 Agent", free: "从成功自由查询", gap: "从工作流缺口", agentId: "Agent 技术 ID",
     module: "模块", sourceAgent: "源 Agent", runId: "自由查询运行编号", workflowDraft: "工作流草稿编号",
@@ -40,6 +41,10 @@ const text = {
     moduleHelp: "仅调整目录归类、导航和发现方式，不改变SAP范围、执行逻辑或验收状态。",
     moduleSaved: "所属模块已更新；原版本与验收保持不变。",
     moduleReloadRequired: "所属模块已更新；请重新启动前台以刷新静态目录。",
+    pendingVersion: "待启用版本", activeVersion: "当前活动版本", activateVersion: "启用此版本",
+    activationProgress: "查看启用进度", activationHelp: "版本已发布但尚未启用；启用不会改变已有工作流固定引用。",
+    activationBlocked: "此版本暂不能启用。", noActiveVersion: "无",
+    activationDone: "版本已启用", activationSiteFailed: "版本已启用，页面刷新失败", activationRunning: "正在启用版本", activationFailed: "版本启用未完成",
     createHelp: "创建时选择目录模块；进入草稿后仍可调整。自由查询和工作流缺口生成的草稿也可在定义页调整。",
     sourceType: "创建方式", createBlank: "空白Agent", createClone: "复制现有Agent", createFromQuery: "从自由查询创建",
     deleteDraftWarning: "此操作会永久删除草稿包、修订和对话，无法恢复。历史验证运行将继续保留。",
@@ -59,7 +64,7 @@ const text = {
     version: "Version", validation: "Acceptance", dependencies: "Workflow references", createVersion: "Create new version",
     deactivate: "Deactivate", activate: "Activate", rollback: "Roll back", delete: "Delete permanently",
     activateBlocked: "The current version has not passed activation gates. Create and validate a new version before activation.",
-    activationBlockerLabels: { agent_must_be_inactive: "Only inactive Agents can be activated", agent_validation_pass_required: "The current version has not passed acceptance", agent_version_not_found: "No activatable version was found" },
+    activationBlockerLabels: { agent_must_be_inactive: "Only inactive Agents can be activated", agent_validation_pass_required: "The current version has not passed acceptance", agent_version_not_found: "No activatable version was found", agent_activation_state_unconfirmed: "The previous activation commit is unconfirmed; inspect Git state first" },
     deleteBlocked: "Permanent deletion is unavailable", back: "Back to catalog", source: "Creation source", blank: "Blank template",
     clone: "Clone existing Agent", free: "Successful free query", gap: "Workflow capability gap", agentId: "Agent technical ID",
     module: "Module", sourceAgent: "Source Agent", runId: "Free-query run ID", workflowDraft: "Workflow draft ID",
@@ -78,6 +83,10 @@ const text = {
     moduleHelp: "This changes catalog grouping, navigation and discovery only. It does not change SAP scope, execution or acceptance.",
     moduleSaved: "The module was updated; the version and acceptance are unchanged.",
     moduleReloadRequired: "The module was updated; restart the site to refresh the static catalog.",
+    pendingVersion: "Pending version", activeVersion: "Current active version", activateVersion: "Activate this version",
+    activationProgress: "View activation progress", activationHelp: "This version is published but not active. Activation does not change pinned workflow references.",
+    activationBlocked: "This version cannot be activated yet.", noActiveVersion: "None",
+    activationDone: "Version activated", activationSiteFailed: "Version activated; page refresh failed", activationRunning: "Version activation is running", activationFailed: "Version activation did not complete",
     createHelp: "Choose the catalog module at creation; it remains editable in the draft. Drafts generated from free queries or workflow gaps can be reclassified on their definition page.",
     sourceType: "Creation source", createBlank: "Blank Agent", createClone: "Clone Agent", createFromQuery: "Create from free query",
     deleteDraftWarning: "This permanently deletes the draft package, revisions and conversation. Validation runs remain available.",
@@ -121,7 +130,7 @@ async function request(url: string, init?: RequestInit) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = body?.detail;
-    throw new Error(detail?.message || detail || body?.message || `HTTP ${response.status}`);
+    throw Object.assign(new Error(detail?.message || detail || body?.message || `HTTP ${response.status}`), { status: response.status, code: detail?.code });
   }
   return body;
 }
@@ -157,6 +166,11 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   const [deleteCandidate, setDeleteCandidate] = useState<any>(null);
   const [draftConfirmId, setDraftConfirmId] = useState("");
   const [selectedModule, setSelectedModule] = useState("");
+  const [activation, setActivation] = useState<any>(null);
+  const [activationDraftId, setActivationDraftId] = useState("");
+  const [activationDialogOpen, setActivationDialogOpen] = useState(false);
+  const [activationConfirming, setActivationConfirming] = useState(false);
+  const [activationConnectionError, setActivationConnectionError] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [createSource, setCreateSource] = useState<"blank" | "clone">("blank");
   const [createAgentId, setCreateAgentId] = useState("");
@@ -207,6 +221,45 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   }, [catalog, loaders]);
 
   useEffect(() => {
+    if (!selected) return;
+    const fresh = catalog.find((item: any) => item.id === selected.id);
+    if (fresh && (fresh.digest !== selected.digest || JSON.stringify(fresh.lifecycle) !== JSON.stringify(selected.lifecycle) || JSON.stringify(fresh.pending_activation) !== JSON.stringify(selected.pending_activation) || JSON.stringify(fresh.latest_activation) !== JSON.stringify(selected.latest_activation))) setSelected(fresh);
+  }, [catalog, selected]);
+
+  useEffect(() => {
+    if (!selected?.id) return;
+    const requested = new URLSearchParams(window.location.search).get("activationDraft");
+    const draftId = requested || selected.pending_activation?.draft_id || selected.latest_activation?.draft_id;
+    if (!draftId) return;
+    setActivationDraftId(draftId);
+    void request(`${apiBase}/api/authoring/agents/${encodeURIComponent(draftId)}`)
+      .then((value) => {
+        const activation = value.activation_operation;
+        const refresh = value.publication_operation?.kind === "site_refresh" ? value.publication_operation : null;
+        const latest = refresh && (!activation || String(refresh.created_at) >= String(activation.created_at)) ? refresh : activation;
+        if (latest) setActivation(latest);
+      })
+      .catch(() => setActivationConnectionError(true));
+  }, [apiBase, selected?.id, selected?.pending_activation?.draft_id, selected?.latest_activation?.draft_id]);
+
+  useEffect(() => {
+    if (!activationDraftId || !["starting", "queued", "running"].includes(String(activation?.status))) return;
+    const timer = window.setInterval(() => {
+      void request(`${apiBase}/api/authoring/agents/${encodeURIComponent(activationDraftId)}`)
+        .then((value) => {
+          const latest = [value.activation_operation, value.publication_operation].find((item) => item?.operation_id === activation?.operation_id);
+          if (latest) {
+            setActivation(latest);
+            setActivationConnectionError(false);
+            if (!["queued", "running"].includes(latest.status)) void loaders.catalog.refresh();
+          }
+        })
+        .catch(() => setActivationConnectionError(true));
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [apiBase, activationDraftId, activation?.operation_id, activation?.status, loaders.catalog]);
+
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const draftId = params.get("draft");
     if (draftId) void openDraft(draftId, params.get("step") || undefined);
@@ -214,7 +267,10 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
       const next = new URLSearchParams(window.location.search);
       const nextDraft = next.get("draft");
       if (nextDraft) void openDraft(nextDraft, next.get("step") || undefined, false);
-      else backToList(false);
+      else if (next.get("agent")) {
+        const item = loaders.catalog.state.data.find((entry: any) => entry.id === next.get("agent"));
+        setDraft(null); setSelected(item || null); setSelectedModule(item?.module || "Common");
+      } else backToList(false);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -234,6 +290,8 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   }, [list, rows, filters, t.changedFilter]);
   const backToList = (writeHistory = true) => {
     setDraft(null); setSelected(null); setSelectedModule("");
+    setActivationDialogOpen(false); setActivationConfirming(false);
+    setActivation(null); setActivationDraftId(""); setActivationConnectionError(false);
     if (writeHistory) history.pushState({}, "", window.location.pathname);
     void load();
   };
@@ -270,6 +328,68 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
       const result = await request(`${apiBase}/api/agents/${encodeURIComponent(selected.id)}${action === "delete" ? "" : `/${action}`}`, { method: action === "delete" ? "DELETE" : "POST", body: JSON.stringify(body) });
       setNotice(`${result.branch || ""} ${result.commit_sha || ""}`); setSelected(null); await load();
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  const openPublishedAgent = async (result: any, confirmActivation = false) => {
+    setDraft(null);
+    setNotice(`${result.branch || ""} · ${result.commit_sha || ""} · ${locale === "zh" ? "未推送" : "not pushed"}`);
+    try {
+      const rows = await request(`${apiBase}/api/agents/catalog?state=all`);
+      const item = rows.find((entry: any) => entry.id === result.agent_id);
+      if (!item) { backToList(); return; }
+      setSelected(item); setSelectedModule(item.module || "Common");
+      history.pushState({}, "", `${window.location.pathname}?agent=${encodeURIComponent(item.id)}`);
+      await loaders.catalog.refresh();
+      if (confirmActivation && item.pending_activation?.version === result.version) {
+        setActivationDraftId(item.pending_activation.draft_id);
+        setActivationConfirming(true);
+        setActivationDialogOpen(true);
+      }
+    } catch (failure: any) { setError(failure.message); backToList(); }
+  };
+
+  const confirmActivation = async () => {
+    const pending = selected?.pending_activation;
+    if (!selected || !pending?.can_activate) return;
+    const draftId = pending.draft_id;
+    const body = {
+      requestId: crypto.randomUUID(), expectedRevision: pending.draft_revision,
+      expectedVersion: selected.version, expectedAgentHash: selected.digest,
+      targetVersion: pending.version, expectedTargetDigest: pending.digest,
+      reason: reason || null,
+    };
+    setActivationDraftId(draftId); setActivationConfirming(false);
+    setActivation({ status: "starting", phase: "checking_version", version: pending.version, created_at: new Date().toISOString() });
+    setActivationConnectionError(false);
+    history.replaceState({}, "", `${window.location.pathname}?agent=${encodeURIComponent(selected.id)}&activationDraft=${encodeURIComponent(draftId)}`);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const value = await request(`${apiBase}/api/authoring/agents/${encodeURIComponent(draftId)}/activate`, { method: "POST", body: JSON.stringify(body) });
+        setActivation(value); setActivationConnectionError(false); return;
+      } catch (failure: any) {
+        try {
+          const current = await request(`${apiBase}/api/authoring/agents/${encodeURIComponent(draftId)}`);
+          if (current.activation_operation?.request_id === body.requestId) {
+            setActivation(current.activation_operation); setActivationConnectionError(false); return;
+          }
+        } catch { /* An uncertain response is retried with the same request ID. */ }
+        if (attempt === 2 || (failure.status && failure.status < 500)) {
+          setActivation({ status: "failed", phase: "completed", version: pending.version, failure_code: failure.message });
+          setActivationConnectionError(!failure.status || failure.status >= 500);
+          return;
+        }
+      }
+    }
+  };
+
+  const retryActivationSite = async () => {
+    if (!activationDraftId) return;
+    try {
+      const value = await request(`${apiBase}/api/authoring/agents/${encodeURIComponent(activationDraftId)}/refresh-site`, {
+        method: "POST", body: JSON.stringify({ requestId: crypto.randomUUID() }),
+      });
+      setActivation(value); setActivationConnectionError(false);
+    } catch (failure: any) { setError(failure.message); }
   };
 
   const saveSelectedModule = async () => {
@@ -317,14 +437,21 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
-  if (draft) return <AgentDraftWorkspace key={draft.draft_id} initialDraft={draft} apiBase={apiBase} locale={locale} runPath={runPath} initialStep={step} onBack={() => backToList()} onPublished={(result) => { setNotice(`${result.branch || ""} · ${result.commit_sha || ""} · ${locale === "zh" ? "未推送" : "not pushed"}`); backToList(); }} />;
+  if (draft) return <AgentDraftWorkspace key={draft.draft_id} initialDraft={draft} apiBase={apiBase} locale={locale} runPath={runPath} initialStep={step} onBack={() => backToList()} onPublished={(result) => { void openPublishedAgent(result); }} onActivatePublished={(result) => { void openPublishedAgent(result, true); }} />;
 
-  if (selected) return <main className="agent-management"><button onClick={() => backToList()}>{t.back}</button><p className="eyebrow">{t.eyebrow}</p><h1>{localized(selected.title, locale)}</h1><p>{localized(selected.summary, locale)}</p><dl><dt>ID</dt><dd><code>{selected.id}</code></dd><dt>{t.catalogModule}</dt><dd>{selected.module}</dd><dt>{t.version}</dt><dd>{selected.version}</dd><dt>{t.validation}</dt><dd>{selected.validation?.verdict || "-"}</dd><dt>{t.dependencies}</dt><dd>{selected.workflow_dependencies?.length || 0}</dd></dl>
-    {error && <p className="agent-alert error">{error}</p>}{notice && <p className="agent-alert">{notice}</p>}
-    <section className="agent-panel"><h2>{t.catalogModule}</h2><div className="draft-module-editor"><label>{t.catalogModule}<select value={selectedModule || selected.module} disabled={busy} onChange={(event) => setSelectedModule(event.target.value)}>{catalogModules.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button disabled={busy || !selectedModule || selectedModule === selected.module} onClick={saveSelectedModule}>{t.saveModule}</button></div><p>{t.moduleHelp}</p></section>
-    <section className="agent-panel"><h2>{t.createVersion}</h2><select value={bump} onChange={(e) => setBump(e.target.value as any)}><option value="patch">{t.patch}</option><option value="minor">{t.minor}</option><option value="major">{t.major}</option></select><button disabled={busy || !selected.management?.can_create_version} onClick={createVersion}>{t.createVersion}</button></section>
-    <section className="agent-panel"><label>{t.reason}<input value={reason} onChange={(e) => setReason(e.target.value)} /></label><div className="agent-actions">{selected.lifecycle?.state === "active" ? <button disabled={busy} onClick={() => lifecycleAction("deactivate")}>{t.deactivate}</button> : <button disabled={busy || !selected.management?.can_activate} onClick={() => lifecycleAction("activate")}>{t.activate}</button>}</div>{selected.lifecycle?.state === "inactive" && !selected.management?.can_activate && <div role="status"><p>{t.activateBlocked}</p><ul>{(selected.management?.activate_blockers || []).map((item: string) => <li key={item}>{(t.activationBlockerLabels as Record<string, string>)[item] || t.activateBlocked}</li>)}</ul></div>}</section>
-    <section className="agent-panel danger"><h2>{t.delete}</h2>{(selected.management?.delete_blockers || []).length > 0 && <ul>{selected.management.delete_blockers.map((item: string) => <li>{item}</li>)}</ul>}<label>{t.confirmId}<input value={confirmId} onChange={(e) => setConfirmId(e.target.value)} /></label><button disabled={busy || !selected.management?.can_delete || confirmId !== selected.id} onClick={() => lifecycleAction("delete")}>{t.delete}</button></section>
+  if (selected) return <main className="agent-management agent-management-detail">
+    <header className="agent-detail-header"><button className="agent-secondary-action" onClick={() => backToList()}>{t.back}</button><div><p className="eyebrow">{t.eyebrow}</p><h1>{localized(selected.title, locale)}</h1><p>{localized(selected.summary, locale)}</p></div></header>
+    <dl className="agent-detail-overview"><div><dt>ID</dt><dd><code>{selected.id}</code></dd></div><div><dt>{t.catalogModule}</dt><dd>{selected.module}</dd></div><div><dt>{t.activeVersion}</dt><dd>{selected.lifecycle?.active_version || t.noActiveVersion}</dd></div><div><dt>{t.validation}</dt><dd>{selected.validation?.verdict || "—"}</dd></div><div><dt>{t.dependencies}</dt><dd>{selected.workflow_dependencies?.length || 0}</dd></div></dl>
+    {error && <p className="agent-alert error" role="alert">{error}</p>}{notice && <p className="agent-alert" role="status">{notice}</p>}
+    {selected.pending_activation && <section className="agent-panel agent-activation-card"><div><h2>{t.pendingVersion} {selected.pending_activation.version}</h2><p>{selected.lifecycle?.state === "active" && selected.lifecycle?.active_version ? `${t.activeVersion} ${selected.lifecycle.active_version} → ${t.pendingVersion} ${selected.pending_activation.version}` : t.activationHelp}</p></div><p>{t.activationHelp}</p><div className="agent-actions"><button disabled={busy || !selected.pending_activation.can_activate || ["starting", "queued", "running"].includes(String(activation?.status))} onClick={() => { setActivationDraftId(selected.pending_activation.draft_id); setActivationConfirming(true); setActivationDialogOpen(true); }}>{t.activateVersion}</button>{activation && <button className="agent-secondary-action" onClick={() => { setActivationConfirming(false); setActivationDialogOpen(true); }}>{t.activationProgress}</button>}</div>{!selected.pending_activation.can_activate && <div role="status"><p>{t.activationBlocked}</p><ul>{selected.pending_activation.blockers.map((item: string) => <li key={item}>{(t.activationBlockerLabels as Record<string, string>)[item] || item}</li>)}</ul></div>}</section>}
+    {activation && !selected.pending_activation && <section className="agent-panel agent-activation-card" role="status"><h2>{activation.activation_status === "active" ? activation.site_refresh_status === "failed" ? t.activationSiteFailed : t.activationDone : activation.status === "failed" ? t.activationFailed : t.activationRunning}</h2><p>{t.version} {activation.version || activation.result?.version || "—"}</p><div className="agent-actions"><button className="agent-secondary-action" onClick={() => { setActivationConfirming(false); setActivationDialogOpen(true); }}>{t.activationProgress}</button>{activation.activation_status === "active" && activation.site_refresh_status === "failed" && <button onClick={() => { void retryActivationSite(); }}>{locale === "zh" ? "重试刷新页面" : "Retry page refresh"}</button>}</div></section>}
+    <div className="agent-detail-grid">
+      <section className="agent-panel agent-module-card"><h2>{t.catalogModule}</h2><div className="draft-module-editor"><select aria-label={t.catalogModule} value={selectedModule || selected.module} disabled={busy} onChange={(event) => setSelectedModule(event.target.value)}>{catalogModules.map((item) => <option key={item} value={item}>{item}</option>)}</select><button disabled={busy || !selectedModule || selectedModule === selected.module} onClick={saveSelectedModule}>{t.saveModule}</button></div><p>{t.moduleHelp}</p></section>
+      <section className="agent-panel"><h2>{t.createVersion}</h2><div className="agent-actions"><select aria-label={t.createVersion} value={bump} onChange={(e) => setBump(e.target.value as any)}><option value="patch">{t.patch}</option><option value="minor">{t.minor}</option><option value="major">{t.major}</option></select><button disabled={busy || !selected.management?.can_create_version} onClick={createVersion}>{t.createVersion}</button></div></section>
+      <section className="agent-panel"><h2>{selected.lifecycle?.state === "active" ? t.deactivate : t.activate}</h2><label>{t.reason}<input value={reason} onChange={(e) => setReason(e.target.value)} /></label><div className="agent-actions">{selected.lifecycle?.state === "active" ? <button disabled={busy} onClick={() => lifecycleAction("deactivate")}>{t.deactivate}</button> : !selected.pending_activation && <button disabled={busy || !selected.management?.can_activate} onClick={() => lifecycleAction("activate")}>{t.activate}</button>}</div>{selected.lifecycle?.state === "inactive" && !selected.pending_activation && !selected.management?.can_activate && <div role="status"><p>{t.activateBlocked}</p><ul>{(selected.management?.activate_blockers || []).map((item: string) => <li key={item}>{(t.activationBlockerLabels as Record<string, string>)[item] || t.activateBlocked}</li>)}</ul></div>}</section>
+    </div>
+    <details className="agent-panel danger agent-detail-danger"><summary>{t.delete}</summary>{(selected.management?.delete_blockers || []).length > 0 && <ul>{selected.management.delete_blockers.map((item: string) => <li key={item}>{item}</li>)}</ul>}<label>{t.confirmId}<input value={confirmId} onChange={(e) => setConfirmId(e.target.value)} /></label><button disabled={busy || !selected.management?.can_delete || confirmId !== selected.id} onClick={() => lifecycleAction("delete")}>{t.delete}</button></details>
+    <AgentActivationDialog open={activationDialogOpen} confirming={activationConfirming} value={activation} pending={selected.pending_activation} currentVersion={selected.lifecycle?.state === "active" ? selected.lifecycle?.active_version : null} locale={locale} connectionError={activationConnectionError} onClose={() => { setActivationDialogOpen(false); setActivationConfirming(false); }} onConfirm={() => { void confirmActivation(); }} onRetrySite={() => { void retryActivationSite(); }} />
   </main>;
 
   return <main className="agent-management">
@@ -362,7 +489,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
             <div data-label={t.state}><span className="agent-list-status">{mappedLabel(t.statusLabels, item.state)}</span>{item.kind === "draft" && <small>{mappedLabel(t.statusLabels, item.status)}</small>}</div>
             <div data-label={t.validation}>{mappedLabel(t.statusLabels, item.acceptance)}{item.sync_error && <small role="status">{t.syncError}</small>}</div>
             <div className="agent-list-actions" data-label={t.actions}>
-              <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id, draftPrimaryStep(item)); else { setSelected(item); setSelectedModule(item.module || "Common"); } }}>{item.kind !== "draft" ? t.view : item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status) ? t.viewProgress : item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available" ? t.reviewPublish : Object.values(item.wizard?.steps || {}).includes("needs_action") ? t.handleIssue : t.continueDraft}</button>
+              <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id, draftPrimaryStep(item)); else { setSelected(item); setSelectedModule(item.module || "Common"); history.pushState({}, "", `${window.location.pathname}?agent=${encodeURIComponent(item.id)}`); } }}>{item.kind !== "draft" ? t.view : item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status) ? t.viewProgress : item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available" ? t.reviewPublish : Object.values(item.wizard?.steps || {}).includes("needs_action") ? t.handleIssue : t.continueDraft}</button>
               {item.kind === "draft" && <button className="agent-danger-action" disabled={busy || !item.management?.can_delete} title={(item.management?.delete_blockers || []).join(", ")} onClick={() => { setDeleteCandidate(item); setDraftConfirmId(""); setError(""); }}>{t.deleteDraft}</button>}
             </div>
           </div>
