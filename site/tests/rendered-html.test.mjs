@@ -149,7 +149,7 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   assert.match(component, /\/catalog-module/);
   assert.match(component, /expectedCatalogRevision/);
   assert.match(workbench, /保存所属模块/);
-  for (const label of ["明确用途", "设置输入与结果", "确认处理逻辑", "试运行", "正式验收", "审核与发布"]) assert.match(workbench, new RegExp(label));
+  for (const label of ["明确用途", "设置查询条件与输出", "确认处理逻辑", "试运行", "正式验收", "审核与发布"]) assert.match(workbench, new RegExp(label));
   assert.match(workbench, /结果结构预览/);
   assert.match(component, /创建新版本/);
   assert.match(component, /GET-only 真机验证/);

@@ -541,7 +541,10 @@ test("input overview derives names from Schema and keeps requirement badges sepa
   for (const locale of ["zh", "en"]) {
     const html = renderToStaticMarkup(createElement(Workspace, { initialDraft: draft, initialStep: "io", locale, apiBase: "", runPath: "/runs", onBack: () => {}, onPublished: () => {} }));
     assert.match(html, locale === "zh" ? /中文名称<input[^>]*value="交货日期"/ : /English name<input[^>]*value="Delivery date"/);
-    assert.match(html, /<code>date<\/code> · string/);
+    assert.match(html, /<ul class="draft-input-definition-list"><li class="draft-input-definition"><details><summary>/);
+    assert.match(html, /<code>date<\/code><\/span><span class="draft-input-definition-meta">/);
+    assert.match(html, locale === "zh" ? /设置查询条件与输出/ : /Set query conditions and output/);
+    assert.match(html, locale === "zh" ? /<h2>结果结构预览<\/h2>[\s\S]*?<button[^>]*>让 AI 调整<\/button>/ : /<h2>Result structure preview<\/h2>[\s\S]*?<button[^>]*>Ask AI to adjust<\/button>/);
     assert.doesNotMatch(html, /错误旧展示|Stale display/);
   }
 });
