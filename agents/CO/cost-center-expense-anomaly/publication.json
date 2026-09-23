@@ -1,14 +1,16 @@
 {
   "schemaVersion": 1,
   "agent_id": "cost-center-expense-anomaly",
-  "state": "active",
-  "lifecycle_state": "active",
+  "state": "inactive",
+  "lifecycle_state": "inactive",
   "active_version": "0.1.1",
   "latest_version": "1.0.0",
   "active_digest": "sha256:228ecbd94f90b18c8dc5bb2a9fb9781c40679317f92c909628fcd1efc38de98d",
   "catalog_module": "CO",
   "catalog_revision": 1,
   "published_at": "2026-09-23T02:13:34.157593+00:00",
-  "git_branch": "codex/agent-cost-center-expense-anomaly-publish-v1.0.0-4d8ea649",
-  "git_commit": "recorded_in_agent_management_events"
+  "git_branch": "codex/agent-cost-center-expense-anomaly-deactivate-v0.1.1-886c2554",
+  "git_commit": "recorded_in_agent_management_events",
+  "deactivated_at": "2026-09-23T02:31:05.358831+00:00",
+  "deactivation_reason": ""
 }
