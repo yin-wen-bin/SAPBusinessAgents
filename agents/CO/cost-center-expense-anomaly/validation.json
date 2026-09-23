@@ -1,0 +1,257 @@
+{
+  "schema_version": "1.0",
+  "type": "formal_acceptance",
+  "campaign_id": "campaign_434c3726e6ab4aa6ab5b",
+  "draft_id": "agent_draft_3fdd86bc42b24303",
+  "agent_id": "cost-center-expense-anomaly",
+  "revision": 3,
+  "tested_at": "2026-09-22T15:08:09.656701+00:00",
+  "started_at": "2026-09-22T14:50:42.957204+00:00",
+  "completed_at": "2026-09-22T15:08:09.656701+00:00",
+  "execution_digest": "sha256:99dea17cb4454f848b047fe0f74ffc75e6c09c9cbe78ad655e771048ed612c45",
+  "managed_rule_digest": "sha256:41f4de7eb8fb93b8425b54b593aa121415593375f0429af2e31c67dd51fa7064",
+  "acceptance_contract_digest": "sha256:8483a421f1f24ae9452324c681fea54f56875291c448cc6d3f8d81f7fe763746",
+  "acceptanceMode": "three_stage",
+  "verdict": "PASS",
+  "executable": true,
+  "fixedAgentComparison": "MATCH",
+  "freeQueryComparison": "MATCH",
+  "blockingLimitations": [],
+  "runtime": {
+    "provider_id": "codex",
+    "sdk_id": "codex-python-sdk",
+    "version": "0.147.0",
+    "cli_version": "0.147.0",
+    "model": "gpt-5.6-sol",
+    "model_source": "system_settings",
+    "reasoning_effort": "max",
+    "reasoning_effort_source": "system_settings",
+    "model_catalog_digest": "26da4f344b32be72205ab275f0de910b375a3d5b61cb12f8f20a89184a45e717",
+    "model_check_digest": "4833e11bbc7d64a80c5eb0386cc204abe6a2735b6ff0a1eb525531162f0453cd",
+    "runtime_configuration_revision": 24,
+    "configuration_digest": "f9b5f0bdd84f818d6396ae539741ed6770a3283da93ede738f2577dd5fe28ff4",
+    "capabilities": [
+      "planning",
+      "tool_calling",
+      "mcp",
+      "streaming",
+      "resume",
+      "structured_output",
+      "cancel",
+      "authoring",
+      "workflow_authoring",
+      "role_matching"
+    ],
+    "integration_runtime": {
+      "adapter_id": "codex-app-server",
+      "resource_kinds": [
+        "app",
+        "mcp_server"
+      ],
+      "features": {
+        "catalog": true,
+        "configured_discovery": true,
+        "status": true,
+        "authentication": true,
+        "configuration": true,
+        "direct_tool_call": true
+      },
+      "credential_owner": "runtime",
+      "readiness": "production",
+      "blockers": []
+    },
+    "selected_at": "2026-09-22T14:50:42.923410+00:00"
+  },
+  "case_count": 1,
+  "cases": [
+    {
+      "case_id": "case-1",
+      "verdict": "PASS",
+      "failure_category": null,
+      "baseline": {
+        "schema_version": "4.0",
+        "run_id": "acceptance_b0f5f874f4e4495f",
+        "runtime": "codex_sdk_direct_sap",
+        "runtime_snapshot": {
+          "provider_id": "codex",
+          "sdk_id": "codex-python-sdk",
+          "version": "0.147.0",
+          "cli_version": "0.147.0",
+          "model": "gpt-5.6-sol",
+          "model_source": "system_settings",
+          "reasoning_effort": "max",
+          "reasoning_effort_source": "system_settings",
+          "model_catalog_digest": "26da4f344b32be72205ab275f0de910b375a3d5b61cb12f8f20a89184a45e717",
+          "model_check_digest": "4833e11bbc7d64a80c5eb0386cc204abe6a2735b6ff0a1eb525531162f0453cd",
+          "runtime_configuration_revision": 24,
+          "configuration_digest": "f9b5f0bdd84f818d6396ae539741ed6770a3283da93ede738f2577dd5fe28ff4",
+          "capabilities": [
+            "planning",
+            "tool_calling",
+            "mcp",
+            "streaming",
+            "resume",
+            "structured_output",
+            "cancel",
+            "authoring",
+            "workflow_authoring",
+            "role_matching"
+          ],
+          "integration_runtime": {
+            "adapter_id": "codex-app-server",
+            "resource_kinds": [
+              "app",
+              "mcp_server"
+            ],
+            "features": {
+              "catalog": true,
+              "configured_discovery": true,
+              "status": true,
+              "authentication": true,
+              "configuration": true,
+              "direct_tool_call": true
+            },
+            "credential_owner": "runtime",
+            "readiness": "production",
+            "blockers": []
+          },
+          "selected_at": "2026-09-22T14:50:42.923410+00:00"
+        },
+        "candidate_access": false,
+        "sources": [
+          {
+            "tool": "sap_query_execute",
+            "http_method": "GET",
+            "semantic_read_only": false,
+            "read_only": true,
+            "evidence_ref": "ev_8a14590c429a3fff9b7b634f",
+            "plan_digest": "sha256:6aab0b1c3f168ccd0bc7a2a852856bdf0ca9474b63a1e166dc5c2d2aa62194fd",
+            "scope": [
+              {
+                "service_name": "API_COSTCENTER_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_CostCenter"
+              }
+            ]
+          },
+          {
+            "tool": "sap_query_execute",
+            "http_method": "GET",
+            "semantic_read_only": false,
+            "read_only": true,
+            "evidence_ref": "ev_459dd6cdbd75ce0072176f76",
+            "plan_digest": "sha256:d547b7878d068ac1b9e1149518add3d581f848364b7e8a044e066635b55644b4",
+            "scope": [
+              {
+                "service_name": "API_FINPLANNINGENTRYITEM_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_FinPlanningEntryItem"
+              }
+            ]
+          },
+          {
+            "tool": "sap_query_execute",
+            "http_method": "GET",
+            "semantic_read_only": false,
+            "read_only": true,
+            "evidence_ref": "ev_b0797e42d989e07c990b74fe",
+            "plan_digest": "sha256:90d69a670861d0eedbb516490e803d4e0d9e7f6cf6b9da3a88de689f67547a21",
+            "scope": [
+              {
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV",
+                "odata_version": "2.0",
+                "entity_set": "A_OperationalAcctgDocItemCube"
+              }
+            ]
+          }
+        ],
+        "tool_summary": [
+          {
+            "tool": "sap_query_execute",
+            "count": 3
+          }
+        ],
+        "result_hash": "sha256:68e651c8f1f556c1edda18d51d500c9193aa18f0fd66e3a2279113c608b62239",
+        "normalized_result": {
+          "records": [
+            {
+              "company_code": "1710",
+              "controlling_area": "A000",
+              "cost_center": "17100100",
+              "fiscal_year": "2021",
+              "period_from": "11",
+              "period_to": "11",
+              "business_status": "attention",
+              "currency": "USD",
+              "evidence_refs": [
+                "ev_8a14590c429a3fff9b7b634f",
+                "ev_b0797e42d989e07c990b74fe",
+                "ev_459dd6cdbd75ce0072176f76"
+              ]
+            }
+          ],
+          "metrics": {
+            "actual_amount": "11180.00",
+            "plan_amount": "-180.00",
+            "variance_amount": "11360.00",
+            "variance_pct": "6311.11"
+          },
+          "limitations": [],
+          "source_complete": true,
+          "evidence_complete": true,
+          "business_complete": true,
+          "business_status": "attention",
+          "evidence_gap_codes": []
+        }
+      },
+      "free_query": {
+        "run_id": "acceptance_a37b0e95650d4088",
+        "status": "completed",
+        "comparison": {
+          "verdict": "MATCH",
+          "expected_hash": "sha256:68e651c8f1f556c1edda18d51d500c9193aa18f0fd66e3a2279113c608b62239",
+          "actual_hash": "sha256:7e85ecbb02894d768d095ca448385a4ce330148cfb733a6d203c4ebf5fb59ca8",
+          "differences": [],
+          "comparison_hash": "sha256:2871d12554ec318fe97fa5612afc5f13c6d0e3d7623ef6094ae336195752dcd1"
+        }
+      },
+      "fixed_agent": {
+        "run_id": "acceptance_9d8461298498411a",
+        "status": "completed",
+        "comparison": {
+          "verdict": "MATCH",
+          "expected_hash": "sha256:68e651c8f1f556c1edda18d51d500c9193aa18f0fd66e3a2279113c608b62239",
+          "actual_hash": "sha256:ea1458c01a23c6233c50e8281e7db50be1f48ebbc27671b340028aff6c5a8955",
+          "differences": [],
+          "comparison_hash": "sha256:6a3879783b205c32798dcda94e182e6948af57706ecccc9996f685960ed1bf50"
+        }
+      },
+      "source_anchors": {
+        "verdict": "PASS",
+        "method": "controller_replay_of_independent_baseline_get_plans",
+        "before": {
+          "verdict": "PASS",
+          "expected_hash": "sha256:f70a9d7eea3312c52f82c842c5b71c561d3e13d741d8241cfad8af2ba415639b",
+          "observed_hash": "sha256:f70a9d7eea3312c52f82c842c5b71c561d3e13d741d8241cfad8af2ba415639b",
+          "source_count": 3,
+          "captured_at": "2026-09-22T14:58:58.857711+00:00"
+        },
+        "after": {
+          "verdict": "PASS",
+          "expected_hash": "sha256:f70a9d7eea3312c52f82c842c5b71c561d3e13d741d8241cfad8af2ba415639b",
+          "observed_hash": "sha256:f70a9d7eea3312c52f82c842c5b71c561d3e13d741d8241cfad8af2ba415639b",
+          "source_count": 3,
+          "captured_at": "2026-09-22T15:08:09.643047+00:00"
+        },
+        "reason_code": null
+      },
+      "blocking_limitations": [],
+      "validation_issues": [],
+      "completed_at": "2026-09-22T15:08:09.647282+00:00"
+    }
+  ],
+  "failure_category": null,
+  "read_only_audit": true,
+  "applicable_to_current_revision": true,
+  "report_digest": "sha256:0938b5cc53561856e2ce77ed86bf5f68653c606dccce01727f799fd6eb053df0"
+}

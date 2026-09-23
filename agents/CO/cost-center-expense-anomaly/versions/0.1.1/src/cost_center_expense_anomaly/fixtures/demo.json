@@ -1,12 +1,5 @@
 {
   "run_input": {
-    "company_code": "1710",
-    "fiscal_year": "2026",
-    "controlling_area": "A000",
-    "cost_center": "CC-DEMO",
-    "period_from": "1",
-    "period_to": "1",
-    "planning_category": "PLAN",
     "variance_threshold_pct": 20
   },
   "assessment": {

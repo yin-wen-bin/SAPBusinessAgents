@@ -25,7 +25,7 @@ A completed query is not a completed business process. Review conclusions and ga
 ## 当前范围与输入输出 / Current scope and I/O
 
 <!-- generated:facts:start -->
-版本 / Version: **0.1.2** · 使用中 / Active · 因证据或验收缺口受阻 / Blocked
+版本 / Version: **0.1.1** · 使用中 / Active · 因证据或验收缺口受阻 / Blocked
 
 网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/CO/cost-center-expense-anomaly/) · [en](http://127.0.0.1:4321/en/agents/CO/cost-center-expense-anomaly/)
 
@@ -56,16 +56,8 @@ The three stages are semantically consistent, but a live capability or evidence 
 
 ### 结果字段 / Result fields
 
-- 规范业务记录 / Canonical business records
 - 业务状态 / Business status
 - 查询源完整性 / Query-source completeness
-- 证据完整性 / Evidence completeness
-- 业务完整性 / Business completeness
-- 实际金额 / Actual amount
-- 计划金额 / Plan amount
-- 差异金额 / Variance amount
-- 差异比例 / Variance percentage
-- 证据缺口代码 / Evidence gap codes
 - 结构化业务报告 / Structured business report
 
 ### 数据与开发资料 / Contracts and development
