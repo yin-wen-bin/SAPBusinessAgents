@@ -65,6 +65,12 @@
 .draft-business-steps li { padding-left: 6px; }
 .draft-advanced textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .draft-advanced[open] > * + * { margin-top: 16px; }
+.draft-publish-details > details { min-width: 0; }
+.draft-publish-details summary { justify-content: space-between; gap: 12px; list-style: none; font-size: 1.4rem; }
+.draft-publish-details summary::-webkit-details-marker { display: none; }
+.draft-publish-details summary::after { content: "⌄"; display: inline-block; color: var(--color-text-muted); }
+.draft-publish-details details[open] summary::after { transform: rotate(180deg); }
+.draft-publish-details-content { display: grid; gap: 18px; min-width: 0; margin-top: 12px; padding-top: 18px; border-top: 1px solid var(--color-border); }
 .draft-conversation-history { display: grid; gap: 18px; }
 .draft-conversation-history article { border-block-end: 1px solid var(--color-border); padding-block-end: 18px; }
 .draft-conversation-history p { white-space: pre-wrap; overflow-wrap: anywhere; }

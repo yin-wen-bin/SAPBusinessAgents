@@ -158,7 +158,7 @@ test("fixed Agent lifecycle management is available in both languages", async ()
   assert.match(workbench, /validation-report/);
   assert.match(component, /expectedAgentHash/);
   assert.match(workbench, /validationReportDigest/);
-  assert.match(workbench, /变更审核/);
+  assert.match(workbench, /详细变更信息/);
   assert.match(workbench, /需要解释什么/);
   assert.match(workbench, /需要修改什么/);
   assert.match(workbench, /sampleConfirmed/);

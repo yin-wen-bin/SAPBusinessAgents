@@ -620,8 +620,12 @@ test("actual workbench gates validation and publication but keeps unconfirmed de
   const logic = renderToStaticMarkup(createElement(Workspace, { ...props, initialStep: "logic" }));
   assert.doesNotMatch(logic, /disabled=""[^>]*>Run automatic checks again/);
   const publish = renderToStaticMarkup(createElement(Workspace, { ...props, initialStep: "publish" }));
+  assert.match(publish, /<section class="agent-panel draft-publish-details"><details><summary>Detailed change information<\/summary>/);
+  assert.doesNotMatch(publish, /class="agent-panel draft-publish-details"><details open/);
   assert.match(publish, /disabled=""[^>]*>Publish inactive/);
   assert.match(publish, /Publication requirements are not met/);
+  const publishZh = renderToStaticMarkup(createElement(Workspace, { ...props, initialStep: "publish", locale: "zh" }));
+  assert.match(publishZh, /<summary>详细变更信息<\/summary>/);
   const upgrade = renderToStaticMarkup(createElement(Workspace, { ...props, initialDraft: { ...draft, technical_identity: { kind: "version_upgrade", confirmed: true, locked: true, can_rename: false } } }));
   assert.match(upgrade, /version upgrade/);
   assert.doesNotMatch(upgrade, /id="draft-technical-id"/);
