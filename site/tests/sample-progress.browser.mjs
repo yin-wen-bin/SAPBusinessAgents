@@ -43,7 +43,12 @@ try {
       const req = route.request(), url = new URL(req.url());
       let value = {};
       if (req.method() === 'OPTIONS') { await route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' } }); return; }
-      if (url.pathname.endsWith('/sample-discovery') && req.method() === 'POST') {
+      if (url.pathname.endsWith('/sample-discovery/preflight')) {
+        value = { revision: 1, can_start: true, blocking_fields: [], fields: [
+          { field: 'date', status: 'discoverable', reason: 'declared_odata_binding', sources: [] },
+          { field: 'plant', status: 'discoverable', reason: 'declared_odata_binding', sources: [] },
+        ] };
+      } else if (url.pathname.endsWith('/sample-discovery') && req.method() === 'POST') {
         assert.deepEqual(req.postDataJSON().selectedFields, ['date']);
         posts++; await gate;
         sample = { run_id: `browser-run-${posts}`, revision: 1, status: 'running', phase: 'reading_candidates', timeout_seconds: 600,
@@ -57,7 +62,7 @@ try {
       await route.fulfill({ json: value, headers: { 'Access-Control-Allow-Origin': '*' } });
     });
     const zh = locale === 'zh';
-    await page.goto(`${origin}/SAPBusinessAgents/${locale}/agent-management/?draft=browser-sample`);
+    await page.goto(`${origin}/SAPBusinessAgents/${locale}/agent-management/?draft=browser-sample&step=trial`);
     const check = page.getByRole('checkbox', { name: zh ? '自动查找验证数据' : 'Find validation data automatically' });
     await check.check();
     const modal = page.locator('dialog[open]');
@@ -97,7 +102,7 @@ try {
     await modal.getByRole('button', { name: zh ? '查看并确认参数' : 'Review and confirm inputs' }).click();
     await modal.waitFor({ state: 'hidden' });
     await page.waitForFunction(() => document.activeElement.classList.contains('draft-discovery'));
-    assert.equal(await page.getByRole('checkbox', { name: zh ? '已核对回填参数，确认用于本次试运行' : 'I reviewed the proposed parameters and confirm this trial' }).isChecked(), false);
+    assert.equal(await page.getByRole('checkbox', { name: zh ? '已核对回填参数，确认用于本次操作' : 'I reviewed the proposed parameters and confirm this use' }).isChecked(), false);
     await page.reload(); await page.getByRole('button', { name: zh ? '查看查找进度' : 'View discovery progress' }).waitFor();
     assert.equal(await modal.count(), 0);
     assert.deepEqual(errors, []);

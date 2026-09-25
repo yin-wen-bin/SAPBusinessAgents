@@ -50,12 +50,13 @@ export function SampleProgressSummary({ value, locale }: { value: any; locale: L
   </div>;
 }
 
-export default function AgentSampleProgress({ open, value, locale, canRetry, onClose, onCancel, onRetry, onReview, onAfterClose, fields, selectedFields = [], onSelection, onStart }: {
+export default function AgentSampleProgress({ open, value, locale, canRetry, onClose, onCancel, onRetry, onReview, onAfterClose, fields, selectedFields = [], onSelection, onStart, preflightBusy = false, preflightError = false, scopeRequired = false }: {
   open: boolean; value: any; locale: Locale; canRetry: boolean; onClose: () => void;
   onCancel: () => void; onRetry: () => void; onReview: () => void;
   onAfterClose?: () => void;
   fields?: { key: string; label: string; requirement: string; disabled: boolean; reason: string }[];
   selectedFields?: string[]; onSelection?: (fields: string[]) => void; onStart?: () => void;
+  preflightBusy?: boolean; preflightError?: boolean; scopeRequired?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const tr = (zh: string, en: string) => locale === "zh" ? zh : en;
@@ -77,10 +78,13 @@ export default function AgentSampleProgress({ open, value, locale, canRetry, onC
     <header><h2 id="sample-progress-title">{selecting ? tr("选择需要查找测试数据的参数", "Choose parameters to find test data for") : ready ? tr("已找到测试样本数据", "Test sample data found") : active ? tr("正在查找测试样本数据", "Finding test sample data") : tr("测试样本查找结果", "Test sample discovery result")}</h2>
       <button type="button" className="agent-secondary-action" aria-label={tr("关闭对话框，不取消任务", "Close dialog without cancelling") } onClick={onClose}>×</button></header>
     <p>{selecting ? tr("请选择需要查找的参数（可多选）。已填写的参数作为查询条件保留；未选参数不会自动回填。点击开始后才读取SAP。", "Select one or more parameters. Existing values remain query scope; unselected inputs are not filled. SAP reads start only after you press Start.") : tr("正在通过SAP只读查询寻找合适样本，不会修改SAP数据。", "Finding suitable samples through read-only SAP queries. SAP data will not be changed.")}</p>
+    {selecting && preflightBusy && <p role="status">{tr("正在检查参数与读取定义的对应关系…", "Checking input-to-read mappings…")}</p>}
+    {selecting && preflightError && <p role="alert">{tr("暂时无法核对自动查找条件。可手工填写参数后试运行。", "Discovery readiness could not be checked. You can enter trial inputs manually.")}</p>}
+    {selecting && scopeRequired && <p role="status">{tr("请先手工填写必需的公司代码或工厂范围，再查找样本。", "Enter the required company code or plant scope before finding samples.")}</p>}
     {selecting ? <fieldset className="sample-parameter-selection"><legend>{tr("当前输入参数", "Current input parameters")}</legend>{fields.map((item) => <label key={item.key} className="draft-checkbox"><input type="checkbox" checked={selectedFields.includes(item.key)} disabled={item.disabled} onChange={(event) => onSelection?.(event.target.checked ? [...selectedFields, item.key] : selectedFields.filter((key) => key !== item.key))} /><span>{item.label} · {item.requirement}{item.reason && <small> · {item.reason}</small>}</span></label>)}</fieldset> : value && <SampleProgressSummary value={value} locale={locale} />}
     {!selecting && ready && <p>{tr("已核对参数数量", "Verified parameters")}: {Object.keys(value.field_sources || {}).length}</p>}
     <footer>
-      {selecting ? <><button type="button" className="agent-secondary-action" onClick={onClose}>{tr("暂不查找", "Not now")}</button><button type="button" disabled={!canRetry || !selectedFields.length} onClick={onStart}>{tr("开始查找", "Start discovery")}</button></> : active ? <><button type="button" className="agent-secondary-action" onClick={onClose}>{tr("后台继续", "Continue in background")}</button><button type="button" disabled={!value.run_id || value.status === "cancelling"} onClick={onCancel}>{tr(value.status === "cancelling" ? "正在取消" : "取消查找", value.status === "cancelling" ? "Cancelling" : "Cancel discovery")}</button></>
+      {selecting ? <><button type="button" className="agent-secondary-action" onClick={onClose}>{tr("暂不查找", "Not now")}</button><button type="button" disabled={!canRetry || !selectedFields.length || preflightBusy || preflightError || scopeRequired} onClick={onStart}>{tr("开始查找", "Start discovery")}</button></> : active ? <><button type="button" className="agent-secondary-action" onClick={onClose}>{tr("后台继续", "Continue in background")}</button><button type="button" disabled={!value.run_id || value.status === "cancelling"} onClick={onCancel}>{tr(value.status === "cancelling" ? "正在取消" : "取消查找", value.status === "cancelling" ? "Cancelling" : "Cancel discovery")}</button></>
         : ready ? <button type="button" onClick={onReview}>{tr("查看并确认参数", "Review and confirm inputs")}</button>
         : <><button type="button" className="agent-secondary-action" onClick={onReview}>{tr("返回填写参数", "Return to inputs")}</button><button type="button" disabled={!canRetry} onClick={onRetry}>{tr(value?.status === "start_uncertain" ? "重新连接" : "重新查找", value?.status === "start_uncertain" ? "Reconnect" : "Retry discovery")}</button></>}
     </footer>

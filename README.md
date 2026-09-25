@@ -170,7 +170,7 @@ FI 清账不自动证明银行到账；MRP模拟不等于正式ATP；处理建�
 |---|---|---|---|---|
 | CO | [预算滚动预测助手](agents/CO/budget-rolling-forecast/README.md) | 0.1.1 | 使用中 | 因证据或验收缺口受阻 |
 | CO | [CO 月结分配与结算助手](agents/CO/co-month-end-allocation-settlement/README.md) | 0.1.1 | 使用中 | 因证据或验收缺口受阻 |
-| CO | [成本中心费用异常助手](agents/CO/cost-center-expense-anomaly/README.md) | 0.1.1 | 使用中 | 因证据或验收缺口受阻 |
+| CO | [成本中心费用异常助手](agents/CO/cost-center-expense-anomaly/README.md) | 1.0.0 | 使用中 | 验收通过 |
 | CO | [内部订单与项目控制助手](agents/CO/internal-order-project-control/README.md) | 0.4.0 | 使用中 | 因证据或验收缺口受阻 |
 | CO | [生产订单成本差异分析助手](agents/CO/product-cost-variance/README.md) | 0.2.0 | 使用中 | 验收通过 |
 | Common | [岗位匹配助理](agents/Common/role-agent-matching/README.md) | 0.2.0 | 使用中 | 平台能力门禁 |
@@ -376,7 +376,7 @@ This index is generated from current manifests and lifecycle records. Active lif
 |---|---|---|---|---|
 | CO | [Budget Rolling Forecast Assistant](agents/CO/budget-rolling-forecast/README.md) | 0.1.1 | Active | Blocked |
 | CO | [CO Month-End Allocation and Settlement Assistant](agents/CO/co-month-end-allocation-settlement/README.md) | 0.1.1 | Active | Blocked |
-| CO | [Cost Center Expense Anomaly Assistant](agents/CO/cost-center-expense-anomaly/README.md) | 0.1.1 | Active | Blocked |
+| CO | [Cost Center Expense Anomaly Assistant](agents/CO/cost-center-expense-anomaly/README.md) | 1.0.0 | Active | Passed |
 | CO | [Internal Order and Project Control Assistant](agents/CO/internal-order-project-control/README.md) | 0.4.0 | Active | Blocked |
 | CO | [Production Order Cost Variance Analysis Assistant](agents/CO/product-cost-variance/README.md) | 0.2.0 | Active | Passed |
 | Common | [Role-to-Agent Matching Assistant](agents/Common/role-agent-matching/README.md) | 0.2.0 | Active | Platform gate |

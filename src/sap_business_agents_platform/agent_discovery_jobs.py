@@ -21,6 +21,25 @@ class AgentDiscoveryJobs:
         self.sdk_manager, self.service = sdk_manager, service
         self.tasks: dict[str, asyncio.Task] = {}
 
+    def preflight(self, draft_id: str, payload: Any) -> dict[str, Any]:
+        """Inspect the saved revision without reserving a task or contacting SAP."""
+        draft = self.store.get_agent_authoring_draft(draft_id)
+        revision = int(payload.expected_revision)
+        if int(draft["revision"]) != revision:
+            raise AgentLifecycleError("The draft has changed. Reload it before finding samples.", code="agent_draft_conflict")
+        package = self.store.get_agent_authoring_revision(draft_id, revision)["package"]
+        manifest = package["manifest"]
+        supplied = copy.deepcopy(payload.input)
+        _check_public_input(supplied, manifest.get("execution", {}).get("inputSchema", {}))
+        try:
+            return SampleDiscoveryContext(manifest, supplied, revision,
+                                          selected_fields=payload.selected_fields).readiness()
+        except SampleDiscoveryError as exc:
+            raise AgentLifecycleError("Invalid or private sample input.", code=exc.code) from exc
+        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+            raise AgentLifecycleError("The saved discovery definition is invalid.",
+                                      code="sample_definition_invalid") from exc
+
     def start(self, draft_id: str, payload: Any) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
         self.lifecycle.require_technical_identity(draft)
@@ -31,10 +50,10 @@ class AgentDiscoveryJobs:
         manifest = copy.deepcopy(package["manifest"])
         supplied = copy.deepcopy(payload.input)
         _check_public_input(supplied, manifest.get("execution", {}).get("inputSchema", {}))
-        try:
-            SampleDiscoveryContext(manifest, supplied, revision, selected_fields=payload.selected_fields)
-        except SampleDiscoveryError as exc:
-            raise AgentLifecycleError("Invalid or private sample input. Use the secure trial form instead.", code=exc.code) from exc
+        readiness = self.preflight(draft_id, payload)
+        if not readiness["can_start"]:
+            raise AgentLifecycleError("Supply the missing scope or add a provable discovery mapping before searching.",
+                                      code="sample_discovery_preflight_failed", detail=readiness)
         fingerprint_input = supplied if payload.selected_fields is None else {"input": supplied, "selected_fields": sorted(payload.selected_fields)}
         fingerprint = hashlib.sha256(json.dumps(fingerprint_input, ensure_ascii=False, sort_keys=True,
                                                 separators=(",", ":")).encode()).hexdigest()

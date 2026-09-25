@@ -26,7 +26,8 @@ SAMPLE_CLEANUP_SECONDS = 10
 _INPUT = re.compile(r"^\{\{\s*input\.([A-Za-z0-9_]+)\s*\}\}$")
 _PRIVATE = re.compile(r"password|secret|token|payer|bank.*(?:reference|account)|receipt.?reference|iban|account.?number|address|contact|email|phone|name|text|description|note|assignment.?reference|payment.?reference|remittance", re.I)
 _TOOLS = {"sap_catalog_search", "sap_schema_get", "sap_query_validate", "sap_query_execute",
-          "list_all_approved_skills", "sap_evidence_read", "sap_evidence_assess", "sap_skill_execute"}
+          "list_all_approved_skills", "sap_evidence_read", "sap_evidence_assess", "sap_skill_execute",
+          "tool_catalog_search", "tool_catalog_inspect"}
 _READS = {"sap_query_execute", "sap_skill_execute"}
 
 
@@ -44,6 +45,18 @@ def _objects(value: Any):
     elif isinstance(value, list):
         for child in value:
             yield from _objects(child)
+
+
+def _input_references(value: Any):
+    if isinstance(value, str):
+        if match := _INPUT.fullmatch(value):
+            yield match.group(1)
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _input_references(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _input_references(child)
 
 
 def _public(schema: dict[str, Any], name: str) -> bool:
@@ -269,18 +282,68 @@ class SampleDiscoveryContext:
                 if not _present(values.get(name))]
 
     def preflight_gaps(self) -> list[str]:
-        missing = self.missing_fields()
-        mapped = {name for plan in self.plans for _, name, _ in self._bindings(plan)}
-        gaps = [name for name in missing if name not in self.properties
-                or self.properties[name].get("type") == "object"
-                or (self.properties[name].get("type") == "array"
-                    and (self.properties[name].get("items") or {}).get("type") == "object")
-                or (name not in mapped and not self.skill_steps)]
-        # Organisational scope is a user decision, not a random cross-company
-        # sample. Single-document Agents can still discover a bounded ID.
+        return self.readiness()["blocking_fields"]
+
+    def readiness(self) -> dict[str, Any]:
+        """Static, value-free provenance check shared by draft UI and run gate.
+
+        A Skill consuming an input is not a source for that input. Only an exact
+        declared OData filter binding can currently prove a suggested cell;
+        live metadata, row scope and cross-source joins are still checked later.
+        """
+        requested = set(self.missing_fields())
+        fields = []
+        blocking = []
+        for name, spec in self.properties.items():
+            if _present(self.supplied_inputs.get(name)):
+                fields.append({"field": name, "status": "supplied", "reason": "already_supplied", "sources": []})
+                continue
+            sources = []
+            for plan in self.plans:
+                for source_field, binding, operator in self._bindings(plan):
+                    if (binding == name and operator == "eq"
+                            and source_field in (plan.get("select_fields") or [])):
+                        source = {"service_name": plan["service_name"], "odata_version": plan["odata_version"],
+                                  "entity_set": plan["entity_set"], "source_field": source_field}
+                        if source not in sources:
+                            sources.append(source)
+            skill_consumers = []
+            for step in self.skill_steps:
+                if name in set(_input_references(step.get("inputMapping") or {})):
+                    skill_id = str(step.get("skillId") or step.get("skill_id") or "")
+                    if skill_id and skill_id not in skill_consumers:
+                        skill_consumers.append(skill_id)
+            kind = spec.get("type")
+            if kind == "object" or (kind == "array" and (spec.get("items") or {}).get("type") == "object"):
+                status, reason = "manual", "complex_input"
+            elif len(self.required_fields) > 1 and name in {"company_code", "plant"}:
+                status, reason = "manual", "organizational_scope"
+            elif name in self.conditional_gaps:
+                status, reason = "manual", "input_branch_ambiguous"
+            elif sources:
+                status, reason = "discoverable", "declared_odata_binding"
+            elif skill_consumers:
+                status, reason = "manual", "skill_requires_input"
+            else:
+                status, reason = "manual", "mapping_missing"
+            fields.append({"field": name, "status": status, "reason": reason,
+                           "sources": sources, "skill_consumers": skill_consumers})
+            if name in requested and status != "discoverable":
+                blocking.append(name)
+        for name in self.missing_fields():
+            if name not in self.properties:
+                fields.append({"field": name, "status": "manual", "reason": "private_or_unknown_input",
+                               "sources": [], "skill_consumers": []})
+                blocking.append(name)
+        # A partial/optional selection must not bypass the user-controlled
+        # organizational scope required by the draft's input contract.
         if len(self.required_fields) > 1:
-            gaps.extend(name for name in missing if name in {"company_code", "plant"})
-        return list(dict.fromkeys([*gaps, *self.conditional_gaps]))
+            blocking.extend(name for name in self.required_fields if name in {"company_code", "plant"}
+                            and not _present(self.supplied_inputs.get(name)))
+        blocking.extend(self.conditional_gaps)
+        return {"revision": self.revision, "requested_fields": self.missing_fields(),
+                "blocking_fields": list(dict.fromkeys(blocking)),
+                "fields": fields, "can_start": bool(requested) and not blocking}
 
     def allow_tool(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if self.closed:
@@ -289,7 +352,7 @@ class SampleDiscoveryContext:
             raise SampleDiscoveryError("sample_tool_not_allowed")
         if not self.remaining():
             raise SampleDiscoveryError("sample_discovery_timeout")
-        if tool not in {"sap_evidence_read", "sap_evidence_assess"} and not self.remaining(external=True):
+        if tool not in {"sap_evidence_read", "sap_evidence_assess", "tool_catalog_search", "tool_catalog_inspect"} and not self.remaining(external=True):
             self.progress("finalizing")
             raise SampleDiscoveryError("sample_finalization_only")
         if tool in {"sap_query_validate", "sap_query_execute"}:

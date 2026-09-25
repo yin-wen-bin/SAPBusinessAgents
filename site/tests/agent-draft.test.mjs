@@ -125,6 +125,20 @@ test("sample field selection lists visible optional inputs and preserves entered
   assert.ok(!html.includes("正在查找测试样本数据"));
 });
 
+test("sample preflight explains manual scope and prevents premature SAP reads", async () => {
+  const Modal = await component("AgentSampleProgress");
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Modal, {
+      fields: [{ key: "company_code", label: "Company", requirement: "Required", disabled: true,
+        reason: locale === "zh" ? "组织范围需手工指定" : "Enter organizational scope manually" },
+        { key: "customer", label: "Customer", requirement: "Required", disabled: false, reason: "" }],
+      selectedFields: ["customer"], open: true, locale, canRetry: true, scopeRequired: true,
+    }));
+    assert.ok(html.includes(locale === "zh" ? "请先手工填写必需的公司代码或工厂范围" : "Enter the required company code or plant scope"));
+    assert.match(html, /disabled="">(?:开始查找|Start discovery)/);
+  }
+});
+
 test("sample modal exposes bilingual progress, background and cancellation separately", async () => {
   const Modal = await component("AgentSampleProgress");
   for (const locale of ["zh", "en"]) {
@@ -282,6 +296,7 @@ import { publicValues, validateDraftInput, changedDefinition, clearDiscoveredInp
 // Render the actual TSX without building the catalog or starting a browser/API.
 const require = createRequire(import.meta.url);
 async function component(name, dependencies = {}) {
+  if (name === "AgentDraftConversation") dependencies["./SafeMarkdown"] = await component("SafeMarkdown");
   if (["AgentDraftWorkspace", "AgentAcceptance"].includes(name)) {
     dependencies["./AcceptanceReadiness"] = await component("AcceptanceReadiness");
   }
@@ -305,6 +320,69 @@ async function component(name, dependencies = {}) {
 }
 
 const title = (zh, en) => ({ zh, en });
+
+test("assistant Markdown escapes HTML, blocks unsafe links and never loads images", async () => {
+  const Markdown = await component("SafeMarkdown");
+  const html = renderToStaticMarkup(createElement(Markdown, {
+    text: "**结论** <script>alert(1)</script> [bad](javascript:alert(1)) ![remote](https://example.com/x.png) [good](https://example.com)",
+  }));
+  assert.match(html, /<strong>结论<\/strong>/);
+  assert.doesNotMatch(html, /<script|href="javascript:|<img/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.match(html, /href="https:\/\/example.com"/);
+});
+
+test("trial diagnostic annotations bind to the matching run and source digest", async () => {
+  const Result = await component("AgentDraftResult");
+  const props = { run: { run_id: "run-current", status: "failed" },
+    trial: { errors: [{ code: "trial_schema_invalid", message: "Check records" }] },
+    locale: "en", runPath: "/en/run/", apiBase: "", revision: 7 };
+  const bound = renderToStaticMarkup(createElement(Result, {
+    ...props, feedbackSource: { source_id: "run-current", digest: "sha256:test" },
+  }));
+  assert.match(bound, /data-draft-annotation-kind="trial_issue"/);
+  assert.match(bound, /data-draft-ref="\/errors\/0"/);
+  assert.match(bound, /data-draft-source-digest="sha256:test"/);
+  const stale = renderToStaticMarkup(createElement(Result, {
+    ...props, feedbackSource: { source_id: "run-other", digest: "sha256:old" },
+  }));
+  assert.doesNotMatch(stale, /data-draft-annotation-kind="trial_issue"/);
+});
+
+test("assistant renders queued state, clarification, bound diff and collapsed diagnostics", async () => {
+  const Conversation = await component("AgentDraftConversation");
+  const html = renderToStaticMarkup(createElement(Conversation, { locale: "zh", turns: [
+    { turn: 1, kind: "feedback", status: "completed", base_revision: 2, result_revision: 3,
+      user_message: "请调整", decision: { action: "clarify", summary: { zh: "**请确认**", en: "Confirm" },
+        pending_clarification: { id: "q1", revision: 3, question: { zh: "范围？", en: "Scope?" } } },
+      diff: [{ path: "/manifest/title/zh", before: "旧", after: "新" }] },
+    { turn: 2, kind: "feedback", status: "waiting", base_revision: 3, user_message: "继续", decision: {} },
+  ], onWithdraw: () => {} }));
+  assert.match(html, /待确认问题/);
+  assert.match(html, /查看本轮修改/);
+  assert.match(html, /修订 2 → 3/);
+  assert.match(html, /撤回排队消息/);
+  assert.match(html, /消息排队中/);
+  assert.match(html, /<summary>技术详情<\/summary>/);
+});
+
+test("draft presentation exposes typed references without changing published details", async () => {
+  const Details = await component("AgentDefinitionDetails");
+  const agent = { sapModules: ["MM-PUR"], workflow: [{
+    id: "read-order", title: { zh: "读取订单", en: "Read order" },
+    description: { zh: "核对订单", en: "Check order" },
+    executionStepIds: [],
+  }] };
+  const draft = renderToStaticMarkup(createElement(Details, {
+    agent, locale: "zh", idPrefix: "draft", annotatable: true,
+  }));
+  const published = renderToStaticMarkup(createElement(Details, {
+    agent, locale: "zh",
+  }));
+  assert.match(draft, /data-draft-ref="\/manifest\/sapModules"/);
+  assert.match(draft, /data-draft-ref="\/manifest\/workflow\/0"/);
+  assert.doesNotMatch(published, /data-draft-ref=/);
+});
 
 test("acceptance readiness explains contract gaps without claiming certification", async () => {
   const Readiness = await component("AcceptanceReadiness");
@@ -440,8 +518,12 @@ test("public presentation rows read localized cells from the validated values ar
 
 test("workbench uses confirmed live discovery, protected inputs and formal publishability", async () => {
   const source = await readFile(new URL("../src/components/AgentDraftWorkspace.tsx", import.meta.url), "utf8");
-  assert.match(source, /解释问题/);
-  assert.match(source, /修改草稿/);
+  assert.match(source, /className="draft-assistant-actions"[\s\S]*?submitFeedback\("explain"\)[\s\S]*?解释问题/);
+  assert.match(source, /className="draft-assistant-actions"[\s\S]*?submitFeedback\("revise"\)[\s\S]*?修改草稿/);
+  assert.doesNotMatch(source, /draft-assistant-modes|feedbackIntent|请求解释|提交修改要求/);
+  assert.match(source, /retryIntent === intent/);
+  assert.match(source, /uncertainFeedback && pendingFeedbackRequest\.current\?\.intent !== intent/);
+  assert.match(source, /disabled=\{busy \|\| draft\.status === "published" \|\| remoteConflict \|\| uncertainFeedback \|\| \(active && !feedbackTaskActive\)\}/);
   assert.match(source, /\/ui-state/);
   assert.match(source, /autoDiscover: false/);
   assert.match(source, /sensitiveInputs: secrets/);
@@ -567,7 +649,7 @@ test("input overview derives names from Schema and keeps requirement badges sepa
   for (const locale of ["zh", "en"]) {
     const html = renderToStaticMarkup(createElement(Workspace, { initialDraft: draft, initialStep: "io", locale, apiBase: "", runPath: "/runs", onBack: () => {}, onPublished: () => {} }));
     assert.match(html, locale === "zh" ? /中文名称<input[^>]*value="交货日期"/ : /English name<input[^>]*value="Delivery date"/);
-    assert.match(html, /<ul class="draft-input-definition-list"><li class="draft-input-definition"><details><summary>/);
+    assert.match(html, /<ul class="draft-input-definition-list"><li class="draft-input-definition"[^>]*><details><summary>/);
     assert.match(html, /<code>date<\/code><\/span><span class="draft-input-definition-meta">/);
     assert.match(html, locale === "zh" ? /设置查询条件与输出/ : /Set query conditions and output/);
     assert.match(html, locale === "zh" ? /<h2>结果结构预览<\/h2>[\s\S]*?<button[^>]*>让 AI 调整<\/button>/ : /<h2>Result structure preview<\/h2>[\s\S]*?<button[^>]*>Ask AI to adjust<\/button>/);
@@ -641,6 +723,8 @@ test("actual workbench gates validation and publication but keeps unconfirmed de
   const props = { initialDraft: draft, locale: "en", apiBase: "", runPath: "/runs", onBack: () => {}, onPublished: () => {} };
   const html = renderToStaticMarkup(createElement(Workspace, props));
   assert.match(html, /Check availability/);
+  assert.match(html, /data-draft-ref="\/manifest\/title\/en"/);
+  assert.match(html, /data-draft-ref="\/manifest\/owner"/);
   const trial = renderToStaticMarkup(createElement(Workspace, { ...props, initialStep: "trial" }));
   assert.match(trial, /disabled=""[^>]*>Run read-only trial/);
   const logic = renderToStaticMarkup(createElement(Workspace, { ...props, initialStep: "logic" }));

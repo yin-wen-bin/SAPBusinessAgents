@@ -318,7 +318,19 @@ class RunStore:
                     diff_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     completed_at TEXT,
+                    request_id TEXT,
+                    input_hash TEXT,
                     PRIMARY KEY(draft_id, turn),
+                    FOREIGN KEY(draft_id) REFERENCES agent_authoring_drafts(draft_id)
+                );
+                CREATE TABLE IF NOT EXISTS agent_conversation_events (
+                    draft_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    turn INTEGER,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(draft_id, sequence),
                     FOREIGN KEY(draft_id) REFERENCES agent_authoring_drafts(draft_id)
                 );
                 CREATE TABLE IF NOT EXISTS agent_validation_attempts (
@@ -614,6 +626,16 @@ class RunStore:
                     "ALTER TABLE free_query_feedback_requests "
                     "ADD COLUMN event_sequence INTEGER NOT NULL DEFAULT 0"
                 )
+            conversation_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(agent_conversation_turns)").fetchall()
+            }
+            for name in ("request_id", "input_hash"):
+                if name not in conversation_columns:
+                    connection.execute(f"ALTER TABLE agent_conversation_turns ADD COLUMN {name} TEXT")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS agent_conversation_request "
+                "ON agent_conversation_turns(draft_id, request_id) WHERE request_id IS NOT NULL"
+            )
 
     def create_run(
         self,
@@ -2412,6 +2434,52 @@ class RunStore:
             )
             return cursor.rowcount == 1
 
+    def append_agent_operation_tool_event(
+        self, draft_id: str, operation_id: str, event: dict[str, Any]
+    ) -> bool:
+        """Atomically append a bounded, public-only authoring tool audit entry."""
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT detail_json, status FROM agent_draft_operations WHERE draft_id = ? AND operation_id = ?",
+                (draft_id, operation_id),
+            ).fetchone()
+            if row is None or row["status"] not in {"queued", "running"}:
+                return False
+            detail = _load(row["detail_json"], {})
+            if not isinstance(detail, dict):
+                detail = {}
+            events = list(detail.get("tool_events") or [])[-99:]
+            events.append(event)
+            detail["tool_events"] = events
+            connection.execute(
+                "UPDATE agent_draft_operations SET detail_json = ?, updated_at = ? WHERE draft_id = ? AND operation_id = ?",
+                (_dump(detail), utc_now(), draft_id, operation_id),
+            )
+            return True
+
+    def merge_agent_operation_detail(
+        self, draft_id: str, operation_id: str, patch: dict[str, Any]
+    ) -> bool:
+        """Merge progress fields without racing task-scoped tool audit entries."""
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT detail_json, status FROM agent_draft_operations WHERE draft_id = ? AND operation_id = ?",
+                (draft_id, operation_id),
+            ).fetchone()
+            if row is None or row["status"] not in {"queued", "running", "cancelling"}:
+                return False
+            detail = _load(row["detail_json"], {})
+            if not isinstance(detail, dict):
+                detail = {}
+            detail.update(patch)
+            connection.execute(
+                "UPDATE agent_draft_operations SET detail_json = ?, updated_at = ? WHERE draft_id = ? AND operation_id = ?",
+                (_dump(detail), utc_now(), draft_id, operation_id),
+            )
+            return True
+
     def finish_agent_operation(self, draft_id: str, operation_id: str, status: str = "completed") -> bool:
         if status in {"queued", "running", "cancelling"}:
             raise ValueError("agent_operation_terminal_status_required")
@@ -2616,6 +2684,18 @@ class RunStore:
                         """UPDATE agent_conversation_turns SET status = 'failed', completed_at = ?, decision_json = ?
                         WHERE draft_id = ? AND turn = ?""", (now, _dump(decision), row["draft_id"], turn["turn"]),
                     )
+                if row["kind"] == "feedback":
+                    connection.execute(
+                        "UPDATE agent_conversation_turns SET status = 'needs_review' "
+                        "WHERE draft_id = ? AND status = 'waiting'", (row["draft_id"],),
+                    )
+            # A crash can happen after finishing one turn but before dispatching
+            # the next. Never auto-run those orphaned requests on restart: the
+            # user must inspect the current revision and resubmit explicitly.
+            connection.execute(
+                "UPDATE agent_conversation_turns SET status = 'needs_review' "
+                "WHERE status = 'waiting'"
+            )
 
     def get_agent_authoring_draft(self, draft_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -2748,14 +2828,15 @@ class RunStore:
                 """INSERT OR REPLACE INTO agent_conversation_turns
                 (draft_id, turn, parent_turn, kind, status, user_message,
                  decision_json, base_revision, result_revision, diff_json,
-                 created_at, completed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 created_at, completed_at, request_id, input_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     item["draft_id"], int(item["turn"]), item.get("parent_turn"),
                     item["kind"], item["status"], item.get("user_message"),
                     _dump(item.get("decision") or {}), item.get("base_revision"),
                     item.get("result_revision"), _dump(item.get("diff") or []),
                     item.get("created_at") or utc_now(), item.get("completed_at"),
+                    item.get("request_id"), item.get("input_hash"),
                 ),
             )
 
@@ -2775,9 +2856,173 @@ class RunStore:
                 "result_revision": row["result_revision"],
                 "diff": _load(row["diff_json"], []),
                 "created_at": row["created_at"], "completed_at": row["completed_at"],
+                "request_id": row["request_id"], "input_hash": row["input_hash"],
             }
             for row in rows
         ]
+
+    def create_agent_feedback_turn(
+        self, draft_id: str, *, item: dict[str, Any], base_turn: int,
+        input_hash: str, enqueue_if_busy: bool,
+    ) -> dict[str, Any]:
+        """Accept a turn atomically; waiting turns never claim the active-operation slot."""
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            request_id = item.get("request_id")
+            if request_id:
+                prior = connection.execute(
+                    "SELECT * FROM agent_conversation_turns WHERE draft_id = ? AND request_id = ?",
+                    (draft_id, request_id),
+                ).fetchone()
+                if prior is not None:
+                    if prior["input_hash"] != input_hash:
+                        raise ValueError("agent_request_conflict")
+                    decision = _load(prior["decision_json"], {}) or {}
+                    return {"turn": int(prior["turn"]), "status": prior["status"],
+                            "task_id": decision.get("task_id"), "reused": True}
+            draft = connection.execute(
+                "SELECT revision, status FROM agent_authoring_drafts WHERE draft_id = ?", (draft_id,),
+            ).fetchone()
+            if draft is None:
+                raise KeyError(draft_id)
+            if draft["status"] == "published":
+                raise ValueError("agent_draft_published")
+            if int(draft["revision"]) != int(item["base_revision"]):
+                raise ValueError("agent_draft_conflict")
+            latest = connection.execute(
+                "SELECT COALESCE(MAX(turn), 0) FROM agent_conversation_turns WHERE draft_id = ?", (draft_id,),
+            ).fetchone()[0]
+            if int(base_turn) != int(latest):
+                raise ValueError("agent_draft_conflict")
+            active = connection.execute(
+                "SELECT kind FROM agent_draft_operations WHERE draft_id = ? "
+                "AND status IN ('queued','running','cancelling')", (draft_id,),
+            ).fetchone()
+            if active and (not enqueue_if_busy or active["kind"] != "feedback"):
+                raise ValueError("agent_draft_operation_active")
+            if active:
+                waiting_count = connection.execute(
+                    "SELECT COUNT(*) FROM agent_conversation_turns "
+                    "WHERE draft_id = ? AND status = 'waiting'", (draft_id,),
+                ).fetchone()[0]
+                if waiting_count >= 20:
+                    raise ValueError("agent_feedback_queue_full")
+            if not active:
+                pending = connection.execute(
+                    "SELECT 1 FROM agent_conversation_turns WHERE draft_id = ? AND status = 'waiting'",
+                    (draft_id,),
+                ).fetchone()
+                if pending:
+                    raise ValueError("agent_draft_operation_active")
+            item["turn"] = int(latest) + 1
+            item["status"] = "waiting" if active else "queued"
+            operation_id = None
+            if not active:
+                operation_id = f"agent_op_{uuid.uuid4().hex[:20]}"
+                connection.execute(
+                    "INSERT INTO agent_draft_operations "
+                    "(operation_id,draft_id,revision,kind,status,request_id,input_hash,detail_json,created_at,updated_at) "
+                    "VALUES (?,?,?,'feedback','running',?,?,?, ?,?)",
+                    (operation_id, draft_id, item["base_revision"], request_id, input_hash,
+                     _dump({"turn": item["turn"], "phase": "queued", "completed_units": 0,
+                            "total_units": 4, "timeout_seconds": item["decision"]["execution"]["timeout_seconds"]}),
+                     item["created_at"], item["created_at"]),
+                )
+                item["decision"]["task_id"] = operation_id
+            connection.execute(
+                "INSERT INTO agent_conversation_turns "
+                "(draft_id,turn,parent_turn,kind,status,user_message,decision_json,base_revision,result_revision,"
+                "diff_json,created_at,completed_at,request_id,input_hash) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (draft_id, item["turn"], item.get("parent_turn"), "feedback", item["status"],
+                 item["user_message"], _dump(item["decision"]), item["base_revision"], None, "[]",
+                 item["created_at"], None, request_id, input_hash),
+            )
+            return {"turn": item["turn"], "status": item["status"],
+                    "task_id": operation_id, "reused": False}
+
+    def pause_agent_feedback_queue(self, draft_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE agent_conversation_turns SET status = 'needs_review' "
+                "WHERE draft_id = ? AND status = 'waiting'", (draft_id,),
+            )
+
+    def claim_next_agent_feedback(self, draft_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM agent_draft_operations WHERE draft_id = ? "
+                "AND status IN ('queued','running','cancelling')", (draft_id,),
+            ).fetchone():
+                return None
+            row = connection.execute(
+                "SELECT * FROM agent_conversation_turns WHERE draft_id = ? AND status = 'waiting' "
+                "ORDER BY turn LIMIT 1", (draft_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            draft = connection.execute(
+                "SELECT revision,status FROM agent_authoring_drafts WHERE draft_id = ?", (draft_id,),
+            ).fetchone()
+            if draft is None or draft["status"] == "published" or int(draft["revision"]) != int(row["base_revision"]):
+                connection.execute(
+                    "UPDATE agent_conversation_turns SET status = 'needs_review' "
+                    "WHERE draft_id = ? AND status = 'waiting'", (draft_id,),
+                )
+                return None
+            operation_id = f"agent_op_{uuid.uuid4().hex[:20]}"
+            decision = _load(row["decision_json"], {}) or {}
+            decision["task_id"] = operation_id
+            now = utc_now()
+            connection.execute(
+                "INSERT INTO agent_draft_operations "
+                "(operation_id,draft_id,revision,kind,status,request_id,input_hash,detail_json,created_at,updated_at) "
+                "VALUES (?,?,?,'feedback','running',?,?,?, ?,?)",
+                (operation_id, draft_id, row["base_revision"], row["request_id"], row["input_hash"],
+                 _dump({"turn": row["turn"], "phase": "queued", "completed_units": 0, "total_units": 4,
+                        "timeout_seconds": decision.get("execution", {}).get("timeout_seconds", 3600)}), now, now),
+            )
+            connection.execute(
+                "UPDATE agent_conversation_turns SET status = 'queued', decision_json = ? "
+                "WHERE draft_id = ? AND turn = ?",
+                (_dump(decision), draft_id, row["turn"]),
+            )
+            return {"turn": int(row["turn"]), "task_id": operation_id}
+
+    def append_agent_conversation_event(
+        self, draft_id: str, kind: str, payload: dict[str, Any], turn: int | None = None,
+    ) -> dict[str, Any]:
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            sequence = int(connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_conversation_events WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()[0])
+            now = utc_now()
+            connection.execute(
+                "INSERT INTO agent_conversation_events "
+                "(draft_id,sequence,turn,kind,payload_json,created_at) VALUES (?,?,?,?,?,?)",
+                (draft_id, sequence, turn, kind, _dump(payload), now),
+            )
+            return {"sequence": sequence, "turn": turn, "kind": kind,
+                    "payload": payload, "created_at": now}
+
+    def list_agent_conversation_events(self, draft_id: str, after: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_conversation_events WHERE draft_id = ? AND sequence > ? "
+                "ORDER BY sequence LIMIT ?", (draft_id, after, min(max(limit, 1), 100)),
+            ).fetchall()
+        return [{"sequence": int(row["sequence"]), "turn": row["turn"], "kind": row["kind"],
+                 "payload": _load(row["payload_json"], {}), "created_at": row["created_at"]} for row in rows]
+
+    def latest_agent_conversation_event_sequence(self, draft_id: str) -> int:
+        with self._connect() as connection:
+            return int(connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM agent_conversation_events WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()[0])
 
     def create_agent_acceptance_campaign(
         self, *, campaign: dict[str, Any], cases: list[dict[str, Any]],

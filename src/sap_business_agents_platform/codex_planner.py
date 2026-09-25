@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import uuid
 from collections import deque
@@ -72,6 +73,29 @@ def _tool_authoring_codex(workspace: Any, *, full_access: bool = False) -> Any:
                or key.upper() in {"PYTHONPATH", "NODE_OPTIONS", "SSH_AUTH_SOCK"}}
     client._client._sync.config = replace(config, launch_args_override=tuple(args),
         env={**cleared, **environment})
+    return client
+
+
+def _with_authoring_mcp(client: Any, session: dict[str, str]) -> Any:
+    """Attach only the platform's revision-scoped authoring Broker."""
+    from dataclasses import replace
+    from .harness import _validate_internal_api_url
+    _validate_internal_api_url(session["internal_api_url"])
+    config = client._client._sync.config
+    args = list(config.launch_args_override)
+    name = "sap_authoring_catalog"
+    values = [
+        f"mcp_servers.{name}.command={json.dumps(sys.executable)}",
+        f"mcp_servers.{name}.args={json.dumps(['-m', 'sap_business_agents_platform.mcp_server', '--mode', 'authoring'])}",
+        f"mcp_servers.{name}.enabled=true",
+        f"mcp_servers.{name}.env.SAPBA_INTERNAL_API_URL={json.dumps(session['internal_api_url'])}",
+        f"mcp_servers.{name}.env.SAPBA_HARNESS_RUN_ID={json.dumps(session['operation_id'])}",
+        f"mcp_servers.{name}.env.SAPBA_HARNESS_CAPABILITY={json.dumps(session['capability'])}",
+        f"mcp_servers.{name}.env.PYTHONUTF8={json.dumps('1')}",
+    ]
+    for value in values:
+        args[args.index("app-server"):args.index("app-server")] = ["--config", value]
+    client._client._sync.config = replace(config, launch_args_override=tuple(args))
     return client
 
 
@@ -401,6 +425,13 @@ class Planner(Protocol):
 
 
 class CodexPlanner:
+    @staticmethod
+    def feedback_capabilities() -> dict[str, bool]:
+        # Authoring still creates an isolated turn for each revision; SDK
+        # resume and live steering are not yet validated for this scope.
+        return {"stream_events": False, "resume": False, "steer": False,
+                "image_input": True}
+
     def __init__(self, repository_root: Path, model: str | None = None, reasoning_effort: str | None = None, *, data_root: Path | None = None) -> None:
         self.data_root = data_root or repository_root / ".local-data"
         self.repository_root = repository_root
@@ -690,6 +721,8 @@ requirements; never claim a rule has been implemented or a process completed.
         tool_policy: dict[str, Any] | None = None,
         intent: str = "revise",
         feedback_context: dict[str, Any] | None = None,
+        tool_session: dict[str, str] | None = None,
+        image_inputs: list[str] | None = None,
     ) -> dict[str, Any]:
         if not self.model:
             raise ValueError("agent_runtime_binding_missing")
@@ -823,8 +856,20 @@ Agent-package changes become an unpublished draft revision. Platform source chan
 become a pending changeset requiring independent verification and user approval.
 Never claim that a platform changeset was applied or that a dependent draft is ready.
 """
+            if tool_session is not None:
+                prompt += """
+The platform's task-scoped MCP tool catalog is connected. Discover relevant
+tools before use. Discovery is not execution permission. DDIC labels may be
+verified only through sap_ddic_field_labels_get; never query SAP from shell.
+The no-HTTP rule applies to native shell/browser access, not the approved MCP
+Broker call, whose internal loopback transport is owned by the platform.
+The Broker can reject calls when the request, revision or deadline no longer
+matches. The local full-access shell is not an OS security boundary.
+"""
         with tempfile.TemporaryDirectory(prefix="sapba-agent-authoring-") as isolated:
             client = _tool_authoring_codex(tool_workspace, full_access=full_access) if tool_workspace else _agent_authoring_codex(Path(isolated))
+            if tool_session is not None:
+                client = _with_authoring_mcp(client, tool_session)
             key = operation_id or f"local-{id(client)}"
             # SDK startup uses to_thread. Shield it: cancelling the await must not lose
             # ownership of a process that the worker thread may still create later.
@@ -859,7 +904,7 @@ Never claim that a platform changeset was applied or that a dependent draft is r
                             result = await self._run_agent_feedback(codex,
                                 prompt + ("\nController check failures: " + json.dumps(issues) if issues else ""),
                                 candidate, None, str(tool_workspace.source), tool_workspace=tool_workspace,
-                                explain_only=explain_only)
+                                explain_only=explain_only, image_inputs=image_inputs)
                             if result.get("action") == "revise_agent" and "edits" in result:
                                 from .agent_authoring import apply_package_edits
                                 result = {**result, "package": apply_package_edits(candidate, result.pop("edits"))}
@@ -872,7 +917,7 @@ Never claim that a platform changeset was applied or that a dependent draft is r
                     else:
                         decision = await self._run_agent_feedback(codex, prompt, package, None,
                             str(tool_workspace.source), tool_workspace=tool_workspace,
-                            explain_only=explain_only)
+                            explain_only=explain_only, image_inputs=image_inputs)
                     decision["harness"] = {"mode": "full_access" if full_access else "isolated_tools", "workspace_id": tool_workspace.root.name,
                         "base_commit": tool_workspace.base_commit, "preflight": preflight,
                         "live_testing": "not_performed", "platform_apply": "not_performed"}
@@ -888,7 +933,8 @@ Never claim that a platform changeset was applied or that a dependent draft is r
                             decision["harness"]["platform_dependency_status"] = "awaiting_verification"
                     return decision
                 return await self._run_agent_feedback(
-                    codex, prompt, package, thread_id, isolated, explain_only=explain_only
+                    codex, prompt, package, thread_id, isolated, explain_only=explain_only,
+                    image_inputs=image_inputs,
                 )
             finally:
                 cleanup = asyncio.create_task(self._close_authoring_client(key, state))
@@ -983,7 +1029,7 @@ Never claim that a platform changeset was applied or that a dependent draft is r
         return bool(proc.poll() is not None and start is not None and start.done() and not start.cancelled()
                     and cleanup is not None and cleanup.done())
 
-    async def _run_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str, *, tool_workspace: Any = None, explain_only: bool = False) -> dict[str, Any]:
+    async def _run_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str, *, tool_workspace: Any = None, explain_only: bool = False, image_inputs: list[str] | None = None) -> dict[str, Any]:
         from openai_codex import ApprovalMode, Sandbox
 
         full_access = bool(tool_workspace and getattr(tool_workspace, "full_access", False))
@@ -1024,7 +1070,12 @@ Never claim that a platform changeset was applied or that a dependent draft is r
             )
         turn_options = {"sandbox": Sandbox.full_access, "model": self.model,
                         "approval_mode": ApprovalMode.deny_all, "cwd": isolated} if full_access else {}
-        result = await thread.run(prompt, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA, effort=self.reasoning_effort, **turn_options)
+        if image_inputs:
+            from openai_codex import ImageInput, TextInput
+            prompt_input: Any = [TextInput(prompt), *[ImageInput(url=value) for value in image_inputs]]
+        else:
+            prompt_input = prompt
+        result = await thread.run(prompt_input, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA, effort=self.reasoning_effort, **turn_options)
         raw = json.loads(result.final_response)
         if tool_workspace:
             from .authoring_harness import AuthoringHarnessError
@@ -1534,6 +1585,9 @@ Rules:
             previous=previous or {},
             integration_catalog=integration_catalog or {"items": [], "bindings": []},
         )
+        prompt += "\n\nPlatform tool discovery (not permission to execute): " + _workflow_assistant_tool_catalog(
+            requirement, integration_catalog or {}
+        )
         async with AsyncCodex() as codex:
             if thread_id:
                 thread = await codex.thread_resume(
@@ -1595,6 +1649,7 @@ Rules:
         validation_report: dict[str, Any] | None,
         thread_id: str | None,
         clarification_input: str | None = None,
+        integration_catalog: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from openai_codex import ApprovalMode, AsyncCodex, Sandbox
 
@@ -1608,6 +1663,9 @@ Rules:
             catalog=catalog,
             validation_report=validation_report,
             clarification_input=clarification_input,
+        )
+        prompt += "\n\nPlatform tool discovery (not permission to execute): " + _workflow_assistant_tool_catalog(
+            requirement + " " + feedback, integration_catalog or {}
         )
         async with AsyncCodex() as codex:
             if thread_id:
@@ -1662,6 +1720,22 @@ Rules:
                 "proposal": proposal,
                 "thread_id": thread.id,
             }
+
+
+def _workflow_assistant_tool_catalog(requirement: str, integrations: dict[str, Any]) -> str:
+    """Supply one bounded discovery projection, never a runnable capability."""
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    from .assistant_tools import AssistantToolContext, catalog as assistant_catalog
+    context = AssistantToolContext(
+        "workflow_authoring", hashlib.sha256(requirement.encode()).hexdigest(),
+        "workflow-proposal", None, datetime.now(timezone.utc) + timedelta(minutes=3),
+    )
+    bindings = integrations.get("bindings") if isinstance(integrations, dict) else []
+    entries = assistant_catalog(context, mail_bindings=bindings if isinstance(bindings, list) else [], limit=50)
+    selected = [{key: item.get(key) for key in ("tool_id", "purpose", "effect", "available", "unavailable_reason")}
+                for item in entries if item["tool_id"].startswith(("mail.v1/", "tool_catalog_"))]
+    return json.dumps(selected, ensure_ascii=False, separators=(",", ":"))
 
 
 def _workflow_feedback_prompt(

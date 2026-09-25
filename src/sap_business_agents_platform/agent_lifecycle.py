@@ -39,6 +39,7 @@ from .plugins import PluginError
 from .relationships import apply_advisory_relationship_policy
 from .skills import SkillError, validate_agent_skill_dependencies
 from .site_release import SiteReleaseError, SiteReleaseManager
+from .sample_discovery import SampleDiscoveryContext
 from .workflows import WorkflowRepository, WorkflowError, agent_digest, validate_value
 
 
@@ -746,6 +747,33 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         identity = self.technical_identity(draft)
         active_operation = self.store.get_agent_operation(draft_id)
         wizard = self._wizard_projection(draft, identity, assessment, active_operation)
+        try:
+            sample_readiness = SampleDiscoveryContext(revision["package"]["manifest"], {}, int(draft["revision"])).readiness()
+        except Exception:
+            # An incomplete draft must stay editable even when its sample
+            # discovery definition cannot yet be projected.
+            sample_readiness = {"revision": int(draft["revision"]), "can_start": False,
+                                "blocking_fields": [], "fields": [], "diagnostic": "sample_definition_invalid"}
+        feedback_sources = {"static": {"revision": int(draft["revision"]),
+                                      "digest": self._feedback_digest({"errors": (assessment.get("static_checks") or {}).get("errors") or []})}}
+        trial_ref = assessment.get("trial") or {}
+        if trial_ref.get("run_id"):
+            try:
+                attempt = self.store.get_agent_validation_attempt(draft_id, trial_ref["run_id"])
+                if attempt["revision"] == int(draft["revision"]):
+                    feedback_sources["trial"] = {"source_id": trial_ref["run_id"], "revision": attempt["revision"],
+                                                  "digest": self._feedback_digest(self._limited_feedback_report(attempt.get("report")))}
+            except KeyError:
+                pass
+        acceptance_ref = assessment.get("acceptance") or {}
+        if acceptance_ref.get("campaign_id"):
+            try:
+                campaign = self.store.get_agent_acceptance_campaign(draft_id, acceptance_ref["campaign_id"])
+                if campaign["revision"] == int(draft["revision"]):
+                    feedback_sources["acceptance"] = {"source_id": campaign["campaign_id"], "revision": campaign["revision"],
+                                                       "digest": self._feedback_digest(self._limited_feedback_report(campaign.get("report")))}
+            except KeyError:
+                pass
         return {
             **draft,
             "technical_identity": identity,
@@ -760,10 +788,14 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             "diff": revision["diff"],
             "revisions": self.store.list_agent_authoring_revisions(draft_id),
             "conversation": [self._public_feedback_turn(turn) for turn in self.store.list_agent_conversation_turns(draft_id)],
+            "conversation_event_sequence": self.store.latest_agent_conversation_event_sequence(draft_id),
+            "assistant_capabilities": self._assistant_capabilities((draft.get("metadata") or {}).get("runtime_snapshot") or {}),
+            "feedback_sources": feedback_sources,
             "active_operation": active_operation,
             "publication_operation": publication_operation,
             "activation_operation": self._public_publication_operation(activation) if activation else None,
             "sample_discovery": sample,
+            "sample_readiness": sample_readiness,
             "ui_state": self.store.get_agent_authoring_ui_state(draft_id),
             "wizard": wizard,
             **assessment,

@@ -51,6 +51,7 @@ from .models import (
     AgentDraftUiStateUpdate,
     AgentDraftCatalogModuleUpdate,
     AgentFeedbackRequest,
+    AgentFeedbackImageUpload,
     AgentTechnicalIdCheck,
     AgentTechnicalIdUpdate,
     AgentLifecycleRequest,
@@ -396,6 +397,7 @@ def create_app(
         drafts,
         skills=skills,
     )
+    agent_lifecycle.authoring_tool_broker = harness_broker
     sample_discovery = AgentDiscoveryJobs(
         settings, store, agent_lifecycle, sdk_registry,
         SampleDiscoveryService(settings, store, harness_broker),
@@ -2225,10 +2227,47 @@ def create_app(
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
+    @app.get("/api/authoring/agents/{draft_id}/conversation/events")
+    async def managed_agent_conversation_events(
+        request: Request, draft_id: str, after: int = Query(0, ge=0),
+    ) -> StreamingResponse:
+        try:
+            agent_lifecycle.store.get_agent_authoring_draft(draft_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Agent draft not found") from exc
+
+        async def stream() -> AsyncIterator[str]:
+            try:
+                resumed = int(request.headers.get("last-event-id") or "0")
+            except ValueError:
+                resumed = 0
+            sequence = max(after, resumed)
+            while not await request.is_disconnected():
+                events = agent_lifecycle.store.list_agent_conversation_events(draft_id, sequence)
+                for event in events:
+                    sequence = event["sequence"]
+                    yield (f"id: {sequence}\nevent: {event['kind']}\n"
+                           f"data: {json.dumps(event, ensure_ascii=False)}\n\n")
+                if not events:
+                    yield ": heartbeat\n\n"
+                await asyncio.sleep(1)
+
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     @app.post("/api/authoring/agents/{draft_id}/feedback/{turn_number}/cancel")
     async def cancel_managed_agent_feedback(draft_id: str, turn_number: int) -> dict[str, Any]:
         try:
             return await agent_lifecycle.cancel_feedback(draft_id, turn_number)
+        except (AgentLifecycleError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/feedback-images")
+    def upload_managed_agent_feedback_image(
+        draft_id: str, payload: AgentFeedbackImageUpload,
+    ) -> dict[str, Any]:
+        try:
+            return agent_lifecycle.save_feedback_image(draft_id, payload.data_url)
         except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
@@ -2275,6 +2314,15 @@ def create_app(
                 request_id=payload.request_id,
             )
         except (AgentLifecycleError, RunExecutionError, KeyError) as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
+
+    @app.post("/api/authoring/agents/{draft_id}/sample-discovery/preflight")
+    def preflight_managed_agent_sample_discovery(
+        draft_id: str, payload: AgentSampleDiscoveryRequest,
+    ) -> dict[str, Any]:
+        try:
+            return sample_discovery.preflight(draft_id, payload)
+        except (AgentLifecycleError, KeyError) as exc:
             raise _agent_lifecycle_http_error(exc) from exc
 
     @app.post("/api/authoring/agents/{draft_id}/sample-discovery", status_code=202)

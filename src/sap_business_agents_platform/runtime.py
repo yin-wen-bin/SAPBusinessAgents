@@ -351,6 +351,13 @@ class RuntimeRouter:
         provider = self._provider(self.current_provider_id, self.current_model_id)
         return callable(getattr(provider, operation, None))
 
+    def feedback_capabilities(self, provider_id: str, model_id: str | None = None) -> dict[str, bool]:
+        provider = self._provider(provider_id, model_id)
+        declared = getattr(provider, "feedback_capabilities", None)
+        value = declared() if callable(declared) else {}
+        return {name: bool(value.get(name)) for name in
+                ("stream_events", "resume", "steer", "image_input")}
+
     def bind_events(self, sink: Any) -> Any:
         provider = self._provider(self.current_provider_id, self.current_model_id)
         method = getattr(provider, "bind_events", None)

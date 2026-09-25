@@ -115,7 +115,11 @@ export function canRetryFeedback(turn: any): boolean {
 export type FeedbackRequest = {
   baseTurn: number; baseRevision: number; feedback: string; locale: Locale;
   intent: "explain" | "revise"; step?: DraftStep; fieldPath?: string;
-  runId?: string; acceptanceCampaignId?: string; retryOfTurn?: number; requestId: string;
+    runId?: string; acceptanceCampaignId?: string; retryOfTurn?: number; requestId: string;
+    annotations?: { kind: "manifest_field" | "static_issue" | "trial_issue" | "acceptance_issue"; path: string; comment: string; revision: number; sourceId?: string; sourceDigest?: string }[];
+    replyToClarificationId?: string; enqueueIfBusy?: boolean;
+    imageIds?: string[];
+    selection?: { kind: "manifest_field" | "rules" | "readme" | "trial_report" | "acceptance_report"; path: string; excerpt: string; revision: number; sourceId?: string; sourceDigest?: string };
 };
 /** An uncertain network response is a retransmission, not a new logical conversation. */
 export function prepareFeedbackRequest(previous: FeedbackRequest | null, next: Omit<FeedbackRequest, "requestId">, createId: () => string): FeedbackRequest {
@@ -123,7 +127,12 @@ export function prepareFeedbackRequest(previous: FeedbackRequest | null, next: O
     && previous.intent === next.intent && previous.step === next.step
     && previous.fieldPath === next.fieldPath && previous.runId === next.runId
     && previous.acceptanceCampaignId === next.acceptanceCampaignId
-    && previous.retryOfTurn === next.retryOfTurn) return previous;
+      && previous.retryOfTurn === next.retryOfTurn
+      && previous.replyToClarificationId === next.replyToClarificationId
+      && previous.enqueueIfBusy === next.enqueueIfBusy
+      && JSON.stringify(previous.imageIds || []) === JSON.stringify(next.imageIds || [])
+      && JSON.stringify(previous.selection || null) === JSON.stringify(next.selection || null)
+      && JSON.stringify(previous.annotations || []) === JSON.stringify(next.annotations || [])) return previous;
   return { ...next, requestId: createId() };
 }
 export function presentationCell(row: any, index: number, key: string): any {
@@ -343,7 +352,7 @@ export function diffBusinessLabel(change: any, manifest: any, locale: Locale): s
 
 export function draftStatus(value: unknown, locale: Locale): string {
   const labels: Record<string, [string, string]> = {
-    draft: ["编辑中", "Editing"], queued: ["等待执行", "Queued"], running: ["执行中", "Running"], cancelling: ["正在取消并清理", "Cancelling and cleaning up"], finalizing: ["生成结果", "Finalizing"], waiting_input: ["等待补充", "Waiting for input"],
+    draft: ["编辑中", "Editing"], queued: ["等待执行", "Queued"], waiting: ["消息排队中", "Message queued"], needs_review: ["待核对后重发", "Review before resending"], withdrawn: ["已撤回", "Withdrawn"], running: ["执行中", "Running"], cancelling: ["正在取消并清理", "Cancelling and cleaning up"], finalizing: ["生成结果", "Finalizing"], waiting_input: ["等待补充", "Waiting for input"],
     received: ["已接收请求", "Request received"], preparing: ["准备查询", "Preparing query"], reading_sap: ["读取SAP证据", "Reading SAP evidence"], validating_evidence: ["核验证据", "Checking evidence"], preparing_result: ["生成业务结果", "Preparing business result"],
     completed: ["执行完成", "Completed"], passed: ["验收通过", "Passed"], blocked: ["验收受阻", "Blocked"], superseded: ["不适用于当前修订", "Not applicable to the current revision"], interrupted: ["任务已中断", "Interrupted"], ready: ["样本已找到，请核对", "Sample ready for review"], needs_input: ["需要补充参数", "More input needed"], timed_out: ["任务超时", "Timed out"], unavailable: ["暂不可用", "Unavailable"], inconclusive: ["证据不足", "Inconclusive"], failed: ["执行失败", "Failed"], cancelled: ["已取消", "Cancelled"], expired: ["已过期", "Expired"],
     normal: ["正常", "Normal"], attention: ["需要处理", "Needs attention"], unknown: ["无法确认", "Unknown"], PASS: ["验收通过", "Passed"], FAIL: ["验收失败", "Failed"], BLOCKED: ["受阻", "Blocked"], NOT_TESTED: ["尚未验收", "Not tested"], MATCH: ["一致", "Match"], MISMATCH: ["不一致", "Mismatch"], UNAVAILABLE: ["无法核对", "Unavailable"], CHANGED: ["验收期间数据发生变化", "Data changed during acceptance"],

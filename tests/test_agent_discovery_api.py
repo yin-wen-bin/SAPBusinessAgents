@@ -29,8 +29,8 @@ def package():
                                                    {"field": "Customer", "value": "{{input.customer}}", "operator": "eq"}]}}}]}}, "rules": None}
 
 
-def save_draft(store, settings, draft_id="draft_sample", status="draft", *, confirmed=True, agent_id="sample-agent"):
-    draft_package = package()
+def save_draft(store, settings, draft_id="draft_sample", status="draft", *, confirmed=True, agent_id="sample-agent", draft_package=None):
+    draft_package = draft_package or package()
     draft_package["manifest"]["slug"] = agent_id
     store.save_agent_authoring_draft({"draft_id": draft_id, "agent_id": agent_id, "source_type": "blank", "status": status,
                                      "revision": 1, "path": str(settings.draft_root / draft_id),
@@ -237,6 +237,26 @@ def test_missing_organisational_scope_prevents_broad_sample_read():
     assert "company_code" in ctx.preflight_gaps()
 
 
+def test_missing_field_mapping_fails_before_operation_or_runtime(tmp_path):
+    jobs, store, sdk, service, settings = setup_jobs(tmp_path)
+    broken = package()
+    plan = broken["manifest"]["execution"]["steps"][0]["inputMapping"]["plan"]
+    plan["filters"] = [item for item in plan["filters"] if item["field"] != "Customer"]
+    broken["manifest"]["execution"]["steps"].append({"executor": "skill", "skillId": "sap-adt-table-export",
+        "inputMapping": {"filters": [{"field": "Customer", "value": "{{input.customer}}"}]}})
+    save_draft(store, settings, "unmapped", agent_id="unmapped", draft_package=broken)
+    payload = request()
+    readiness = jobs.preflight("unmapped", payload)
+    assert readiness["blocking_fields"] == ["customer"]
+    assert readiness["fields"][1]["reason"] == "skill_requires_input"
+    with pytest.raises(AgentLifecycleError) as error:
+        jobs.start("unmapped", payload)
+    assert error.value.code == "sample_discovery_preflight_failed"
+    assert store.latest_agent_operation("unmapped", "sample_discovery") is None
+    sdk.runtime_snapshot_for_model.assert_not_called()
+    service.discover.assert_not_called()
+
+
 def test_revision_published_and_cross_draft_guards(tmp_path):
     async def scenario():
         jobs, store, _, service, settings = setup_jobs(tmp_path)
@@ -257,7 +277,7 @@ def test_revision_published_and_cross_draft_guards(tmp_path):
 def test_api_start_poll_idempotency_conflict_cancel_and_cross_draft(tmp_path):
     from sap_business_agents_platform.app import create_app
     async def scenario():
-        jobs, _, sdk, service, settings = setup_jobs(tmp_path)
+        jobs, store, sdk, service, settings = setup_jobs(tmp_path)
         app = create_app(settings)
         actual = app.state.agent_sample_discovery
         actual.sdk_manager = sdk
@@ -267,6 +287,12 @@ def test_api_start_poll_idempotency_conflict_cancel_and_cross_draft(tmp_path):
         actual.service = SimpleNamespace(discover=AsyncMock(side_effect=wait_for_cancel))
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765") as client:
             payload = {"expectedRevision": 1, "input": {"company_code": "1710"}, "requestId": "api-request"}
+            preflight = await client.post("/api/authoring/agents/draft_sample/sample-discovery/preflight", json=payload)
+            assert preflight.status_code == 200 and preflight.json()["can_start"] is True
+            assert store.latest_agent_operation("draft_sample", "sample_discovery") is None
+            draft_view = await client.get("/api/authoring/agents/draft_sample")
+            assert draft_view.status_code == 200
+            assert "sample_readiness" in draft_view.json()
             start = await client.post("/api/authoring/agents/draft_sample/sample-discovery", json=payload)
             assert start.status_code == 202, start.text
             run_id = start.json()["run_id"]

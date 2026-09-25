@@ -48,6 +48,7 @@ from sap_business_agents_platform.models import (
     RunCreate,
     RunMode,
     RunPresentation,
+    RunStatus,
 )
 from sap_business_agents_platform.sap_read.embedded_odata import EmbeddedODataProvider
 
@@ -481,6 +482,27 @@ def _settings(tmp_path: Path, root: Path | None = None) -> Settings:
 def test_broker_enforces_capability_idempotency_evidence_and_gap_gate(tmp_path: Path) -> None:
     async def scenario() -> None:
         await _broker_scenario(tmp_path)
+
+    asyncio.run(scenario())
+
+
+def test_broker_rebinds_only_after_platform_resumes_with_new_user_scope(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        store = RunStore(settings.database_path)
+        run_id = "run_scope_rebind"
+        store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="initial request"))
+        broker = HarnessToolBroker(settings, store, FakeSapRead(), FakeSkills())
+        token = broker.open_session(run_id)
+        store.update_run(run_id, status=RunStatus.waiting_input)
+        blocked = await broker.handle(run_id, token, "sap_catalog_search", {"query": "supplier"})
+        assert blocked["code"] == "harness_run_closed"
+        store.update_run(run_id, status=RunStatus.queued, query="initial request\nAdditional user information: company 1010")
+        stale = await broker.handle(run_id, token, "sap_catalog_search", {"query": "supplier"})
+        assert stale["code"] == "tool_session_stale"
+        refreshed = broker.open_session(run_id)
+        accepted = await broker.handle(run_id, refreshed, "sap_catalog_search", {"query": "supplier"})
+        assert accepted["ok"] is True
 
     asyncio.run(scenario())
 
@@ -1374,7 +1396,9 @@ async def _broker_scenario(tmp_path: Path) -> None:
         run_id, token, "unknown_tool", {"value": 1, "tool_call_id": "failed_2"}
     )
     assert failed["ok"] is False
-    assert failed_replay["idempotent_replay"] is True
+    assert failed["code"] == "tool_not_enabled_for_task"
+    assert failed_replay["code"] == "tool_not_enabled_for_task"
+    assert not any(call["tool_name"] == "unknown_tool" for call in store.list_harness_tool_calls(run_id))
 
     await broker.handle(
         run_id,
@@ -1464,7 +1488,7 @@ async def _broker_scenario(tmp_path: Path) -> None:
             },
         },
     )
-    assert skill["source_type"] == "sap_skill"
+    assert skill.get("source_type") == "sap_skill", skill
     reused = await broker.handle(
         run_id,
         token,

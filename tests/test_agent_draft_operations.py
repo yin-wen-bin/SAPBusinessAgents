@@ -17,10 +17,16 @@ def seed(tmp_path):
     draft = {"draft_id": "draft-test", "agent_id": "sample-test", "source_type": "blank",
              "status": "draft", "revision": 1, "path": str(tmp_path / "draft"), "metadata": {}}
     manifest = {"slug": "sample-test", "module": "FI", "version": "0.1.0", "execution": {
-        "inputSchema": {"type": "object", "properties": {
+        "inputSchema": {"type": "object", "required": ["sample_id"], "properties": {
             "company_code": {"type": "string"},
+            "sample_id": {"type": "string"},
             "receipt_reference": {"type": "string", "x-sapba-sensitive": True},
-        }}, "steps": [],
+        }}, "steps": [{"executor": "sap", "inputMapping": {"plan": {
+            "service_name": "API_TEST", "odata_version": "2.0", "entity_set": "Samples",
+            "http_method": "GET", "select_fields": ["CompanyCode", "SampleID"],
+            "filters": [{"field": "CompanyCode", "operator": "eq", "value": "1710"},
+                        {"field": "SampleID", "operator": "eq", "value": "{{input.sample_id}}"}],
+        }}}],
     }}
     store.save_agent_authoring_draft(draft, package={"manifest": manifest, "rules": None})
     return store, draft

@@ -554,6 +554,7 @@ class WorkflowDraftService:
                         ),
                         catalog=compact_agent_catalog(self.agents),
                         validation_report=validation_report,
+                        integration_catalog=integration_catalog,
                         thread_id=draft.thread_id,
                         clarification_input=pending.get("clarification_input"),
                     ),

@@ -5,6 +5,7 @@ type Props = {
   presentation?: AgentPresentation | Record<string, any> | null;
   locale: Locale;
   idPrefix?: string;
+  annotatable?: boolean;
 };
 
 function localized(value: LocalizedText | Record<string, string> | undefined, locale: Locale) {
@@ -31,7 +32,7 @@ function declaredToolFor(step: any, executionStep: any) {
   });
 }
 
-export default function AgentDefinitionDetails({ agent, presentation, locale, idPrefix = "" }: Props) {
+export default function AgentDefinitionDetails({ agent, presentation, locale, idPrefix = "", annotatable = false }: Props) {
   const tr = (zh: string, en: string) => locale === "zh" ? zh : en;
   const projection: any = presentation || (agent as any).presentation || {};
   const odata = Array.isArray(projection.odata_objects) ? projection.odata_objects : [];
@@ -53,7 +54,7 @@ export default function AgentDefinitionDetails({ agent, presentation, locale, id
       <h2>{tr("SAP范围", "SAP scope")}</h2>
       <p>{tr("以下范围从已保存的资料和确定性执行定义生成；它描述定义中的调用，不代表每次运行都执行了全部条件步骤。", "This scope is generated from saved metadata and deterministic execution. It describes configured calls, not whether every conditional step ran in a particular run.")}</p>
       <div className="scope-grid">
-        <div><h3>{tr("SAP业务组件", "SAP business components")}</h3><ul className="tag-list scope-tags">{modules.map((item: string) => <li key={item}>{item}</li>)}</ul></div>
+        <div data-draft-ref={annotatable ? "/manifest/sapModules" : undefined}><h3>{tr("SAP业务组件", "SAP business components")}</h3><ul className="tag-list scope-tags">{modules.map((item: string) => <li key={item}>{item}</li>)}</ul></div>
         {transactions.length > 0 && <div><h3>{tr("事务码", "Transactions")}</h3><ul className="tag-list scope-tags">{transactions.map((item: string) => <li key={item}><code>{item}</code></li>)}</ul></div>}
         <div className="shared-scope-wide"><h3>{tr("核心OData实体", "Core OData entities")}</h3>
           {odata.length ? <ul className="tag-list scope-tags odata-api-tags">{odata.map((item: any) => <li key={`${item.service}|${item.version}|${item.entity}`}><code>{item.service} / {item.entity}</code><span className="odata-version-badge">{`V${String(item.version).split(".")[0]}`}</span>{item.conditional && <small>{tr("满足条件时调用", "Called when its condition is met")}</small>}</li>)}</ul> : <p>{tr("定义中没有可确认的OData实体。", "No OData entity can be confirmed from the definition.")}</p>}
@@ -72,7 +73,7 @@ export default function AgentDefinitionDetails({ agent, presentation, locale, id
       <h2>{tr("工作流与 Tools", "Workflow & Tools")}</h2>
       <p>{tr("从业务输入到安全输出的完整执行路径。每一步均列出对应 SAP 范围与实际使用的 Tool。", "The complete execution path from business input to safe output. Every step identifies its SAP scope and the Tools it uses.")}</p>
       <ol className="agent-workflow">
-        {workflow.map((step: any, index: number) => <li className="workflow-step" key={step.id || index}>
+        {workflow.map((step: any, index: number) => <li className="workflow-step" key={step.id || index} data-draft-ref={annotatable ? `/manifest/workflow/${index}` : undefined}>
           <div className="workflow-step-heading"><span className="workflow-index">{String(index + 1).padStart(2, "0")}</span><div><small>{tr("步骤", "Step")} {index + 1}</small><h3>{localized(step.title, locale)}</h3></div><code>{step.id}</code></div>
           <p>{localized(step.description, locale)}</p>
           {Array.isArray(step.operations?.[locale]) && step.operations[locale].length > 0 && <div className="step-operations"><h4>{tr("详细操作", "Detailed operations")}</h4><ol>{step.operations[locale].map((operation: string, operationIndex: number) => <li key={operationIndex}>{operation}</li>)}</ol></div>}

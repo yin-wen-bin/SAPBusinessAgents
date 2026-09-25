@@ -21,6 +21,8 @@ from urllib.parse import urlsplit
 from pydantic import ValidationError
 
 from .config import Settings
+from .assistant_tools import CATALOG_VERSION, AssistantToolContext, catalog as assistant_catalog, inspect as assistant_inspect, permitted as assistant_permitted, contract_digest as assistant_contract_digest, contract_snapshot as assistant_contract_snapshot
+from .assistant_ddic import DdicLabelError, field_labels
 from .agent_rules import evaluate_business_agent
 from .acceptance_projection import output_schema, validate_projection, visible_projection_issues
 from .database import RunStore
@@ -295,6 +297,91 @@ class HarnessToolBroker:
         self._run_clocks: dict[str, tuple[str, float]] = {}
         self._tool_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._closed_runs: set[str] = set()
+        self._authoring_sessions: dict[str, tuple[str, str, AssistantToolContext, dict[str, str]]] = {}
+        self._authoring_tool_tasks: dict[str, set[asyncio.Task[Any]]] = {}
+
+    def open_authoring_session(
+        self, draft_id: str, operation_id: str, revision: int,
+        request_digest: str, expires_at: datetime,
+        allowed_ddic_fields: tuple[tuple[str, str], ...] = (),
+    ) -> str:
+        if not self.store.assert_agent_operation(draft_id, operation_id, revision):
+            raise ToolAdmissionError("The authoring operation is no longer current.", code="tool_session_stale")
+        token = secrets.token_urlsafe(32)
+        self._authoring_sessions[operation_id] = (
+            draft_id, token, AssistantToolContext("agent_authoring", request_digest,
+                                                  draft_id, revision, expires_at,
+                                                  allowed_ddic_fields),
+            assistant_contract_snapshot("agent_authoring"),
+        )
+        return token
+
+    def close_authoring_session(self, operation_id: str) -> None:
+        self._authoring_sessions.pop(operation_id, None)
+        for task in self._authoring_tool_tasks.pop(operation_id, set()):
+            if not task.done():
+                task.cancel()
+
+    async def _handle_authoring(
+        self, operation_id: str, token: str, tool_name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        record = self._authoring_sessions.get(operation_id)
+        if record is None or not hmac.compare_digest(record[1], token):
+            return {"ok": False, "code": "harness_capability_denied"}
+        draft_id, _secret, context, contracts = record
+        allowed, reason = assistant_permitted(context, tool_name)
+        if allowed and not self.store.assert_agent_operation(draft_id, operation_id, int(context.revision or 0)):
+            allowed, reason = False, "tool_session_stale"
+        if allowed and (contracts.get(tool_name) != assistant_contract_digest(tool_name)):
+            allowed, reason = False, "tool_contract_changed"
+        audit = {"tool": tool_name[:80], "at": datetime.now(timezone.utc).isoformat(),
+                 "status": "denied", "code": reason}
+        if not allowed:
+            self.store.append_agent_operation_tool_event(draft_id, operation_id, audit)
+            return {"ok": False, "code": reason}
+        if tool_name == "sap_ddic_field_labels_get":
+            pair = (str(arguments.get("table") or "").strip().upper(),
+                    str(arguments.get("field") or "").strip().upper())
+            if pair not in context.allowed_ddic_fields:
+                self.store.append_agent_operation_tool_event(draft_id, operation_id,
+                    {**audit, "code": "tool_parameter_outside_task_scope"})
+                return {"ok": False, "code": "tool_parameter_outside_task_scope"}
+        try:
+            if tool_name == "tool_catalog_search":
+                output = {"ok": True, "catalog_version": CATALOG_VERSION, "tools": self._assistant_catalog(context,
+                    query=str(arguments.get("query") or "")[:120],
+                    limit=min(max(int(arguments.get("limit") or 30), 1), 50))}
+            elif tool_name == "tool_catalog_inspect":
+                item = assistant_inspect(context, str(arguments.get("tool_id") or ""),
+                    approved_skills=self.skills.list_all_approved_skills())
+                output = {"ok": item is not None, "catalog_version": CATALOG_VERSION, "tool": item,
+                          "code": None if item is not None else "tool_not_found"}
+            elif tool_name == "sap_ddic_field_labels_get":
+                remaining = max(0.001, (context.expires_at - datetime.now(timezone.utc)).total_seconds())
+                task = asyncio.current_task()
+                self._authoring_tool_tasks.setdefault(operation_id, set()).add(task)
+                try:
+                    async with asyncio.timeout(remaining):
+                        output = await field_labels(self.skills, arguments)
+                finally:
+                    self._authoring_tool_tasks.get(operation_id, set()).discard(task)
+            else:
+                output = {"ok": False, "code": "tool_not_enabled_for_task"}
+        except DdicLabelError as exc:
+            output = {"ok": False, "code": exc.code}
+        except Exception:
+            output = {"ok": False, "code": "tool_execution_failed"}
+        # A cancelled or revised operation cannot receive a late SAP-derived result.
+        if not context.valid() or not self.store.assert_agent_operation(draft_id, operation_id, int(context.revision or 0)):
+            output = {"ok": False, "code": "tool_session_stale"}
+        audit.update(status="completed" if output.get("ok") else "denied",
+                     code=output.get("code"), evidence_sha256=output.get("evidence_sha256"))
+        self.store.append_agent_operation_tool_event(draft_id, operation_id, audit)
+        return output
+
+    def _assistant_catalog(self, context: AssistantToolContext, *, query: str = "", limit: int = 30) -> list[dict[str, Any]]:
+        return assistant_catalog(context, approved_skills=self.skills.list_all_approved_skills(),
+                                 query=query, limit=limit)
 
     def open_session(self, run_id: str) -> str:
         self._closed_runs.discard(run_id)
@@ -322,7 +409,55 @@ class HarnessToolBroker:
                     }
                 },
             )
+        frozen = state.get("assistant_tool_authorization")
+        if (not isinstance(frozen, dict)
+                or frozen.get("request_digest") != self._run_request_digest(run_id, state)):
+            context = self._run_assistant_context(run_id, fresh=True)
+            self.store.update_harness_state(run_id, {"assistant_tool_authorization": {
+                "kind": context.kind, "request_digest": context.request_digest,
+                "target_id": context.target_id, "revision": context.revision,
+                "expires_at": context.expires_at.isoformat(),
+                "tool_contracts": assistant_contract_snapshot(context.kind),
+            }})
+        elif not isinstance(frozen.get("tool_contracts"), dict):
+            updated = dict(frozen)
+            updated["tool_contracts"] = assistant_contract_snapshot(str(updated.get("kind") or ""))
+            self.store.update_harness_state(run_id, {"assistant_tool_authorization": updated})
         return token
+
+    def _run_request_digest(self, run_id: str, state: dict[str, Any]) -> str:
+        run = self.store.get_run(run_id)
+        request_data = {"query": str(run.query or ""), "acceptance_spec": state.get("acceptance_spec")}
+        return hashlib.sha256(json.dumps(request_data, sort_keys=True, default=str).encode()).hexdigest()
+
+    def _run_assistant_context(self, run_id: str, *, fresh: bool = False) -> AssistantToolContext:
+        run = self.store.get_run(run_id)
+        state = self.store.get_harness_state(run_id)
+        snapshot = state.get("assistant_tool_authorization")
+        if isinstance(snapshot, dict) and not fresh:
+            try:
+                return AssistantToolContext(
+                    str(snapshot["kind"]), str(snapshot["request_digest"]),
+                    str(snapshot["target_id"]), snapshot.get("revision"),
+                    datetime.fromisoformat(str(snapshot["expires_at"]).replace("Z", "+00:00")),
+                )
+            except (KeyError, ValueError, TypeError):
+                # A malformed persisted binding cannot silently broaden access.
+                return AssistantToolContext("invalid", "", run_id, None,
+                                            datetime.fromtimestamp(0, timezone.utc))
+        kind = ("sample_discovery" if run_id in self._sample_contexts else
+                "acceptance_baseline" if state.get("acceptance_direct_baseline") is True else
+                "acceptance_free_query" if state.get("acceptance_spec") else "free_query")
+        started = datetime.fromisoformat(str(run.started_at or run.created_at).replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        from datetime import timedelta
+        return AssistantToolContext(
+            kind=kind,
+            request_digest=self._run_request_digest(run_id, state),
+            target_id=run_id, revision=state.get("draft_revision"),
+            expires_at=started + timedelta(seconds=self.budget_snapshot(run_id)["hard_limit_seconds"]),
+        )
 
     def budget_snapshot(self, run_id: str) -> dict[str, Any]:
         budget = self.store.get_harness_state(run_id).get("time_budget") or {}
@@ -567,8 +702,23 @@ class HarnessToolBroker:
     async def handle(
         self, run_id: str, token: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if run_id in self._authoring_sessions:
+            return await self._handle_authoring(run_id, token, tool_name, arguments)
         if not self.authenticate(run_id, token):
             return {"ok": False, "code": "harness_capability_denied", "message": "Invalid capability."}
+        run = self.store.get_run(run_id)
+        context = self._run_assistant_context(run_id)
+        allowed, reason = assistant_permitted(context, tool_name)
+        if allowed and context.request_digest != self._run_request_digest(run_id, self.store.get_harness_state(run_id)):
+            allowed, reason = False, "tool_session_stale"
+        frozen = (self.store.get_harness_state(run_id).get("assistant_tool_authorization") or {}).get("tool_contracts") or {}
+        if allowed and frozen.get(tool_name) != assistant_contract_digest(tool_name):
+            allowed, reason = False, "tool_contract_changed"
+        if (not allowed or run.cancel_requested or run.status in TERMINAL_STATUSES
+                or run.status == RunStatus.waiting_input or run_id in self._closed_runs):
+            code = reason if not allowed else "harness_run_closed"
+            self.store.append_event(run_id, "tool_denied", {"tool": tool_name[:80], "code": code})
+            return {"ok": False, "code": code}
         sample_context = self._sample_contexts.get(run_id)
         if sample_context is not None:
             try:
@@ -597,6 +747,8 @@ class HarnessToolBroker:
             "sap_month_end_status_assess",
             "sap_final_report_validate",
             "safe_compute",
+            "tool_catalog_search",
+            "tool_catalog_inspect",
         }:
             return {
                 "ok": False,
@@ -726,7 +878,8 @@ class HarnessToolBroker:
                 sample_context.begin_read()
                 sample_read_started = True
             if sample_context is not None:
-                async with asyncio.timeout(sample_context.remaining(external=tool_name not in {"sap_evidence_read", "sap_evidence_assess"})):
+                async with asyncio.timeout(sample_context.remaining(external=tool_name not in {
+                    "sap_evidence_read", "sap_evidence_assess", "tool_catalog_search", "tool_catalog_inspect"})):
                     output = await self._dispatch(run_id, tool_name, arguments)
                 if sample_context.closed:
                     raise ValueError("sample_discovery_closed")
@@ -834,7 +987,7 @@ class HarnessToolBroker:
         record = self.store.get_run(run_id)
         if record.status in TERMINAL_STATUSES or record.status == RunStatus.waiting_input:
             return
-        validation_tools = {"sap_catalog_search", "sap_schema_get", "sap_query_validate", "list_all_approved_skills"}
+        validation_tools = {"sap_catalog_search", "sap_schema_get", "sap_query_validate", "list_all_approved_skills", "tool_catalog_search", "tool_catalog_inspect"}
         next_status = RunStatus.validating if tool_name in validation_tools else RunStatus.running
         # Do not move the public progress indicator backwards after live reads begin.
         if record.status == RunStatus.running and next_status == RunStatus.validating:
@@ -870,6 +1023,16 @@ class HarnessToolBroker:
     async def _dispatch(
         self, run_id: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if tool_name in {"tool_catalog_search", "tool_catalog_inspect"}:
+            context = self._run_assistant_context(run_id)
+            if tool_name == "tool_catalog_search":
+                return {"ok": True, "catalog_version": CATALOG_VERSION, "tools": self._assistant_catalog(context,
+                    query=str(arguments.get("query") or "")[:120],
+                    limit=min(max(int(arguments.get("limit") or 30), 1), 50))}
+            item = assistant_inspect(context, str(arguments.get("tool_id") or ""),
+                approved_skills=self.skills.list_all_approved_skills())
+            return {"ok": item is not None, "catalog_version": CATALOG_VERSION, "tool": item,
+                    "code": None if item is not None else "tool_not_found"}
         if tool_name == "list_all_approved_skills":
             catalog = self.skills.list_all_approved_skills()
             selected = str(arguments.get("skill_id") or "")

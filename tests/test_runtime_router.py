@@ -56,6 +56,22 @@ class FakePlanner:
         return self.provider_id
 
 
+def test_feedback_capabilities_are_declared_per_provider_not_inherited() -> None:
+    codex = FakePlanner("codex")
+    codex.feedback_capabilities = lambda: {
+        "stream_events": False, "resume": False, "steer": False,
+        "image_input": True,
+    }
+    router = RuntimeRouter(FakeManager(), {
+        "codex": codex, "workbuddy": FakePlanner("workbuddy"),
+    })
+    assert router.feedback_capabilities("codex", "codex-model")["image_input"] is True
+    assert router.feedback_capabilities("workbuddy", "workbuddy-model") == {
+        "stream_events": False, "resume": False, "steer": False,
+        "image_input": False,
+    }
+
+
 def test_runtime_router_pins_existing_task_when_default_changes() -> None:
     manager = FakeManager()
     codex = FakePlanner("codex")

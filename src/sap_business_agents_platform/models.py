@@ -524,6 +524,41 @@ class AgentDraftDeleteRequest(BaseModel):
     confirm_agent_id: str = Field(alias="confirmAgentId", min_length=1, max_length=80)
 
 
+class AgentFeedbackAnnotation(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    kind: Literal["manifest_field", "static_issue", "trial_issue", "acceptance_issue"]
+    path: str = Field(min_length=1, max_length=512)
+    comment: str = Field(min_length=1, max_length=2000)
+    revision: int = Field(ge=1)
+    source_id: str | None = Field(default=None, alias="sourceId", max_length=100)
+    source_digest: str | None = Field(default=None, alias="sourceDigest", max_length=100)
+
+    @model_validator(mode="after")
+    def strip_comment(self) -> "AgentFeedbackAnnotation":
+        self.comment = self.comment.strip()
+        if not self.comment:
+            raise ValueError("annotation comment must not be blank")
+        return self
+
+
+class AgentFeedbackImageUpload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    data_url: str = Field(alias="dataUrl", min_length=32, max_length=1_500_000)
+
+
+class AgentFeedbackSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    kind: Literal["manifest_field", "readme", "rules", "trial_report", "acceptance_report"]
+    path: str = Field(min_length=1, max_length=512)
+    excerpt: str = Field(min_length=1, max_length=1000)
+    revision: int = Field(ge=1)
+    source_id: str | None = Field(default=None, alias="sourceId", max_length=100)
+    source_digest: str | None = Field(default=None, alias="sourceDigest", max_length=100)
+
+
 class AgentFeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -538,6 +573,11 @@ class AgentFeedbackRequest(BaseModel):
     acceptance_campaign_id: str | None = Field(default=None, alias="acceptanceCampaignId", min_length=1, max_length=100)
     request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
     retry_of_turn: int | None = Field(default=None, alias="retryOfTurn", ge=1)
+    annotations: list[AgentFeedbackAnnotation] = Field(default_factory=list, max_length=20)
+    reply_to_clarification_id: str | None = Field(default=None, alias="replyToClarificationId", max_length=100)
+    enqueue_if_busy: bool = Field(default=False, alias="enqueueIfBusy")
+    image_ids: list[str] = Field(default_factory=list, alias="imageIds", max_length=3)
+    selection: AgentFeedbackSelection | None = None
 
     @model_validator(mode="after")
     def strip_feedback(self) -> "AgentFeedbackRequest":

@@ -298,6 +298,35 @@ _TOOL_TOOLS = [
     },
 ]
 
+_CATALOG_TOOLS = [
+    {
+        "name": "tool_catalog_search",
+        "description": "Find tools relevant to this platform-owned assistant task, including safe unavailability reasons. Discovery does not grant execution.",
+        "inputSchema": _schema({"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
+    },
+    {
+        "name": "tool_catalog_inspect",
+        "description": "Inspect one task-relevant platform tool's public purpose, effect, contract digest and current eligibility.",
+        "inputSchema": _schema({"tool_id": {"type": "string"}}, ["tool_id"]),
+    },
+]
+
+_AUTHORING_TOOLS = [
+    *_CATALOG_TOOLS,
+    {
+        "name": "sap_ddic_field_labels_get",
+        "description": "Verify the medium Chinese and English DDIC field labels of one named SAP table field through the approved read-only ADT Skill. No arbitrary table rows are returned.",
+        "inputSchema": _schema({
+            "table": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,29}$"},
+            "field": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,29}$"},
+            "languages": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": True,
+                          "items": {"type": "string", "enum": ["zh", "en"]}},
+        }, ["table", "field"]),
+    },
+]
+
+_SAP_TOOLS.extend(_CATALOG_TOOLS)
+
 
 def _result(value: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -340,7 +369,7 @@ def _call_platform(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def serve(mode: str) -> None:
-    tools = _SAP_TOOLS if mode == "sap" else _TOOL_TOOLS
+    tools = {"sap": _SAP_TOOLS, "tools": _TOOL_TOOLS, "authoring": _AUTHORING_TOOLS}[mode]
     allowed = {item["name"] for item in tools}
     for line in sys.stdin:
         try:
@@ -405,7 +434,7 @@ def serve(mode: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["sap", "tools"], required=True)
+    parser.add_argument("--mode", choices=["sap", "tools", "authoring"], required=True)
     args = parser.parse_args()
     serve(args.mode)
 

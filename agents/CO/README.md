@@ -15,7 +15,7 @@ The index below reflects current manifests. Active lifecycle does not automatica
 |---|---|---|---|---|
 | CO | [预算滚动预测助手 / Budget Rolling Forecast Assistant](budget-rolling-forecast/README.md) | 0.1.1 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
 | CO | [CO 月结分配与结算助手 / CO Month-End Allocation and Settlement Assistant](co-month-end-allocation-settlement/README.md) | 0.1.1 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
-| CO | [成本中心费用异常助手 / Cost Center Expense Anomaly Assistant](cost-center-expense-anomaly/README.md) | 0.1.1 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
+| CO | [成本中心费用异常助手 / Cost Center Expense Anomaly Assistant](cost-center-expense-anomaly/README.md) | 1.0.0 | 使用中 / Active | 验收通过 / Passed |
 | CO | [内部订单与项目控制助手 / Internal Order and Project Control Assistant](internal-order-project-control/README.md) | 0.4.0 | 使用中 / Active | 因证据或验收缺口受阻 / Blocked |
 | CO | [生产订单成本差异分析助手 / Production Order Cost Variance Analysis Assistant](product-cost-variance/README.md) | 0.2.0 | 使用中 / Active | 验收通过 / Passed |
 <!-- generated:agents:end -->

@@ -413,6 +413,47 @@ def test_nested_and_sensitive_missing_inputs_require_manual_without_sap():
         SampleDiscoveryContext(data, {"receipt_reference": "SECRET"}, 0)
 
 
+def test_skill_consumption_does_not_prove_missing_input_discoverable():
+    data = manifest()
+    schema = data["execution"]["inputSchema"]
+    schema["required"].extend(["controlling_area", "allocation_cycle"])
+    schema["properties"].update({"controlling_area": {"type": "string"},
+                                 "allocation_cycle": {"type": "string"}})
+    data["execution"]["steps"].append({"executor": "skill", "skillId": "sap-adt-table-export",
+        "inputMapping": {"filters": [{"field": "KOKRS", "value": "{{input.controlling_area}}"},
+                                      {"field": "CYCLE", "value": "{{input.allocation_cycle}}"}]}})
+    ctx = SampleDiscoveryContext(data, {"company_code": "1710"}, 1)
+    readiness = ctx.readiness()
+    assert readiness["can_start"] is False
+    assert readiness["blocking_fields"] == ["controlling_area", "allocation_cycle"]
+    fields = {item["field"]: item for item in readiness["fields"]}
+    assert fields["controlling_area"]["reason"] == "skill_requires_input"
+    assert fields["allocation_cycle"]["skill_consumers"] == ["sap-adt-table-export"]
+    assert fields["customer"]["status"] == "discoverable"
+    assert SampleDiscoveryContext(data, {"company_code": "1710", "controlling_area": "A000",
+                                      "allocation_cycle": "CYCLE1"}, 1).readiness()["can_start"] is True
+
+
+def test_unmapped_source_field_is_not_claimed_as_discoverable():
+    data = manifest()
+    data["execution"]["steps"][0]["inputMapping"]["plan"]["filters"] = [
+        item for item in data["execution"]["steps"][0]["inputMapping"]["plan"]["filters"]
+        if item["field"] != "Customer"]
+    readiness = SampleDiscoveryContext(data, {"company_code": "1710"}, 1).readiness()
+    assert readiness["blocking_fields"] == ["customer"]
+    assert next(item for item in readiness["fields"] if item["field"] == "customer")["reason"] == "mapping_missing"
+
+
+def test_optional_selection_cannot_bypass_missing_organizational_scope():
+    data = manifest()
+    data["execution"]["inputSchema"]["properties"]["item"] = {"type": "string"}
+    data["execution"]["steps"][0]["inputMapping"]["plan"]["filters"].append(
+        {"field": "Item", "operator": "eq", "value": "{{input.item}}"})
+    ctx = SampleDiscoveryContext(data, {}, 1, selected_fields=["item"])
+    assert ctx.readiness()["blocking_fields"] == ["company_code"]
+    assert ctx.readiness()["can_start"] is False
+
+
 def test_private_rows_and_diagnostics_excluded_before_evidence_persistence():
     projected = context().project_evidence({"results": [{"CompanyCode": "1710", "Customer": "C1", "FinancialAccountType": "D", "PayerName": "PRIVATE", "BankAccount": "FULL_ACCOUNT"}],
                                             "internal_path": "PRIVATE_FILE"}, plan=plan())

@@ -46,10 +46,16 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const [notice, setNotice] = useState("");
   const [remoteConflict, setRemoteConflict] = useState(false);
   const [feedback, setFeedback] = useState("");
-  const [feedbackIntent, setFeedbackIntent] = useState<"explain" | "revise">("explain");
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const [annotationMode, setAnnotationMode] = useState(false);
+  const [annotations, setAnnotations] = useState<NonNullable<FeedbackRequest["annotations"]>>([]);
+  const [replyToClarificationId, setReplyToClarificationId] = useState<string | undefined>();
+  const [feedbackImages, setFeedbackImages] = useState<{ id: string; name: string }[]>([]);
+  const [imageReviewed, setImageReviewed] = useState(false);
+  const [feedbackSelection, setFeedbackSelection] = useState<FeedbackRequest["selection"]>();
   const [feedbackContext, setFeedbackContext] = useState<{ fieldPath?: string; runId?: string; acceptanceCampaignId?: string }>({});
   const [retryOfTurn, setRetryOfTurn] = useState<number | undefined>();
+  const [retryIntent, setRetryIntent] = useState<"explain" | "revise" | null>(null);
   const [uncertainFeedback, setUncertainFeedback] = useState(false);
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false);
   const [feedbackLaunch, setFeedbackLaunch] = useState<any>(null);
@@ -65,6 +71,9 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const [sampleDialogOpen, setSampleDialogOpen] = useState(false);
   const [selectingSampleFields, setSelectingSampleFields] = useState(false);
   const [selectedSampleFields, setSelectedSampleFields] = useState<string[]>([]);
+  const [sampleReadiness, setSampleReadiness] = useState<any>(null);
+  const [samplePreflightBusy, setSamplePreflightBusy] = useState(false);
+  const [samplePreflightError, setSamplePreflightError] = useState(false);
   const sampleSubmitting = useRef(false);
   const pendingSampleRequest = useRef<any>(null);
   const sampleInputsRef = useRef<HTMLDivElement>(null);
@@ -101,6 +110,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const stepHistoryReady = useRef(false);
   const restoringStepHistory = useRef(false);
   const chatRef = useRef<HTMLTextAreaElement>(null);
+  const focusedAnnotationTarget = useRef<HTMLElement | null>(null);
   const assistantToggleRef = useRef<HTMLButtonElement>(null);
   const assistantWasOpen = useRef(false);
   const progressRef = useRef<HTMLParagraphElement>(null);
@@ -113,7 +123,22 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   let manifest: any;
   try { manifest = JSON.parse(manifestText); } catch { manifest = draft.package.manifest; }
   const schema = manifest.execution?.inputSchema || { type: "object", properties: {} };
-  const sampleFields = sampleFieldOptions(schema, locale, input);
+  const sampleFields = sampleFieldOptions(schema, locale, input).map((field) => {
+    const assessment = (sampleReadiness?.revision === draft.revision ? sampleReadiness : draft.sample_readiness)?.fields
+      ?.find((item: any) => item.field === field.key);
+    const reasons: Record<string, [string, string]> = {
+      complex_input: ["复杂参数需手工填写", "Enter complex input manually"],
+      organizational_scope: ["组织范围需手工指定", "Enter organizational scope manually"],
+      input_branch_ambiguous: ["请先确定输入分支", "Select the input branch first"],
+      skill_requires_input: ["Skill 需要此参数，不能用它反向查找", "A Skill requires this input and cannot discover it"],
+      mapping_missing: ["定义中缺少可核对的读取字段映射", "No verifiable read-field mapping is declared"],
+      private_or_unknown_input: ["敏感或未声明参数需手工填写", "Enter sensitive or undeclared input manually"],
+    };
+    return { ...field, disabled: field.disabled || assessment?.status === "manual",
+      reason: field.reason || (assessment?.status === "manual" ? reasons[assessment.reason]?.[locale === "zh" ? 0 : 1] || assessment.reason : "") };
+  });
+  const sampleScopeMissing = Boolean(sampleReadiness?.blocking_fields?.some((name: string) =>
+    sampleReadiness.fields?.some((item: any) => item.field === name && item.reason === "organizational_scope")));
   const campaignActive = Boolean(acceptanceCampaign && !["passed", "failed", "blocked", "cancelled", "interrupted", "superseded"].includes(acceptanceCampaign.status));
   const publicationActive = Boolean(publication && !draftTerminal.has(publication.status));
   const active = Boolean(operation && !draftTerminal.has(operation.status)) || publicationActive || campaignActive || (draft.conversation || []).some((turn: any) => turn.kind === "feedback" && ["queued", "running", "cancelling"].includes(turn.status));
@@ -161,6 +186,11 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const feedbackProgressTurn = (feedbackTurnNumber == null ? null : conversation.find((item: any) => (item.turn ?? item.turn_number) === feedbackTurnNumber && item.kind === "feedback")) || feedbackLaunch || latestFeedbackTurn;
   const feedbackOperation = operation?.kind === "feedback" ? operation : null;
   const feedbackTaskActive = Boolean(feedbackOperation && !draftTerminal.has(feedbackOperation.status)) || ["starting", "start_uncertain", "queued", "running", "cancelling"].includes(String(feedbackProgressTurn?.status || ""));
+  const assistantCanSubmit = !busy && !remoteConflict && draft.status !== "published"
+    && (!active || feedbackTaskActive);
+  const currentClarification = latestFeedbackTurn?.status === "completed"
+    && latestFeedbackTurn?.decision?.pending_clarification?.revision === draft.revision
+    ? latestFeedbackTurn.decision.pending_clarification : null;
   const trialRunId = trial?.run_id || draft.trial?.run_id;
   const acceptanceDefaultInput = run && draftTerminal.has(run.status)
     && Number(trial?.revision ?? trial?.draft_revision) === Number(draft.revision)
@@ -207,10 +237,11 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     setCatalogModule(value.catalog_module || value.package.manifest.module || "Common");
     if (value.revision !== draftRef.current.revision) {
       const previousSchema = draftRef.current.package.manifest.execution?.inputSchema || {};
-      setReport(null); setRun(null); setTrial(null); setTrialDialogOpen(false); setTrialConnectionError(false); setDiscovery(null); setDiscoveryInputHash(""); setConfirmedSample(""); setAutoDiscover(false); setAutoFilled({}); setSecrets({}); setAcceptanceCampaign(null); setAcceptanceSetupOpen(false); setAcceptanceProgressOpen(false); setAcceptanceCases([]); setAcceptanceSampleCase(null); sampleApplied.current = "";
+      setReport(null); setRun(null); setTrial(null); setTrialDialogOpen(false); setTrialConnectionError(false); setDiscovery(null); setDiscoveryInputHash(""); setConfirmedSample(""); setAutoDiscover(false); setAutoFilled({}); setSecrets({}); setSampleReadiness(null); setAcceptanceCampaign(null); setAcceptanceSetupOpen(false); setAcceptanceProgressOpen(false); setAcceptanceCases([]); setAcceptanceSampleCase(null); sampleApplied.current = "";
       setInput((current) => retainCompatibleInput(previousSchema, value.package.manifest.execution?.inputSchema || {}, current));
       setCompareFrom(Math.max(1, value.revision - 1)); setCompareTo(value.revision);
       setIdentityCheck(null);
+      setAnnotationMode(false);
     }
     draftRef.current = value;
     setDraft(value);
@@ -218,7 +249,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     if (value.publication_operation) setPublication(value.publication_operation);
     setTrial(value.trial || null);
     if (pendingFeedbackRequest.current && value.active_operation?.request_id === pendingFeedbackRequest.current.requestId) {
-      pendingFeedbackRequest.current = null; setUncertainFeedback(false); setFeedback(""); setRetryOfTurn(undefined);
+      pendingFeedbackRequest.current = null; setUncertainFeedback(false); setFeedback(""); setRetryOfTurn(undefined); setRetryIntent(null);
     }
     if (replaceEditor) { setManifestText(JSON.stringify(value.package.manifest, null, 2)); setReadme(value.package.readme || ""); setRules(value.package.rules || ""); }
   };
@@ -351,6 +382,21 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   }, [base, acceptanceCampaign?.campaign_id, campaignActive]);
 
   useEffect(() => {
+    if (typeof EventSource === "undefined") return;
+    const after = Number(draftRef.current.conversation_event_sequence || 0);
+    const stream = new EventSource(`${base}/conversation/events?after=${Number.isFinite(after) ? after : 0}`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const received = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { void refresh(false).then(() => setFeedbackConnectionError(false)).catch(() => setFeedbackConnectionError(true)); }, 100);
+    };
+    for (const kind of ["turn_queued", "turn_dispatched", "phase", "turn_finished", "turn_withdrawn"]) stream.addEventListener(kind, received);
+    stream.onerror = () => setFeedbackConnectionError(true);
+    stream.onopen = () => setFeedbackConnectionError(false);
+    return () => { if (timer) clearTimeout(timer); stream.close(); };
+  }, [base, draft.draft_id]);
+
+  useEffect(() => {
     const campaignId = acceptanceCampaign?.campaign_id;
     if (!campaignId || !campaignActive || typeof EventSource === "undefined") return;
     const stream = new EventSource(`${base}/acceptance-campaigns/${encodeURIComponent(campaignId)}/events`);
@@ -469,20 +515,36 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     else next.default = raw;
     if (next.default === undefined) delete next.default;
   });
-  const openAssistant = (intent: "explain" | "revise", prompt = "", context: typeof feedbackContext = {}) => {
-    setFeedbackIntent(intent); setFeedback(prompt); setFeedbackContext(context); setAssistantOpen(true);
+  const openAssistant = (_intent: "explain" | "revise", prompt = "", context: typeof feedbackContext = {}) => {
+    if (!uncertainFeedback) {
+      setFeedback(prompt); setFeedbackContext(context); setRetryOfTurn(undefined); setRetryIntent(null);
+    }
+    setAssistantOpen(true);
     window.setTimeout(() => chatRef.current?.focus(), 0);
   };
-  const chooseSampleFields = () => {
+  const chooseSampleFields = async () => {
     if (!validationActionable || sampleSubmitting.current) return;
     if (pendingSampleRequest.current) { void discover(); return; }
     setSelectedSampleFields(sampleFields.filter((field) => !field.disabled && field.required).map((field) => field.key));
     setSelectingSampleFields(true); setSampleDialogOpen(true);
+    setSamplePreflightBusy(true); setSamplePreflightError(false);
+    try {
+      const result = await call(`${base}/sample-discovery/preflight`, {
+        expectedRevision: draft.revision, input: publicValues(schema, input),
+      });
+      setSampleReadiness(result);
+      const allowed = sampleFieldOptions(schema, locale, input).filter((field) => !field.disabled && field.required
+        && result.fields?.some((item: any) => item.field === field.key && item.status === "discoverable"));
+      setSelectedSampleFields(allowed.map((field) => field.key));
+    } catch {
+      setSamplePreflightError(true);
+      setSelectedSampleFields([]);
+    } finally { setSamplePreflightBusy(false); }
   };
   const discover = () => {
     if (!validationActionable || sampleSubmitting.current) return;
     const selected = selectedSampleFields.filter((key) => sampleFields.some((field) => field.key === key && !field.disabled));
-    if (!pendingSampleRequest.current && !selected.length) return;
+    if (!pendingSampleRequest.current && (!selected.length || samplePreflightBusy || samplePreflightError || sampleScopeMissing)) return;
     sampleSubmitting.current = true;
     setSelectingSampleFields(false);
     setSampleDialogOpen(true);
@@ -547,12 +609,26 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       }
     });
   };
-  const submitFeedback = () => {
-    if (!actionable || !feedback.trim()) return;
+  const submitFeedback = (intent: "explain" | "revise") => {
+    if (!assistantCanSubmit || !feedback.trim()) return;
+    if (dirty && (intent === "revise" || annotations.length > 0 || feedbackSelection)) {
+      setError(tr("请先保存当前修改，再重新核对标注后发送。", "Save the current edits, then review the annotations before sending.")); return;
+    }
+    if (annotations.some((item) => item.revision !== draft.revision || !item.comment.trim()) || (feedbackSelection && feedbackSelection.revision !== draft.revision)) {
+      setError(tr("标注已过期或缺少意见，请重新标注并填写。", "An annotation is stale or has no comment. Select the target again and add a comment.")); return;
+    }
+    if (uncertainFeedback && pendingFeedbackRequest.current?.intent !== intent) return;
+    const matchingRetry = retryOfTurn !== undefined && retryIntent === intent;
+    if (!matchingRetry) { setRetryOfTurn(undefined); setRetryIntent(null); }
     const request = prepareFeedbackRequest(pendingFeedbackRequest.current, {
       baseTurn: latestTurn?.turn ?? latestTurn?.turn_number ?? conversation.length,
-      baseRevision: draft.revision, feedback, locale, intent: feedbackIntent, step,
-      ...feedbackContext, ...(retryOfTurn === undefined ? {} : { retryOfTurn }),
+      baseRevision: draft.revision, feedback, locale, intent, step,
+      ...feedbackContext, ...(matchingRetry ? { retryOfTurn } : {}),
+      ...(annotations.length ? { annotations } : {}),
+      ...(replyToClarificationId ? { replyToClarificationId } : {}),
+      ...(feedbackTaskActive ? { enqueueIfBusy: true } : {}),
+      ...(feedbackImages.length ? { imageIds: feedbackImages.map((item) => item.id) } : {}),
+      ...(feedbackSelection ? { selection: feedbackSelection } : {}),
     }, () => crypto.randomUUID());
     const expectedTurn = (latestTurn?.turn ?? latestTurn?.turn_number ?? conversation.length) + 1;
     pendingFeedbackRequest.current = request;
@@ -578,19 +654,23 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         else { pendingFeedbackRequest.current = null; setUncertainFeedback(false); }
         throw failure;
       }
-      pendingFeedbackRequest.current = null; setUncertainFeedback(false); setRetryOfTurn(undefined);
+      pendingFeedbackRequest.current = null; setUncertainFeedback(false); setRetryOfTurn(undefined); setRetryIntent(null);
       pendingFocus.current = true;
       setFeedbackLaunch((current: any) => ({ ...current, turn: value.turn ?? value.turn_number ?? expectedTurn, status: value.status || "queued", decision: { ...(current?.decision || {}), task_id: value.task_id } }));
-      setFeedback(""); setOperation({ ...(value.task || value), kind: "feedback", status: value.status || "queued", turn: value.turn ?? value.turn_number });
+      setFeedback(""); setAnnotations([]); setReplyToClarificationId(undefined); setAnnotationMode(false); setFeedbackImages([]); setImageReviewed(false); setFeedbackSelection(undefined);
+      if (value.status === "waiting") { setFeedbackDialogOpen(false); setFeedbackLaunch(null); }
+      if (value.task_id) setOperation({ ...(value.task || value), kind: "feedback", status: value.status || "queued", turn: value.turn ?? value.turn_number });
       await refresh(false); progressRef.current?.focus();
     });
   };
   const retryFeedback = (turn: any) => {
-    if (!actionable || !canRetryFeedback(turn)) return;
+    if (!actionable || uncertainFeedback || !(canRetryFeedback(turn) || turn.status === "needs_review")) return;
     pendingFeedbackRequest.current = null; setUncertainFeedback(false);
-    setFeedback(turn.user_message ?? turn.feedback); setRetryOfTurn(turn.turn ?? turn.turn_number);
-    setFeedbackIntent(turn.decision?.intent === "explain" ? "explain" : "revise");
-    setFeedbackContext({
+    setFeedback(turn.user_message ?? turn.feedback);
+    setRetryOfTurn(turn.status === "needs_review" ? undefined : turn.turn ?? turn.turn_number);
+    setAnnotations([]); setReplyToClarificationId(undefined); setFeedbackSelection(undefined);
+    setRetryIntent(turn.decision?.intent === "explain" ? "explain" : "revise");
+    setFeedbackContext(turn.status === "needs_review" ? {} : {
       fieldPath: turn.decision?.context?.field_path,
       runId: turn.decision?.context?.run_id,
       acceptanceCampaignId: turn.decision?.context?.acceptance_campaign_id,
@@ -598,6 +678,65 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     setAssistantOpen(true);
     setNotice(tr("原意见已回填，请核对后确认发送。新一轮基于当前技术 ID 和修订，使用该绑定模型的最新推理强度。", "The original request is prefilled. Review it before confirming. The new turn uses the current technical ID and revision, and the bound model's latest reasoning effort."));
     chatRef.current?.focus();
+  };
+  const addAnnotation = (element: HTMLElement | null) => {
+    const target = element?.closest<HTMLElement>("[data-draft-ref]");
+    if (!target) { setNotice(tr("这个控件尚无可核对的草稿引用。", "This control has no verifiable draft reference.")); return; }
+    const path = target.dataset.draftRef;
+    if (!path) return;
+    const kind = (target.dataset.draftAnnotationKind || "manifest_field") as NonNullable<FeedbackRequest["annotations"]>[number]["kind"];
+    const annotation = { kind, path, comment: "", revision: draft.revision,
+      ...(target.dataset.draftSourceId ? { sourceId: target.dataset.draftSourceId } : {}),
+      ...(target.dataset.draftSourceDigest ? { sourceDigest: target.dataset.draftSourceDigest } : {}) };
+    setAnnotations((current) => current.some((item) => item.kind === kind && item.path === path && item.sourceId === annotation.sourceId)
+      ? current : [...current, annotation]);
+    setAssistantOpen(true);
+  };
+  const withdrawFeedback = (turn: any) => action(async () => {
+    await call(`${base}/feedback/${encodeURIComponent(turn.turn)}/cancel`, {});
+    await refresh(false);
+  });
+  const uploadFeedbackImage = async (file: File) => {
+    if (!imageReviewed || !["image/png", "image/jpeg"].includes(file.type) || file.size > 1_000_000 || feedbackImages.length >= 3) {
+      setError(tr("请先检查敏感信息；仅支持最多3张、每张不超过1 MB的 PNG/JPEG 图片。", "Review sensitive content first. Up to three PNG/JPEG images of at most 1 MB each are supported.")); return;
+    }
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error("image_read_failed"));
+        reader.readAsDataURL(file);
+      });
+      const uploaded = await call(`${base}/feedback-images`, { dataUrl });
+      setFeedbackImages((current) => [...current, { id: uploaded.image_id, name: file.name }]);
+    } catch {
+      setError(tr("截图上传失败，请检查格式或重试。", "Screenshot upload failed. Check the format and retry."));
+    }
+  };
+  const captureSelectedText = () => {
+    const activeElement = document.activeElement;
+    let excerpt = window.getSelection()?.toString().trim().slice(0, 1000) || "";
+    let selection: FeedbackRequest["selection"] | undefined;
+    if (activeElement instanceof HTMLTextAreaElement && activeElement.selectionEnd > activeElement.selectionStart) {
+      excerpt = activeElement.value.slice(activeElement.selectionStart, activeElement.selectionEnd).trim().slice(0, 1000);
+      if (excerpt && activeElement.value === rules) selection = { kind: "rules", path: "/rules", excerpt, revision: draft.revision };
+      else if (excerpt && activeElement.value === readme) selection = { kind: "readme", path: "/readme", excerpt, revision: draft.revision };
+    }
+    if (!selection && excerpt) {
+      const anchor = window.getSelection()?.anchorNode;
+      const element = anchor instanceof Element ? anchor : anchor?.parentElement;
+      const target = element?.closest<HTMLElement>("[data-draft-ref]");
+      if (target?.dataset.draftRef) selection = { kind: "manifest_field", path: target.dataset.draftRef, excerpt, revision: draft.revision };
+      else if (anchor && trialResultRef.current?.contains(anchor) && draft.feedback_sources?.trial) {
+        const source = draft.feedback_sources.trial;
+        selection = { kind: "trial_report", path: "/", excerpt, revision: draft.revision, sourceId: source.source_id, sourceDigest: source.digest };
+      } else if (anchor && acceptanceResultRef.current?.contains(anchor) && draft.feedback_sources?.acceptance) {
+        const source = draft.feedback_sources.acceptance;
+        selection = { kind: "acceptance_report", path: "/", excerpt, revision: draft.revision, sourceId: source.source_id, sourceDigest: source.digest };
+      }
+    }
+    if (!selection) { setNotice(tr("请先在当前草稿或报告中选中有来源的文字。", "Select sourced text in the current draft or report first.")); return; }
+    setFeedbackSelection(selection); setAssistantOpen(true);
   };
   const checkIdentity = () => action(async () => {
     if (!identityEditable || identityError) return;
@@ -812,12 +951,15 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     <div className="draft-wizard-layout">
       <nav className="agent-steps draft-wizard-nav" aria-label={tr("Agent 编辑步骤", "Agent editing steps")}>{draftStepNames.map((name, index) => { const state = localStepStatus(name); return <button key={name} className={`${step === name ? "active " : ""}wizard-${state}`} aria-current={step === name ? "step" : undefined} onClick={() => setStep(name)}><span className="wizard-step-number">{index + 1}</span><span><strong>{stepLabels[name]}</strong><small>{statusLabels[state] || state}</small></span></button>; })}</nav>
 
-      <div className="draft-wizard-main">
+      <div className={`draft-wizard-main${annotationMode ? " draft-annotation-mode" : ""}`}
+        onFocusCapture={(event) => { focusedAnnotationTarget.current = (event.target as HTMLElement).closest<HTMLElement>("[data-draft-ref]"); }}
+        onClickCapture={(event) => { if (!annotationMode) return; event.preventDefault(); event.stopPropagation(); addAnnotation(event.target as HTMLElement); }}
+        onKeyDownCapture={(event) => { if (!annotationMode || !["Enter", " "].includes(event.key)) return; const target = event.target as HTMLElement; if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return; event.preventDefault(); event.stopPropagation(); addAnnotation(target); }}>
         {step === "io" && (schema.oneOf?.length || Object.keys(schema.dependentRequired || {}).length) > 0 && <aside className="agent-panel draft-conditional-rules"><h2>{tr("条件必填规则", "Conditional requirement rules")}</h2><p>{tr("以下为当前定义中的实际关系。首版表单只展示这些关系，修改请使用 AI 助手或高级编辑。", "These are the actual relationships in the current definition. The initial form displays them; use the AI assistant or advanced editor to change them.")}</p><ul>{(schema.oneOf || []).map((branch: any, index: number) => <li key={`oneof-${index}`}>{tr(`备选条件 ${index + 1} 必填：`, `Alternative ${index + 1} requires: `)}<code>{(branch.required || []).join(", ") || tr("无", "none")}</code></li>)}{Object.entries(schema.dependentRequired || {}).map(([trigger, fields]: [string, any]) => <li key={`dependent-${trigger}`}><code>{trigger}</code>{tr(" 有值时必填：", " requires when supplied: ")}<code>{(fields || []).join(", ")}</code></li>)}</ul></aside>}
         <div className="draft-mobile-step"><label>{tr("当前步骤", "Current step")}<select value={step} onChange={(event) => setStep(event.target.value as Step)}>{draftStepNames.map((name, index) => <option value={name} key={name}>{index + 1}. {stepLabels[name]} · {statusLabels[localStepStatus(name)]}</option>)}</select></label></div>
         {dirty && <aside className="agent-alert draft-unsaved"><p>{tr("有尚未保存的定义修改。保存后系统会自动检查定义；选样、试运行、AI 助手和发布暂不可用。", "There are unsaved definition changes. Saving automatically checks the definition; discovery, trials, AI and publication are unavailable until then.")}</p><div className="agent-actions"><button disabled={locked || remoteConflict} onClick={save}>{tr("保存并检查", "Save and check")}</button><button className="agent-secondary-action" disabled={locked} onClick={discard}>{tr("放弃未保存修改", "Discard unsaved edits")}</button></div></aside>}
 
-        {step === "purpose" && <div className="agent-document-body"><section className="agent-panel"><h2>{stepLabels.purpose}</h2><p>{tr("说明这个 Agent 服务的业务场景，并确认发布后保持稳定的技术身份。", "Describe the business scenario and confirm the technical identity that remains stable after publication.")}</p><div className="draft-module-editor"><label>{tr("目录归类", "Catalog grouping")}<select value={catalogModule} disabled={!actionable} onChange={(event) => setCatalogModule(event.target.value)}>{catalogModules.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" disabled={!actionable || catalogModule === (draft.catalog_module || manifest.module)} onClick={saveCatalogModule}>{tr("保存所属模块", "Save module")}</button></div><div className="draft-basic-grid">{(["zh", "en"] as const).map((lang) => <div key={lang}><label>{lang === "zh" ? tr("中文名称", "Chinese name") : tr("英文名称", "English name")}<input disabled={locked} value={manifest.title?.[lang] || ""} onChange={(event) => updateBasic("title", event.target.value, lang)} /></label><label>{lang === "zh" ? tr("中文说明", "Chinese summary") : tr("英文说明", "English summary")}<textarea disabled={locked} rows={3} value={manifest.summary?.[lang] || ""} onChange={(event) => updateBasic("summary", event.target.value, lang)} /></label></div>)}</div><div className="draft-basic-grid"><label>{tr("业务域", "Business domain")}<input disabled={locked} value={manifest.owner || ""} onChange={(event) => updateBasic("owner", event.target.value)} /></label><label>{tr("SAP 业务组件", "SAP business components")}<input disabled={locked} value={(manifest.sapModules || []).join(", ")} onChange={(event) => updateSapModules(event.target.value)} /></label></div></section><section className="agent-panel draft-technical-identity" id="draft-technical-identity"><div className="draft-identity-heading"><h2>{tr("技术 ID", "Technical ID")}</h2><span className={identityReady ? "draft-identity-confirmed" : "draft-identity-pending"}>{identityReady ? tr("已确认", "Confirmed") : tr("首次发布前需确认", "Confirm before publication")}</span></div><p>{identity.kind === "version_upgrade" ? tr("这是已有 Agent 的版本升级，技术 ID 保持不变。", "This is a version upgrade; its technical ID is unchanged.") : tr("技术 ID 发布后永久锁定。", "The technical ID is permanently locked after publication.")}</p>{identity.kind === "new_agent" && !identity.locked ? <><label htmlFor="draft-technical-id">{tr("拟使用的技术 ID", "Proposed technical ID")}<input id="draft-technical-id" value={identityInput} disabled={!identityEditable} onChange={(event) => { setIdentityInput(event.target.value); setIdentityCheck(null); }} /></label><p>{identityError}</p><div className="agent-actions"><button className="agent-secondary-action" disabled={!identityEditable || Boolean(identityError)} onClick={checkIdentity}>{tr("检查可用性", "Check availability")}</button><button disabled={!identityEditable || !checkedIdentity || Boolean(identityError) || (identityReady && !identityChanged)} onClick={confirmIdentity}>{tr("确认技术 ID", "Confirm technical ID")}</button></div></> : <code>{identity.agent_id}</code>}</section></div>}
+        {step === "purpose" && <div className="agent-document-body"><section className="agent-panel"><h2>{stepLabels.purpose}</h2><p>{tr("说明这个 Agent 服务的业务场景，并确认发布后保持稳定的技术身份。", "Describe the business scenario and confirm the technical identity that remains stable after publication.")}</p><div className="draft-module-editor"><label>{tr("目录归类", "Catalog grouping")}<select value={catalogModule} disabled={!actionable} onChange={(event) => setCatalogModule(event.target.value)}>{catalogModules.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" disabled={!actionable || catalogModule === (draft.catalog_module || manifest.module)} onClick={saveCatalogModule}>{tr("保存所属模块", "Save module")}</button></div><div className="draft-basic-grid">{(["zh", "en"] as const).map((lang) => <div key={lang}><label data-draft-ref={`/manifest/title/${lang}`}>{lang === "zh" ? tr("中文名称", "Chinese name") : tr("英文名称", "English name")}<input disabled={locked} value={manifest.title?.[lang] || ""} onChange={(event) => updateBasic("title", event.target.value, lang)} /></label><label data-draft-ref={`/manifest/summary/${lang}`}>{lang === "zh" ? tr("中文说明", "Chinese summary") : tr("英文说明", "English summary")}<textarea disabled={locked} rows={3} value={manifest.summary?.[lang] || ""} onChange={(event) => updateBasic("summary", event.target.value, lang)} /></label></div>)}</div><div className="draft-basic-grid"><label data-draft-ref="/manifest/owner">{tr("业务域", "Business domain")}<input disabled={locked} value={manifest.owner || ""} onChange={(event) => updateBasic("owner", event.target.value)} /></label><label data-draft-ref="/manifest/sapModules">{tr("SAP 业务组件", "SAP business components")}<input disabled={locked} value={(manifest.sapModules || []).join(", ")} onChange={(event) => updateSapModules(event.target.value)} /></label></div></section><section className="agent-panel draft-technical-identity" id="draft-technical-identity"><div className="draft-identity-heading"><h2>{tr("技术 ID", "Technical ID")}</h2><span className={identityReady ? "draft-identity-confirmed" : "draft-identity-pending"}>{identityReady ? tr("已确认", "Confirmed") : tr("首次发布前需确认", "Confirm before publication")}</span></div><p>{identity.kind === "version_upgrade" ? tr("这是已有 Agent 的版本升级，技术 ID 保持不变。", "This is a version upgrade; its technical ID is unchanged.") : tr("技术 ID 发布后永久锁定。", "The technical ID is permanently locked after publication.")}</p>{identity.kind === "new_agent" && !identity.locked ? <><label htmlFor="draft-technical-id">{tr("拟使用的技术 ID", "Proposed technical ID")}<input id="draft-technical-id" value={identityInput} disabled={!identityEditable} onChange={(event) => { setIdentityInput(event.target.value); setIdentityCheck(null); }} /></label><p>{identityError}</p><div className="agent-actions"><button className="agent-secondary-action" disabled={!identityEditable || Boolean(identityError)} onClick={checkIdentity}>{tr("检查可用性", "Check availability")}</button><button disabled={!identityEditable || !checkedIdentity || Boolean(identityError) || (identityReady && !identityChanged)} onClick={confirmIdentity}>{tr("确认技术 ID", "Confirm technical ID")}</button></div></> : <code>{identity.agent_id}</code>}</section></div>}
 
         {step === "io" && <div className="agent-document-body">
           <section className="agent-panel">
@@ -834,7 +976,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
                 const complexRequired = Boolean(schema.oneOf?.some((item: any) => item.required?.includes(key)) || Object.values(schema.dependentRequired || {}).some((items: any) => items.includes(key)));
                 const editableDefault = !property["x-sapba-sensitive"] && !property["x-sapba-server-default"] && ["string", "number", "integer", "boolean", "array"].includes(type) && !(type === "array" && property.items?.type === "object");
                 const defaultValue = property.default === undefined ? "__unset__" : type === "array" ? property.default.join("\n") : String(property.default);
-                return <li className="draft-input-definition" key={key}>
+                return <li className="draft-input-definition" key={key} data-draft-ref={"/manifest/execution/inputSchema/properties/" + key.replace(/~/g, "~0").replace(/\//g, "~1")}>
                   <details>
                     <summary>
                       <span className="draft-input-definition-title"><strong>{localText(property.title, locale) || key}</strong><code>{key}</code></span>
@@ -869,25 +1011,58 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
               </div>
               <button type="button" className="agent-secondary-action" disabled={!actionable} onClick={() => openAssistant("revise", tr("请调整结果结构，并同步核对业务规则输出、报告展示和验收契约。", "Please adjust the result structure and check the rule output, report presentation and acceptance contract together."), { fieldPath: "/manifest/execution/outputSchema" })}>{tr("让 AI 调整", "Ask AI to adjust")}</button>
             </div>
-            {Object.keys(manifest.execution?.outputSchema?.properties || {}).length ? <ul>{Object.entries(manifest.execution.outputSchema.properties).map(([key, property]: [string, any]) => <li key={key}><strong>{localText(property.title, locale) || key}</strong> <code>{Array.isArray(property.type) ? property.type.join(" | ") : property.type || "unknown"}</code></li>)}</ul> : <ul>{(manifest.outputs?.[locale] || []).map((item: string, index: number) => <li key={index}>{item}</li>)}</ul>}
+            {Object.keys(manifest.execution?.outputSchema?.properties || {}).length ? <ul>{Object.entries(manifest.execution.outputSchema.properties).map(([key, property]: [string, any]) => <li key={key} data-draft-ref={"/manifest/execution/outputSchema/properties/" + key.replace(/~/g, "~0").replace(/\//g, "~1")}><strong>{localText(property.title, locale) || key}</strong> <code>{Array.isArray(property.type) ? property.type.join(" | ") : property.type || "unknown"}</code></li>)}</ul> : <ul>{(manifest.outputs?.[locale] || []).map((item: string, index: number) => <li key={index} data-draft-ref={`/manifest/outputs/${locale}/${index}`}>{item}</li>)}</ul>}
           </section>
         </div>}
 
-        {step === "logic" && <div className="agent-document-body"><section className="agent-panel"><div className="draft-section-heading"><div><h2>{stepLabels.logic}</h2><p>{tr("核对业务步骤、SAP 范围、规则和只读安全边界。", "Review business steps, SAP scope, rules and read-only guardrails.")}</p></div><button className="agent-secondary-action" onClick={() => openAssistant("revise", tr("请调整 Agent 的处理逻辑。", "Please adjust the Agent processing logic."))}>{tr("让 AI 调整", "Ask AI to adjust")}</button></div><dl><dt>{tr("自动检查", "Automatic checks")}</dt><dd>{staticLabel}</dd></dl>{staticChecks.errors?.length > 0 && <ul className="draft-blockers">{staticChecks.errors.map((item: any, index: number) => <li key={index}>{item.message || item.code} {item.path && <code>{item.path}</code>}</li>)}</ul>}<button className="agent-secondary-action" disabled={!actionable} onClick={check}>{tr("重新运行自动检查", "Run automatic checks again")}</button></section><AgentDefinitionDetails agent={manifest} presentation={presentation} locale={locale} idPrefix="draft" /><section className="agent-panel"><h2>{tr("安全边界", "Guardrails")}</h2><ul>{(manifest.guardrails?.[locale] || []).map((item: string, index: number) => <li key={index}>{item}</li>)}</ul></section><details className="agent-panel draft-advanced"><summary>{tr("高级技术编辑", "Advanced technical editing")}</summary><p>{tr("仅在了解数据契约时使用。所有修改仍须通过安全检查。", "Use only when familiar with the contracts. Every change remains subject to safety checks.")}</p><label>Agent JSON<textarea disabled={locked} rows={20} spellCheck={false} value={manifestText} onChange={(event) => setManifestText(event.target.value)} /></label><label>README<textarea disabled={locked} rows={8} value={readme} onChange={(event) => setReadme(event.target.value)} /></label><label>{tr("受控规则源码", "Managed rule source")}<textarea disabled={locked} rows={10} value={rules} onChange={(event) => setRules(event.target.value)} /></label></details></div>}
+        {step === "logic" && <div className="agent-document-body"><section className="agent-panel"><div className="draft-section-heading"><div><h2>{stepLabels.logic}</h2><p>{tr("核对业务步骤、SAP 范围、规则和只读安全边界。", "Review business steps, SAP scope, rules and read-only guardrails.")}</p></div><button className="agent-secondary-action" onClick={() => openAssistant("revise", tr("请调整 Agent 的处理逻辑。", "Please adjust the Agent processing logic."))}>{tr("让 AI 调整", "Ask AI to adjust")}</button></div><dl><dt>{tr("自动检查", "Automatic checks")}</dt><dd>{staticLabel}</dd></dl>{staticChecks.errors?.length > 0 && <ul className="draft-blockers">{staticChecks.errors.map((item: any, index: number) => <li key={index} data-draft-ref={`/errors/${index}`} data-draft-annotation-kind="static_issue" data-draft-source-digest={draft.feedback_sources?.static?.digest}>{item.message || item.code} {item.path && <code>{item.path}</code>}</li>)}</ul>}<button className="agent-secondary-action" disabled={!actionable} onClick={check}>{tr("重新运行自动检查", "Run automatic checks again")}</button></section><AgentDefinitionDetails agent={manifest} presentation={presentation} locale={locale} idPrefix="draft" annotatable /><section className="agent-panel"><h2>{tr("安全边界", "Guardrails")}</h2><ul>{(manifest.guardrails?.[locale] || []).map((item: string, index: number) => <li key={index} data-draft-ref={`/manifest/guardrails/${locale}/${index}`}>{item}</li>)}</ul></section><details className="agent-panel draft-advanced"><summary>{tr("高级技术编辑", "Advanced technical editing")}</summary><p>{tr("仅在了解数据契约时使用。所有修改仍须通过安全检查。", "Use only when familiar with the contracts. Every change remains subject to safety checks.")}</p><label>Agent JSON<textarea disabled={locked} rows={20} spellCheck={false} value={manifestText} onChange={(event) => setManifestText(event.target.value)} /></label><label>README<textarea disabled={locked} rows={8} value={readme} onChange={(event) => setReadme(event.target.value)} /></label><label>{tr("受控规则源码", "Managed rule source")}<textarea disabled={locked} rows={10} value={rules} onChange={(event) => setRules(event.target.value)} /></label></details></div>}
 
-        {step === "trial" && <section className="agent-run-panel"><h2>{stepLabels.trial}</h2><p>{tr("填写业务参数，使用已保存草稿执行只读查询。试运行不会修改默认值，也不代表正式验收通过。", "Enter business parameters to run the saved draft read-only. A trial does not change defaults or establish formal acceptance.")}</p><form onSubmit={(event) => { event.preventDefault(); void runTrial(); }} noValidate><AgentDraftInputs schema={schema} values={input} onChange={(next) => { setInput(next); setFieldErrors({}); setConfirmedSample(""); if (hasVerifiedSample && Object.entries(discovery.input || {}).every(([key, value]) => discoveryFingerprint(0, { value }) === discoveryFingerprint(0, { value: next[key] }))) setDiscoveryInputHash(discoveryFingerprint(draft.revision, next)); }} secrets={secrets} onSecrets={setSecrets} locale={locale} errors={fieldErrors} disabled={locked || dirty} /><div className="draft-discovery" ref={sampleInputsRef} tabIndex={-1}><label className="draft-checkbox"><input type="checkbox" checked={autoDiscover} disabled={!validationActionable} onChange={(event) => { const enabled = event.target.checked; setAutoDiscover(enabled); setConfirmedSample(""); if (enabled) chooseSampleFields(); else { setInput((current) => clearDiscoveredInput(current, autoFilledRef.current)); setAutoFilled({}); setDiscoveryInputHash(""); setFieldErrors({}); } }} />{tr("自动查找验证数据", "Find validation data automatically")}</label>{autoDiscover && <><p>{tr("保留已填范围，有界读取真实 SAP 样本；回填后请确认。敏感参考号请手工填写。", "Keep the entered scope and read bounded live SAP samples. Confirm proposed values; enter sensitive references manually.")}</p><button type="button" className="agent-secondary-action" disabled={!validationActionable} onClick={chooseSampleFields}>{tr(discovery ? "重新查找样本" : "查找样本", discovery ? "Find another sample" : "Find sample")}</button>{discovery && <div><SampleProgressSummary value={discovery} locale={locale} />{hasVerifiedSample && <label className="draft-checkbox"><input type="checkbox" disabled={!validationActionable || discoveryInputHash !== sampleFingerprint} checked={sampleConfirmed} onChange={(event) => confirmSample(event.target.checked)} />{tr("已核对回填参数，确认用于本次操作", "I reviewed the proposed parameters and confirm this use")}</label>}</div>}</>}</div><div className="agent-actions"><button type="submit" disabled={!validationActionable || (requiresSampleConfirmation && !sampleConfirmed)}>{tr("执行只读试运行", "Run read-only trial")}</button></div></form>{trialRunId ? <div className="draft-trial-history"><p>{tr("最近一次试运行", "Latest trial")}: {draftStatus(run?.status || trial?.status, locale)}{(trial?.revision ?? trial?.draft_revision) !== undefined && (trial?.revision ?? trial?.draft_revision) !== draft.revision && <strong> · {tr("历史修订结果", "Historical revision result")}</strong>}</p>{run && !draftTerminal.has(run.status) && <><TrialProgressSummary run={run} trial={trial} locale={locale} connectionError={trialConnectionError} /><button className="agent-secondary-action" onClick={() => setTrialDialogOpen(true)}>{tr("查看进度", "View progress")}</button></>}{run && draftTerminal.has(run.status) && <div ref={trialResultRef} tabIndex={-1}><AgentDraftResult run={run} trial={trial} locale={locale} runPath={runPath} apiBase={apiBase} /></div>}<button className="agent-secondary-action" onClick={() => openAssistant("explain", tr("请分析最近一次试运行的结果或失败原因，不要修改草稿。", "Analyze the latest trial result or failure without modifying the draft."), { runId: trialRunId })}>{tr("分析结果或失败原因", "Analyze result or failure")}</button></div> : <p>{tr("当前没有试运行记录。", "No trial has been run yet.")}</p>}{effectiveTrial?.run_id && <p>{tr("当前验收使用的有效试运行：", "Effective trial for acceptance: ")}<code>{effectiveTrial.run_id}</code>{effectiveTrial.run_id !== trialRunId && <span> · {tr("最近尝试未覆盖此有效结果", "The latest attempt did not replace this result")}</span>}</p>}</section>}
+        {step === "trial" && <section className="agent-run-panel"><h2>{stepLabels.trial}</h2><p>{tr("填写业务参数，使用已保存草稿执行只读查询。试运行不会修改默认值，也不代表正式验收通过。", "Enter business parameters to run the saved draft read-only. A trial does not change defaults or establish formal acceptance.")}</p><form onSubmit={(event) => { event.preventDefault(); void runTrial(); }} noValidate><AgentDraftInputs schema={schema} values={input} onChange={(next) => { setInput(next); setFieldErrors({}); setConfirmedSample(""); if (hasVerifiedSample && Object.entries(discovery.input || {}).every(([key, value]) => discoveryFingerprint(0, { value }) === discoveryFingerprint(0, { value: next[key] }))) setDiscoveryInputHash(discoveryFingerprint(draft.revision, next)); }} secrets={secrets} onSecrets={setSecrets} locale={locale} errors={fieldErrors} disabled={locked || dirty} /><div className="draft-discovery" ref={sampleInputsRef} tabIndex={-1}><label className="draft-checkbox"><input type="checkbox" checked={autoDiscover} disabled={!validationActionable} onChange={(event) => { const enabled = event.target.checked; setAutoDiscover(enabled); setConfirmedSample(""); if (enabled) chooseSampleFields(); else { setInput((current) => clearDiscoveredInput(current, autoFilledRef.current)); setAutoFilled({}); setDiscoveryInputHash(""); setFieldErrors({}); } }} />{tr("自动查找验证数据", "Find validation data automatically")}</label>{autoDiscover && <><p>{tr("保留已填范围，有界读取真实 SAP 样本；回填后请确认。敏感参考号请手工填写。", "Keep the entered scope and read bounded live SAP samples. Confirm proposed values; enter sensitive references manually.")}</p><button type="button" className="agent-secondary-action" disabled={!validationActionable} onClick={chooseSampleFields}>{tr(discovery ? "重新查找样本" : "查找样本", discovery ? "Find another sample" : "Find sample")}</button>{discovery && <div><SampleProgressSummary value={discovery} locale={locale} />{hasVerifiedSample && <label className="draft-checkbox"><input type="checkbox" disabled={!validationActionable || discoveryInputHash !== sampleFingerprint} checked={sampleConfirmed} onChange={(event) => confirmSample(event.target.checked)} />{tr("已核对回填参数，确认用于本次操作", "I reviewed the proposed parameters and confirm this use")}</label>}</div>}</>}</div><div className="agent-actions"><button type="submit" disabled={!validationActionable || (requiresSampleConfirmation && !sampleConfirmed)}>{tr("执行只读试运行", "Run read-only trial")}</button></div></form>{trialRunId ? <div className="draft-trial-history"><p>{tr("最近一次试运行", "Latest trial")}: {draftStatus(run?.status || trial?.status, locale)}{(trial?.revision ?? trial?.draft_revision) !== undefined && (trial?.revision ?? trial?.draft_revision) !== draft.revision && <strong> · {tr("历史修订结果", "Historical revision result")}</strong>}</p>{run && !draftTerminal.has(run.status) && <><TrialProgressSummary run={run} trial={trial} locale={locale} connectionError={trialConnectionError} /><button className="agent-secondary-action" onClick={() => setTrialDialogOpen(true)}>{tr("查看进度", "View progress")}</button></>}{run && draftTerminal.has(run.status) && <div ref={trialResultRef} tabIndex={-1}><AgentDraftResult run={run} trial={trial} locale={locale} runPath={runPath} apiBase={apiBase} feedbackSource={draft.feedback_sources?.trial} revision={draft.revision} /></div>}<button className="agent-secondary-action" onClick={() => openAssistant("explain", tr("请分析最近一次试运行的结果或失败原因，不要修改草稿。", "Analyze the latest trial result or failure without modifying the draft."), { runId: trialRunId })}>{tr("分析结果或失败原因", "Analyze result or failure")}</button></div> : <p>{tr("当前没有试运行记录。", "No trial has been run yet.")}</p>}{effectiveTrial?.run_id && <p>{tr("当前验收使用的有效试运行：", "Effective trial for acceptance: ")}<code>{effectiveTrial.run_id}</code>{effectiveTrial.run_id !== trialRunId && <span> · {tr("最近尝试未覆盖此有效结果", "The latest attempt did not replace this result")}</span>}</p>}</section>}
 
+        {step === "trial" && discovery?.run_id && <div className="draft-discovery-progress-link"><button type="button" className="agent-secondary-action" onClick={() => { setSelectingSampleFields(false); setSampleDialogOpen(true); }}>{tr("查看查找进度", "View discovery progress")}</button></div>}
         {step === "acceptance" && <section className="agent-panel" ref={acceptanceResultRef} tabIndex={-1}><h2>{stepLabels.acceptance}</h2><p>{tr("自动检查、试运行和正式验收分别记录。1–5 组必选案例全部通过后才会解锁发布。", "Automatic checks, trials and formal acceptance are recorded separately. All 1–5 required cases must pass before publication is unlocked.")}</p><dl><dt>{tr("自动检查", "Automatic checks")}</dt><dd>{staticLabel}</dd><dt>{tr("正式验收", "Formal acceptance")}</dt><dd>{draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</dd></dl>{(acceptance?.source_version || acceptance?.reused_from_version) && <p>{tr("复用来源版本验收：", "Acceptance reused from source version: ")}{acceptance.source_version || acceptance.reused_from_version}</p>}<AcceptanceSummary campaign={acceptanceCampaign} locale={locale} onOpen={() => setAcceptanceProgressOpen(true)} /><AcceptanceReadiness value={acceptanceReadiness} locale={locale} /><div className="agent-actions"><button type="button" disabled={!formalAcceptanceReady || campaignActive} onClick={openAcceptance}>{tr(acceptanceCampaign ? "更换案例并重新验收" : "开始正式验收", acceptanceCampaign ? "Change cases and run again" : "Start formal acceptance")}</button><button className="agent-secondary-action" disabled={busy} onClick={() => action(async () => { setReport(await call(`${base}/validation-report`)); await refresh(false); })}>{tr("刷新验证状态", "Refresh validation status")}</button>{acceptanceCampaign && <button className="agent-secondary-action" onClick={() => openAssistant("explain", tr("请分析最近一次正式验收结果，不要修改草稿。", "Analyze the latest formal acceptance without modifying the draft."), { acceptanceCampaignId: acceptanceCampaign.campaign_id })}>{tr("分析验收结果", "Analyze acceptance")}</button>}</div>{publishability?.blockers?.length > 0 && <ul className="draft-blockers">{publishability.blockers.map((item: any, index: number) => <li key={index}>{localText(item.message || item.description, locale) || tr("正式验收或发布条件尚未满足。", "Acceptance or publication requirements remain unmet.")}<details><summary>{tr("技术原因", "Technical reason")}</summary><code>{typeof item === "string" ? item : item.code}</code></details></li>)}</ul>}</section>}
+
+        {step === "acceptance" && draft.feedback_sources?.acceptance?.source_id === acceptanceCampaign?.campaign_id && Array.isArray(acceptanceCampaign?.report?.errors) && acceptanceCampaign.report.errors.length > 0 &&
+          <section className="agent-panel" aria-label={tr("可标注的验收诊断", "Annotatable acceptance diagnostics")}>
+            <h3>{tr("可标注的验收诊断", "Annotatable acceptance diagnostics")}</h3>
+            <ul>{acceptanceCampaign.report.errors.map((issue: any, index: number) =>
+              <li key={index} data-draft-ref={`/errors/${index}`} data-draft-annotation-kind="acceptance_issue" data-draft-source-id={draft.feedback_sources.acceptance.source_id} data-draft-source-digest={draft.feedback_sources.acceptance.digest} data-draft-revision={draft.revision}>
+                {localText(issue.message || issue.description, locale) || issue.code || String(issue)}
+              </li>)}</ul>
+          </section>}
 
         {step === "publish" && <div className="agent-document-body"><section className="agent-panel draft-publish-details"><details><summary>{tr("详细变更信息", "Detailed change information")}</summary><div className="draft-publish-details-content"><p>{compareBaseline === "source" ? tr("正在与创建草稿时绑定的来源版本比较。", "Comparing with the source version pinned when this draft was created.") : tr("正在比较两个草稿修订。", "Comparing two saved draft revisions.")}</p><div className="draft-basic-grid"><label>{tr("比较基准", "Comparison baseline")}<select value={compareBaseline} onChange={(event) => setCompareBaseline(event.target.value as "revision" | "source")}><option value="source">{draft.source_version ? tr(`来源版本 ${draft.source_version}`, `Source version ${draft.source_version}`) : tr("新 Agent 的完整定义", "Full new Agent definition")}</option><option value="revision">{tr("草稿修订", "Draft revision")}</option></select></label>{compareBaseline === "revision" && <label>{tr("修改前修订", "Before revision")}<select value={compareFrom} onChange={(event) => setCompareFrom(Number(event.target.value))}>{revisions.map((revision) => <option key={revision}>{revision}</option>)}</select></label>}<label>{tr("修改后修订", "After revision")}<select value={compareTo} onChange={(event) => setCompareTo(Number(event.target.value))}>{revisions.map((revision) => <option key={revision}>{revision}</option>)}</select></label></div>{renderDiff()}{compareBaseline === "revision" && <button className="agent-secondary-action" disabled={!actionable || compareFrom === draft.revision} onClick={restore}>{tr("恢复修改前修订（创建新修订）", "Restore before revision (creates a new revision)")}</button>}</div></details></section><section className="agent-panel"><h2>{stepLabels.publish}</h2><p>{tr("正式验收通过后才可发布。系统检查候选包和页面后提交到本地 main，不会推送远端。", "Formal acceptance is required. The package and candidate pages are checked before committing to local main; nothing is pushed.")}</p><p>{tr("技术 ID", "Technical ID")}: <code>{identity.agent_id}</code> · {identityReady ? tr("已确认", "Confirmed") : tr("尚未确认", "Not confirmed")}</p><p>{tr("正式验收", "Formal acceptance")}: {draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</p>{!canPublish && <p role="status">{tr("发布条件尚未满足，请按左侧状态返回处理。", "Publication requirements are not met. Use the step statuses to resolve them.")}</p>}<label>{tr("目标版本", "Target version")}<input value={targetVersion} disabled={locked} onChange={(event) => setTargetVersion(event.target.value)} /></label><div className="agent-actions"><button disabled={!actionable || !canPublish} onClick={() => publish(false)}>{tr("发布为未启用版本", "Publish inactive")}</button><button disabled={!actionable || !canPublish} onClick={() => publish(true)}>{tr("发布并启用", "Publish and activate")}</button></div>{publication && <div className="draft-publication-summary"><PublicationProgressSummary value={publication} locale={locale} connectionError={publicationConnectionError} /><div className="agent-actions"><button className="agent-secondary-action" onClick={() => setPublicationDialogOpen(true)}>{tr("查看发布进度", "View publication progress")}</button>{publication.publication_status === "published" && publication.site_refresh_status === "failed" && <button onClick={retrySiteRefresh}>{tr("重试刷新页面", "Retry page refresh")}</button>}{publication.publication_status === "published" && (publication.result?.active === false || publication.activate === false) && onActivatePublished && <button onClick={() => onActivatePublished(publication.result || publication)}>{tr("启用此版本", "Activate this version")}</button>}</div></div>}</section></div>}
       </div>
 
-      {assistantOpen && <aside className="draft-assistant" aria-label={tr("AI 助手", "AI assistant")}><header><div><p className="eyebrow">{tr("当前步骤", "Current step")}</p><h2>{tr("AI 助手", "AI assistant")}</h2></div><button className="agent-secondary-action" onClick={() => setAssistantOpen(false)} aria-label={tr("关闭 AI 助手", "Close AI assistant")}>×</button></header><div className="draft-assistant-modes" role="group" aria-label={tr("助手模式", "Assistant mode")}><button className={feedbackIntent === "explain" ? "active" : "agent-secondary-action"} onClick={() => { setFeedbackIntent("explain"); pendingFeedbackRequest.current = null; }}>{tr("解释问题", "Explain")}</button><button className={feedbackIntent === "revise" ? "active" : "agent-secondary-action"} onClick={() => { setFeedbackIntent("revise"); pendingFeedbackRequest.current = null; }}>{tr("修改草稿", "Revise draft")}</button></div><p>{feedbackIntent === "explain" ? tr("只分析已保存定义和已有结果；服务端会拒绝任何修改。", "Analyzes only the saved definition and existing results; the server rejects any modification.") : tr("明确的修改会保存为新修订，并重新判断验证是否有效。", "Clear changes are saved as a new revision and validation applicability is recalculated.")}</p>{feedbackTaskActive && <div className="draft-feedback-progress-card"><FeedbackProgressSummary turn={feedbackProgressTurn} operation={feedbackOperation} locale={locale} connectionError={feedbackConnectionError} /><button className="agent-secondary-action" onClick={() => setFeedbackDialogOpen(true)}>{tr("查看进度", "View progress")}</button></div>}<AgentDraftConversation turns={conversation} locale={locale} onRetry={retryFeedback} retryDisabled={!actionable} />{uncertainFeedback && <p className="agent-alert">{tr("上次发送未确认；原样重传会复用同一请求。", "The previous send was unconfirmed; resending unchanged reuses the same request.")}</p>}<label htmlFor="draft-feedback">{feedbackIntent === "explain" ? tr("需要解释什么？", "What should be explained?") : tr("需要修改什么？", "What should change?")}<textarea ref={chatRef} id="draft-feedback" rows={5} value={feedback} disabled={locked || dirty} onChange={(event) => { setFeedback(event.target.value); pendingFeedbackRequest.current = null; setUncertainFeedback(false); }} /></label><button disabled={!actionable || !feedback.trim()} onClick={submitFeedback}>{uncertainFeedback ? tr("重传原请求", "Resend original request") : feedbackIntent === "explain" ? tr("请求解释", "Ask for explanation") : tr("提交修改要求", "Submit revision request")}</button></aside>}
+      {assistantOpen && <aside className="draft-assistant" aria-label={tr("AI 助手", "AI assistant")}>
+        <header><div><p className="eyebrow">{tr("当前步骤", "Current step")}</p><h2>{tr("AI 助手", "AI assistant")}</h2></div><button type="button" className="agent-secondary-action" onClick={() => setAssistantOpen(false)} aria-label={tr("关闭 AI 助手", "Close AI assistant")}>×</button></header>
+        {feedbackTaskActive && <div className="draft-feedback-progress-card"><FeedbackProgressSummary turn={feedbackProgressTurn} operation={feedbackOperation} locale={locale} connectionError={feedbackConnectionError} /><button type="button" className="agent-secondary-action" onClick={() => setFeedbackDialogOpen(true)}>{tr("查看进度", "View progress")}</button></div>}
+        <AgentDraftConversation turns={conversation} locale={locale} onRetry={retryFeedback} onWithdraw={withdrawFeedback} retryDisabled={!actionable || uncertainFeedback} />
+        <button type="button" className="agent-secondary-action" aria-pressed={annotationMode} disabled={dirty || draft.status === "published"} onClick={() => setAnnotationMode((current) => !current)}>{annotationMode ? tr("完成控件标注", "Finish annotating") : tr("标注控件", "Annotate controls")}</button>
+        {annotationMode && <p role="status">{tr("选择草稿中的查询条件或结果字段；点击不会执行原控件操作。键盘用户可聚焦控件后按 Enter，或使用下方按钮。", "Select a query condition or output field. Selection will not activate the original control. Keyboard users can focus a control and press Enter, or use the button below.")}</p>}
+        {annotationMode && <button type="button" className="agent-secondary-action" onClick={() => addAnnotation(focusedAnnotationTarget.current)}>{tr("标注当前焦点控件", "Annotate focused control")}</button>}
+        {annotations.length > 0 && <ol className="draft-annotation-list">{annotations.map((item, index) => <li key={`${item.kind}:${item.path}:${item.sourceId || ""}`}><code>{index + 1}. {item.path}</code>{item.revision !== draft.revision && <strong>{tr("已过期，请重新标注", "Stale; select again")}</strong>}<label>{tr("修改意见", "Comment")}<textarea rows={2} value={item.comment} onChange={(event) => setAnnotations((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, comment: event.target.value } : entry))} /></label><button type="button" className="agent-secondary-action" onClick={() => setAnnotations((current) => current.filter((_, entryIndex) => entryIndex !== index))}>{tr("移除", "Remove")}</button></li>)}</ol>}
+        <button type="button" className="agent-secondary-action" onClick={captureSelectedText}>{tr("引用页面所选内容", "Quote selected content")}</button>
+        {feedbackSelection && <div className="draft-selected-excerpt"><code>{feedbackSelection.path}</code><blockquote>{feedbackSelection.excerpt}</blockquote><button type="button" className="agent-secondary-action" onClick={() => setFeedbackSelection(undefined)}>{tr("移除引用", "Remove quote")}</button></div>}
+        {currentClarification && <div className="draft-pending-question"><strong>{tr("助手正在等待确认", "The assistant awaits confirmation")}</strong><p>{localText(currentClarification.question, locale)}</p><button type="button" className="agent-secondary-action" onClick={() => { setReplyToClarificationId(currentClarification.id); chatRef.current?.focus(); }}>{tr("回复这个问题", "Reply to this question")}</button>{replyToClarificationId === currentClarification.id && <small>{tr("本次回复将引用此问题。", "This message will reference the question.")}</small>}</div>}
+        {uncertainFeedback && <p className="agent-alert">{tr("上次发送未确认；原样重传会复用同一请求。", "The previous send was unconfirmed; resending unchanged reuses the same request.")}</p>}
+        <label htmlFor="draft-feedback">{tr("输入问题或修改要求", "Enter a question or revision request")}
+          <textarea ref={chatRef} id="draft-feedback" rows={5} value={feedback} disabled={busy || draft.status === "published" || remoteConflict || uncertainFeedback || (active && !feedbackTaskActive)} onChange={(event) => { setFeedback(event.target.value); pendingFeedbackRequest.current = null; setUncertainFeedback(false); }} />
+        </label>
+        {feedbackTaskActive && <p role="status">{draft.assistant_capabilities?.steer ? tr("支持向本轮补充说明。", "This Runtime supports steering the active turn.") : tr("当前编写 Runtime 未接通运行中补充；新消息将安全排入下一轮。", "Live steering is not connected for this authoring Runtime; new messages are queued for the next turn.")}</p>}
+        {draft.assistant_capabilities?.image_input && <div className="draft-feedback-images"><label className="draft-checkbox"><input type="checkbox" checked={imageReviewed} onChange={(event) => setImageReviewed(event.target.checked)} />{tr("我已检查截图，不包含不应交给助手的敏感信息。截图仅作上下文，不作为 SAP 证据。", "I reviewed the screenshot for sensitive information. It is context, not SAP evidence.")}</label><label>{tr("添加截图（PNG/JPEG，1 MB以内，最多3张；24小时后过期）", "Add screenshots (PNG/JPEG, up to 1 MB each, maximum three; expire after 24 hours)")}<input type="file" accept="image/png,image/jpeg" disabled={!imageReviewed || feedbackImages.length >= 3} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadFeedbackImage(file); event.target.value = ""; }} /></label>{feedbackImages.length > 0 && <ul>{feedbackImages.map((item) => <li key={item.id}>{item.name} <button type="button" className="agent-secondary-action" onClick={() => setFeedbackImages((current) => current.filter((entry) => entry.id !== item.id))}>{tr("移除", "Remove")}</button></li>)}</ul>}</div>}
+        {dirty && <p role="status">{tr("解释可基于已保存修订进行；修改草稿或提交标注前，请先保存并重新核对。", "Explanation can use the saved revision; save and review again before revising or submitting annotations.")}</p>}
+        <p className="draft-assistant-action-hint">{tr("解释只分析已保存内容；修改草稿可能保存新修订。", "Explanation only analyzes saved content; revision may save a new draft revision.")}</p>
+        <div className="draft-assistant-actions" role="group" aria-label={tr("提交方式", "Submit as")}>
+          <button type="button" className="agent-secondary-action" disabled={!assistantCanSubmit || !feedback.trim() || (dirty && (annotations.length > 0 || Boolean(feedbackSelection))) || (uncertainFeedback && pendingFeedbackRequest.current?.intent !== "explain")} onClick={() => submitFeedback("explain")}>{uncertainFeedback && pendingFeedbackRequest.current?.intent === "explain" ? tr("重传原请求", "Resend original request") : tr("解释问题", "Explain issue")}</button>
+          <button type="button" disabled={!assistantCanSubmit || dirty || !feedback.trim() || (uncertainFeedback && pendingFeedbackRequest.current?.intent !== "revise")} onClick={() => submitFeedback("revise")}>{uncertainFeedback && pendingFeedbackRequest.current?.intent === "revise" ? tr("重传原请求", "Resend original request") : tr("修改草稿", "Revise draft")}</button>
+        </div>
+      </aside>}
     </div>
 
     <footer className="draft-wizard-footer"><button className="agent-secondary-action" disabled={currentIndex <= 0} onClick={() => move(-1)}>{tr("上一步", "Previous")}</button><span>{currentIndex + 1} / {draftStepNames.length} · {stepLabels[step]}</span>{currentIndex < draftStepNames.length - 1 && <button disabled={busy || remoteConflict} onClick={() => move(1)}>{dirty ? tr("保存并继续", "Save and continue") : tr("继续", "Continue")}</button>}</footer>
 
-    <AgentSampleProgress open={sampleDialogOpen} value={discovery} locale={locale} canRetry={validationActionable} fields={selectingSampleFields ? sampleFields : undefined} selectedFields={selectedSampleFields} onSelection={setSelectedSampleFields} onStart={discover} onClose={() => setSampleDialogOpen(false)} onCancel={cancelSample} onRetry={chooseSampleFields} onReview={reviewSample} onAfterClose={() => { if (sampleReviewFocus.current) { sampleReviewFocus.current = false; sampleInputsRef.current?.focus(); } }} />
+    <AgentSampleProgress open={sampleDialogOpen} value={discovery} locale={locale} canRetry={validationActionable} fields={selectingSampleFields ? sampleFields : undefined} selectedFields={selectedSampleFields} onSelection={setSelectedSampleFields} onStart={discover} preflightBusy={samplePreflightBusy} preflightError={samplePreflightError} scopeRequired={sampleScopeMissing} onClose={() => setSampleDialogOpen(false)} onCancel={cancelSample} onRetry={chooseSampleFields} onReview={reviewSample} onAfterClose={() => { if (sampleReviewFocus.current) { sampleReviewFocus.current = false; sampleInputsRef.current?.focus(); } }} />
     <AgentTrialProgress open={trialDialogOpen} run={run} trial={trial} locale={locale} connectionError={trialConnectionError} errorMessage={error} onClose={() => setTrialDialogOpen(false)} onCancel={cancelTrial} onReview={() => { trialReviewFocus.current = true; setTrialDialogOpen(false); }} onAfterClose={() => { if (trialReviewFocus.current) { trialReviewFocus.current = false; trialResultRef.current?.focus(); } }} />
     <AgentAcceptanceSetup open={acceptanceSetupOpen} locale={locale} schema={schema} mode={manifest.validation?.acceptanceMode || "three_stage"} runtime={draft.formal_acceptance_runtime} cases={acceptanceCases} currentInput={acceptanceDefaultInput} currentSecrets={secrets} sampleInput={discovery?.input} canUseSample={sampleConfirmed} disabled={!formalAcceptanceReady} onCases={setAcceptanceCases} onFindSample={findAcceptanceSample} onClose={() => setAcceptanceSetupOpen(false)} onStart={startAcceptance} />
     <AgentAcceptanceProgress open={acceptanceProgressOpen} locale={locale} campaign={acceptanceCampaign} connectionError={acceptanceConnectionError} apiBase={apiBase} draftId={draft.draft_id} onClose={() => { setAcceptanceProgressOpen(false); window.setTimeout(() => acceptanceResultRef.current?.focus(), 0); }} onCancel={cancelAcceptance} onAdjust={() => { setAcceptanceProgressOpen(false); openAssistant("revise", tr("请根据正式验收结果调整草稿。", "Please revise the draft based on the formal acceptance result."), { acceptanceCampaignId: acceptanceCampaign?.campaign_id }); }} onRetry={() => { setAcceptanceProgressOpen(false); window.setTimeout(openAcceptance, 0); }} />

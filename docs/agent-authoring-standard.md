@@ -49,6 +49,23 @@ violations are NOT_TESTED, missing evidence is BLOCKED, and verified business di
 Published packages and historical reports remain unchanged; documentation-only legacy upgrades
 retain acceptance reuse when their execution and rules are identical.
 
+### 自动查找验证数据 / Automatic validation-sample discovery
+
+草稿创建或修改后，应在“试运行与验收”检查每个公开输入的自动发现提示。
+自动查找只接受已保存只读OData计划中可核对的精确输入筛选绑定；已声明Skill
+如果还需要该输入才能执行，不能反过来证明该输入可被Skill发现。组织范围、敏感字段、
+复杂结构和缺少映射的字段需先由用户填写，或通过正常草稿修订补齐可信的读取定义。
+“可尝试自动发现”仍须在运行时经过实时Schema、范围、稳定排序、证据单元格和跨来源
+关联核对；不是保证SAP中一定有样本。预检不访问SAP，也不改变固定Agent执行或验收。
+
+After creation or editing, review each public input's discovery guidance in Trial and Acceptance.
+Automatic discovery requires an exact, verifiable input-filter binding in a saved read-only
+OData plan. A Skill that requires an input cannot itself prove that input discoverable.
+Enter organizational scope, sensitive or complex values, and unmapped fields manually, or
+revise the draft's trusted read definition. “Potentially discoverable” remains subject to live
+schema, scope, stable-order, evidence-cell and cross-source-link checks; it does not promise
+matching SAP data. Preflight makes no SAP call and does not change fixed-Agent execution or acceptance.
+
 CLI使用新版候选快照时需同时提供`--draft-id`，从现有API核对当前候选摘要和已保存试运行的准备状态；不能用来源版本或旧修订的结果代替。受限投影支持字符串、布尔、整数及字符串分类枚举；精确小数继续用声明过的Decimal字符串，不允许任意Schema或计算代码。计数关系只对整数执行。
 
 For v1 candidate snapshots the CLI requires `--draft-id`, checks the current candidate digest and saved trial readiness through the existing API, and never substitutes a source version's trial. The bounded projection supports strings, booleans, integers and string classification enums. Exact decimals remain explicitly declared Decimal strings, not arbitrary schemas or code; count invariants operate on integers.
@@ -129,3 +146,17 @@ SAP读取候选不得以`Unassigned`、仅`Common`或`SAP OData entity`等占位
 - 平台助理使用独立规则，不要求固定Agent执行步骤映射。 / Platform assistants use separate rules and need no fixed-Agent execution mapping.
 
 自动检查不是SAP试运行或三级验收。资料修复若保持执行、托管规则和验收契约不变，可按生命周期规则复用来源PASS验收，但不得改写原SAP验收日期或比较结论。 / Automatic checks are not an SAP trial or three-stage acceptance. Documentation repairs that preserve execution, managed rules and the acceptance contract may reuse source PASS acceptance under lifecycle rules, without rewriting the original SAP acceptance date or comparison conclusions.
+
+## AI 工具发现与授权 / AI tool discovery and admission
+
+AI 助手可查看与任务相关的内部工具目录，了解双语用途、契约摘要和不可用原因；发现工具不表示获准执行。平台提供的工具调用按本轮请求、草稿或运行编号、修订和截止时间逐次核对。草稿助手核对 `T811C-CYCLE` 等 DDIC 字段标签时，必须由用户请求明确表与字段，使用受控的 `sap_ddic_field_labels_get`；该工具只返回已验证的中等标签、缺失翻译和证据摘要，不开放任意表行。邮件发送、发布和启用仍需页面确认；固定 Agent 和已发布工作流仍按保存定义确定性执行。
+
+AI assistants may discover task-relevant internal tools, their bilingual purpose, contract digest and unavailability reasons; discovery is not permission to execute. Each platform-owned call rechecks the current request, draft/run identity, revision and deadline. DDIC label checks such as `T811C-CYCLE` require an explicit table and field in the user's request and use only `sap_ddic_field_labels_get`, which projects verified medium labels, translation gaps and evidence digests, never arbitrary rows. Sending mail, publishing and activation still require UI confirmation; fixed Agents and published workflows remain deterministic.
+
+草稿修改会话保留 SDK `full_access`。以上授权只约束 SAPBusinessAgents 提供的工具；Windows 账户权限下的原生命令没有操作系统级隔离，提示词和工具目录不能阻止所有旁路。不得把本地测试或 DDIC 标签核对称为 SAP 业务验收。 / Draft modification retains SDK `full_access`. These checks govern only SAPBusinessAgents-provided tools. Native commands under the Windows account are not OS-isolated, and neither prompts nor the catalog prevent every bypass. Local tests and DDIC label checks are not SAP business acceptance.
+
+## 草稿助手会话与标注 / Draft assistant sessions and annotations
+
+草稿助手保存每轮原话、最终答复、澄清问题、修订和本轮 Diff。“解释问题”不修改草稿；“修改草稿”最多保存一个可审核修订。短回复仅能承接当前修订中唯一仍适用的澄清问题。对话中的控件标注绑定草稿字段或检查诊断的类型化路径、修订及报告摘要；页面坐标与可见文字不能授权修改。未保存的字段必须先显式保存，过期标注与排队消息不得自动套用到新修订。队列中的消息不占用草稿操作锁，服务中断后需要人工核对并重新发送。截图最多三张 PNG/JPEG、每张 1 MB，24 小时后不可再引用；截图仅供理解问题，不是 SAP 证据。运行中补充仅在 Provider 明确支持且安全范围不变时可用，否则按下一轮消息排队。
+
+The draft assistant stores each turn's original request, final answer, clarification, bound revision and turn-specific diff. Explain cannot change a draft; revise can save at most one reviewable revision. A short reply may answer only the unique still-current clarification for that revision. Control annotations bind typed draft-field or diagnostic paths to a revision and report digest; page coordinates and visible text confer no edit authority. Unsaved fields must be saved explicitly, and stale annotations or queued requests are never silently applied to a new revision. Waiting messages do not occupy the draft operation lock and require review and resubmission after interruption. Up to three PNG/JPEG screenshots of 1 MB each may be referenced for 24 hours; they are context, not SAP evidence. Live steering is available only when a Provider explicitly supports it without changing the safety scope; otherwise the message is queued for the next turn.

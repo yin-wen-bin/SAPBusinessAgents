@@ -106,6 +106,43 @@ def test_runtime_optional_input_dependency_is_rejected_before_revision(tmp_path)
     assert failure["decision"]["validation_issues"][0]["code"] == "agent_optional_input_unguarded"
 
 
+def test_feedback_binds_authoring_broker_to_request_and_closes_it(tmp_path):
+    service, _, _ = _service(tmp_path)
+    draft = create(service)
+    service.runtime = Runtime("reply")
+
+    class Broker:
+        settings = SimpleNamespace(internal_api_url="http://127.0.0.1:8765")
+
+        def __init__(self):
+            self.opened = None
+            self.closed = None
+
+        def open_authoring_session(self, *args):
+            self.opened = args
+            service.store.append_agent_operation_tool_event(args[0], args[1],
+                {"tool": "tool_catalog_search", "status": "completed", "code": None})
+            return "opaque-capability"
+
+        def close_authoring_session(self, operation_id):
+            self.closed = operation_id
+
+    broker = Broker()
+    service.authoring_tool_broker = broker
+    submitted, result = asyncio.run(send_and_wait(
+        service, draft, feedback_payload(draft, "请核对 T811C-CYCLE 中英文标签")
+    ))
+    assert result["conversation"][-1]["status"] == "completed"
+    assert broker.opened[0] == draft["draft_id"]
+    assert broker.opened[5] == (("T811C", "CYCLE"),)
+    assert broker.closed == submitted["task_id"]
+    passed = service.runtime.calls[-1]["tool_session"]
+    assert passed["operation_id"] == submitted["task_id"]
+    assert passed["capability"] == "opaque-capability"
+    operation = service.store.get_agent_operation_by_id(draft["draft_id"], submitted["task_id"])
+    assert operation["detail"]["tool_events"][0]["tool"] == "tool_catalog_search"
+
+
 async def send_and_wait(service, draft, payload):
     submitted = await service.submit_feedback(draft["draft_id"], payload)
     await service._feedback_tasks[submitted["task_id"]]

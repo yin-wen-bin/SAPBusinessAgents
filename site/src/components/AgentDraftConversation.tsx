@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Locale } from "../lib/types";
 import { canRetryFeedback, draftStatus, feedbackDuration, feedbackEffort, feedbackFailureText, feedbackTiming, feedbackValidationIssues, localText } from "../lib/agentDraft";
+import SafeMarkdown from "./SafeMarkdown";
 
 const auditKinds: Record<string, [string, string]> = {
   initial: ["创建草稿", "Draft created"], create: ["创建草稿", "Draft created"], clone: ["复制现有Agent", "Agent copied"],
@@ -9,7 +10,7 @@ const auditKinds: Record<string, [string, string]> = {
 };
 const sourceLabels: Record<string, [string, string]> = { blank: ["空白模板", "Blank template"], clone: ["现有Agent", "Existing Agent"], free_query: ["自由查询结果", "Free-query result"], workflow_gap: ["工作流能力缺口", "Workflow capability gap"] };
 
-export default function AgentDraftConversation({ turns, locale, onRetry, retryDisabled = false }: { turns: any[]; locale: Locale; onRetry?: (turn: any) => void; retryDisabled?: boolean }) {
+export default function AgentDraftConversation({ turns, locale, onRetry, onWithdraw, retryDisabled = false }: { turns: any[]; locale: Locale; onRetry?: (turn: any) => void; onWithdraw?: (turn: any) => void; retryDisabled?: boolean }) {
   const [now, setNow] = useState(() => Date.now());
   const hasActiveTurn = turns.some((turn) => feedbackTiming(turn).active);
   useEffect(() => {
@@ -38,7 +39,9 @@ export default function AgentDraftConversation({ turns, locale, onRetry, retryDi
       <h3>{audit ? audit[language] : locale === "zh" ? `第${chatNumber}轮对话` : `Conversation ${chatNumber}`}{!audit && <> · {draftStatus(turn.status || turn.decision?.action, locale)}</>}</h3>
       {audit ? <p>{source && <>{locale === "zh" ? "来源：" : "Source: "}{source} · </>}{identityChange ? <>{tr("技术 ID", "Technical ID")}: <code>{String(identityChange.before ?? "")}</code> → <code>{String(identityChange.after ?? "")}</code></> : reply || (locale === "zh" ? "此记录为草稿操作，不是待回复的对话。" : "This is a draft action, not a conversation awaiting reply.")}</p> : <>
         <p className="draft-user-message">{userMessage || (locale === "zh" ? "历史用户消息未记录" : "Historical user message was not recorded")}</p>
-        <div className="draft-feedback-metrics">
+        <div className="draft-turn-context"><span>{tr("草稿修订", "Draft revision")} {turn.base_revision}</span>{turn.decision?.context?.step && <span>{tr("步骤", "Step")}: {turn.decision.context.step}</span>}{turn.decision?.context?.field_path && <code>{turn.decision.context.field_path}</code>}{turn.decision?.context?.run_id && <code>{tr("试运行", "Trial")}: {turn.decision.context.run_id}</code>}{turn.decision?.context?.acceptance_campaign_id && <code>{tr("验收", "Acceptance")}: {turn.decision.context.acceptance_campaign_id}</code>}{(turn.decision?.context?.annotations || []).map((item: any, annotationIndex: number) => <code key={annotationIndex}>{annotationIndex + 1}. {item.path}{item.source_id && <> · {item.source_id}</>}</code>)}</div>
+        {turn.decision?.pending_clarification && <div className="draft-pending-question"><strong>{turns.some((later) => later.decision?.reply_to_clarification_id === turn.decision.pending_clarification.id) ? tr("已回复的澄清问题", "Answered clarification") : tr("待确认问题", "Question to confirm")}</strong><SafeMarkdown text={localText(turn.decision.pending_clarification.question, locale)} /></div>}
+        <details className="draft-feedback-technical"><summary>{tr("技术详情", "Technical details")}</summary><div className="draft-feedback-metrics">
           <span>{tr("耗时", "Elapsed")}: {feedbackDuration(timing.elapsed_seconds, locale)}</span>
           <span>{tr("本轮时限", "Turn time limit")}: {feedbackDuration(timing.timeout_seconds, locale)}</span>
           <span>{tr("本轮模型", "Turn model")}: {snapshot?.model || tr("未记录", "Not recorded")}</span>
@@ -46,15 +49,18 @@ export default function AgentDraftConversation({ turns, locale, onRetry, retryDi
           {turn.decision?.agent_id && <span>{tr("当时技术 ID", "Technical ID at this turn")}: <code>{turn.decision.agent_id}</code></span>}
         </div>
         {turn.decision?.authoring_policy?.mode === "isolated_tools" && <p className="draft-feedback-tool-policy">{tr("本轮使用隔离编写工具策略：预检通过后可查看源码、编辑 Agent 包及运行本地测试。已接受本机回环可达限制；这不表示网络隔离通过，SAP 只读约束与发布审批不变。", "This turn uses the isolated authoring tool policy: source inspection, Agent package editing and local tests require successful preflight. Loopback reachability is an accepted limitation, not a network-isolation pass. SAP read-only constraints and publication approval remain unchanged.")}</p>}
-        {turn.decision?.authoring_policy?.mode === "full_access" && <p className="draft-feedback-tool-policy">{tr("本轮使用 SDK full access，可调查代码、编辑工作副本及运行命令。工作副本不是安全沙盒；SAP 只读规则、Diff 确认和发布审批仍保留。", "This turn uses SDK full access for source investigation, working-copy edits and commands. The copy is not a security sandbox. SAP read-only rules, Diff confirmation and publication approval still apply.")}</p>}
+        {turn.decision?.authoring_policy?.mode === "full_access" && <p className="draft-feedback-tool-policy">{tr("本轮使用 SDK full access，可调查代码、编辑工作副本及运行命令。工作副本不是安全沙盒；平台提供的 SAP 工具逐次授权且保持只读，但原生命令不受操作系统级隔离。Diff 确认和发布审批仍保留。", "This turn uses SDK full access for source investigation, working-copy edits and commands. The copy is not a security sandbox. Platform-provided SAP tools are authorized per call and remain read-only, but native commands are not OS-isolated. Diff confirmation and publication approval remain in place.")}</p>}
         {turn.decision?.harness?.change_set_id && <p>{tr("平台修改已保存为待核验变更集，尚未应用：", "Platform changes were saved for independent verification, not applied: ")}<code>{turn.decision.harness.change_set_id}</code></p>}
         {turn.decision?.harness?.live_testing === "not_performed" && <small>{tr("本轮工具检查不等于 SAP 真机验收。", "Tool checks in this turn are not SAP live acceptance.")}</small>}
-        {pending && timing.deadline_at && <p className="draft-feedback-deadline">{tr("截止时间", "Deadline")}: <time dateTime={timing.deadline_at}>{new Date(timing.deadline_at).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")}</time></p>}
-        <p>{reply || (pending ? tr("正在处理，请稍候。", "Processing. Please wait.") : failed ? feedbackFailureText(failureCode, locale) : tr("该轮已结束，未记录助手回复。", "This turn ended without a recorded assistant reply."))}</p>
+        {pending && timing.deadline_at && <p className="draft-feedback-deadline">{tr("截止时间", "Deadline")}: <time dateTime={timing.deadline_at}>{new Date(timing.deadline_at).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")}</time></p>}</details>
+        {reply ? <SafeMarkdown text={reply} /> : <p>{turn.status === "waiting" ? tr("消息已排队，等待当前回合结束。", "Queued behind the current turn.") : turn.status === "needs_review" ? tr("前一回合改变了状态，请核对后重新发送。", "The previous turn changed the state. Review and resend.") : pending ? tr("正在处理，请稍候。", "Processing. Please wait.") : failed ? feedbackFailureText(failureCode, locale) : tr("该轮已结束，未记录助手回复。", "This turn ended without a recorded assistant reply.")}</p>}
         {failed && reply && <p className="draft-feedback-failure">{feedbackFailureText(failureCode, locale)}</p>}
         {validationIssues.length > 0 && <div className="draft-feedback-validation"><h4>{tr("定义校验未通过", "Definition validation failed")}</h4><ul>{validationIssues.map((issue, issueIndex) => <li key={issueIndex}>{issue.text}<code>{issue.path}</code></li>)}</ul></div>}
         {timing.deadline_reached && <p role="status">{tr("已到记录的截止时间，正在等待服务确认状态；请勿重复发送。", "The recorded deadline has passed. Waiting for the server to confirm the status; do not send a duplicate request.")}</p>}
         {canRetryFeedback(turn) && onRetry && <button type="button" className="agent-secondary-action" disabled={retryDisabled} onClick={() => onRetry(turn)}>{tr("重试这条意见", "Retry this feedback")}</button>}
+        {turn.status === "waiting" && onWithdraw && <button type="button" className="agent-secondary-action" onClick={() => onWithdraw(turn)}>{tr("撤回排队消息", "Withdraw queued message")}</button>}
+        {turn.status === "needs_review" && onRetry && <button type="button" className="agent-secondary-action" disabled={retryDisabled} onClick={() => onRetry(turn)}>{tr("核对并重新发送", "Review and resend")}</button>}
+        {Array.isArray(turn.diff) && turn.diff.length > 0 && <details className="draft-turn-diff"><summary>{tr("查看本轮修改", "View changes in this turn")} · {tr("修订", "revision")} {turn.base_revision} → {turn.result_revision}</summary><ul>{turn.diff.map((change: any, changeIndex: number) => <li key={changeIndex}><code>{change.path}</code><pre>{JSON.stringify({ before: change.before, after: change.after }, null, 2)}</pre></li>)}</ul></details>}
       </>}
       {turn.result_revision != null && <small>{locale === "zh" ? "已保存修订" : "Saved revision"} {turn.result_revision}</small>}
     </article>;

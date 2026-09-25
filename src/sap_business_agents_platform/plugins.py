@@ -787,6 +787,12 @@ class AgentRuntimeCapability:
     def __init__(self, manager: PluginManager) -> None:
         self.manager = manager
 
+    def feedback_capabilities(self, provider_id: str, model_id: str | None = None) -> dict[str, bool]:
+        method = getattr(self._planner(), "feedback_capabilities", None)
+        value = method(provider_id, model_id) if callable(method) else {}
+        return {name: bool(value.get(name)) for name in
+                ("stream_events", "resume", "steer", "image_input")}
+
     def plugin_metadata(self, operation: str) -> dict[str, Any]:
         capability = (
             "workflow_authoring.v1"

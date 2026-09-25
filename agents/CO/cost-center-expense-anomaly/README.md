@@ -25,19 +25,14 @@ A completed query is not a completed business process. Review conclusions and ga
 ## 当前范围与输入输出 / Current scope and I/O
 
 <!-- generated:facts:start -->
-版本 / Version: **0.1.2** · 使用中 / Active · 因证据或验收缺口受阻 / Blocked
+版本 / Version: **1.0.0** · 使用中 / Active · 验收通过 / Passed
 
 网页 / Web: [zh](http://127.0.0.1:4321/zh/agents/CO/cost-center-expense-anomaly/) · [en](http://127.0.0.1:4321/en/agents/CO/cost-center-expense-anomaly/)
 
-当前不能执行；完成证据与验收门禁后才可启用执行。 / Execution is blocked until evidence and acceptance gates pass.
-验收模式 / Acceptance mode: `not_recorded` · 原记录日期 / Recorded date: 2026-08-20T07:21:48.654922+00:00
-证据范围 / Evidence scope: `bounded`
-三级结果语义一致，但真实能力或证据缺口阻止执行。
-The three stages are semantically consistent, but a live capability or evidence gap blocks execution.
-
-当前阻塞项 / Current blockers:
-
-- `plan_evidence_missing`
+验收模式 / Acceptance mode: `three_stage` · 原记录日期 / Recorded date: 2026-09-22T15:08:09.656701+00:00
+证据范围 / Evidence scope: `complete`
+独立SAP基线、自由查询和固定Agent的业务语义一致。
+The independent SAP baseline, free query, and fixed Agent are semantically consistent.
 
 ### 输入 / Inputs
 
@@ -71,9 +66,10 @@ The three stages are semantically consistent, but a live capability or evidence 
 ### 数据与开发资料 / Contracts and development
 
 - [Agent 定义与完整输入输出契约 / Manifest and complete I/O contract](agent.json)
-- [原始验收记录（适用范围以原报告为准） / Original acceptance record (original scope applies)](docs/three-stage-live-acceptance.md)
+- [原始验收记录（适用范围以原报告为准） / Original acceptance record (original scope applies)](docs/formal-acceptance.md)
 - [docs/sap-data-contract.md](docs/sap-data-contract.md)
 - [docs/offline-regression.md](docs/offline-regression.md)
+- [rules.py](rules.py)
 - [tests](tests)
 - [开发指南 / Developer guide](../../../docs/developer-guide.md)
 <!-- generated:facts:end -->
