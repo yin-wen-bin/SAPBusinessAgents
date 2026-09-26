@@ -33,6 +33,10 @@
     {
       "capability": "workflow_authoring.v1",
       "operations": ["compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"]
+    },
+    {
+      "capability": "workflow_authoring.v2",
+      "operations": ["author_workflow_v2"]
     }
   ],
   "transport": {

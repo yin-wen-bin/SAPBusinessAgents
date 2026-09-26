@@ -1636,6 +1636,10 @@ Rules:
                 "thread_id": thread.id,
             }
 
+    async def author_workflow_v2(self, **kwargs: Any) -> dict[str, Any]:
+        from .workflow_authoring_runtime import run
+        return await run(self, **kwargs)
+
     async def review_workflow_feedback(
         self,
         *,

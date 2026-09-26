@@ -72,13 +72,30 @@ class WorkflowDraftService:
         self.author = author
         self.integrations = integrations
         self._tasks: set[asyncio.Task[Any]] = set()
+        from .workflow_assistant import WorkflowAssistant
+        self.assistant = WorkflowAssistant(self)
 
     def create(
         self,
         title: dict[str, str],
         description: dict[str, str],
         workflow: dict[str, Any] | None,
+        request_id: str | None = None,
     ) -> WorkflowDraftRecord:
+        if request_id:
+            from .workflow_assistant import fingerprint
+            digest = fingerprint({"title": title, "description": description, "workflow": workflow})
+            with self.store._lock:
+                for existing in self.store.list_workflow_drafts():
+                    binding = existing.composition.get("creation_request") or {}
+                    if binding.get("request_id") == request_id:
+                        if binding.get("fingerprint") != digest:
+                            raise WorkflowDraftError("Creation request ID conflict.", code="workflow_request_conflict")
+                        return existing
+                draft = self.create(title, description, workflow)
+                draft.composition["creation_request"] = {"request_id": request_id, "fingerprint": digest}
+                self.store.save_workflow_draft(draft)
+                return draft
         draft_id = f"workflow_draft_{uuid.uuid4().hex[:12]}"
         slug = f"workflow-{draft_id[-8:]}"
         value = workflow or {
@@ -158,6 +175,11 @@ class WorkflowDraftService:
 
     def get(self, draft_id: str) -> WorkflowDraftRecord:
         return self.store.get_workflow_draft(draft_id)
+
+    def _assert_assistant_idle(self, draft: WorkflowDraftRecord) -> None:
+        rounds = (draft.composition.get("assistant_v2") or {}).get("rounds", [])
+        if any(r["status"] in {"running", "cancelling", "cleanup_pending"} and r["intent"] == "revise" for r in rounds):
+            raise WorkflowDraftError("An assistant revision is active.", code="workflow_assistant_active")
 
     def revisions(self, draft_id: str) -> list[dict[str, Any]]:
         self.store.get_workflow_draft(draft_id)
@@ -422,6 +444,7 @@ class WorkflowDraftService:
         validation_run_id: str | None,
     ) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
+        self._assert_assistant_idle(draft)
         if draft.status == "published":
             raise WorkflowDraftError(
                 "A published draft is immutable; create a new version first.",
@@ -676,6 +699,7 @@ class WorkflowDraftService:
         self, draft_id: str, *, base_turn: int, revision: int, workflow_hash: str
     ) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
+        self._assert_assistant_idle(draft)
         state = self._conversation_state(draft)
         if (
             int(state.get("current_turn") or 0) != base_turn
@@ -719,6 +743,7 @@ class WorkflowDraftService:
         accepted_gap_codes: list[str],
     ) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
+        self._assert_assistant_idle(draft)
         state = self._conversation_state(draft)
         accepted_design = state.get("accepted_design") if isinstance(state, dict) else None
         if not isinstance(accepted_design, dict) or (
@@ -767,6 +792,7 @@ class WorkflowDraftService:
         self, draft_id: str, *, base_turn: int, base_revision: int, target_revision: int
     ) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
+        self._assert_assistant_idle(draft)
         state = self._conversation_state(draft)
         if int(state.get("current_turn") or 0) != base_turn or draft.revision != base_revision:
             raise WorkflowDraftError(
@@ -828,6 +854,7 @@ class WorkflowDraftService:
 
     async def reconcile(self, draft_id: str) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
+        self._assert_assistant_idle(draft)
         integration_catalog = await self._workflow_integration_catalog()
         previous_revision = draft.revision
         migrated = self._ensure_current_compiler(
@@ -972,6 +999,7 @@ class WorkflowDraftService:
         self, draft_id: str, expected_revision: int, workflow: dict[str, Any]
     ) -> WorkflowDraftRecord:
         current = self.store.get_workflow_draft(draft_id)
+        self._assert_assistant_idle(current)
         if current.status == "published":
             raise WorkflowDraftError("A published draft is immutable.", code="workflow_draft_published")
         if current.revision != expected_revision:
@@ -1022,6 +1050,7 @@ class WorkflowDraftService:
 
     def validate_structure(self, draft_id: str) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
+        self._assert_assistant_idle(draft)
         try:
             validate_workflow(
                 draft.workflow,
@@ -1060,7 +1089,9 @@ class WorkflowDraftService:
         expectations: list[dict[str, Any]] | None = None,
         conversation_kind: str = "validation",
     ) -> WorkflowDraftRecord:
-        current = self._ensure_current_compiler(self.store.get_workflow_draft(draft_id))
+        current = self.store.get_workflow_draft(draft_id)
+        self._assert_assistant_idle(current)
+        current = self._ensure_current_compiler(current)
         gaps = list(current.composition.get("gaps") or [])
         if gaps:
             raise WorkflowDraftError(
@@ -1767,6 +1798,7 @@ class WorkflowDraftService:
         accepted_gap_codes: list[str],
     ) -> WorkflowDraftRecord:
         draft = self.store.get_workflow_draft(draft_id)
+        self._assert_assistant_idle(draft)
         if draft.status not in {"validated", "inconclusive"}:
             raise WorkflowDraftError("Only a live-validated workflow can be published.")
         if draft.validation.get("workflow_hash") != workflow_digest(draft.workflow):

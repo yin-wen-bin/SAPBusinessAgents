@@ -407,6 +407,9 @@ class RuntimeRouter:
     async def review_workflow_feedback(self, *args: Any, **kwargs: Any) -> Any:
         return await self._invoke("review_workflow_feedback", *args, **kwargs)
 
+    async def author_workflow_v2(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._invoke("author_workflow_v2", *args, **kwargs)
+
     async def resume_workflow_composition(self, *args: Any, **kwargs: Any) -> Any:
         return await self._invoke("review_workflow_feedback", *args, **kwargs)
 

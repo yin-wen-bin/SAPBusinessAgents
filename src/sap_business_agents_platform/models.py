@@ -746,6 +746,15 @@ class WorkflowDraftCreate(BaseModel):
     )
     description: dict[str, str] = Field(default_factory=lambda: {"zh": "", "en": ""})
     workflow: dict[str, Any] | None = None
+    requestId: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class WorkflowAssistantReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["workflow_field", "diagnostic"]
+    draftId: str
+    revision: int = Field(ge=1)
+    path: str = Field(min_length=1, max_length=500)
 
 
 class WorkflowCompositionCreate(BaseModel):
@@ -795,12 +804,21 @@ class WorkflowFeedbackRequest(BaseModel):
     ] | None = Field(default=None, alias="feedbackTypeHint")
     locale: Literal["zh", "en"] = "zh"
     validation_run_id: str | None = Field(default=None, alias="validationRunId")
+    request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=128)
+    intent: Literal["explain", "revise"] | None = None
+    execution_mode: Literal["restricted", "full_access"] = Field(default="restricted", alias="executionMode")
+    trusted_local_confirmed: bool = Field(default=False, alias="trustedLocalConfirmed")
+    budget_seconds: int = Field(default=600, ge=1, le=3600, alias="budgetSeconds")
+    references: list[WorkflowAssistantReference] = Field(default_factory=list, max_length=20)
+    reply_to_clarification_id: str | None = Field(default=None, alias="replyToClarificationId", max_length=150)
 
     @model_validator(mode="after")
     def strip_feedback(self) -> "WorkflowFeedbackRequest":
         self.feedback = self.feedback.strip()
         if not self.feedback:
             raise ValueError("feedback must not be blank")
+        if self.intent and not self.request_id:
+            raise ValueError("workflow authoring v2 requires requestId")
         return self
 
 

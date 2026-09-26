@@ -13,6 +13,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import WorkflowAssistant from "./WorkflowAssistant";
 import type {
   AgentDefinition,
   ExecutionInputProperty,
@@ -457,10 +458,10 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
   const [liveRun, setLiveRun] = useState<RunSnapshot | null>(null);
   const [activeStep, setActiveStep] = useState<WizardStep>("compose");
   const [conversation, setConversation] = useState<WorkflowConversation | null>(null);
-  const [feedbackText, setFeedbackText] = useState("");
-  const [feedbackType, setFeedbackType] = useState("");
   const [feedbackInput, setFeedbackInput] = useState("");
   const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
   const pollTimer = useRef<number | null>(null);
   const validationEvents = useRef<EventSource | null>(null);
   const reconciledDrafts = useRef(new Set<string>());
@@ -775,35 +776,6 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
     } finally { setBusy(false); }
   };
 
-  const sendWorkflowFeedback = async (fromValidation: boolean) => {
-    if (!draft || !conversation || !feedbackText.trim()) return;
-    const categoryValues = fromValidation ? t.feedbackCategoryValuesValidate : t.feedbackCategoryValuesReview;
-    setBusy(true); setMessage("");
-    try {
-      const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draft.draft_id)}/feedback`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          baseTurn: conversation.current_turn,
-          baseRevision: draft.revision,
-          feedback: feedbackText.trim(),
-          feedbackTypeHint: feedbackType || categoryValues[0],
-          locale,
-          validationRunId: fromValidation ? validationReport?.run_id ?? null : null,
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail?.message ?? payload.detail ?? "Workflow feedback failed");
-      setFeedbackText("");
-      applyDraft(payload as Draft);
-      await refreshConversation(payload.draft_id);
-      pollDraft(payload.draft_id);
-      if (fromValidation) moveToStep("validate", payload.draft_id);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally { setBusy(false); }
-  };
-
   const continueWorkflowFeedback = async () => {
     if (!draft || !conversation || !feedbackInput.trim()) return;
     setBusy(true); setMessage("");
@@ -882,11 +854,6 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally { setBusy(false); }
-  };
-
-  const startAnotherWorkflow = () => {
-    setDraft(null); setConversation(null); setValidationReport(null); setLiveRun(null);
-    setRequirement(""); setFeedbackText(""); setMessage(""); moveToStep("compose");
   };
 
   const integrationOwnedInputs = new Set(
@@ -1048,8 +1015,50 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
   };
   const pendingFeedback = composition?.conversation?.pending_feedback;
 
+  const prepareAssistant = async (intent: "explain" | "revise", requestId: string): Promise<Draft> => {
+    if (!draft) {
+      const creationKey = "workflow-assistant-create-request";
+      const creationId = sessionStorage.getItem(creationKey) ?? requestId;
+      sessionStorage.setItem(creationKey, creationId);
+      const workflow = emptyWorkflow();
+      const response = await fetch(`${apiBase}/api/authoring/workflows`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId: creationId, title: workflow.title, description: workflow.description, workflow }),
+      });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.detail?.code ?? "Draft creation failed");
+      sessionStorage.removeItem(creationKey);
+      applyDraft(value); moveToStep("review", value.draft_id); return value;
+    }
+    if (intent === "revise" && dirty) {
+      if (!window.confirm(locale === "zh" ? "保存当前编辑后交给 AI 修改？" : "Save current edits before AI revision?")) throw new Error(locale === "zh" ? "已取消保存" : "Save cancelled");
+      const response = await fetch(`${apiBase}/api/authoring/workflows/${draft.draft_id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedRevision: draft.revision, workflow: draft.workflow }),
+      });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.detail?.code ?? "Save failed");
+      applyDraft(value); return value;
+    }
+    return draft;
+  };
+  const refreshAssistantDraft = () => {
+    if (!draft || dirty) return;
+    void fetch(`${apiBase}/api/authoring/workflows/${draft.draft_id}`).then(async response => {
+      if (response.ok) {
+        const value = await response.json();
+        if (!dirtyRef.current) applyDraft(value);
+        await refreshConversation(draft.draft_id);
+      }
+    });
+  };
+
   return (
     <main className="workflow-builder-shell">
+      <WorkflowAssistant apiBase={apiBase} locale={locale} draftId={draft?.draft_id} revision={draft?.revision}
+        step={activeStep} fieldPath={selectedNode && draft?.workflow.nodes.some(node => node.id === selectedNode) ? `/nodes/${draft.workflow.nodes.findIndex(node => node.id === selectedNode)}` : undefined}
+        published={draft?.status === "published"} dirty={dirty} busy={busy}
+        prepare={prepareAssistant} refresh={refreshAssistantDraft} />
       <header className="workflow-builder-heading">
         <div><p className="eyebrow">Workflow Factory</p><h1>{t.title}</h1><p>{t.lead}</p></div>
       </header>
@@ -1089,7 +1098,6 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
         {gaps.length > 0 && <section className="workflow-gap-panel"><header><div><p className="eyebrow">Blocked</p><h2>{t.gapTitle}</h2><p>{t.gapHelp}</p></div><strong>{gaps.length}</strong></header><div className="workflow-gap-list">{gaps.map((gap) => { const agentGap = (gap.gap_type ?? "agent_missing") === "agent_missing"; const pluginPath = `/${locale}/plugins?capability=${encodeURIComponent(gap.required_capability ?? "mail.v1")}&operation=${encodeURIComponent(gap.required_operation ?? "")}&runtime=${encodeURIComponent(gap.target_runtime_provider_id ?? "")}&workflowDraft=${encodeURIComponent(draft.draft_id)}&gap=${encodeURIComponent(gap.gap_id)}`; return <article key={gap.gap_id}><div><small>{agentGap ? t.missingAgent : `${t.integrationGap} · ${gap.gap_type}`}</small><h3>{localizedText(gap.title, locale)}</h3><p>{localizedText(gap.description, locale)}</p></div>{agentGap && <dl><div><dt>Inputs</dt><dd>{(gap.required_inputs ?? []).map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div><div><dt>Outputs</dt><dd>{(gap.required_outputs ?? []).map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div></dl>}{gap.agent_draft_id && <p className="workflow-gap-draft"><strong>{t.gapDraft}: {gap.agent_draft_id}</strong><br /><span>{t.awaitingCatalog}</span></p>}<a className="workflow-gap-action" href={agentGap ? `${askPath}?workflowDraft=${encodeURIComponent(draft.draft_id)}&gap=${encodeURIComponent(gap.gap_id)}` : pluginPath}>{agentGap ? t.createGapAgent : t.resolvePluginGap}</a></article>; })}</div></section>}
         <div className="workflow-review-toolbar"><button onClick={() => setAdvanced((value) => !value)}>{advanced ? t.hideAdvanced : t.advanced}</button>{advanced && <button disabled={busy} onClick={save}>{t.save}</button>}</div>
         {advanced && <section className="workflow-builder-grid"><aside className="workflow-agent-palette"><h2>{t.agents}</h2>{agents.map((agent) => <button key={agent.slug} onClick={() => addAgent(agent)}><strong>{agent.title[locale]}</strong><small>{agent.module} · {agent.slug}</small></button>)}</aside><div className="workflow-canvas" aria-label={t.title}><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onConnect={onConnect} onNodeClick={(_, node) => setSelectedNode(node.id)} onNodesChange={(changes) => mutateWorkflow((workflow) => { for (const change of changes) if (change.type === "position" && change.position) { const item = workflow.nodes.find((node) => node.id === change.id); if (item) item.position = change.position; } })} fitView><Background /><MiniMap /><Controls /></ReactFlow></div><aside className="workflow-inspector"><h2>{t.metadata}</h2><div className="workflow-metadata-fields"><label><span>{t.workflowId}</span><input value={draft.workflow.id} pattern="[a-z][a-z0-9-]*" onChange={(event) => mutateWorkflow((workflow) => { workflow.id = event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"); })} /></label><label><span>{t.workflowName}</span><input value={draft.workflow.title[locale]} onChange={(event) => mutateWorkflow((workflow) => { workflow.title[locale] = event.target.value; })} /></label></div><h2>{t.mapping}</h2>{selected && selectedAgent ? <NodeInspector workflow={draft.workflow} nodeId={selected.id} agent={selectedAgent} agents={agentMap} locale={locale} onChange={mutateWorkflow} onRemove={() => { mutateWorkflow((workflow) => removeNode(workflow, selected.id)); setSelectedNode(null); }} removeLabel={t.remove} /> : <p>{t.selectNode}</p>}</aside></section>}
-        <WorkflowFeedbackComposer labels={t} validation={false} value={feedbackText} typeValue={feedbackType} onValue={setFeedbackText} onType={setFeedbackType} onSubmit={() => void sendWorkflowFeedback(false)} onNewWorkflow={startAnotherWorkflow} busy={busy} />
         {designAccepted && <p className="workflow-acceptance-note">{t.designAccepted}</p>}
         <div className="workflow-stage-actions"><button onClick={() => moveToStep("compose", draft.draft_id)}>{t.back}</button><button className="primary" disabled={!designReady || busy} onClick={acceptDesign}>{t.acceptDesign}</button></div>
       </section>}
@@ -1104,7 +1112,6 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
           <div className="workflow-stage-actions"><button onClick={() => moveToStep("review", draft.draft_id)}>{validationVerdict === "blocked" ? t.returnToReview : t.back}</button><button className="primary" disabled={busy || !canValidate} onClick={validate}>{validating && <span className="workflow-spinner workflow-spinner--button" />}{validating ? t.validating : validationVerdict === "blocked" ? t.retryPreflight : t.validate}</button></div>
         </section>
         {validationReport?.phase === "completed" && <ValidationReportPanel report={validationReport} locale={locale} apiBase={apiBase} draftId={draft.draft_id} runPath={runPath} labels={t} />}
-        {validationReport?.phase === "completed" && <WorkflowFeedbackComposer labels={t} validation value={feedbackText} typeValue={feedbackType} onValue={setFeedbackText} onType={setFeedbackType} onSubmit={() => void sendWorkflowFeedback(true)} onNewWorkflow={startAnotherWorkflow} busy={busy} />}
         {validationReport?.phase === "completed" && validationReport.verdict === "inconclusive" && <div className="workflow-acknowledgement"><EvidenceGapList gaps={validationReport.evidence_gaps ?? []} locale={locale} emptyLabel={t.noEvidenceGaps} /><label><input type="checkbox" checked={acknowledge} onChange={(event) => setAcknowledge(event.target.checked)} /><span>{t.acknowledgeDetailed}</span></label><small>{t.acknowledgementHelp}</small></div>}
         {validationAccepted && <p className="workflow-acceptance-note">{t.validationAccepted}</p>}
         {validationReport?.phase === "completed" && <div className="workflow-stage-actions"><button className="primary" disabled={!validationAcceptable || busy || validationVerdict === "inconclusive" && !acknowledge} onClick={acceptValidation}>{t.acceptValidation}</button></div>}
@@ -1135,17 +1142,6 @@ function WorkflowConversationTimeline({ conversation, locale, labels: viewLabels
         </div>
       </details>;
     })}</div>
-  </section>;
-}
-
-function WorkflowFeedbackComposer({ labels: viewLabels, validation, value, typeValue, onValue, onType, onSubmit, onNewWorkflow, busy }: { labels: typeof labels.zh | typeof labels.en; validation: boolean; value: string; typeValue: string; onValue: (value: string) => void; onType: (value: string) => void; onSubmit: () => void; onNewWorkflow: () => void; busy: boolean }) {
-  const categoryLabels = validation ? viewLabels.feedbackCategoriesValidate : viewLabels.feedbackCategoriesReview;
-  const categoryValues = validation ? viewLabels.feedbackCategoryValuesValidate : viewLabels.feedbackCategoryValuesReview;
-  return <section className="workflow-feedback-composer">
-    <header><h2>{viewLabels.feedbackTitle}</h2></header>
-    <div className="workflow-feedback-categories">{categoryLabels.map((label, index) => <button className={(typeValue || categoryValues[0]) === categoryValues[index] ? "is-selected" : ""} key={categoryValues[index]} onClick={() => onType(categoryValues[index])}>{label}</button>)}</div>
-    <textarea rows={4} value={value} placeholder={viewLabels.feedbackPlaceholder} onChange={(event) => onValue(event.target.value)} />
-    <div className="workflow-feedback-actions"><button onClick={onNewWorkflow}>{viewLabels.newWorkflowIntent}</button><button className="primary" disabled={busy || !value.trim()} onClick={onSubmit}>{viewLabels.sendFeedback}</button></div>
   </section>;
 }
 

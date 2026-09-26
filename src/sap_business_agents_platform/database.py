@@ -1902,6 +1902,17 @@ class RunStore:
         diff: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._lock, self._connect() as connection:
+            existing = connection.execute("SELECT composition_json, workflow_json, status FROM workflow_drafts WHERE draft_id=?", (draft.draft_id,)).fetchone()
+            if existing:
+                assistant = _load(existing["composition_json"], {}).get("assistant_v2")
+                if assistant:
+                    active = next((r for r in assistant.get("rounds", []) if r["status"] in {"running", "cancelling", "cleanup_pending"} and r["intent"] == "revise"), None)
+                    if active and (_load(existing["workflow_json"], {}) != draft.workflow or existing["status"] != draft.status):
+                        from .workflow_factory import WorkflowDraftError
+                        raise WorkflowDraftError("A workflow revision is being prepared.", code="workflow_assistant_active")
+                    # A concurrent read-only explanation must not be overwritten
+                    # by a validation progress snapshot loaded before that round.
+                    draft.composition["assistant_v2"] = assistant
             connection.execute(
                 """INSERT OR REPLACE INTO workflow_drafts
                 (draft_id, status, revision, workflow_json, path, thread_id,
@@ -1934,6 +1945,35 @@ class RunStore:
                         draft.updated_at,
                     ),
                 )
+
+    def mutate_workflow_assistant(self, draft_id: str, mutate: Any) -> WorkflowDraftRecord:
+        """Serialize assistant ownership, CAS, revision, Diff and terminal state.
+
+        Assistant events/rounds live in the existing composition JSON. No SDK
+        work or filesystem writes may occur inside this transaction.
+        """
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM workflow_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
+            if row is None:
+                raise KeyError(draft_id)
+            draft = WorkflowDraftRecord(
+                draft_id=row["draft_id"], status=row["status"], revision=row["revision"],
+                workflow=_load(row["workflow_json"], {}), path=row["path"], thread_id=row["thread_id"],
+                validation_run_id=row["validation_run_id"], composition=_load(row["composition_json"], {}),
+                validation=_load(row["validation_json"], {}), created_at=row["created_at"], updated_at=row["updated_at"],
+            )
+            diff = mutate(draft)
+            draft.updated_at = utc_now()
+            connection.execute("""UPDATE workflow_drafts SET status=?, revision=?, workflow_json=?,
+                validation_run_id=?, composition_json=?, validation_json=?, updated_at=? WHERE draft_id=?""",
+                (draft.status, draft.revision, _dump(draft.workflow), draft.validation_run_id,
+                 _dump(draft.composition), _dump(draft.validation), draft.updated_at, draft_id))
+            if diff is not None:
+                connection.execute("""INSERT INTO workflow_revisions
+                    (draft_id, revision, workflow_json, diff_json, created_at) VALUES (?, ?, ?, ?, ?)""",
+                    (draft_id, draft.revision, _dump(draft.workflow), _dump(diff), draft.updated_at))
+            return draft
 
     def get_workflow_draft(self, draft_id: str) -> WorkflowDraftRecord:
         with self._connect() as connection:

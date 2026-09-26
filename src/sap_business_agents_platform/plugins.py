@@ -530,6 +530,12 @@ class CodexRuntimePluginProvider:
             )
         return await method(*args, **kwargs)
 
+    async def author_workflow_v2(self, *args: Any, **kwargs: Any) -> Any:
+        method = getattr(self.planner, "author_workflow_v2", None)
+        if not callable(method):
+            raise PluginError("Workflow authoring v2 is not implemented.", code="operation_unavailable")
+        return await method(*args, **kwargs)
+
     async def resume_workflow_composition(self, *args: Any, **kwargs: Any) -> Any:
         return await self.review_workflow_feedback(*args, **kwargs)
 
@@ -795,6 +801,7 @@ class AgentRuntimeCapability:
 
     def plugin_metadata(self, operation: str) -> dict[str, Any]:
         capability = (
+            "workflow_authoring.v2" if operation == "author_workflow_v2" else
             "workflow_authoring.v1"
             if operation in {"compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"}
             else "authoring.v1"
@@ -805,6 +812,7 @@ class AgentRuntimeCapability:
 
     def supports(self, operation: str) -> bool:
         capability = (
+            "workflow_authoring.v2" if operation == "author_workflow_v2" else
             "workflow_authoring.v1"
             if operation in {"compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"}
             else "authoring.v1"
@@ -936,6 +944,9 @@ class AgentRuntimeCapability:
             "workflow_authoring.v1", "review_workflow_feedback", *args, **kwargs
         )
 
+    async def author_workflow_v2(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.manager.invoke("workflow_authoring.v2", "author_workflow_v2", *args, **kwargs)
+
     async def resume_workflow_composition(self, *args: Any, **kwargs: Any) -> Any:
         return await self.manager.invoke(
             "workflow_authoring.v1", "resume_workflow_composition", *args, **kwargs
@@ -1031,6 +1042,10 @@ def official_plugin_manifests() -> list[PluginManifest]:
                 {
                     "capability": "workflow_authoring.v1",
                     "operations": ["compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback", "resume_workflow_composition"],
+                },
+                {
+                    "capability": "workflow_authoring.v2",
+                    "operations": ["author_workflow_v2"],
                 },
             ],
             "transport": {"type": "builtin", "loopback_only": True},

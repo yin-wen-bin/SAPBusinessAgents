@@ -426,9 +426,11 @@ def create_app(
         )
         await coordinator.start()
         await role_matching.start()
+        workflow_drafts.assistant.recover()
         try:
             yield
         finally:
+            await workflow_drafts.assistant.stop()
             await acceptance_campaigns.stop()
             await sample_discovery.stop()
             await agent_lifecycle.stop()
@@ -2474,7 +2476,7 @@ def create_app(
     def create_workflow_draft(payload: WorkflowDraftCreate) -> dict[str, Any]:
         try:
             return workflow_drafts.create(
-                payload.title, payload.description, payload.workflow
+                payload.title, payload.description, payload.workflow, payload.requestId
             ).model_dump(mode="json")
         except (WorkflowDraftError, WorkflowError, KeyError) as exc:
             raise HTTPException(
@@ -2543,6 +2545,8 @@ def create_app(
         draft_id: str, payload: WorkflowFeedbackRequest
     ) -> dict[str, Any]:
         try:
+            if payload.intent:
+                return workflow_drafts.assistant.submit(draft_id, payload.model_dump(mode="json", by_alias=True)).model_dump(mode="json")
             return workflow_drafts.submit_feedback(
                 draft_id,
                 base_turn=payload.base_turn,
@@ -2559,6 +2563,44 @@ def create_app(
                 409,
                 {"code": getattr(exc, "code", "workflow_feedback_failed"), "message": str(exc), "detail": getattr(exc, "detail", None)},
             ) from exc
+
+    @app.get("/api/authoring/workflows/{draft_id}/assistant")
+    def workflow_assistant_snapshot(draft_id: str) -> dict[str, Any]:
+        try:
+            return workflow_drafts.assistant.snapshot(draft_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+
+    @app.post("/api/authoring/workflows/{draft_id}/assistant/{request_id}/cancel")
+    async def cancel_workflow_assistant(draft_id: str, request_id: str) -> dict[str, Any]:
+        try:
+            return workflow_drafts.assistant.cancel(draft_id, request_id).model_dump(mode="json")
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+        except WorkflowDraftError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+
+    @app.get("/api/authoring/workflows/{draft_id}/assistant/events")
+    async def workflow_assistant_events(draft_id: str, request: Request, after: int = 0) -> StreamingResponse:
+        try:
+            workflow_drafts.get(draft_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Workflow draft not found") from exc
+        try:
+            cursor = max(0, after, int(request.headers.get("last-event-id") or 0))
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid event cursor") from exc
+        async def stream():
+            nonlocal cursor
+            while not await request.is_disconnected():
+                snapshot = workflow_drafts.assistant.snapshot(draft_id)
+                for item in snapshot["events"]:
+                    if item["id"] > cursor:
+                        cursor = item["id"]
+                        yield f"id: {cursor}\nevent: workflow_assistant\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
+                yield ": heartbeat\n\n"
+                await asyncio.sleep(1)
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
     @app.post("/api/authoring/workflows/{draft_id}/feedback-input", status_code=202)
     async def workflow_feedback_input(
