@@ -1,5 +1,26 @@
 # Agent authoring Harness implementation checkpoint
 
+## Draft-assistant scope update — 2026-09-29
+
+For Agent draft feedback only, the controller now rejects every platform-source
+change, including SDK full-access turns. It never creates a platform changeset
+from draft feedback. The SDK mode, isolated work-copy creation, per-call SAP
+authorization, revision checks and publication approval are unchanged. Historical
+changesets remain readable; the general free-query/workflow changeset paths are
+not changed by this update. The September 10 checkpoint below is historical.
+
+The assistant now preserves unresolved questions/options and confirmed decisions
+outside its recent-turn window, validates revision-bound evidence references,
+bridges only safe lifecycle/tool events, and provides numbered annotations with
+semantic navigation and inline Diff. Screenshot expiry also has background file
+cleanup. WorkBuddy draft feedback has a separate tool-free implementation and
+mock SDK tests, but has not been enabled or live-model certified. Native resume,
+steer and free-form screenshot box annotations remain disabled/unimplemented;
+queued messages and control-level annotations are the supported fallback.
+
+See [Draft assistant delivery verification](agent-draft-assistant-verification.md)
+for current environment and offline test evidence.
+
 Updated 2026-09-10. This is a partial implementation, not SAP acceptance or proof
 that production tool execution is operational.
 

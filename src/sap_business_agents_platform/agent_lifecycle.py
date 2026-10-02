@@ -27,6 +27,7 @@ from .manifests import (
 from .models import RunStatus, TERMINAL_STATUSES, utc_now
 from .acceptance import agent_execution_digest
 from .agent_authoring import AgentAuthoringMixin, package_changes
+from .agent_feedback_context import pending_questions
 from .agent_identity import AgentIdentityMixin, draft_identity_kind
 from .agent_presentation import inspect_agent_presentation, presentation_ready
 from .agent_publication import (
@@ -789,6 +790,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             "revisions": self.store.list_agent_authoring_revisions(draft_id),
             "conversation": [self._public_feedback_turn(turn) for turn in self.store.list_agent_conversation_turns(draft_id)],
             "conversation_event_sequence": self.store.latest_agent_conversation_event_sequence(draft_id),
+            "pending_clarifications": pending_questions(self.store.list_agent_conversation_turns(draft_id), int(draft["revision"])),
             "assistant_capabilities": self._assistant_capabilities((draft.get("metadata") or {}).get("runtime_snapshot") or {}),
             "feedback_sources": feedback_sources,
             "active_operation": active_operation,

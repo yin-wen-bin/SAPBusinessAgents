@@ -104,3 +104,23 @@ def test_arbitrary_tool_policy_is_rejected_before_workspace(tmp_path):
     with pytest.raises(AuthoringHarnessError, match='policy_invalid'):
         asyncio.run(CodexPlanner(tmp_path, 'gpt-5.6-sol').review_agent_feedback(
             feedback='test', locale='en', package={}, tool_policy={'mode': 'full_access'}))
+
+
+def test_full_access_draft_feedback_rejects_platform_edits_too(tmp_path):
+    workspace = AuthoringWorkspace(tmp_path / 'repo', tmp_path / 'job')
+    workspace.source.mkdir(parents=True)
+    package = {'manifest': {'slug': 'example'}, 'readme': 'before', 'rules': None, 'files': {}}
+    workspace.write_package(package)
+    workspace.full_access = True
+    class Thread:
+        id = 'new-thread'
+        async def run(self, *_args, **_kwargs):
+            (workspace.source / 'README.md').write_text('not allowed', encoding='utf-8')
+            return SimpleNamespace(final_response=json.dumps({'action': 'reply', 'summary': {'zh': '说明', 'en': 'Summary'}}))
+    class Codex:
+        async def thread_start(self, **kwargs):
+            assert 'ONLY agent-package' in kwargs['developer_instructions']
+            return Thread()
+    with pytest.raises(AuthoringHarnessError, match='platform_approval_required'):
+        asyncio.run(CodexPlanner(tmp_path, 'gpt-5.6-sol')._run_agent_feedback(Codex(), 'test', package, None,
+            str(workspace.source), tool_workspace=workspace))

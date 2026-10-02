@@ -204,8 +204,9 @@ AGENT_FEEDBACK_OUTPUT_SCHEMA: dict[str, Any] = {
         "rules_source": {"type": "string"},
         "files_json": {"type": "string"},
         "edits_json": {"type": "string"},
+        "clarification_json": {"type": "string"},
     },
-    "required": ["action", "summary", "required_changes", "manifest_json", "readme", "rules_source", "files_json", "edits_json"],
+    "required": ["action", "summary", "required_changes", "manifest_json", "readme", "rules_source", "files_json", "edits_json", "clarification_json"],
     "additionalProperties": False,
 }
 
@@ -763,7 +764,7 @@ requirements; never claim a rule has been implemented or a process completed.
             (tool_workspace.source / ".authoring-tmp").mkdir()
             # Until platform changeset approval is connected, platform source is
             # readable for investigation but not editable through this entry point.
-            tool_workspace.read_only_source = not full_access
+            tool_workspace.read_only_source = True
 
         explain_only = intent == "explain"
         prompt = f"""
@@ -787,6 +788,12 @@ evidence support it. Missing catalog coverage alone must not block the revision 
 a SAP fact.
 
 Choose action=clarify to ask a specific bilingual question when intent needs a business decision.
+For clarify, clarification_json must encode {{"question":{{"zh":"...","en":"..."}},
+"answer_mode":"confirm|choice|text","options":[{{"id":"stable-option-id","label":{{"zh":"...","en":"..."}}}}]}}.
+Use confirm only for one yes/no question, choice for 2-10 distinct options, and text for open
+questions. confirm/text must use an empty options array. Other actions leave clarification_json empty.
+Outstanding questions and choices in platform_context remain unresolved unless explicitly answered.
+An answer is conversation context, never new SAP authorization.
 Choose reply when the user asks for explanation without changes. Both return no package changes:
 set manifest_json, readme, rules_source, files_json and edits_json to empty strings.
 {"This is explanation-only mode. You MUST choose reply or clarify. Do not inspect external files, call tools, query SAP, create edits, or return a revised package." if explain_only else ""}
@@ -834,11 +841,6 @@ edits. For explanation-only requests leave the package unchanged and return repl
 Test failures are evidence, not permission to weaken tests or acceptance controls.
 """
             if full_access:
-                prompt = prompt.replace("not modify platform code or other Agents.", "not modify other Agents or approval controls.")
-                prompt = prompt.replace("You may inspect source, edit ONLY agent-package files and run local commands/tests.",
-                    "You may inspect source, edit the Agent package and task-related platform source, and run local commands/tests.")
-                prompt = prompt.replace("Do not modify\nplatform source, identity/validation/version fields or publication/approval gates.",
-                    "Do not modify identity/validation/version fields or publication/approval gates.")
                 prompt = prompt.replace(
                     "Use .authoring-tmp/ for temporary tests and cache output. Never contact any HTTP\n"
                     "endpoint, localhost service, SAP, external host or inherited plugin. SAP tests are\n"
@@ -852,9 +854,9 @@ files, shell and web search for investigation and local tests. Never write the
 production checkout, publish, approve changes, change system settings, or access
 SAP directly from shell/browser. SAP business evidence requires approved Broker
 tools; if unavailable, report the missing connection, never claim live testing.
-Agent-package changes become an unpublished draft revision. Platform source changes
-become a pending changeset requiring independent verification and user approval.
-Never claim that a platform changeset was applied or that a dependent draft is ready.
+Only Agent-package changes become an unpublished draft revision. Platform source is
+read-only for this draft-assistant task: any out-of-package change is rejected by
+the controller, not converted into a platform changeset. Do not modify other Agents.
 """
             if tool_session is not None:
                 prompt += """
@@ -924,13 +926,9 @@ matches. The local full-access shell is not an OS security boundary.
                     if full_access:
                         decision["harness"].update(execution_snapshot(model=self.model, effort=self.reasoning_effort),
                                                    base_digest=tool_workspace.base_digest, checks=checks)
-                        from .runtime_changesets import RuntimeChangeSets
-                        from .authoring_harness import content_digest
-                        change_set = RuntimeChangeSets(self.data_root / "runtime-change-sets").create(
-                            tool_workspace, source_id=key, candidate_digest=content_digest(decision.get("package", package)))
-                        if change_set:
-                            decision["harness"]["change_set_id"] = change_set["change_set_id"]
-                            decision["harness"]["platform_dependency_status"] = "awaiting_verification"
+                        if tool_workspace.platform_changes():
+                            from .authoring_harness import AuthoringHarnessError
+                            raise AuthoringHarnessError("agent_harness_platform_approval_required")
                     return decision
                 return await self._run_agent_feedback(
                     codex, prompt, package, thread_id, isolated, explain_only=explain_only,
@@ -1037,7 +1035,7 @@ matches. The local full-access shell is not an OS security boundary.
             thread = await codex.thread_start(
                 cwd=isolated, sandbox=Sandbox.full_access, approval_mode=ApprovalMode.deny_all,
                 model=self.model, service_name="sap_business_agents_agent_authoring",
-                developer_instructions="Investigate and test the working copy. Preserve identity and acceptance. Never apply production changes or approve/publish. Return structured results; do not invent test evidence.",
+                developer_instructions="Inspect the work copy but edit ONLY agent-package. Platform source is read-only for draft feedback. Preserve identity and acceptance. Never apply production changes or approve/publish. Return structured results; do not invent test evidence.",
             )
         elif tool_workspace:
             # High-level SDK 0.147.0 has no permissions argument. Send the real
@@ -1079,7 +1077,7 @@ matches. The local full-access shell is not an OS security boundary.
         raw = json.loads(result.final_response)
         if tool_workspace:
             from .authoring_harness import AuthoringHarnessError
-            if tool_workspace.platform_changes() and not full_access:
+            if tool_workspace.platform_changes():
                 raise AuthoringHarnessError("agent_harness_platform_approval_required")
             file_package = tool_workspace.read_package()
             original = {key: package.get(key) for key in ("manifest", "readme", "rules", "files")}
@@ -1091,7 +1089,8 @@ matches. The local full-access shell is not an OS security boundary.
                     file_package["manifest"]["managedRule"]["sha256"] = source_digest(file_package["rules"])
                 return {"action": "revise_agent", "summary": raw["summary"], "package": {**copy.deepcopy(package), **file_package}, "thread_id": thread.id}
         if raw.get("action") in {"clarify", "reply"}:
-            return {"action": raw["action"], "summary": raw["summary"], "thread_id": thread.id}
+            return {"action": raw["action"], "summary": raw["summary"], "thread_id": thread.id,
+                    "clarification": json.loads(raw["clarification_json"]) if raw.get("clarification_json") else None}
         if raw.get("action") != "revise_agent":
             raise ValueError("runtime_agent_feedback_invalid")
         if raw.get("edits_json"):

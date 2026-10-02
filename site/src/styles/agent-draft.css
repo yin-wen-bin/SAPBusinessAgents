@@ -49,8 +49,11 @@
 .draft-assistant-action-hint { margin: 0; color: var(--color-text-muted); }
 .draft-assistant-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px; }
 .draft-assistant-actions button { width: 100%; min-width: 0; }
+.draft-annotation-tray { display: none; }
 .draft-annotation-mode [data-draft-ref] { cursor: crosshair; outline: 2px dashed #0b5ed7; outline-offset: 3px; }
 .draft-annotation-mode [data-draft-ref]:hover, .draft-annotation-mode [data-draft-ref]:focus-within { background: #edf4ff; }
+[data-draft-annotation-number] { position: relative; outline: 2px solid #0b5ed7 !important; outline-offset: 3px; }
+[data-draft-annotation-number]::before { content: attr(data-draft-annotation-number); position: absolute; top: -12px; right: 4px; z-index: 2; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #0b5ed7; color: white; font-size: 13px; font-weight: 700; box-shadow: 0 0 0 2px white; }
 .draft-annotation-list { display: grid; gap: 10px; margin: 0; padding-left: 24px; }
 .draft-annotation-list li { display: grid; gap: 7px; min-width: 0; border: 1px solid #b8c9e3; border-radius: 8px; padding: 10px; }
 .draft-annotation-list code, .draft-turn-context code, .draft-turn-diff code { overflow-wrap: anywhere; }
@@ -58,6 +61,9 @@
 .draft-annotation-list button { justify-self: start; }
 .draft-turn-context { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--color-text-muted); font-size: .85rem; }
 .draft-turn-context > * { min-width: 0; }
+.draft-object-link { min-height: 44px; padding: 4px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: #f5f8fc; color: #0b5ed7; font: inherit; overflow-wrap: anywhere; cursor: pointer; text-align: left; }
+.draft-object-link:focus-visible, [data-draft-ref]:focus-visible { outline: 3px solid #0b5ed7; outline-offset: 3px; }
+.draft-tool-diagnostics { padding-left: 18px; overflow-wrap: anywhere; }
 .draft-feedback-technical { margin-block: 10px; }
 .draft-feedback-technical summary { cursor: pointer; }
 .draft-safe-markdown { overflow-wrap: anywhere; }
@@ -150,7 +156,12 @@
   .draft-wizard-nav { display: none; }
   .draft-mobile-step { display: block; }
   .draft-mobile-step label { display: grid; gap: 6px; }
-  .draft-assistant { position: fixed; inset: 12px; z-index: 12; max-height: none; overflow: auto; box-shadow: 0 0 0 100vmax rgb(10 25 45 / 45%); }
+  .draft-assistant { position: fixed; inset: 12px; z-index: 120; max-height: none; overflow: auto; box-shadow: 0 0 0 100vmax rgb(10 25 45 / 45%); }
+  .draft-annotating .draft-assistant { display: none; }
+  .draft-annotating { padding-bottom: 110px; }
+  .draft-annotation-tray { position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 120; display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid #b8c9e3; border-radius: 10px; background: white; box-shadow: 0 4px 24px rgb(15 45 55 / 20%); }
+  .draft-annotation-tray strong { flex: 1; min-width: 0; font-size: .9rem; }
+  .draft-annotation-tray button { flex: none; min-height: 44px; }
   .draft-section-heading { display: grid; }
   .agent-draft-workspace .agent-actions { flex-wrap: wrap; }
   .agent-draft-workspace .agent-panel, .agent-draft-workspace .agent-run-panel { padding: 18px; }

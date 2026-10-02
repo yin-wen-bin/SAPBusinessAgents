@@ -1,4 +1,5 @@
-// Isolated browser check for the draft assistant composer. No SAP, model, or real draft is used.
+// Isolated draft assistant acceptance: composer, annotations, quotes, Diff and fallback.
+// No SAP, model, or real draft is used.
 // Run after `npm run build` with an Astro preview and SAPBA_SITE_URL pointing to that preview.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -27,14 +28,14 @@ function fixture() {
       guardrails: { zh: [], en: [] }, execution: { inputSchema: { type: "object", properties: {}, required: [] } },
     }, readme: "Synthetic documentation", rules: null },
     acceptance: { verdict: "NOT_TESTED" }, publishability: { can_publish: false, blockers: [] },
-    revisions: [{ revision: 1 }], active_operation: null, conversation: [],
+    revisions: [{ revision: 1 }], active_operation: null, conversation: [], pending_clarifications: [],
   };
 }
 
 const browser = await chromium.launch({ channel: process.env.SAPBA_BROWSER_CHANNEL || "msedge", headless: true });
 try {
   for (const locale of ["zh", "en"]) for (const width of [1440, 550, 390]) {
-    const state = { draft: fixture(), requests: [], failFirst: true, violations: [] };
+    const state = { draft: fixture(), requests: [], failFirst: true, violations: [], polls: 0, streams: 0 };
     const context = await browser.newContext({ viewport: { width, height: 844 }, serviceWorkers: "block" });
     await context.route("**/*", async (route) => {
       const request = route.request();
@@ -51,17 +52,36 @@ try {
       if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers });
       if (request.method() === "GET" && path === "/api/agents/catalog") return respond([]);
       if (request.method() === "GET" && path === "/api/authoring/agents") return respond([state.draft]);
-      if (request.method() === "GET" && path === base) return respond(state.draft);
+      if (request.method() === "GET" && path === base) { state.polls += 1; return respond(state.draft); }
       if (request.method() === "GET" && path === `${base}/validation-report`) return respond({ acceptance: state.draft.acceptance, publishability: state.draft.publishability });
       if (request.method() === "GET" && path === `${base}/acceptance-campaigns`) return respond([]);
+      if (request.method() === "GET" && path === `${base}/conversation/events`) {
+        state.streams += 1;
+        // Deliberately unavailable: the page must keep bounded polling alive.
+        return route.fulfill({ status: 503, headers, body: "Synthetic disconnected stream" });
+      }
+      if (request.method() === "GET" && path === `${base}/diff`) return respond({ changes: state.draft.conversation.at(-1)?.diff || [] });
       if (request.method() === "PUT" && path === `${base}/ui-state`) return respond({});
       if (request.method() === "POST" && path === `${base}/feedback`) {
         const body = request.postDataJSON();
         state.requests.push(body);
         if (state.failFirst) { state.failFirst = false; return route.abort("failed"); }
-        const turn = state.draft.conversation.length + 1;
+        const turn = Math.max(0, ...state.draft.conversation.map((item) => item.turn)) + 1;
+        const baseRevision = state.draft.revision;
+        const diff = [];
+        if (body.annotations?.length && body.intent === "revise") {
+          for (const [lang, value] of [["zh", "改后的合成草稿"], ["en", "Revised synthetic draft"]]) {
+            diff.push({ path: `/manifest/title/${lang}`, before: state.draft.package.manifest.title[lang], after: value, change: "modified", group: "basic" });
+            state.draft.package.manifest.title[lang] = value;
+          }
+          state.draft.revision += 1;
+          state.draft.revisions.push({ revision: state.draft.revision });
+        }
+        if (body.replyToClarificationId) state.draft.pending_clarifications = [];
         state.draft.conversation.push({ turn, kind: "feedback", status: "completed", user_message: body.feedback,
-          decision: { intent: body.intent, assistant_message: { zh: "合成回复", en: "Synthetic reply" } } });
+          base_revision: baseRevision, result_revision: state.draft.revision, diff,
+          decision: { intent: body.intent, context: { step: body.step, annotations: body.annotations?.map((item) => ({ ...item, source_id: item.sourceId, source_digest: item.sourceDigest })) },
+            reply_to_clarification_id: body.replyToClarificationId, assistant_message: { zh: "合成回复", en: "Synthetic reply" } } });
         return respond({ status: "completed", turn });
       }
       state.violations.push(`Unexpected API: ${request.method()} ${path}`);
@@ -127,11 +147,76 @@ try {
       await page.locator("dialog.feedback-progress-dialog[open]").waitFor();
       assert.equal(state.requests[4].intent, "explain");
       assert.equal(state.requests[4].retryOfTurn, 5, "matching action retains the historical retry binding");
+      await page.locator("dialog.feedback-progress-dialog[open]").getByRole("button", { name: tr("返回修改意见", "Return to feedback") }).click();
+      await page.goto(`${origin.origin}${siteBase}/${locale}/agent-management/?draft=${draftId}&step=purpose`);
+      await button("打开 AI 助手", "Open AI assistant").click();
+      await button("标注控件", "Annotate controls").click();
+      const chineseName = page.locator('[data-draft-ref="/manifest/title/zh"]');
+      const englishName = page.locator('[data-draft-ref="/manifest/title/en"]');
+      const beforeName = await chineseName.locator("input").inputValue();
+      await chineseName.click();
+      await englishName.click();
+      const annotationList = page.locator(".draft-annotation-list");
+      assert.equal(await annotationList.locator("li").count(), 2);
+      if (width <= 820) await button("完成控件标注", "Finish annotating").click();
+      await annotationList.getByRole("textbox").nth(0).fill(tr("修改中文名称", "Revise Chinese name"));
+      await annotationList.getByRole("textbox").nth(1).fill(tr("修改英文名称", "Revise English name"));
+      assert.equal(await chineseName.getAttribute("data-draft-annotation-number"), "1");
+      assert.equal(await englishName.getAttribute("data-draft-annotation-number"), "2");
+      assert.equal(await chineseName.locator("input").inputValue(), beforeName, "annotation click must not edit the field");
+      await annotationList.getByRole("button", { name: tr("定位控件", "Locate control"), exact: true }).first().click();
+      await page.waitForFunction(() => document.activeElement?.getAttribute("data-draft-ref") === "/manifest/title/zh");
+      if (width <= 820 || await button("完成控件标注", "Finish annotating").isVisible()) await button("完成控件标注", "Finish annotating").click();
+      await page.screenshot({ path: fileURLToPath(new URL(`${locale}-${width}-annotations.png`, output)) });
+      await composer.fill(tr("按两条标注修改草稿", "Revise both annotated fields"));
+      const beforeRevision = state.draft.revision;
+      await button("修改草稿", "Revise draft").click();
+      await page.locator("dialog.feedback-progress-dialog[open]").waitFor();
+      assert.equal(state.requests.at(-1).annotations.length, 2);
+      assert.equal(state.draft.revision, beforeRevision + 1);
+      for (const item of state.requests.at(-1).annotations) assert.deepEqual(Object.keys(item).sort(), ["comment", "kind", "path", "revision"]);
+      await page.locator("dialog.feedback-progress-dialog[open]").getByRole("button", { name: tr("关闭对话框，不取消任务", "Close dialog without cancelling"), exact: true }).click();
+      assert.equal(await page.locator(".draft-unsaved").count(), 0, "assistant revisions must refresh a previously clean editor");
+      await page.locator(".draft-turn-diff").last().locator("summary").click();
+      assert.match(await page.locator(".draft-turn-diff").last().textContent(), /\/manifest\/title\/zh/);
+      // A historical field reference must not be silently rebound to the new revision.
+      await page.locator(".draft-chat-entry").last().getByRole("button", { name: "1. /manifest/title/zh", exact: true }).click();
+      await page.getByText(tr("此对象属于旧修订，不能自动定位到新定义。请查看该回合的 Diff。", "This object belongs to an old revision and cannot be rebound. Review the turn Diff."), { exact: true }).waitFor();
+      const requestCount = state.requests.length, pollCount = state.polls;
+      state.draft.pending_clarifications = [{ id: "synthetic-choice", revision: state.draft.revision, state: "pending", answer_mode: "choice",
+        question: { zh: "选择范围", en: "Choose scope" }, options: [{ id: "one", label: { zh: "范围一", en: "Scope one" } }, { id: "two", label: { zh: "范围二", en: "Scope two" } }] }];
+      await button("范围二", "Scope two").waitFor({ timeout: 15000 });
+      assert.ok(state.polls > pollCount && state.streams > 0, "disconnected SSE must fall back to polling");
+      assert.equal(state.requests.length, requestCount, "reconnection must never resubmit feedback");
+      await button("范围二", "Scope two").click();
+      await button("解释问题", "Explain issue").click();
+      await page.locator("dialog.feedback-progress-dialog[open]").waitFor();
+      assert.equal(state.requests.at(-1).replyToClarificationId, "synthetic-choice");
+      assert.equal(state.requests.at(-1).clarificationOptionId, "two");
+      await page.locator("dialog.feedback-progress-dialog[open]").getByRole("button", { name: tr("返回修改意见", "Return to feedback") }).click();
+      await page.goto(`${origin.origin}${siteBase}/${locale}/agent-management/?draft=${draftId}&step=logic`);
+      await page.locator(".draft-advanced summary").click();
+      const readme = page.locator(".draft-advanced label").filter({ hasText: "README" }).getByRole("textbox");
+      await readme.focus();
+      await readme.evaluate((element) => { element.setSelectionRange(0, 9); element.dispatchEvent(new Event("select", { bubbles: true })); });
+      await button("打开 AI 助手", "Open AI assistant").click();
+      await button("引用页面所选内容", "Quote selected content").click();
+      assert.match(await page.locator(".draft-selected-excerpt").textContent(), /Synthetic/);
+      await composer.fill(tr("解释选中的文档", "Explain the selected documentation"));
+      await button("解释问题", "Explain issue").click();
+      await page.locator("dialog.feedback-progress-dialog[open]").waitFor();
+      assert.equal(state.requests.at(-1).selection.kind, "readme");
+      assert.equal(state.requests.at(-1).selection.path, "/readme");
+      assert.equal(await page.locator("#feedback-progress-title").textContent(), tr("解释请求已完成", "Explanation request completed"));
+      assert.ok((await page.locator("dialog.feedback-progress-dialog").textContent()).includes(tr("草稿未修改", "the draft was not modified")));
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, "no horizontal overflow");
       await page.screenshot({ path: fileURLToPath(new URL(`${locale}-${width}.png`, output)) });
       assert.deepEqual(errors, []);
       assert.deepEqual(state.violations, []);
-      console.log(`PASS assistant actions ${locale} ${width}px`);
+      console.log(`PASS assistant actions, annotations, Diff, choices, quotes, polling ${locale} ${width}px`);
+    } catch (error) {
+      await page.screenshot({ path: fileURLToPath(new URL(`${locale}-${width}-failed.png`, output)) });
+      throw error;
     } finally { await context.close(); }
   }
 } finally { await browser.close(); }

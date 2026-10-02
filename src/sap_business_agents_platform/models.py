@@ -575,6 +575,7 @@ class AgentFeedbackRequest(BaseModel):
     retry_of_turn: int | None = Field(default=None, alias="retryOfTurn", ge=1)
     annotations: list[AgentFeedbackAnnotation] = Field(default_factory=list, max_length=20)
     reply_to_clarification_id: str | None = Field(default=None, alias="replyToClarificationId", max_length=100)
+    clarification_option_id: str | None = Field(default=None, alias="clarificationOptionId", max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     enqueue_if_busy: bool = Field(default=False, alias="enqueueIfBusy")
     image_ids: list[str] = Field(default_factory=list, alias="imageIds", max_length=3)
     selection: AgentFeedbackSelection | None = None

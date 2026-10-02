@@ -223,6 +223,23 @@ test("feedback modal exposes immediate status, persisted phases and terminal act
   }
 });
 
+test("explanation progress never describes an unchanged draft as a revision", async () => {
+  const Modal = await component("AgentFeedbackProgress");
+  for (const locale of ["zh", "en"]) {
+    const props = { open: true, locale, onClose() {}, onCancel() {}, onRetry() {}, onReview() {} };
+    const turn = { turn: 1, kind: "feedback", status: "running", base_revision: 2, result_revision: 2, decision: { intent: "explain" } };
+    const active = renderToStaticMarkup(createElement(Modal, { ...props, turn,
+      operation: { status: "running", detail: { phase: "generating_revision" } } }));
+    assert.ok(active.includes(locale === "zh" ? "正在解释问题" : "Explaining the issue"));
+    assert.ok(active.includes(locale === "zh" ? "调查草稿并准备解释" : "Investigating the draft and preparing an explanation"));
+    const completed = renderToStaticMarkup(createElement(Modal, { ...props, turn: { ...turn, status: "completed" } }));
+    assert.ok(completed.includes(locale === "zh" ? "解释请求已完成" : "Explanation request completed"));
+    assert.ok(completed.includes(locale === "zh" ? "草稿未修改" : "the draft was not modified"));
+    assert.ok(!completed.includes(locale === "zh" ? "生成修改" : "preparing changes"));
+    assert.ok(!completed.includes(locale === "zh" ? "查看修改前后对比" : "Review before and after"));
+  }
+});
+
 test("full access feedback separates execution permission from live acceptance and application", async () => {
   const Conversation = await component("AgentDraftConversation");
   for (const locale of ["zh", "en"]) {
@@ -382,6 +399,33 @@ test("draft presentation exposes typed references without changing published det
   assert.match(draft, /data-draft-ref="\/manifest\/sapModules"/);
   assert.match(draft, /data-draft-ref="\/manifest\/workflow\/0"/);
   assert.doesNotMatch(published, /data-draft-ref=/);
+});
+
+test("assistant semantic objects are keyboard links and safe tool summaries stay collapsed", async () => {
+  const Conversation = await component("AgentDraftConversation");
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Conversation, { locale, onLocate() {}, turns: [{
+      turn: 1, kind: "feedback", status: "completed", base_revision: 3, user_message: "Review",
+      decision: { summary: { zh: "说明", en: "Summary" }, context: { step: "purpose", field_path: "/manifest/title/zh" },
+        tool_events: [{ tool: "tool_catalog_search", status: "completed" }] },
+    }] }));
+    assert.match(html, /<button type="button" class="draft-object-link"/);
+    assert.match(html, /\/manifest\/title\/zh/);
+    assert.match(html, /<details class="draft-feedback-technical"><summary>/);
+    assert.match(html, /tool_catalog_search/);
+  }
+});
+
+test("semantic navigation and clarification choices preserve exact identities", () => {
+  assert.equal(draftHelpers.feedbackObjectStep({ revision: 1, path: "/manifest/title/zh" }), "purpose");
+  assert.equal(draftHelpers.feedbackObjectStep({ revision: 1, path: "/manifest/execution/inputSchema/properties/plant" }), "io");
+  assert.equal(draftHelpers.feedbackObjectStep({ revision: 1, path: "/manifest/workflow/0" }), "logic");
+  assert.equal(draftHelpers.feedbackObjectStep({ revision: 1, kind: "trial_issue" }), "trial");
+  const draft = { baseTurn: 1, baseRevision: 1, feedback: "Scope", locale: "en", intent: "explain", replyToClarificationId: "question", clarificationOptionId: "one" };
+  const initial = draftHelpers.prepareFeedbackRequest(null, draft, () => "first");
+  const retransmitted = draftHelpers.prepareFeedbackRequest(initial, draft, () => "should-not-change");
+  assert.equal(retransmitted.requestId, "first");
+  assert.equal(draftHelpers.prepareFeedbackRequest(initial, { ...draft, clarificationOptionId: "two" }, () => "second").requestId, "second");
 });
 
 test("acceptance readiness explains contract gaps without claiming certification", async () => {

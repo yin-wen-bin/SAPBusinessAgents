@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from .acceptance import agent_execution_digest
+from .agent_feedback_context import clarification_state, conversation_context, pending_questions, safe_context
 from .managed_rules import validate_managed_rule
 from .manifests import ManifestError, derive_input_display, validate_execution
 from .models import utc_now
@@ -185,29 +186,8 @@ class AgentAuthoringMixin:
             "errors", "business_report", "presentation", "blocking_limitations",
             "report_digest", "case_count", "passed_cases", "failed_cases",
         }
-        blocked_tokens = {"input", "secret", "credential", "password", "token", "authorization",
-                          "raw_rows", "source_rows", "encrypted", "sealed", "protected"}
-
-        def clean(value: Any, depth: int = 0) -> Any:
-            if depth > 8:
-                return None
-            if isinstance(value, dict):
-                restricted = value.get("restricted") is True or value.get("raw_rows_restricted") is True
-                return {
-                    str(key): clean(item, depth + 1)
-                    for key, item in list(value.items())[:200]
-                    if not any(token in str(key).lower() for token in blocked_tokens)
-                    and not (restricted and str(key).lower() in {"rows", "records", "values", "items"})
-                }
-            if isinstance(value, list):
-                return [clean(item, depth + 1) for item in value[:200]]
-            if isinstance(value, str):
-                return value[:10_000]
-            if isinstance(value, (int, float, bool)) or value is None:
-                return value
-            return str(value)
-
-        return {key: clean(report[key]) for key in allowed if key in report}
+        restricted = report.get("restricted") is True or report.get("raw_rows_restricted") is True
+        return {key: safe_context(report[key], limit=10_000, restricted=restricted) for key in allowed if key in report}
 
     def _feedback_context(self, draft_id: str, revision: int, payload: Any) -> dict[str, Any]:
         context = {key: value for key, value in {
@@ -233,6 +213,8 @@ class AgentAuthoringMixin:
                 attempt = self.store.get_agent_validation_attempt(draft_id, str(run_id))
             except KeyError as exc:
                 raise self._authoring_error("The referenced run does not belong to this draft.", "agent_feedback_context_invalid") from exc
+            if int(attempt["revision"]) != revision:
+                raise self._authoring_error("The referenced run belongs to an older revision.", "agent_feedback_context_stale")
             context["run_evidence"] = self._limited_feedback_report(attempt.get("report"))
         campaign_id = context.get("acceptance_campaign_id")
         if campaign_id:
@@ -240,6 +222,8 @@ class AgentAuthoringMixin:
                 campaign = self.store.get_agent_acceptance_campaign(draft_id, str(campaign_id))
             except KeyError as exc:
                 raise self._authoring_error("The referenced acceptance campaign does not belong to this draft.", "agent_feedback_context_invalid") from exc
+            if int(campaign["revision"]) != revision:
+                raise self._authoring_error("The referenced acceptance campaign belongs to an older revision.", "agent_feedback_context_stale")
             context["acceptance_evidence"] = {
                 "status": campaign.get("status"),
                 "phase": campaign.get("phase"),
@@ -366,6 +350,53 @@ class AgentAuthoringMixin:
         key = hashlib.sha256(draft_id.encode("utf-8")).hexdigest()
         return Path(self.settings.data_root).resolve() / "assistant-images" / key
 
+    @staticmethod
+    def _image_link(path: Path) -> bool:
+        if path.is_symlink():
+            return True
+        try:
+            # Includes Windows junctions on Python 3.11 (Path.is_junction is 3.12+).
+            return bool(getattr(path.lstat(), "st_file_attributes", 0) & 0x400)
+        except FileNotFoundError:
+            return False
+
+    def cleanup_feedback_images(self, *, now: float | None = None) -> int:
+        """Delete only expired, owned attachments; never follow links/junctions."""
+        root = Path(self.settings.data_root).resolve() / "assistant-images"
+        if self._image_link(root) or not root.is_dir():
+            return 0
+        current_time = time.time() if now is None else now
+        removed = 0
+        for folder in root.iterdir():
+            if (self._image_link(folder) or not folder.is_dir() or folder.resolve().parent != root.resolve()
+                    or not re.fullmatch(r"[0-9a-f]{64}", folder.name)):
+                continue
+            for old in folder.iterdir():
+                if (not re.fullmatch(r"feedback_image_[0-9a-f]{32}\.bin", old.name)
+                        or self._image_link(old) or not old.is_file() or old.resolve().parent != folder.resolve()):
+                    continue
+                try:
+                    if current_time - old.stat().st_mtime > 86400:
+                        old.unlink()
+                        removed += 1
+                except FileNotFoundError:
+                    pass  # Concurrent expiry/read is harmless.
+        return removed
+
+    async def start_feedback_image_cleanup(self) -> None:
+        task = getattr(self, "_feedback_image_cleanup_task", None)
+        if task is not None and not task.done():
+            return
+        async def clean() -> None:
+            while True:
+                try:
+                    await asyncio.to_thread(self.cleanup_feedback_images)
+                except OSError:
+                    pass  # Access failures do not bypass expiry on reads.
+                await asyncio.sleep(300)
+        # Start without waiting for filesystem scans on the HTTP event loop.
+        self._feedback_image_cleanup_task = asyncio.create_task(clean())
+
     def save_feedback_image(self, draft_id: str, data_url: str) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
         self._assert_editable(draft)
@@ -385,14 +416,10 @@ class AgentAuthoringMixin:
                 if match.group(1) == "image/png" else len(content) >= 4 and content.startswith(b"\xff\xd8\xff") and content.endswith(b"\xff\xd9")):
             raise self._authoring_error("The screenshot content does not match its type.", "agent_feedback_image_invalid")
         folder = self._feedback_image_directory(draft_id)
+        if self._image_link(folder.parent) or self._image_link(folder):
+            raise self._authoring_error("The screenshot directory is unsafe.", "agent_feedback_image_invalid")
         folder.mkdir(parents=True, exist_ok=True)
-        image_root = folder.parent
-        for draft_folder in image_root.iterdir():
-            if not draft_folder.is_dir() or draft_folder.is_symlink() or not re.fullmatch(r"[0-9a-f]{64}", draft_folder.name):
-                continue
-            for old in draft_folder.glob("feedback_image_*.bin"):
-                if old.is_file() and not old.is_symlink() and time.time() - old.stat().st_mtime > 86400:
-                    old.unlink()
+        self.cleanup_feedback_images()
         if sum(1 for item in folder.glob("feedback_image_*.bin") if item.is_file() and not item.is_symlink()) >= 20:
             raise self._authoring_error("Too many active screenshots for this draft.", "agent_feedback_image_limit")
         image_id = f"feedback_image_{uuid.uuid4().hex}"
@@ -404,6 +431,8 @@ class AgentAuthoringMixin:
         if not re.fullmatch(r"feedback_image_[0-9a-f]{32}", image_id):
             raise self._authoring_error("The screenshot reference is invalid.", "agent_feedback_image_invalid")
         path = self._feedback_image_directory(draft_id) / f"{image_id}.bin"
+        if self._image_link(path.parent.parent) or self._image_link(path.parent) or self._image_link(path):
+            raise self._authoring_error("The screenshot reference is unsafe.", "agent_feedback_image_invalid")
         if not path.is_file() or time.time() - path.stat().st_mtime > 86400:
             raise self._authoring_error("The screenshot expired or is unavailable.", "agent_feedback_image_expired")
         content = path.read_bytes()
@@ -641,7 +670,7 @@ class AgentAuthoringMixin:
             # Codex screenshot behavior, never infer it for another provider.
             value = {"image_input": snapshot.get("provider_id") == "codex"}
         return {"stream_events": True, "provider_stream_events": bool(value.get("stream_events")),
-                "resume": bool(value.get("resume")), "steer": bool(value.get("steer")),
+                "resume": False, "steer": False,
                 "image_input": bool(value.get("image_input"))}
 
     async def _stop_feedback_runtime(self, task: asyncio.Task, operation_id: str) -> None:
@@ -710,6 +739,7 @@ class AgentAuthoringMixin:
         annotations = getattr(payload, "annotations", None) or []
         enqueue_if_busy = bool(getattr(payload, "enqueue_if_busy", False))
         if (annotations or getattr(payload, "selection", None) or getattr(payload, "reply_to_clarification_id", None)
+                or getattr(payload, "clarification_option_id", None)
                 or getattr(payload, "image_ids", None) or enqueue_if_busy) and not request_id:
             raise self._authoring_error("A request ID is required for this interaction.", "agent_feedback_request_id_required")
         fingerprint_data = (payload.model_dump(by_alias=True, exclude={"request_id"})
@@ -735,21 +765,27 @@ class AgentAuthoringMixin:
                 raise self._authoring_error("Only a failed or interrupted turn in this draft can be retried.", "agent_feedback_retry_invalid")
         feedback_context = self._feedback_context(draft_id, revision, payload)
         reply_id = getattr(payload, "reply_to_clarification_id", None)
-        prior_feedback = next((item for item in reversed(turns) if item["kind"] == "feedback"), None)
-        pending = (prior_feedback or {}).get("decision", {}).get("pending_clarification")
-        pending_valid = (prior_feedback is not None and prior_feedback["status"] == "completed"
-                         and isinstance(pending, dict) and int(pending.get("revision") or 0) == revision)
+        questions = [item for item in pending_questions(turns, revision) if item["state"] == "pending"]
+        pending = next((item for item in questions if item["id"] == reply_id), None) if reply_id else (questions[0] if len(questions) == 1 else None)
+        option_id = getattr(payload, "clarification_option_id", None)
         short_reply = str(payload.feedback).strip().casefold() in {"可以", "好", "是", "同意", "确认", "yes", "ok", "okay", "no", "不", "不要"}
         if reply_id:
-            if not pending_valid or pending.get("id") != reply_id:
+            if pending is None:
                 raise self._authoring_error("The clarification is no longer current.", "agent_feedback_clarification_stale")
-        elif short_reply and pending_valid:
+        elif short_reply and pending is not None:
             reply_id = pending["id"]
-        elif short_reply:
+        elif short_reply or option_id:
             raise self._authoring_error("This short reply has no unique current question.", "agent_feedback_clarification_required")
         if reply_id:
+            options = pending.get("options") or []
+            option = next((item for item in options if item["id"] == option_id), None)
+            if option_id and option is None:
+                raise self._authoring_error("The clarification option is invalid.", "agent_feedback_clarification_required")
+            if short_reply and not option and (pending.get("answer_mode", "confirm") != "confirm" or options):
+                raise self._authoring_error("Choose an option or provide an unambiguous answer.", "agent_feedback_clarification_required")
             feedback_context["clarification"] = {"id": reply_id, "question": pending["question"],
-                                                   "revision": revision}
+                "options": options, "target": pending.get("target") or {}, "revision": revision,
+                "answer_mode": pending.get("answer_mode", "confirm"), "selected_option": option}
         try:
             snapshot = self._feedback_runtime_snapshot(draft)
             binding_error = None
@@ -760,8 +796,6 @@ class AgentAuthoringMixin:
                 binding_error = "agent_runtime_snapshot_failed"
         if getattr(payload, "image_ids", None) and not self._assistant_capabilities(snapshot)["image_input"]:
             raise self._authoring_error("This Runtime does not accept images.", "agent_feedback_image_unsupported")
-        if intent == "explain" and snapshot.get("provider_id") != "codex":
-            binding_error = "runtime_agent_explanation_unavailable"
         decision = {"runtime_snapshot": snapshot,
                     "agent_id": draft["agent_id"], "retry_of_turn": retry_of_turn,
                     "intent": intent, "context": feedback_context, "locale": str(payload.locale),
@@ -891,31 +925,7 @@ class AgentAuthoringMixin:
             pin = getattr(self.runtime, "pin", None)
             pin_options = {"reasoning_effort": snapshot["reasoning_effort"]} if snapshot.get("reasoning_effort") is not None else {}
             context = pin(snapshot["provider_id"], snapshot["model"], **pin_options) if callable(pin) else nullcontext()
-            history = []
-            def safe_history(value: Any) -> Any:
-                if isinstance(value, str):
-                    return re.sub(
-                        r"(?i)\b(password|token|secret|api[_-]?key|authorization)\s*[:=]\s*\S+",
-                        r"\1=[redacted]", value[:4000],
-                    )
-                if isinstance(value, dict):
-                    return {key: safe_history(item) for key, item in value.items()
-                            if not any(token in str(key).lower() for token in
-                                       ("password", "secret", "credential", "authorization", "token", "raw_rows", "protected"))}
-                if isinstance(value, list):
-                    return [safe_history(item) for item in value[:20]]
-                return value if isinstance(value, (int, float, bool)) or value is None else None
-            for item in self.store.list_agent_conversation_turns(draft_id):
-                if item["turn"] >= turn["turn"] or item["kind"] != "feedback" or item["status"] != "completed":
-                    continue
-                prior = item.get("decision") or {}
-                history.append({"turn": item["turn"], "user_message": safe_history(str(item.get("user_message") or "")),
-                                "assistant_message": safe_history(prior.get("assistant_message") or prior.get("summary")),
-                                "action": prior.get("action"),
-                                "decision": safe_history(prior.get("pending_clarification")),
-                                "base_revision": item.get("base_revision"),
-                                "result_revision": item.get("result_revision")})
-            history = history[-20:]
+            history = conversation_context(self.store.list_agent_conversation_turns(draft_id), int(turn["base_revision"]), int(turn["turn"]))
             with context:
                 supports = getattr(self.runtime, "supports", None)
                 if callable(supports) and not supports("review_agent_feedback"):
@@ -938,7 +948,19 @@ class AgentAuthoringMixin:
                 progress("generating_revision", 1)
                 images = [self._feedback_image_data(draft_id, image_id)
                           for image_id in (turn["decision"].get("context") or {}).get("image_ids") or []]
-                decision = await self._await_feedback_runtime(self.runtime.review_agent_feedback(feedback=str(payload.feedback), locale=str(payload.locale), package=runtime_package, history=history, thread_id=None if explanation or turn["decision"].get("retry_of_turn") else draft.get("thread_id"), operation_id=operation_id, intent=turn["decision"].get("intent", "revise"), feedback_context=copy.deepcopy(turn["decision"].get("context") or {}), **({"image_inputs": images} if images else {}), **({} if explanation else tool_options)), draft_id=draft_id, operation_id=operation_id, timeout=budget - (monotonic() - started))
+                event_binding = getattr(self.runtime, "bind_events", None)
+                def provider_event(kind: str, data: dict[str, Any]) -> None:
+                    # Only bounded lifecycle diagnostics, never provider prompts,
+                    # message text, credentials, paths or raw tool output.
+                    if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", kind):
+                        return
+                    public = {key: data[key] for key in ("provider_id", "resumed", "tools_enabled", "message_type", "session_id_present")
+                              if key in data and (isinstance(data[key], bool) or isinstance(data[key], str)
+                                                  and re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", data[key]))}
+                    self.store.append_agent_conversation_event(draft_id, "runtime_diagnostic", {"kind": kind, **public}, turn["turn"])
+                with event_binding(provider_event) if callable(event_binding) else nullcontext():
+                    # Native resume remains disabled until independently validated.
+                    decision = await self._await_feedback_runtime(self.runtime.review_agent_feedback(feedback=safe_context(str(payload.feedback)), locale=str(payload.locale), package=runtime_package, history=history, thread_id=None, operation_id=operation_id, intent=turn["decision"].get("intent", "revise"), feedback_context=safe_context(turn["decision"].get("context") or {}), **({"image_inputs": images} if images else {}), **({} if explanation else tool_options)), draft_id=draft_id, operation_id=operation_id, timeout=budget - (monotonic() - started))
             check_deadline()
             self._assert_operation(draft_id, operation_id, int(turn["base_revision"]))
             progress("validating_response", 2)
@@ -983,10 +1005,12 @@ class AgentAuthoringMixin:
                                   "summary": decision["summary"],
                                   "assistant_message": decision["summary"], "changed": changed}
             if action == "clarify":
-                completed_decision["pending_clarification"] = {
-                    "id": f"clarify_{uuid.uuid4().hex[:20]}", "question": decision["summary"],
-                    "revision": int(refreshed["revision"]), "turn": turn["turn"],
-                }
+                verified_target = {key: turn["decision"].get("context", {})[key]
+                                   for key in ("step", "field_path", "run_id", "acceptance_campaign_id")
+                                   if key in turn["decision"].get("context", {})}
+                completed_decision["pending_clarification"] = clarification_state(
+                    decision.get("clarification"), question=decision["summary"], revision=int(refreshed["revision"]),
+                    turn=int(turn["turn"]), identifier=f"clarify_{uuid.uuid4().hex[:20]}", target=verified_target)
             turn.update(status="completed", result_revision=int(refreshed["revision"]),
                         decision=completed_decision, diff=result["diff"] if changed else [])
             status = "completed"
@@ -1002,6 +1026,8 @@ class AgentAuthoringMixin:
             if tool_session is not None:
                 tool_broker.close_authoring_session(operation_id)
             operation = self.store.get_agent_operation_by_id(draft_id, operation_id)
+            turn["decision"]["tool_events"] = (operation.get("detail") or {}).get("tool_events") or []
+            turn["decision"]["runtime_diagnostics"] = self.store.list_agent_conversation_turn_diagnostics(draft_id, int(turn["turn"]))
             code = turn["decision"].get("error_code")
             if operation["status"] == "cancelling" and code not in {"agent_feedback_timeout", "agent_feedback_cleanup_failed"}:
                 # Cancellation is a persisted write barrier, even if a Provider
@@ -1091,6 +1117,10 @@ class AgentAuthoringMixin:
         return self.conversation(draft_id)
 
     async def stop(self) -> None:
+        image_cleanup = getattr(self, "_feedback_image_cleanup_task", None)
+        if image_cleanup is not None:
+            image_cleanup.cancel()
+            await asyncio.gather(image_cleanup, return_exceptions=True)
         for draft in self.store.list_agent_authoring_drafts():
             for turn in self.store.list_agent_conversation_turns(draft["draft_id"]):
                 # Persisted turns may outlive the in-memory asyncio task (for

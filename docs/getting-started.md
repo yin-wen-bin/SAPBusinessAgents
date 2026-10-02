@@ -6,7 +6,7 @@
 
 ### 安装前
 
-本地执行环境面向 Windows。Python 最低3.11，推荐CI使用的3.13；Node.js最低22.13.0，CI使用Node 22。先安装Git、Python及Node.js，准备只读SAP账户。SDK版本不代表模型一定可用，登录与模型检查在系统配置中单独完成。
+本地执行环境面向 Windows。Python 最低3.11，推荐CI使用的3.13；Node.js最低22.19.0，CI使用Node 22。先安装Git、Python及Node.js，准备只读SAP账户。SDK版本不代表模型一定可用，登录与模型检查在系统配置中单独完成。
 
 按[根README安装步骤](../README.md#首次安装与启动)从 `v0.1.0` 标签克隆并创建本地 `main`，再建立虚拟环境、安装Python依赖，并在site目录执行`npm ci`。仅解压源码ZIP可以浏览或运行，但没有Git仓库时不能使用Agent发布流程。只在`.env`不存在时复制`.env.example`；填写SAP_BASE_URL、SAP_USERNAME、SAP_PASSWORD、SAP_CLIENT等本地OData配置。也可使用受保护的SAPBA_SAP_ENV_FILE。需要Skill的功能请继续完成[README中的SAPSkillhub安装与离线核对](../README.md#安装平台批准的-sapskillhub-skill)；SAPSKILLHUB_ROOT须指向仓库外固定提交的绝对路径，ADT连接和来源Profile另外配置。启用自由查询或Agent对话编写前，先阅读[full access安全边界](../SECURITY.md)。
 
@@ -37,7 +37,7 @@
 
 ### Before installation
 
-The local environment targets Windows. Python 3.11 is the minimum; CI uses/recommends 3.13. Node.js requires at least 22.13.0; CI uses Node 22. Install Git, Python and Node.js and obtain a read-only SAP account. SDK installation does not prove model compatibility; login and model checks are separate settings steps.
+The local environment targets Windows. Python 3.11 is the minimum; CI uses/recommends 3.13. Node.js requires at least 22.19.0; CI uses Node 22. Install Git, Python and Node.js and obtain a read-only SAP account. SDK installation does not prove model compatibility; login and model checks are separate settings steps.
 
 Follow the [README installation](../README.md#first-installation-and-startup): clone the `v0.1.0` tag, create a local `main`, create a virtual environment, install Python dependencies, and run `npm ci` in site. A source ZIP can be browsed or run, but Agent publication requires the Git repository. Copy `.env.example` only when `.env` does not exist. Set local OData connection values or use a protected SAPBA_SAP_ENV_FILE. For Skill-dependent features, complete the [SAPSkillhub setup and offline checks in the README](../README.md#install-platform-approved-sapskillhub-skills): SAPSKILLHUB_ROOT must be an absolute path to the pinned checkout outside the repository, with separate ADT and source-profile configuration. Read the [full-access security boundary](../SECURITY.md) before enabling free queries or conversational Agent authoring.
 

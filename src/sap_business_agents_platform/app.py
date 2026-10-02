@@ -427,6 +427,7 @@ def create_app(
         await coordinator.start()
         await role_matching.start()
         workflow_drafts.assistant.recover()
+        await agent_lifecycle.start_feedback_image_cleanup()
         try:
             yield
         finally:
@@ -2238,23 +2239,8 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(404, "Agent draft not found") from exc
 
-        async def stream() -> AsyncIterator[str]:
-            try:
-                resumed = int(request.headers.get("last-event-id") or "0")
-            except ValueError:
-                resumed = 0
-            sequence = max(after, resumed)
-            while not await request.is_disconnected():
-                events = agent_lifecycle.store.list_agent_conversation_events(draft_id, sequence)
-                for event in events:
-                    sequence = event["sequence"]
-                    yield (f"id: {sequence}\nevent: {event['kind']}\n"
-                           f"data: {json.dumps(event, ensure_ascii=False)}\n\n")
-                if not events:
-                    yield ": heartbeat\n\n"
-                await asyncio.sleep(1)
-
-        return StreamingResponse(stream(), media_type="text/event-stream",
+        from .agent_feedback_events import stream_feedback_events
+        return StreamingResponse(stream_feedback_events(request, agent_lifecycle.store, draft_id, after=after), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.post("/api/authoring/agents/{draft_id}/feedback/{turn_number}/cancel")

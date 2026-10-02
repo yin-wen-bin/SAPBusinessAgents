@@ -31,7 +31,7 @@ SAP 访问限于 OData GET 或已批准的语义只读 ADT 查询。查询、催
 
 ### 首次安装与启动
 
-Windows 本地运行；Python 最低 **3.11**，推荐与 CI 一致的 **3.13**；Node.js **22.13.0 或以上**（CI 使用 Node 22）。先安装 Git、Python、Node.js，并准备有只读权限的 SAP 连接。以下从 Release 标签取得源码并保留 Git 仓库；Agent 发布功能需要干净的本地 `main`，仅解压 GitHub 自动生成的源码 ZIP 不具备这一条件。
+Windows 本地运行；Python 最低 **3.11**，推荐与 CI 一致的 **3.13**；Node.js **22.19.0 或以上**（CI 使用 Node 22）。先安装 Git、Python、Node.js，并准备有只读权限的 SAP 连接。以下从 Release 标签取得源码并保留 Git 仓库；Agent 发布功能需要干净的本地 `main`，仅解压 GitHub 自动生成的源码 ZIP 不具备这一条件。
 
 在 PowerShell 中：
 
@@ -237,7 +237,7 @@ Selected tasks: [AR collection](agents/FI/ar-collection/README.md), [bank reconc
 
 ### First installation and startup
 
-Use Windows locally. Python **3.11** is the minimum; **3.13** is recommended to match CI. Node.js must be **22.13.0 or newer** (CI uses Node 22). Install Git, Python and Node.js, and obtain a read-only SAP connection. The commands below obtain the Release tag while retaining a Git repository. Agent publication requires a clean local `main`; extracting GitHub's automatic source ZIP alone does not provide one.
+Use Windows locally. Python **3.11** is the minimum; **3.13** is recommended to match CI. Node.js must be **22.19.0 or newer** (CI uses Node 22). Install Git, Python and Node.js, and obtain a read-only SAP connection. The commands below obtain the Release tag while retaining a Git repository. Agent publication requires a clean local `main`; extracting GitHub's automatic source ZIP alone does not provide one.
 
 In PowerShell:
 

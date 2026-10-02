@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -2490,11 +2491,22 @@ class RunStore:
             if not isinstance(detail, dict):
                 detail = {}
             events = list(detail.get("tool_events") or [])[-99:]
-            events.append(event)
+            public = {key: value[:100] if isinstance(value, str) else value
+                      for key, value in event.items() if key in {"tool", "at", "status", "code"}
+                      and (isinstance(value, (bool, int)) or isinstance(value, str)
+                           and re.fullmatch(r"[A-Za-z0-9_.:+-]{1,100}", value))}
+            events.append(public)
             detail["tool_events"] = events
             connection.execute(
                 "UPDATE agent_draft_operations SET detail_json = ?, updated_at = ? WHERE draft_id = ? AND operation_id = ?",
                 (_dump(detail), utc_now(), draft_id, operation_id),
+            )
+            sequence = int(connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_conversation_events WHERE draft_id = ?", (draft_id,),
+            ).fetchone()[0])
+            connection.execute(
+                "INSERT INTO agent_conversation_events (draft_id,sequence,turn,kind,payload_json,created_at) VALUES (?,?,?,?,?,?)",
+                (draft_id, sequence, detail.get("turn"), "tool_summary", _dump(public), utc_now()),
             )
             return True
 
@@ -3063,6 +3075,16 @@ class RunStore:
                 "SELECT COALESCE(MAX(sequence), 0) FROM agent_conversation_events WHERE draft_id = ?",
                 (draft_id,),
             ).fetchone()[0])
+
+    def list_agent_conversation_turn_diagnostics(self, draft_id: str, turn: int) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_conversation_events WHERE draft_id = ? AND turn = ? "
+                "AND kind IN ('tool_summary','runtime_diagnostic') ORDER BY sequence DESC LIMIT 100",
+                (draft_id, turn),
+            ).fetchall()
+        return [{"sequence": int(row["sequence"]), "turn": row["turn"], "kind": row["kind"],
+                 "payload": _load(row["payload_json"], {}), "created_at": row["created_at"]} for row in reversed(rows)]
 
     def create_agent_acceptance_campaign(
         self, *, campaign: dict[str, Any], cases: list[dict[str, Any]],

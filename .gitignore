@@ -14,6 +14,7 @@ htmlcov/
 .prototype/
 .local-scaffold/
 output/
+outputs/
 out/
 .artifacts/
 

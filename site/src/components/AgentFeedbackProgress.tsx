@@ -13,6 +13,11 @@ const phaseLabels: Record<string, [string, string]> = {
   finalizing: ["正在收尾", "Finalizing"],
   cancelling: ["正在取消并清理", "Cancelling and cleaning up"],
 };
+const explainPhaseLabels: Record<string, [string, string]> = {
+  starting: ["正在启动解释任务", "Starting explanation task"],
+  generating_revision: ["调查草稿并准备解释", "Investigating the draft and preparing an explanation"],
+  validating_response: ["校验解释结果", "Validating the explanation"],
+};
 
 function failureCode(turn: any): string {
   if (turn?.decision?.error_code) return String(turn.decision.error_code);
@@ -36,6 +41,7 @@ export function FeedbackProgressSummary({ turn, operation, locale, connectionErr
     return () => window.clearInterval(timer);
   }, [active]);
   const detail = operation?.detail || {};
+  const explain = (turn?.decision?.intent || detail.intent) === "explain";
   const timingTurn = {
     ...turn,
     status,
@@ -52,22 +58,22 @@ export function FeedbackProgressSummary({ turn, operation, locale, connectionErr
   const timing = feedbackTiming(timingTurn, now);
   const snapshot = turn?.decision?.runtime_snapshot;
   const phaseKey = status === "cancelling" ? "cancelling" : String(detail.phase || status);
-  const phase = phaseLabels[phaseKey]?.[locale === "zh" ? 0 : 1];
+  const phase = (explain && explainPhaseLabels[phaseKey] || phaseLabels[phaseKey])?.[locale === "zh" ? 0 : 1];
   const completedUnits = detail.completed_units;
   const totalUnits = detail.total_units;
   const changed = turn?.decision?.changed === true || (Number.isInteger(turn?.result_revision) && Number.isInteger(turn?.base_revision) && turn.result_revision !== turn.base_revision);
-  const outcome = active ? phase || tr("正在处理修改意见", "Processing revision request")
+  const outcome = active ? phase || (explain ? tr("正在解释问题", "Explaining the issue") : tr("正在处理修改意见", "Processing revision request"))
     : status === "completed" && changed ? tr(`修改已完成，已保存修订 ${turn.result_revision}`, `Changes completed and saved as revision ${turn.result_revision}`)
-    : status === "completed" ? tr("本轮处理已完成", "This revision turn is complete")
+    : status === "completed" ? explain ? tr("解释已完成，草稿未修改", "Explanation completed; the draft was not modified") : tr("本轮处理已完成", "This revision turn is complete")
     : status === "cancelled" ? tr("本轮已取消", "This turn was cancelled")
     : status === "failed" || status === "timed_out" || status === "expired" || status === "interrupted" ? tr("本轮执行失败", "This turn failed")
-    : phase || tr("正在启动修改任务", "Starting revision task");
+    : phase || (explain ? tr("正在启动解释任务", "Starting explanation task") : tr("正在启动修改任务", "Starting revision task"));
   return <div className="feedback-progress-summary">
     <p role="status">{active && <span className="sample-spinner" aria-hidden="true" />}{outcome}</p>
     <p>{tr("已耗时", "Elapsed")}: {feedbackDuration(timing.elapsed_seconds, locale)} / {tr("本轮时限", "Turn limit")}: {feedbackDuration(timing.timeout_seconds, locale)}</p>
     <div className="draft-feedback-metrics">
-      <span>{tr("模型", "Model")}: {snapshot?.model || tr("正在读取系统配置", "Reading system configuration")}</span>
-      <span>{tr("推理强度", "Reasoning effort")}: {snapshot ? feedbackEffort(snapshot.reasoning_effort, locale) : tr("正在读取", "Loading")}</span>
+      <span>{tr("模型", "Model")}: {snapshot?.model || (active ? tr("正在读取系统配置", "Reading system configuration") : tr("未记录", "Not recorded"))}</span>
+      <span>{tr("推理强度", "Reasoning effort")}: {snapshot ? feedbackEffort(snapshot.reasoning_effort, locale) : active ? tr("正在读取", "Loading") : tr("未记录", "Not recorded")}</span>
     </div>
     {Number.isInteger(completedUnits) && Number.isInteger(totalUnits) && <p>{tr("已完成阶段", "Completed stages")}: {completedUnits} / {totalUnits}</p>}
     {timing.deadline_reached && <p role="status">{tr("已到本轮截止时间，正在等待服务确认终态；请勿重复发送。", "The turn deadline has been reached. Waiting for the server to confirm the terminal state; do not submit a duplicate.")}</p>}
@@ -85,6 +91,7 @@ export default function AgentFeedbackProgress({ open, turn, operation, locale, c
   const operationStatus = String(operation?.status || "");
   const status = operationStatus === "cancelling" ? "cancelling" : String(turn?.status || operationStatus || "starting");
   const active = activeStates.has(status);
+  const explain = (turn?.decision?.intent || operation?.detail?.intent) === "explain";
   const retryable = canRetryFeedback(turn);
   const changed = turn?.decision?.changed === true || (Number.isInteger(turn?.result_revision) && Number.isInteger(turn?.base_revision) && turn.result_revision !== turn.base_revision);
   const turnNumber = operation?.detail?.turn ?? turn?.turn ?? turn?.turn_number;
@@ -96,12 +103,14 @@ export default function AgentFeedbackProgress({ open, turn, operation, locale, c
     return () => { if (dialog.current?.open) dialog.current.close(); previous?.focus(); };
   }, [open]);
 
-  const title = active ? tr("正在处理修改意见", "Processing revision request")
+  const title = explain ? active ? tr("正在解释问题", "Explaining the issue")
+    : status === "completed" ? tr("解释请求已完成", "Explanation request completed") : tr("解释请求结果", "Explanation request result")
+    : active ? tr("正在处理修改意见", "Processing revision request")
     : status === "completed" ? tr("修改意见处理完成", "Revision request completed")
     : tr("修改意见处理结果", "Revision request result");
   return <dialog ref={dialog} className="sample-progress-dialog feedback-progress-dialog" aria-labelledby="feedback-progress-title" onClose={onAfterClose} onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <header><h2 id="feedback-progress-title">{title}</h2><button type="button" className="agent-secondary-action" aria-label={tr("关闭对话框，不取消任务", "Close dialog without cancelling")} onClick={onClose}>×</button></header>
-    <p>{tr("系统正在根据您的意见调查草稿、生成修改并校验结果。完成后仍需您检查Diff，Agent不会自动发布。", "The system is investigating the draft, preparing changes, and validating the result. You must still review the diff; the Agent is never published automatically.")}</p>
+    <p>{explain ? tr("本轮只分析已保存的草稿并回答问题，不修改草稿，也不会发布 Agent。", "This turn analyzes the saved draft and answers your question. It does not modify the draft or publish the Agent.") : tr("系统正在根据您的意见调查草稿、生成修改并校验结果。完成后仍需您检查Diff，Agent不会自动发布。", "The system is investigating the draft, preparing changes, and validating the result. You must still review the diff; the Agent is never published automatically.")}</p>
     <FeedbackProgressSummary turn={turn} operation={operation} locale={locale} connectionError={connectionError} />
     {!active && errorMessage && <p className="agent-alert error" role="alert">{errorMessage}</p>}
     <footer>{active ? <>

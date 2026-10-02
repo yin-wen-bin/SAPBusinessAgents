@@ -80,6 +80,12 @@ export function feedbackFailureText(code: unknown, locale: Locale): string {
     runtime_agent_explanation_unavailable: ["当前 Runtime 无法保障只读解释模式，请更换受支持的 Runtime。", "The current Runtime cannot guarantee read-only explanation mode. Select a supported Runtime."],
     agent_explanation_write_rejected: ["解释模式返回了修改内容，服务端已拒绝且未创建修订。", "Explanation mode returned a modification. The server rejected it and created no revision."],
     agent_feedback_context_invalid: ["解释请求引用的字段或运行记录不属于当前草稿，请刷新后重试。", "The referenced field or run record does not belong to this draft. Refresh and retry."],
+    agent_feedback_context_stale: ["引用的试运行或验收记录属于旧修订，请重新选择当前报告。", "The referenced trial or acceptance belongs to an old revision. Select the current report."],
+    agent_feedback_clarification_required: ["请选择明确选项或说明完整答案；不能用简短确认回答多个或开放问题。", "Choose an explicit option or provide a complete answer; a short confirmation cannot answer multiple or open questions."],
+    agent_feedback_clarification_stale: ["该澄清问题已回答或修订已变化，请重新确认当前问题。", "The clarification was answered or its revision changed. Confirm the current question again."],
+    agent_feedback_annotation_invalid: ["标注目标已变化或不属于当前修订，请重新定位并标注。", "The annotation target changed or does not belong to the current revision. Locate and annotate it again."],
+    agent_feedback_selection_invalid: ["选中文字与保存的对象不一致，请保存并重新选择。", "The selected text does not match the saved object. Save and select again."],
+    agent_harness_platform_approval_required: ["草稿助手尝试修改平台源码，控制器已拒绝；本轮未应用修改。", "The draft assistant attempted a platform source edit. The controller rejected it; no changes were applied."],
     runtime_not_selectable: ["本轮使用的 Runtime 暂不可用，请检查系统配置后重试。", "The Runtime for this turn is unavailable. Check system settings before retrying."],
     runtime_model_check_required: ["本轮模型与推理强度尚未通过兼容检查，请在系统配置中完成检查。", "The model and reasoning effort require a compatibility check in system settings."],
     runtime_reasoning_effort_unsupported: ["本轮推理强度不受支持，请检查该模型的配置。", "The reasoning effort for this turn is unsupported. Check this model's settings."],
@@ -91,7 +97,6 @@ export function feedbackFailureText(code: unknown, locale: Locale): string {
     agent_authoring_context_too_large: ["当前定义与对话内容过长，请缩小本轮修改范围后重试。", "The definition and conversation are too large. Narrow the requested change before retrying."],
     agent_harness_sandbox_preflight_failed: ["隔离工作区预检未通过，本轮未开放工具执行。已接受的回环限制不会绕过文件权限检查。", "Workspace isolation preflight failed; tools were not started. The accepted loopback limitation does not waive filesystem checks."],
     agent_harness_sandbox_preflight_timeout: ["隔离命令启动预检超时，尚未进入模型修改阶段，未应用修改。请检查本机 SDK 沙盒状态后重试。", "Sandbox command startup preflight timed out before model editing. No changes were applied. Check the local SDK sandbox and retry."],
-    agent_harness_platform_approval_required: ["本轮涉及平台源码修改，不能通过 Agent 包修订直接应用。隔离工作区已保留，需单独审查平台变更。", "This turn changed platform source, which cannot be applied as an Agent package revision. The isolated workspace is retained for separate review."],
     agent_harness_ambiguous_changes: ["本轮同时返回文件修改和 JSON 修改，未应用歧义结果。请重试并采用一种修改方式。", "This turn mixed file edits and JSON edits. Ambiguous changes were not applied; retry using one editing method."],
     agent_harness_policy_invalid: ["本轮编写工具策略无效，未开放工具。", "The authoring tool policy is invalid; tools were not enabled."],
     runtime_sdk_initialization_timeout: ["SDK 初始化超时，尚未执行修改。请检查客户端连接后重试。", "SDK initialization timed out before editing. Check the client connection and retry."],
@@ -117,7 +122,7 @@ export type FeedbackRequest = {
   intent: "explain" | "revise"; step?: DraftStep; fieldPath?: string;
     runId?: string; acceptanceCampaignId?: string; retryOfTurn?: number; requestId: string;
     annotations?: { kind: "manifest_field" | "static_issue" | "trial_issue" | "acceptance_issue"; path: string; comment: string; revision: number; sourceId?: string; sourceDigest?: string }[];
-    replyToClarificationId?: string; enqueueIfBusy?: boolean;
+    replyToClarificationId?: string; clarificationOptionId?: string; enqueueIfBusy?: boolean;
     imageIds?: string[];
     selection?: { kind: "manifest_field" | "rules" | "readme" | "trial_report" | "acceptance_report"; path: string; excerpt: string; revision: number; sourceId?: string; sourceDigest?: string };
 };
@@ -129,11 +134,28 @@ export function prepareFeedbackRequest(previous: FeedbackRequest | null, next: O
     && previous.acceptanceCampaignId === next.acceptanceCampaignId
       && previous.retryOfTurn === next.retryOfTurn
       && previous.replyToClarificationId === next.replyToClarificationId
+      && previous.clarificationOptionId === next.clarificationOptionId
       && previous.enqueueIfBusy === next.enqueueIfBusy
       && JSON.stringify(previous.imageIds || []) === JSON.stringify(next.imageIds || [])
       && JSON.stringify(previous.selection || null) === JSON.stringify(next.selection || null)
       && JSON.stringify(previous.annotations || []) === JSON.stringify(next.annotations || [])) return previous;
   return { ...next, requestId: createId() };
+}
+
+export type FeedbackObjectReference = {
+  revision: number; kind?: string; path?: string; step?: DraftStep;
+  sourceId?: string; sourceDigest?: string; resultRevision?: number;
+};
+/** Navigation derives from the semantic object; selectors/coordinates never travel to the API. */
+export function feedbackObjectStep(reference: FeedbackObjectReference): DraftStep {
+  if (reference.kind === "revision") return "publish";
+  if (reference.kind === "static_issue") return "logic";
+  if (reference.kind === "trial_issue" || reference.kind === "trial_report") return "trial";
+  if (reference.kind === "acceptance_issue" || reference.kind === "acceptance_report") return "acceptance";
+  const path = reference.path || "";
+  if (/^\/manifest\/(title|summary|owner|sapModules)(\/|$)/.test(path)) return "purpose";
+  if (/^\/manifest\/(inputs|outputs|execution\/(inputSchema|outputSchema))(\/|$)/.test(path)) return "io";
+  return reference.step || "logic";
 }
 export function presentationCell(row: any, index: number, key: string): any {
   if (Array.isArray(row?.values)) return row.values[index];
