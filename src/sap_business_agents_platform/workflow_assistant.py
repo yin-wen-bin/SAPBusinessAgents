@@ -102,6 +102,8 @@ class WorkflowAssistant:
     def snapshot(self, draft_id: str) -> dict:
         draft = self.store.get_workflow_draft(draft_id)
         from .workflow_authoring_runtime import capabilities
+        if (state(draft).get("runtime_snapshot") or {}).get("provider_id") == "workbuddy":
+            from .workbuddy_authoring import capabilities
         return {**state(draft), "draft_id": draft_id, "revision": draft.revision,
                 "workflow_hash": workflow_digest(draft.workflow), "capabilities": capabilities("restricted")}
 
@@ -131,6 +133,8 @@ class WorkflowAssistant:
                 method = getattr(self.service.author, "snapshot", None)
                 provider = str(getattr(self.service.author, "current_provider_id", "codex"))
                 value["runtime_snapshot"] = bound or (method(provider) if callable(method) else {"provider_id": provider})
+            if value["runtime_snapshot"].get("provider_id") == "workbuddy" and payload["executionMode"] != "full_access":
+                raise WorkflowDraftError("WorkBuddy Windows restricted mode is unverified. Select trusted local explicitly.", code="workbuddy_windows_restricted_unverified")
             pending = [r for r in value["rounds"] if r["status"] == "queued"]
             if len(pending) >= 3:
                 raise WorkflowDraftError("There are already three waiting messages.", code="workflow_assistant_queue_full")
@@ -213,11 +217,28 @@ class WorkflowAssistant:
             task.add_done_callback(finished)
 
     async def run(self, draft_id: str, item: dict) -> None:
+        if (item.get("runtime_snapshot", {}).get("provider_id") == "workbuddy"
+                and not self.service.author.workbuddy_reserved()):
+            async with self.service.author.workbuddy_reservation():
+                return await self.run(draft_id, item)
         request = item["request_id"]
         cleanup: dict = {"complete": True}
         try:
             draft = self.store.get_workflow_draft(draft_id)
             snapshot = item["runtime_snapshot"]
+            if snapshot.get("provider_id") == "workbuddy":
+                def acquired(current: Any):
+                    round_ = next(r for r in state(current)["rounds"] if r["request_id"] == request)
+                    if current.revision != item["base_revision"] or workflow_digest(current.workflow) != item["base_hash"]:
+                        round_.update(status="needs_review", failure_code="workflow_revision_conflict")
+                        event(current, request, "needs_review")
+                    elif round_["status"] == "running":
+                        round_["started_at"] = utc_now()
+                        event(current, request, "execution_started", {"provider": "workbuddy"})
+                self.store.mutate_workflow_assistant(draft_id, acquired)
+                draft = self.store.get_workflow_draft(draft_id)
+                if next(r for r in state(draft)["rounds"] if r["request_id"] == request)["status"] != "running":
+                    return
             provider, model, effort = str(snapshot.get("provider_id") or "codex"), snapshot.get("model"), snapshot.get("reasoning_effort")
             def emit(phase: str, data: dict):
                 def append(current: Any):
@@ -235,12 +256,15 @@ class WorkflowAssistant:
             if not callable(method):
                 raise WorkflowDraftError("The provider does not implement workflow_authoring.v2.", code="workflow_provider_unavailable")
             pin = getattr(self.service.author, "pin", None)
-            with pin(provider, model, effort) if callable(pin) else nullcontext():
+            bound = getattr(self.service.author, "pin_snapshot", None)
+            context = bound(snapshot) if provider == "workbuddy" and callable(bound) else pin(provider, model, effort) if callable(pin) else nullcontext()
+            with context:
                 async with asyncio.timeout(item["budget_seconds"]):
                     result = await method(workflow=safe_context(draft.workflow), message=item["message"], intent=item["intent"],
                         execution_mode=item["execution_mode"], history=safe_context(history),
                         catalog=compact_agent_catalog(self.service.agents), references=item["references"],
-                        emit=emit, cleanup_state=cleanup)
+                        emit=emit, cleanup_state=cleanup,
+                        **({"request_id": request} if provider == "workbuddy" else {}))
             def commit(current: Any):
                 round_ = next(r for r in state(current)["rounds"] if r["request_id"] == request)
                 if round_["status"] != "running":

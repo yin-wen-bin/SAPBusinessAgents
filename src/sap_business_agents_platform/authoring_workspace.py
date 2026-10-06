@@ -153,16 +153,48 @@ class AuthoringWorkspace:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
 
-    def read_package(self) -> dict[str, Any]:
+    def read_package(self, *, exclude_test_artifacts: bool = False) -> dict[str, Any]:
         self._check_links_and_size()
         files = {}
         folder = self.agent / "files"
         if folder.exists():
-            files = {p.relative_to(folder).as_posix(): p.read_text(encoding="utf-8") for p in folder.rglob("*") if p.is_file()}
+            if exclude_test_artifacts:
+                files = self._read_package_files_without_test_artifacts(folder)
+            else:
+                # Preserve the existing Codex readback path. WorkBuddy opts in
+                # explicitly after receiving a valid native terminal result.
+                files = {p.relative_to(folder).as_posix(): p.read_text(encoding="utf-8") for p in folder.rglob("*") if p.is_file()}
         return {"manifest": json.loads((self.agent / "manifest.json").read_text(encoding="utf-8")),
                 "readme": (self.agent / "README.md").read_text(encoding="utf-8"),
                 "rules": (self.agent / "rules.py").read_text(encoding="utf-8") if (self.agent / "rules.py").exists() else None,
                 "files": files}
+
+    def _read_package_files_without_test_artifacts(self, folder: Path) -> dict[str, str]:
+        files = {}
+        total = 0
+        # Inspect caches too, before excluding them from the proposal. Never
+        # follow a link, swallow arbitrary binary content, or delete artifacts.
+        for current, dirs, names in os.walk(folder, followlinks=False):
+            for name in [*dirs, *names]:
+                path = Path(current) / name
+                if path.is_symlink() or getattr(path, "is_junction", lambda: False)() or not path.resolve().is_relative_to(folder):
+                    raise AuthoringHarnessError("agent_harness_path_invalid")
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+                if stat.st_nlink > 1:
+                    raise AuthoringHarnessError("agent_harness_source_link_rejected")
+                total += stat.st_size
+                if stat.st_size > 2 * 1024 * 1024 or total > 50 * 1024 * 1024:
+                    raise AuthoringHarnessError("agent_harness_source_too_large")
+                relative = path.relative_to(folder)
+                if any(part in {"__pycache__", ".pytest_cache"} for part in relative.parts) or path.suffix in {".pyc", ".pyo"}:
+                    continue
+                try:
+                    files[relative.as_posix()] = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    raise AuthoringHarnessError("agent_harness_binary_file_unsupported") from None
+        return files
 
     def _check_links_and_size(self) -> None:
         total = 0

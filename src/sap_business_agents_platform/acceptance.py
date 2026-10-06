@@ -109,6 +109,8 @@ def validate_direct_baseline(
     case: CanonicalTestCase | None = None,
 ) -> JsonObject:
     baseline_version = str(value.get("schema_version") or "1.0")
+    if baseline_version == "workbuddy-baseline/1":
+        return _validate_workbuddy_baseline(value, case)
     if baseline_version == "4.0":
         if value.get("runtime") != "codex_sdk_direct_sap":
             raise ValueError("direct baseline v4 runtime must be codex_sdk_direct_sap")
@@ -420,6 +422,38 @@ def _validate_supplemental_adt_source(value: Any, index: int) -> None:
             raise ValueError(
                 f"direct baseline supplemental_sources[{index}].{field} must be true"
             )
+
+
+def _validate_workbuddy_baseline(value: JsonObject, case: CanonicalTestCase | None) -> JsonObject:
+    from .workbuddy_identity import checked_identity
+    if (value.get("runtime") != "workbuddy_sdk_direct_sap" or value.get("candidate_access") is not False
+            or value.get("used_sap_business_agents") is not False):
+        raise ValueError("WorkBuddy baseline isolation contract invalid")
+    snapshot = value.get("runtime_snapshot") or {}
+    if (snapshot.get("provider_id") != "workbuddy" or not checked_identity(snapshot, flag="model_identity_known")
+            or snapshot.get("reasoning_effort") is not None or not snapshot.get("actual_model")
+            or snapshot.get("model") != snapshot.get("actual_model")
+            or not all(snapshot.get(field) for field in ("environment_digest", "model", "configuration_digest", "sdk_fingerprint"))):
+        raise ValueError("WorkBuddy concrete Runtime binding is required")
+    sources = value.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise ValueError("WorkBuddy baseline sources required")
+    for source in sources:
+        if (not isinstance(source, dict) or source.get("read_only") is not True
+                or not source.get("evidence_ref") or source.get("http_method") not in {"GET", "POST"}
+                or source.get("http_method") == "POST" and source.get("semantic_read_only") is not True):
+            raise ValueError("WorkBuddy baseline source not approved read-only evidence")
+    normalized = value.get("normalized_result")
+    if not isinstance(normalized, dict):
+        raise ValueError("WorkBuddy normalized result missing")
+    _validate_normalized_result(normalized, version="4.0")
+    if value.get("result_hash") != canonical_hash(normalized):
+        raise ValueError("WorkBuddy baseline result hash mismatch")
+    if normalized.get("source_complete") is not True and not (normalized.get("evidence_gap_codes") or normalized.get("limitations")):
+        raise ValueError("Incomplete WorkBuddy baseline must declare evidence gaps")
+    if case is not None and case.schema_version == "2.0":
+        _validate_case_evidence(value, normalized, case)
+    return normalized
 
 
 def _validate_normalized_result(value: JsonObject, *, version: str = "1.0") -> None:

@@ -799,6 +799,12 @@ class AgentRuntimeCapability:
         return {name: bool(value.get(name)) for name in
                 ("stream_events", "resume", "steer", "image_input")}
 
+    def workbuddy_reservation(self):
+        return self._planner().workbuddy_reservation()
+
+    def workbuddy_reserved(self):
+        return self._planner().workbuddy_reserved()
+
     def plugin_metadata(self, operation: str) -> dict[str, Any]:
         capability = (
             "workflow_authoring.v2" if operation == "author_workflow_v2" else
@@ -860,6 +866,14 @@ class AgentRuntimeCapability:
 
             return nullcontext()
         return method(provider_id, model_id, reasoning_effort)
+
+    def pin_snapshot(self, snapshot: dict) -> Any:
+        method = getattr(self._planner(), "pin_snapshot", None)
+        return method(snapshot) if callable(method) else self.pin(snapshot.get("provider_id"), snapshot.get("model"), snapshot.get("reasoning_effort"))
+
+    def snapshot_for_binding(self, snapshot: dict) -> dict:
+        method = getattr(self._planner(), "snapshot_for_binding", None)
+        return method(snapshot) if callable(method) else snapshot
 
     def resolve_legacy_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         method = getattr(self._planner(), "resolve_legacy_snapshot", None)

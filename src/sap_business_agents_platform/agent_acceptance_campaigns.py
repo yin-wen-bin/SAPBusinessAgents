@@ -126,6 +126,7 @@ class AgentAcceptanceJobs:
             })
         request_hash = canonical_hash({
             "revision": revision,
+            **({"runtime_model_id": payload.runtime_model_id} if payload.runtime_model_id else {}),
             "cases": [{"case_id": item["case_id"], "input": item["input"],
                        "sensitive_fingerprints": item["sensitive_fingerprints"]} for item in cases],
         })
@@ -189,6 +190,12 @@ class AgentAcceptanceJobs:
             )
         try:
             runtime = self.sdk_manager.runtime_snapshot()
+            if runtime.get("provider_id") == "workbuddy":
+                runtime = self.sdk_manager.workbuddy.runtime_snapshot(payload.runtime_model_id, formal=True)
+                for operation in ("acceptance_baseline", "acceptance_free_query"):
+                    self.sdk_manager.workbuddy.environment.assert_operation(runtime, operation)
+            elif payload.runtime_model_id:
+                raise AgentLifecycleError("runtimeModelId is only supported for WorkBuddy acceptance.", code="agent_acceptance_runtime_model_invalid")
         except Exception as exc:
             raise AgentLifecycleError(str(exc), code=str(getattr(exc, "code", "runtime_not_selectable"))) from exc
 
@@ -681,6 +688,8 @@ class AgentAcceptanceJobs:
                         failure_stage=self.get(draft_id, campaign_id).get("phase"), diagnostics=self._run_diagnostics(run_id))
                 if record.status in {RunStatus.failed, RunStatus.cancelled}:
                     code = str((record.error or {}).get("code") or "agent_acceptance_stage_failed")
+                    if code == "workbuddy_deadline_exceeded":
+                        code = "agent_acceptance_stage_timeout"
                     detail = (record.error or {}).get("detail") or {}
                     issues = detail.get("validation_issues") if isinstance(detail, dict) else []
                     category = "contract" if code == "acceptance_report_validation_failed" else "environment"
@@ -1080,6 +1089,8 @@ def _baseline_payload(run: dict[str, Any], normalized: dict[str, Any], runtime: 
         "schema_version": "4.0", "runtime": "codex_sdk_direct_sap",
         "used_sap_business_agents": False, "candidate_access": False,
         "runtime_snapshot": copy.deepcopy(runtime), "sources": sources,
+        **({"schema_version": "workbuddy-baseline/1", "runtime": "workbuddy_sdk_direct_sap"}
+           if runtime.get("provider_id") == "workbuddy" else {}),
         "tool_summary": [
             {"tool": tool, "count": sum(item["tool"] == tool for item in sources)}
             for tool in sorted({str(item["tool"]) for item in sources})

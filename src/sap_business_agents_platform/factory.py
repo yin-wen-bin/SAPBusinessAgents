@@ -132,6 +132,8 @@ class AgentDraftService:
                 provider_id = run.runtime.provider_id if run.runtime else "codex"
                 model_id = run.runtime.model if run.runtime else None
                 context = pin(provider_id, model_id, getattr(run.runtime, "reasoning_effort", None) if run.runtime else None) if callable(pin) else nullcontext()
+                if provider_id == "workbuddy":
+                    context = self.author.pin_snapshot(run.runtime.model_dump(mode="json"))
                 with context:
                     authored = await author_draft(
                         thread_id=run.thread_id,

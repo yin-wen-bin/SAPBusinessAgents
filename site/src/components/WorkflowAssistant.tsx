@@ -105,7 +105,7 @@ export default function WorkflowAssistant(props: Props) {
         const requestId = crypto.randomUUID();
         const draft = await props.prepare(intent, requestId);
         const body = { requestId, baseTurn: 1, baseRevision: draft.revision, feedback: text.trim(), locale: props.locale,
-          intent, executionMode: mode, trustedLocalConfirmed: mode === "full_access", budgetSeconds: 600,
+          intent, executionMode: mode, trustedLocalConfirmed: mode === "full_access", budgetSeconds: 3600,
           replyToClarificationId: reply?.clarification_id ?? null,
           references: props.fieldPath && !props.dirty ? [{ kind: "workflow_field", draftId: draft.draft_id, revision: draft.revision, path: props.fieldPath }] : [] };
         pending.current = { url: `${props.apiBase}/api/authoring/workflows/${encodeURIComponent(draft.draft_id)}/feedback`, body };

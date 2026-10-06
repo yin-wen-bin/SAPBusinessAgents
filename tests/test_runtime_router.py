@@ -162,7 +162,7 @@ def test_workbuddy_adapter_denies_builtin_tools_and_resumes_session(
             self.is_error = False
             self.errors: list[str] = []
             self.result = response
-            self.structured_output = None
+            self.structured_output = json.loads(response)
 
     class PermissionResultDeny:
         def __init__(self, **kwargs: Any) -> None:
@@ -193,10 +193,15 @@ def test_workbuddy_adapter_denies_builtin_tools_and_resumes_session(
         CodeBuddyAgentOptions=CodeBuddyAgentOptions,
         CodeBuddySDKClient=CodeBuddySDKClient,
         PermissionResultDeny=PermissionResultDeny,
+        PermissionResultAllow=PermissionResultDeny,
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
+        ToolUseBlock=type("ToolUse", (), {}),
+        ToolResultBlock=type("ToolResult", (), {}),
     )
     monkeypatch.setitem(sys.modules, "codebuddy_agent_sdk", fake_module)
+    from tests.workbuddy_fakes import inline_worker
+    inline_worker(monkeypatch)
 
     planner = WorkBuddyPlanner(tmp_path)
     events: list[tuple[str, dict[str, Any]]] = []
@@ -211,22 +216,34 @@ def test_workbuddy_adapter_denies_builtin_tools_and_resumes_session(
             )
         )
 
-    assert decision.thread_id == "workbuddy-session"
+    # Native identity is retained as metadata, not an unscoped conversation key.
+    assert decision.thread_id.startswith("workbuddy:")
+    assert decision.thread_id != "prior-session"
+    assert planner._driver.sessions[decision.thread_id]["native_session_id"] == "workbuddy-session"
     assert decision.plan is not None
     assert decision.plan["method"] == "GET"
-    assert captured["tools"] == []
-    assert captured["allowed_tools"] == []
+    # Native formatting is not business/tool execution permission.
+    assert captured["tools"] == ["StructuredOutput"]
+    assert captured["allowed_tools"] == ["StructuredOutput"]
+    from sap_business_agents_platform.runtime_prompts import PLANNER_OUTPUT_SCHEMA
+    assert json.loads(captured["extra_args"]["json-schema"]) == PLANNER_OUTPUT_SCHEMA
     assert captured["permission_mode"] == "plan"
     assert captured["setting_sources"] == []
-    assert captured["resume"] == "prior-session"
-    assert {"Bash", "Write", "Edit", "WebFetch", "Agent", "Skill"}.issubset(
+    assert captured["resume"] is None
+    assert {"WebFetch", "Agent", "Skill"}.issubset(
         set(captured["disallowed_tools"])
     )
     assert callable(captured["can_use_tool"])
+    for tool in ("Bash", "Read", "WebFetch", "Agent", "Skill"):
+        rejected = asyncio.run(captured["can_use_tool"](tool, {}, None))
+        assert rejected.kwargs["message"] == "tool_not_enabled_for_task"
     assert "Return exactly one JSON object" in captured["prompt"]
     assert [event_type for event_type, _data in events] == [
         "agent_runtime_turn_started",
         "agent_runtime_response_received",
+        "agent_runtime_result_received",
+        "agent_runtime_sdk_closing",
+        "agent_runtime_sdk_closed",
         "agent_runtime_turn_completed",
     ]
     assert all(data["provider_id"] == "workbuddy" for _event, data in events)
@@ -237,21 +254,43 @@ def test_workbuddy_authentication_probe_rejects_login_flow(
 ) -> None:
     cancelled = False
 
-    class LoginFlow:
-        auth_url = "https://login.invalid/opaque"
-
-        async def cancel(self) -> None:
+    class Options:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+    class Transport:
+        def __init__(self, *, options):
+            assert options.tools == options.setting_sources == []
+        async def connect(self):
+            pass
+        async def write(self, message):
+            pass
+        async def read_messages(self):
+            yield {"type": "control_response", "response": {"request_id": "sapba_auth_init", "subtype": "success",
+                "response": {"account": {}}}}
+        async def close(self) -> None:
             nonlocal cancelled
             cancelled = True
-
-    async def authenticate(**_kwargs: Any) -> LoginFlow:
-        return LoginFlow()
 
     monkeypatch.setitem(
         sys.modules,
         "codebuddy_agent_sdk",
-        SimpleNamespace(authenticate=authenticate),
+        SimpleNamespace(),
     )
+    monkeypatch.setitem(sys.modules, "codebuddy_agent_sdk.transport", SimpleNamespace(SubprocessTransport=Transport))
+    from sap_business_agents_platform.workbuddy_manager import WorkBuddyManager
+    async def isolated_login(self):
+        from sap_business_agents_platform.workbuddy_worker import execute
+        return await execute({"operation": "authentication", "payload": {}, "cli_path": "locked-fixture-cli"}, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(WorkBuddyManager, "check", isolated_login)
+    # SDK import is exercised only inside the worker, not the management facade.
+    import codebuddy_agent_sdk
+    codebuddy_agent_sdk.CodeBuddyAgentOptions = Options
+    codebuddy_agent_sdk.CodeBuddySDKClient = object
+    codebuddy_agent_sdk.ResultMessage = object
+    codebuddy_agent_sdk.AssistantMessage = object
+    codebuddy_agent_sdk.TextBlock = object
+    codebuddy_agent_sdk.PermissionResultAllow = object
+    codebuddy_agent_sdk.PermissionResultDeny = object
     probe = WorkBuddyRuntimeProbe(tmp_path)
     result = asyncio.run(probe.check_authentication(None))  # type: ignore[arg-type]
 

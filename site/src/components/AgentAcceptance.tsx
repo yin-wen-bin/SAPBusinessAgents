@@ -27,6 +27,9 @@ type SetupProps = {
   onFindSample: (index: number) => void;
   onClose: () => void;
   onStart: () => void;
+  runtimeModels?: any[];
+  runtimeModelId?: string;
+  onRuntimeModel?: (model: string) => void;
 };
 
 export function AgentAcceptanceSetup(props: SetupProps) {
@@ -65,8 +68,9 @@ export function AgentAcceptanceSetup(props: SetupProps) {
       <dl className="acceptance-summary-grid">
         <div><dt>{tr("验收模式", "Acceptance mode")}</dt><dd>{props.mode === "three_stage" ? tr("三级比较", "Three-stage comparison") : tr("确定性Runtime比较", "Deterministic Runtime comparison")}</dd></div>
         <div><dt>{tr("模型", "Model")}</dt><dd>{props.runtime?.model || tr("由系统配置决定", "System configured")}</dd></div>
-        <div><dt>{tr("推理强度", "Reasoning effort")}</dt><dd>{props.runtime?.reasoning_effort || tr("由系统配置决定", "System configured")}</dd></div>
+        <div><dt>{tr("推理强度", "Reasoning effort")}</dt><dd>{props.runtime?.provider_id === "workbuddy" ? tr("由 SDK 决定", "SDK controlled") : props.runtime?.reasoning_effort || tr("由系统配置决定", "System configured")}</dd></div>
       </dl>
+      {props.runtime?.provider_id === "workbuddy" && <label>{tr("WorkBuddy 验收模型（须确认具体身份）", "WorkBuddy acceptance model (concrete identity required)")}<select value={props.runtimeModelId || ""} onChange={(event) => props.onRuntimeModel?.(event.target.value)}><option value="">{tr("选择已验证的具体模型", "Choose a verified concrete model")}</option>{(props.runtimeModels || []).filter((model) => model.selectable && model.identity_known && model.model_id === model.actual_model).map((model) => <option key={model.model_id} value={model.model_id}>{model.model_id} · {model.actual_model}</option>)}</select><small>{tr("不会使用路由别名，也不会静默切换模型。", "Routing aliases are not accepted; models are never switched silently.")}</small></label>}
       {props.mode === "deterministic_runtime" && <p className="agent-alert">{tr("此Agent使用确定性Runtime模式，自由查询比较不适用。", "This Agent uses deterministic Runtime acceptance; free-query comparison is not applicable.")}</p>}
       <div className="acceptance-case-list">
         {props.cases.map((item, index) => <fieldset key={`${index}-${item.caseId}`} className="acceptance-case-editor">

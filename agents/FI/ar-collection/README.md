@@ -66,6 +66,5 @@ Version 1.2.0 passed independent SAP baseline, candidate fixed-Agent, and biling
 - [Agent 定义与完整输入输出契约 / Manifest and complete I/O contract](agent.json)
 - [原始验收记录（适用范围以原报告为准） / Original acceptance record (original scope applies)](docs/three-stage-live-acceptance.md)
 - [rules.py](rules.py)
-- [tests](tests)
 - [开发指南 / Developer guide](../../../docs/developer-guide.md)
 <!-- generated:facts:end -->

@@ -132,7 +132,7 @@ class RoleMatchingService:
                 code="role_matching_runtime_consent_required",
             )
         provider_id = str(getattr(self.runtime, "current_provider_id", "codex"))
-        if provider_id != "codex" or not self.runtime.supports("analyze_role_matching"):
+        if provider_id not in {"codex", "workbuddy"} or not self.runtime.supports("analyze_role_matching"):
             raise RoleMatchingError(
                 "The selected Agent Runtime has not passed role-matching acceptance.",
                 code="role_matching_runtime_unavailable",
@@ -566,7 +566,9 @@ class RoleMatchingService:
                 runtime_snapshot = resolve(runtime_snapshot)
                 self.store.update_role_matching_session(session_id, runtime=runtime_snapshot)
             provider_id = str(runtime_snapshot.get("provider_id") or "codex")
-            with self.runtime.pin(provider_id, runtime_snapshot.get("model"), runtime_snapshot.get("reasoning_effort")):
+            context = (self.runtime.pin_snapshot(runtime_snapshot) if provider_id == "workbuddy"
+                       else self.runtime.pin(provider_id, runtime_snapshot.get("model"), runtime_snapshot.get("reasoning_effort")))
+            with context:
                 method = self.runtime.review_role_matching_feedback if previous else self.runtime.analyze_role_matching
                 raw = await method(
                     documents=runtime_documents,

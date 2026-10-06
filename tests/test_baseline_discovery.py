@@ -162,7 +162,9 @@ def test_harness_validate_and_execute_share_order_adapter(tmp_path):
         broker = HarnessToolBroker(settings, store, sap, FakeSkills())
         token = broker.open_session("run")
         for tool in ("sap_query_validate", "sap_query_execute"):
-            result = await broker.handle("run", token, tool, {"plan": {"http_method": "GET", "order_by": [{"field": "CompanyCode", "direction": "asc"}]}})
+            result = await broker.handle("run", token, tool, {"plan": {"service_name": "API_TEST_SRV",
+                "odata_version": "2.0", "entity_set": "Items", "http_method": "GET",
+                "order_by": [{"field": "CompanyCode", "direction": "asc"}]}})
             assert result["ok"] is True and result["normalization_diagnostics"]
         assert seen and all(plan["order_by"] == ["CompanyCode"] for plan in seen)
     asyncio.run(run())
@@ -263,8 +265,9 @@ def test_late_tool_cannot_save_evidence_after_cancel(tmp_path):
         sap.execute_plan = execute
         broker = HarnessToolBroker(settings, store, sap, FakeSkills())
         token = broker.open_session("run")
-        task = asyncio.create_task(broker.handle("run", token, "sap_query_execute", {"plan": {"http_method": "GET"}}))
-        await ready.wait()
+        task = asyncio.create_task(broker.handle("run", token, "sap_query_execute", {"plan": {
+            "service_name": "API_TEST_SRV", "odata_version": "2.0", "entity_set": "Items", "http_method": "GET"}}))
+        await asyncio.wait_for(ready.wait(), timeout=1)
         assert await broker.cancel_tools("run", timeout=0.1)
         result = await task
         assert result["code"] == "harness_run_closed"

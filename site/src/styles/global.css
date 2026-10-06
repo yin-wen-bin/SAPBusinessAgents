@@ -3799,7 +3799,21 @@ details[open] > summary .disclosure-chevron {
 .sdk-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
+  gap: 12px;
+}
+
+.sdk-manager > .plugin-manager-header {
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.sdk-manager > .plugin-manager-header h1 {
+  margin: 4px 0 6px;
+  font-size: clamp(24px, 3vw, 30px);
+}
+
+.sdk-manager > .plugin-manager-header p {
+  margin: 4px 0;
 }
 
 .sdk-card {
@@ -3813,9 +3827,9 @@ details[open] > summary .disclosure-chevron {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   background: var(--color-bg-subtle);
-  padding: 18px;
+  padding: 14px 16px;
 }
 
 .sdk-card-heading h2 {
@@ -3871,6 +3885,23 @@ details[open] > summary .disclosure-chevron {
 
 .sdk-settings-section {
   border-top: 1px solid var(--color-border);
+}
+
+.sdk-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+.sdk-overview > .sdk-settings-section {
+  min-width: 0;
+}
+
+.sdk-overview > .sdk-settings-section + .sdk-settings-section {
+  border-left: 1px solid var(--color-border);
+}
+
+.sdk-overview .sdk-version-grid {
+  border-bottom: 0;
 }
 
 .plugin-catalog-filters {
@@ -4101,12 +4132,13 @@ details[open] > summary .disclosure-chevron {
 .sdk-settings-section > h3,
 .sdk-model-heading {
   margin: 0;
-  padding: 16px 18px 0;
+  padding: 12px 16px 0;
   font-size: 14px;
 }
 
 .sdk-version-block {
-  padding: 18px;
+  min-width: 0;
+  padding: 12px 16px;
 }
 
 .sdk-version-block + .sdk-version-block {
@@ -4122,11 +4154,39 @@ details[open] > summary .disclosure-chevron {
 
 .sdk-version-block strong {
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 18px;
+  font-size: 16px;
+  overflow-wrap: anywhere;
 }
 
 .sdk-facts {
   border-top: 0;
+  margin: 10px 16px;
+  padding: 0;
+  min-width: 0;
+}
+
+.sdk-facts dd {
+  overflow-wrap: anywhere;
+}
+
+.sdk-technical-details {
+  margin: 10px 16px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.sdk-technical-details summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.sdk-technical-details summary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+.sdk-technical-details .sdk-facts {
+  margin: 10px 0;
 }
 
 .sdk-error {
@@ -4137,7 +4197,7 @@ details[open] > summary .disclosure-chevron {
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
-  padding: 14px 18px 18px;
+  padding: 10px 16px 14px;
 }
 
 .sdk-manager .secondary-button,
@@ -4324,8 +4384,8 @@ details[open] > summary .disclosure-chevron {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 16px;
+  gap: 12px;
+  padding-bottom: 12px;
 }
 
 .sdk-model-heading h3,
@@ -4345,10 +4405,46 @@ details[open] > summary .disclosure-chevron {
 
 .sdk-model-row {
   display: grid;
-  grid-template-columns: minmax(210px, 0.85fr) minmax(300px, 1.4fr) auto;
-  align-items: center;
-  gap: 16px;
-  padding: 16px 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding: 12px 16px;
+  min-width: 0;
+}
+
+.sdk-model-row > * {
+  min-width: 0;
+}
+
+.sdk-model-row > .sdk-update-note {
+  align-self: center;
+  margin: 0;
+  font-size: 12px;
+}
+
+.sdk-model-row > .sdk-model-actions,
+.sdk-model-row > .sdk-error,
+.sdk-workbuddy-model > .sdk-reasoning-field {
+  grid-column: 1 / -1;
+}
+
+.sdk-model-picker {
+  margin: 0 16px 12px;
+}
+
+.sdk-model-picker small {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.sdk-model-section > .sdk-update-note,
+.sdk-model-list > .sdk-update-note,
+.sdk-model-section > .sdk-error {
+  display: block;
+  margin: 10px 16px 12px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .sdk-model-row + .sdk-model-row {
@@ -4372,6 +4468,11 @@ details[open] > summary .disclosure-chevron {
 .sdk-model-name code {
   color: var(--color-text-muted);
   font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.sdk-model-identity strong {
+  overflow-wrap: anywhere;
 }
 
 .sdk-model-badges {
@@ -4425,9 +4526,12 @@ details[open] > summary .disclosure-chevron {
   font-weight: 600;
 }
 
-.sdk-reasoning-field select {
+.sdk-reasoning-field select,
+.sdk-reasoning-field input {
   box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 44px;
   padding: 8px 12px;
   border: 1px solid var(--color-border);
@@ -4437,12 +4541,14 @@ details[open] > summary .disclosure-chevron {
   font: inherit;
 }
 
-.sdk-reasoning-field select:focus-visible {
+.sdk-reasoning-field select:focus-visible,
+.sdk-reasoning-field input:focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
 
-.sdk-reasoning-field select:disabled {
+.sdk-reasoning-field select:disabled,
+.sdk-reasoning-field input:disabled {
   opacity: 0.65;
 }
 
@@ -4454,28 +4560,65 @@ details[open] > summary .disclosure-chevron {
 }
 
 @media (max-width: 820px) {
-  .sdk-version-grid,
-  .sdk-model-row {
+  .sdk-overview {
     grid-template-columns: 1fr;
   }
 
-  .sdk-version-block + .sdk-version-block {
-    border-top: 1px solid var(--color-border);
+  .sdk-overview > .sdk-settings-section + .sdk-settings-section {
     border-left: 0;
+  }
+
+  .sdk-model-row {
+    grid-template-columns: 1fr;
   }
 
   .sdk-model-heading {
     flex-direction: column;
   }
 
-  .sdk-model-heading .secondary-button,
-  .sdk-model-actions,
-  .sdk-model-actions button {
-    width: 100%;
+  .sdk-model-heading .secondary-button { align-self: flex-start; }
+  .sdk-model-actions {
+    justify-content: flex-start;
   }
 
-  .sdk-model-actions {
-    justify-content: stretch;
+  .sdk-card-actions { justify-content: flex-start; }
+}
+
+@media (max-width: 480px) {
+  .sdk-card-heading { flex-direction: column; }
+  .sdk-version-block { padding: 10px; }
+  .sdk-version-block strong { font-size: 14px; }
+  .sdk-manager .secondary-button,
+  .sdk-manager .sdk-update-button,
+  .sdk-manager .danger-outline-button { min-height: 44px; }
+  .sdk-model-actions button { flex: 1 1 150px; }
+  .sdk-model-facts { grid-template-columns: minmax(0, auto) minmax(0, 1fr); }
+  .sdk-facts { grid-template-columns: minmax(0, 100px) minmax(0, 1fr); }
+}
+
+.sdk-manager [hidden] {
+  display: none !important;
+}
+
+.sdk-manager [aria-busy="true"] {
+  cursor: wait;
+}
+
+.sdk-manager [aria-busy="true"] button:disabled {
+  cursor: wait;
+}
+
+.sdk-manager .sdk-model-picker select {
+  text-overflow: ellipsis;
+}
+
+.sdk-manager .sdk-error {
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 821px) {
+  .sdk-manager > .plugin-manager-header > button {
+    flex: 0 0 auto;
   }
 }
 
@@ -4486,12 +4629,18 @@ details[open] > summary .disclosure-chevron {
 }
 
 .sdk-manager button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.65;
 }
 
 .sdk-update-note {
   color: var(--color-text-muted);
+}
+
+.sdk-login-command {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .plugin-alert[data-tone="success"] {

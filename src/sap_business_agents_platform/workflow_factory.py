@@ -44,6 +44,21 @@ class WorkflowDraftError(RuntimeError):
         self.detail = detail
 
 
+async def _await_feedback_runtime(author, provider_id, request, *, timeout):
+    if provider_id != "workbuddy":
+        return await asyncio.wait_for(request, timeout=timeout)
+    dispatched = False
+    try:
+        async with author.workbuddy_reservation():
+            dispatched = True
+            # The owned worker is the sole execution clock (3600s + cleanup).
+            # An outer clock must not count queue time or mask cleanup failure.
+            return await request
+    finally:
+        if not dispatched and hasattr(request, "close"):
+            request.close()
+
+
 def _draft_status_for_gaps(composition: dict[str, Any]) -> str:
     gaps = [item for item in composition.get("gaps") or [] if isinstance(item, dict)]
     if any(str(item.get("gap_type") or "agent_missing") == "agent_missing" for item in gaps):
@@ -558,6 +573,8 @@ class WorkflowDraftService:
             provider_id, model_id, reasoning_effort = self._runtime_binding(draft)
             pin = getattr(self.author, "pin", None)
             context = pin(provider_id, model_id, reasoning_effort) if callable(pin) else nullcontext()
+            if provider_id == "workbuddy":
+                context = self.author.pin_snapshot(self._conversation_state(draft)["runtime_snapshot"])
             validation_report = None
             if pending.get("validation_run_id"):
                 try:
@@ -565,7 +582,7 @@ class WorkflowDraftService:
                 except WorkflowDraftError:
                     validation_report = None
             with context:
-                raw = await asyncio.wait_for(
+                raw = await _await_feedback_runtime(self.author, provider_id,
                     review(
                         requirement=str(draft.composition.get("requirement") or ""),
                         feedback=str(pending.get("feedback") or ""),
@@ -1174,6 +1191,8 @@ class WorkflowDraftService:
             provider_id, model_id, reasoning_effort = self._runtime_binding(draft)
             pin = getattr(self.author, "pin", None)
             context = pin(provider_id, model_id, reasoning_effort) if callable(pin) else nullcontext()
+            if provider_id == "workbuddy":
+                context = self.author.pin_snapshot(self._conversation_state(draft)["runtime_snapshot"])
             with context:
                 raw_review = await asyncio.wait_for(
                     review_workflow(
@@ -1443,6 +1462,8 @@ class WorkflowDraftService:
             draft.composition["runtime_provider_id"] = provider_id
             pin = getattr(self.author, "pin", None)
             context = pin(provider_id, model_id, reasoning_effort) if callable(pin) else nullcontext()
+            if provider_id == "workbuddy":
+                context = self.author.pin_snapshot(self._conversation_state(draft)["runtime_snapshot"])
             with context:
                 result = await compose(
                     requirement=requirement,
@@ -2142,6 +2163,8 @@ class WorkflowDraftService:
             provider_id, model_id, reasoning_effort = self._runtime_binding(draft)
             pin = getattr(self.author, "pin", None)
             context = pin(provider_id, model_id, reasoning_effort) if callable(pin) else nullcontext()
+            if provider_id == "workbuddy":
+                context = self.author.pin_snapshot(self._conversation_state(draft)["runtime_snapshot"])
             with context:
                 proposal = await repair(
                     workflow=draft.workflow,

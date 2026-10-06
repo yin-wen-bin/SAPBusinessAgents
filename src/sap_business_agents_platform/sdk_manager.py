@@ -259,7 +259,7 @@ class SDKManager:
         )
         self._state: dict[str, dict[str, Any]] = {}
         for item in self.definitions:
-            installed = self.adapters[item.ecosystem].installed_version(item)
+            installed = None if item.provider_id == "workbuddy" else self.adapters[item.ecosystem].installed_version(item)
             trusted_active_login = bool(
                 installed
                 and item.provider_id == "codex"
@@ -280,6 +280,8 @@ class SDKManager:
         self._locks = {item.sdk_id: asyncio.Lock() for item in self.definitions}
         self._config_lock = threading.RLock()
         self._runtime_config = self._load_runtime_config()
+        from .workbuddy_manager import WorkBuddyManager
+        self.workbuddy = WorkBuddyManager(self.repository_root)
 
     @property
     def default_provider_id(self) -> str | None:
@@ -294,11 +296,15 @@ class SDKManager:
         return [self._snapshot(item) for item in self.definitions]
 
     async def check_all(self) -> list[dict[str, Any]]:
-        await asyncio.gather(*(self.check(item.sdk_id) for item in self.definitions))
+        await asyncio.gather(*(self.check(item.sdk_id) for item in self.definitions
+            if item.provider_id != "workbuddy" or self.workbuddy.snapshot().get("enabled")))
         return self.list()
 
     async def check(self, sdk_id: str) -> dict[str, Any]:
         definition = self._get_sdk(sdk_id)
+        if definition.provider_id == "workbuddy":
+            await self.workbuddy.check()
+            return self._snapshot(definition)
         async with self._locks[sdk_id]:
             await self._check_unlocked(definition)
             return self._snapshot(definition)
@@ -308,6 +314,8 @@ class SDKManager:
         return await self.check(definition.sdk_id)
 
     def models(self, provider_id: str) -> dict[str, Any]:
+        if provider_id == "workbuddy":
+            return self.workbuddy.models()
         definition = self._get_provider(provider_id)
         catalog = self._catalog(definition)
         models = [self._decorate_model(definition, item) for item in catalog.get("models", [])]
@@ -347,6 +355,8 @@ class SDKManager:
         }
 
     async def refresh_models(self, provider_id: str) -> dict[str, Any]:
+        if provider_id == "workbuddy":
+            return await self.workbuddy.refresh_models()
         definition = self._get_provider(provider_id)
         async with self._locks[definition.sdk_id]:
             probe = self.runtime_probes.get(provider_id)
@@ -437,6 +447,8 @@ class SDKManager:
             return self.models(provider_id)
 
     async def check_model(self, provider_id: str, model_id: str, reasoning_effort: str | None = None) -> dict[str, Any]:
+        if provider_id == "workbuddy":
+            return await self.workbuddy.check_model(model_id, reasoning_effort)
         definition = self._get_provider(provider_id)
         model_id = _validate_model_id(model_id)
         async with self._locks[definition.sdk_id]:
@@ -521,8 +533,12 @@ class SDKManager:
 
     def reasoning_configuration(
         self, provider_id: str, model_id: str, requested: str | None = None,
-    ) -> tuple[str, str]:
+    ) -> tuple[str | None, str]:
         """Resolve an explicit SDK-supported value; never inherit a CLI global default."""
+        if provider_id == "workbuddy":
+            if requested is not None:
+                raise SDKManagerError("WorkBuddy reasoning is controlled by its SDK.", code="workbuddy_reasoning_effort_sdk_default")
+            return None, "sdk_default"
         definition = self._get_provider(provider_id)
         model = self._catalog_model(definition, model_id)
         saved = self._provider_runtime_state(definition).get("model_reasoning_efforts", {}).get(model_id)
@@ -558,6 +574,9 @@ class SDKManager:
         return self.models(provider_id)
 
     async def set_default_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+        if provider_id == "workbuddy":
+            await self.workbuddy.set_default_model(model_id)
+            return self._snapshot(self._get_provider(provider_id))
         definition = self._get_provider(provider_id)
         model_id = _validate_model_id(model_id)
         self._catalog_model(definition, model_id)
@@ -582,6 +601,9 @@ class SDKManager:
         return self._snapshot(definition)
 
     def set_enabled(self, provider_id: str, enabled: bool) -> dict[str, Any]:
+        if provider_id == "workbuddy":
+            self.workbuddy.set_enabled(enabled)
+            return self._snapshot(self._get_provider(provider_id))
         definition = self._get_provider(provider_id)
         with self._config_lock:
             if enabled:
@@ -602,6 +624,8 @@ class SDKManager:
 
     async def update(self, sdk_id: str) -> dict[str, Any]:
         definition = self._get_sdk(sdk_id)
+        if definition.provider_id == "workbuddy":
+            return await self.workbuddy.update()
         if not definition.update_enabled:
             raise SDKManagerError("This SDK cannot be updated here.", code="sdk_update_disabled")
         async with self._locks[sdk_id]:
@@ -645,6 +669,8 @@ class SDKManager:
 
     def runtime_snapshot(self, provider_id: str | None = None) -> dict[str, Any]:
         selected = provider_id or self.default_provider_id
+        if selected == "workbuddy":
+            return self.workbuddy.runtime_snapshot()
         if not selected:
             raise SDKManagerError(
                 "No default Agent Runtime is configured.",
@@ -681,6 +707,8 @@ class SDKManager:
 
     def runtime_snapshot_for_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
         """Bind a checked task model without mutating the user's system default."""
+        if provider_id == "workbuddy":
+            return self.workbuddy.runtime_snapshot(model_id)
         definition = self._get_provider(provider_id)
         snapshot = self._snapshot(definition)
         blockers = [str(value) for value in snapshot["blockers"]
@@ -797,6 +825,8 @@ class SDKManager:
         self._persist_runtime_config()
 
     def _snapshot(self, definition: SDKDefinition) -> dict[str, Any]:
+        if definition.provider_id == "workbuddy":
+            return self.workbuddy.snapshot(definition, selected=self.default_provider_id == "workbuddy")
         adapter = self.adapters[definition.ecosystem]
         installed = adapter.installed_version(definition)
         state = self._state[definition.sdk_id]

@@ -124,6 +124,7 @@ export type FeedbackRequest = {
     annotations?: { kind: "manifest_field" | "static_issue" | "trial_issue" | "acceptance_issue"; path: string; comment: string; revision: number; sourceId?: string; sourceDigest?: string }[];
     replyToClarificationId?: string; clarificationOptionId?: string; enqueueIfBusy?: boolean;
     imageIds?: string[];
+    executionMode?: "trusted_local" | "restricted"; trustedLocalConfirmed?: boolean;
     selection?: { kind: "manifest_field" | "rules" | "readme" | "trial_report" | "acceptance_report"; path: string; excerpt: string; revision: number; sourceId?: string; sourceDigest?: string };
 };
 /** An uncertain network response is a retransmission, not a new logical conversation. */
@@ -136,6 +137,8 @@ export function prepareFeedbackRequest(previous: FeedbackRequest | null, next: O
       && previous.replyToClarificationId === next.replyToClarificationId
       && previous.clarificationOptionId === next.clarificationOptionId
       && previous.enqueueIfBusy === next.enqueueIfBusy
+      && previous.executionMode === next.executionMode
+      && previous.trustedLocalConfirmed === next.trustedLocalConfirmed
       && JSON.stringify(previous.imageIds || []) === JSON.stringify(next.imageIds || [])
       && JSON.stringify(previous.selection || null) === JSON.stringify(next.selection || null)
       && JSON.stringify(previous.annotations || []) === JSON.stringify(next.annotations || [])) return previous;

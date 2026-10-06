@@ -639,6 +639,11 @@ class AgentAuthoringMixin:
 
     def _feedback_runtime_snapshot(self, draft: dict[str, Any]) -> dict[str, Any]:
         previous = (draft.get("metadata") or {}).get("runtime_snapshot") or {}
+        if previous.get("provider_id") == "workbuddy":
+            resolve = getattr(self.runtime, "snapshot_for_binding", None)
+            if not callable(resolve):
+                raise self._authoring_error("WorkBuddy frozen binding cannot be resolved.", "workbuddy_binding_invalid")
+            return copy.deepcopy(resolve(previous))
         if previous.get("provider_id") and previous.get("model"):
             resolve = getattr(self.runtime, "snapshot_for_model", None)
             if callable(resolve):
@@ -748,6 +753,11 @@ class AgentAuthoringMixin:
                                 "feedback": payload.feedback, "locale": payload.locale,
                                 "intent": intent, "retryOfTurn": retry_of_turn,
                             })
+        # New permission fields are absent from historical Codex fingerprints.
+        if fingerprint_data.get("executionMode") is None:
+            fingerprint_data.pop("executionMode", None)
+        if not fingerprint_data.get("trustedLocalConfirmed"):
+            fingerprint_data.pop("trustedLocalConfirmed", None)
         fingerprint = self._feedback_digest(fingerprint_data)
         if request_id:
             prior = next((item for item in turns if item.get("request_id") == request_id), None)
@@ -807,6 +817,15 @@ class AgentAuthoringMixin:
             # do not translate that into a successful network-isolation claim.
             from .runtime_execution import FULL_ACCESS_POLICY
             decision["authoring_policy"] = copy.deepcopy(FULL_ACCESS_POLICY)
+        if snapshot.get("provider_id") == "workbuddy":
+            mode = getattr(payload, "execution_mode", None)
+            if mode == "restricted":
+                raise self._authoring_error("Windows restricted mode is not validated.", "workbuddy_windows_restricted_unverified")
+            if intent == "revise":
+                if mode != "trusted_local" or not getattr(payload, "trusted_local_confirmed", False):
+                    raise self._authoring_error("Explicit trusted-local confirmation is required.", "workbuddy_trusted_local_confirmation_required")
+                decision["authoring_policy"] = {"mode": "trusted_local", "os_isolation": False,
+                                                "platform_tools": "per_call_authorized"}
         if binding_error:
             decision["binding_error"] = binding_error
         turn = {"draft_id": draft_id, "parent_turn": latest_turn or None, "kind": "feedback",
@@ -871,6 +890,18 @@ class AgentAuthoringMixin:
         self._start_feedback_task(draft_id, turn, payload, claimed["task_id"])
 
     async def _run_feedback(self, draft_id: str, turn: dict[str, Any], payload: Any, operation_id: str) -> None:
+        if (turn["decision"].get("runtime_snapshot", {}).get("provider_id") == "workbuddy"
+                and not self.runtime.workbuddy_reserved()):
+            try:
+                async with self.runtime.workbuddy_reservation():
+                    return await self._run_feedback(draft_id, turn, payload, operation_id)
+            except asyncio.CancelledError:
+                turn.update(status="cancelled", completed_at=utc_now(),
+                    decision={**turn["decision"], "error_code": "agent_feedback_cancelled"})
+                self.store.save_agent_conversation_turn(turn)
+                self._finish_operation(draft_id, operation_id, "cancelled")
+                self.store.pause_agent_feedback_queue(draft_id)
+                return
         status = "failed"
         monotonic = getattr(self, "_feedback_clock", time.monotonic)
         started = monotonic()
@@ -925,6 +956,8 @@ class AgentAuthoringMixin:
             pin = getattr(self.runtime, "pin", None)
             pin_options = {"reasoning_effort": snapshot["reasoning_effort"]} if snapshot.get("reasoning_effort") is not None else {}
             context = pin(snapshot["provider_id"], snapshot["model"], **pin_options) if callable(pin) else nullcontext()
+            if snapshot.get("provider_id") == "workbuddy":
+                context = self.runtime.pin_snapshot(snapshot)
             history = conversation_context(self.store.list_agent_conversation_turns(draft_id), int(turn["base_revision"]), int(turn["turn"]))
             with context:
                 supports = getattr(self.runtime, "supports", None)
@@ -933,7 +966,7 @@ class AgentAuthoringMixin:
                 tool_options = {"tool_policy": copy.deepcopy(turn["decision"]["authoring_policy"])} if turn["decision"].get("authoring_policy") else {}
                 explanation = turn["decision"].get("intent") == "explain"
                 if (not explanation and tool_options and tool_broker is not None
-                        and str(snapshot.get("provider_id") or "") == "codex"):
+                        and str(snapshot.get("provider_id") or "") in {"codex", "workbuddy"}):
                     digest = hashlib.sha256(str(payload.feedback).encode("utf-8")).hexdigest()
                     ddic_fields = tuple(sorted({(table.upper(), field.upper()) for table, field in
                         re.findall(r"\b([A-Za-z][A-Za-z0-9_]{0,29})[.-]([A-Za-z][A-Za-z0-9_]{0,29})\b",
@@ -957,6 +990,9 @@ class AgentAuthoringMixin:
                     public = {key: data[key] for key in ("provider_id", "resumed", "tools_enabled", "message_type", "session_id_present")
                               if key in data and (isinstance(data[key], bool) or isinstance(data[key], str)
                                                   and re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", data[key]))}
+                    if data.get("provider_id") == "workbuddy":
+                        from .workbuddy_diagnostics import safe_progress
+                        public.update(safe_progress(kind, data))
                     self.store.append_agent_conversation_event(draft_id, "runtime_diagnostic", {"kind": kind, **public}, turn["turn"])
                 with event_binding(provider_event) if callable(event_binding) else nullcontext():
                     # Native resume remains disabled until independently validated.
@@ -1038,7 +1074,7 @@ class AgentAuthoringMixin:
             turn["decision"]["execution"].update(completed_at=turn["completed_at"], elapsed_seconds=max(0, monotonic() - started))
             self.store.save_agent_conversation_turn(turn)
             progress("cancelled" if status == "cancelled" else "completed" if status == "completed" else "failed", 4)
-            if code != "agent_feedback_cleanup_failed":
+            if code not in {"agent_feedback_cleanup_failed", "runtime_cleanup_incomplete"}:
                 self._finish_operation(draft_id, operation_id, status)
             self.store.append_agent_conversation_event(
                 draft_id, "turn_finished", {"status": status, "error_code": code,

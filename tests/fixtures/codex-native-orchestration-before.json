@@ -1,0 +1,420 @@
+{
+  "review_agent_feedback": {
+    "trace": [
+      [
+        "open",
+        {}
+      ],
+      [
+        "thread_start",
+        {
+          "sandbox": "read-only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sap_business_agents_agent_authoring",
+          "developer_instructions": "Explain only the supplied saved Agent definition and existing evidence. Return reply or clarify and never propose or apply package changes. Never call tools, inspect files, run commands, contact SAP, or edit the repository."
+        }
+      ],
+      [
+        "run",
+        {
+          "prompt": {
+            "sha256": "76082d45b80edf529fe024aa0f877e3e69911475b312f88c6adfd036a06381e1",
+            "length": 6292
+          },
+          "output_schema": {
+            "sha256": "ff024312d9c50c718088d95ff603180299ee666031475d6c024bc928735a7879"
+          },
+          "effort": "max"
+        }
+      ],
+      [
+        "close",
+        {}
+      ]
+    ],
+    "result": {
+      "action": "reply",
+      "summary": {
+        "zh": "未修改",
+        "en": "Unchanged"
+      },
+      "thread_id": "thread-frozen",
+      "clarification": null
+    }
+  },
+  "workflow_authoring.v2": {
+    "trace": [
+      [
+        "open",
+        {}
+      ],
+      [
+        "preflight",
+        {}
+      ],
+      [
+        "thread_start",
+        {
+          "sandbox": "full-access",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sapba_workflow_authoring_v2",
+          "developer_instructions": {
+            "sha256": "ba3149cac5229024390eab4d323415a17e76cf53f500a38fbcb909c64a5b41de",
+            "length": 724
+          }
+        }
+      ],
+      [
+        "turn",
+        {
+          "prompt": "{\"intent\": \"explain\", \"user_message\": \"Explain\", \"workflow\": {\"id\": \"frozen\", \"nodes\": []}, \"history\": [], \"catalog\": {}, \"references\": []}",
+          "output_schema": {
+            "sha256": "23609603e5f453748308561ff4a724552c3b3483833fcb91eb429527d0ac4321"
+          },
+          "effort": "max",
+          "sandbox": "full-access",
+          "approval_mode": "deny_all"
+        }
+      ],
+      [
+        "close",
+        {}
+      ]
+    ],
+    "result": {
+      "action": "explain",
+      "answer": "No changes",
+      "question": "",
+      "workflow": null,
+      "capabilities": {
+        "contract": "workflow_authoring.v2",
+        "mode": "full_access",
+        "file_edit": "available",
+        "shell_tests": "available",
+        "web": "preflight_required",
+        "mcp": "not_connected",
+        "subagents": "not_verified",
+        "resume": "platform_history",
+        "steer": "queue_only",
+        "stream_events": "sdk_tool_events",
+        "image_input": "not_verified",
+        "os_isolation": false
+      },
+      "context_mode": "platform_history"
+    }
+  },
+  "sample_discovery": {
+    "trace": [
+      [
+        "open",
+        {}
+      ],
+      [
+        "thread_start",
+        {
+          "approval_mode": "deny_all",
+          "developer_instructions": {
+            "sha256": "109cf0d158b2a78b42c94c2be5de38fdb6bc06a28c0b60cae1bc874ea4682843",
+            "length": 2542
+          },
+          "model": "gpt-5.6-sol",
+          "sandbox": "read-only"
+        }
+      ],
+      [
+        "turn",
+        {
+          "prompt": "Find a verifiable real input sample within the declared scope.",
+          "approval_mode": "deny_all",
+          "model": "gpt-5.6-sol",
+          "effort": "max",
+          "output_schema": {
+            "sha256": "1869ae7537c63fb4bf2542cac298deaf546d7cc868cb0559740cc0c9f6e84382"
+          },
+          "sandbox": "read-only"
+        }
+      ],
+      [
+        "close",
+        {}
+      ]
+    ],
+    "result": {
+      "status": "needs_input",
+      "suggested_inputs": {
+        "company_code": "1710"
+      },
+      "input": {
+        "company_code": "1710"
+      },
+      "field_sources": {},
+      "missing_fields": [
+        "customer"
+      ],
+      "selection_reason": {
+        "zh": "未能证明完整且一致的样本，请补充参数后试运行。",
+        "en": "A complete coherent sample could not be proven. Fill the remaining inputs manually."
+      },
+      "selection_reasons": [
+        {
+          "zh": "未能证明完整且一致的样本，请补充参数后试运行。",
+          "en": "A complete coherent sample could not be proven. Fill the remaining inputs manually."
+        }
+      ],
+      "evidence_refs": [],
+      "bounded_discovery": true,
+      "source_complete": null,
+      "revision": 2,
+      "selected_fields": null,
+      "model": "gpt-5.6-sol",
+      "query_count": 0,
+      "codes": [
+        "sample_manual_input_required"
+      ],
+      "selection_method": "runtime"
+    }
+  },
+  "free_query": {
+    "trace": [
+      [
+        "open",
+        {}
+      ],
+      [
+        "preflight",
+        {}
+      ],
+      [
+        "thread_start",
+        {
+          "approval_mode": "deny_all",
+          "developer_instructions": {
+            "sha256": "fdcdfff73ad2e34c11eaee41f8d0843a9ca8bf7fd7d5e55a185833ae7b08dfe4",
+            "length": 10133
+          },
+          "model": "fixture-model",
+          "sandbox": "full-access"
+        }
+      ],
+      [
+        "turn",
+        {
+          "prompt": {
+            "sha256": "fe959c3089a83fa3cbb650597f58fc75f2ea6fb8c95decdf1726eebfa14cce2a",
+            "length": 2535
+          },
+          "effort": "max",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "output_schema": {
+            "sha256": "363ac4923e80ef372f1883f9f881502debd89eb6ee6a24ca25b002b626e56248"
+          },
+          "sandbox": "full-access"
+        }
+      ],
+      [
+        "close",
+        {}
+      ]
+    ],
+    "result": {
+      "thread_id": "thread-frozen",
+      "turn_count": 1,
+      "status": "inconclusive",
+      "stop_reason": "completed",
+      "summary": {
+        "zh": "最终业务结论未通过运行内证据引用校验，未展示未经验证的业务事实。",
+        "en": "The final business conclusion did not pass run-scoped evidence-reference validation; unvalidated business facts were withheld."
+      },
+      "source_complete": false,
+      "business_complete": false,
+      "missing_evidence": [
+        "offline_probe",
+        "final_report_validation_missing"
+      ],
+      "evidence_refs": [],
+      "executed_plans": [],
+      "clarification_question": "",
+      "input_kind": null,
+      "input_field": null,
+      "tool_calls": [],
+      "evidence": [],
+      "web_search_count": 0,
+      "discovered_tool_count": 0,
+      "activated_tool_count": 0,
+      "presentation": null,
+      "acceptance_projection": null,
+      "verified_rule_results": [],
+      "budgeted_tool_call_count": 0,
+      "limit_kind": null,
+      "hard_limit_seconds": 600,
+      "query_seconds_granted": 500,
+      "finalization_seconds_reserved": 100,
+      "extension_count": 0,
+      "extension_reasons": [],
+      "deadline_phase": "completed"
+    }
+  },
+  "acceptance_baseline": {
+    "trace": [
+      [
+        "open",
+        {}
+      ],
+      [
+        "thread_start",
+        {
+          "approval_mode": "deny_all",
+          "developer_instructions": {
+            "sha256": "c7faf8aa10d19f4552670f42e8a946f103d1cc999f7b7f3f7f6531142ab1cb9e",
+            "length": 9773
+          },
+          "model": "fixture-model",
+          "sandbox": "read-only"
+        }
+      ],
+      [
+        "turn",
+        {
+          "prompt": {
+            "sha256": "2287c5969c812cbfd4f812fad453b8e758a7cf3adebdb934f436b9be170439f2",
+            "length": 3295
+          },
+          "effort": "max",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "output_schema": {
+            "sha256": "568c325ed3893a3d2cbf0d79be2f140ea42a73b077a6364d648693d653000f8f"
+          },
+          "sandbox": "read-only"
+        }
+      ],
+      [
+        "close",
+        {}
+      ]
+    ],
+    "result": {
+      "thread_id": "thread-frozen",
+      "turn_count": 1,
+      "status": "inconclusive",
+      "stop_reason": "completed",
+      "summary": {
+        "zh": "最终业务结论未通过运行内证据引用校验，未展示未经验证的业务事实。",
+        "en": "The final business conclusion did not pass run-scoped evidence-reference validation; unvalidated business facts were withheld."
+      },
+      "source_complete": false,
+      "business_complete": false,
+      "missing_evidence": [
+        "offline_probe",
+        "acceptance_projection_not_validated",
+        "final_report_validation_missing"
+      ],
+      "evidence_refs": [],
+      "executed_plans": [],
+      "clarification_question": "",
+      "input_kind": null,
+      "input_field": null,
+      "tool_calls": [],
+      "evidence": [],
+      "web_search_count": 0,
+      "discovered_tool_count": 0,
+      "activated_tool_count": 0,
+      "presentation": null,
+      "acceptance_projection": null,
+      "verified_rule_results": [],
+      "budgeted_tool_call_count": 0,
+      "limit_kind": null,
+      "hard_limit_seconds": 600,
+      "query_seconds_granted": 500,
+      "finalization_seconds_reserved": 100,
+      "extension_count": 0,
+      "extension_reasons": [],
+      "deadline_phase": "completed"
+    }
+  },
+  "acceptance_free_query": {
+    "trace": [
+      [
+        "open",
+        {}
+      ],
+      [
+        "preflight",
+        {}
+      ],
+      [
+        "thread_start",
+        {
+          "approval_mode": "deny_all",
+          "developer_instructions": {
+            "sha256": "fdcdfff73ad2e34c11eaee41f8d0843a9ca8bf7fd7d5e55a185833ae7b08dfe4",
+            "length": 10133
+          },
+          "model": "fixture-model",
+          "sandbox": "full-access"
+        }
+      ],
+      [
+        "turn",
+        {
+          "prompt": {
+            "sha256": "2287c5969c812cbfd4f812fad453b8e758a7cf3adebdb934f436b9be170439f2",
+            "length": 3295
+          },
+          "effort": "max",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "output_schema": {
+            "sha256": "568c325ed3893a3d2cbf0d79be2f140ea42a73b077a6364d648693d653000f8f"
+          },
+          "sandbox": "full-access"
+        }
+      ],
+      [
+        "close",
+        {}
+      ]
+    ],
+    "result": {
+      "thread_id": "thread-frozen",
+      "turn_count": 1,
+      "status": "inconclusive",
+      "stop_reason": "completed",
+      "summary": {
+        "zh": "最终业务结论未通过运行内证据引用校验，未展示未经验证的业务事实。",
+        "en": "The final business conclusion did not pass run-scoped evidence-reference validation; unvalidated business facts were withheld."
+      },
+      "source_complete": false,
+      "business_complete": false,
+      "missing_evidence": [
+        "offline_probe",
+        "acceptance_projection_not_validated",
+        "final_report_validation_missing"
+      ],
+      "evidence_refs": [],
+      "executed_plans": [],
+      "clarification_question": "",
+      "input_kind": null,
+      "input_field": null,
+      "tool_calls": [],
+      "evidence": [],
+      "web_search_count": 0,
+      "discovered_tool_count": 0,
+      "activated_tool_count": 0,
+      "presentation": null,
+      "acceptance_projection": null,
+      "verified_rule_results": [],
+      "budgeted_tool_call_count": 0,
+      "limit_kind": null,
+      "hard_limit_seconds": 600,
+      "query_seconds_granted": 500,
+      "finalization_seconds_reserved": 100,
+      "extension_count": 0,
+      "extension_reasons": [],
+      "deadline_phase": "completed"
+    }
+  }
+}

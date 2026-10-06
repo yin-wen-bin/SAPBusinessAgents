@@ -64,6 +64,9 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const [feedbackLaunch, setFeedbackLaunch] = useState<any>(null);
   const [feedbackConnectionError, setFeedbackConnectionError] = useState(false);
   const pendingFeedbackRequest = useRef<FeedbackRequest | null>(null);
+  const [workbuddyTrusted, setWorkbuddyTrusted] = useState(false);
+  const [acceptanceRuntimeModels, setAcceptanceRuntimeModels] = useState<any[]>([]);
+  const [acceptanceRuntimeModel, setAcceptanceRuntimeModel] = useState("");
   const feedbackAfterClose = useRef<null | (() => void)>(null);
   const [identityInput, setIdentityInput] = useState(initialDraft.agent_id || "");
   const [identityCheck, setIdentityCheck] = useState<{ agent_id: string; revision: number; available: boolean } | null>(null);
@@ -629,6 +632,10 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   };
   const submitFeedback = (intent: "explain" | "revise") => {
     if (!assistantCanSubmit || !feedback.trim()) return;
+    const workbuddy = draft.metadata?.runtime_snapshot?.provider_id === "workbuddy";
+    if (workbuddy && intent === "revise" && !workbuddyTrusted && !uncertainFeedback) {
+      setError(tr("请确认可信本地编写模式后再修改。", "Confirm trusted-local authoring before revising.")); return;
+    }
     if (dirty && (intent === "revise" || annotations.length > 0 || feedbackSelection)) {
       setError(tr("请先保存当前修改，再重新核对标注后发送。", "Save the current edits, then review the annotations before sending.")); return;
     }
@@ -650,6 +657,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       ...(feedbackTaskActive ? { enqueueIfBusy: true } : {}),
       ...(feedbackImages.length ? { imageIds: feedbackImages.map((item) => item.id) } : {}),
       ...(feedbackSelection ? { selection: feedbackSelection } : {}),
+      ...(workbuddy && intent === "revise" ? { executionMode: "trusted_local" as const, trustedLocalConfirmed: workbuddyTrusted } : {}),
     }, () => crypto.randomUUID());
     const expectedTurn = request.baseTurn + 1;
     pendingFeedbackRequest.current = request;
@@ -874,6 +882,11 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       input: acceptanceDefaultInput, sensitiveInputs: { ...secrets },
     };
     setAcceptanceCases([first]); setAcceptanceSetupOpen(true); setError("");
+    setAcceptanceRuntimeModel("");
+    if (draft.formal_acceptance_runtime?.provider_id === "workbuddy") {
+      call(`${apiBase}/api/system/sdk-runtimes/workbuddy/models`).then((result) => setAcceptanceRuntimeModels(result.items || []))
+        .catch(() => { setAcceptanceRuntimeModels([]); setError(tr("无法读取已验证模型，请检查系统配置。", "Cannot load verified models; check system settings.")); });
+    }
   };
   const findAcceptanceSample = (index: number) => {
     const selected = acceptanceCases[index];
@@ -902,6 +915,9 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   };
   const startAcceptance = () => {
     if (!validationActionable || !acceptanceCases.length) return;
+    if (draft.formal_acceptance_runtime?.provider_id === "workbuddy" && !acceptanceRuntimeModel) {
+      setError(tr("请选择身份已确认的验收模型。", "Choose an identity-verified acceptance model.")); return;
+    }
     for (const item of acceptanceCases) {
       const errors = validateDraftInput(schema, item.input, item.sensitiveInputs, locale);
       if (Object.keys(errors).length) {
@@ -921,6 +937,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       try {
         const value = await call(`${base}/acceptance-campaigns`, {
           expectedRevision: draft.revision, requestId: crypto.randomUUID(),
+          ...(draft.formal_acceptance_runtime?.provider_id === "workbuddy" ? { runtimeModelId: acceptanceRuntimeModel } : {}),
           cases: acceptanceCases.map((item) => ({ caseId: item.caseId, input: item.input, sensitiveInputs: item.sensitiveInputs })),
         });
         setSecrets({}); setAcceptanceCampaign(value); setOperation({ status: value.status || "queued", kind: "formal_acceptance", detail: { campaign_id: value.campaign_id } });
@@ -1146,6 +1163,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         {draft.assistant_capabilities?.image_input && <div className="draft-feedback-images"><label className="draft-checkbox"><input type="checkbox" checked={imageReviewed} onChange={(event) => setImageReviewed(event.target.checked)} />{tr("我已检查截图，不包含不应交给助手的敏感信息。截图仅作上下文，不作为 SAP 证据。", "I reviewed the screenshot for sensitive information. It is context, not SAP evidence.")}</label><label>{tr("添加截图（PNG/JPEG，1 MB以内，最多3张；24小时后过期）", "Add screenshots (PNG/JPEG, up to 1 MB each, maximum three; expire after 24 hours)")}<input type="file" accept="image/png,image/jpeg" disabled={!imageReviewed || feedbackImages.length >= 3} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadFeedbackImage(file); event.target.value = ""; }} /></label>{feedbackImages.length > 0 && <ul>{feedbackImages.map((item) => <li key={item.id}>{item.name} <button type="button" className="agent-secondary-action" onClick={() => setFeedbackImages((current) => current.filter((entry) => entry.id !== item.id))}>{tr("移除", "Remove")}</button></li>)}</ul>}</div>}
         {dirty && <p role="status">{tr("解释可基于已保存修订进行；修改草稿或提交标注前，请先保存并重新核对。", "Explanation can use the saved revision; save and review again before revising or submitting annotations.")}</p>}
         <p className="draft-assistant-action-hint">{tr("解释只分析已保存内容；修改草稿可能保存新修订。", "Explanation only analyzes saved content; revision may save a new draft revision.")}</p>
+        {draft.metadata?.runtime_snapshot?.provider_id === "workbuddy" && <label className="draft-checkbox"><input type="checkbox" checked={workbuddyTrusted} disabled={uncertainFeedback} onChange={(event) => setWorkbuddyTrusted(event.target.checked)} />{tr("允许 WorkBuddy 在可信本地副本中调查代码、编辑与运行测试。这不是操作系统沙盒，SAP 工具仍逐次授权。", "Allow WorkBuddy to inspect, edit and test a trusted local copy. This is not an OS sandbox; SAP tools remain authorized per call.")}</label>}
         <div className="draft-assistant-actions" role="group" aria-label={tr("提交方式", "Submit as")}>
           <button type="button" className="agent-secondary-action" disabled={!assistantCanSubmit || !feedback.trim() || (dirty && (annotations.length > 0 || Boolean(feedbackSelection))) || (uncertainFeedback && pendingFeedbackRequest.current?.intent !== "explain")} onClick={() => submitFeedback("explain")}>{uncertainFeedback && pendingFeedbackRequest.current?.intent === "explain" ? tr("重传原请求", "Resend original request") : tr("解释问题", "Explain issue")}</button>
           <button type="button" disabled={!assistantCanSubmit || dirty || !feedback.trim() || (uncertainFeedback && pendingFeedbackRequest.current?.intent !== "revise")} onClick={() => submitFeedback("revise")}>{uncertainFeedback && pendingFeedbackRequest.current?.intent === "revise" ? tr("重传原请求", "Resend original request") : tr("修改草稿", "Revise draft")}</button>
@@ -1159,7 +1177,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
 
     <AgentSampleProgress open={sampleDialogOpen} value={discovery} locale={locale} canRetry={validationActionable} fields={selectingSampleFields ? sampleFields : undefined} selectedFields={selectedSampleFields} onSelection={setSelectedSampleFields} onStart={discover} preflightBusy={samplePreflightBusy} preflightError={samplePreflightError} scopeRequired={sampleScopeMissing} onClose={() => setSampleDialogOpen(false)} onCancel={cancelSample} onRetry={chooseSampleFields} onReview={reviewSample} onAfterClose={() => { if (sampleReviewFocus.current) { sampleReviewFocus.current = false; sampleInputsRef.current?.focus(); } }} />
     <AgentTrialProgress open={trialDialogOpen} run={run} trial={trial} locale={locale} connectionError={trialConnectionError} errorMessage={error} onClose={() => setTrialDialogOpen(false)} onCancel={cancelTrial} onReview={() => { trialReviewFocus.current = true; setTrialDialogOpen(false); }} onAfterClose={() => { if (trialReviewFocus.current) { trialReviewFocus.current = false; trialResultRef.current?.focus(); } }} />
-    <AgentAcceptanceSetup open={acceptanceSetupOpen} locale={locale} schema={schema} mode={manifest.validation?.acceptanceMode || "three_stage"} runtime={draft.formal_acceptance_runtime} cases={acceptanceCases} currentInput={acceptanceDefaultInput} currentSecrets={secrets} sampleInput={discovery?.input} canUseSample={sampleConfirmed} disabled={!formalAcceptanceReady} onCases={setAcceptanceCases} onFindSample={findAcceptanceSample} onClose={() => setAcceptanceSetupOpen(false)} onStart={startAcceptance} />
+    <AgentAcceptanceSetup open={acceptanceSetupOpen} locale={locale} schema={schema} mode={manifest.validation?.acceptanceMode || "three_stage"} runtime={draft.formal_acceptance_runtime} runtimeModels={acceptanceRuntimeModels} runtimeModelId={acceptanceRuntimeModel} onRuntimeModel={setAcceptanceRuntimeModel} cases={acceptanceCases} currentInput={acceptanceDefaultInput} currentSecrets={secrets} sampleInput={discovery?.input} canUseSample={sampleConfirmed} disabled={!formalAcceptanceReady} onCases={setAcceptanceCases} onFindSample={findAcceptanceSample} onClose={() => setAcceptanceSetupOpen(false)} onStart={startAcceptance} />
     <AgentAcceptanceProgress open={acceptanceProgressOpen} locale={locale} campaign={acceptanceCampaign} connectionError={acceptanceConnectionError} apiBase={apiBase} draftId={draft.draft_id} onClose={() => { setAcceptanceProgressOpen(false); window.setTimeout(() => acceptanceResultRef.current?.focus(), 0); }} onCancel={cancelAcceptance} onAdjust={() => { setAcceptanceProgressOpen(false); openAssistant("revise", tr("请根据正式验收结果调整草稿。", "Please revise the draft based on the formal acceptance result."), { acceptanceCampaignId: acceptanceCampaign?.campaign_id }); }} onRetry={() => { setAcceptanceProgressOpen(false); window.setTimeout(openAcceptance, 0); }} />
     <AgentFeedbackProgress open={feedbackDialogOpen} turn={feedbackProgressTurn} operation={feedbackOperation} locale={locale} connectionError={feedbackConnectionError} errorMessage={feedbackLaunch?.status === "failed" ? error : ""} onClose={() => setFeedbackDialogOpen(false)} onCancel={cancelFeedback} onRetry={() => { if (!feedbackProgressTurn) return; feedbackAfterClose.current = () => retryFeedback(feedbackProgressTurn); setFeedbackDialogOpen(false); }} onReview={() => { if (!feedbackProgressTurn) return; feedbackAfterClose.current = () => { setCompareFrom(feedbackProgressTurn.base_revision ?? Math.max(1, draft.revision - 1)); setCompareTo(feedbackProgressTurn.result_revision ?? draft.revision); setCompareBaseline("revision"); setStep("publish"); }; setFeedbackDialogOpen(false); }} onAfterClose={() => { const followUp = feedbackAfterClose.current; feedbackAfterClose.current = null; followUp?.(); }} />
     <AgentPublicationProgress open={publicationDialogOpen} value={publication} locale={locale} connectionError={publicationConnectionError} onClose={() => setPublicationDialogOpen(false)} onRetrySite={retrySiteRefresh} onComplete={finishPublication} onActivate={onActivatePublished ? () => { setPublicationDialogOpen(false); onActivatePublished(publication?.result || publication || {}); } : undefined} />

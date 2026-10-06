@@ -53,3 +53,12 @@ test("workflow new interaction preserves intent on uncertain delivery and has bo
   assert.match(source, /Math.min\(30000/);
   assert.match(source, /sessionStorage.setItem/);
 });
+
+test("new workflow rounds use one hour without rewriting uncertain requests", async () => {
+  const source = await readFile(new URL("../src/components/WorkflowAssistant.tsx", import.meta.url), "utf8");
+  assert.match(source, /budgetSeconds: 3600/);
+  assert.doesNotMatch(source, /budgetSeconds: 600\b/);
+  assert.match(source, /if \(!pending.current\)/);
+  assert.match(source, /JSON.stringify\(pending.current.body\)/);
+  assert.doesNotMatch(source, /pending.current.body.budgetSeconds\s*=/);
+});

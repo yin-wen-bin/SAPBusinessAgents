@@ -68,8 +68,13 @@ class AgentDiscoveryJobs:
             return self.get(draft_id, run_id)
         created_run = False
         try:
-            runtime = self.sdk_manager.runtime_snapshot_for_model("codex", SAMPLE_MODEL)
-            if runtime.get("provider_id") != "codex" or runtime.get("model") != SAMPLE_MODEL:
+            bound = (draft.get("metadata") or {}).get("runtime_snapshot") or {}
+            if bound.get("provider_id") == "workbuddy":
+                runtime = self.sdk_manager.workbuddy.bound_snapshot(bound)
+                self.sdk_manager.workbuddy.environment.assert_operation(runtime, "sample_discovery")
+            else:
+                runtime = self.sdk_manager.runtime_snapshot_for_model("codex", SAMPLE_MODEL)
+            if runtime.get("provider_id") != "workbuddy" and (runtime.get("provider_id") != "codex" or runtime.get("model") != SAMPLE_MODEL):
                 raise AgentLifecycleError("The sample Runtime binding is inconsistent.", code="sample_discovery_model_mismatch")
             RuntimeSnapshot.model_validate(runtime)
             request = RunCreate(mode=RunMode.free_query, query="Find validation sample inputs for the isolated Agent draft.", input=supplied)
@@ -78,7 +83,8 @@ class AgentDiscoveryJobs:
             self.store.save_agent_run_snapshot(run_id, manifest, rules_source=package.get("rules"),
                                                draft_id=draft_id, revision=revision)
             self.store.update_agent_operation(draft_id, run_id, detail={
-                "run_id": run_id, "revision": revision, "model": "gpt-5.6-sol",
+                "run_id": run_id, "revision": revision, "model": runtime.get("model"),
+                **({"runtime_snapshot": runtime} if runtime.get("provider_id") == "workbuddy" else {}),
                 "input": supplied, "status": "queued", "bounded_discovery": True,
                 "timeout_seconds": SAMPLE_SECONDS, "phase": "queued",
                 "reasoning_effort": runtime.get("reasoning_effort"), "created_at": utc_now(),
@@ -106,6 +112,11 @@ class AgentDiscoveryJobs:
         return self.get(draft_id, run_id)
 
     async def _run(self, draft_id: str, run_id: str, revision: int, manifest: dict, supplied: dict, selected_fields: list[str] | None = None) -> None:
+        runtime = self.store.get_run(run_id).runtime
+        manager = getattr(self.service, "workbuddy_manager", None)
+        if runtime and runtime.provider_id == "workbuddy" and manager and not manager.supervisor.reserved:
+            async with manager.supervisor.reserve():
+                return await self._run(draft_id, run_id, revision, manifest, supplied, selected_fields)
         outcome: dict[str, Any]
         started = time.monotonic()
         started_at = utc_now()
@@ -114,11 +125,13 @@ class AgentDiscoveryJobs:
             **self.store.get_agent_operation_by_id(draft_id, run_id)["detail"],
             "started_at": started_at, "deadline_at": deadline_at, "phase": "preparing", "status": "running"})
         worker = None
+        runtime = self.store.get_run(run_id).runtime
+        sample_model = runtime.model if runtime and runtime.provider_id == "workbuddy" else "gpt-5.6-sol"
         try:
             self.store.update_run(run_id, status=RunStatus.running, started_at=started_at)
-            self.store.append_event(run_id, "sample_discovery_started", {"draft_id": draft_id, "revision": revision, "model": "gpt-5.6-sol"})
+            self.store.append_event(run_id, "sample_discovery_started", {"draft_id": draft_id, "revision": revision, "model": sample_model})
             worker = asyncio.create_task(self.service.discover(
-                run_id, manifest, supplied, revision=revision, model="gpt-5.6-sol",
+                run_id, manifest, supplied, revision=revision, model=sample_model,
                 started=started, selected_fields=selected_fields,
             ))
             done, _ = await asyncio.wait({worker}, timeout=max(0, started + SAMPLE_SECONDS - time.monotonic()))
@@ -135,9 +148,14 @@ class AgentDiscoveryJobs:
             outcome = {"status": "cancelled", "codes": ["sample_discovery_cancelled"]}
         except TimeoutError:
             outcome = {"status": "timed_out", "codes": ["sample_discovery_timeout"]}
-        except Exception:
+        except Exception as exc:
             # Runtime and SAP exceptions can contain business values: never persist their text.
             outcome = {"status": "unavailable", "codes": ["sample_discovery_failed"]}
+            if runtime and runtime.provider_id == "workbuddy":
+                import re
+                code = getattr(exc, "code", None)
+                if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code):
+                    outcome["codes"] = [code]
         if worker is not None and not worker.done():
             if hasattr(self.service, "quiesce"):
                 self.service.quiesce(run_id)
@@ -171,7 +189,7 @@ class AgentDiscoveryJobs:
             return
         execution = self.store.get_harness_state(run_id).get("sample_execution", {})
         outcome = {**current["detail"], **execution, **outcome, "run_id": run_id, "draft_id": draft_id, "revision": revision,
-                   "model": "gpt-5.6-sol", "bounded_discovery": True, "completed_at": utc_now()}
+                   "model": current["detail"].get("model", "gpt-5.6-sol"), "bounded_discovery": True, "completed_at": utc_now()}
         status = str(outcome.get("status") or "inconclusive")
         if outcome.get("started_at"):
             outcome["elapsed_seconds"] = round((datetime.fromisoformat(outcome["completed_at"]) - datetime.fromisoformat(outcome["started_at"])).total_seconds(), 1)

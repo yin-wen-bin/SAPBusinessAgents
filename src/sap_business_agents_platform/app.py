@@ -311,7 +311,9 @@ def create_app(
             {},
             provider_factories={
                 "codex": lambda model, reasoning_effort=None: CodexPlanner(settings.repository_root, model=model, reasoning_effort=reasoning_effort, data_root=settings.data_root),
-                "workbuddy": lambda model: WorkBuddyPlanner(settings.repository_root, model=model),
+                "workbuddy": lambda model, reasoning_effort=None, runtime_snapshot=None: WorkBuddyPlanner(
+                    settings.repository_root, model=model, supervisor=sdk_registry.workbuddy.supervisor,
+                    runtime_snapshot=runtime_snapshot, tool_broker=harness_broker),
             },
         )
     plugin_manager = PluginManager(
@@ -372,6 +374,10 @@ def create_app(
         integrations=integrations,
     )
     drafts = AgentDraftService(settings, store, agent_runtime)
+    if not planner_supplied:
+        from .workbuddy_harness import WorkBuddyHarnessController
+        if hasattr(sdk_registry, "workbuddy"):
+            coordinator.workbuddy_harness = WorkBuddyHarnessController(settings, store, harness_broker, sdk_registry.workbuddy)
     workflow_drafts = WorkflowDraftService(
         settings,
         store,
@@ -402,6 +408,8 @@ def create_app(
         settings, store, agent_lifecycle, sdk_registry,
         SampleDiscoveryService(settings, store, harness_broker),
     )
+    if hasattr(sdk_registry, "workbuddy"):
+        sample_discovery.service.workbuddy_manager = sdk_registry.workbuddy
     acceptance_campaigns = AgentAcceptanceJobs(
         settings, store, agent_lifecycle, coordinator, sdk_registry,
     )
@@ -416,6 +424,14 @@ def create_app(
     artifact_csrf_token = secrets.token_urlsafe(32)
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if hasattr(sdk_registry, "workbuddy"):
+            try:
+                sdk_registry.workbuddy.supervisor.reconcile()
+            except (SDKManagerError, OSError, ValueError, TypeError):
+                # Leave WorkBuddy blocked for an explicit recheck, not the API
+                # or the independent Codex lifecycle. Never reset owned jobs.
+                import logging
+                logging.getLogger(__name__).warning("WorkBuddy cleanup requires an explicit recheck.")
         store.recover_agent_operations()
         agent_lifecycle.reconcile_publications()
         await plugin_manager.start()
@@ -439,6 +455,8 @@ def create_app(
             await coordinator.stop()
             await integrations.close()
             await plugin_manager.stop()
+            if hasattr(sdk_registry, "workbuddy"):
+                await sdk_registry.workbuddy.supervisor.close()
 
     app = FastAPI(
         title="SAPBusinessAgents Local Prototype",

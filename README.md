@@ -16,6 +16,8 @@ SAP 访问限于 OData GET 或已批准的语义只读 ADT 查询。查询、催
 
 > 安全边界：自由查询和 Agent 对话编写使用 Codex SDK `full_access`，以启动服务的 Windows 账户权限运行，可执行命令、读写该账户可访问的文件并访问网络；工作副本不是操作系统沙盒。只在可信的本地账户和受控环境使用，不要把未知文档或网页内容视为可信指令。平台的 SAP Broker 仍限制其注册的 SAP 查询为只读，但不能从操作系统层面阻止 SDK 命令访问其他资源。详见[安全说明](SECURITY.md)。
 
+Codex 保持默认。WorkBuddy 的独立安装、验证门禁及当前不可用原因见[独立 Runtime 说明](docs/workbuddy-runtime.md)；平台安装不再要求安装 WorkBuddy SDK。
+
 ### 按任务选择入口
 
 | 你想做什么 | 选择哪个入口 | 是否需要 Agent Runtime |
@@ -221,6 +223,8 @@ SAP access is limited to OData GET or approved semantically read-only ADT querie
 > The online catalog is not connected to your SAP system and does not store your runs; queries and Agent management use the local service.
 
 > Security boundary: free queries and conversational Agent authoring use the Codex SDK in `full_access` under the Windows account that starts the service. It can run commands, read or write files accessible to that account, and use the network; a work copy is not an OS sandbox. Use a trusted local account and environment, and treat external content as untrusted data. The platform SAP Broker limits its registered SAP queries to read-only operations, but cannot prevent SDK commands from accessing other resources at the OS level. See [Security](SECURITY.md).
+
+Codex remains the default. See [isolated Runtime setup](docs/workbuddy-runtime.md) for WorkBuddy installation, validation gates and current blockers; WorkBuddy is no longer a mandatory platform dependency.
 
 ### Choose by task
 

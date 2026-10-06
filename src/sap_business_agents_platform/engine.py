@@ -200,6 +200,8 @@ class RunCoordinator:
 
     def _future_session_binding(self, session: dict[str, Any]) -> dict[str, Any]:
         snapshot = session.get("runtime") or {}
+        if snapshot.get("provider_id") == "workbuddy":
+            return self.planner.snapshot_for_binding(snapshot)
         resolve = getattr(self.planner, "resolve_legacy_snapshot", None)
         if snapshot.get("reasoning_effort") is None and callable(resolve):
             snapshot = resolve(snapshot)
@@ -209,6 +211,8 @@ class RunCoordinator:
 
     def _future_runtime_binding(self, record: Any) -> dict[str, Any]:
         original = record.runtime.model_dump(mode="json") if record.runtime else {}
+        if original.get("provider_id") == "workbuddy":
+            return self.planner.snapshot_for_binding(original)
         if original.get("reasoning_effort") is not None:
             return original
         state = self.store.get_harness_state(record.run_id)
@@ -1098,7 +1102,7 @@ class RunCoordinator:
         feedback_reviewer = getattr(self.planner, "review_free_query_feedback", None)
         supports = getattr(self.planner, "supports", None)
         if (
-            provider_id != "codex"
+            provider_id not in {"codex", "workbuddy"}
             or not callable(feedback_reviewer)
             or (callable(supports) and not supports("review_free_query_feedback"))
         ):
@@ -1169,6 +1173,8 @@ class RunCoordinator:
         try:
             pin = getattr(self.planner, "pin", None)
             context = pin(provider_id, model_id, runtime_snapshot.get("reasoning_effort")) if callable(pin) else nullcontext()
+            if provider_id == "workbuddy":
+                context = self.planner.pin_snapshot(runtime_snapshot)
             with context:
                 decision = await feedback_reviewer(
                     thread_id=previous.thread_id,
@@ -1400,6 +1406,8 @@ class RunCoordinator:
         model_id = runtime_snapshot.get("model")
         pin = getattr(self.planner, "pin", None)
         context = pin(provider_id, model_id, runtime_snapshot.get("reasoning_effort")) if callable(pin) else nullcontext()
+        if provider_id == "workbuddy":
+            context = self.planner.pin_snapshot(runtime_snapshot)
         with context:
             cancel = getattr(self.planner, "cancel", None)
             if callable(cancel):
@@ -1464,6 +1472,8 @@ class RunCoordinator:
             provider_id = record.runtime.provider_id if record.runtime else "codex"
             if provider_id == "codex" and self.harness is not None:
                 await self.harness.interrupt(run_id)
+            elif provider_id == "workbuddy" and getattr(self, "workbuddy_harness", None):
+                await self.workbuddy_harness.interrupt(run_id)
             else:
                 pin = getattr(self.planner, "pin", None)
                 model_id = record.runtime.model if record.runtime else None
@@ -1475,6 +1485,11 @@ class RunCoordinator:
 
     async def _execute_scheduled_run(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
+        if (record.mode == RunMode.free_query and record.runtime and record.runtime.provider_id == "workbuddy"
+                and getattr(self, "workbuddy_harness", None)
+                and not self.workbuddy_harness.manager.supervisor.reserved):
+            async with self.workbuddy_harness.manager.supervisor.reserve():
+                return await self._execute_scheduled_run(run_id)
         timeout = (
             self.settings.free_query_run_seconds
             + (15 if self.settings.max_free_query_seconds is not None else 0)
@@ -3129,6 +3144,8 @@ class RunCoordinator:
         model_id = record.runtime.model if record.runtime else None
         pin = getattr(self.planner, "pin", None)
         context = pin(provider_id, model_id, self._future_runtime_binding(record).get("reasoning_effort")) if callable(pin) else nullcontext()
+        if provider_id == "workbuddy":
+            context = self.planner.pin_snapshot(self._future_runtime_binding(record))
         bind_events = getattr(self.planner, "bind_events", None)
         event_context = (
             bind_events(
@@ -3140,6 +3157,12 @@ class RunCoordinator:
             else nullcontext()
         )
         with context, event_context:
+            if provider_id == "workbuddy":
+                if not getattr(self, "workbuddy_harness", None):
+                    raise RunExecutionError("WorkBuddy harness is unavailable.", code="runtime_operation_unavailable")
+                with self.planner.pin_snapshot(self._future_runtime_binding(record)):
+                    await self._execute_workbuddy_harness(run_id)
+                return
             if (
                 provider_id == "codex"
                 and self.harness is not None
@@ -3181,7 +3204,7 @@ class RunCoordinator:
         presentation_reviser = getattr(self.planner, "revise_free_query_presentation", None)
         supports = getattr(self.planner, "supports", None)
         if (
-            provider_id != "codex"
+            provider_id not in {"codex", "workbuddy"}
             or not callable(presentation_reviser)
             or (callable(supports) and not supports("revise_free_query_presentation"))
         ):
@@ -3202,6 +3225,8 @@ class RunCoordinator:
             pin = getattr(self.planner, "pin", None)
             model_id = record.runtime.model if record.runtime else None
             context = pin(provider_id, model_id, self._future_runtime_binding(record).get("reasoning_effort")) if callable(pin) else nullcontext()
+            if provider_id == "workbuddy":
+                context = self.planner.pin_snapshot(self._future_runtime_binding(record))
             with context:
                 revised = await presentation_reviser(
                     thread_id=str(record.thread_id or source.thread_id or ""),
@@ -3418,6 +3443,185 @@ class RunCoordinator:
             ),
             thread_id=outcome.thread_id,
             harness=HarnessResult(
+                diagnostics=run_diagnostics(self.store, run_id),
+                thread_id=outcome.thread_id,
+                turn_count=outcome.turn_count,
+                tool_call_count=len(outcome.tool_calls),
+                budgeted_tool_call_count=outcome.budgeted_tool_call_count,
+                web_search_count=outcome.web_search_count,
+                discovered_tool_count=outcome.discovered_tool_count,
+                activated_tool_count=outcome.activated_tool_count,
+                stop_reason=outcome.stop_reason,
+                limits=HarnessLimits(
+                    tool_calls=HarnessLimitUsage(
+                        limit=self.settings.max_tool_calls,
+                        used=outcome.budgeted_tool_call_count,
+                        reached=outcome.limit_kind == "tool_calls",
+                    ),
+                    turns=HarnessLimitUsage(
+                        limit=self.settings.max_harness_turns,
+                        used=outcome.turn_count,
+                        reached=outcome.limit_kind == "turns",
+                    ),
+                    runtime_seconds=HarnessLimitUsage(
+                        limit=outcome.hard_limit_seconds or self.settings.free_query_run_seconds,
+                        used=outcome.elapsed_seconds,
+                        reached=outcome.limit_kind == "runtime_seconds",
+                    ),
+                    reached_kind=outcome.limit_kind,
+                    hard_limit_seconds=(
+                        outcome.hard_limit_seconds
+                        or self.settings.free_query_run_seconds
+                    ),
+                    query_seconds_granted=outcome.query_seconds_granted,
+                    finalization_seconds_reserved=outcome.finalization_seconds_reserved,
+                    extension_count=outcome.extension_count,
+                    extension_reasons=outcome.extension_reasons,
+                    deadline_phase=outcome.deadline_phase,
+                    elapsed_seconds=outcome.elapsed_seconds,
+                ),
+            ),
+            started_at=record.started_at,
+        )
+        self.store.update_run(run_id, status=RunStatus.running, plan_json=plan)
+        self.store.append_event(
+            run_id,
+            "harness_completed",
+            {
+                "thread_id": outcome.thread_id,
+                "turn_count": outcome.turn_count,
+                "tool_call_count": len(outcome.tool_calls),
+                "web_search_count": outcome.web_search_count,
+                "stop_reason": outcome.stop_reason,
+            },
+        )
+        self.store.set_progress(
+            run_id,
+            phase="preparing_result",
+            state="active",
+            determinate=False,
+            elapsed_seconds=outcome.elapsed_seconds,
+            hard_limit_seconds=(
+                outcome.hard_limit_seconds or self.settings.free_query_run_seconds
+            ),
+            deadline_phase="completed",
+            extension_count=outcome.extension_count,
+        )
+        self._complete_result(run_id, result)
+
+    async def _execute_workbuddy_harness(self, run_id: str) -> None:
+        record = self.store.get_run(run_id)
+        query = str(record.query or "").strip()
+        harness_query = query
+        if record.agent_id:
+            try:
+                guided_agent = self.agents.get(str(record.agent_id))
+            except (KeyError, PluginError) as exc:
+                raise RunExecutionError(
+                    f"Guided Agent context is unavailable: {record.agent_id}",
+                    code="guided_agent_not_found",
+                ) from exc
+            harness_query = _guided_agent_question(guided_agent, query)
+        self.store.update_run(run_id, status=RunStatus.planning)
+        self._set_progress(run_id, phase="preparing", state="active", determinate=False)
+        self.store.append_event(
+            run_id,
+            "planning_started",
+            {"query": query, "agent_id": record.agent_id, "runtime": "workbuddy_worker"},
+        )
+        outcome = await self.workbuddy_harness.run(
+            run_id,
+            harness_query,
+            record.thread_id,
+            record.runtime.model if record.runtime else None,
+            reasoning_effort=self._future_runtime_binding(record).get("reasoning_effort"),
+        )
+        self.store.update_run(run_id, thread_id=outcome.thread_id)
+        if outcome.status == "waiting_input":
+            question = outcome.clarification_question or "请补充完成查询所必需的信息。"
+            input_detail = (
+                {"input_kind": outcome.input_kind, "field": outcome.input_field}
+                if outcome.input_kind and outcome.input_field
+                else None
+            )
+            self.store.update_run(
+                run_id,
+                status=RunStatus.waiting_input,
+                error_json={
+                    "code": "clarification_required",
+                    "message": question,
+                    "detail": input_detail,
+                },
+            )
+            self._set_progress(
+                run_id, phase="preparing", state="waiting_input", determinate=False
+            )
+            self.store.append_event(
+                run_id,
+                "waiting_input",
+                {
+                    "question": question,
+                    "runtime": "workbuddy_worker",
+                    **(input_detail or {}),
+                },
+            )
+            session = self.store.get_free_query_session_by_run(run_id)
+            if session is not None:
+                self.store.update_free_query_session(
+                    session["session_id"], thread_id=outcome.thread_id, status="waiting_input"
+                )
+            return
+        if outcome.stop_reason == "interrupted" and self.store.get_run(run_id).cancel_requested:
+            self._finish_cancelled(run_id)
+            return
+        plan = {
+            "kind": "sap_business_agents_harness",
+            "runtime": "workbuddy_worker",
+            "steps": outcome.executed_plans,
+        }
+        result = RunResult(
+            run_id=run_id,
+            mode=RunMode.free_query,
+            agent_id=record.agent_id,
+            query=query,
+            plan=plan,
+            steps=[
+                {
+                    "step_id": call["call_id"],
+                    "executor": "workbuddy_harness",
+                    "operation": call["tool"],
+                    "status": call["status"],
+                }
+                for call in outcome.tool_calls
+            ],
+            tool_calls=outcome.tool_calls,
+            evidence=outcome.evidence,
+            rule_results=[
+                {
+                    "rule_id": "harness_evidence_contract",
+                    "business_complete": outcome.business_complete,
+                    "missing_evidence": outcome.missing_evidence,
+                    "evidence_refs": outcome.evidence_refs,
+                },
+                *outcome.verified_rule_results,
+            ],
+            summary=outcome.summary,
+            presentation=outcome.presentation,
+            acceptance_projection=outcome.acceptance_projection,
+            errors=(
+                []
+                if outcome.status == "completed"
+                else [
+                    {
+                        "code": "harness_inconclusive",
+                        "message": "The WorkBuddy Harness could not establish a complete conclusion.",
+                        "missing_evidence": outcome.missing_evidence,
+                    }
+                ]
+            ),
+            thread_id=outcome.thread_id,
+            harness=HarnessResult(
+                runtime="workbuddy_worker",
                 diagnostics=run_diagnostics(self.store, run_id),
                 thread_id=outcome.thread_id,
                 turn_count=outcome.turn_count,

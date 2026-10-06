@@ -361,17 +361,20 @@ def test_runtime_selection_is_gated_and_persisted(tmp_path: Path) -> None:
     )["selectable"] is False
 
     checked = asyncio.run(manager.check_provider("workbuddy"))
-    assert checked["authenticated"] is True
+    # Platform packages/probes may no longer make an independent runtime ready.
+    assert checked["authenticated"] is False
     assert checked["selectable"] is False
     catalog = asyncio.run(manager.refresh_models("workbuddy"))
-    assert [item["model_id"] for item in catalog["items"]] == ["test-model"]
-    assert catalog["model_catalog_complete"] is True
-    asyncio.run(manager.set_default_model("workbuddy", "test-model"))
-    enabled = manager.set_enabled("workbuddy", True)
-    assert enabled["selectable"] is True
-    selected = manager.set_default("workbuddy")
-    assert selected["provider_id"] == "workbuddy"
-    assert manager.default_provider_id == "workbuddy"
+    assert catalog["items"] == []
+    assert catalog["model_catalog_complete"] is False
+    revision = manager.configuration_revision
+    import pytest
+    with pytest.raises(Exception, match="operation validation"):
+        manager.set_enabled("workbuddy", True)
+    with pytest.raises(Exception):
+        manager.set_default("workbuddy")
+    assert manager.configuration_revision == revision
+    assert manager.default_provider_id == "codex"
 
     reloaded = SDKManager(
         registry,
@@ -383,10 +386,10 @@ def test_runtime_selection_is_gated_and_persisted(tmp_path: Path) -> None:
         },
         selection_path=state,
     )
-    assert reloaded.default_provider_id == "workbuddy"
+    assert reloaded.default_provider_id == "codex"
     assert next(
         item for item in reloaded.list() if item["provider_id"] == "workbuddy"
-    )["default_model_id"] == "test-model"
+    )["default_model_id"] is None
 
     try:
         manager.set_default("deepseek-harness")

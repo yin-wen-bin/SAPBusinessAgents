@@ -32,9 +32,17 @@ its process ownership can be reconciled; it is not assumed safely terminated.
   a source copy; production files are not accepted as output artifacts.
 - SAP/mail credentials and personal MCP servers are not supplied. No SAP calls,
   mail sends, live validation, publication or activation are performed by v2.
-- Each dispatched round has a 600-second default budget (API maximum 3600),
+- Each new dispatched round has a 3600-second default budget (API maximum 3600),
   followed by at most ten seconds of owned-process cleanup. Unconfirmed cleanup
   retains an operation blocker. Waiting/queue time is outside that budget.
+  Explicit shorter API budgets and already-saved rounds retain their original values;
+  pending requests are retransmitted unchanged. The one-hour default applies to
+  both Codex and WorkBuddy workflow authoring, without changing SDK/model options.
+
+新工作流助手回合默认执行预算为 3600 秒（1 小时），前台与 API 默认值一致。
+历史回合、等待重传的请求及显式指定的较短预算不改写；排队时间不计入执行预算，
+清理窗口仍最多 10 秒。此项按用户要求同时适用于 Codex 和 WorkBuddy 工作流编写，
+不修改 SDK、模型、推理或权限配置。
 
 仅凭配置不能证明 Windows 隔离成立。离线检查实际命令边界（不调用模型或 SAP）：
 

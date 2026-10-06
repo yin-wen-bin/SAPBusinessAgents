@@ -174,69 +174,15 @@ class CodexRuntimeProbe:
 
 
 class WorkBuddyRuntimeProbe:
+    """Compatibility facade; SDK probes always execute in the independent worker."""
     def __init__(self, repository_root: Path, *, timeout_seconds: float = 10.0) -> None:
         self.repository_root = repository_root.resolve()
         self.timeout_seconds = timeout_seconds
 
     async def check_authentication(self, definition: SDKDefinition) -> dict[str, Any]:
         del definition
-        try:
-            from codebuddy_agent_sdk import authenticate
-        except ImportError:
-            return {
-                "authenticated": False,
-                "status": "sdk_not_installed",
-                "error": {
-                    "code": "sdk_not_installed",
-                    "message": "The WorkBuddy Python SDK is not installed.",
-                },
-            }
-        flow = None
-        try:
-            flow = await asyncio.wait_for(
-                authenticate(timeout=self.timeout_seconds),
-                timeout=self.timeout_seconds,
-            )
-            if flow.auth_url:
-                await flow.cancel()
-                return {
-                    "authenticated": False,
-                    "status": "login_required",
-                    "error": {
-                        "code": "workbuddy_existing_login_unavailable",
-                        "message": "WorkBuddy requires an interactive CodeBuddy login.",
-                    },
-                }
-            result = await asyncio.wait_for(
-                flow.wait(timeout=self.timeout_seconds),
-                timeout=self.timeout_seconds,
-            )
-            if not getattr(getattr(result, "userinfo", None), "user_id", ""):
-                raise RuntimeUnavailableError(
-                    "WorkBuddy authentication returned no user identity.",
-                    code="workbuddy_existing_login_unavailable",
-                )
-        except Exception as exc:
-            if flow is not None:
-                try:
-                    await flow.cancel()
-                except Exception:
-                    pass
-            return {
-                "authenticated": False,
-                "status": "failed",
-                "error": {
-                    "code": str(
-                        getattr(exc, "code", "workbuddy_existing_login_unavailable")
-                    ),
-                    "message": str(exc) or type(exc).__name__,
-                },
-            }
-        return {
-            "authenticated": True,
-            "status": "existing_login",
-            "error": None,
-        }
+        from .workbuddy_manager import WorkBuddyManager
+        return await WorkBuddyManager(self.repository_root).check()
 
 
 class RuntimeRouter:
@@ -260,6 +206,7 @@ class RuntimeRouter:
         self._pinned_binding: ContextVar[tuple[str, str | None, str | None] | None] = ContextVar(
             "sapba_runtime_binding", default=None
         )
+        self._workbuddy_snapshot: ContextVar[dict | None] = ContextVar("workbuddy_frozen_snapshot", default=None)
 
     @property
     def current_provider_id(self) -> str:
@@ -324,6 +271,32 @@ class RuntimeRouter:
         """Read the latest checked settings for a bound model, not the default model."""
         return dict(self.manager.runtime_snapshot_for_model(provider_id, model_id))
 
+    def snapshot_for_binding(self, snapshot: dict) -> dict:
+        if snapshot.get("provider_id") == "workbuddy":
+            return self.manager.workbuddy.bound_snapshot(snapshot)
+        return self.snapshot_for_model(snapshot["provider_id"], snapshot["model"])
+
+    def workbuddy_reservation(self):
+        return self.manager.workbuddy.supervisor.reserve()
+
+    def workbuddy_reserved(self):
+        return self.manager.workbuddy.supervisor.reserved
+
+    @contextmanager
+    def pin_snapshot(self, snapshot: dict) -> Iterator[None]:
+        if snapshot.get("provider_id") != "workbuddy":
+            with self.pin(snapshot.get("provider_id"), snapshot.get("model"), snapshot.get("reasoning_effort")):
+                yield
+            return
+        saved = self.manager.workbuddy.bound_snapshot(snapshot)
+        snapshot_token = self._workbuddy_snapshot.set(saved)
+        token = self._pinned_binding.set(("workbuddy", saved["model"], None))
+        try:
+            yield
+        finally:
+            self._pinned_binding.reset(token)
+            self._workbuddy_snapshot.reset(snapshot_token)
+
     @contextmanager
     def pin(self, provider_id: str | None, model_id: str | None = None, reasoning_effort: str | None = None) -> Iterator[None]:
         selected = provider_id or self.manager.default_provider_id
@@ -383,6 +356,8 @@ class RuntimeRouter:
 
     def resolve_legacy_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         """Bind future turns once; callers persist separately from immutable run history."""
+        if snapshot.get("provider_id") == "workbuddy":
+            return self.manager.workbuddy.bound_snapshot(snapshot)
         if snapshot.get("reasoning_effort") is not None:
             return snapshot
         provider_id = str(snapshot.get("provider_id") or "codex")
@@ -458,6 +433,12 @@ class RuntimeRouter:
     def _provider(self, provider_id: str, model_id: str | None = None, reasoning_effort: str | None = None) -> Any:
         factory = self.provider_factories.get(provider_id)
         if callable(factory):
+            if provider_id == "workbuddy":
+                snapshot = self._workbuddy_snapshot.get() or self.manager.workbuddy.runtime_snapshot(model_id)
+                key = (provider_id, snapshot["model"], snapshot["configuration_digest"])
+                if key not in self._provider_cache:
+                    self._provider_cache[key] = factory(snapshot["model"], None, runtime_snapshot=snapshot)
+                return self._provider_cache[key]
             if reasoning_effort is None:
                 reasoning_effort = self.current_reasoning_effort
             key = (provider_id, model_id, reasoning_effort)

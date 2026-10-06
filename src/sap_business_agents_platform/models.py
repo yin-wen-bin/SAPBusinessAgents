@@ -320,6 +320,7 @@ class HarnessLimits(BaseModel):
 
 
 class RuntimeSnapshot(BaseModel):
+    model_config = ConfigDict(extra="allow")  # Preserve optional Provider-specific frozen bindings.
     provider_id: str
     sdk_id: str
     version: str | None = None
@@ -338,7 +339,7 @@ class RuntimeSnapshot(BaseModel):
 
 class HarnessResult(BaseModel):
     diagnostics: dict[str, Any] = Field(default_factory=dict)
-    runtime: Literal["codex_app_server"] = "codex_app_server"
+    runtime: Literal["codex_app_server", "workbuddy_worker"] = "codex_app_server"
     protocol: Literal["agent_runtime.v2"] = "agent_runtime.v2"
     thread_id: str | None = None
     turn_count: int = 0
@@ -579,6 +580,8 @@ class AgentFeedbackRequest(BaseModel):
     enqueue_if_busy: bool = Field(default=False, alias="enqueueIfBusy")
     image_ids: list[str] = Field(default_factory=list, alias="imageIds", max_length=3)
     selection: AgentFeedbackSelection | None = None
+    execution_mode: Literal["trusted_local", "restricted"] | None = Field(default=None, alias="executionMode")
+    trusted_local_confirmed: bool = Field(default=False, alias="trustedLocalConfirmed")
 
     @model_validator(mode="after")
     def strip_feedback(self) -> "AgentFeedbackRequest":
@@ -649,6 +652,7 @@ class AgentAcceptanceCampaignRequest(BaseModel):
     expected_revision: int = Field(alias="expectedRevision", ge=1)
     request_id: str = Field(alias="requestId", min_length=1, max_length=100)
     cases: list[AgentAcceptanceCase] = Field(min_length=1, max_length=5)
+    runtime_model_id: str | None = Field(default=None, alias="runtimeModelId", min_length=1, max_length=128)
 
     @field_validator("cases")
     @classmethod
@@ -809,7 +813,7 @@ class WorkflowFeedbackRequest(BaseModel):
     intent: Literal["explain", "revise"] | None = None
     execution_mode: Literal["restricted", "full_access"] = Field(default="restricted", alias="executionMode")
     trusted_local_confirmed: bool = Field(default=False, alias="trustedLocalConfirmed")
-    budget_seconds: int = Field(default=600, ge=1, le=3600, alias="budgetSeconds")
+    budget_seconds: int = Field(default=3600, ge=1, le=3600, alias="budgetSeconds")
     references: list[WorkflowAssistantReference] = Field(default_factory=list, max_length=20)
     reply_to_clarification_id: str | None = Field(default=None, alias="replyToClarificationId", max_length=150)
 

@@ -22,3 +22,24 @@ test("checking and independently saving send explicit chosen effort", () => {
   assert.match(source, /if \(modelBusy\) return; setModelBusy\(true\)/);
   assert.match(source, /row\.setAttribute\("aria-busy", String\(busy\)\)/);
 });
+
+test("WorkBuddy candidates are explicit, unverified and cannot probe before authentication", () => {
+  const branch = source.slice(source.indexOf('if (sdk.provider_id === "workbuddy")'), source.indexOf('const statusText = payload.catalog_status'));
+  assert.match(branch, /refresh\.disabled = !sdk\.installed/);
+  assert.match(branch, /\/workbuddy\/models\/refresh/);
+  assert.match(branch, /check\.disabled = !sdk\.model_check_supported \|\| sdk\.authenticated !== true/);
+  assert.match(branch, /modelPicker\(sdk, payload, true\)/);
+  assert.match(branch, /const modelId = model\?\.model_id \|\| input\.value\.trim\(\)/);
+  assert.match(branch, /if \(model && model\.selectable && !model\.selected\)/);
+  for (const text of ["CLI 声明，尚未验证", "CLI-declared, not checked"]) assert.ok(branch.includes(text));
+  assert.doesNotMatch(branch, /reasoning_effort: effortSelect/);
+  assert.match(branch, /login-workbuddy-runtime\.ps1/);
+  assert.match(branch, /if \(sdk\.installed\)/);
+  assert.match(branch, /WorkBuddy is not enabled automatically/);
+});
+
+test("WorkBuddy sign-in command wraps without overflowing narrow settings panels", async () => {
+  const css = await readFile(new URL("../src/styles/global.css", import.meta.url), "utf8");
+  assert.match(source, /sdk-update-note sdk-login-command/);
+  assert.match(css, /\.sdk-login-command\s*\{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
+});

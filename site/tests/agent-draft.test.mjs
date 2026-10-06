@@ -7,6 +7,34 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as draftHelpers from "../src/lib/agentDraft.ts";
 
+test("WorkBuddy acceptance lists only identity-verified concrete models and SDK reasoning", async () => {
+  const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceSetup, {
+      open: true, locale, schema: {}, mode: "three_stage", runtime: { provider_id: "workbuddy", model: "route", reasoning_effort: null },
+      runtimeModels: [
+        { model_id: "verified-model", actual_model: "verified-model", selectable: true, identity_known: true },
+        { model_id: "UNKNOWN-IDENTITY", actual_model: null, selectable: true, identity_known: false },
+        { model_id: "ROUTE-ALIAS", actual_model: "verified-model", selectable: true, identity_known: true },
+      ], cases: [], currentInput: {}, currentSecrets: {}, canUseSample: false,
+      onCases() {}, onFindSample() {}, onClose() {}, onStart() {},
+    }));
+    assert.match(html, /verified-model/);
+    assert.doesNotMatch(html, /UNKNOWN-IDENTITY|ROUTE-ALIAS/);
+    assert.match(html, locale === "zh" ? /由 SDK 决定/ : /SDK controlled/);
+  }
+});
+
+test("trusted-local choice participates in feedback idempotency without changing Codex requests", () => {
+  const base = { baseTurn: 1, baseRevision: 2, feedback: "revise", locale: "en", intent: "revise" };
+  const prior = draftHelpers.prepareFeedbackRequest(null, base, () => "old");
+  assert.equal(draftHelpers.prepareFeedbackRequest(prior, base, () => "unused"), prior);
+  const trusted = draftHelpers.prepareFeedbackRequest(prior, { ...base, executionMode: "trusted_local", trustedLocalConfirmed: true }, () => "new");
+  assert.equal(trusted.requestId, "new");
+  assert.equal(prior.executionMode, undefined);
+  assert.equal(draftHelpers.prepareFeedbackRequest(trusted, { ...base, executionMode: "trusted_local", trustedLocalConfirmed: true }, () => "unused"), trusted);
+});
+
 test("acceptance timeout diagnosis is distinct from business mismatch and protects cleanup", async () => {
   const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
   for (const locale of ["zh", "en"]) {

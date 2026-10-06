@@ -33,6 +33,79 @@ def test_package_roundtrip_and_protected_diff(tmp_path):
         workspace.platform_changes()
 
 
+def test_opt_in_readback_excludes_only_test_artifacts_without_deleting_them(tmp_path):
+    workspace = AuthoringWorkspace(tmp_path / "repo", tmp_path / "job")
+    workspace.source.mkdir(parents=True)
+    package = {"manifest": {}, "readme": "Before", "rules": "pass\n", "files": {
+        "tests/test_rules.py": "assert True\n", "docs/__pycache__-guide.md": "Keep this documentation",
+        "dist/notes.md": "Keep authored output", "docs/.pytest_cache.md": "Keep this too"}}
+    workspace.write_package(package)
+    artifacts = ["tests/__pycache__/test_rules.cpython-314.pyc", "nested/.pytest_cache/v/cache/nodeids",
+                 "tests/legacy.pyc", "tests/legacy.pyo"]
+    for name in artifacts:
+        path = workspace.agent / "files" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\x00\x80")
+    assert workspace.read_package(exclude_test_artifacts=True) == package
+    assert all((workspace.agent / "files" / name).read_bytes() == b"\xff\x00\x80" for name in artifacts)
+    # Default behavior, including Codex's existing caller, is unchanged.
+    with pytest.raises(UnicodeDecodeError):
+        workspace.read_package()
+
+
+def test_opt_in_readback_rejects_non_cache_binary_with_safe_code(tmp_path):
+    workspace = AuthoringWorkspace(tmp_path / "repo", tmp_path / "job")
+    workspace.source.mkdir(parents=True)
+    workspace.write_package({"manifest": {}, "readme": "", "rules": None, "files": {}})
+    path = workspace.agent / "files/private-report.bin"
+    path.parent.mkdir()
+    path.write_bytes(b"\xff\x00synthetic-sensitive-content")
+    with pytest.raises(AuthoringHarnessError) as error:
+        workspace.read_package(exclude_test_artifacts=True)
+    assert error.value.code == "agent_harness_binary_file_unsupported"
+    assert "private-report" not in str(error.value) and "sensitive" not in str(error.value)
+
+
+@pytest.mark.parametrize("cache_path", ["tests/__pycache__/generated.pyc", ".pytest_cache/v/cache/nodeids"])
+def test_excluded_test_artifacts_still_reject_links(tmp_path, monkeypatch, cache_path):
+    from pathlib import Path
+    workspace = AuthoringWorkspace(tmp_path / "repo", tmp_path / "job")
+    workspace.source.mkdir(parents=True)
+    workspace.write_package({"manifest": {}, "readme": "", "rules": None, "files": {}})
+    target = workspace.agent / "files" / cache_path
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xff")
+    original = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path == target or original(path))
+    with pytest.raises(AuthoringHarnessError, match="path_invalid"):
+        workspace.read_package(exclude_test_artifacts=True)
+
+
+def test_excluded_test_artifacts_still_reject_hard_links(tmp_path):
+    import os
+    workspace = AuthoringWorkspace(tmp_path / "repo", tmp_path / "job")
+    workspace.source.mkdir(parents=True)
+    workspace.write_package({"manifest": {}, "readme": "", "rules": None, "files": {}})
+    original = tmp_path / "compiled.pyc"
+    original.write_bytes(b"\xff")
+    target = workspace.agent / "files/tests/__pycache__/generated.pyc"
+    target.parent.mkdir(parents=True)
+    os.link(original, target)
+    with pytest.raises(AuthoringHarnessError, match="source_link_rejected"):
+        workspace.read_package(exclude_test_artifacts=True)
+
+
+def test_excluded_test_artifacts_still_enforce_size_limit(tmp_path):
+    workspace = AuthoringWorkspace(tmp_path / "repo", tmp_path / "job")
+    workspace.source.mkdir(parents=True)
+    workspace.write_package({"manifest": {}, "readme": "", "rules": None, "files": {}})
+    target = workspace.agent / "files/tests/__pycache__/large.pyc"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+    with pytest.raises(AuthoringHarnessError, match="source_too_large"):
+        workspace.read_package(exclude_test_artifacts=True)
+
+
 def test_crlf_protected_file_is_not_misclassified_as_changed(tmp_path):
     workspace = AuthoringWorkspace(tmp_path / "repo", tmp_path / "job")
     workspace.source.mkdir(parents=True)

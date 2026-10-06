@@ -1,0 +1,595 @@
+{
+  "plan": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "start",
+        "options": {
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sap_business_agents_local",
+          "developer_instructions": "You are a read-only SAP query planner. Never execute shell commands, edit files, or invent SAP services. Return only the requested structured output."
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "0347e7593c10e11b6a896badc6baa2ab59d86298a51878ffd63fe87c9d363ca2",
+        "schema_sha256": "780e8071e121ec7fdf2cdb40b89ef521c2aaf4f64d61f35202ddb86fcaa6bc27",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "intent": "Offline",
+      "needs_clarification": false,
+      "clarification_question": "",
+      "plan": {
+        "service_name": "API_FIXTURE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_Fixture",
+        "http_method": "GET",
+        "filters": [
+          {
+            "field": "Document",
+            "operator": "eq",
+            "value": "001"
+          }
+        ],
+        "top": 1
+      },
+      "thread_id": "thread"
+    }
+  },
+  "ground_plan": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "resume",
+        "options": {
+          "thread_id": "thread",
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model"
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "5cd5813e548281c78b8c7acee05067cca8705b1639e25c18e70d8c21967c93d2",
+        "schema_sha256": "780e8071e121ec7fdf2cdb40b89ef521c2aaf4f64d61f35202ddb86fcaa6bc27",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "intent": "Offline",
+      "needs_clarification": false,
+      "clarification_question": "",
+      "plan": {
+        "service_name": "API_FIXTURE_SRV",
+        "odata_version": "2.0",
+        "entity_set": "A_Fixture",
+        "http_method": "GET",
+        "filters": [
+          {
+            "field": "Document",
+            "operator": "eq",
+            "value": "001"
+          }
+        ],
+        "top": 1
+      },
+      "thread_id": "thread"
+    }
+  },
+  "summarize": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "resume",
+        "options": {
+          "thread_id": "thread",
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model"
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "ca57044beb7725e3e63d5fc78c62e52e959d5326028092f97b0848b1b7af7f88",
+        "schema_sha256": "099dff98abe5773e0b4026e4d6006322e467ad2f41e377d09bc6952976322f49",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "zh": "离线",
+      "en": "Offline"
+    }
+  },
+  "author_draft": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "resume",
+        "options": {
+          "thread_id": "thread",
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model"
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "b7818def8d56ca365ee3cfd142b4f5ff64cf18eda3dcce37ab42792fcb7df863",
+        "schema_sha256": "dfc14360b97969b42e9c5beed970e33ea30dc39a0db770c4c9c921131c927cc9",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "content_zh": "离线",
+      "content_en": "Offline",
+      "rule_notes": []
+    }
+  },
+  "review_free_query_feedback": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "resume",
+        "options": {
+          "thread_id": "thread",
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model"
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "502de5b7fbe45af708639949c84c2ba8cc45fbd9e2b4b85679714a9abac1df87",
+        "schema_sha256": "8c2fd97a6d471772c36261534748a8ad9786ed0aea2af0ffb097deeefade6f8f",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "feedback_type": "presentation",
+      "action": "reinterpret",
+      "revised_intent": "Offline",
+      "revised_query": "Offline",
+      "required_changes": [],
+      "preserved_scope": [],
+      "candidate_expectations": [],
+      "clarification_question": "",
+      "reason": {
+        "zh": "离线",
+        "en": "Offline"
+      }
+    }
+  },
+  "revise_free_query_presentation": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "resume",
+        "options": {
+          "thread_id": "thread",
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model"
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "560bcfa36c23e444c00738b7b1a5e51fbecbf98e8b7fa74c9a2fec10a310329c",
+        "schema_sha256": "5416847cf43df88bf02eb4de5559a9dcdd63a1a217387ec3c047ea95e1e1aae0",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "summary": {
+        "zh": "离线",
+        "en": "Offline"
+      },
+      "presentation": {
+        "schema_version": "1.0",
+        "title": {
+          "zh": "离线",
+          "en": "Offline"
+        },
+        "blocks": [],
+        "validation_ref": null
+      }
+    }
+  },
+  "compose_workflow": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "start",
+        "options": {
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sap_business_agents_workflow_composer",
+          "developer_instructions": "You compose reusable deterministic read-only workflows only from the supplied executable Agent and integration catalogs. Never call tools, inspect other files, execute SAP, edit files, invent catalog IDs, or directly perform an external action."
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "cfde3fb27bb0235f26564ecd12ca689b834c8c0c49d15ba2a92b4e8b3735cca3",
+        "schema_sha256": "d959effc74d173b3a3fb3da83efd17491698dfa13de78449f26071e1fbadd582",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "needs_clarification": false,
+      "clarification_question": "",
+      "proposal": {
+        "title": {
+          "zh": "离线",
+          "en": "Offline"
+        },
+        "description": {
+          "zh": "离线",
+          "en": "Offline"
+        },
+        "stages": [
+          {
+            "id": "s",
+            "agent_id": "fixture",
+            "confidence": "high",
+            "capability": {
+              "zh": "离线",
+              "en": "Offline"
+            },
+            "reason": {
+              "zh": "离线",
+              "en": "Offline"
+            },
+            "bindings": [],
+            "requested_outputs": []
+          }
+        ]
+      },
+      "thread_id": "thread"
+    }
+  },
+  "review_workflow": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "start",
+        "options": {
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sap_business_agents_workflow_authoring",
+          "developer_instructions": "You review read-only deterministic workflow contracts. Never call tools, edit files, execute SAP, or create write-capable steps."
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "6a57245d82556ca7d2f1dd504a22b38a76bde7bc744140d8b52c3ecfdd598ae3",
+        "schema_sha256": "bdba6e88b2289536efe266be4614a045b51f15d1ccbbd721c096d705acad778c",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "verdict": "pass",
+      "issues": [],
+      "summary": {
+        "zh": "离线",
+        "en": "Offline"
+      },
+      "thread_id": "thread"
+    }
+  },
+  "repair_workflow": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "resume",
+        "options": {
+          "thread_id": "thread",
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model"
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "11984e1eed488646c129387680166a9bf85d6d33c96e9c127307605865494ed3",
+        "schema_sha256": "b6ee519221395085ae1b6e9647ef178e68bb16583508a256945be1aad57090f8",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "reason": "Offline",
+      "connections": [],
+      "thread_id": "thread"
+    }
+  },
+  "review_workflow_feedback": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "start",
+        "options": {
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sap_business_agents_workflow_feedback",
+          "developer_instructions": "Review workflow feedback only from the supplied workflow and executable Agent catalog. Never call tools, inspect files, execute SAP, edit files, invent Agents, or weaken deterministic safety and completeness contracts."
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "dc259e87fe9e0a8ca784b80190ee8bcdec49a4f2be7c3b9744b5cb000869b0b0",
+        "schema_sha256": "998bfceba5d07d9e0be057c7e2e45ed51c90a93e4be69c0531ca8850fce398f3",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "feedback_type": "unclear",
+      "action": "clarify",
+      "revised_requirement": "Offline",
+      "required_changes": [],
+      "preserved_behavior": [],
+      "validation_input_patch": {},
+      "candidate_expectations": [],
+      "clarification_question": "Clarify",
+      "reason": "Offline",
+      "proposal": null,
+      "thread_id": "thread"
+    }
+  },
+  "analyze_role_matching": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "start",
+        "options": {
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sap_business_agents_role_matching",
+          "developer_instructions": "Analyze only supplied document text and Agent catalog. Never call tools, read local paths, execute SAP, or modify files."
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "e2eeb8c156d95aa423c8e6dbcb9867ac15393de799fbbc5872a6f518964397bd",
+        "schema_sha256": "fb4a53088a9fa581751179deba8f251ef2c2ebd90f292e866eb81868142bd5f6",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "start",
+        "options": {
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sap_business_agents_role_matching_catalog_page",
+          "developer_instructions": "Evaluate only the supplied canonical operations and complete Agent catalog page. Never call tools, read files, execute SAP, or modify files."
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "9a2ce92c5f18ec3561fbc135f8ec0afb551c9544ee4448aaee8498d58f64567c",
+        "schema_sha256": "fb4a53088a9fa581751179deba8f251ef2c2ebd90f292e866eb81868142bd5f6",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "8c14c3c647244859b57af4276b3687377d7a04a7ee2fe026e476804912a78d53",
+        "schema_sha256": "fb4a53088a9fa581751179deba8f251ef2c2ebd90f292e866eb81868142bd5f6",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "analysis": {
+        "roles": [],
+        "processes": [],
+        "operations": [],
+        "document_issues": [],
+        "non_sap_operation_count": 0,
+        "agent_matches": [],
+        "rejected_candidates": [],
+        "workflow_suggestions": [],
+        "agent_gaps": [],
+        "catalog_evaluation": {
+          "catalog_digest": "catalog",
+          "total_agent_count": 1,
+          "evaluated_agent_count": 1,
+          "evaluated_pair_count": 0,
+          "evaluated_agent_ids": [
+            "fixture"
+          ],
+          "catalog_page_count": 1,
+          "agent_catalog_complete": true,
+          "matching_complete": true,
+          "consolidation_complete": true,
+          "failed_pages": []
+        },
+        "summary": {
+          "zh": "离线",
+          "en": "Offline"
+        }
+      },
+      "thread_id": "thread"
+    }
+  },
+  "review_role_matching_feedback": {
+    "trace": [
+      {
+        "call": "client",
+        "options": {}
+      },
+      {
+        "call": "start",
+        "options": {
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sap_business_agents_role_matching",
+          "developer_instructions": "Analyze only supplied document text and Agent catalog. Never call tools, read local paths, execute SAP, or modify files."
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "e2eeb8c156d95aa423c8e6dbcb9867ac15393de799fbbc5872a6f518964397bd",
+        "schema_sha256": "fb4a53088a9fa581751179deba8f251ef2c2ebd90f292e866eb81868142bd5f6",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "start",
+        "options": {
+          "cwd": "<repository>",
+          "sandbox": "read_only",
+          "approval_mode": "deny_all",
+          "model": "fixture-model",
+          "service_name": "sap_business_agents_role_matching_catalog_page",
+          "developer_instructions": "Evaluate only the supplied canonical operations and complete Agent catalog page. Never call tools, read files, execute SAP, or modify files."
+        }
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "9a2ce92c5f18ec3561fbc135f8ec0afb551c9544ee4448aaee8498d58f64567c",
+        "schema_sha256": "fb4a53088a9fa581751179deba8f251ef2c2ebd90f292e866eb81868142bd5f6",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "run",
+        "prompt_sha256": "8c14c3c647244859b57af4276b3687377d7a04a7ee2fe026e476804912a78d53",
+        "schema_sha256": "fb4a53088a9fa581751179deba8f251ef2c2ebd90f292e866eb81868142bd5f6",
+        "effort": "max",
+        "options": {}
+      },
+      {
+        "call": "close"
+      }
+    ],
+    "result": {
+      "analysis": {
+        "roles": [],
+        "processes": [],
+        "operations": [],
+        "document_issues": [],
+        "non_sap_operation_count": 0,
+        "agent_matches": [],
+        "rejected_candidates": [],
+        "workflow_suggestions": [],
+        "agent_gaps": [],
+        "catalog_evaluation": {
+          "catalog_digest": "catalog",
+          "total_agent_count": 1,
+          "evaluated_agent_count": 1,
+          "evaluated_pair_count": 0,
+          "evaluated_agent_ids": [
+            "fixture"
+          ],
+          "catalog_page_count": 1,
+          "agent_catalog_complete": true,
+          "matching_complete": true,
+          "consolidation_complete": true,
+          "failed_pages": []
+        },
+        "summary": {
+          "zh": "离线",
+          "en": "Offline"
+        }
+      },
+      "thread_id": "thread"
+    }
+  }
+}

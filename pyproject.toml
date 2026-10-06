@@ -13,7 +13,6 @@ dependencies = [
   "fastapi>=0.115,<1.0",
   "httpx>=0.28,<1.0",
   "jsonschema>=4.23,<5.0",
-  "codebuddy-agent-sdk>=0.3.247,<0.4",
   "openai-codex==0.147.0",
   "packaging>=24",
   "openpyxl>=3.1,<4.0",
@@ -38,6 +37,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+sap_business_agents_platform = ["workbuddy_contracts.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["agents", "tests"]

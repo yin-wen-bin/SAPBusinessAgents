@@ -576,13 +576,13 @@ class SampleDiscoveryContext:
                                               "key_fields": (self.stable_fields.get(_source(plan or {}))
                                                              or self.live_keys.get(_source(plan or {}), []))}
 
-    def prompt(self) -> str:
+    def prompt(self, *, runtime_model: str = SAMPLE_MODEL) -> str:
         # No examples/defaults/README/rule text: those are not source evidence.
         properties = {name: {key: value for key, value in spec.items()
                              if key not in {"default", "examples", "placeholder"}}
                       for name, spec in self.properties.items()}
-        return """Find one real sample for the saved Agent draft using ONLY the provided SAP broker.
-Use model gpt-5.6-sol. This is sample discovery, NOT business analysis or acceptance.
+        return f"""Find one real sample for the saved Agent draft using ONLY the provided SAP broker.
+Use model {runtime_model}. This is sample discovery, NOT business analysis or acceptance.
 Use catalog, live schema, then validate and execute explicit top<=100 single-entity GET plans
 with stable metadata business keys. Preserve supplied scope and declared constant filters exactly.
 Every order_by entry MUST be a bare field name. Ascending order is implicit; never append asc or desc.
@@ -790,118 +790,16 @@ class SampleDiscoveryService:
     async def discover(self, run_id: str, manifest: dict[str, Any], supplied_inputs: dict[str, Any], *,
                        revision: int, model: str = SAMPLE_MODEL, started: float | None = None,
                        selected_fields: list[str] | None = None) -> dict[str, Any]:
-        from .harness import (_safe_codex, _approval_mode, _sandbox, _event_item,
-                              _completed_turn_error, _custom_tool_kind, _best_effort_interrupt)
-        if model != SAMPLE_MODEL:
-            raise SampleDiscoveryError("sample_model_must_be_gpt_5_6_sol")
-        context = SampleDiscoveryContext(manifest, supplied_inputs, revision,
-                                         selected_fields=selected_fields,
-                                         started=time.monotonic() if started is None else started)
-        context.on_progress = lambda value: self.store.update_harness_state(run_id, {"sample_execution": value})
-        context.progress("preparing")
-        gaps = context.preflight_gaps()
-        if gaps:
-            return context.result("needs_input", missing=gaps, codes=["sample_input_requires_manual_entry"])
-        if not context.missing_fields():
-            return context.result("needs_input", codes=["sample_inputs_already_provided"])
-        self.broker._sample_contexts[run_id] = context
-        reserved = SAMPLE_SECONDS - SAMPLE_QUERY_SECONDS
-        self.store.update_harness_state(run_id, {"time_budget": {
-            "hard_limit_seconds": context.max_seconds,
-            "query_seconds_granted": max(1, context.max_seconds - reserved),
-            "finalization_seconds_reserved": reserved, "extension_count": 0,
-            "extension_reasons": [], "deadline_phase": "querying", "progress_marker": 0,
-        }})
-        capability = self.broker.open_session(run_id)
-        workspace = self.settings.data_root / "harness" / run_id / "sample-workspace"
-        workspace.mkdir(parents=True, exist_ok=True)
-        final_response = ""
-        try:
-            codex = _safe_codex(self.settings, run_id, capability, workspace, allow_web=False)
-            async with asyncio.timeout(context.remaining()):
-                from .runtime_execution import owned_client
-                async with owned_client(codex):
-                    thread = await codex.thread_start(approval_mode=_approval_mode(), developer_instructions=context.prompt(),
-                                                     cwd=str(workspace), model=SAMPLE_MODEL, sandbox=_sandbox())
-                    self.store.update_run(run_id, thread_id=thread.id)
-                    turn = await thread.turn("Find a verifiable real input sample within the declared scope.",
-                                             approval_mode=_approval_mode(), model=SAMPLE_MODEL,
-                                             effort=self.store.get_run(run_id).runtime.reasoning_effort,
-                                             output_schema=sample_output_schema(), sandbox=_sandbox())
-                    self._turns[run_id] = turn
-                    async def consume():
-                        nonlocal final_response
-                        async for event in turn.stream():
-                            kind, item = _event_item(event)
-                            custom_kind, _ = _custom_tool_kind(item)
-                            if kind in {"webSearch", "commandExecution", "fileChange", "computerUse", "collabAgentToolCall", "dynamicToolCall"} or custom_kind in {"forbidden", "web_search"}:
-                                raise SampleDiscoveryError("sample_capability_isolation_failed")
-                            if event.method == "turn/completed" and _completed_turn_error(event):
-                                raise SampleDiscoveryError("sample_runtime_unavailable")
-                            if kind == "agentMessage" and event.method == "item/completed":
-                                final_response = str(item.get("text") or "")
-                    stream_task = asyncio.create_task(consume())
-                    ready_task = asyncio.create_task(context.ready_event.wait())
-                    try:
-                        await asyncio.wait({stream_task, ready_task}, return_when=asyncio.FIRST_COMPLETED)
-                        if stream_task.done():
-                            stream_task.result()  # Tool-boundary violations still fail closed.
-                        if context.ready_result:
-                            context.closed = True
-                            context.progress("finalizing")
-                            await _best_effort_interrupt(turn)
-                        else:
-                            await stream_task
-                    finally:
-                        if not stream_task.done():
-                            # SDK 0.147 uses to_thread(queue.get). Cancelling the
-                            # asyncio wrapper unregisters that queue, leaving the
-                            # worker blocked forever. Wake this task-owned router
-                            # BEFORE cancellation/unregistration (no global SDK state).
-                            router = getattr(getattr(getattr(codex, "_client", None), "_sync", None), "_router", None)
-                            if router is not None and callable(getattr(router, "fail_all", None)):
-                                router.fail_all(RuntimeError("sample_stream_closed"))
-                                await asyncio.wait({stream_task}, timeout=1)
-                        for task in (stream_task, ready_task):
-                            if not task.done():
-                                task.cancel()
-                        await asyncio.gather(stream_task, ready_task, return_exceptions=True)
-            if self.store.get_run(run_id).cancel_requested:
-                return context.result("inconclusive", codes=["sample_discovery_cancelled"])
-            if not context.remaining():
-                raise TimeoutError()
-            if context.ready_result:
-                return context.ready_result
-            context.progress("checking_sample")
-            payload = json.loads(final_response)
-            if list(Draft202012Validator(sample_output_schema()).iter_errors(payload)):
-                raise SampleDiscoveryError("sample_projection_invalid")
-            return {**context.validate_result(payload, lambda ref: self.broker._read_evidence(run_id, ref)),
-                    "selection_method": "runtime"}
-        except asyncio.CancelledError:
-            self.quiesce(run_id)
-            active = self._turns.get(run_id)
-            if active is not None:
-                await _best_effort_interrupt(active)
-            raise
-        except Exception as exc:
-            self.quiesce(run_id)
-            active = self._turns.get(run_id)
-            if active is not None:
-                await _best_effort_interrupt(active)
-            code = (exc.code if isinstance(exc, SampleDiscoveryError) or getattr(exc, "code", "") == "runtime_cleanup_incomplete"
-                    else "sample_discovery_timeout" if isinstance(exc, TimeoutError) else "sample_runtime_unavailable")
-            # Never persist untrusted Runtime exception messages or final text.
-            return {**context.result("timed_out" if isinstance(exc, TimeoutError) else "inconclusive", codes=[code]),
-                    "failed_stage": context.phase}
-        finally:
-            context.closed = True
-            context.progress(context.phase)
-            pending = [task for task in context.tool_tasks if not task.done()]
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-            self._turns.pop(run_id, None)
-            self.broker.close_session(run_id)
-            self.broker._sample_contexts.pop(run_id, None)
+        from .runtime_sample import discover
+        runtime = self.store.get_run(run_id).runtime
+        if runtime and runtime.provider_id == "workbuddy":
+            from .workbuddy_driver import WorkBuddySampleDriver
+            driver = WorkBuddySampleDriver(self.workbuddy_manager)
+            binding = self.workbuddy_manager.bound_snapshot(runtime.model_dump(mode="json"))
+            driver.manager.supervisor.check_operation(binding, "sample_discovery")
+            model = binding["model"]
+        else:
+            from .codex_driver import CodexSampleDriver
+            driver, binding = CodexSampleDriver(), {}
+        return await discover(self, run_id, manifest, supplied_inputs, revision=revision,
+            model=model, started=started, selected_fields=selected_fields, driver=driver, binding=binding)

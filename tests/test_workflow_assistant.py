@@ -49,6 +49,28 @@ def payload(request="r1", intent="explain", revision=1, **extra):
     return WorkflowFeedbackRequest(baseTurn=1, baseRevision=revision, feedback="Why?", requestId=request, intent=intent, **extra).model_dump(mode="json", by_alias=True)
 
 
+def test_workflow_budget_defaults_to_one_hour_and_preserves_explicit_values(tmp_path, monkeypatch):
+    assert payload()["budgetSeconds"] == 3600
+    assert payload(budgetSeconds=600)["budgetSeconds"] == 600
+    for invalid in (0, 3601):
+        with pytest.raises(ValueError):
+            payload(budgetSeconds=invalid)
+    service, _, draft = setup(tmp_path)
+    observed = []
+    original_timeout = asyncio.timeout
+    def timeout(seconds):
+        observed.append(seconds)
+        return original_timeout(seconds)
+    monkeypatch.setattr(asyncio, "timeout", timeout)
+    async def check():
+        service.assistant.submit(draft.draft_id, payload())
+        await finished(service.assistant)
+        round_ = state(service.get(draft.draft_id))["rounds"][0]
+        assert round_["budget_seconds"] == 3600 and round_["status"] == "completed"
+    asyncio.run(check())
+    assert observed == [3600]  # Controlled check: never waits an actual hour.
+
+
 async def finished(assistant):
     for _ in range(100):
         if not assistant.tasks:
