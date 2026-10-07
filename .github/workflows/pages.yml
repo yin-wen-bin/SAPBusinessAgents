@@ -38,16 +38,8 @@ jobs:
           python -m pip install --upgrade pip setuptools
           python -m pip install -e ".[dev]"
 
-      - name: Test platform and Agents
-        run: python -m pytest -q
-
-      - name: Assert Codex environment does not install WorkBuddy
-        run: python -c "import importlib.util; assert importlib.util.find_spec('codebuddy_agent_sdk') is None"
-
-      - name: Audit Python dependencies
-        run: |
-          python -m pip install pip-audit
-          python -m pip_audit --local --skip-editable --progress-spinner off
+      - name: Test and audit the clean platform with the shared prepush entry point
+        run: python scripts/prepush.py --scope python --require-no-workbuddy
 
       - name: Set up Node.js for Windows installation
         uses: actions/setup-node@v6
@@ -60,11 +52,8 @@ jobs:
         working-directory: site
         run: npm ci
 
-      - name: Check and build the site on Windows
-        working-directory: site
-        run: |
-          npm run check
-          npm run build
+      - name: Audit, check, build and test the site on Windows
+        run: python scripts/prepush.py --scope site
 
   workbuddy-offline:
     name: WorkBuddy independent boundary tests (no SDK or external services)
@@ -103,27 +92,14 @@ jobs:
           cache-dependency-path: site/package-lock.json
 
       - name: Check documentation
-        run: python scripts/documentation.py --check
+        run: python scripts/prepush.py --scope docs
 
       - name: Install site dependencies
         working-directory: site
         run: npm ci
 
-      - name: Audit production site dependencies
-        working-directory: site
-        run: npm audit --omit=dev
-
-      - name: Validate Agent manifests
-        working-directory: site
-        run: npm run validate
-
-      - name: Check Astro project
-        working-directory: site
-        run: npm run check
-
-      - name: Build and test static site
-        working-directory: site
-        run: npm test
+      - name: Audit, validate, check, build and test the site
+        run: python scripts/prepush.py --scope site
 
       - name: Configure GitHub Pages
         if: github.event_name != 'pull_request'

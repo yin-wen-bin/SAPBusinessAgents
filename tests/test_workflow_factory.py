@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
+import threading
+
+import pytest
 from datetime import date
 import time
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -477,17 +482,98 @@ def _wait(client: TestClient, run_id: str) -> dict[str, Any]:
         if value["status"] in {"completed", "inconclusive", "failed", "cancelled"}:
             return value
         time.sleep(0.03)
-    raise AssertionError("Workflow run did not finish")
+    raise AssertionError(f"Workflow run {run_id} did not finish; last run: {value!r}")
 
 
-def _wait_draft(client: TestClient, draft_id: str) -> dict[str, Any]:
+def _wait_draft(
+    client: TestClient, draft_id: str, validation_run_id: str
+) -> dict[str, Any]:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
-        value = client.get(f"/api/authoring/workflows/{draft_id}").json()
-        if value["status"] in {"validated", "inconclusive", "invalid", "needs_review", "published"}:
+        response = client.get(f"/api/authoring/workflows/{draft_id}")
+        assert response.status_code == 200, response.text
+        value = response.json()
+        validation = value.get("validation") or {}
+        report = validation.get("validation_report") or {}
+        # needs_review also describes queued/running validation. Wait for the
+        # controller to persist the report for this run, not just a draft status.
+        if (
+            value.get("validation_run_id") == validation_run_id
+            and validation.get("phase") == "completed"
+            and report.get("run_id") == validation_run_id
+            and report.get("phase") == "completed"
+            and report.get("verdict") in {"pass", "inconclusive", "fail"}
+        ):
             return value
         time.sleep(0.03)
-    raise AssertionError("Workflow draft status did not settle")
+    run = client.get(f"/api/runs/{validation_run_id}")
+    raise AssertionError(
+        f"Workflow draft {draft_id} did not settle for run {validation_run_id}; "
+        f"last draft: {value!r}; run HTTP {run.status_code}: {run.text}"
+    )
+
+
+@pytest.mark.parametrize(
+    "expectations, expected_status",
+    [
+        ([], "inconclusive"),
+        ([{"output": "payment_status", "operator": "equals", "expected": "blocked"}], "needs_review"),
+    ],
+)
+def test_wait_draft_waits_for_delayed_validation_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    expectations: list[dict[str, Any]], expected_status: str,
+) -> None:
+    app = create_app(
+        _settings(tmp_path), planner=WorkflowPlanner(),
+        embedded_provider=WorkflowSapProvider(),
+    )
+    release = threading.Event()
+    monitor = app.state.workflow_drafts._monitor_validation
+
+    async def delayed_monitor(*args: Any, **kwargs: Any) -> None:
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        await monitor(*args, **kwargs)
+
+    monkeypatch.setattr(app.state.workflow_drafts, "_monitor_validation", delayed_monitor)
+    with TestClient(app) as client:
+        try:
+            created = client.post(
+                "/api/authoring/workflows", json={"workflow": _p2p_ap_workflow()}
+            ).json()
+            response = client.post(
+                f"/api/authoring/workflows/{created['draft_id']}/validate",
+                json={"autoDiscover": False,
+                      "input": {"purchase_orders": ["4500000001"], "as_of": "2026-08-17"},
+                      "expectations": expectations},
+            )
+            assert response.status_code == 202, response.text
+            run_id = response.json()["validation_run_id"]
+            run = _wait(client, run_id)
+            assert run["status"] == "inconclusive", run
+            pending = client.get(f"/api/authoring/workflows/{created['draft_id']}").json()
+            assert pending["status"] == "needs_review"
+            assert pending["validation"]["phase"] == "queued"
+            assert pending["validation"]["verdict"] == "pending"
+            original_sleep = time.sleep
+
+            def release_after_pending_poll(seconds: float) -> None:
+                release.set()
+                original_sleep(seconds)
+
+            # Completion happens only after the helper has observed the pending
+            # draft. The old status-only helper returns before this release.
+            monkeypatch.setitem(
+                _wait_draft.__globals__, "time",
+                SimpleNamespace(monotonic=time.monotonic, sleep=release_after_pending_poll),
+            )
+            settled = _wait_draft(client, created["draft_id"], run_id)
+            assert settled["status"] == expected_status, settled
+            assert settled["validation"]["phase"] == "completed"
+            assert settled["validation"]["validation_report"]["run_id"] == run_id
+        finally:
+            release.set()
 
 
 def test_workflow_schema_validates_ports_order_and_cycles() -> None:
@@ -1142,8 +1228,11 @@ def test_validated_workflow_publishes_to_new_local_branch_with_revision(tmp_path
             f"/api/authoring/workflows/{created['draft_id']}/validate",
             json={"autoDiscover": False, "input": {"purchase_orders": ["4500000001"], "as_of": "2026-08-17"}},
         )
-        _wait(client, validation.json()["validation_run_id"])
-        settled = _wait_draft(client, created["draft_id"])
+        assert validation.status_code == 202, validation.text
+        run_id = validation.json()["validation_run_id"]
+        run = _wait(client, run_id)
+        assert run["status"] == "inconclusive", run
+        settled = _wait_draft(client, created["draft_id"], run_id)
         assert settled["status"] == "inconclusive"
         report_response = client.get(
             f"/api/authoring/workflows/{created['draft_id']}/validation-report"
@@ -1217,8 +1306,10 @@ def test_workflow_validation_report_evaluates_user_expectations(tmp_path: Path) 
             },
         )
         assert response.status_code == 202, response.text
-        _wait(client, response.json()["validation_run_id"])
-        settled = _wait_draft(client, created["draft_id"])
+        run_id = response.json()["validation_run_id"]
+        run = _wait(client, run_id)
+        assert run["status"] in {"completed", "inconclusive"}, run
+        settled = _wait_draft(client, created["draft_id"], run_id)
         assert settled["status"] == "needs_review"
         report = client.get(
             f"/api/authoring/workflows/{created['draft_id']}/validation-report"

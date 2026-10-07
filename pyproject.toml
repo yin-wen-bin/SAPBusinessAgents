@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.0.3"]
+dev = ["pytest==9.0.3", "pip-audit>=2.9,<3"]
 
 [project.scripts]
 sap-business-agents = "sap_business_agents_platform.cli:main"
