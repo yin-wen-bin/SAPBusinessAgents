@@ -72,7 +72,24 @@ import secrets
 import copy
 from typing import Any
 
-async def run(
+async def run(self, driver, run_id, query, thread_id=None, model=None, reasoning_effort=None):
+    from contextlib import nullcontext
+    from .runtime_contract import cleanup_binding
+    supervisor = getattr(getattr(self, "manager", None), "supervisor", None)
+    reserve = getattr(supervisor, "reserve", None)
+    async with reserve() if driver.provider_id == "workbuddy" and callable(reserve) else nullcontext():
+        if driver.provider_id == "workbuddy":
+            from .models import utc_now
+            record = self.store.get_run(run_id)
+            anchor = self.store.get_harness_state(run_id).get("budget_start") or {}
+            if anchor.get("source_started_at") != record.started_at or not anchor.get("execution_started_at"):
+                self.store.update_harness_state(run_id, {"budget_start": {
+                    "source_started_at": record.started_at, "execution_started_at": utc_now()}})
+        with cleanup_binding():
+            return await _run(self, driver, run_id, query, thread_id, model, reasoning_effort)
+
+
+async def _run(
         self, driver,
         run_id: str,
         query: str,
@@ -154,8 +171,9 @@ async def run(
         "thread_id": thread_id, "turn_count": turn_count, "cleanup_state": cleanup_state, "final_response": "", "read_scope": scope}
     final_response = ""
     try:
-        async with asyncio.timeout(request.remaining()):
-            result = await driver.harness_turn(request, context)
+        from .runtime_contract import await_business
+        result = await await_business(driver.harness_turn(request, context), deadline=request.deadline)
+        request.remaining()
         thread_id = context["thread_id"]
         if not result.cleanup_complete:
             from .runtime_contract import RuntimeContractError
@@ -165,7 +183,11 @@ async def run(
         if context.get("native_complete") is False:
             raise RuntimeError("runtime_structured_terminal_missing")
         self.store.update_harness_state(run_id, {"turn_count": turn_count, "thread_id": thread_id})
-    except TimeoutError:
+    except (TimeoutError, RuntimeContractError) as exc:
+        if isinstance(exc, RuntimeContractError) and exc.code != "runtime_deadline_exceeded":
+            raise
+        if getattr(exc, "detail", {}).get("cleanup_failure_code"):
+            self.store.update_harness_state(run_id, {"cleanup_incomplete": True})
         # Native execution has already run its bounded owned-process cleanup.
         thread_id, final_response = context["thread_id"], context["final_response"]
         self.store.fail_running_harness_tool_calls(
@@ -219,8 +241,8 @@ async def run(
             return HarnessOutcome(
                 thread_id=thread_id,
                 turn_count=turn_count,
-                status="inconclusive" if missing_evidence else "completed",
-                stop_reason="completed",
+                status="inconclusive",
+                stop_reason="limit_reached",
                 summary={
                     "zh": str(
                         (partial_payload.get("summary") or {}).get("zh")
@@ -232,8 +254,8 @@ async def run(
                     ),
                 },
                 source_complete=_evidence_sources_complete(evidence),
-                business_complete=partial_payload.get("business_complete") is True,
-                missing_evidence=missing_evidence,
+                business_complete=False,
+                missing_evidence=sorted(set(missing_evidence + ["harness_structured_terminal_missing"])),
                 evidence_refs=evidence_refs,
                 executed_plans=executed_plans,
                 tool_calls=calls,
@@ -405,10 +427,22 @@ async def run(
                 )
         raise
     finally:
+        import sys
+        primary = sys.exception()
         if cleanup_state.get("started") and cleanup_state.get("complete") is not True:
             self.store.update_harness_state(run_id, {"cleanup_incomplete": True})
-        await driver.cleanup(run_id, context)
-        self.broker.close_session(run_id)
+        from .runtime_contract import drain_cleanup, begin_cleanup
+        begin_cleanup()
+        try:
+            await drain_cleanup(driver.cleanup(run_id, context))
+        except BaseException as cleanup_error:
+            self.store.update_harness_state(run_id, {"cleanup_incomplete": True})
+            if primary is None:
+                raise
+            primary.detail = dict(getattr(primary, "detail", {}) or {},
+                                  cleanup_failure_code="runtime_cleanup_incomplete")
+        finally:
+            self.broker.close_session(run_id)
         from .runtime_changesets import RuntimeChangeSets
         try:
             change_set = (

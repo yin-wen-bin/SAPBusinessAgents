@@ -33,6 +33,40 @@ def cleanup_deadline():
     return value["deadline"] if value and value.get("deadline") is not None else time.monotonic() + 10
 
 
+def begin_cleanup():
+    value = _cleanup_deadline.get()
+    if value is not None and value.get("deadline") is None:
+        value["deadline"] = time.monotonic() + 10
+    return cleanup_deadline()
+
+
+@contextmanager
+def cleanup_binding():
+    """Keep one lazy cleanup cutoff across execution and outer finalizers."""
+    inherited = _cleanup_deadline.get()
+    token = _cleanup_deadline.set(inherited if inherited is not None else {"deadline": None})
+    try:
+        yield
+    finally:
+        _cleanup_deadline.reset(token)
+
+
+async def drain_cleanup(awaitable):
+    """Bound even cancellation-resistant cleanup; never invent confirmation."""
+    with cleanup_scope():
+        task = asyncio.ensure_future(awaitable)
+        try:
+            done, _ = await asyncio.wait({task}, timeout=max(0, cleanup_deadline() - time.monotonic()))
+        except asyncio.CancelledError:
+            task.add_done_callback(_consume_task)
+            raise
+        if not done:
+            task.cancel()
+            task.add_done_callback(_consume_task)
+            raise RuntimeContractError("runtime_cleanup_incomplete")
+        return task.result()
+
+
 @contextmanager
 def cleanup_scope(deadline=None):
     inherited = _cleanup_deadline.get()

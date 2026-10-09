@@ -294,6 +294,7 @@ class WorkBuddySampleDriver:
         workspace.mkdir(parents=True, exist_ok=True)
         async def tool(name, arguments):
             return await service.broker.handle(run_id, capability, name, arguments)
+        primary = None
         try:
             result = await self.manager.supervisor.run(task_id=run_id, snapshot=binding, operation="sample_discovery",
                 payload={"system_prompt": sample_prompt(context, binding),
@@ -310,16 +311,24 @@ class WorkBuddySampleDriver:
                 output_format="native_json_schema")
             return result["text"]
         except WorkBuddyError as error:
+            primary = error
             if error.code == "workbuddy_deadline_exceeded":
                 raise TimeoutError from error
             if error.code == "workbuddy_cancelled":
                 import asyncio
                 raise asyncio.CancelledError from error
             raise
+        except BaseException as error:
+            primary = error
+            raise
         finally:
-            remaining = max(0, self.manager.supervisor.cleanup_deadlines.get(run_id, time.monotonic() + 10) - time.monotonic())
+            from .runtime_contract import begin_cleanup
+            remaining = max(0, min(begin_cleanup(), self.manager.supervisor.cleanup_deadlines.get(run_id, time.monotonic() + 10)) - time.monotonic())
             if not await service.broker.cancel_tools(run_id, timeout=remaining) or self.manager.supervisor.reconcile():
-                raise WorkBuddyError("runtime_cleanup_incomplete")
+                service.store.update_harness_state(run_id, {"cleanup_incomplete": True})
+                if primary is None:
+                    raise WorkBuddyError("runtime_cleanup_incomplete")
+                primary.detail = dict(getattr(primary, "detail", {}) or {}, cleanup_failure_code="runtime_cleanup_incomplete")
 
 
 class WorkBuddyHarnessDriver:

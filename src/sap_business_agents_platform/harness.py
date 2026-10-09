@@ -395,7 +395,8 @@ class HarnessToolBroker:
         record = self.store.get_run(run_id)
         # Queue time is not execution time. Anchor once, then use a monotonic
         # clock so wall-clock corrections cannot extend an active task.
-        value = record.started_at
+        anchor = self.store.get_harness_state(run_id).get("budget_start") or {}
+        value = anchor.get("execution_started_at") if anchor.get("source_started_at") == record.started_at else record.started_at
         if not value:
             return 0
         cached = self._run_clocks.get(run_id)
@@ -413,9 +414,11 @@ class HarnessToolBroker:
 
     def _next_deadline_at(self, run_id: str, budget: dict[str, Any]) -> str | None:
         record = self.store.get_run(run_id)
+        anchor = self.store.get_harness_state(run_id).get("budget_start") or {}
+        execution_start = anchor.get("execution_started_at") if anchor.get("source_started_at") == record.started_at else record.started_at
         try:
             started = datetime.fromisoformat(
-                str(record.started_at or record.created_at).replace("Z", "+00:00")
+                str(execution_start or record.created_at).replace("Z", "+00:00")
             )
             if started.tzinfo is None:
                 started = started.replace(tzinfo=timezone.utc)
