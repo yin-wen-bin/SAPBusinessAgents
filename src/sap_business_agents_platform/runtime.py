@@ -321,6 +321,9 @@ class RuntimeRouter:
             self._pinned_binding.reset(token)
 
     def supports(self, operation: str) -> bool:
+        from .runtime_policy import RETIRED_OPERATIONS
+        if operation in RETIRED_OPERATIONS:
+            return False
         provider = self._provider(self.current_provider_id, self.current_model_id)
         return callable(getattr(provider, operation, None))
 
@@ -416,6 +419,10 @@ class RuntimeRouter:
         return await self._invoke(operation, *args, **kwargs)
 
     async def _invoke(self, operation: str, *args: Any, **kwargs: Any) -> Any:
+        from .runtime_policy import RETIRED_OPERATIONS
+        if operation in RETIRED_OPERATIONS:
+            raise RuntimeUnavailableError("This query operation has been retired; start a Harness query.",
+                                          code="runtime_operation_retired")
         provider = self._provider(self.current_provider_id, self.current_model_id)
         method = getattr(provider, operation, None)
         if not callable(method):
@@ -489,6 +496,9 @@ class StaticRuntimeRouter:
         yield
 
     def supports(self, operation: str) -> bool:
+        from .runtime_policy import RETIRED_OPERATIONS
+        if operation in RETIRED_OPERATIONS:
+            return False
         return callable(getattr(self.planner, operation, None))
 
     @contextmanager
@@ -497,4 +507,9 @@ class StaticRuntimeRouter:
         yield
 
     def __getattr__(self, name: str) -> Any:
+        from .runtime_policy import RETIRED_OPERATIONS, require_operation
+        if name in RETIRED_OPERATIONS:
+            async def retired(*args, **kwargs):
+                require_operation(name)
+            return retired
         return getattr(self.planner, name)

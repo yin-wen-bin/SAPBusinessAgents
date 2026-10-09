@@ -1,0 +1,19 @@
+---
+import SiteLayout from "../../layouts/SiteLayout.astro";
+import Sidebar from "../../components/Sidebar.astro";
+import QueryHistory from "../../components/QueryHistory.astro";
+import { moduleCounts } from "../../lib/catalog";
+import { queryHistoryPath } from "../../lib/urls";
+import type { Locale } from "../../lib/types";
+export function getStaticPaths() { return [{ params: { lang: "zh" } }, { params: { lang: "en" } }]; }
+const locale = Astro.params.lang as Locale;
+const other: Locale = locale === "zh" ? "en" : "zh";
+const base = import.meta.env.BASE_URL;
+---
+<SiteLayout title={locale === "zh" ? "历史查询记录 — SAP Business Agents" : "Query history — SAP Business Agents"}
+  description={locale === "zh" ? "查看自由查询会话，重新查询或转为 Agent 草稿。" : "Review free-query sessions, retry queries or create Agent drafts."}
+  locale={locale} alternateHref={queryHistoryPath(base, other)}>
+  <div class="app-shell"><Sidebar locale={locale} counts={moduleCounts()} />
+    <main id="main-content" class="main-content runtime-main"><QueryHistory locale={locale} /></main>
+  </div>
+</SiteLayout>

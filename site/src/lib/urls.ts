@@ -18,6 +18,10 @@ export function askPath(base: string, locale: Locale): string {
   return withBase(base, locale, "ask");
 }
 
+export function queryHistoryPath(base: string, locale: Locale): string {
+  return withBase(base, locale, "query-history");
+}
+
 export function runPath(base: string, locale: Locale): string {
   return withBase(base, locale, "run");
 }

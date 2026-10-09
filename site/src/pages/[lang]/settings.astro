@@ -2,6 +2,7 @@
 import SiteLayout from "../../layouts/SiteLayout.astro";
 import Sidebar from "../../components/Sidebar.astro";
 import SystemSettingsPanel from "../../components/SystemSettingsPanel.astro";
+import QueryHistorySettings from "../../components/QueryHistorySettings.astro";
 import { moduleCounts } from "../../lib/catalog";
 import { settingsPath } from "../../lib/urls";
 import type { Locale } from "../../lib/types";
@@ -22,6 +23,6 @@ const base = import.meta.env.BASE_URL;
 >
   <div class="app-shell">
     <Sidebar locale={locale} counts={moduleCounts()} />
-    <main id="main-content" class="main-content runtime-main"><SystemSettingsPanel locale={locale} /></main>
+    <main id="main-content" class="main-content runtime-main"><SystemSettingsPanel locale={locale} /><QueryHistorySettings locale={locale} /></main>
   </div>
 </SiteLayout>

@@ -26,7 +26,7 @@ async def run(planner, **kwargs):
         return await shared_run(planner, **kwargs)
     except (RuntimeContractError, ValueError) as exc:
         code = exc.code if isinstance(exc, RuntimeContractError) else str(exc)
-        failure = WorkBuddyError("workbuddy_structured_output_invalid" if isinstance(exc, RuntimeContractError) else code)
+        failure = WorkBuddyError(code)
         failure.detail = getattr(exc, "detail", {})
         issue = next(iter(failure.detail.get("validation_issues", [])), {})
         kwargs["emit"]("validation_failed", {"code": failure.code, **failure.detail,

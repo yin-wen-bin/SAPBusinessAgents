@@ -5,6 +5,38 @@ import time
 from .harness import AcceptanceReportValidationError
 
 
+def native_terminal_instructions(schema):
+    """Explain native envelope encoding; never alter the authoritative Schema.
+
+    The pinned CLI validates the formatter separately from the SAP report tool.
+    Nullable clarification fields are not identifiers from the user's query.
+    Keep this provider-only guidance outside shared business prompts and Codex.
+    """
+    instructions = "\nSDK terminal encoding: use StructuredOutput with the entire frozen output object, not a fragment."
+    fields = ("input_kind", "input_field")
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+    if not all(name in required and isinstance(properties.get(name), dict)
+               and isinstance(properties[name].get("type"), list)
+               and "null" in properties[name]["type"]
+               and isinstance(properties[name].get("enum"), list)
+               and None in properties[name]["enum"] for name in fields):
+        return instructions
+    json_nulls = '{"input_kind": null, "input_field": null}'
+    instructions += (
+        "\nThe required nullable fields input_kind and input_field describe the secure-reference "
+        "clarification path already defined in the shared task instructions; they are NOT SAP "
+        "query parameters or queried column names. Use their non-null enum values only when "
+        "those instructions require that clarification. Otherwise explicitly include " + json_nulls + ". "
+        "Use literal JSON null, not an empty string or the strings 'null', 'None' or 'undefined'. "
+        "Do not omit a required nullable field to fix an enum error. Copy these two members into "
+        "the full final envelope, not as a standalone response. A successful "
+        "sap_final_report_validate validates the presentation, not this complete native envelope; "
+        "finish only after the full StructuredOutput object satisfies the unchanged Schema."
+    )
+    return instructions
+
+
 def parse_output(text, schema, *, formal=False):
     from .runtime_diagnostics import checked_output
     from .runtime_contract import RuntimeContractError

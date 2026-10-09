@@ -40,7 +40,7 @@ def sdk_fixture(monkeypatch, responses, *, delayed=False):
             self.closed = True
         async def query(self, prompt):
             self.prompt = prompt
-        async def receive_response(self):
+        async def receive_messages(self):
             if delayed:
                 await asyncio.Event().wait()
             message = ResultMessage(responses.pop(0))
@@ -286,20 +286,21 @@ def test_trusted_native_candidate_ignores_generated_test_cache_only(tmp_path, mo
     assert package["readme"] == "Before"
 
 
-def test_workbuddy_schema_repair_keeps_system_guard_and_only_its_own_session(tmp_path, monkeypatch):
-    # Other WorkBuddy operations retain their existing prompt-only repair path.
+def test_invalid_terminal_preserves_system_guard_without_automatic_replay(tmp_path, monkeypatch):
     from sap_business_agents_platform.workbuddy_prompts import AGENT_FEEDBACK_OUTPUT_SCHEMA
     clients = sdk_fixture(monkeypatch, [{"invalid": True}, response()])
     planner = WorkBuddyPlanner(tmp_path, "bound-model")
-    result, _ = asyncio.run(planner._structured_turn("Explain", AGENT_FEEDBACK_OUTPUT_SCHEMA,
-        thread_id=None, system_prompt="No tools or production changes."))
-    assert result["action"] == "reply"
+    import time
+    from sap_business_agents_platform.runtime_contract import deadline_scope
+    with deadline_scope(time.monotonic() + 10):
+        with pytest.raises(WorkBuddyRuntimeError, match="invalid structured output"):
+            asyncio.run(planner._structured_turn("Explain", AGENT_FEEDBACK_OUTPUT_SCHEMA,
+                thread_id=None, system_prompt="No tools or production changes."))
+    assert len(clients) == 1
     assert clients[0].options.resume is None
-    assert clients[1].options.resume is None  # Continuation uses platform context, not unverified SDK resume.
-    assert "Previous response" in clients[1].prompt
-    assert clients[1].options.system_prompt == clients[0].options.system_prompt
+    assert clients[0].options.system_prompt.startswith("No tools or production changes.")
     assert all(client.closed for client in clients)
-    assert all("json-schema" not in client.options.extra_args for client in clients)
+    assert all("json-schema" in client.options.extra_args for client in clients)
 
 
 @pytest.mark.parametrize("intent,mode", [("explain", None), ("revise", "trusted_local")])
@@ -311,7 +312,7 @@ def test_native_feedback_invalid_terminal_is_not_replayed(tmp_path, monkeypatch,
     with pytest.raises(WorkBuddyRuntimeError) as failure:
         asyncio.run(planner.review_agent_feedback(feedback="Explain or revise", locale="en", package=PACKAGE,
             intent=intent, tool_policy={"mode": mode} if mode else None))
-    assert failure.value.code == "workbuddy_structured_output_invalid"
+    assert failure.value.code == "runtime_report_validation_failed"
     assert len(clients) == 1 and clients[0].closed
     assert PACKAGE["readme"] == "Before"
 

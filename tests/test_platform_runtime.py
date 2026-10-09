@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from sap_business_agents_platform.app import create_app
+from sap_business_agents_platform.app import create_app as platform_app
 from sap_business_agents_platform.config import Settings
 from sap_business_agents_platform.database import RunStore
 from sap_business_agents_platform.engine import (
@@ -50,6 +50,15 @@ from sap_business_agents_platform.models import (
 from sap_business_agents_platform.skills import SkillError, SkillRegistry
 from sap_business_agents_platform.scheduler import LocalRunScheduler, WorkloadClass
 from sap_business_agents_platform.workflows import workflow_digest
+
+
+def create_app(settings=None, *, planner=None, **kwargs):
+    from tests.free_query_harness_fixture import ScriptedHarness
+    harness = ScriptedHarness(planner) if planner is not None else None
+    app = platform_app(settings, planner=planner, harness=harness, **kwargs)
+    if harness:
+        harness.bind(app)
+    return app
 
 
 @pytest.mark.parametrize(
@@ -837,6 +846,7 @@ class TimeoutSummaryPlanner(FakePlanner):
 
 
 class HarnessPlanner(FakePlanner):
+    fixture_skill_id = "fixture-read-only"
     async def plan(
         self,
         query: str,
@@ -1846,7 +1856,7 @@ def test_disabling_codex_does_not_block_fixed_agent_but_blocks_free_query(
         assert free_run["error"]["code"] == "capability_unavailable"
 
 
-def test_free_query_uses_codex_plan_then_embedded_validation(tmp_path: Path) -> None:
+def test_free_query_uses_explicit_harness_and_embedded_validation(tmp_path: Path) -> None:
     embedded = FakeEmbeddedProvider(complete=False)
     planner = FakePlanner()
     app = create_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
@@ -1869,7 +1879,8 @@ def test_free_query_uses_codex_plan_then_embedded_validation(tmp_path: Path) -> 
         ]
         assert run["result"]["summary"]["zh"] == "One read-only SAP record was found."
         assert run["result"]["presentation"]["blocks"][0]["type"] == "text"
-        assert run["result"]["tool_calls"][0]["odata_version"] == "2.0"
+        execute = next(call for call in run["result"]["tool_calls"] if call["tool"] == "sap_query_execute")
+        assert execute["input"]["plan"]["odata_version"] == "2.0"
         assert client.get(
             f"/api/runs/{run['run_id']}/artifacts/result.json"
         ).status_code == 200
@@ -1878,7 +1889,7 @@ def test_free_query_uses_codex_plan_then_embedded_validation(tmp_path: Path) -> 
         ).status_code == 200
 
 
-def test_free_query_preserves_evidence_when_codex_summary_times_out(tmp_path: Path) -> None:
+def test_harness_never_calls_retired_summary(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     app = create_app(settings, planner=TimeoutSummaryPlanner(), embedded_provider=FakeEmbeddedProvider())
     with TestClient(app) as client:
@@ -1889,7 +1900,8 @@ def test_free_query_preserves_evidence_when_codex_summary_times_out(tmp_path: Pa
         assert run["status"] == "completed"
         assert run["result"]["evidence"]
         assert run["result"]["summary"]["zh"] == "One read-only SAP record was found."
-        assert run["result"]["errors"][0]["code"] == "codex_summary_timeout"
+        assert run["result"]["errors"] == []
+        assert run["runtime"]["execution_flow"] == "harness"
 
 
 def test_free_query_with_explicit_top_is_inconclusive_even_when_embedded_is_complete(
@@ -1905,7 +1917,7 @@ def test_free_query_with_explicit_top_is_inconclusive_even_when_embedded_is_comp
         run = _wait(client, response.json()["run_id"])
         assert run["status"] == "inconclusive"
         assert run["result"]["completeness"]["source_complete"] is False
-        assert "1 explicit top bound" in run["result"]["completeness"]["reason"]
+        assert run['result']['harness']['stop_reason'] == 'completed'
         assert embedded.executed_plans[0]["top"] == 1
 
 
@@ -2097,78 +2109,46 @@ def test_nested_embedded_top_bounds_are_counted_without_counting_skill_limits() 
     assert _count_free_query_top_bounds(plan) == 3
 
 
-def test_free_query_grounds_fields_in_live_schema_before_sap_get(tmp_path: Path) -> None:
+def test_harness_rejects_invalid_schema_before_business_read(tmp_path: Path) -> None:
     embedded = SchemaRejectingEmbeddedProvider()
-    planner = GroundingPlanner()
+    planner = FakePlanner()
+    planner.fixture_plan = {"service_name": "API_PURCHASEORDER_PROCESS_SRV", "odata_version": "2.0",
+        "entity_set": "A_PurchaseOrder", "select_fields": ["ObsoleteField"], "http_method": "GET"}
     app = create_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
     with TestClient(app) as client:
-        response = client.post(
-            "/api/runs", json={"mode": "free_query", "query": "查询采购订单 4500000001"}
-        )
-        run = _wait(client, response.json()["run_id"])
-        assert run["status"] == "completed"
-        assert planner.ground_calls == [1]
-        assert embedded.schema_calls
-        assert len(embedded.executed_plans) == 1
-        assert embedded.executed_plans[0]["select_fields"] == ["PurchaseOrder"]
-        event_types = {event.type for event in app.state.store.events_after(run["run_id"])}
-        assert {"schema_received", "plan_repaired", "plan_validated"}.issubset(event_types)
-
-
-def test_free_query_rejects_after_only_one_bounded_schema_repair(tmp_path: Path) -> None:
-    embedded = SchemaRejectingEmbeddedProvider()
-    planner = GroundingPlanner(needs_repair=True)
-    app = create_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/runs", json={"mode": "free_query", "query": "查询采购订单 4500000001"}
-        )
-        run = _wait(client, response.json()["run_id"])
+        run = _wait(client, client.post("/api/runs", json={"mode": "free_query", "query": "查询采购订单"}).json()["run_id"])
         assert run["status"] == "failed"
         assert run["error"]["code"] == "free_query_plan_rejected"
-        assert planner.ground_calls == [1]
         assert embedded.executed_plans == []
-        event_types = {event.type for event in app.state.store.events_after(run["run_id"])}
-        assert "plan_repaired" in event_types
+        assert embedded.validated_plans[0]["select_fields"] == ["ObsoleteField"]
 
 
-def test_free_query_records_unlisted_o2c_relation_as_non_blocking_guidance(
-    tmp_path: Path,
-) -> None:
-    embedded = O2CRelationshipEmbeddedProvider()
-    planner = O2CRelationshipPlanner()
-    app = create_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
+def test_missing_harness_never_calls_legacy_planner(tmp_path: Path) -> None:
+    embedded, planner = FakeEmbeddedProvider(), FakePlanner()
+    app = platform_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
     with TestClient(app) as client:
-        response = client.post(
-            "/api/runs", json={"mode": "free_query", "query": "追踪销售订单的开票和清账"}
-        )
-        run = _wait(client, response.json()["run_id"])
-        assert run["status"] == "completed"
-        assert planner.ground_calls == []
-        assert len(embedded.executed_plans) == 1
-        encoded = json.dumps(embedded.executed_plans[0])
-        assert "OrderID" in encoded
-        assert "SalesDocument" not in encoded
-        assert run["result"]["plan"]["advisories"][0]["code"] == "relationship_literal_semantic_mismatch"
-        event_types = {event.type for event in app.state.store.events_after(run["run_id"])}
-        assert "relationship_advisories_recorded" in event_types
+        run = _wait(client, client.post("/api/runs", json={"mode": "free_query", "query": "采购订单"}).json()["run_id"])
+        assert run["status"] == "failed"
+        assert run["error"]["code"] == "runtime_harness_unavailable"
+        assert planner.calls == 0 and embedded.executed_plans == []
 
 
-def test_free_query_does_not_require_relationship_repair_before_sap_get(tmp_path: Path) -> None:
-    embedded = O2CRelationshipEmbeddedProvider()
-    planner = O2CRelationshipPlanner(repair=False)
-    app = create_app(_settings(tmp_path), planner=planner, embedded_provider=embedded)
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/runs", json={"mode": "free_query", "query": "追踪销售订单的开票和清账"}
-        )
-        run = _wait(client, response.json()["run_id"])
-        assert run["status"] == "completed"
-        assert planner.ground_calls == []
-        assert len(embedded.executed_plans) == 1
-        advisories = run["result"]["plan"]["advisories"]
-        assert advisories[0]["code"] == "relationship_literal_semantic_mismatch"
-        assert "SO_FIXTURE" not in json.dumps(advisories)
+def test_query_flow_does_not_infer_harness_from_provider_or_thread(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from sap_business_agents_platform.runtime_query_history import query_flow
+    record = SimpleNamespace(runtime=SimpleNamespace(model_dump=lambda **_: {"provider_id": "codex"}), result=None, thread_id="thr_old")
+    assert query_flow(record) == "unknown"
+    assert query_flow(record, [{"type": "validation_started", "data": {"phase": "live_schema_grounding"}}]) == "planner_legacy"
+    assert query_flow(record, [{"type": "harness_completed", "data": {}}]) == "harness"
+
+
+def test_query_flow_conflicting_history_is_view_only(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from sap_business_agents_platform.runtime_query_history import query_flow
+    record = SimpleNamespace(runtime=SimpleNamespace(model_dump=lambda **_: {"execution_flow": "harness"}), result=None)
+    events = [{"type": "validation_started", "data": {"phase": "live_schema_grounding"}}]
+    assert query_flow(record, events) == "unknown"
+    assert events == [{"type": "validation_started", "data": {"phase": "live_schema_grounding"}}]
 
 
 def test_free_query_can_pause_for_clarification_and_resume_thread(tmp_path: Path) -> None:
@@ -2574,7 +2554,7 @@ def test_free_query_rejects_codex_write_plan_before_sap(tmp_path: Path) -> None:
         response = client.post("/api/runs", json={"mode": "free_query", "query": "创建采购订单"})
         run = _wait(client, response.json()["run_id"])
         assert run["status"] == "failed"
-        assert run["error"]["code"] == "write_operation_rejected"
+        assert run["error"]["code"] == "runtime_plan_contract_invalid"
         assert embedded.executed_plans == []
 
 
@@ -2778,11 +2758,12 @@ def test_standard_skill_contract_and_free_query_harness(tmp_path: Path) -> None:
         )
         run = _wait(client, response.json()["run_id"])
         assert run["status"] == "completed"
-        assert [item["source"] for item in run["result"]["evidence"]] == [
-            "sap_read",
-            "skill",
+        assert [item["source_type"] for item in run["result"]["evidence"]] == [
+            "sap_live",
+            "sap_skill",
         ]
-        assert run["result"]["tool_calls"][1]["skill_id"] == "fixture-read-only"
+        skill_call = next(call for call in run["result"]["tool_calls"] if call["tool"] == "sap_skill_execute")
+        assert skill_call["input"]["skill_id"] == "fixture-read-only"
 
 
 def test_progress_tracks_delayed_sap_activity_instead_of_existing_rule_results(

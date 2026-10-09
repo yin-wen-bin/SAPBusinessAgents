@@ -69,7 +69,8 @@ def test_tool_thread_file_results_are_controller_verified(tmp_path, monkeypatch,
         id = 'new-thread'
         async def run(self, prompt, *, output_schema, effort):
             assert effort == 'high'
-            raw = {'action': 'reply', 'summary': {'zh': '说明', 'en': 'Summary'}}
+            from tests.test_workbuddy_feedback import response
+            raw = response()
             if mode in {'edit', 'ambiguous'}:
                 (workspace.agent / 'README.md').write_text('after', encoding='utf-8')
                 raw['action'] = 'revise_agent'
@@ -116,7 +117,8 @@ def test_full_access_draft_feedback_rejects_platform_edits_too(tmp_path):
         id = 'new-thread'
         async def run(self, *_args, **_kwargs):
             (workspace.source / 'README.md').write_text('not allowed', encoding='utf-8')
-            return SimpleNamespace(final_response=json.dumps({'action': 'reply', 'summary': {'zh': '说明', 'en': 'Summary'}}))
+            from tests.test_workbuddy_feedback import response
+            return SimpleNamespace(final_response=json.dumps(response()))
     class Codex:
         async def thread_start(self, **kwargs):
             assert 'ONLY agent-package' in kwargs['developer_instructions']

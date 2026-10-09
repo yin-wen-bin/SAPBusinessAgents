@@ -8,11 +8,116 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from contextvars import ContextVar
-from contextlib import contextmanager
+from contextlib import contextmanager, asynccontextmanager, nullcontext
 from typing import Any, Callable, Protocol
 
 
 _execution_deadline = ContextVar("runtime_execution_deadline", default=None)
+_cleanup_deadline = ContextVar("runtime_cleanup_deadline", default=None)
+
+
+def current_deadline():
+    return _execution_deadline.get()
+
+
+def require_deadline():
+    value = current_deadline()
+    if value is None:
+        raise RuntimeContractError("runtime_budget_binding_missing")
+    remaining_budget(None)
+    return value
+
+
+def cleanup_deadline():
+    value = _cleanup_deadline.get()
+    return value["deadline"] if value and value.get("deadline") is not None else time.monotonic() + 10
+
+
+@contextmanager
+def cleanup_scope(deadline=None):
+    inherited = _cleanup_deadline.get()
+    deadline = deadline if deadline is not None else time.monotonic() + 10
+    effective = min(inherited["deadline"], deadline) if inherited and inherited.get("deadline") is not None else deadline
+    token = _cleanup_deadline.set({"deadline": effective})
+    try:
+        yield effective
+    finally:
+        _cleanup_deadline.reset(token)
+
+
+@asynccontextmanager
+async def business_scope(owner, operation, *, seconds=None, provider_id=None):
+    """Capacity precedes the first clock; inherited deadlines never restart."""
+    from .runtime_policy import operation_seconds, require_operation
+    require_operation(operation)
+    reserve = getattr(owner, "workbuddy_reservation", None)
+    provider_id = provider_id or getattr(getattr(owner, "_driver", None), "provider_id", None) or getattr(owner, "provider_id", None) or getattr(owner, "current_provider_id", None)
+    async with reserve() if provider_id == "workbuddy" and callable(reserve) else nullcontext():
+        # Role matching has bounded model stages, not a new job-wide timeout.
+        if operation in {"analyze_role_matching", "review_role_matching_feedback"}:
+            yield current_deadline()
+            return
+        seconds = operation_seconds(provider_id, operation, existing=seconds)
+        with deadline_scope(time.monotonic() + seconds):
+            yield require_deadline()
+
+
+async def await_business(awaitable, *, deadline=None):
+    """Bound execution without trusting cancellation to bound SDK shutdown."""
+    with deadline_scope(deadline):
+        limit = require_deadline()
+        # A mutable, initially inactive binding is inherited by the child. At
+        # cancellation both the supervisor and SDK close share one cutoff.
+        inherited = _cleanup_deadline.get()
+        cleanup = inherited if inherited is not None else {"deadline": None}
+        token = _cleanup_deadline.set(cleanup)
+        try:
+            task = asyncio.ensure_future(awaitable)
+            primary = None
+            try:
+                done, _ = await asyncio.wait({task}, timeout=max(0, limit - time.monotonic()))
+                if done:
+                    result = task.result()
+                    remaining_budget(None)
+                    return result
+                primary = RuntimeContractError("runtime_deadline_exceeded")
+            except asyncio.CancelledError as exc:
+                primary = exc
+            cutoff = time.monotonic() + 10
+            if cleanup.get("deadline") is not None:
+                cutoff = min(cutoff, cleanup["deadline"])
+            cleanup["deadline"] = cutoff
+            task.cancel()
+            try:
+                done, _ = await asyncio.wait({task}, timeout=max(0, cutoff - time.monotonic()))
+            except asyncio.CancelledError:
+                task.add_done_callback(_consume_task)
+                primary.detail = dict(getattr(primary, "detail", {}) or {},
+                                      cleanup_failure_code="runtime_cleanup_incomplete")
+                raise primary
+            if not done:
+                task.add_done_callback(_consume_task)
+                detail = dict(getattr(primary, "detail", {}) or {})
+                detail["cleanup_failure_code"] = "runtime_cleanup_incomplete"
+                primary.detail = detail
+            else:
+                try:
+                    task.result()
+                except BaseException as exc:
+                    if (getattr(exc, "code", None) == "runtime_cleanup_incomplete"
+                            or getattr(exc, "detail", {}).get("cleanup_failure_code")):
+                        primary.detail = dict(getattr(primary, "detail", {}) or {},
+                                              cleanup_failure_code="runtime_cleanup_incomplete")
+            raise primary
+        finally:
+            _cleanup_deadline.reset(token)
+
+
+def _consume_task(task):
+    try:
+        task.result()
+    except BaseException:
+        pass
 
 
 @contextmanager
@@ -109,7 +214,7 @@ class RuntimeResult:
     status: str = "completed"
     actual_model: str | None = None
     diagnostics: tuple[dict[str, Any], ...] = ()
-    cleanup_complete: bool = True
+    cleanup_complete: bool = False
 
     def __post_init__(self):
         if not isinstance(self.output, dict):
@@ -132,6 +237,22 @@ class RuntimeEvent:
     data: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class RuntimeTurn:
+    """Validated terminal data inside an owned client, before shutdown."""
+    output: dict[str, Any]
+    session: RuntimeSession
+    actual_model: str | None = None
+
+    @property
+    def final_response(self):
+        return json.dumps(self.output, ensure_ascii=False)
+
+    def result(self, *, cleanup_complete):
+        return RuntimeResult(self.output, self.session, actual_model=self.actual_model,
+                             cleanup_complete=cleanup_complete)
+
+
 class RuntimeDriver(Protocol):
     provider_id: str
 
@@ -149,12 +270,13 @@ async def execute_frozen(driver, request: RuntimeRequest, *, emit=None):
     if request.provider_id != driver.provider_id:
         raise RuntimeContractError("runtime_binding_provider_mismatch")
     remaining = request.remaining()
+    if remaining is None:
+        raise RuntimeContractError("runtime_budget_binding_missing")
     if emit:
         emit(RuntimeEvent(request.provider_id, request.operation, request.stage, "stage_started"))
     try:
         with deadline_scope(request.deadline):
-            async with asyncio.timeout(remaining):
-                result = await driver._execute(request)
+            result = await await_business(driver._execute(request))
         request.remaining()
         result.final_response  # Reject incomplete cleanup / nonterminal output.
         result.session.require_provider(request.provider_id)

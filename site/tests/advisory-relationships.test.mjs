@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import path from "node:path";
 
 
 test("run results separate advisory guidance from execution errors in both languages", async () => {
-  const zh = await readFile(new URL("../dist/zh/run/index.html", import.meta.url), "utf8");
-  const en = await readFile(new URL("../dist/en/run/index.html", import.meta.url), "utf8");
+  const zh = await readFile(process.env.SAPBA_BROWSER_DIST ? path.join(process.env.SAPBA_BROWSER_DIST, "zh/run/index.html") : new URL("../dist/zh/run/index.html", import.meta.url), "utf8");
+  const en = await readFile(process.env.SAPBA_BROWSER_DIST ? path.join(process.env.SAPBA_BROWSER_DIST, "en/run/index.html") : new URL("../dist/en/run/index.html", import.meta.url), "utf8");
 
   assert.match(zh, /参考提示/);
   assert.match(zh, /不会阻止查询/);

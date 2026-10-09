@@ -49,7 +49,7 @@ def test_workflow_output_uses_shared_parser_and_safe_failure_diagnostics(tmp_pat
     else:
         with pytest.raises(WorkBuddyError) as failure:
             asyncio.run(run())
-        assert failure.value.code == ("workbuddy_native_schema_unavailable" if form == "legacy_worker" else "workbuddy_structured_output_invalid")
+        assert failure.value.code == ("workbuddy_native_schema_unavailable" if form == "legacy_worker" else "runtime_report_validation_failed")
         issue = next(data for kind, data in events if kind == "validation_failed")
         assert issue["constraint"] in {"json_object", "json_value", "additionalProperties", "required", "enum", "native_json_schema"}
         assert "secret" not in json.dumps(events) and "private" not in json.dumps(events)

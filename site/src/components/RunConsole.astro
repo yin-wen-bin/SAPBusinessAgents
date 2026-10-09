@@ -61,6 +61,7 @@ const labels = locale === "zh" ? {
   reconnect: "重新连接",
   downloads: "下载业务报告与明细",
   unavailable: "无法连接本机查询服务。请先启动 SAPBusinessAgents。",
+  historyExpired: "查询历史已过期或删除，请返回自由查询重新执行。",
   empty: "暂无",
   phaseLabels: ["接收请求", "准备查询", "读取 SAP", "核验证据", "生成结果"],
   progressState: { waiting_input: "等待补充信息", completed: "查询完成", inconclusive: "查询完成，但证据不足", failed: "查询失败", cancelled: "查询已取消" },
@@ -235,6 +236,7 @@ const labels = locale === "zh" ? {
   reconnect: "Reconnect",
   downloads: "Download report and details",
   unavailable: "Cannot reach the local query service. Start SAPBusinessAgents first.",
+  historyExpired: "Query history expired or was deleted. Return to free query to run it again.",
   empty: "None",
   phaseLabels: ["Receive request", "Prepare query", "Read SAP", "Validate evidence", "Prepare result"],
   progressState: { waiting_input: "Waiting for more information", completed: "Query completed", inconclusive: "Completed with insufficient evidence", failed: "Query failed", cancelled: "Query cancelled" },
@@ -1666,7 +1668,7 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-session-correct]").hidden = session.status !== "reviewing" || !latestReviewable;
     root.querySelector("[data-session-accept]").hidden = session.status !== "reviewing" || !latestReviewable;
     root.querySelector("[data-session-reopen]").hidden = session.status !== "satisfied";
-    root.querySelector("[data-session-draft]").hidden = session.status !== "satisfied";
+    root.querySelector("[data-session-draft]").hidden = session.status !== "satisfied" || session.can_create_draft === false;
     if (session.status === "draft_created" && session.draft_id) showDraftManagement({ draft_id: session.draft_id, managed_draft_id: session.managed_draft_id });
     const feedbackForm = root.querySelector("[data-session-feedback]");
     if (session.status === "waiting_input" && session.pending_feedback) {
@@ -1682,7 +1684,7 @@ const labels = locale === "zh" ? {
   const loadSession = async () => {
     if (!sessionId || !apiBase) return;
     const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}`);
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
     const session = await response.json();
     renderFreeQuerySession(session);
     if (session.active_feedback_request?.feedback_request_id) {
@@ -1834,7 +1836,7 @@ const labels = locale === "zh" ? {
     ordinaryInput.hidden = secureReference; ordinaryInput.required = !secureReference;
     secureInput.hidden = !secureReference; secureInput.required = secureReference;
     ordinaryInput.placeholder = waitingForInput ? labels.clarificationPlaceholder : (steerable ? labels.steerPlaceholder : labels.inputPlaceholder);
-    root.querySelector("[data-draft]").hidden = Boolean(sessionId) || run.mode !== "free_query" || !terminal.has(run.status) || !run.plan;
+    root.querySelector("[data-draft]").hidden = Boolean(sessionId) || run.mode !== "free_query" || run.status !== "completed" || run.can_create_draft === false || !run.plan;
     root.querySelector("[data-start-session]").hidden = Boolean(sessionId) || run.mode !== "free_query" || !["completed", "inconclusive"].includes(run.status);
     const downloads = root.querySelector("[data-downloads]");
     const downloadLinks = downloads.querySelector("[data-download-links]");
@@ -1864,7 +1866,7 @@ const labels = locale === "zh" ? {
     }
     if (!runId || !apiBase) return;
     const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}`);
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
     const run = await response.json(); renderRun(run); return run;
   };
   const eventNames = [
@@ -2148,8 +2150,8 @@ const labels = locale === "zh" ? {
     }
   });
   if (runId || sessionId) {
-    Promise.all([loadRun(), sessionId ? loadSession() : Promise.resolve()]).then(connect).catch(() => {
-      showAlert(labels.unavailable);
+    Promise.all([loadRun(), sessionId ? loadSession() : Promise.resolve()]).then(connect).catch((error) => {
+      showAlert(error.status === 404 ? labels.historyExpired : labels.unavailable);
       root.querySelector("[data-reconnect]").hidden = false;
     });
   } else showAlert(labels.noRun);

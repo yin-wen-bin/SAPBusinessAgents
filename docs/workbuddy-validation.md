@@ -1,6 +1,6 @@
 # WorkBuddy 实施与验证记录 / Implementation and validation record
 
-最近检查日期 / Latest check date: **2026-10-05**。以下分阶段记录按其标注日期保留；最新状态见文末 / Dated stage records are retained; see the final section for current status.
+最近检查日期 / Latest check date: **2026-10-08**。以下分阶段记录按其标注日期保留；最新状态见文末 / Dated stage records are retained; see the final section for current status.
 
 ## 2026年10月4日续接检查 / Continuation checks on 2026-10-04
 
@@ -66,7 +66,7 @@ Platform implementation, offline boundary checks, pinned isolated installation a
 
 The previous 116-test run includes WorkBuddy report diagnostics, query preflight, explicit CLI binding, queued cancellation and controlled-clock tests. The continuation also covers sign-in transport, redaction, candidate discovery and environment invalidation. Targeted counts are not used to infer a full-suite result.
 
-全量唯一失败为 `test_generated_documentation_is_current_and_linked`：`agents/FI/ar-collection/README.md` 包含 `[tests](tests)`，但该目录不存在。该 README 及文档生成器本轮均未修改；保留失败，不修改已发布包、重写摘要或移除断言来掩盖它。文档检查仍未通过。
+全量唯一失败为 `test_generated_documentation_is_current_and_linked`：`agents/FI/ar-collection/README.md` 包含指向 `tests` 目录的本地链接，但该目录不存在。该 README 及文档生成器本轮均未修改；保留失败，不修改已发布包、重写摘要或移除断言来掩盖它。文档检查仍未通过。
 
 The sole full-suite failure is `test_generated_documentation_is_current_and_linked`: `agents/FI/ar-collection/README.md` links to a nonexistent `tests` directory. Neither that README nor the documentation generator was changed. The failure remains visible; no published package, digest or assertion was altered to hide it. Documentation checks remain failing.
 
@@ -519,3 +519,337 @@ One SAP free-query qualification attempt does not pass, and **three dependent op
 Separately, the existing shared OData policy marks every explicit top-bound read incomplete, conflicting with the fixture's complete-success expectation. This applies to Codex too and is not changed here. A future complete-source fixture needs a live-confirmed unique-key predicate and a bounded design without relying on explicit truncation; this pass's result cannot be upgraded by weakening expectations. The actual platform event is **inconclusive**, with preserved evidence and `harness_runtime_unavailable`, not a business mismatch or deadline exhaustion. The fixture subsequently stores a failed qualification status; the separate diagnosis records that distinction without rewriting either record. A validated intermediate report does not survive the runtime-degraded final result. Discovery and both acceptance stages remain gated, with **zero Campaigns** and no production business-object changes.
 
 Logged-in-user reconciliation confirms **can_enable=false**, operation qualification still required, deliberate disablement, Codex default, healthy API/bilingual pages and complete owned-process cleanup. Redacted Codex controls match. One complete offline Python run passes **1546** tests, with one host-symlink skip and one existing Starlette warning, in **1585.62 seconds**; DPAPI checks are not weakened. The overlapping **244** targeted checks are not added to that full-suite count. The separate frozen-pass reports preserve earlier failures and qualification history. No automatic retry, Runtime enablement, business publication/activation, commit or push occurs; later orchestration/environment changes require fresh binding checks rather than copied PASS records.
+
+## 剩余阻碍的离线诊断准备 2026 10 07 / Offline blocker diagnostics
+
+本轮只做离线代码与用例修复，不启动模型、SAP 查询、Campaign 或服务切换，不修改已安装 release、Runtime 启停及历史资格记录。
+
+新增可协商的原生输出诊断：worker 将候选参数或原生终态临时提交给平台，平台针对冻结 Schema 复用现有校验器；仅返回校验状态，持久化摘要、类型、字段路径及约束，不持久化参数值、工具文本、SDK 会话 ID或受限原始行。消息同时核对 task、attempt、调用编号及 Schema 摘要，沿用帧大小、总输出、截止时间和清理限制；该内部消息不转成 SAP 工具调用。诊断不会修补参数、放宽业务校验，或把合法的候选参数当作 SDK 原生终态。原生终态为空，即使此前工具结果 `is_error=false`，仍拒绝资格。
+
+新的验证用例明确分流：保留显式 `top=1` 的有限样本必须如实报告不完整，不授予完整查询资格；另一完整来源用例先取得本轮实时元数据的完整唯一键，再允许相同订单、实体及三个字段、不含显式截断的精确读取。现有读取完整性策略没有修改。两类用例分别显式执行，使用全新隔离目录；原用例与历史报告保持不变。独立验证断言不再把平台的 `inconclusive` 写成 `failed`。
+
+新增入口默认 dry-run，不读取运行状态、不执行模型或 SAP。真实执行前检查当前操作摘要、权限模式、冻结模型、环境及 worker 内容；更新 worker 需创建新锁定环境，认证、模型和全部受影响操作重新验证。现有资格表不复制、不补写。源码编排摘要变化后，上一轮 14/18 不能直接为新代码背书；运行中旧服务没有在本轮切换。
+
+本轮针对原生候选有效但终态缺失、Schema 字段诊断、消息绑定与越权、无敏感原值、有限样本不授予资格、完整键缺失或不完整元数据拒绝、读取范围保护、平台结果不覆盖，以及现有 Codex 编排对照执行离线回归。正常 Windows 登录账户下 **235 passed、1 warning**，22.89 秒、退出码 0；警告为既有 Starlette 弃用提示。文档检查 **55 项、0 过期受控块、0 错误**；目录校验 **34 个 Agent 包、6 个模块**通过。新入口有限样本 dry-run 退出码 0，不创建验证目录或启动服务。本轮没有前端源码变化，未重新执行全量 Python、前端构建或远端 CI；不将上一轮成绩计为本轮新测试。
+
+This pass prepares diagnostics, not a proven native-capture fix. The worker negotiates a bounded, run/attempt/schema-bound internal check using the existing platform validator. Transient candidate values are not persisted; only safe schema issues and fingerprints cross the diagnostic boundary. No Broker dispatch, permission extension, text repair, terminal substitution or qualification occurs through that check. Missing native termination continues to fail closed even after a valid candidate and non-error tool result.
+
+The new opt-in fixture separates incomplete explicit-top sampling from a live-schema-confirmed exact unique-key complete case. Both retain the same order, entity and field scope, with existing result/pagination/time limits. Assertion failures are stored separately without rewriting platform status. Dry-run does not initialize runtime state, a model or SAP. Installed releases and historical evidence remain unchanged; new worker bytes require a new immutable environment and fresh affected qualifications. No model, SAP, Campaign, service restart, Runtime enablement, business publication, commit or push is performed in this offline pass.
+
+The logged-in Windows account passes **235 targeted offline tests** with one existing Starlette warning in **22.89 seconds**. Documentation validation checks **55 documents**, with no stale controlled blocks or errors; catalogue validation passes **34 packages across six modules**. The limited-sample dry-run exits successfully without creating a validation directory or starting services. The overlapping initial 44-test and 234-test runs are not added to the final count. The final JUnit report is retained locally at `.local-data/workbuddy-baseline/native-diagnostics-20261007/regression-final.xml`. No new full-suite, frontend-build or remote-CI result is claimed. Native capture and operation qualification remain pending live verification under the new binding.
+
+## 新诊断 worker 的实际验证 2026 10 07 / Diagnostic-worker live validation
+
+创建新的不可变环境 `93ac6d54d49d990338d172f14ac511dda9886004bcc0873022241c1b93a03375`，保留旧环境及其报告。使用已核对的本地官方 wheel 和独立安装解释器，SDK **0.3.247**、CLI **2.141.0**、模型 **hy4-preview** 及平台 Python 依赖不变；没有原地改写旧 worker。复用本机登录记录的认证探针通过（4.87 秒），具体模型身份与兼容检查通过（33.43 秒）。
+
+两个只用合成数据的原生捕获探针通过：简单 Schema 15.64 秒，共享 Harness 完整 Schema 与两个模拟工具 31.69 秒。候选参数及 SDK 终态均通过 Schema 检查，并确认原生输出存在。这只能证明该锁定组合能完成这些用例，不能证明上一轮真实 SAP 查询的原生捕获故障已消失，也不授予业务操作资格。
+
+所有业务验证使用当前共享编排、全新隔离记录和平台原有检查器；旧通过记录未复制，新环境中当前资格为 **13/18**：
+
+| 操作 | 本轮真实结果 |
+| --- | --- |
+| `plan`、`ground_plan`、`summarize` | 通过；分别 26.63、31.97、21.39 秒，冻结范围与结构检查有效。 |
+| `author_draft` | 通过；65.62 秒，隔离保存、双语与只读定义检查有效。 |
+| `review_free_query_feedback`、`revise_free_query_presentation` | 通过；四类反馈合计 135.49 秒，仅重新解释 30.93 秒；事实、完整性、来源及原记录不变。 |
+| `compose_workflow`、`review_workflow`、`repair_workflow`、`review_workflow_feedback` | 通过；分别 33.79、60.95、20.08、45.95 秒，真实编译与固定版本绑定检查有效。 |
+| `review_agent_feedback` | 两种模式通过；解释 51.95 秒不修改修订，可信本地修改 124.66 秒仅精确追加 README，执行、规则和验收定义不变。 |
+| `workflow_authoring.v2` | 可信本地解释及修改通过；57.71、99.54 秒，单修订、逐轮 Diff、幂等与固定引用不变。 |
+| `analyze_role_matching` | 通过；746.82 秒，当前 31 个活动 Agent、8 页均覆盖，引用与汇总完整。每个模型阶段仍限 300 秒。 |
+| `review_role_matching_feedback` | 未授予资格；866.16 秒，分页覆盖完整，但最后汇总未完成，详见下方。 |
+| `free_query`、`sample_discovery`、`acceptance_baseline`、`acceptance_free_query` | 未派发；岗位反馈前置资格未通过，SAP 调用与新 Campaign 均为零。 |
+
+岗位反馈不是目录缺失或引用失败：第二修订已保存，`agent_catalog_complete=true`、`matching_complete=true`，但 **`consolidation_complete=false`**，并保存 `role_matching_consolidation_incomplete`；没有生成可用工作流建议。平台会话的 `completed` 表示流程已结束，不代表完整业务结果或 Runtime 资格。验证断言拒绝此结果，没有把第二修订删除或改写成成功。
+
+最后汇总在原 300 秒阶段预算末尾提交空对象，原生候选检查明确报告缺少 `/analysis_json`、`/summary_zh`、`/summary_en`，未观察到该作业的有效 SDK 终态。共享编排的既有兜底吞掉汇总异常，当前保存记录不足以确定是哪种异常先触发；不能把缺字段、时限或 SDK 故障互相推定为根因。此前页面阶段的终态都有效，但不为失败的汇总背书。没有自动重跑反馈、提高预算、补字段或继续 SAP 验证。
+
+失败作业的进程已经退出，但留下 `running` 记录。先按 PID 启动标识确认原进程不存在，再使用现有恢复逻辑将该操作状态记为 `interrupted / cleanup_complete=true`；这是可变作业状态的恢复，不改历史验证报告。最终核对没有活动或 `cleanup_pending` worker。下一步须补齐汇总阶段的原始安全异常与输入/输出规模诊断，再决定修复方向；不能直接复制上轮的岗位反馈 PASS。
+
+只读查询验证入口的一项准备检查发现原始 Runtime 字典与平台类型化存储投影的差异：后者带有 `model_catalog_digest=null`。验证器现在使用同一 `RuntimeSnapshot` 投影，保留所有环境、模型、配置及资格绑定，不通过忽略摘要差异放宽范围。该修复只涉及验证脚本和离线用例，不改变共享业务编排或 SDK 驱动，未触发 SAP。
+
+本轮正常账户离线检查分别为 **130 passed、1 warning**（诊断、范围、隔离，9.82 秒）和 **93 passed、1 warning**（共享编排、Codex 对照、历史绑定，29.01 秒）。警告均为既有 Starlette 弃用提示；不冒充全量 Python 或远端 CI。记录保存于忽略的 `.local-data/workbuddy-baseline/native-diagnostics-live-20261007/`，包括 `probe-report.json`、`continuation-report.json`、`role-diagnostic.json`、清理核对及两个 JUnit 报告。WorkBuddy 保持用户停用，Codex 仍为默认；本轮没有 SAP 读取、邮件、业务发布/启用、提交或推送。
+
+The new immutable diagnostic-worker release preserves its predecessor and keeps SDK **0.3.247**, CLI **2.141.0**, **hy4-preview** and platform dependencies pinned. Existing authentication and concrete-model checks pass. Simple native capture and a complete shared-Harness Schema with two synthetic tools pass, including candidate and terminal checks. These probes qualify no business operation and do not prove the historical live-SAP capture fault repaired.
+
+Fresh isolated business validation qualifies **13 of 18 operations** against the new environment and current orchestration. Planning/grounding/summarization, Agent creation, both free-query feedback operations, four legacy workflow operations, both draft-feedback permission modes, trusted-local workflow v2 and complete-catalog role analysis pass their existing platform checks. No historical PASS is copied. Role feedback covers all **31 active Agents across eight pages**, but its saved second revision has **consolidation_complete=false** and `role_matching_consolidation_incomplete`. Session completion is not completeness or qualification, and the assertion rejects it without rewriting that revision.
+
+Near the original 300-second final-stage deadline, the model submits an empty structured candidate, missing `analysis_json`, `summary_zh` and `summary_en`; no valid terminal for that job is observed. The existing consolidation fallback discards the original exception, so these records cannot identify which exception first caused fallback or prove a particular SDK/network cause. Page-stage success does not qualify the final stage. The process exits leaving a running job record; identity-checked existing recovery marks it interrupted with confirmed cleanup, preserving the original verification reports. No active or pending-cleanup worker remains. SAP query, discovery and both acceptance operations remain undispatched; there is no SAP read or Campaign, retry, budget increase or fabricated output.
+
+The query verifier now uses the same typed Runtime projection as stored runs, retaining all binding checks, including the nullable model-catalog field. This is verification-only, not a business/driver change. Logged-in-user targeted suites pass **130** and **93** cases, each with the existing Starlette warning; these are not a new full-suite or remote-CI claim. WorkBuddy remains deliberately disabled and Codex stays default. No mail, business publication/activation, commit or push occurs. Safe reports under the ignored current-pass directory preserve probes, operation results, final-stage schema issues and process reconciliation.
+
+最终核对：Codex 配置、默认 Runtime、依赖、解释器、Git 提交及受保护源码的脱敏对照完全一致，旧 release 未变。启动器确认现有 API（8765）和前台（4321）健康并直接复用，没有重启或重新构建；进一步只读检查中英文页面均为 HTTP 200，运行中 API 返回新环境、当前编排摘要和 **13/18** 资格，`can_enable=false`。技术门禁仍为 `workbuddy_operation_validation_required`，另保留 `runtime_disabled`。文档检查 **55 项、0 过期受控块、0 错误**，目录校验 **34 包、6 模块**；前端源码未改，不宣称本轮新前端构建或远端 CI。`audit-report.json`、`cleanup-reconciliation.json` 和 `service-audit.json` 保存上述最终核对。
+
+Final redacted Codex configuration/default/dependency/interpreter/commit/protected-source controls match exactly, and the old release is unchanged. The launcher reuses the already healthy API/frontend rather than restarting or building. Bilingual pages return HTTP 200; the live API projects the new environment, current orchestration digests and **13/18** qualification with **can_enable=false**. Operation validation remains the technical gate, alongside deliberate disablement. Documentation checks cover **55** documents without stale blocks/errors, and catalogue validation passes **34** packages across **six** modules. No new frontend build or remote-CI result is claimed. Final audit, cleanup and service-projection reports are retained separately.
+
+## 岗位汇总与取消清理离线修复 2026 10 07 / Offline role-final and cleanup repair
+
+确认并修复两类平台缺口：共享编排原先丢弃最后汇总异常；WorkBuddy 外层到期不等待被取消回合清理，且 `shield` 不能保证取消发生在清理期间时调用方仍等待结果。新增安全阶段诊断与字段问题保存；自有客户端和监督器共用最多 10 秒的清理截止时间，未确认时阻止重试。排队任务在派发时重新检查清理状态，迟到输出拒绝写入历史，取消不影响其它作业或 Codex。
+
+实际原生请求只保存输入长度、摘要、Schema 摘要和预算到作业记录，不保存模型提示或命令。岗位报告的阶段指纹对应共享业务提示；驱动的请求指纹另外包含其原生编码与平台上下文，两者不能混称为同一输入。空对象的三个必填字段诊断去重后保留，错误类型与完整性规则不放宽。岗位结果页双语区分“目录匹配完整，但汇总未完成”，技术原因默认折叠，旧报告不重新分类。
+
+原有汇总提示、输出 Schema、300 秒阶段预算、SDK、CLI、模型及已安装诊断 release 均不修改。本轮不重跑真实反馈或 SAP 验证，不能据离线取消测试宣称空对象的生成根因已解决。时间相近的本机 CLI 元数据缺少可靠的平台作业绑定，不用它认定本次 SDK 或网络故障。
+
+新源码绑定的有效资格为 **0/18**：上一轮 13 项真实通过记录保留，但共享诊断、驱动及监督器摘要变化后需要重新验证。不是 18 项都运行失败，也不复制旧 PASS。监督器新增纳入资格摘要，避免以后仅修改取消/清理规则却沿用旧资格。平台侧修改不需要替换不可变 worker 环境；Codex 配置、默认选择、依赖、解释器、原有驱动及提示源码、安装环境和 worker 内容的前后安全指纹相同。首次对照脚本因 JSON 列表与 Python 元组表示差异产生的误报保留，使用同一序列化表示后再次核对一致，不改平台规则掩盖它。
+
+记录位于忽略的 `.local-data/workbuddy-baseline/role-consolidation-repair-20261007/`，保留首次失败的离线测试和最终回归。初次新增测试发现 Python 局部异常名遮蔽，已修复；兼容回归发现不相关入口的新增事件改变顺序，诊断事件限定到岗位阶段，旧断言未删改。前端测试允许读取隔离构建目录，原有断言保持不变，不覆盖正在服务的构建。真实模型、SAP、Campaign、邮件、发布/启用、服务重启、Git 提交或推送均为零。
+
+Two confirmed platform gaps are repaired: the shared final-stage fallback discarded its cause, and WorkBuddy cancellation could return before owned cleanup and record persistence, including cancellation during cleanup itself. Safe diagnostics, a single bounded cleanup deadline, post-queue admission rechecks and late-history fencing address those reproducible paths without changing Codex execution. Only fingerprints, lengths, schema constraints and budgets are saved; the shared-prompt and native-wire fingerprints are distinct. Bilingual UI separates catalog coverage from consolidation and keeps technical details collapsed; historical results remain unchanged.
+
+The consolidation prompt, Schema and 300-second stage budget, pinned SDK/CLI/model and installed immutable worker remain unchanged. No model, SAP or acceptance validation is rerun; the cause of the historical empty native candidate is not inferred from unrelated/unbound CLI telemetry. Current-source qualification becomes **0/18** after digest changes, while the previous **13** genuine passing records are preserved for their old binding. Supervisor behavior is now included in qualification fingerprints. A serialized-type mismatch in the first audit fixture is preserved and corrected using equivalent JSON representations; configuration/dependency/default/installed-worker controls then match. New offline tests also expose and fix a local exception-name shadow and an unrelated event-order change without weakening existing assertions. All original and final reports remain under the isolated ignored directory. No Runtime enablement, service switch, business mutation, commit or push occurs.
+
+最终正常账户定向 Python 回归 **363 passed、1 warning**，109.39 秒；警告是既有 Starlette 弃用提示，没有跳过失败。包含 Codex 不可变请求轨迹、原预算、各 WorkBuddy 入口、历史绑定及清理期间取消等检查，不等同于全量 Python 或真实模型验证。前端全量 **117 项通过**；Astro **50 文件、0 错误/警告/提示**，隔离生产构建 **82 页**。合成组件在中英文、1440px/550px/390px 下键盘展开成功且无横向溢出，不连接实际平台 API。文档检查 **55 项、0 过期块/错误**，目录 **34 包、6 模块**通过；未触发远端 CI、SAP 或服务切换。
+
+Final targeted Python regression passes **363** cases in **109.39 seconds**, with one existing Starlette warning and no skipped failures. It includes immutable Codex request/budget traces, WorkBuddy compatibility, historical binding and cancellation-during-cleanup checks, not a complete Python suite or live-model qualification. All **117** frontend tests pass against an isolated **82-page** production build; Astro checks **50 files** with zero errors/warnings/hints. Synthetic bilingual component checks at **1440/550/390px** confirm keyboard disclosure and no horizontal overflow, without contacting the platform API. Documentation checks **55** documents with no stale blocks/errors and catalogue validation passes **34** packages in **six** modules. No remote CI, SAP or service switch is performed.
+
+## 冻结编排后的岗位实测 2026 10 07 / Frozen-orchestration role validation
+
+确认正式数据库没有活动任务、没有活动或待清理 worker 后，通过现有启动器受控重启 API 和前台，加载上一轮平台修复。启动器先完成目录检查及 **82 页**构建再停止旧服务；API、中英文页面恢复健康。继续使用不可变环境 `93ac6d54d49d990338d172f14ac511dda9886004bcc0873022241c1b93a03375`、SDK **0.3.247**、CLI **2.141.0** 和 **hy4-preview**，没有新建安装环境或复制旧资格。Codex 配置、默认选择、依赖、解释器、受保护源码及 worker/环境文件摘要的前后对照一致。本轮平台编排源码没有修改。
+
+使用旧岗位验证输入及原断言，在新的隔离数据库中执行一次岗位分析，计划通过后再执行反馈。材料理解及 **8 个分页阶段**均取得有效原生结构化终态；最终汇总输入 **43,222 字节**，保持原有 **300 秒**模型阶段预算，但预算内没有取得结构化终态。整个分析 **832.86 秒**后失败，服务错误为 **`runtime_cleanup_incomplete`**，没有保存可审核结果修订或取得操作资格。未观察到该汇总阶段的空对象或字段错误，不能套用上次空对象诊断。岗位反馈、其余非 SAP 验证及自由查询均未派发；**SAP 调用和 Campaign 为零**，不自动重跑。
+
+失败后确认所有所属进程已经退出，作业记录为 `completed` 或 `cancelled / cleanup_complete=true`，没有活动或 `cleanup_pending` worker。代码调查发现独立的平台诊断缺陷：`WorkBuddyClient.__aexit__` 从当前及已完成历史作业的所有清理截止时间取最小值，已完成作业的过期截止时间会让当前回合等待窗口立即归零，错误报告清理未完成并覆盖原始阶段超时。离线模拟确认：加入已完成作业的过期时间时等待仅 **0.0001 秒**即报错；只考虑当前作业时 **0.0203 秒**完成清理且不报错。模拟不调用 SDK、模型或 SAP，也不修改生产代码。它证明清理等待算法存在缺陷，不证明模型为什么未能及时完成汇总。
+
+记录位于忽略的 `.local-data/workbuddy-baseline/frozen-validation-20261007-final/`，包括 `before.json`、`freeze.json`、`roles-summary.json`、新隔离岗位报告、`roles-events.jsonl`、`role-diagnostic.json`、`stale-cleanup-deadline-proof.json` 和 `after.json`。旧 14/18、13/18 及失败记录保持原样；当前资格仍为 **0/18**，WorkBuddy 停用、Codex 默认，未发布/启用业务对象、提交或推送。下一步需先修正已完成作业影响当前清理窗口的缺陷，保留原始超时与独立清理诊断，再根据汇总输入规模与时限进行单独修复评估；不通过扩大预算、补字段或挑选历史 PASS 消除本次失败。
+
+With no active business tasks or pending workers, the existing launcher rebuilds **82 pages before stopping services** and performs one controlled API/frontend restart. The same immutable worker, SDK **0.3.247**, CLI **2.141.0** and **hy4-preview** are retained; no qualification is copied. Redacted Codex configuration/default/dependency/interpreter/source and immutable-release controls match before and after, and orchestration source remains frozen.
+
+One isolated role-analysis attempt obtains valid native terminal objects for understanding and **eight catalogue pages**. Final consolidation receives **43,222 input bytes** but no native terminal within the unchanged **300-second** stage budget. The operation fails after **832.86 seconds**, reported as **runtime_cleanup_incomplete**, without a saved result revision or qualification. No empty final candidate or final field error is observed, so the previous empty-object diagnosis is not substituted. Feedback and dependent validations are not dispatched, with **zero SAP calls and Campaigns** and no automatic retry.
+
+All owned processes eventually exit and their records confirm cleanup. An SDK-free reproduction independently demonstrates a platform defect: the client mixes expired cleanup deadlines from completed turns into the current turn's deadline, reducing its wait to zero and masking the original stage timeout. With a completed turn's expired deadline it raises after **0.0001 seconds**; with only the current turn it completes cleanup in **0.0203 seconds** without error. This proves the cleanup algorithm defect, not the cause of the model's consolidation timeout. Original reports remain immutable. No production fix, Runtime enablement, business publication, commit or push occurs in this pass; current qualification remains **0/18**.
+
+## 清理修复与原生空流定位 2026 10 08 / Cleanup fix and native empty-stream diagnosis
+
+本轮修复 `WorkBuddyClient` 的清理截止时间选择：只用仍待完成回合所属作业的截止时间，不让已完成作业的过期时间压缩当前窗口；当前作业自身已经过期时仍阻断，不给它重新签发预算。另外，将岗位原生对象按原生对象保存为后续上下文，避免把已经验证的对象再次编码成转义 JSON 字符串；对外规范结果仍保持旧字符串信封。没有增减业务字段、补造缺失输出或修改 Codex 路径、模型、SDK、CLI 及原 300 秒阶段预算。不可变 worker 内容不变，没有新建环境。
+
+正常 Windows 账户的 Python 全量回归为 **1609 passed、1 skipped、1 warning**，耗时 **992.01 秒**。跳过项是现有 `test_import_rejects_external_attachment`，警告为既有 Starlette 弃用提示；没有通过新增跳过或放宽旧断言消除失败。三个补充清理用例覆盖完成作业的过期截止时间、保留当前过期截止时间及归属隔离；原生上下文用例核对双引号、换行、业务对象及原 API 信封均无损。完整报告为忽略目录中的 `full-regression-20261008.xml`。
+
+一次隔离汇总重放前，出站安全检查因历史请求可能含内部资料而拒绝。随后只读来源核对证明：请求精确摘要绑定至失败作业，只有 **1 段合成岗位描述、0 上传文档**；规范记录来自该描述的前序模型输出，全部引用指向它；**5 个候选 Agent 契约**与干净 `origin/main` 的公开目录投影完全一致。重新提交同一请求的安全审查后才执行，不通过其它入口绕过拒绝。重放仅验证汇总阶段，不是完整岗位分析，也不授予操作资格。
+
+修复后的重放仍未在 **300 秒**内取得结构化终态，但 **300.53 秒**后准确报告 `runtime_deadline_exceeded` 且清理完成，不再被错误的 `runtime_cleanup_incomplete` 覆盖。输入为 **42,734 字节**原生上下文；没有观察到结构化候选或 Schema 字段错误。通过请求摘要精确匹配官方 CLI 追踪及日志，确认本次原生生成在约 **174.88 秒**收到 `finish_reason="error"`，CLI 将其分类为 **reasoning-only / EmptyStreamError**：收到 **364 个流片段、551,764 字节**，但没有实质最终模型输出。日志中的字节数是原生流总量，不是可用业务结果。官方通用提示为 `Error streaming response`；底层网关为何结束该请求没有被报告，不能据此猜测网络、权限、限流或 token 上限。
+
+另一个不同目的的对照探针使用同一 **43,222 字节**已核实参考文本，只要求最小结构化确认，不执行岗位任务；**hy4-preview 在 19.36 秒内返回有效终态，清理正常**。它证明模型和该上下文大小不是全局不可用，不证明复杂汇总或任何业务操作合格。配置回退告警也出现在相邻无空流的日志中，不能仅凭告警认定路由错误。两次探针均使用原锁定环境，SAP 调用为零，不调用邮件或发布服务、不复制旧 PASS、不重跑失败业务流程。
+
+记录位于忽略的 `.local-data/workbuddy-baseline/role-final-probe-20261008/` 与 `large-context-control-20261008/`，包含安全来源审查、失败及对照报告、精确追踪绑定和仅保留白名单遥测的结论。当前实际复现的阻碍是复杂岗位汇总的上游响应流终止；普通小任务成功不能解除它。岗位反馈及 SAP 查询、选样、两种验收资格尚未在本轮取得；旧自由查询原生终态故障也不能宣称已经修复。当前源码有效资格仍为 **0/18**，旧 14/18、13/18 保持历史绑定。WorkBuddy 保持停用、Codex 默认。若继续修改汇总阶段契约或更换模型/SDK，需先确认超出当前冻结边界的方案；本轮不直接改变业务编排追求 PASS，也不宣称该 SDK 或模型永久无法使用。
+
+The client now derives its bounded cleanup drain only from still-pending owned turns. Expired deadlines of completed jobs cannot mask a current timeout, while an expired current deadline remains fail-closed. Validated native role objects are retained losslessly for subsequent context; the legacy public JSON-string envelope remains unchanged. No missing business field is invented, no Codex execution/request policy changes, and the pinned worker, SDK/CLI/model and 300-second stage budget remain intact.
+
+The complete logged-in Windows Python suite passes **1609 cases**, with **one existing skip and one Starlette warning**, in **992.01 seconds**. New regressions cover owned deadline isolation and native context round-tripping without weakening prior assertions. Before a single final-stage diagnostic replay, an outbound review rejects potentially sensitive historical input. A read-only exact-fingerprint audit establishes one synthetic description, no uploaded documents, references solely to that description and five Agent contracts identical to the clean public origin snapshot. The same execution is then resubmitted for review rather than bypassing the rejection.
+
+The corrected replay still times out after **300.53 seconds**, but cleanup completes and the original deadline error is preserved. No native candidate or Schema-field error is observed. Exact input binding to the official CLI trace/log establishes an upstream **finish_reason=error**, classified as **reasoning-only / EmptyStreamError**, after approximately **174.88 seconds**, **364 chunks** and **551,764 raw streaming bytes** without substantive final output. This is not usable business data, and the gateway's underlying reason is not reported. A separate minimal-output control acknowledges the same **43,222-byte** verified reference in **19.36 seconds** with a valid terminal and clean shutdown. It rules out blanket model/input-size unavailability, not the complex consolidation failure. Configuration fallback warnings also occur in an adjacent log without empty-stream errors and are not proof of a routing fault.
+
+Both probes qualify no operation and perform no SAP/business write. Current qualification remains **0/18** after source changes; previous 14/18 and 13/18 reports remain valid only for their historical binding. Role feedback and dependent SAP validations remain unqualified, and the historical live-query capture fault is not claimed repaired. WorkBuddy stays disabled and Codex default. Altering the consolidation contract or pinned model/SDK requires a separately confirmed scope; no permanent SDK/model impossibility is inferred from these diagnostics. All safe probe and provenance artifacts remain under ignored local directories, without raw log/prompt copies in published documentation.
+
+两次探针及所有回归结束后，重新确认正式数据库无活动任务、无待清理 worker，受控重启 API 和前台加载本轮驱动修复。启动器先验证已有静态构建再停止旧进程，复用原构建而非宣称新增生产构建。重启后 API、中英文页面均为 HTTP 200，运行中 API 的环境、停用和启用门禁与当前管理状态一致；Codex 配置、默认选择、依赖、解释器及不可变环境的脱敏对照仍完全一致。文档检查 **55 项、0 过期块、0 错误**，目录检查 **34 包、6 模块**，Git 差异格式检查无错误。没有提交、推送或业务启用。
+
+After both probes and regression finish, a fresh no-active-task/no-pending-worker check permits one controlled API/frontend restart. The launcher verifies and reuses the existing static build before stopping old processes; no new production build is claimed. API and bilingual pages return HTTP 200, live Runtime projections agree with current disabled/eligibility state, and protected Codex/default/dependency/interpreter/immutable-release controls still match. Documentation checks **55** documents with no stale blocks/errors; catalogue validation covers **34** packages in **six** modules and Git whitespace checks pass. No commit, push or business activation occurs.
+
+## 独立非 SAP 操作重新验证 2026 10 08 / Independent non-SAP requalification
+
+在同一冻结源码、不可变环境 `93ac6d54d49d990338d172f14ac511dda9886004bcc0873022241c1b93a03375`、SDK **0.3.247**、CLI **2.141.0** 和 **hy4-preview** 下，继续执行与岗位汇总无依赖的已批准非 SAP 验证。生产启用门禁没有改变；每个操作族只执行一次，沿用原验证输入、业务检查和权限模式。没有更换模型、重跑岗位失败任务或把历史 PASS 复制到当前绑定。
+
+当前源码的完整有效资格为 **12/18**：
+
+| 操作 | 本轮真实结果与耗时（秒） |
+| --- | --- |
+| `plan`、`ground_plan`、`summarize` | 通过；39.91、32.00、25.98。精确过滤、字段及 `top=1` 保留；总结如实披露合成证据不完整，没有调用 SAP。 |
+| `author_draft` | 通过；107.29。通过真实创建服务保存到隔离数据库，Manifest、双语、只读定义及幂等检查有效。 |
+| `review_free_query_feedback`、`revise_free_query_presentation` | 通过；四类反馈合计 161.35，仅重新解释 23.70。事实、证据别名、来源及完整性保持不变，重新解释零次 SAP 读取。 |
+| `compose_workflow`、`review_workflow`、`repair_workflow`、`review_workflow_feedback` | 通过；44.75、48.48、29.52、57.95。真实编译、端口修复范围、双语及固定 Agent 版本/Digest 检查有效，反馈落入隔离修订。 |
+| `review_agent_feedback` | **两种模式均通过**；有界解释 80.13，不改修订；可信本地修改 144.48，只精确追加 README、一个修订和 `/readme` Diff，执行、规则与验收定义不变。 |
+| `workflow_authoring.v2` | **可信本地解释和修改均通过**；80.81、111.31。解释不改定义，修改仅改变 `/title/zh`、`/title/en`，单修订、逐轮 Diff、稳定引用、请求幂等及固定绑定均有效。 |
+| `analyze_role_matching` | 当前绑定未取得资格；已有本轮独立汇总重放确认上游 reasoning-only / `EmptyStreamError`，见上一节。不重复运行。 |
+| `review_role_matching_feedback` | 未派发；岗位分析资格尚未通过，不标为本轮实际运行失败。 |
+| `free_query`、`sample_discovery`、`acceptance_baseline`、`acceptance_free_query` | 未派发；完整非 SAP 前置门禁尚未满足，SAP 调用及新 Campaign 为零，不宣称旧查询终态故障已经解决。 |
+
+所有通过项均同时取得有效原生结构化终态、通过平台业务检查并确认所属进程清理完成，才由原验证入口登记资格；原生候选有效不单独授予资格。草稿及工作流编写继续使用 **3600 秒**原预算，岗位模型阶段仍为 **300 秒**，没有因验证方便放宽断言或提高时限。
+
+最终独立审计核对 18 项当前编排摘要、冻结模型与环境、每项报告及所属作业绑定，并确认运行中 API 显示 **12/18、can_enable=false**。仅剩资格门禁和用户保留的 `runtime_disabled`；这不是 6 项都执行失败。无活动业务任务、活动 worker 或待清理进程，API 与中英文首页均 HTTP 200。Codex 配置、默认选择、依赖、解释器、受保护源码及不可变 worker/环境对照仍一致；WorkBuddy 仍停用、Codex 仍默认。本轮平台执行源码没有修改，不重启服务、不切换页面构建，也不宣称重新执行了上一节全量回归。
+
+逐族报告、冻结快照、安全事件和 18 项审计矩阵位于忽略的 `.local-data/workbuddy-baseline/independent-nonsap-20261008/`，最终入口为 `audit-report.json`。历史 14/18、13/18、0/18 的不同绑定和失败报告保持原样。下一步如需改变共享岗位汇总契约或锁定模型/SDK，先另行确认范围并重新执行相关 Codex 对照；当前没有通过更换入口、延长预算、重复运行或补字段解除上游阻碍。没有正式草稿修改、业务发布/启用、邮件发送、提交或推送。
+
+The frozen source, immutable environment, SDK **0.3.247**, CLI **2.141.0** and **hy4-preview** are retained. Seven independent, previously approved non-SAP families run once with their existing fixtures, permissions and platform assertions. Production enablement still requires all eighteen operations; no failed role task is retried and no historical qualification is copied.
+
+**Twelve operations now hold current complete qualification.** Planning/grounding preserve exact scope; summary honestly reports incomplete synthetic evidence. Isolated Agent creation, all free-query feedback decisions, zero-read reinterpretation, the four legacy workflow operations, both draft-feedback permission modes and trusted-local workflow v2 pass native termination, real platform business checks and owned-process cleanup. Explanation does not mutate definitions; draft modification creates one README-only revision; workflow v2 creates one bilingual-title-only revision with stable references, fixed bindings, per-round Diff and exact-request idempotency. Existing 3600-second authoring and 300-second role-stage budgets remain unchanged.
+
+The remaining six are **not six newly failed executions**: role analysis remains unqualified after the already documented upstream reasoning-only empty stream; role feedback is not dispatched; four SAP/acceptance operations remain gated. This pass performs **zero SAP calls and creates zero Campaigns**, and does not claim the historical real-query terminal problem repaired. A final independent audit checks every current digest, frozen binding, report and owned job, confirms the live API's **12/18 and can_enable=false**, healthy API/bilingual pages, no active business/worker/cleanup jobs and identical protected Codex/default/dependency/interpreter/immutable-release controls. WorkBuddy stays disabled and Codex default. Source execution code and services are unchanged in this pass; no new full-suite/build result, Runtime enablement, production-object mutation, email, commit or push is claimed. Dated historical evidence remains untouched. Safe reports and the complete matrix are retained locally under the ignored independent-pass directory.
+
+### 剩余阻碍边界复核 / Remaining-blocker boundary review
+
+随后只读核对当前锁定 SDK、精确绑定的失败追踪及[官方 Python SDK 参考](https://www.codebuddy.cn/docs/cli/sdk-python)、[故障排查指南](https://www.codebuddy.cn/docs/cli/troubleshooting)和[模型配置指南](https://www.codebuddy.cn/docs/cli/models)。锁定客户端在错误消息后结束响应，或遇到带错误的结果时抛出异常；它不会生成缺失的业务终态。这个源码行为不证明失败作业实际收到过哪种消息。失败追踪只保留通用生成/流错误，没有可核对的 token 上限、HTTP 错误码或更底层网关原因；未检索到针对该锁定组合、本次空流的确定官方修复说明。当前官方文档中的新选项或升级建议不能直接作为旧版本的兼容证明，也没有据此修改模型、推理配置、SDK 或 CLI。
+
+实时 API 再次确认 **12/18、can_enable=false、WorkBuddy 停用、Codex 默认、0 待清理 worker**。同一剩余阻碍已经持续三个连续目标回合；前两个回合的驱动修复和独立资格进展保留，不把它们当作岗位问题已经解除。当前授权边界内没有已证实可执行的进一步修复：继续拆分共享汇总或更换锁定模型/SDK，需要明确范围选择；外部厂商修复则需要新的证据。目标仍未完成，不能宣称 SDK 或模型永久不可用。边界审计保存在忽略的 `.local-data/workbuddy-baseline/blocked-audit-20261008.json`；本次只读核对没有模型、SAP、服务切换、启用、提交或推送。
+
+A subsequent read-only review checks the pinned client, exactly bound failure trace and the official Python SDK/troubleshooting/model guides. The pinned client terminates on an error message or raises for an error result; it cannot invent a missing business terminal. This does not establish which SDK message the failed job actually emitted. The trace supplies only generic generation/stream errors, not a verified token ceiling, HTTP status or underlying gateway cause. The reviewed current documentation does not establish a remedy for this pinned failure, and new documented options do not prove old-version compatibility. No configuration, model or SDK change follows from this research.
+
+The live API reconfirms **12/18, disabled WorkBuddy, Codex default and no pending cleanup**. The same remaining blocker persists across three consecutive goal turns despite real progress on other operations. The complete objective remains unmet. Further shared-contract changes, a different pinned runtime or an external vendor remedy require a scope decision or new evidence; no permanent model/SDK impossibility is claimed. The ignored boundary audit preserves the original scope, affected operations and evidence without qualifying unexecuted stages or repeating model/SAP tasks.
+
+## 获批的共享汇总修复 2026 10 08 / Approved shared-consolidation repair
+
+本轮按用户确认的完整修复计划实施，而非继续受上一节未确认的范围限制。新不可变 worker 环境为 `7f50527cc86bc14b162caef67332b136444c870e15753b0cbf4d1967e4b6d650`；旧 release 保留，SDK **0.3.247**、CLI **2.141.0**、依赖与 **hy4-preview** 不升级。认证和实际模型身份检查通过，WorkBuddy 仍停用。模型阶段仍为 **300 秒**，工作流编写仍为 **3600 秒**。
+
+首先按精确输入、前序上下文和原 Schema 摘要完成一次无 SAP 的诊断复现。原输入 **43,222 字节**；新 worker 在 **134.23 秒**内取得有效结构化终态，清理确认，无资格登记。本次未复现历史空流，不能认定 SDK／网关缺陷已修复，也不能将其代替完整岗位分析。原先上游错误的底层原因仍未知。证据位于忽略目录 `.local-data/workbuddy-baseline/unblock-20261008/original-contract-report.json`，只有安全遥测与指纹，没有复制原生推理日志。
+
+共享末轮改用 `sapba.role-consolidation/1` 四字段 Schema，平台保留理解、分页匹配和拒绝记录，执行逐操作对账并保存建议、缺口及逐轮 Diff。明确错误在 SDK 关闭前上报；缺失终态、中间候选、关闭挂起和清理失败分别检查，原始错误不会被清理异常替代。无确切 SDK 错误的静默调用仍按原预算超时。完整操作资格必须绑定新环境、模型、编排摘要及业务检查，旧 **12/18** 仅保留为历史证据。
+
+With the user's explicit approval, this pass implements the shared-contract repair previously outside scope. A new immutable worker release retains the exact SDK **0.3.247**, CLI **2.141.0**, dependencies and **hy4-preview**, preserving the old release. Authentication and concrete model identity pass; WorkBuddy remains disabled. An exact, provenance-checked original-contract diagnostic replay receives a valid terminal after **134.23 seconds** with confirmed cleanup and zero SAP reads. It qualifies no business operation and does not establish that the intermittent gateway fault is fixed.
+
+The strict four-field final contract retains canonical/page records under platform control. Per-operation reconciliation, saved suggestions/gaps and revision Diff, immediate safe native-error signaling and separate cleanup outcomes are covered offline. Intermediate candidates cannot substitute for terminals. Silent unfinished calls retain their original deadline. Historical qualifications remain immutable and cannot certify the changed source/environment; fresh complete qualification is evaluated separately below.
+
+### Codex 真实对照与新增门禁 / Live Codex comparison and newly exposed gate
+
+首次完整 Python 回归发现一个旧测试替身仍实现 `receive_response`，与新 worker 使用的官方 `receive_messages` 不一致。只修正替身接口，全部旧断言保留；最终全量为 **1629 passed、1 个既有 skipped、1 个 Starlette warning**，耗时 **1104.77 秒**。前端 **119 项**、Astro **50 文件零错误/警告/提示**、目录 **34 包/6 模块**、文档 **55 项**和隔离 **82 页**生产构建通过。合成组件在中英文及 **1440/550/390px** 下键盘操作成功，无横向溢出。Codex 配置、默认选择、依赖、解释器和既有受保护源码的脱敏指纹一致。
+
+Codex 验证夹具最初漏传应用的管理探针，在模型请求前被拒绝；该次单独保存为 `not_run / model_jobs=0`。修复夹具初始化后只启动一次真实分析，使用现有 **gpt-5.6-sol** 及原有权限、推理和预算。分析 **254.66 秒**后保存可查看的部分结果：**31 个候选、8 页、31 个业务操作/Agent配对**均完成，唯一操作由 `mm-po-gr-status` 完整覆盖。但末轮在 **4.792 秒**失败，`consolidation_complete=false`，没有派发反馈。不能把会话 `completed`、对账完整或分页结果当作完整资格。
+
+原输入摘要精确绑定到官方 Codex 追踪，终态错误明确拒绝新原生 Schema 中的 `uniqueItems`，涉及 `workflow_suggestions.operation_ids`；该末轮没有助手消息。只保存类型计数、字段与安全错误分类，不复制追踪、推理或异常原文。这是本轮新增的 **Codex 原生 Schema 适配问题**，不是 SAP、业务比较、300 秒超时或已证明的 WorkBuddy 上游空流。原保存报告保持原诊断，不追溯重写；附加定位保存在 `codex-trace-diagnostic.json`。
+
+修复仅在 Codex 新末轮的原生编码中移除不支持的关键词，平台严格 Schema 仍保留唯一性，重复引用仍阻断。新增离线测试验证这个边界、无原生 Schema 错误原文及所有其它操作原请求轨迹；没有重跑失败的真实作业。WorkBuddy 岗位分析/反馈、其余12项非SAP重验及4项SAP/验收验证全部等待前置门禁，**SAP调用和新Campaign为零**。需要对新冻结绑定另行启动真实 Codex 对照，通过后才能继续完整 WorkBuddy 验证；当前不宣称18项通过或可启用。
+
+The complete offline suite passes **1629 cases** with one existing skip and one Starlette warning after correcting an outdated fake message method without weakening assertions. Frontend **119** tests, Astro, catalogue/documentation checks, an isolated **82-page** build and bilingual keyboard/narrow-screen checks pass. Protected Codex/default/dependency/interpreter controls match. A verifier-only initialization fault is retained as a preflight `not_run` with zero model jobs.
+
+The first actual Codex analysis takes **254.66 seconds** and completes all **31** candidate pairs across **eight** pages. Its sole operation is covered by the fixed PO receipt Agent, but final consolidation fails after **4.792 seconds**. Exact request binding to the official terminal establishes rejection of `uniqueItems` in the new native Schema, with no final assistant output. This is a concrete Codex wire-Schema compatibility defect, not SAP, a business difference, timeout or proof of WorkBuddy's historical empty stream. Original partial results remain unchanged; supplemental diagnosis contains only safe metadata.
+
+The narrowly scoped encoder omits that keyword only for the new Codex final contract. Platform uniqueness, evidence, compiler and business checks remain strict, and unrelated Codex requests are unchanged. Offline regressions cover duplicate rejection and safe errors. No failed live job is automatically rerun: Codex feedback and all dependent WorkBuddy business/SAP/acceptance validation remain undispatched. Fresh validation against the repaired binding is still required; WorkBuddy remains disabled, Codex default, and no SAP reads, Campaign, business publication, commit or push occurs.
+
+### 最终离线回归与交付状态 / Final offline regression and handoff
+
+原生 Schema 编码修正后的 Python 全量报告为 **1632 passed、1 existing skipped、0 failures/errors**，耗时 **3957.15 秒**，保存于忽略目录中的 `full-regression-native-schema.xml`。全量运行后补充的错误关键词引号变体由最新定向用例单独核对：**5 passed**；此前共享编排与编码定向检查 **113 passed**。既有跳过和 Starlette 弃用警告没有被用来掩盖失败。前端 **119 项通过**，Astro **50 文件、0 错误/警告/提示**，隔离构建 **82 页**；中英文、1440px/550px/390px 合成页面的键盘操作及溢出检查通过。目录 **34 包、6 模块**及文档 **55 项**检查通过；这不是远端 CI 或新的真实模型资格。
+
+最终安全审计确认 Codex 配置、默认选择、依赖及受保护执行文件的前后对照一致；已发布 Agent 包不变，没有活动业务任务或待清理 worker。无活动任务时受控重启后，API 和中英文前台均返回 HTTP 200。运行中 API 与本地状态一致：新绑定有效资格 **0/18**、`can_enable=false`、WorkBuddy 停用、Codex 默认。原资格和真实失败报告保留原绑定，未被覆盖或复制。
+
+本轮交付平台修复与离线验证，但尚未解除 WorkBuddy 启用门禁。因首次真实 Codex 对照发现原生 Schema 不兼容，修正后须重新冻结绑定并获准执行新的 Codex 分析与反馈，再继续 WorkBuddy 的 18 项验证；没有自动重跑失败作业。安全原因矩阵、原契约复现、独立审计和逐项未派发状态保存在 `.local-data/workbuddy-baseline/unblock-20261008/`。本轮 SAP 调用、Campaign 创建均为零，未发送邮件、发布、启用、提交或推送。
+
+The final Python report after native Schema encoding repair records **1632 passes, one existing skip and zero failures/errors** in **3957.15 seconds**. Subsequent quoted-keyword diagnostic variants pass a separate **five-case** focused run; the earlier shared-orchestration/encoding suite passes **113** cases. All **119** frontend tests pass, Astro checks **50 files** with no errors/warnings/hints, and the isolated build produces **82 pages**. Bilingual keyboard/overflow checks at **1440/550/390px**, **34-package/six-module** catalogue validation and **55-document** checks pass. Existing skips and deprecation warnings are disclosed, not used to suppress failures; no remote CI or live-model qualification is inferred.
+
+The final audit confirms identical protected Codex configuration/default/dependency/execution controls, unchanged published Agent packages and no active business or pending-cleanup worker. A controlled restart after those checks restores HTTP 200 API and bilingual pages. Live and saved projections agree on **0/18 current-binding qualifications, can_enable=false, disabled WorkBuddy and Codex default**, with historical records preserved. Platform repair is delivered but enablement is not cleared. A newly frozen, explicitly authorized Codex comparison must precede dependent WorkBuddy validation; no failed live job is automatically retried. Safe replay, causes, audit and undispatched-stage records remain in the ignored local delivery directory. This pass performs zero SAP calls and creates no Campaign, sends no mail and does not publish, enable, commit or push.
+
+## Codex 续验与单 Agent 建议对账修正 / Codex continuation and single-Agent suggestion reconciliation
+
+收到用户继续授权后，冻结新的隔离验证绑定并执行一次 Codex 岗位分析。耗时 **254.33 秒**，完整核对 **31 个候选、8 页**，取得有效的新四字段汇总终态；没有再出现 `uniqueItems` 原生 Schema 拒绝。唯一操作由可执行且 PASS 的 `mm-po-gr-status` 完整覆盖。末轮同时提出单 Agent 工作流建议 `workflow_001`，已经通过现有编译器，但新增对账器将其误报为 `role_matching_combination_unsupported`，因而整体汇总未通过。该会话的 `completed` 状态不代表业务资格通过。反馈以及 WorkBuddy 后续验证未派发，没有 SAP 调用或 Campaign。
+
+原因已由保存结果和代码共同确认：现有工作流契约允许至少一个步骤，新对账却额外要求至少两个不同 Agent。修正仅允许已由同一可执行 PASS Agent 完整覆盖的合法单 Agent 建议；它不作为组合证据，不让部分覆盖升级为完整覆盖，不放宽编译器、引用、只读或证据检查。原建议的离线回放通过，原数据库摘要保持不变；原失败报告仍保持失败，不复制或重新绑定资格。相关回归 **115 passed、1 既有 Starlette 警告**，随后全量 Python **1639 passed、1 既有 skipped、1 既有 warning**，耗时 **918.84 秒**。报告保存为 `full-regression-single-agent.xml`。没有修改旧断言或跳过失败；离线通过不等同于修正后的真实对照。
+
+所有安全记录保存在忽略目录 `.local-data/workbuddy-baseline/resume-20261008-schema/`。源摘要再次变化后，原冻结绑定不能为新代码背书；须重新冻结并取得新的真实验证记录。SDK **0.3.247**、CLI **2.141.0**、**hy4-preview**、Codex 配置及现有预算不变。没有自动重跑失败作业；WorkBuddy 保持停用、Codex 默认，未发送邮件、发布、启用、提交或推送。
+
+Following explicit continuation, one newly frozen Codex analysis takes **254.33 seconds** and checks **31 candidates across eight pages**, with a valid four-field final terminal and no native `uniqueItems` rejection. The sole operation is fully covered by executable PASS `mm-po-gr-status`. A proposed single-Agent workflow also passes the existing compiler, but the new reconciliation incorrectly rejects it for having fewer than two distinct Agents. Session completion is not business qualification; feedback and dependent WorkBuddy verification are not dispatched, with zero SAP calls and Campaigns.
+
+The focused correction permits a compiled single-Agent suggestion only where that same executable PASS Agent already provides full coverage. It cannot turn a partial match into a validated combination and does not weaken references, compiler, read-only or evidence checks. Offline replay passes with an unchanged original database; the original failed result is neither rewritten nor qualified. **115** focused regressions pass, followed by a full Python suite of **1639 passes, one existing skip and one existing warning in 918.84 seconds**. Prior assertions are not weakened and no failed test is newly skipped. Current-source qualification still requires new frozen live records, not these offline checks. Pinned versions, models, protected Codex controls and budgets remain unchanged; no automatic failed-job retry or enablement occurs. Safe artifacts remain in the ignored continuation directory.
+
+本续验未修改前端源码，未重新宣称前端或生产构建结果；前一轮的 **119 项前端测试、Astro 零错误及 82 页隔离构建**保留原验证记录。全量 Python 结束后再次确认无活动业务任务、无待清理 worker，才受控重启服务加载对账修正。当前源摘要有效资格仍为 **0/18**；这表示待重新验证，不表示十八项均运行失败。WorkBuddy 停用、Codex 默认、SAP 和 Campaign 为零，保护对照一致。新的真实尝试需要使用新的冻结绑定，原失败作业不自动重跑。
+
+This continuation does not modify frontend source or claim a new frontend/production-build run; the earlier **119 frontend passes, clean Astro check and 82-page isolated build** retain their original records. A new idle/cleanup check after the full Python suite precedes the controlled restart. Current-source qualification remains **0/18 pending revalidation**, not eighteen failed executions, with disabled WorkBuddy, Codex default, zero SAP calls/Campaigns and identical protected controls. A fresh live attempt requires a new frozen binding rather than automatic retry of the failed job.
+
+## 新冻结绑定完整续验 2026 10 08 / Fresh-binding live continuation
+
+本轮在 `.local-data/workbuddy-baseline/resume-20261008-single/` 保存新的冻结编排、保护对照和隔离记录。SDK **0.3.247**、CLI **2.141.0**、**hy4-preview**、环境 `7f50527cc86bc14b162caef67332b136444c870e15753b0cbf4d1967e4b6d650` 不变；没有修改平台执行源码或沿用历史资格。Codex 真实岗位分析及反馈分别 **304.55 秒、305.04 秒**通过。WorkBuddy 完整岗位分析及反馈分别 **871.38 秒、1067.10 秒**通过；每轮核对 **31 个候选、8 页、31 个操作/Agent配对**，汇总、引用、编译、逐操作对账、历史修订及所属进程清理均通过。整体岗位时长不是单模型阶段时限：每个阶段仍为 **300 秒**，工作流编写仍为 **3600 秒**。本轮没有再观察到岗位空流，但不能据此认定历史 SDK／网关故障永久消失。
+
+以下 **14 项**取得当前环境、模型和编排摘要绑定的新真实资格，未复制旧通过记录：
+
+| 操作组 / Operation group | 当前结果 / Current result |
+| --- | --- |
+| `plan`、`ground_plan`、`summarize` | 通过；合法计划、范围保护、双语总结及证据不足披露 / Passed plan, scope and summary checks |
+| `author_draft` | 通过；隔离创建、持久化及幂等 / Passed isolated authoring, persistence and idempotency |
+| `review_free_query_feedback`、`revise_free_query_presentation` | 通过；四条反馈路径、原始结果不变、仅重解释零次 SAP 读取 / Passed feedback paths and immutable, zero-read reinterpretation |
+| `compose_workflow`、`review_workflow`、`repair_workflow`、`review_workflow_feedback` | 通过；真实编译、固定绑定、连接修复和反馈保存 / Passed compiler, fixed bindings, repair and persisted feedback |
+| `analyze_role_matching`、`review_role_matching_feedback` | 通过；完整目录及业务对账 / Passed complete catalogue and operation reconciliation |
+| `review_agent_feedback` | `bounded` 解释及 `trusted_local` 修改均通过；解释无 Diff，修改只产生一个 `/readme` 修订，精确文本与换行一致，执行及规则摘要不变 / Both modes passed with immutable explanation and an exact README-only revision |
+| `workflow_authoring.v2` | `trusted_local` 通过；解释不改修订，修改仅涉及双语标题，引用、固定绑定、逐轮 Diff 和历史结果核对通过 / Passed explanation and title-only revision with checked references, bindings and history |
+
+非 SAP 门禁全部通过后，准备一次采购订单 `4500001466` 抬头、三个字段、`top=1` 的有限样本查询。新夹具最初把资格登记产生的管理修订 **119 → 134**误判为执行环境变化，尚未派发模型、未读取 SAP，单独保存为 `not_run`。代码核对确认管理修订及完整配置摘要包含资格状态；夹具因此逐项核对执行身份、模型检查、环境、源码摘要和所需权限模式，而非忽略这些保护。历史记录和执行源码没有改写。
+
+随后唯一一次有限样本验证已执行 **1 次批准的业务读取工具调用**，目录、实时 Schema、查询校验、查询执行、证据读取及 `sap_final_report_validate` 均成功。然而四次原生格式捕获没有产生有效终态：候选先在 `/input_kind`、`/input_field` 违反枚举，后来又缺少这两个必填字段；SDK 返回 `success` 但 `structured_output` 为 `null`，安全错误为 **`workbuddy_structured_output_missing`**，耗时约 **246.62 秒**，不是预算超时。共享契约要求在不需要安全业务引用澄清时明确输出 JSON `null`；这些字段不是采购订单筛选字段。当前证据只证明模型/原生格式捕获未满足该契约，不能确认 SDK 或网关底层缺陷，也不补造缺失字段或从中间候选合成成功终态。
+
+运行继续保留真实的 `inconclusive` 及 `harness_runtime_unavailable`，验证结果为 `failed / verification_report_or_evidence_invalid`，未登记 `free_query` 资格，没有覆盖平台运行状态。失败及安全遥测保存于 `.local-data/workbuddy-validation/resume-20261008-single/limited/`。完整唯一键查询、自动选样、独立基线和验收模式自由查询均暂停，未创建 Campaign、没有自动重跑或扩大读取。这里的 **1 次**指审计中的业务读取工具调用，不代表全部 HTTP／元数据请求数量。
+
+最终保存状态与在线 API 一致：**14/18、can_enable=false、WorkBuddy 停用、Codex 默认、0 活动业务任务、0 待清理 worker**。Codex 配置、依赖、解释器和保护对照保持一致。下一直接阻碍为自由查询原生终态；后三项能力等待其前置门禁，不应表述为三项均已真实运行失败。当前只更新验证资料与忽略目录中的夹具，未重新宣称全量测试、前端或生产构建结果，未重启服务、发送邮件、发布、启用、提交或推送。
+
+This explicitly authorized fresh pass records successful Codex analysis/feedback (**304.55/305.04 seconds**) and WorkBuddy analysis/feedback (**871.38/1067.10 seconds**). Both role rounds cover all **31 candidates across eight pages**, with valid final contracts, checked references and compilation, operation reconciliation, persisted history and confirmed owned cleanup. Individual role model stages remain **300 seconds**; WorkBuddy workflow authoring remains **3600 seconds**. All **14 non-SAP operations**, including both required Agent-feedback modes and trusted-local workflow v2, receive new current-binding qualifications. No historical qualification is copied, and no execution source, pinned installation or protected Codex control changes. The successful role run does not prove that an intermittent upstream fault can never recur.
+
+A fixture-only preflight first confuses qualification-registration revisions with runtime identity and stops before dispatch, preserving a separate zero-model/zero-read `not_run` record. After correcting that check using the actual manager implementation, the single approved limited-sample attempt succeeds in one audited business-read tool call and final-report validation, but native output violates the nullable clarification enums and later omits the two required fields. The SDK returns a success result without `structured_output`; the worker rejects it as **`workbuddy_structured_output_missing`** after approximately **246.62 seconds**, not a deadline failure. A normal non-clarification response must provide explicit JSON nulls. The safe trace proves contract failure, not an identified SDK/gateway defect. Candidates are not promoted to terminals and missing fields are not fabricated.
+
+The persisted run remains honestly inconclusive with its runtime-unavailable diagnostic, separately from failed qualification. Complete-key query, sample discovery and the two acceptance operations are not dispatched; no Campaign is created and no failed job is automatically rerun. The live API and saved audit agree on **14/18**, disabled WorkBuddy, default Codex, unchanged protected controls and no active or pending-cleanup tasks. No automatic enablement, service restart, mail, publication, commit or push occurs. New verification documents do not claim a new full-test or frontend build run.
+
+## 可空终态字段离线修复 2026 10 08 / Offline nullable-terminal repair
+
+本轮先离线核对失败记录、共享提示、输出 Schema 和锁定 CLI 的原生格式器。共享提示原本已经要求在无需安全引用澄清时将 `input_kind`、`input_field` 设为 JSON `null`；平台 JSON Schema 校验接受这两个空值。锁定 CLI 将原 Schema 交给 AJV，未发现转换时删除 `null` 的证据。已保存的失败仅提供枚举、必填问题和缺失终态，没有保存无效字段的原始值，因此不推断模型实际输出了哪个错误字符串，也不将问题认定为已证实的 SDK／网关缺陷。
+
+最小修复仅为 WorkBuddy Harness 增加原生输出指导：说明两个字段用于安全引用澄清，而非 SAP 查询参数；提供显式 JSON 空值示例，禁止省略必填字段，并区分报告工具检查与完整 SDK 终态。仅当冻结 Schema 已声明这两个必填可空枚举时追加指导。共享业务提示、权威 Schema、平台校验器、工具与读取范围不变；不从候选生成终态、不补字段、不重跑失败模型任务。Codex 请求路径不受这段 Provider 专属指导影响。
+
+新增 **21 项**离线用例覆盖空值原样传递、错误字符串及缺失字段诊断、合法安全引用澄清、原生 Schema 编码、缺失终态拒绝，以及相同工具、预算和绑定。结合现有 Harness、共享编排、Runtime Router 与原生输出测试，定向回归 **172 passed、1 个既有 Starlette warning**。完整 Python 回归结果另行记录于本节后续，不以定向通过代替全量结果；本轮无前端源码修改，不重新宣称此前的前端或生产构建结果。
+
+只读审计确认修复前后的 Codex 配置、默认选择、依赖和解释器一致；SDK **0.3.247**、CLI **2.141.0**、**hy4-preview** 及不可变 worker 环境 `7f50527cc86bc14b162caef67332b136444c870e15753b0cbf4d1967e4b6d650` 保持原样。没有新建 release 或原地修改 worker。API 与中英文首页健康，无活动业务或待清理 worker，WorkBuddy 停用、Codex 默认。
+
+现有摘要机制覆盖共享文件及驱动，本轮两个 WorkBuddy 源文件变化后，当前投影为 **0/18、can_enable=false**；历史 **14/18** 原样保留，未删除、重绑或变成十八次失败。本轮不调整摘要粒度。离线修复不能证明真实 `hy4-preview` 已能返回合法终态；需按新冻结绑定重新取得业务验证资格，再继续完整唯一键查询、选样和隔离验收。脱敏基线、测试及只读审计保存在忽略目录 `.local-data/workbuddy-baseline/nullable-20261008/`。本轮零模型任务、零 SAP 调用、零 Campaign；未重启服务、启用、发送邮件、发布、提交或推送。
+
+The existing shared prompt already requires literal JSON nulls outside the secure-reference clarification path. Offline checks confirm that the authoritative Schema accepts them and the pinned native formatter passes the original Schema to AJV; no observed conversion removes null. The saved failure retains enum/required constraints and a missing terminal, not the invalid raw values or an established SDK/gateway root cause.
+
+The narrowly scoped WorkBuddy guidance clarifies field purpose, explicit null encoding, required members and report-versus-terminal validation. It activates only for the existing required nullable enums. Shared business prompts, Schema, checkers, tools, scope, Codex calls and immutable worker remain unchanged. No candidate is promoted to a terminal and no field is fabricated. **Twenty-one** new offline cases cover lossless nulls and clarification values, safe rejection, exact native Schema and mandatory terminal collection; the focused suite passes **172 cases** with one existing warning. Full-suite results are recorded separately rather than inferred; no new frontend or build result is claimed.
+
+A read-only before/after audit confirms unchanged protected Codex/default/dependency/interpreter controls and the same SDK **0.3.247**, CLI **2.141.0**, model and worker release. Healthy local services have no active business or pending-cleanup worker. The existing broad source-digest rule now projects **0/18 pending revalidation** while retaining historical **14/18** records unchanged. This is not eighteen failed executions or deleted history. Real model effectiveness and current-binding qualifications remain to be established; no live retry, SAP read, Campaign, release replacement, service restart, enablement, email, publication, commit or push occurs in this offline pass.
+
+本轮最终全量 Python 为 **1660 passed、1 个既有 skipped、1 个既有 Starlette warning**，耗时 **1083.37 秒**，报告为 `nullable-20261008/full.xml`。正式目录 **34 包／6 模块**、文档索引 **55 项**及两份 WorkBuddy 文档本地链接检查通过；后者只调整历史错误链接示例的引用写法，保留其原失败结论。最后再次执行只读状态审计，未更新任何真实资格。修复及离线兼容门禁通过，模型效果和启用门禁仍待新的真实验证；两者分开报告。
+
+The final full Python suite passes **1660 cases**, with **one existing skip and one existing Starlette warning**, in **1083.37 seconds** (`nullable-20261008/full.xml`). The **34-package/six-module** catalogue, **55-document** index and both WorkBuddy documents' local links pass. A historical broken-link example is quoted without being treated as actual navigation; its original failure conclusion is retained. A final read-only audit changes no real qualification. Offline compatibility passes while live effectiveness and enablement remain pending, reported separately.
+
+## 新绑定真实验证 2026 10 09 / Fresh-binding live verification
+
+用户继续授权后，本轮使用新的 `.local-data/workbuddy-baseline/resume-20261009-nullable/`，保存脱敏基线并核对无活动业务或待清理 worker，随后受控重启加载输出指导修复。先校验可用静态构建再停止服务，复用既有构建，没有重新构建前台。锁定 SDK **0.3.247**、CLI **2.141.0**、**hy4-preview**、worker release 及依赖不变。认证 **4.25 秒**通过；无工具模型探针 **35.64 秒**通过，实际模型身份确认后冻结新源码和环境绑定。
+
+一次新的真实 Codex 岗位分析／反馈对照分别 **245.16 秒、238.69 秒**通过；两轮均完整覆盖 **31 个候选、8 页、31 个操作／Agent配对**，引用、工作流编译、单操作对账、持久化及历史修订检查通过。未修改 Codex 模型、推理、权限、配置或原有预算。
+
+随后的唯一一次 WorkBuddy 岗位分析在 **654.43 秒**后形成可查看但不完整的业务汇总：**10 个有效原生结构化终态、31 个候选、8 页**均通过，没有空流、缺失终态、超时或分页遗漏。失败为 **`role_business_validation_incomplete`**，具体问题 **`role_matching_combination_unsupported`**；运行会话的 `completed` 不等于资格通过。
+
+保存修订的只读离线重放精确复现对账结果，原数据库摘要不变。模型生成两个通过编译器的建议：一个只用已完整覆盖操作的 `mm-po-gr-status`，另一个追加 `supplier-performance-risk`。后者在本轮分页记录中是 **partial／low**；当前建议支持规则要求 **full 或 partial、medium 或 high、可执行且 PASS**，所以仅有 `mm-po-gr-status` 在支持集合内。合法单 Agent 建议被接受，追加低置信度 Agent 的建议仍须拒绝，不能把阶段中声明的 `confidence=high` 当成已核对的分页置信度。
+
+这不是此前的“合法单 Agent 被强制要求两个 Agent”误判。门禁拒绝正确，但共享末轮提示只明示 full／partial 和可执行 PASS，**没有明确说明分页匹配至少 medium 的门槛**。这是可核对的通用提示与检查不一致；本轮不能证明它是模型输出偏离的唯一原因，也不能据此推断 SDK／网关故障。建议下一步从同一权威判定生成按操作的建议支持集合、拒绝原因和提示，明确阶段置信度不能升级前序匹配，保留业务门禁，不删除不合格建议来追求资格。
+
+按“一次失败停止依赖项”处理：WorkBuddy 岗位反馈、其余非 SAP 操作、有界查询、选样和隔离验收均未派发，**本轮零 SAP 调用、零 Campaign**。昨天可空字段指导的真实 SAP 查询效果仍未验证，不能宣称已经解决。本轮不修改平台执行源码、worker 或前端，不重新宣称全量测试及生产构建。当前矩阵仍 **0/18、can_enable=false**，历史 **14/18** 保留；最终 API 与保存状态一致，Codex 保护对照不变，无活动业务或待清理 worker，API 与中英文首页健康。WorkBuddy 保持停用、Codex 默认，未发送邮件、发布、启用、提交或推送。
+
+Safe reports are retained in a new independent directory for **2026-10-09**, not copied or rebound from historical qualifications. An idle check precedes a controlled restart that validates and reuses the available static build. Authentication and the no-tools model probe pass in **4.25/35.64 seconds**, with the same pinned SDK, CLI, concrete model, immutable worker and dependencies. New Codex analysis/feedback pass in **245.16/238.69 seconds** with complete catalogue coverage, valid references and compilation, operation reconciliation and preserved revision history.
+
+The one WorkBuddy analysis takes **654.43 seconds** and has **ten valid native terminals, all 31 candidates and eight pages**, but fails business consolidation. A compiled single-Agent suggestion is valid; a second proposal adds executable PASS `supplier-performance-risk`, whose authoritative page match is **partial with low confidence**. The existing support gate requires at least medium confidence and correctly rejects this extra stage. Native formatting, empty streams and timeouts are not the observed failure. The final shared prompt omits that explicit confidence threshold, exposing a general prompt/check inconsistency rather than proving an SDK fault or the sole causal explanation. A saved-only replay reproduces the rejection without changing the database or qualifying the failed result. Future repair should derive per-operation support and guidance from the same rule, not relax confidence, overwrite page records or discard failures to obtain PASS.
+
+All dependent non-SAP and SAP stages stop before dispatch; no SAP read or Campaign occurs. The nullable-guidance effectiveness on live SAP queries remains untested. This pass changes no execution source or immutable release and claims no fresh full-test/frontend build result. Final saved/live projections agree on **0/18 current qualification, can_enable=false**, preserved historical **14/18**, disabled WorkBuddy, default Codex, healthy services and no active/pending-cleanup jobs. No enablement, publication, mail, commit or push follows.
+
+失败后的离线对账、诊断、原生 Schema 和可空字段回归为 **63 passed、1 个既有 Starlette warning**，耗时 **17.32 秒**；两份 WorkBuddy 文档链接及补丁格式检查通过。原失败不重分类、不授予资格。这是定向离线验证，不代替新真实业务通过记录或昨日全量回归。
+
+Post-failure targeted offline reconciliation, diagnostics, native Schema and nullable-envelope tests pass **63 cases** with one existing Starlette warning in **17.32 seconds**. WorkBuddy document links and patch formatting pass. The original failure is not reclassified or qualified; this targeted replay is neither live business qualification nor a new full-suite result.
+
+## 候选支持与提示统一 2026 10 09 / Unified candidate support and guidance
+
+本轮在共享业务层完成 `sapba.role-candidate-support/1`：冻结目录提供执行资格和 PASS，已核对分页记录提供匹配覆盖与置信度。末轮提示接收每个操作的可用步骤 Agent、可完整独立覆盖 Agent 和安全拒绝原因；生成后的对账使用同一候选判定。匹配必须 full/partial、medium/high、可执行且 PASS，步骤自行填写 high 不能提升低置信度匹配，也不能把不适用候选作为“可选背景”步骤加入。原平台目录能力校正同时在生成前和保存前使用，未新增或放宽这些校正。
+
+所有分页匹配、包括低置信度候选仍保留供解释和审计。覆盖与可执行性保持区分；多个声明操作逐一核对，单 Agent 仍须完整覆盖，原端口、固定绑定、引用与工作流编译门禁不变。保存失败案例的只读重放得到完全相同的原对账：`mm-po-gr-status` 可用，低置信度 `supplier-performance-risk` 不可作为本次操作的步骤。原数据库摘要与历史结论保持不变，没有丢弃错误建议、重分类或授予资格。
+
+新增 **20 项**离线测试覆盖同一规则的生成／检查一致性、未知资格的拒绝、模型伪造 PASS、操作间越界、部分覆盖与单 Agent 区别、现有能力校正和两种 Provider 的相同提示。定向 **135 passed**（**100.28 秒**）；完整 Python **1680 passed、1 个既有 skipped、1 个既有 Starlette warning**（**931.79 秒**）。原 Codex 对照中的材料理解、分页、请求选项、权限、模型及推理参数保持一致，末轮业务提示是本轮明确修改；权威输出 Schema 和其他操作的对照未放宽。前端 **119 项**通过，Astro **50 个文件零错误／零警告／零提示**，隔离生产目录生成 **82 页**；正式目录 **34 包／6 模块**、文档索引 **55 项**及 WorkBuddy 文档本地链接检查通过。前端源码未在本轮修改，现有站点制品未覆盖或切换。
+
+脱敏基线、保存案例回放和测试报告在 `.local-data/workbuddy-baseline/candidate-support-20261009/`。Codex 配置、依赖、解释器、默认选择、安装 release、worker 摘要及 WorkBuddy 保存状态保持一致。共享提示变化形成新编排摘要；当前 **0/18** 仍需新绑定真实验证，不复制历史 **14/18**。SDK **0.3.247**、CLI **2.141.0**、**hy4-preview** 和不可变 worker 环境不变，无需新安装 release。本轮零真实模型任务、零 SAP 调用、零 Campaign，未重启服务、启用、发布、提交或推送。
+
+下一步是受控加载新编排后执行新的真实 Codex 岗位分析／反馈对照，再依门禁验证 WorkBuddy 岗位和后续操作。离线规则修复通过不证明模型一定遵守提示，不证明此前可空终态修复的真实 SAP 效果，也不解除启用门禁。
+
+The shared projection and final validator now use one predicate from frozen catalogue eligibility and checked page matches. Per-operation eligible stages, full single-Agent candidates and safe rejection reasons are supplied before generation. A stage's high self-rating cannot promote a low-confidence match or justify an optional context stage. Existing catalogue corrections are shared unchanged; audit records, distinct coverage/executability, compiler, references and bindings remain authoritative. Read-only replay preserves the exact historical rejection and database digest without qualification.
+
+**Twenty** new offline cases exercise predicate parity, forged/missing eligibility, cross-operation scope, partial/full coverage, existing normalization and both Providers' guidance. Focused tests pass **135 cases in 100.28 seconds**; the full suite passes **1680**, with **one existing skip and one existing Starlette warning**, in **931.79 seconds**. Codex's understanding/page traces and native options remain protected; final business guidance is the intentional change, not a Schema or validation relaxation. **119** frontend tests pass, Astro reports no issues across **50 files**, and an isolated production build generates **82 pages** without overwriting the active build. Catalogue, documentation index and local links also pass.
+
+Protected configuration, dependencies, interpreter, default selection, installed release/worker and saved WorkBuddy state remain unchanged. New source binding requires fresh live qualification; **0/18 current** and historical **14/18** are not rebound. No worker replacement, live model/SAP task, Campaign, restart, enablement, publication, commit or push occurs. Fresh Codex comparison and gated WorkBuddy validation remain next; offline correctness is not proof of model compliance or release readiness.
+
+## 候选支持修复后的真实验证 2026 10 09 / Live validation after candidate-support repair
+
+用户继续授权后，本轮使用新的 `.local-data/workbuddy-baseline/resume-20261009-support/` 保存基线和冻结报告。确认无活动业务及待清理 worker 后受控重启，先校验并复用可用静态构建，再停止旧服务；本轮不重新构建前台。认证 **9.72 秒**、无工具模型探针 **24.90 秒**通过。SDK **0.3.247**、CLI **2.141.0**、**hy4-preview** 和不可变环境 `7f50527cc86bc14b162caef67332b136444c870e15753b0cbf4d1967e4b6d650` 保持不变，未复制历史资格。
+
+新的真实 Codex 岗位分析／反馈分别 **1023.89 秒、2793.21 秒**通过，均完整核对 **31 个候选、8 页、31 个操作／Agent 配对**，引用、编译、业务对账、保存修订及首轮不可变性通过。反馈偏慢的底层原因未确认；不能从粗粒度 `understanding` 会话阶段推断具体阻塞。每个模型阶段仍是原 **300 秒**，没有把单次模型时限改为整轮耗时。已绑定首轮线程的安全事件确认反馈材料理解调用有完成终态，但不暴露原生推理或将其当作整轮完成。
+
+一次 WorkBuddy 岗位分析／反馈分别 **706.18 秒、695.08 秒**通过现有检查，两轮共 **20 个有效原生终态**，完整目录、引用、业务对账和修订检查通过，无原生空流、缺失终态或分页失败。首轮完整匹配可执行 PASS `mm-po-gr-status`；反馈保留相同操作，但将“差异上报与跟催路径未定义端口”列为未覆盖项，匹配置信度变为 low，末轮记录明确能力缺口而非不合格工作流建议。`coverage=full` 标签附带未覆盖项不构成平台定义的完整覆盖。该缺口通过现有对账，登记两项操作资格，但**不证明模型两轮业务判断一致**；上报／跟催说明是否应作为原用户需求的必需能力仍需独立核对，不改写保存结果追求一致。
+
+后续计划族第一次在夹具导入阶段报 `ModuleNotFoundError: live_guard`，未调用模型。原 `sequence-report.json` 保留。仅修复忽略目录内的当前绑定监控和加载入口，原始夹具源码、平台执行摘要和 worker 不变；**七组离线导入检查、四项绑定／操作／模式／目录越权拒绝检查**通过，均零模型／SAP 调用且不授予资格。新的独立续接记录只首次派发未执行的操作，不重复岗位任务，也不重传失败模型请求。
+
+计划 `plan` 在 **122.80 秒**、独立 `summarize` 在 **122.58 秒**后均保存 **`workbuddy_deadline_exceeded`**。请求元数据确认各自既定预算 **120000 ms**，输入字节数 **4965／1468**及 Schema 摘要有记录。没有有效终态或明确原生错误诊断，不能猜测为之前的 `EmptyStreamError`、确定的 Schema 错误、输入过大或 SAP 环境问题；握手、SDK 初始化与模型等待的实际阻塞位置不能由现有记录确认。两个作业均为 `timed_out`，清理成功，原始超时未被文件清理异常覆盖。计划失败后 `ground_plan` 未派发；已启动的独立汇总完成收尾后，整个族停止，随后编写、自由查询反馈、工作流、草稿解释／修改、工作流 v2 均未派发。不得将这些未验证操作描述为全部执行失败。
+
+最终独立审计核对全部当前摘要、模型／环境身份、资格模式、Codex 配置／依赖／解释器／默认选择和受保护源码。保存状态与运行中 API 一致：**2/18、can_enable=false、WorkBuddy 停用、Codex 默认**，无活动业务、运行 worker 或待清理进程，API、中英文首页均 HTTP 200。受控重启后的 API 在本轮验证期间保持运行，没有再次重启。SAP 查询、选样及隔离验收均未派发，**零 SAP 调用、零 Campaign**；可空终态修复的真实 SAP 效果仍不能宣称通过。历史资格和失败不重分类；本轮不升级环境、不启用、发布、发送邮件、提交或推送。只更新验证夹具和双语记录，不宣称重新执行上一节的全量测试与构建。
+
+Fresh safe evidence is retained in the new ignored pass directory. An idle-controlled restart validates and reuses the static build before stopping old services. Authentication and the no-tools model probe pass in **9.72/24.90 seconds** without changing the pinned SDK, CLI, concrete model or immutable release. The new Codex analysis/feedback pass in **1023.89/2793.21 seconds**, with complete catalogue, references, compilation, reconciliation and immutable revision checks. The longer latency has no confirmed underlying explanation; the original **300-second per-model-stage** budget is unchanged.
+
+WorkBuddy analysis/feedback take **706.18/695.08 seconds**, with **twenty valid native terminals**, all 31 candidates/eight pages and valid persisted checks. Initial single-Agent coverage succeeds; feedback explicitly reports an escalation/follow-up capability gap from low-confidence matching. The current reconciliation accepts that cited gap, not identical semantic conclusions. A full-coverage label with nonempty uncovered capabilities is not platform-full coverage; the saved result is neither rewritten nor treated as a universally correct match.
+
+The following import-only fixture failure occurs before model dispatch and is preserved. Seven fixture imports and four negative guard probes pass offline. A task-local current-binding monitor fixes loading without changing locked source, worker, runtime binding or qualification rules; only never-dispatched operations continue in a new record. Plan and the independent summary then time out after **122.80/122.58 seconds**, on their existing **120-second** budgets. Input lengths and Schema digests are saved, but neither a valid terminal nor a definitive native error is available. Startup, handshake and model-wait locations remain unconfirmed; these are not evidence of another empty-stream, Schema, SAP or prompt-size failure. Both owned jobs clean up successfully. Dependent grounding and every subsequent family/SAP stage stop before dispatch, without model retry or budget extension.
+
+The final independent audit confirms **2/18, can_enable=false**, disabled WorkBuddy, default Codex, identical protected/frozen controls, healthy API/bilingual pages and no active or cleanup-pending jobs. There are **zero SAP reads and zero Campaigns**. Historical results stay intact, real-query nullable guidance remains untested, and no new full-suite/build, upgrade, enablement, publication, mail, commit or push is claimed.

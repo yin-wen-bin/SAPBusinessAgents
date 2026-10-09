@@ -1,7 +1,7 @@
 ---
 import { ArrowRight, ChevronDown, MessageSquareText, ShieldCheck } from "@lucide/astro";
 import type { Locale } from "../lib/types";
-import { runPath } from "../lib/urls";
+import { runPath, queryHistoryPath } from "../lib/urls";
 
 interface Props { locale: Locale }
 const { locale } = Astro.props;
@@ -20,6 +20,7 @@ const copy = locale === "zh" ? {
   questionHelp: "请尽量提供业务对象编号、日期范围和需要核对的状态或关系。",
   placeholder: "例如：查询供应商 1000123 上个月到期但尚未付款的采购订单",
   submit: "开始只读查询",
+  history: "历史查询记录",
   safety: "仅允许 SAP Provider GET 和已批准的只读 Skill",
   error: "无法连接本地运行服务，请先启动 127.0.0.1:8765。",
   gapContext: "正在为工作流补齐缺口 Agent。完成查询后，请点击“保存为 Agent 草稿”。",
@@ -34,6 +35,7 @@ const copy = locale === "zh" ? {
   questionHelp: "Include business object IDs, date ranges, and the statuses or relationships you want to verify when possible.",
   placeholder: "Example: find purchase orders for supplier 1000123 that were due last month but remain unpaid",
   submit: "Start read-only query",
+  history: "Query history",
   safety: "Only SAP Provider GET and approved read-only Skills are allowed",
   error: "Cannot reach the local runtime. Start 127.0.0.1:8765 first.",
   gapContext: "This query is closing a workflow Agent gap. When it finishes, select Save as Agent draft.",
@@ -49,6 +51,7 @@ const copy = locale === "zh" ? {
     <h2>{copy.title}</h2>
     <p>{copy.body}</p>
     <p class="runtime-safety"><ShieldCheck size={16} aria-hidden="true" />{copy.safety}</p>
+    <a class="query-history-link" href={queryHistoryPath(base, locale)} data-query-history-link>{copy.history}</a>
   </header>
   <form class="free-query-form">
     <p class="free-query-gap-context" data-gap-context hidden>{copy.gapContext}</p>
@@ -81,6 +84,22 @@ const copy = locale === "zh" ? {
     const params = new URLSearchParams(window.location.search);
     const workflowDraft = params.get("workflowDraft");
     const gap = params.get("gap");
+    const retryHistory = params.get("retryHistory");
+    if (retryHistory) {
+      const submit = form?.querySelector<HTMLButtonElement>("button[type=submit]");
+      if (submit) submit.disabled = true;
+      void fetch(`${panel.dataset.apiBase}/api/free-query-history/${encodeURIComponent(retryHistory)}/retry-query`)
+        .then(async (response) => {
+          if (!response.ok) throw new Error(await response.text());
+          const payload = await response.json();
+          if (textarea) { textarea.value = String(payload.query || ""); textarea.focus(); }
+          if (submit) submit.disabled = false;
+        })
+        .catch(() => {
+          if (error) { error.textContent = panel.dataset.locale === "zh" ? "历史记录已过期、删除或暂时无法读取，请重新输入问题。" : "History expired, was deleted or could not be loaded. Enter the query again."; error.hidden = false; }
+          if (submit) submit.disabled = false;
+        });
+    }
     if (workflowDraft && gap) {
       void fetch(`${panel.dataset.apiBase}/api/authoring/workflows/${encodeURIComponent(workflowDraft)}/gaps/${encodeURIComponent(gap)}?locale=${encodeURIComponent(panel.dataset.locale || "zh")}`)
         .then(async (response) => {
@@ -124,3 +143,8 @@ const copy = locale === "zh" ? {
     });
   });
 </script>
+<style is:global>
+  .free-query-panel .query-history-link { display:inline-flex; align-items:center; min-height:44px; margin-top:.75rem; padding:.55rem .85rem; border:1px solid var(--color-border-strong); border-radius:5px; background:white; color:var(--color-text); font-weight:600; text-decoration:none; }
+  .free-query-panel .query-history-link:hover { border-color:var(--color-primary); color:var(--color-primary); }
+  .free-query-panel .query-history-link:focus-visible { outline:2px solid var(--color-primary); outline-offset:3px; }
+</style>

@@ -125,6 +125,23 @@ class RunStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS free_query_history_settings (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    retention_days INTEGER NOT NULL CHECK(retention_days > 0)
+                );
+                INSERT OR IGNORE INTO free_query_history_settings VALUES (1, 30);
+                CREATE TABLE IF NOT EXISTS free_query_history_cleanup (
+                    history_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    run_ids_json TEXT NOT NULL,
+                    feedback_ids_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                );
+                CREATE TABLE IF NOT EXISTS free_query_history_expired_runs (
+                    run_id TEXT PRIMARY KEY,
+                    history_id TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS free_query_feedback_requests (
                     feedback_request_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -767,7 +784,8 @@ class RunStore:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT * FROM structured_artifacts
-                WHERE run_id = ? AND artifact_id = ?""",
+                WHERE run_id = ? AND artifact_id = ? AND NOT EXISTS
+                (SELECT 1 FROM free_query_history_expired_runs e WHERE e.run_id=structured_artifacts.run_id)""",
                 (run_id, artifact_id),
             ).fetchone()
         if row is None:
@@ -853,7 +871,8 @@ class RunStore:
 
     def get_run(self, run_id: str) -> RunRecord:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            row = connection.execute("SELECT * FROM runs WHERE run_id = ? AND NOT EXISTS "
+                "(SELECT 1 FROM free_query_history_expired_runs e WHERE e.run_id=runs.run_id)", (run_id,)).fetchone()
         if row is None:
             raise KeyError(run_id)
         return _run_from_row(row)
@@ -861,7 +880,8 @@ class RunStore:
     def list_runs(self, limit: int = 50) -> list[RunRecord]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 200)),)
+                "SELECT * FROM runs WHERE NOT EXISTS (SELECT 1 FROM free_query_history_expired_runs e "
+                "WHERE e.run_id=runs.run_id) ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 200)),)
             ).fetchall()
         return [_run_from_row(row) for row in rows]
 
@@ -965,7 +985,8 @@ class RunStore:
     def get_free_query_session(self, session_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM free_query_sessions WHERE session_id = ?", (session_id,)
+                "SELECT * FROM free_query_sessions WHERE session_id = ? AND NOT EXISTS "
+                "(SELECT 1 FROM free_query_history_cleanup c WHERE c.session_id=free_query_sessions.session_id AND c.status='pending')", (session_id,)
             ).fetchone()
         if row is None:
             raise KeyError(session_id)

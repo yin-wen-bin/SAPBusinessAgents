@@ -62,7 +62,14 @@ def decode(text, *, intent):
     return {**raw, "workflow": value}
 
 
-async def run(planner, *, workflow, message, intent, execution_mode, history, catalog,
+async def run(planner, **kwargs):
+    from .runtime_contract import business_scope, deadline_scope, await_business
+    with deadline_scope(kwargs.get("deadline")):
+        async with business_scope(planner, "workflow_authoring.v2"):
+            return await await_business(_run(planner, **kwargs))
+
+
+async def _run(planner, *, workflow, message, intent, execution_mode, history, catalog,
               references, emit, cleanup_state, request_id=None, deadline=None, **_):
     """One snapshot/candidate/contract path; only native execution varies."""
     driver = planner._driver
@@ -82,6 +89,9 @@ async def run(planner, *, workflow, message, intent, execution_mode, history, ca
         cwd=str(workspace.source), instructions=instructions(),
         permissions={"execution_mode": execution_mode}, deadline=deadline)
     request.remaining()
+    if request.deadline is None:
+        from .runtime_contract import RuntimeContractError
+        raise RuntimeContractError("runtime_budget_binding_missing")
     result, available = await driver.workflow_turn(request, workspace=workspace,
         task_id=request_id, emit=emit, cleanup_state=cleanup_state)
     request.remaining()

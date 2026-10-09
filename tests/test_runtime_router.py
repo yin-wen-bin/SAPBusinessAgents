@@ -51,7 +51,7 @@ class FakePlanner:
         self.provider_id = provider_id
         self.calls: list[str] = []
 
-    async def plan(self, query: str, *_args: Any, **_kwargs: Any) -> str:
+    async def author_draft(self, query: str, *_args: Any, **_kwargs: Any) -> str:
         self.calls.append(query)
         return self.provider_id
 
@@ -97,8 +97,8 @@ def test_runtime_router_pins_existing_task_when_default_changes() -> None:
     manager.default_provider_id = "workbuddy"
 
     with router.pin(existing["provider_id"], existing["model"]):
-        assert asyncio.run(router.plan("existing", {}, {}, [])) == "codex"
-    assert asyncio.run(router.plan("new", {}, {}, [])) == "workbuddy"
+        assert asyncio.run(router.author_draft("existing")) == "codex"
+    assert asyncio.run(router.author_draft("new")) == "workbuddy"
     assert codex.calls == ["existing"]
     assert workbuddy.calls == ["new"]
 
@@ -118,8 +118,8 @@ def test_runtime_router_uses_isolated_provider_instances_per_model() -> None:
     manager.models["codex"] = "new-model"
 
     with router.pin(existing["provider_id"], existing["model"]):
-        assert asyncio.run(router.plan("existing", {}, {}, [])) == "codex:codex-model"
-    assert asyncio.run(router.plan("new", {}, {}, [])) == "codex:new-model"
+        assert asyncio.run(router.author_draft("existing")) == "codex:codex-model"
+    assert asyncio.run(router.author_draft("new")) == "codex:new-model"
     assert created["codex-model"].calls == ["existing"]
     assert created["new-model"].calls == ["new"]
 
@@ -130,17 +130,7 @@ def test_workbuddy_adapter_denies_builtin_tools_and_resumes_session(
     captured: dict[str, Any] = {}
     response = json.dumps(
         {
-            "intent": "read one SAP entity",
-            "needs_clarification": False,
-            "clarification_question": "",
-            "plan_json": json.dumps(
-                {
-                    "service_name": "API_FIXTURE_SRV",
-                    "odata_version": "2.0",
-                    "entity_set": "A_Fixture",
-                    "method": "GET",
-                }
-            ),
+            "verdict": "pass", "issues": [], "summary": {"zh": "通过", "en": "Pass"},
         }
     )
 
@@ -181,7 +171,7 @@ def test_workbuddy_adapter_denies_builtin_tools_and_resumes_session(
         async def query(self, prompt: str) -> None:
             captured["prompt"] = prompt
 
-        async def receive_response(self):
+        async def receive_messages(self):
             yield AssistantMessage([TextBlock(response)])
             yield ResultMessage()
 
@@ -207,26 +197,22 @@ def test_workbuddy_adapter_denies_builtin_tools_and_resumes_session(
     events: list[tuple[str, dict[str, Any]]] = []
     with planner.bind_events(lambda event_type, data: events.append((event_type, data))):
         decision = asyncio.run(
-            planner.plan(
-                "fixture",
-                {"data": {"items": []}},
-                {"data": {}},
-                [],
+            planner.review_workflow(
+                workflow={}, agent_contracts=[], validation_input={}, review_contract={},
                 thread_id="prior-session",
             )
         )
 
     # Native identity is retained as metadata, not an unscoped conversation key.
-    assert decision.thread_id.startswith("workbuddy:")
-    assert decision.thread_id != "prior-session"
-    assert planner._driver.sessions[decision.thread_id]["native_session_id"] == "workbuddy-session"
-    assert decision.plan is not None
-    assert decision.plan["method"] == "GET"
+    assert decision['thread_id'].startswith("workbuddy:")
+    assert decision['thread_id'] != "prior-session"
+    assert planner._driver.sessions[decision['thread_id']]["native_session_id"] == "workbuddy-session"
+    assert decision['verdict'] == 'pass'
     # Native formatting is not business/tool execution permission.
     assert captured["tools"] == ["StructuredOutput"]
     assert captured["allowed_tools"] == ["StructuredOutput"]
-    from sap_business_agents_platform.runtime_prompts import PLANNER_OUTPUT_SCHEMA
-    assert json.loads(captured["extra_args"]["json-schema"]) == PLANNER_OUTPUT_SCHEMA
+    from sap_business_agents_platform.runtime_prompts import WORKFLOW_REVIEW_OUTPUT_SCHEMA
+    assert json.loads(captured["extra_args"]["json-schema"]) == WORKFLOW_REVIEW_OUTPUT_SCHEMA
     assert captured["permission_mode"] == "plan"
     assert captured["setting_sources"] == []
     assert captured["resume"] is None

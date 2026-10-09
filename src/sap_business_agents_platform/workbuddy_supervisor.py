@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
 import json
 import os
+import re
 import signal
 import time
 import uuid
@@ -112,6 +115,8 @@ class WorkBuddySupervisor:
             if item.get("status") not in {"running", "cleanup_pending"}:
                 continue
             if item.get("task_id") in self.active:
+                if item.get("status") == "cleanup_pending":
+                    pending.append(item)
                 continue
             identity = process_identity(int(item.get("pid") or 0))
             if identity is None or identity != item.get("process_identity") and identity != "unknown":
@@ -123,6 +128,17 @@ class WorkBuddySupervisor:
             atomic_json(path, item)
         return pending
 
+    def mark_cleanup_pending(self, task_ids: set[str]) -> None:
+        """Fence only a caller's owned jobs when cancellation cannot be drained."""
+        for task_id in task_ids:
+            item = self.active.get(task_id)
+            if item is None:
+                continue
+            item.update(cancelled=True, failure="runtime_cleanup_incomplete")
+            record = item["record"]
+            record.update(status="cleanup_pending", cleanup_complete=False)
+            atomic_json(item["record_path"], record)
+
     async def cancel(self, task_id: str) -> bool:
         item = self.active.get(task_id)
         if item is None:
@@ -131,7 +147,9 @@ class WorkBuddySupervisor:
                 return True  # No process has been dispatched; queued job is revoked.
             return task_id in self.closed
         item["cancelled"] = True
-        deadline = item.setdefault("cleanup_deadline", time.monotonic() + 10)
+        from .runtime_contract import cleanup_deadline
+        deadline = min(item.get("cleanup_deadline", float("inf")), cleanup_deadline())
+        item["cleanup_deadline"] = deadline
         self.cleanup_deadlines[task_id] = deadline
         try:
             item["job"].terminate()
@@ -159,10 +177,17 @@ class WorkBuddySupervisor:
 
     async def run(self, *, task_id: str | None, snapshot: dict, operation: str,
                   payload: dict, seconds: float, mode: str = "bounded", probe: bool = False,
-                  tool_handler: Any = None, emit: Any = None) -> dict:
+                  tool_handler: Any = None, emit: Any = None, deadline: float | None = None) -> dict:
         task_id = task_id or uuid.uuid4().hex
         if probe and (operation not in {"authentication", "model_check", "models"} or mode != "bounded" or payload.get("tools")):
             raise WorkBuddyError("workbuddy_probe_scope_invalid")
+        if not probe:
+            from .runtime_policy import require_operation
+            from .runtime_contract import RuntimeContractError
+            try:
+                require_operation(operation)
+            except RuntimeContractError as error:
+                raise WorkBuddyError(error.code) from None
         verification = self._verification.get()
         validating = bool(verification and verification[0] == digest(snapshot) and operation in verification[1])
         if mode not in {"bounded", "trusted_local"}:
@@ -170,7 +195,16 @@ class WorkBuddySupervisor:
         if self.reconcile():
             raise WorkBuddyError("workbuddy_cleanup_pending")
         async with self._capacity(probe, task_id):  # Queue time is outside the execution budget.
+            from .runtime_contract import current_deadline
+            inherited = current_deadline()
+            deadline = min(deadline, inherited) if deadline is not None and inherited is not None else deadline if deadline is not None else inherited
+            deadline = deadline if deadline is not None else time.monotonic() + seconds
+            payload = copy.deepcopy(payload)
             async with self.dispatch_lock:
+                # Cleanup can become uncertain while this request waits for
+                # capacity. Recheck at dispatch, not just before entering queue.
+                if self.reconcile():
+                    raise WorkBuddyError("workbuddy_cleanup_pending")
                 if task_id in self.cancelled:
                     raise WorkBuddyError("workbuddy_cancelled")
                 with self.environment.maintenance():
@@ -179,11 +213,21 @@ class WorkBuddySupervisor:
                 if task_id in self.active:
                     raise WorkBuddyError("workbuddy_task_busy")
                 self.closed.discard(task_id)
+                seconds = min(seconds, deadline - time.monotonic())
+                if seconds <= 0:
+                    raise WorkBuddyError("workbuddy_deadline_exceeded")
+                if "timeout_ms" in payload:
+                    payload["timeout_ms"] = max(1, int(seconds * 1000))
                 binding = {"protocol": PROTOCOL, "task_id": task_id, "attempt_id": uuid.uuid4().hex,
                            "operation": operation, "environment_digest": release["environment_digest"],
                            "runtime_digest": digest(snapshot), "deadline": time.time() + seconds}
                 request = {**binding, "snapshot": snapshot, "payload": payload, "mode": mode,
                            "cli_path": release["cli_path"]}
+                if payload.get("output_schema") is not None:
+                    from .workbuddy_diagnostics import NATIVE_DIAGNOSTICS
+                    # Additive negotiation: older locked workers ignore this;
+                    # newer workers never send checks to an older supervisor.
+                    request["native_output_diagnostics"] = NATIVE_DIAGNOSTICS
                 encoded = self._encode(request)
                 # Credential-free allowlist, rather than inheriting SAP/.env/secrets.
                 allowed = {"SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "USERPROFILE", "APPDATA",
@@ -209,6 +253,13 @@ class WorkBuddySupervisor:
                 record = {**binding, "pid": process.pid, "process_identity": process_identity(process.pid),
                           "status": "running", "cleanup_complete": False, "permission_mode": mode,
                           "validation_job": validating}
+                prompt = payload.get("prompt")
+                if isinstance(prompt, str):
+                    prompt_bytes = prompt.encode("utf-8")
+                    record["request_metadata"] = {"input_length": len(prompt_bytes),
+                        "input_sha256": hashlib.sha256(prompt_bytes).hexdigest(), "budget_ms": int(seconds * 1000)}
+                    if isinstance(payload.get("output_schema"), dict):
+                        record["request_metadata"]["schema_sha256"] = digest(payload["output_schema"])
                 # Stored locally, not added to the locked worker wire protocol.
                 if operation in OPERATIONS:
                     record.update(orchestration_version=ORCHESTRATION_VERSION,
@@ -218,7 +269,8 @@ class WorkBuddySupervisor:
                     job.close()
                     raise WorkBuddyError("workbuddy_task_id_invalid")
                 atomic_json(record_path, record)
-                item = {"process": process, "job": job, "cancelled": False}
+                item = {"process": process, "job": job, "cancelled": False,
+                        "record": record, "record_path": record_path}
                 self.active[task_id] = item
             total = 0
             async def drain_stderr():
@@ -232,10 +284,11 @@ class WorkBuddySupervisor:
                     # SDK logs may contain secrets; never persist raw stderr.
             stderr = asyncio.create_task(drain_stderr())
             status = "failed"
+            primary = None
             try:
-                process.stdin.write(encoded)
-                await process.stdin.drain()
-                async with asyncio.timeout(seconds):
+                async with asyncio.timeout(max(0, deadline - time.monotonic())):
+                    process.stdin.write(encoded)
+                    await process.stdin.drain()
                     handshake = await self._read(process.stdout)
                     if handshake != {"kind": "hello", **binding}:
                         raise WorkBuddyError("workbuddy_handshake_mismatch")
@@ -259,6 +312,30 @@ class WorkBuddySupervisor:
                             await process.stdin.drain()
                             if value.get("_workbuddy_stop_after_response"):
                                 raise WorkBuddyError("acceptance_report_validation_failed")
+                        elif kind == "schema_check":
+                            from .workbuddy_diagnostics import native_output_diagnostic, NATIVE_DIAGNOSTICS
+                            from jsonschema.exceptions import SchemaError
+                            schema = payload.get("output_schema")
+                            phase = message.get("phase")
+                            if (request.get("native_output_diagnostics") != NATIVE_DIAGNOSTICS
+                                    or not isinstance(schema, dict) or not isinstance(phase, str)
+                                    or phase not in {"native_candidate", "native_terminal"}
+                                    or not isinstance(message.get("call_id"), str)
+                                    or not re.fullmatch(r"[a-f0-9]{32}", message["call_id"])):
+                                raise WorkBuddyError("workbuddy_protocol_invalid")
+                            try:
+                                diagnosis = native_output_diagnostic(message.get("value"), schema,
+                                    operation=operation, phase=phase)
+                            except SchemaError:
+                                raise WorkBuddyError("workbuddy_output_schema_invalid") from None
+                            diagnosis["schema_sha256"] = digest(schema)
+                            if emit:
+                                emit("workbuddy_native_output_checked", diagnosis)
+                            process.stdin.write(self._encode({"kind": "schema_check_result",
+                                "call_id": message["call_id"], "task_id": task_id,
+                                "attempt_id": binding["attempt_id"], "schema_sha256": digest(schema),
+                                "schema_valid": diagnosis["schema_valid"]}))
+                            await process.stdin.drain()
                         elif kind == "event":
                             if emit:
                                 emit(str(message.get("event") or "workbuddy_progress"), message.get("data") or {})
@@ -281,30 +358,98 @@ class WorkBuddySupervisor:
                             code = str(message.get("code") or "workbuddy_execution_failed")
                             if not code.replace("_", "").isalnum() or len(code) > 120:
                                 code = "workbuddy_execution_failed"
-                            raise WorkBuddyError(code)
+                            from .workbuddy_diagnostics import safe_native_failure
+                            detail = safe_native_failure(message.get("diagnostic"))
+                            detail["failure_code"] = code
+                            record["failure_diagnostic"] = detail
+                            record["failure_observed_at"] = time.time()
+                            if emit:
+                                emit("workbuddy_native_failure", {"provider_id": "workbuddy", **detail})
+                            error = WorkBuddyError(code)
+                            error.detail = detail
+                            raise error
                         else:
                             raise WorkBuddyError("workbuddy_protocol_invalid")
             except TimeoutError:
                 status = "timed_out"
-                raise WorkBuddyError("workbuddy_deadline_exceeded") from None
-            except WorkBuddyError:
+                record["failure_code"] = "workbuddy_deadline_exceeded"
+                primary = WorkBuddyError("workbuddy_deadline_exceeded")
+                raise primary from None
+            except WorkBuddyError as error:
+                record["failure_code"] = item.get("failure") or error.code
+                primary = error
                 if item.get("failure"):
-                    raise WorkBuddyError(item["failure"]) from None
+                    primary = WorkBuddyError(item["failure"])
+                    raise primary from None
                 raise
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as error:
                 status = "cancelled"
+                primary = error
+                raise
+            except BaseException as error:
+                primary = error
                 raise
             finally:
-                complete = await asyncio.shield(self.cancel(task_id))
-                stderr.cancel()
-                await asyncio.gather(stderr, return_exceptions=True)
-                self.active.pop(task_id, None)
-                if complete:
-                    self.closed.add(task_id)
-                record.update(status=status if complete else "cleanup_pending", cleanup_complete=complete)
-                atomic_json(record_path, record)
+                from .runtime_contract import cleanup_deadline as inherited_cleanup_deadline
+                deadline = item.setdefault("cleanup_deadline", inherited_cleanup_deadline())
+                self.cleanup_deadlines[task_id] = deadline
+                record["cleanup_started_at"] = time.time()
+                async def finish_owned_job():
+                    complete = False
+                    try:
+                        complete = await self.cancel(task_id)
+                    except Exception:
+                        # Owned cleanup failure must not replace the primary SDK
+                        # error with a native exception or sensitive OS text.
+                        complete = False
+                    finally:
+                        stderr.cancel()
+                        await asyncio.gather(stderr, return_exceptions=True)
+                        self.active.pop(task_id, None)
+                        if complete:
+                            self.closed.add(task_id)
+                        record.update(status=status if complete else "cleanup_pending", cleanup_complete=complete)
+                        record["cleanup_completed_at"] = time.time()
+                        if not complete:
+                            record["cleanup_failure_code"] = "runtime_cleanup_incomplete"
+                        atomic_json(record_path, record)
+                    return complete
+                cleanup = asyncio.create_task(finish_owned_job())
+                try:
+                    done, _ = await asyncio.wait({cleanup}, timeout=max(0, deadline - time.monotonic()))
+                except asyncio.CancelledError:
+                    # Shield keeps the owned cleanup alive, but does not wait
+                    # for it when the caller is cancelled. Persist its outcome
+                    # before returning, including cancellation during cleanup.
+                    status = "cancelled"
+                    try:
+                        done, _ = await asyncio.wait({cleanup}, timeout=max(0, deadline - time.monotonic()))
+                    except asyncio.CancelledError:
+                        self.mark_cleanup_pending({task_id})
+                        cleanup.add_done_callback(_consume_cleanup)
+                        raise
+                    if not done:
+                        self.mark_cleanup_pending({task_id})
+                        cleanup.add_done_callback(_consume_cleanup)
+                        raise WorkBuddyError("runtime_cleanup_incomplete") from None
+                    # Persist the owned cleanup before propagating cancellation.
+                    if primary is None:
+                        primary = asyncio.CancelledError()
+                complete = bool(done and cleanup.result())
                 if not complete:
-                    raise WorkBuddyError("runtime_cleanup_incomplete")
+                    self.mark_cleanup_pending({task_id})
+                    cleanup.add_done_callback(_consume_cleanup)
+                    detail = {**getattr(primary, "detail", {}),
+                              "primary_failure_code": record.get("failure_code"),
+                              "cleanup_failure_code": "runtime_cleanup_incomplete"}
+                    if primary is not None:
+                        primary.detail = detail
+                    else:
+                        error = WorkBuddyError("runtime_cleanup_incomplete")
+                        error.detail = detail
+                        raise error
+                if isinstance(primary, asyncio.CancelledError):
+                    raise primary
 
     @staticmethod
     def _encode(value: dict) -> bytes:
@@ -330,3 +475,10 @@ class WorkBuddySupervisor:
         if not isinstance(value, dict):
             raise WorkBuddyError("workbuddy_protocol_invalid")
         return value
+
+
+def _consume_cleanup(task):
+    try:
+        task.result()
+    except BaseException:
+        pass

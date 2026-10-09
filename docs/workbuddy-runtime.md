@@ -172,3 +172,84 @@ Legacy workflows return complete compiler proposals—not JSON Patch or model-pi
 先运行不安装 WorkBuddy 的 Codex 回归、独立协议/进程与 UI 测试，以及前后脱敏基线对照。取得核验安装制品后，依次执行安装/认证、无 SAP 模型/工具探针、一次只读查询及反馈、隔离草稿解释/修改和选样、岗位匹配与工作流 v2、单案例三级验收。真实失败保留诊断，不反复重跑，不把离线 fixture 标成真实验证。
 
 First run Codex regressions without WorkBuddy installed, isolated protocol/process/UI tests and before/after redacted controls. Once the verified installation artifact is available, validate installation/authentication, non-SAP model/tool probes, one read-only query/feedback, isolated draft explanation/revision/sampling, matching/workflow v2 and a single-case three-stage acceptance. Retain failures without automatic reruns; offline fixtures never count as live validation.
+
+### 原生捕获诊断与查询用例 / Native capture diagnostics and query cases
+
+新的 worker 支持可协商的内部 Schema 检查：平台使用同一输出检查器核对 `StructuredOutput` 参数及 SDK 终态，只持久化摘要、类型、字段路径、约束、调用计数和安全终止原因。不保存原生工具文本或受限原始行，不把中间参数转换成最终结果；`ResultMessage.structured_output` 缺失仍须拒绝。诊断消息不调用 Broker，不授予权限，不延长预算。旧 worker 不因该内部扩展被原地改写。
+
+新的只读自由查询验证入口是 [`verify-workbuddy-free-query.py`](../scripts/verify-workbuddy-free-query.py)。必须明确选择 `limited_sample` 或 `complete_unique_key`；不带 `--execute` 只展示用例，不读取运行状态、不启动模型或 SAP。每个实际尝试必须使用 `.local-data/workbuddy-validation/` 下尚不存在的新目录，先检查当前绑定及前置资格，且安装 worker 摘要必须匹配已修复源码。初次使用新 worker 需按现有安装流程创建新锁定环境，重新冻结认证、模型及操作资格；不能复制旧 PASS。
+
+- `limited_sample` 保留显式 `top=1`，要求原生终态、证据引用和已校验报告有效，同时如实保存 `inconclusive / source_complete=false`。它不授予 `free_query` 的完整资格。
+- `complete_unique_key` 保留同一订单的精确服务端过滤和三个字段。只有本轮成功的实时 Schema 确认完整唯一键后，才允许不使用显式 `top` 的读取；原平台分页、行数、响应和时间限制继续生效。它需要单独明确执行，完整报告、来源、业务与进程清理均通过才可登记资格。
+
+验证断言失败只记入独立报告，不再覆盖平台已保存的运行状态。历史用例、失败报告、Campaign 和运行记录保持原样。上述准备不能证明当前 SDK 原生捕获故障已修复；须先用合成数据定位原生捕获，再安排新的真实查询。参见[验证记录](workbuddy-validation.md)。
+
+The new worker negotiates an internal schema-diagnostic exchange with the platform's existing checker. Only fingerprints, types, field paths/constraints, counts and allowlisted stop metadata are persisted; intermediate native-tool arguments never become a terminal result. Missing `ResultMessage.structured_output` still fails closed. This adds no Broker calls, permissions, SDK dependencies or time extension. Create a new immutable release rather than editing the installed worker, and revalidate changed bindings without copying prior PASS records.
+
+The opt-in verification script separates an explicit-top **limited sample** (honest inconclusive output, no full-operation qualification) from a **complete unique-key case** (same exact order and fields, current live-schema key confirmation before a nontruncated read). Existing pagination/result/time limits apply. Without `--execute` it only describes the case. Live runs require a fresh isolated directory, current prerequisites and matching installed-worker bytes; assertion failures never rewrite the platform run. These offline changes do not establish that native capture is repaired or that WorkBuddy is selectable.
+
+2026-10-07 已创建新的不可变诊断环境，保留旧 release，SDK、CLI 和模型不升级。无 SAP 原生输出探针通过，但当前完整操作资格只有 **13/18**；岗位反馈最终汇总不完整，后续四项 SAP/验收操作尚未派发，不能启用。会话 `completed` 不代表汇总完整或能力已验证；同时核对 `catalog_evaluation`、业务检查及作业清理。认证和简单探针通过不等于全部业务能力可用。逐项结果及限制见[当前验证记录](workbuddy-validation.md)。
+
+On 2026-10-07 a new immutable diagnostic release is installed without upgrading SDK/CLI/model or replacing the old release. Non-SAP native-output probes pass, but current complete qualification is **13/18**. Role-feedback consolidation remains incomplete, so the four SAP/acceptance operations are not dispatched and enablement stays blocked. Session completion does not prove consolidation, business checks or operation qualification; inspect completeness and owned-process cleanup as well. Authentication and synthetic probes never certify all business capabilities. See the current validation record.
+
+### 汇总失败与取消清理 / Consolidation failure and cancellation cleanup
+
+岗位汇总失败现在保留安全的阶段原因、原有 300 秒预算、耗时、输入指纹及已声明字段的校验问题。只保存摘要与约束，不保存提示正文、异常原文或受限业务行；页面区分目录覆盖完整与汇总未完成，历史缺少诊断的记录不补造原因。
+
+WorkBuddy 自有客户端在外层到期或取消后等待所属回合的清理；执行预算不延长，清理仍共用最多 10 秒的截止时间。取消发生在 SDK 已返回但正在清理时，也先保存所属作业结果。未确认清理标记 `cleanup_pending` 并阻止派发；排队后取得容量时再次检查。关闭会话后迟到输出不能追加会话历史，清理只涉及该作业，不取消其它用户任务或 Codex 进程。
+
+本次只修改平台侧编排诊断和 WorkBuddy 驱动/监督器，不改已安装 worker、SDK、CLI、模型、汇总提示或输出 Schema，因此无需创建新的安装环境。监督器也纳入操作编排摘要；旧 13 项通过记录保留，但不能为新源码绑定背书，当前需重新验证。离线通过不证明空结构生成的根因已解决；运行中的服务没有在本轮重启或切换页面制品。
+
+Role consolidation now retains safe stage causes, the unchanged 300-second budget, timing, input fingerprints and declared-field constraints. Neither prompts, raw exception messages nor restricted rows are persisted. The page distinguishes exhaustive catalog coverage from incomplete consolidation without inventing diagnoses for historical reports.
+
+Only the WorkBuddy owned-worker client drains cancelled turns. Cancellation during cleanup also persists the job outcome, within the same maximum ten-second cleanup deadline, without extending execution or changing Codex cancellation behavior. Unconfirmed cleanup blocks dispatch, including a recheck after queueing; late results cannot append history. The supervisor is part of the orchestration fingerprint. Installed worker bytes, SDK/CLI/model and consolidation prompts/Schema are unchanged, so no new installation environment is needed. Historical qualifications remain evidence for their old binding, not the modified source. These are offline repairs, not proof of the empty native-output cause or a new live qualification; services are not restarted here.
+
+### 当前启用门禁 2026 10 08 / Current enablement gate
+
+新编排下已独立重新验证 **12/18** 项操作，包含草稿解释与可信本地修改、工作流 v2 的解释/修改，以及计划、创建和反馈等非 SAP 操作。它们使用真实 SDK 和平台业务检查，不是复制旧资格；简单探针成功也不能替代业务资格。岗位汇总已定位到上游 reasoning-only / `EmptyStreamError`，其底层网关原因尚未报告；岗位反馈和四项 SAP/验收操作未派发，不应描述为全部失败。运行中 API 仍为 `can_enable=false`，WorkBuddy 停用、Codex 默认。详细耗时、绑定、独立审计和历史限制见[验证记录](workbuddy-validation.md)。
+
+Under the current frozen orchestration, **12/18** operations are freshly qualified through the real SDK and platform checks, including both draft-feedback modes and trusted-local workflow v2. Role consolidation has a confirmed upstream reasoning-only empty stream, without a reported underlying gateway cause. Role feedback and four SAP/acceptance operations are not dispatched, not all failed. The live API remains `can_enable=false`; WorkBuddy stays disabled and Codex default. See the dated validation record for bindings, timings, the independent audit and historical limitations.
+
+### 共享末轮契约与错误终态 / Shared final-stage contract and terminal failures
+
+岗位分析与反馈的末轮使用独立的 `sapba.role-consolidation/1` 契约，仅要求 `summary_zh`、`summary_en`、`workflow_suggestions`、`agent_gaps`。平台保留材料理解和分页匹配记录，组装旧的公共报告；末轮不能重写这些记录，也不能通过缺字段默认空值完成。Codex 与 WorkBuddy 共用同一 Schema、解码和操作对账。每个 `operation_id` 必须有完整单 Agent 覆盖、经现有编译器检查的可执行组合或明确能力缺口；矛盾、遗漏和引用失效保留具体诊断。目录覆盖、业务覆盖和可执行性分别检查，汇总不完整时不登记资格，也不开放创建工作流草稿。
+
+新 worker 从锁定 SDK 的消息流区分错误、错误结果、有效终态和无终态结束。明确错误先通知 Supervisor，再关闭 SDK；Supervisor 保存原始安全失败并清理所属进程，清理窗口仍最多 10 秒。SDK 未给出错误且没有完成时仍遵守原截止时间，不能猜测为空流。成功必须同时具备有效结构化终态、平台业务检查和确认的清理结果。原始错误与清理失败分开记录，不保存原生推理文本、凭据或受限业务行。
+
+worker 修改通过新不可变 release 生效，旧环境及历史资格保留，SDK **0.3.247**、CLI **2.141.0**、`hy4-preview` 和预算不变。新的编排摘要需要重新验证全部 18 项，不能继承以前的 12 项资格。原契约诊断复现不登记业务资格。使用 [`verify-runtime-role-matching.py`](../scripts/verify-runtime-role-matching.py) 可在新隔离目录分别检查 Codex 和 WorkBuddy 岗位分析及反馈；不带 `--execute` 只描述用例。实际检查不访问 SAP，不改变默认 Runtime 或启停状态。
+
+The independent final-stage contract requires only two summaries, workflow suggestions and explicit gaps. The platform preserves canonical understanding and checked page records, then assembles the existing public report. Both Providers use the same strict Schema, decoder and per-operation reconciliation. Every operation requires a full single-Agent match, a compiler-checked executable combination or a cited capability gap. Conflicts, omissions and stale references prevent complete qualification and workflow creation; coverage is not executability.
+
+The pinned worker distinguishes error messages/results, valid terminals and end-of-stream without termination. A definite safe failure reaches the Supervisor before SDK closure; original failure and owned-process cleanup are recorded separately within the existing ten-second cleanup window. A silent unfinished call retains its deadline rather than being guessed as an empty stream. Qualification still requires a valid structured terminal, platform checks and confirmed cleanup. Immutable release replacement preserves old environments and histories without SDK/CLI/model upgrades; all eighteen operations must be revalidated for the new orchestration binding. Exact historical diagnostic replay never qualifies an operation. The opt-in isolated role verifier performs no SAP reads or Runtime/default changes.
+
+新末轮的 Codex 原生编码不发送其已明确拒绝的 `uniqueItems` 关键词；平台权威 Schema 仍保留这项约束，重复的操作引用仍被拒绝。编码仅匹配新末轮完整 Schema，不变更其它 Codex 操作的 Schema、配置、权限或预算。原生 Schema 拒绝现在保存安全的 `runtime_native_schema_rejected / contract` 诊断，不保存异常原文。本轮首次真实 Codex 对照在末轮失败；离线修复不等同于新的真实对照通过，后续 WorkBuddy 验证仍暂停，详见当日验证记录。
+
+Only the new Codex final-stage wire Schema omits the concretely rejected `uniqueItems` keyword. The authoritative platform Schema still rejects duplicate operation references; all unrelated Codex Schema objects/options remain unchanged. Native Schema rejection receives an allowlisted contract diagnostic, never raw exception text. The first live Codex comparison fails at this boundary; offline repair is not a successful new live comparison, so dependent WorkBuddy validation remains paused.
+
+完整单 Agent 覆盖可以保留经现有编译器验证的单 Agent 工作流建议，不要求为了满足对账而增加第二个 Agent。这类建议仍按单 Agent 覆盖记录，不作为组合补齐部分覆盖的证明；未编译、非 PASS、不可执行或不能完整覆盖所声明操作的单 Agent 建议仍会阻断完整汇总。修正来自新的真实 Codex 对照，原失败记录不重写，也不因离线回放成功授予 Runtime 资格。
+
+A compiler-validated single-Agent workflow suggestion may accompany an operation already fully covered by that executable PASS Agent. It remains a single-Agent resolution, not a combination that upgrades partial coverage. Uncompiled, non-executable, non-PASS or partial single-Agent suggestions remain blocking. The correction restores existing one-stage workflow semantics; offline replay does not rewrite the original failed comparison or grant Runtime qualification.
+
+### 共享候选支持规则 / Shared candidate-support rule
+
+岗位分析及反馈在末轮之前生成 `sapba.role-candidate-support/1` 投影。按每个操作列出可用于步骤的 Agent、可独立完整覆盖的 Agent，以及不适用候选的安全原因。执行资格与 PASS 来自冻结平台目录，覆盖和匹配置信度来自已核对的分页记录；模型不能自行声明执行资格，也不能用建议步骤的 `confidence=high` 提升低置信度匹配。
+
+投影与保存后的业务对账共用候选判定：匹配覆盖为 full/partial、匹配置信度为 medium/high、可执行且 PASS。现有平台目录能力校正同时用于生成前与保存前，规则不新增、不放宽。低置信度及其他不适用候选仍保留用于解释和审计，但不能作为“可选背景”步骤加入工作流。每个声明操作都必须满足其支持清单；单 Agent 建议仍须完整覆盖，组合仍须经过原端口、绑定、引用和编译检查。
+
+Codex 与 WorkBuddy 共用这份业务投影及提示，SDK 参数、权限、时限和安装环境不变。提示调整需要新的编排绑定与业务验证；离线回放仍拒绝历史不合格建议，不重分类、不删除历史结果或授予资格。worker 未改动时无需新建安装 release。平台检查与模型是否能遵守新提示分别报告，不能以离线测试代替真实验证。
+
+The versioned projection is generated before final consolidation for each operation. Eligible stages, eligible full single-Agent matches and safe rejection codes derive from checked page records and the frozen platform catalogue. The same predicate checks returned suggestions. Catalogue normalization remains unchanged and is shared before prompting and persistence; a suggested stage's self-rating cannot promote a low-confidence partial match. Ineligible records remain available for explanation/audit, never optional context stages. Every claimed operation, existing port/binding/reference check and compiler gate still applies.
+
+Both Providers receive the same business guidance without changed native parameters, permissions, budgets or installation. The changed prompt requires new content-bound verification; offline replay neither reclassifies failures nor grants qualification. An unchanged installed worker needs no replacement release. Platform correctness and real model compliance remain separate conclusions.
+
+### 最新验证门禁 2026 10 09 / Latest verification gate
+
+候选支持修复后的新绑定真实验证登记 **2/18**：岗位分析及反馈都完成原生终态、完整目录、引用、业务对账和修订检查；前置 Codex 分析／反馈对照也通过。WorkBuddy 首轮保持可执行单 Agent 覆盖，反馈轮则将未覆盖的上报／跟催路径记录为能力缺口。现有对账契约接受这项明确缺口，不等于两轮模型得出了相同业务匹配结论，也不能据此宣称任何岗位材料都会稳定匹配。
+
+计划与独立汇总各在原有 **120 秒**预算内超时，保存 `workbuddy_deadline_exceeded`，所属 worker 已确认清理。未取得有效终态，不能称为已确认的空流、Schema 错误或业务差异；底层等待原因仍未知。计划补全和其他未执行操作保持未验证，SAP 查询、选样及验收未派发。一次验证夹具导入失败已在本地修复，并保留原记录；修复只续接此前未调用模型的操作，不重复岗位任务或失败模型作业。
+
+运行中 API 与独立审计一致：**can_enable=false、WorkBuddy 停用、Codex 默认**；无活动业务或待清理 worker，中英文前台和 API 健康。SDK、CLI、模型、不可变安装环境、冻结执行源码及 Codex 保护对照不变。此次零 SAP 调用、零 Campaign，未启用、发布、提交或推送。阶段耗时及证据边界见[验证记录](workbuddy-validation.md)。
+
+The new binding registers **2/18** qualifications: role analysis and feedback pass native-terminal, full-catalogue, reference, reconciliation and revision checks after the fresh Codex comparison. The first WorkBuddy result has executable single-Agent coverage; feedback instead declares a cited capability gap for escalation/follow-up. The current contract accepts that explicit gap, not identical or universally reliable semantic matching.
+
+Plan and the independent summary both exceed their unchanged **120-second** budgets. Owned cleanup is confirmed, but no valid terminal or definitive upstream cause is recorded. These are timeouts, not proven empty streams, Schema errors or business discrepancies. Dependencies and all SAP/acceptance stages remain undispatched. The import-only fixture failure is retained; its local repair continues only operations that had never reached the model. The live API remains **can_enable=false**, with disabled WorkBuddy, default Codex, healthy services and unchanged protected/frozen controls. No SAP read, Campaign, enablement, publication, commit or push occurs.

@@ -966,11 +966,15 @@ class AgentRuntimeCapability:
             "workflow_authoring.v1", "resume_workflow_composition", *args, **kwargs
         )
 
+    def require_harness_available(self) -> None:
+        # Resolve only; do not execute a synthetic SDK turn to test availability.
+        self.manager.resolve("agent_runtime.v2", "turn")
+
     def _planner(self) -> Any:
         provider = self.manager._providers.get("codex-runtime")
         if provider is not None:
             return getattr(provider, "planner", provider)
-        binding = self.manager.resolve("agent_runtime.v1", "plan")
+        binding = self.manager.resolve("agent_runtime.v2", "turn")
         return getattr(binding.provider, "planner", binding.provider)
 
 
@@ -1039,11 +1043,7 @@ def official_plugin_manifests() -> list[PluginManifest]:
                 {
                     "capability": "agent_runtime.v1",
                     "operations": [
-                        "plan",
-                        "ground_plan",
-                        "summarize",
                         "review_free_query_feedback",
-                        "resume_free_query_session",
                         "revise_free_query_presentation",
                         "analyze_role_matching",
                         "review_role_matching_feedback",

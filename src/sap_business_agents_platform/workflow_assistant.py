@@ -259,12 +259,13 @@ class WorkflowAssistant:
             bound = getattr(self.service.author, "pin_snapshot", None)
             context = bound(snapshot) if provider == "workbuddy" and callable(bound) else pin(provider, model, effort) if callable(pin) else nullcontext()
             with context:
-                async with asyncio.timeout(item["budget_seconds"]):
-                    result = await method(workflow=safe_context(draft.workflow), message=item["message"], intent=item["intent"],
+                from .runtime_contract import business_scope, await_business
+                async with business_scope(self.service.author, "workflow_authoring.v2", seconds=item["budget_seconds"]) as deadline:
+                    result = await await_business(method(workflow=safe_context(draft.workflow), message=item["message"], intent=item["intent"],
                         execution_mode=item["execution_mode"], history=safe_context(history),
                         catalog=compact_agent_catalog(self.service.agents), references=item["references"],
                         emit=emit, cleanup_state=cleanup,
-                        **({"request_id": request} if provider == "workbuddy" else {}))
+                        request_id=request, deadline=deadline))
             def commit(current: Any):
                 round_ = next(r for r in state(current)["rounds"] if r["request_id"] == request)
                 if round_["status"] != "running":

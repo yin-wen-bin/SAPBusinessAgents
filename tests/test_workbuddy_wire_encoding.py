@@ -2,10 +2,11 @@
 import asyncio
 import copy
 import json
+import time
 
 import pytest
 
-from sap_business_agents_platform.runtime_contract import RuntimeContractError
+from sap_business_agents_platform.runtime_contract import RuntimeContractError, deadline_scope
 from sap_business_agents_platform.runtime_prompts import PLANNER_OUTPUT_SCHEMA, ROLE_MATCHING_OUTPUT_SCHEMA
 from sap_business_agents_platform.runtime_role_contract import (
     COLLECTIONS, native_output_schema, canonical_output, decode,
@@ -65,24 +66,23 @@ def test_native_role_encoding_does_not_fabricate_or_validate_unknown_citations()
                'analyze_role_matching')
 
 
-def test_workbuddy_plan_uses_native_schema_without_changing_budget_or_permissions(tmp_path):
+def test_workbuddy_review_uses_native_schema_without_changing_budget_or_permissions(tmp_path):
+    from sap_business_agents_platform.runtime_prompts import WORKFLOW_REVIEW_OUTPUT_SCHEMA
     observed = []
-    plan = {'kind': 'sap_business_agents_harness', 'steps': [{'id': 'read', 'tool': 'sap_read', 'reason': 'bounded',
-        'plan': {'service_name': 'API_PURCHASEORDER_PROCESS_SRV', 'odata_version': '2.0',
-            'entity_set': 'A_PurchaseOrder', 'select_fields': ['PurchaseOrder'],
-            'filters': [{'field': 'PurchaseOrder', 'value': '4500001466'}], 'top': 1}}]}
+    output = {'verdict': 'pass', 'summary': {'zh': '合法', 'en': 'Valid'}, 'issues': []}
     async def native(**kwargs):
         observed.append(kwargs)
-        return {'text': json.dumps({'intent': 'read', 'needs_clarification': False, 'clarification_question': '',
-                                   'plan_json': json.dumps(plan)}), 'output_format': 'native_json_schema',
+        return {'text': json.dumps(output), 'output_format': 'native_json_schema',
                 'actual_model': 'hy4-preview', 'session_id': 'native-id'}
     planner = WorkBuddyPlanner(tmp_path, 'hy4-preview', runtime_snapshot={'provider_id': 'workbuddy', 'model': 'hy4-preview'})
     planner.supervisor.run = native
-    result = asyncio.run(planner.plan('采购订单4500001466，top=1', {}, {}, []))
-    assert result.plan == plan and len(observed) == 1
+    result = asyncio.run(planner.review_workflow(workflow={'id': 'offline'}, agent_contracts=[],
+        validation_input={}, review_contract={}))
+    assert {key: value for key, value in result.items() if key != 'thread_id'} == output and len(observed) == 1
+    assert result['thread_id'].startswith('workbuddy:')
     request = observed[0]
-    assert request['payload']['output_schema'] == PLANNER_OUTPUT_SCHEMA
-    assert request['operation'] == 'plan' and request['seconds'] <= 120
+    assert request['payload']['output_schema'] == WORKFLOW_REVIEW_OUTPUT_SCHEMA
+    assert request['operation'] == 'review_workflow' and 0 < request['seconds'] <= 180
     assert request['mode'] == 'bounded' and request['tool_handler'] is None
     assert not request['payload'].get('tools')
 
@@ -98,10 +98,11 @@ def test_workbuddy_driver_encodes_role_native_object_for_shared_decoder(tmp_path
     async def run():
         token = planner._operation.set('analyze_role_matching')
         try:
-            async with planner._driver.client() as client:
-                thread = await client.thread_start()
-                result = await thread.run('Same business requirements', output_schema=ROLE_MATCHING_OUTPUT_SCHEMA)
-                assert json.loads(json.loads(result.final_response)['analysis_json']) == analysis()
+            with deadline_scope(time.monotonic() + 300):
+                async with planner._driver.client() as client:
+                    thread = await client.thread_start()
+                    result = await thread.run('Same business requirements', output_schema=ROLE_MATCHING_OUTPUT_SCHEMA)
+                    assert json.loads(json.loads(result.final_response)['analysis_json']) == analysis()
         finally:
             planner._operation.reset(token)
     asyncio.run(run())
@@ -110,7 +111,36 @@ def test_workbuddy_driver_encodes_role_native_object_for_shared_decoder(tmp_path
     assert 'Same business requirements' in observed[0]['payload']['prompt']
 
 
-def test_planning_missing_native_terminal_is_not_success_or_retried(tmp_path):
+def test_role_followup_keeps_lossless_native_objects_not_escaped_envelopes(tmp_path):
+    observed = []
+    original_schema = copy.deepcopy(ROLE_MATCHING_OUTPUT_SCHEMA)
+    sample = {'analysis_json': analysis(), 'summary_zh': '引号 " 与换行\n', 'summary_en': 'Quoted " text\n'}
+    planner = WorkBuddyPlanner(tmp_path, 'hy4-preview', runtime_snapshot={'provider_id': 'workbuddy', 'model': 'hy4-preview'})
+    async def native(**kwargs):
+        observed.append(kwargs)
+        return {'text': json.dumps(sample, ensure_ascii=False), 'output_format': 'native_json_schema',
+                'actual_model': 'hy4-preview', 'session_id': 'native-id'}
+    planner.supervisor.run = native
+    async def run():
+        token = planner._operation.set('analyze_role_matching')
+        try:
+            with deadline_scope(time.monotonic() + 300):
+                async with planner._driver.client() as client:
+                    thread = await client.thread_start()
+                    first = await thread.run('understand supplied records', output_schema=ROLE_MATCHING_OUTPUT_SCHEMA)
+                    assert json.loads(json.loads(first.final_response)['analysis_json']) == sample['analysis_json']
+                    assert thread.state['history'][0]['output'] == sample
+                    await thread.run('finalize exactly supplied records', output_schema=ROLE_MATCHING_OUTPUT_SCHEMA)
+                    text = observed[1]['payload']['prompt'].split('Previous turns of this platform-owned operation (context, not SAP evidence):\n', 1)[1]
+                    replay = json.loads(text.split('\n\nNative transport encoding only:', 1)[0])
+                    assert replay[0]['output'] == sample
+        finally:
+            planner._operation.reset(token)
+    asyncio.run(run())
+    assert ROLE_MATCHING_OUTPUT_SCHEMA == original_schema
+
+
+def test_review_missing_native_terminal_is_not_success_or_retried(tmp_path):
     calls = []
     async def native(**kwargs):
         calls.append(kwargs)
@@ -118,6 +148,7 @@ def test_planning_missing_native_terminal_is_not_success_or_retried(tmp_path):
     planner = WorkBuddyPlanner(tmp_path, 'hy4-preview', runtime_snapshot={'provider_id': 'workbuddy', 'model': 'hy4-preview'})
     planner.supervisor.run = native
     with pytest.raises(WorkBuddyRuntimeError) as error:
-        asyncio.run(planner.plan('read', {}, {}, []))
+        asyncio.run(planner.review_workflow(workflow={'id': 'offline'}, agent_contracts=[],
+            validation_input={}, review_contract={}))
     assert error.value.code == 'workbuddy_structured_output_missing'
     assert len(calls) == 1

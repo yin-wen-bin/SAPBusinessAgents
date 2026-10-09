@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import copy
 import tempfile
+import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -41,6 +42,7 @@ class WorkBuddyRuntimeError(RuntimeError):
 
 
 class WorkBuddyPlanner(SharedPlanner):
+    provider_id = "workbuddy"
     """SDK-free adapter; owned workers enforce per-operation permission modes."""
 
     def __init__(
@@ -48,7 +50,7 @@ class WorkBuddyPlanner(SharedPlanner):
         repository_root: Path,
         model: str | None = None,
         *,
-        request_timeout_ms: int = 120_000,
+        request_timeout_ms: int | None = None,
         supervisor: WorkBuddySupervisor | None = None,
         runtime_snapshot: dict[str, Any] | None = None,
         tool_broker: Any = None,
@@ -63,7 +65,7 @@ class WorkBuddyPlanner(SharedPlanner):
         self.runtime_snapshot = runtime_snapshot or {}
         self.tool_broker = tool_broker
         self._authoring: ContextVar[dict | None] = ContextVar("workbuddy_authoring_options", default=None)
-        self._operation: ContextVar[str] = ContextVar("workbuddy_operation", default="plan")
+        self._operation: ContextVar[str | None] = ContextVar("workbuddy_operation", default=None)
         self._terminal_result: ContextVar[dict | None] = ContextVar("workbuddy_terminal_result", default=None)
         self._feedback_operation: ContextVar[str | None] = ContextVar("workbuddy_feedback_operation", default=None)
         self._feedback_cwd: ContextVar[Path | None] = ContextVar("workbuddy_feedback_cwd", default=None)
@@ -105,90 +107,6 @@ class WorkBuddyPlanner(SharedPlanner):
     def workbuddy_reserved(self):
         return self.supervisor.reserved
 
-    async def review_agent_feedback(self, *, feedback: str, locale: str, package: dict[str, Any],
-                                    history: list[dict[str, Any]] | None = None, thread_id: str | None = None,
-                                    operation_id: str | None = None, intent: str = "revise",
-                                    feedback_context: dict[str, Any] | None = None,
-                                    tool_policy: Any = None, tool_session: Any = None,
-                                    image_inputs: list[str] | None = None) -> dict[str, Any]:
-        from .runtime_agent_authoring import feedback_prompt, decode_feedback
-        # Native session resume/images are not verified for this driver. Context
-        # remains platform-owned; an SDK handle never changes the authorization.
-        del thread_id
-        if not self.model:
-            raise WorkBuddyRuntimeError("An explicit model is required.", code="agent_runtime_binding_missing")
-        if image_inputs:
-            raise WorkBuddyRuntimeError("Images are unsupported.", code="agent_feedback_image_unsupported")
-        from .agent_feedback_context import safe_context
-        feedback, feedback_context = safe_context(feedback), safe_context(feedback_context or {})
-        try:
-            feedback_prompt(self.repository_root, feedback=feedback, locale=locale, package=package,
-                history=history, intent=intent, feedback_context=feedback_context)
-        except ValueError as exc:
-            raise WorkBuddyRuntimeError("Context exceeds the bound.", code=str(exc)) from None
-        trusted = bool(intent == "revise" and tool_policy and tool_policy.get("mode") == "trusted_local")
-        if tool_policy and not trusted and intent != "explain":
-            raise WorkBuddyRuntimeError("Restricted mode is not verified.", code="workbuddy_windows_restricted_unverified")
-        workspace = None
-        if trusted:
-            import uuid
-            from .authoring_workspace import AuthoringWorkspace
-            workspace = AuthoringWorkspace(self.repository_root,
-                self.repository_root / ".local-data/workbuddy-authoring" / uuid.uuid4().hex)
-            workspace.prepare(package, current_source=True)
-            workspace.full_access = True
-            workspace.read_only_source = True
-            (workspace.source / ".authoring-tmp").mkdir(exist_ok=True)
-        prompt = feedback_prompt(self.repository_root, feedback=feedback, locale=locale,
-            package=package, history=history, intent=intent, feedback_context=feedback_context,
-            tool_workspace=workspace, full_access=trusted, tool_session=tool_session, package_in_files=trusted)
-        operation_token = self._feedback_operation.set(operation_id)
-        with tempfile.TemporaryDirectory(prefix="sapba-workbuddy-feedback-") as isolated:
-            cwd_token = self._feedback_cwd.set(workspace.source if workspace else Path(isolated))
-            auth_token = self._authoring.set({"mode": "trusted_local", "session": tool_session} if trusted else None)
-            try:
-                async def turn(candidate_package, issues=(), remaining=None):
-                    from .runtime_contract import deadline_scope
-                    import time
-                    with deadline_scope(time.monotonic() + remaining if remaining is not None else None):
-                        raw, handle = await self._structured_turn(
-                            prompt + ("\nController check failures: " + json.dumps(issues) if issues else ""),
-                            AGENT_FEEDBACK_OUTPUT_SCHEMA, thread_id=None,
-                            system_prompt=("Trusted local Agent authoring. No production writes; SAP via authorized platform tools only."
-                                if trusted else "Draft-only feedback. Only the local StructuredOutput formatter is allowed. Never access SAP or the checkout."),
-                            native_schema=True, allow_repair=False)
-                    candidate = None
-                    if workspace:
-                        workspace._check_links_and_size()
-                        if workspace.platform_changes():
-                            raise WorkBuddyRuntimeError("Agent-only feedback changed platform source.", code="workbuddy_authoring_scope_invalid")
-                        # Common decoder checks mixed file/JSON edits and identity.
-                        candidate = workspace.read_package(exclude_test_artifacts=True)
-                    return decode_feedback(raw, candidate_package, handle,
-                        tool_workspace=workspace, file_package=candidate, explain_only=intent == "explain")
-                if workspace:
-                    from .runtime_agent_authoring import repair_feedback
-                    checks = []
-                    result = await repair_feedback(package, workspace, turn, checks=checks)
-                    result["harness"] = {"mode": "trusted_local", "checks": checks,
-                        "workspace_id": workspace.root.name, "preflight": "operation_validation_required",
-                        "live_testing": "not_performed", "platform_apply": "not_performed"}
-                    return result
-                return await turn(package)
-            except ValueError as exc:
-                raise WorkBuddyRuntimeError("Draft response failed the shared contract.", code=str(exc)) from None
-            finally:
-                self._authoring.reset(auth_token)
-                self._feedback_cwd.reset(cwd_token)
-                self._feedback_operation.reset(operation_token)
-
-
-
-
-
-
-
-
     async def _structured_turn(
         self,
         prompt: str,
@@ -196,9 +114,11 @@ class WorkBuddyPlanner(SharedPlanner):
         *,
         thread_id: str | None,
         system_prompt: str | None = None,
-        allow_repair: bool = True,
-        native_schema: bool = False,
+        allow_repair: bool = False,
+        native_schema: bool = True,
     ) -> tuple[dict[str, Any], str]:
+        if not native_schema:
+            raise RuntimeContractError("runtime_native_schema_required")
         schema_prompt = (
             prompt
             + "\n\nReturn exactly one JSON object matching this JSON Schema:\n"
@@ -207,38 +127,22 @@ class WorkBuddyPlanner(SharedPlanner):
         )
         text, session_id = await self._query(
             schema_prompt, thread_id=thread_id, system_prompt=system_prompt,
-            output_schema=schema if native_schema else None,
+            output_schema=schema,
         )
         try:
-            if native_schema:
-                from .workbuddy_diagnostics import checked_output
-                raw = checked_output(text, schema, operation=self._operation.get(), output_format="native_json_schema")
-            else:
-                raw = _parse_json_object(text)
-                validate(instance=raw, schema=schema)
-        except WorkBuddyError as exc:
+            from .runtime_diagnostics import checked_output
+            raw = checked_output(text, schema, operation=self._operation.get(), output_format="native_json_schema")
+        except (WorkBuddyError, RuntimeContractError) as exc:
             self._emit("workbuddy_output_rejected", exc.detail)
             raise WorkBuddyRuntimeError("WorkBuddy returned invalid structured output.",
-                code="workbuddy_structured_output_invalid", detail=exc.detail) from exc
+                code=exc.code, detail=exc.detail) from exc
         except (ValueError, json.JSONDecodeError, ValidationError) as exc:
             # Never replay a native editing round just to repair terminal JSON.
             # Local edits are proposals until this one terminal passes validation.
-            if not allow_repair or native_schema:
-                raise WorkBuddyRuntimeError(
+            raise WorkBuddyRuntimeError(
                     "WorkBuddy returned invalid structured output.",
                     code="workbuddy_structured_output_invalid",
                 ) from exc
-            return await self._structured_turn(
-                (
-                    "Your previous response failed JSON Schema validation. Re-emit the same "
-                    "answer, changing only JSON syntax and required field shape.\n"
-                    + schema_prompt + "\nPrevious response:\n" + text
-                ),
-                schema,
-                thread_id=session_id,
-                system_prompt=system_prompt,
-                allow_repair=False,
-            )
         return raw, session_id
 
     async def author_workflow_v2(self, **kwargs: Any) -> dict[str, Any]:
@@ -280,9 +184,9 @@ class WorkBuddyPlanner(SharedPlanner):
             from .workbuddy_manager import WorkBuddyManager
             snapshot = WorkBuddyManager(self.repository_root).runtime_snapshot(self.model)
         workspace = tempfile.TemporaryDirectory(prefix="sapba-workbuddy-turn-")
-        seconds = operation_seconds("workbuddy", self._operation.get(), existing=self.request_timeout_ms / 1000)
-        from .runtime_contract import remaining_budget
-        seconds = remaining_budget(seconds)
+        from .runtime_contract import remaining_budget, require_deadline
+        deadline = require_deadline()
+        seconds = remaining_budget(None)
         try:
             payload = {"prompt": prompt, "system_prompt": system_prompt,
                        "cwd": str(self._feedback_cwd.get() or Path(workspace.name)),
@@ -299,10 +203,22 @@ class WorkBuddyPlanner(SharedPlanner):
                     return await self.tool_broker.handle(session["operation_id"], session["capability"], name, arguments)
             if authoring:
                 payload["max_turns"] = 50
+            task_id = self._feedback_operation.get() or uuid.uuid4().hex
+            scope = self._driver.turn_owner.get()
+            if scope is not None:
+                scope["jobs"].add(task_id)
+            # Input fingerprints aid stage diagnosis without saving prompts,
+            # private paths, native commands or business rows.
+            if self._operation.get() in {"analyze_role_matching", "review_role_matching_feedback"}:
+                import hashlib
+                encoded_prompt = prompt.encode("utf-8")
+                self._emit("workbuddy_request_prepared", {"operation": self._operation.get(),
+                    "input_length": len(encoded_prompt), "input_sha256": hashlib.sha256(encoded_prompt).hexdigest(),
+                    "budget_ms": int(seconds * 1000)})
             try:
-                result = await self.supervisor.run(task_id=self._feedback_operation.get(),
+                result = await self.supervisor.run(task_id=task_id,
                     snapshot=snapshot, operation=self._operation.get(), payload=payload,
-                    seconds=seconds,
+                    seconds=seconds, deadline=deadline,
                     mode=authoring.get("mode", "bounded"), tool_handler=tool_handler,
                     emit=self._event_sink.get())
             except WorkBuddyError as exc:
@@ -339,21 +255,21 @@ def _bind_operation(name: str, method: Any) -> Any:
         from .shared_planner import _operation_context
         token = self._operation.set(_operation_context.get() or name)
         try:
-            if name == "review_workflow_feedback":
-                defaults = {"requirement": "", "feedback": "", "feedback_type_hint": None,
-                            "locale": "zh", "workflow": {}, "previous_proposal": {},
-                            "catalog": {}, "validation_report": None, "thread_id": None}
-                kwargs = {**defaults, **kwargs}
             return await method(self, *args, **kwargs)
         except RuntimeContractError as exc:
             raise WorkBuddyRuntimeError("The shared output contract rejected the result.",
-                code="workbuddy_structured_output_invalid", detail=exc.detail) from exc
+                code=exc.code, detail=exc.detail) from exc
+        except ValueError as exc:
+            code = str(exc)
+            if not code.replace("_", "").isalnum() or len(code) > 100:
+                code = "runtime_report_validation_failed"
+            raise WorkBuddyRuntimeError("The shared output contract rejected the result.", code=code) from exc
         finally:
             self._operation.reset(token)
     return call
 
 
-for _name in ("plan", "ground_plan", "summarize", "author_draft", "review_agent_feedback",
+for _name in ("author_draft", "review_agent_feedback",
               "compose_workflow", "review_workflow", "repair_workflow", "review_free_query_feedback",
               "revise_free_query_presentation", "review_workflow_feedback", "analyze_role_matching",
               "review_role_matching_feedback"):

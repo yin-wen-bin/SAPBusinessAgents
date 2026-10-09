@@ -1650,6 +1650,7 @@ select {
 .role-progress-track span.active { width: 35%; animation: role-progress 1.4s ease-in-out infinite alternate; }
 @keyframes role-progress { from { transform: translateX(-100%); } to { transform: translateX(280%); } }
 .role-error { padding: 14px 18px; border: 1px solid #e8a5a5; border-radius: 9px; background: #fff4f4; color: #842626; }
+.role-consolidation-diagnostic code { white-space: normal; overflow-wrap: anywhere; }
 .role-preflight-ready { margin-top: 10px; padding: 12px 15px; border: 1px solid #9bcbb4; border-radius: 9px; background: #effaf4; color: #235c3c; }
 .role-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .role-metrics > div { display: grid; gap: 3px; padding: 16px; border-radius: 10px; background: #eff6fc; }

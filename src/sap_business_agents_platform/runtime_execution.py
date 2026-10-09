@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -30,13 +31,18 @@ class RuntimeExecutionError(RuntimeError):
 @asynccontextmanager
 async def owned_client(client: Any, *, cleanup_timeout: float | None = None, cleanup_state: dict[str, Any] | None = None):
     """Own startup and shutdown, including the SDK's background startup thread."""
+    from .runtime_contract import remaining_budget, cleanup_scope, cleanup_deadline
     start = asyncio.create_task(client.__aenter__())
+    primary = None
     try:
         try:
-            active = await asyncio.wait_for(asyncio.shield(start), timeout=30)
+            active = await asyncio.wait_for(asyncio.shield(start), timeout=remaining_budget(30))
         except TimeoutError:
             raise RuntimeExecutionError("runtime_sdk_initialization_timeout") from None
         yield active
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
         if cleanup_state is not None:
             cleanup_state.update({"started": True, "complete": False})
@@ -53,21 +59,40 @@ async def owned_client(client: Any, *, cleanup_timeout: float | None = None, cle
                 await asyncio.wait_for(asyncio.shield(start), timeout=2)
             except Exception:
                 pass
-            await asyncio.wait_for(client.close(), timeout=5)
+            close = getattr(client, "close", None)
+            if callable(close):
+                await close()
+            else:
+                await client.__aexit__(None, None, None)
             if not start.done() or (proc is not None and proc.poll() is None):
                 raise RuntimeExecutionError("runtime_cleanup_incomplete")
             if cleanup_state is not None:
                 cleanup_state["complete"] = True
-        task = asyncio.create_task(cleanup())
-        if cleanup_timeout is None:
-            await asyncio.shield(task)
-        else:
-            done, pending = await asyncio.wait({task}, timeout=cleanup_timeout)
+        with cleanup_scope():
+            task = asyncio.create_task(cleanup())
+            limit = max(0, cleanup_deadline() - time.monotonic())
+            if cleanup_timeout is not None:
+                limit = min(limit, cleanup_timeout)
+            done, pending = await asyncio.wait({task}, timeout=limit)
+            failure = RuntimeExecutionError("runtime_cleanup_incomplete")
             if pending:
                 task.cancel()
                 task.add_done_callback(lambda finished: None if finished.cancelled() else finished.exception())
-                raise RuntimeExecutionError("runtime_cleanup_incomplete")
-            await task
+            else:
+                try:
+                    task.result()
+                except BaseException:
+                    pass
+                else:
+                    failure = None
+            if failure:
+                if cleanup_state is not None:
+                    cleanup_state["failure_code"] = failure.code
+                if primary is None:
+                    raise failure
+                detail = dict(getattr(primary, "detail", {}) or {})
+                detail["cleanup_failure_code"] = failure.code
+                primary.detail = detail
 
 
 def sandbox() -> Any:

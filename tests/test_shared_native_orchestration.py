@@ -57,7 +57,7 @@ def test_common_harness_stages_schema_and_result_do_not_depend_on_driver(operati
             if operation != "free_query":
                 payload["acceptance_projection"] = None
             context["thread_id"] = "thread-frozen"
-            return RuntimeResult(payload, RuntimeSession(provider, "thread-frozen"))
+            return RuntimeResult(payload, RuntimeSession(provider, "thread-frozen"), cleanup_complete=True)
     outcome = asyncio.run(run(SimpleNamespace(settings=settings, store=store, broker=broker),
         Driver(), "offline", "Inspect supplier", None, "frozen", "max"))
     assert normalized(outcome) == BEFORE[operation]["result"]
@@ -76,12 +76,15 @@ def test_workbuddy_driver_reports_worker_identity_and_timeout_without_guessing(t
     store = SimpleNamespace(get_run=lambda _: SimpleNamespace(runtime=SimpleNamespace(model_dump=lambda **_: {"provider_id": "workbuddy"})),
         get_harness_state=lambda _: {}, update_harness_state=lambda *_, **__: None, update_run=lambda *_, **__: None,
         append_event=lambda *args: events.append(args))
-    owner = SimpleNamespace(store=store, manager=SimpleNamespace(supervisor=SimpleNamespace(run=native)))
+    async def clean(*_, **__):
+        return True
+    owner = SimpleNamespace(store=store, broker=SimpleNamespace(cancel_tools=clean),
+        manager=SimpleNamespace(supervisor=SimpleNamespace(run=native, reconcile=lambda: [], cleanup_deadlines={})))
     request = RuntimeRequest("workbuddy", "free_query", "read", {"provider_id": "workbuddy"}, "question",
         {"type": "object", "properties": {"status": {"const": "completed"}}, "required": ["status"]},
         cwd=str(tmp_path), permissions={"acceptance_direct_baseline": False}, deadline=__import__('time').monotonic() + 600)
     result = asyncio.run(WorkBuddyHarnessDriver(owner).harness_turn(request, {
-        "run_id": "owned", "state": {}, "turn_count": 1}))
+        "run_id": "owned", "state": {}, "turn_count": 1, "cleanup_state": {}}))
     assert result.actual_model == "verified-native"
     async def timeout(**_):
         raise WorkBuddyError("workbuddy_deadline_exceeded")

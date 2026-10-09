@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { loadAgentCatalog } from "../scripts/generate-agent-catalog.mjs";
 
-const readPage = (...segments) => readFile(path.join("dist", ...segments, "index.html"), "utf8");
+const readPage = (...segments) => readFile(path.join(process.env.SAPBA_BROWSER_DIST || "dist", ...segments, "index.html"), "utf8");
 const readManifest = async (module, slug) =>
   JSON.parse(await readFile(path.join("..", "agents", module, slug, "agent.json"), "utf8"));
 

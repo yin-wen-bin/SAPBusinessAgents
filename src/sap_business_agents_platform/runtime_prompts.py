@@ -265,15 +265,16 @@ def _consume_background_task(task: asyncio.Task[Any]) -> None:
 async def _await_with_hard_timeout(awaitable: Any, *, timeout: float) -> Any:
     """Stop waiting at the deadline even when an SDK coroutine ignores cancellation."""
     import time
-    from .runtime_contract import deadline_scope
+    from .runtime_contract import deadline_scope, await_business, RuntimeContractError
     with deadline_scope(time.monotonic() + timeout):
-        task = asyncio.ensure_future(awaitable)
-    done, _pending = await asyncio.wait({task}, timeout=timeout)
-    if task not in done:
-        task.cancel()
-        task.add_done_callback(_consume_background_task)
-        raise TimeoutError(f"Runtime operation exceeded {timeout:g} seconds.")
-    return task.result()
+        try:
+            return await await_business(awaitable)
+        except RuntimeContractError as exc:
+            if exc.code != "runtime_deadline_exceeded":
+                raise
+            failure = TimeoutError("Runtime stage deadline exceeded.")
+            failure.detail = exc.detail
+            raise failure from exc
 
 def _workflow_assistant_tool_catalog(requirement: str, integrations: dict[str, Any]) -> str:
     """Supply one bounded discovery projection, never a runnable capability."""

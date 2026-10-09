@@ -51,7 +51,7 @@ def test_native_progress_separates_tool_result_and_sdk_close(monkeypatch, scenar
             assert "agent_runtime_turn_completed" not in [item[0] for item in events]
         async def query(self, prompt):
             assert prompt == "probe"
-        async def receive_response(self):
+        async def receive_messages(self):
             yield Assistant([ToolUse()])
             yield SimpleNamespace(content=[ToolResult()])
             if scenario != "missing_terminal":
@@ -62,8 +62,13 @@ def test_native_progress_separates_tool_result_and_sdk_close(monkeypatch, scenar
         ToolUseBlock=ToolUse, ToolResultBlock=ToolResult,
         PermissionResultAllow=SimpleNamespace, PermissionResultDeny=SimpleNamespace))
     def send(kind, **kwargs):
-        assert kind == "event"
-        events.append((kwargs["event"], kwargs["data"]))
+        if kind == "error":
+            assert scenario == "missing_terminal"
+            assert kwargs["code"] == "workbuddy_result_missing"
+            events.append(("workbuddy_native_failure", kwargs["diagnostic"]))
+        else:
+            assert kind == "event"
+            events.append((kwargs["event"], kwargs["data"]))
     run = workbuddy_worker.execute({"operation": "review_agent_feedback", "mode": "trusted_local",
         "cli_path": "fixture-cli", "snapshot": {"model": "concrete-model"},
         "payload": {"cwd": "fixture", "prompt": "probe"}}, send)

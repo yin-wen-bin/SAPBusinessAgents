@@ -102,7 +102,7 @@ def test_router_has_isolated_concurrent_effort_instances_and_pins_snapshot():
     class Planner:
         def __init__(self, model, effort):
             self.model, self.effort = model, effort
-        async def plan(self):
+        async def author_draft(self):
             await asyncio.sleep(0)
             return self.model, self.effort
     def factory(model, effort):
@@ -112,7 +112,7 @@ def test_router_has_isolated_concurrent_effort_instances_and_pins_snapshot():
     router = RuntimeRouter(manager, {}, provider_factories={"codex": factory})
     async def run(effort):
         with router.pin("codex", "codex-model", effort):
-            return await router.plan()
+            return await router.author_draft()
     async def all_runs():
         return await asyncio.gather(run("high"), run("medium"), run("high"))
     assert asyncio.run(all_runs()) == [("codex-model", "high"), ("codex-model", "medium"), ("codex-model", "high")]
@@ -126,7 +126,8 @@ def test_planner_repair_and_authoring_resume_explicit_effort(tmp_path):
         async def run(self, prompt, *, output_schema, effort):
             efforts.append(effort)
             if "action" in output_schema.get("properties", {}):
-                return SimpleNamespace(final_response=json.dumps({"action": "reply", "summary": {"zh": "已记录", "en": "Recorded"}}))
+                from tests.test_workbuddy_feedback import response
+                return SimpleNamespace(final_response=json.dumps(response()))
             return SimpleNamespace(final_response=json.dumps({"intent": "test", "needs_clarification": False,
                 "clarification_question": "", "plan_json": "{" if len(efforts) == 1 else "{}"}))
     thread = Thread()

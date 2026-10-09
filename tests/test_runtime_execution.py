@@ -69,7 +69,8 @@ def test_full_access_thread_and_turn_both_explicit(tmp_path):
         id = 'test-thread'
         async def run(self, prompt, **kwargs):
             calls.append(kwargs)
-            return SimpleNamespace(final_response=json.dumps({'action': 'reply', 'summary': {'zh': '说明', 'en': 'Reply'}}))
+            from tests.test_workbuddy_feedback import response
+            return SimpleNamespace(final_response=json.dumps(response()))
     async def start(**kwargs):
         calls.append(kwargs)
         return Thread()

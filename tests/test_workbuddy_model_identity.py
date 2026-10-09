@@ -189,7 +189,7 @@ def test_worker_uses_assistant_identity_not_requested_route_or_system_metadata(m
             pass
         async def query(self, prompt):
             assert prompt == "probe"
-        async def receive_response(self):
+        async def receive_messages(self):
             for message in messages:
                 yield message
     monkeypatch.setitem(sys.modules, "codebuddy_agent_sdk", SimpleNamespace(

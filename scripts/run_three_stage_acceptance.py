@@ -1118,7 +1118,7 @@ async def _run_fixed(
         settings,
         data_root=output / "fixed-runtime",
         draft_root=output / "fixed-drafts",
-        free_query_runtime="planner_legacy",
+        free_query_runtime="harness",
         max_run_seconds=timeout,
         enforce_agent_acceptance=False,
     )

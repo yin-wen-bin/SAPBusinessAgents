@@ -61,6 +61,7 @@ class TraceClient:
         self.trace, self.operation = trace, operation
         # SDK-specific formatter instructions are not business request mutations.
         kwargs.pop("format_instructions", None)
+        kwargs.pop("platform_context_restored", None)
         trace.append({"call": "client", "options": normalize(kwargs)})
 
     async def __aenter__(self):
@@ -98,7 +99,7 @@ def response(operation, prompt):
         return dict(content_zh="离线", content_en="Offline", rule_notes=[])
     if operation == "review_free_query_feedback":
         return dict(feedback_type="presentation", action="reinterpret", revised_intent="Offline", revised_query="Offline",
-            required_changes=[], preserved_scope=[], candidate_expectations=[], clarification_question="", reason=TEXT)
+            required_changes=[], preserved_scope=[], candidate_expectations=[], clarification_question="", reason="Offline")
     if operation == "revise_free_query_presentation":
         return dict(summary=TEXT, presentation=PRESENTATION)
     if operation == "compose_workflow":
@@ -111,6 +112,8 @@ def response(operation, prompt):
         return dict(feedback_type="unclear", action="clarify", revised_requirement="Offline", required_changes=[],
             preserved_behavior=[], validation_input_patch_json="{}", candidate_expectations_json="[]",
             clarification_question="Clarify", reason="Offline", proposal_json="null")
+    if prompt.startswith("Finalize"):
+        return {"summary_zh": "离线", "summary_en": "Offline", "workflow_suggestions": [], "agent_gaps": []}
     canonical = {name: [] for name in ("roles", "processes", "operations", "agent_matches", "rejected_candidates", "workflow_suggestions", "agent_gaps", "document_issues")}
     canonical["catalog_evaluation"] = dict(catalog_digest="catalog", total_agent_count=1, evaluated_agent_count=1,
         evaluated_pair_count=0, catalog_page_count=1, matched_agent_ids=[], rejected_agent_ids=["fixture"], evaluated_agent_ids=["fixture"],

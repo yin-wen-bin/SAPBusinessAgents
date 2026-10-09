@@ -45,15 +45,14 @@ class WorkflowDraftError(RuntimeError):
 
 
 async def _await_feedback_runtime(author, provider_id, request, *, timeout):
-    if provider_id != "workbuddy":
-        return await asyncio.wait_for(request, timeout=timeout)
+    from .runtime_contract import business_scope, await_business
     dispatched = False
     try:
-        async with author.workbuddy_reservation():
+        async with business_scope(author, "review_workflow_feedback", seconds=timeout, provider_id=provider_id):
             dispatched = True
             # The owned worker is the sole execution clock (3600s + cleanup).
             # An outer clock must not count queue time or mask cleanup failure.
-            return await request
+            return await await_business(request)
     finally:
         if not dispatched and hasattr(request, "close"):
             request.close()
@@ -598,7 +597,7 @@ class WorkflowDraftService:
                         thread_id=draft.thread_id,
                         clarification_input=pending.get("clarification_input"),
                     ),
-                    timeout=min(180.0, max(1.0, float(self.settings.max_run_seconds))),
+                    timeout=3600.0,
                 )
             decision = _validated_workflow_feedback(raw)
             draft = self.store.get_workflow_draft(draft_id)

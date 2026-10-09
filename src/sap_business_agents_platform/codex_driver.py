@@ -1,10 +1,43 @@
 """Codex transport driver. No SAP planning, matching or workflow business logic."""
 from __future__ import annotations
 
+import copy
 import json
+import re
+import asyncio
+from contextlib import asynccontextmanager
 from typing import Any
 
-from .runtime_contract import ApprovalMode, RuntimeRequest, RuntimeResult, RuntimeSession, Sandbox, session_id, execute_frozen
+from .runtime_contract import ApprovalMode, RuntimeRequest, RuntimeResult, RuntimeTurn, RuntimeSession, Sandbox, session_id, execute_frozen, require_deadline
+
+
+def native_output_schema(schema):
+    """Encode only the new role contract; business uniqueness stays authoritative.
+
+    The concrete Codex final-stage trace rejects uniqueItems. Other Codex
+    requests retain their original Schema object and every existing option.
+    """
+    from .runtime_role_consolidation import SCHEMA
+    if schema != SCHEMA:
+        return schema
+    native = copy.deepcopy(schema)
+    for name in ("workflow_suggestions", "agent_gaps"):
+        native["properties"][name]["items"]["properties"]["operation_ids"].pop("uniqueItems")
+    return native
+
+
+def role_schema_error(error, schema):
+    from .runtime_role_consolidation import SCHEMA
+    if schema != SCHEMA or "Invalid schema" not in str(error):
+        return None
+    # Native messages are inspected only for known signatures, never persisted.
+    from .runtime_contract import RuntimeContractError
+    failure = RuntimeContractError("runtime_native_schema_rejected")
+    match = re.search(r"\b(uniqueItems|minItems|minLength|type|required|additionalProperties)\b.{0,4} is not permitted", str(error))
+    failure.detail = {"failure_source": "sdk_exception"}
+    if match:
+        failure.detail["validation_issues"] = [{"code": "runtime_report_schema_invalid", "path": "/", "constraint": match[1]}]
+    return failure
 
 
 def native_options(options: dict[str, Any]) -> dict[str, Any]:
@@ -27,6 +60,69 @@ class CodexSDKDriver:
         from openai_codex import AsyncCodex
         options.pop("format_instructions", None)
         return CodexClient(self, AsyncCodex(**options))
+
+    def feedback_options(self, policy, *, intent, image_inputs):
+        from .runtime_execution import FULL_ACCESS_POLICY, LEGACY_TOOL_POLICY
+        if policy is not None and policy not in (FULL_ACCESS_POLICY, LEGACY_TOOL_POLICY):
+            from .authoring_harness import AuthoringHarnessError
+            raise AuthoringHarnessError("agent_harness_policy_invalid")
+        full = policy == FULL_ACCESS_POLICY
+        return {"workspace": policy is not None, "full_access": full,
+                "mode": "full_access" if full else "isolated_tools", "directory": "authoring-harness"}
+
+    @asynccontextmanager
+    async def feedback_session(self, *, workspace, cwd, operation_id, profile, tool_session):
+        from .codex_planner import _tool_authoring_codex, _agent_authoring_codex, _with_authoring_mcp, _authoring_preflight_command
+        from .runtime_contract import remaining_budget, cleanup_scope, cleanup_deadline, RuntimeContractError
+        import time
+        owner = self.owner
+        client = _tool_authoring_codex(workspace, full_access=profile["full_access"]) if workspace else _agent_authoring_codex(cwd)
+        if tool_session:
+            client = _with_authoring_mcp(client, tool_session)
+        key = operation_id or f"local-{id(client)}"
+        start = asyncio.create_task(client.__aenter__())
+        state = {"client": client, "start": start, "proc": None, "cleanup": None, "tool_mode": workspace is not None}
+        owner._authoring_clients[key] = state
+        primary = None
+        try:
+            native = await asyncio.wait_for(asyncio.shield(start), timeout=remaining_budget(30))
+            state["proc"] = owner._authoring_process(client)
+            preflight = None
+            if workspace:
+                if profile["full_access"]:
+                    from .runtime_execution import command_preflight
+                    preflight = await command_preflight(native, workspace.source)
+                else:
+                    from .authoring_workspace import sandbox_preflight
+                    async def probe(ws, command, *, timeout=30):
+                        return await _authoring_preflight_command(native, ws, command, timeout=remaining_budget(timeout))
+                    preflight = await sandbox_preflight(workspace, accept_loopback_access=True, command_runner=probe)
+            yield {"native": native, "preflight": preflight}
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            with cleanup_scope():
+                state["cleanup_deadline"] = cleanup_deadline()
+                close = asyncio.create_task(owner._close_authoring_client(key, state))
+                state["cleanup"] = close
+                done, _ = await asyncio.wait({close}, timeout=max(0, cleanup_deadline() - time.monotonic()))
+                confirmed = bool(done and key in owner._closed_authoring_operations)
+                if not confirmed:
+                    close.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+                    if primary is None:
+                        raise RuntimeContractError("runtime_cleanup_incomplete")
+                    primary.detail = {**dict(getattr(primary, "detail", {}) or {}), "cleanup_failure_code": "runtime_cleanup_incomplete"}
+
+    async def feedback_turn(self, session, prompt, *, cwd, workspace, thread_id, intent, image_inputs):
+        return await self.owner._native_agent_feedback(session["native"], prompt, {}, thread_id, str(cwd),
+            tool_workspace=workspace, explain_only=intent == "explain", image_inputs=image_inputs)
+
+    def feedback_metadata(self, result, workspace, profile):
+        if profile["full_access"]:
+            from .runtime_execution import execution_snapshot
+            result.update(execution_snapshot(model=self.owner.model, effort=self.owner.reasoning_effort),
+                          base_digest=workspace.base_digest)
 
     def workflow_options(self, mode):
         return {"directory": "workflow-authoring", "snapshot_options": {}}
@@ -65,7 +161,7 @@ class CodexSDKDriver:
                 effort=self.owner.reasoning_effort, **options)
             result = await collect_turn(handle, emit)
         return RuntimeResult(json.loads(result.final_response), RuntimeSession("codex", thread.id),
-            cleanup_complete=cleanup_state.get("complete", True)), capabilities(mode, preflight)
+            cleanup_complete=cleanup_state.get("complete") is True), capabilities(mode, preflight)
 
     async def execute(self, request: RuntimeRequest, *, emit=None) -> RuntimeResult:
         return await execute_frozen(self, request, emit=emit)
@@ -77,20 +173,24 @@ class CodexSDKDriver:
                 thread = await client.thread_resume(request.session, **options)
             else:
                 thread = await client.thread_start(**options, developer_instructions=request.instructions)
-            return await thread.run(request.prompt, output_schema=request.output_schema,
-                                    effort=request.binding.get("reasoning_effort"))
+            result = await thread.run(request.prompt, output_schema=request.output_schema,
+                                      effort=request.binding.get("reasoning_effort"))
+        return result.result(cleanup_complete=client.cleanup_state.get("complete") is True)
 
 
 class CodexClient:
     def __init__(self, driver, native):
         self.driver, self.native = driver, native
+        self.cleanup_state = {"complete": False}
 
     async def __aenter__(self):
-        self.active = await self.native.__aenter__()
+        from .runtime_execution import owned_client
+        self._owned = owned_client(self.native, cleanup_timeout=10, cleanup_state=self.cleanup_state)
+        self.active = await self._owned.__aenter__()
         return self
 
     async def __aexit__(self, *args):
-        return await self.native.__aexit__(*args)
+        return await self._owned.__aexit__(*args)
 
     async def thread_start(self, **options):
         thread = await self.active.thread_start(**native_options(options))
@@ -120,11 +220,21 @@ class CodexThread:
             instructions=self.options.get("developer_instructions"),
             permissions={key: value for key, value in self.options.items() if key in {"sandbox", "approval_mode"}},
             session=RuntimeSession("codex", self.id))
+        require_deadline()
         request.remaining()
-        result = await self.native.run(prompt, output_schema=output_schema, effort=effort, **native_options(options))
+        try:
+            result = await self.native.run(prompt, output_schema=native_output_schema(output_schema), effort=effort, **native_options(options))
+        except Exception as exc:
+            failure = role_schema_error(exc, output_schema)
+            if failure is not None:
+                raise failure from None
+            raise
         # Preserve the SDK's final output rather than repairing or inventing fields.
-        return RuntimeResult(json.loads(result.final_response), RuntimeSession("codex", self.id),
-                             actual_model=getattr(result, "model", None))
+        request.remaining()
+        from .runtime_diagnostics import checked_output
+        return RuntimeTurn(checked_output(result.final_response, output_schema,
+            operation=request.operation, output_format="native_json_schema"), RuntimeSession("codex", self.id),
+            actual_model=getattr(result, "model", None))
 
 
 class CodexSampleDriver:
@@ -405,6 +515,6 @@ class CodexHarnessDriver:
                 await asyncio.gather(deadline_monitor, return_exceptions=True)
             context.update(thread_id=thread_id, final_response=locals().get("final_response", ""))
         return RuntimeResult(json.loads(final_response), RuntimeSession("codex", thread_id),
-            cleanup_complete=cleanup_state.get("complete", True))
+            cleanup_complete=cleanup_state.get("complete") is True)
 
 

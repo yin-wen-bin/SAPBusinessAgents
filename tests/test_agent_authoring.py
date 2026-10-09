@@ -672,6 +672,7 @@ def test_planner_response_discriminator_and_empty_isolated_workspace(tmp_path, a
     planner = CodexPlanner(tmp_path, "gpt-5.6-sol")
     calls = []
     raw = {"action": action, "summary": {"zh": "说明", "en": "Explanation"}, "manifest_json": '{"slug":"x"}', "readme": "# Agent", "rules_source": "", "files_json": "{}"}
+    raw.update(required_changes=[], edits_json="", clarification_json="")
 
     async def run(prompt, **kwargs):
         assert "action" in kwargs["output_schema"]["required"]
@@ -795,7 +796,8 @@ def test_planner_accepts_concise_edits_without_expanding_response(tmp_path):
     edits = [{"op": "replace", "path": "/manifest/title/zh", "value": "new"}]
 
     async def run(prompt, **kwargs):
-        return SimpleNamespace(final_response=json.dumps({"action": "revise_agent", "summary": {"zh": "完成", "en": "Done"}, "manifest_json": "", "readme": "", "rules_source": "", "files_json": "", "edits_json": json.dumps(edits)}))
+        from tests.test_workbuddy_feedback import response
+        return SimpleNamespace(final_response=json.dumps(response("revise_agent", edits_json=json.dumps(edits))))
 
     async def start(**kwargs):
         return SimpleNamespace(id="targeted-thread", run=run)

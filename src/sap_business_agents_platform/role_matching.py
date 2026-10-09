@@ -22,6 +22,7 @@ from .role_matching_documents import (
     scan_and_extract,
 )
 from .scheduler import LocalRunScheduler, WorkloadClass
+from .runtime_role_consolidation import checked_candidate
 from .workflow_composer import (
     WorkflowCompositionError,
     compact_agent_catalog,
@@ -359,6 +360,7 @@ class RoleMatchingService:
         if not (
             evaluation.get("agent_catalog_complete")
             and evaluation.get("matching_complete")
+            and (not item["result"].get("consolidation_contract") or evaluation.get("consolidation_complete"))
         ):
             raise RoleMatchingError(
                 "The Agent catalog was not evaluated completely; run a full rematch first.",
@@ -608,7 +610,22 @@ class RoleMatchingService:
                     )
                 }]
                 result["agent_gaps"] = []
+                if consolidation_complete is False and result.get("runtime_diagnostics"):
+                    workflow_issues[0]["diagnostics"] = result["runtime_diagnostics"]
+                    self._event(session_id, "role_matching_consolidation_failed",
+                        {"diagnostics": result["runtime_diagnostics"]})
             result["workflow_suggestions"] = validated_suggestions
+            from .runtime_role_consolidation import VERSION as consolidation_version, reconcile
+            if result.get("consolidation_contract") == consolidation_version:
+                reconciliation = reconcile(result, validated_suggestions,
+                    conflicts=result.pop("_match_conflicts", []))
+                result["operation_reconciliation"] = reconciliation
+                workflow_issues.extend(reconciliation["issues"])
+                consolidation_complete = consolidation_complete and reconciliation["complete"] and not workflow_issues
+                result["catalog_evaluation"]["consolidation_complete"] = consolidation_complete
+                if not consolidation_complete:
+                    self._event(session_id, "role_matching_consolidation_incomplete",
+                        {"contract_version": consolidation_version, "issues": reconciliation["issues"]})
             result["workflow_validation_issues"] = workflow_issues
             result["completeness"] = {
                 "scan_complete": bool(scanned["scan_complete"]),
@@ -748,6 +765,15 @@ class RoleMatchingService:
         if not isinstance(raw, dict):
             raise RoleMatchingError("Runtime role analysis must be an object.", code="role_matching_runtime_output_invalid")
         result = deepcopy(raw)
+        if "runtime_diagnostics" in result:
+            from .runtime_diagnostics import safe_stage_diagnostic
+            from .runtime_prompts import ROLE_MATCHING_OUTPUT_SCHEMA
+            from .runtime_role_contract import native_output_schema
+            from .runtime_role_consolidation import SCHEMA as final_schema, VERSION as final_version
+            diagnostics = result["runtime_diagnostics"]
+            result["runtime_diagnostics"] = [safe_stage_diagnostic(item,
+                schema=final_schema if result.get("consolidation_contract") == final_version else native_output_schema(ROLE_MATCHING_OUTPUT_SCHEMA))
+                for item in (diagnostics[:5] if isinstance(diagnostics, list) else [])]
         for key in ("roles", "processes", "operations", "agent_matches", "rejected_candidates", "workflow_suggestions", "agent_gaps", "document_issues"):
             if not isinstance(result.get(key), list):
                 result[key] = []
@@ -798,42 +824,22 @@ class RoleMatchingService:
             str(item.get("operation_id") or ""): item
             for item in result["operations"] if isinstance(item, dict)
         }
+        from .runtime_role_consolidation import VERSION as final_version, match_conflicts
+        if result.get("consolidation_contract") == final_version:
+            result["_match_conflicts"] = match_conflicts(result)
+            if any(not isinstance(item, dict) or str(item.get("agent_id") or "") not in agents
+                   or str(item.get("operation_id") or "") not in operations
+                   for item in [*result["agent_matches"], *result["rejected_candidates"]]):
+                result["_match_conflicts"].append({"code": "role_matching_candidate_ref_invalid"})
         verified_matches = []
         rejected_candidates = list(result.get("rejected_candidates") or [])
         for match in result["agent_matches"]:
             if not isinstance(match, dict) or str(match.get("agent_id") or "") not in agents:
                 continue
             agent = agents[str(match["agent_id"])]
-            match.update({"executable": agent["executable"], "validation_verdict": agent["validation_verdict"]})
-            if match.get("coverage") not in {"full", "partial", "none"}:
-                match["coverage"] = "partial"
-            if match.get("confidence") not in {"high", "medium", "low"}:
-                match["confidence"] = "low"
-            required_signals = _operation_capability_signals(
-                operations.get(str(match.get("operation_id") or ""), {})
-            )
-            declared_signals = set(
-                catalog.get("capability_signals", {}).get(str(match["agent_id"]), [])
-            )
-            uncovered = [str(item) for item in match.get("uncovered_capabilities") or []]
-            if (
-                match.get("coverage") == "partial"
-                and required_signals
-                and required_signals.issubset(declared_signals)
-                and uncovered
-                and all(_gap_matches_signals(item, required_signals) for item in uncovered)
-            ):
-                match["coverage"] = "full"
-                match["uncovered_capabilities"] = []
-            if (
-                match.get("coverage") == "full"
-                and not (match.get("uncovered_capabilities") or [])
-                and agent["executable"]
-                and agent["validation_verdict"] == "PASS"
-            ):
-                # Full declared coverage by a verified executable Agent is a
-                # high-confidence catalog match. Evidence provenance remains separate.
-                match["confidence"] = "high"
+            match = checked_candidate(match,
+                operation=operations.get(str(match.get("operation_id") or ""), {}), agent=agent,
+                capability_signals=catalog.get("capability_signals", {}).get(str(match["agent_id"]), ()))
             if match.get("coverage") == "none":
                 rejected_candidates.append(match)
             else:
@@ -856,7 +862,7 @@ class RoleMatchingService:
         coverage_rank = {"full": 0, "partial": 1}
         confidence_rank = {"high": 0, "medium": 1, "low": 2}
         result["agent_matches"] = sorted(
-            _deduplicate_matches(verified_matches),
+            _deduplicate_matches(verified_matches, preserve_conflicts=result.get("consolidation_contract") == final_version),
             key=lambda item: (
                 coverage_rank.get(str(item.get("coverage")), 9),
                 confidence_rank.get(str(item.get("confidence")), 9),
@@ -864,13 +870,13 @@ class RoleMatchingService:
                 str(item.get("agent_id") or ""),
             ),
         )
-        result["rejected_candidates"] = _deduplicate_matches(verified_rejected)
+        result["rejected_candidates"] = _deduplicate_matches(verified_rejected, preserve_conflicts=result.get("consolidation_contract") == final_version)
         if not (
             evaluation["agent_catalog_complete"] and evaluation["matching_complete"]
         ):
             result["agent_gaps"] = []
             result["workflow_suggestions"] = []
-        else:
+        elif result.get("consolidation_contract") != final_version:
             fully_covered = {
                 str(item.get("operation_id") or "")
                 for item in result["agent_matches"]
@@ -999,31 +1005,6 @@ def _execution_capability_signals(execution: Any) -> list[str]:
     return signals
 
 
-def _operation_capability_signals(operation: Any) -> set[str]:
-    if not isinstance(operation, dict):
-        return set()
-    text = " ".join(
-        [
-            str(operation.get("name") or ""),
-            str(operation.get("description") or ""),
-            *[str(item) for item in operation.get("outputs") or []],
-        ]
-    ).lower()
-    signals = set()
-    if any(token in text for token in ("pgi", "goods issue", "goods movement", "发货过账", "出库过账")):
-        signals.add("pgi_status")
-    return signals
-
-
-def _gap_matches_signals(value: str, signals: set[str]) -> bool:
-    text = value.lower()
-    if "pgi_status" in signals and any(
-        token in text for token in ("pgi", "goods issue", "goods movement", "发货过账", "出库过账")
-    ):
-        return True
-    return False
-
-
 def _paginate_runtime_catalog(
     items: list[dict[str, Any]], *, digest: str, max_chars: int
 ) -> list[dict[str, Any]]:
@@ -1117,16 +1098,19 @@ def _validate_catalog_evaluation(
     }
 
 
-def _deduplicate_matches(values: list[Any]) -> list[dict[str, Any]]:
+def _deduplicate_matches(values: list[Any], *, preserve_conflicts: bool = False) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    signatures = set()
     for item in values:
         if not isinstance(item, dict):
             continue
         key = (str(item.get("operation_id") or ""), str(item.get("agent_id") or ""))
-        if not all(key) or key in seen:
+        signature = _digest(item)
+        if not all(key) or (signature in signatures if preserve_conflicts else key in seen):
             continue
         seen.add(key)
+        signatures.add(signature)
         result.append(item)
     return result
 

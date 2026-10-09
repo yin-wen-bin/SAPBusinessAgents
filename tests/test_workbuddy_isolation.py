@@ -93,7 +93,7 @@ def test_worker_rewrite_with_identical_stat_identity_cannot_reuse_release_cache(
 def test_worker_boundaries_and_cleanup(tmp_path, monkeypatch, scenario, code):
     owner, binding = supervisor(tmp_path, monkeypatch)
     with pytest.raises(WorkBuddyError) as failure:
-        asyncio.run(owner.run(task_id="owned", snapshot=binding, operation="plan", payload={"scenario": scenario}, seconds=10))
+        asyncio.run(owner.run(task_id="owned", snapshot=binding, operation="review_workflow", payload={"scenario": scenario}, seconds=10))
     assert failure.value.code == code
     assert not owner.active and not owner.pending()
     record = json.loads((owner.environment.root / "jobs" / (digest("owned") + ".json")).read_text())
@@ -109,9 +109,9 @@ def test_tool_relay_and_no_connection_credentials(tmp_path, monkeypatch):
         async def tool(name, arguments):
             calls.append((name, arguments))
             return {"ok": True}
-        result = await owner.run(task_id="one", snapshot=binding, operation="plan", payload={"scenario": "tool"}, seconds=10, tool_handler=tool)
+        result = await owner.run(task_id="one", snapshot=binding, operation="review_workflow", payload={"scenario": "tool"}, seconds=10, tool_handler=tool)
         assert json.loads(result["text"]) == {"ok": True}
-        result = await owner.run(task_id="two", snapshot=binding, operation="plan", payload={}, seconds=10)
+        result = await owner.run(task_id="two", snapshot=binding, operation="review_workflow", payload={}, seconds=10)
         assert "SAP_PASSWORD" not in result["env"] and "OPENAI_API_KEY" not in result["env"]
     asyncio.run(scenario())
     assert calls == [("approved_fixture", {"value": 1})]
@@ -122,8 +122,8 @@ def test_timeout_and_owned_child_tree(tmp_path, monkeypatch):
     observed = []
     async def scenario():
         with pytest.raises(WorkBuddyError, match="deadline_exceeded"):
-            await owner.run(task_id="timeout", snapshot=binding, operation="plan", payload={"scenario": "hang"}, seconds=0.2)
-        task = asyncio.create_task(owner.run(task_id="child", snapshot=binding, operation="plan",
+            await owner.run(task_id="timeout", snapshot=binding, operation="review_workflow", payload={"scenario": "hang"}, seconds=0.2)
+        task = asyncio.create_task(owner.run(task_id="child", snapshot=binding, operation="review_workflow",
             payload={"scenario": "child"}, seconds=10, emit=lambda kind, data: observed.append(data["pid"])))
         for _ in range(200):
             if observed:
@@ -160,9 +160,9 @@ def test_operations_modes_model_identity_and_old_environment_binding(tmp_path, m
     monkeypatch.setattr(manager.environment, "release", lambda key=None: {**value, "environment_digest": key or value["environment_digest"]})
     binding = {"provider_id": "workbuddy", "environment_digest": "a" * 64, "reasoning_effort": None, "model": "route", "operation_capabilities": {}}
     with pytest.raises(WorkBuddyError, match="not validated"):
-        manager.environment.assert_operation(binding, "plan")
+        manager.environment.assert_operation(binding, "review_workflow")
     with pytest.raises(WorkBuddyError, match="restricted_unverified"):
-        manager.environment.assert_operation(binding, "plan", mode="restricted")
+        manager.environment.assert_operation(binding, "review_workflow", mode="restricted")
     manager.environment.mutate(lambda state: state.update(environment_digest="b" * 64, default_model_id="new"))
     assert manager.bound_snapshot(binding)["environment_digest"] == "a" * 64
     assert manager.bound_snapshot(binding)["model"] == "route"
@@ -183,7 +183,7 @@ def test_unverified_operations_cannot_enable_even_with_checked_model(tmp_path, m
 
 def test_probe_cannot_bypass_operation_or_tool_scope(tmp_path, monkeypatch):
     owner, binding = supervisor(tmp_path, monkeypatch)
-    for operation, payload, mode in (("plan", {}, "bounded"), ("model_check", {"tools": [{"name": "unsafe"}]}, "bounded"),
+    for operation, payload, mode in (("review_workflow", {}, "bounded"), ("model_check", {"tools": [{"name": "unsafe"}]}, "bounded"),
                                     ("authentication", {}, "trusted_local")):
         with pytest.raises(WorkBuddyError, match="probe_scope_invalid"):
             asyncio.run(owner.run(task_id="bad", snapshot=binding, operation=operation, payload=payload,
@@ -205,7 +205,7 @@ def test_queue_capacity_is_acquired_before_execution_clock(tmp_path, monkeypatch
         first = asyncio.create_task(held())
         await entered.wait()
         next_job = asyncio.create_task(owner.run(task_id="queued", snapshot=binding,
-            operation="plan", payload={}, seconds=2))
+            operation="review_workflow", payload={}, seconds=2))
         await asyncio.sleep(0)
         assert not owner.active
         # Simulated 30-second queue exceeds the job budget; no dependence on
@@ -215,7 +215,7 @@ def test_queue_capacity_is_acquired_before_execution_clock(tmp_path, monkeypatch
         result = await next_job
         assert result["text"]
         record = json.loads((owner.environment.root / "jobs" / (digest("queued") + ".json")).read_text())
-        assert record["deadline"] == 1032
+        assert 1031 < record["deadline"] <= 1032
         await first
     asyncio.run(scenario())
 
@@ -225,20 +225,21 @@ def test_capability_validation_requires_owned_live_job(tmp_path, monkeypatch):
     manager = WorkBuddyManager(tmp_path)
     binding = {"provider_id": "workbuddy", "environment_digest": "a" * 64}
     path = manager.environment.root / "jobs" / (digest("case") + ".json")
-    job = {"status": "completed", "cleanup_complete": True, "operation": "plan",
+    job = {"status": "completed", "cleanup_complete": True, "operation": "review_workflow",
            "environment_digest": "a" * 64, "runtime_digest": digest(binding),
            "permission_mode": "bounded", "validation_job": True,
-           "orchestration_version": ORCHESTRATION_VERSION, "orchestration_digest": orchestration_digest("plan")}
+           "orchestration_version": ORCHESTRATION_VERSION, "orchestration_digest": orchestration_digest("review_workflow")}
     evidence = {"platform_contract_passed": True, "kind": "live_validation"}
     atomic_json(path, {**job, "validation_job": False})
     with pytest.raises(Exception, match="complete contract"):
-        manager.record_operation_validation(binding, "plan", job_id="case", permission_modes=["bounded"], evidence=evidence)
+        manager.record_operation_validation(binding, "review_workflow", job_id="case", permission_modes=["bounded"], evidence=evidence)
     atomic_json(path, job)
     with pytest.raises(Exception, match="complete contract"):
-        manager.record_operation_validation(binding, "plan", job_id="case", permission_modes=["trusted_local"], evidence=evidence)
-    manager.record_operation_validation(binding, "plan", job_id="case", permission_modes=["bounded"], evidence=evidence)
-    assert manager.capabilities("a" * 64)["plan"]["status"] == "validated"
-    assert manager.capabilities("a" * 64)["ground_plan"]["status"] == "unverified"
+        manager.record_operation_validation(binding, "review_workflow", job_id="case", permission_modes=["trusted_local"], evidence=evidence)
+    manager.record_operation_validation(binding, "review_workflow", job_id="case", permission_modes=["bounded"], evidence=evidence)
+    assert manager.capabilities("a" * 64)["review_workflow"]["status"] == "validated"
+    assert "plan" not in manager.capabilities("a" * 64)
+    assert manager.capabilities("a" * 64)["author_draft"]["status"] == "unverified"
 
 
 def test_model_refresh_and_probes_do_not_write_codex_configuration(tmp_path, monkeypatch):
@@ -276,7 +277,7 @@ def test_inherited_reservations_never_spawn_parallel_execution_workers(tmp_path,
     owner, binding = supervisor(tmp_path, monkeypatch)
     async def scenario():
         async with owner.reserve():
-            tasks = [asyncio.create_task(owner.run(task_id=str(i), snapshot=binding, operation="plan",
+            tasks = [asyncio.create_task(owner.run(task_id=str(i), snapshot=binding, operation="review_workflow",
                     payload={"scenario": "delayed"}, seconds=2)) for i in range(2)]
             while not all(task.done() for task in tasks):
                 assert len(owner.active) <= 1
@@ -320,7 +321,7 @@ def test_validation_scope_is_exact_and_does_not_escape_to_other_operations(tmp_p
     monkeypatch.setattr(owner.environment, "assert_operation", reject)
     with owner.verification(binding, {"sample_discovery"}):
         assert owner.check_operation(binding, "sample_discovery")
-        for snapshot, operation in ((binding, "plan"), ({**binding, "model": "changed"}, "sample_discovery")):
+        for snapshot, operation in ((binding, "review_workflow"), ({**binding, "model": "changed"}, "sample_discovery")):
             with pytest.raises(WorkBuddyError, match="runtime_operation_unavailable"):
                 owner.check_operation(snapshot, operation)
     with pytest.raises(WorkBuddyError, match="runtime_operation_unavailable"):
@@ -448,7 +449,7 @@ def test_cancelling_queued_worker_prevents_dispatch(tmp_path, monkeypatch):
             # A fresh context must queue rather than inherit the reservation.
             import contextvars
             pending = asyncio.create_task(owner.run(task_id="withdrawn", snapshot=binding,
-                operation="plan", payload={}, seconds=2), context=contextvars.Context())
+                operation="review_workflow", payload={}, seconds=2), context=contextvars.Context())
             await asyncio.sleep(0)
             assert "withdrawn" in owner.queued and not owner.active
             assert await owner.cancel("withdrawn")

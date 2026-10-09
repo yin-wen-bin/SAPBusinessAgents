@@ -160,7 +160,7 @@ class Settings:
             ).resolve(),
             codex_model=os.getenv("SAPBA_CODEX_MODEL") or None,
             free_query_runtime=_env_choice(
-                "SAPBA_FREE_QUERY_RUNTIME", "harness", {"harness", "planner_legacy"}
+                "SAPBA_FREE_QUERY_RUNTIME", "harness", {"harness"}
             ),
             internal_api_url=os.getenv(
                 "SAPBA_INTERNAL_API_URL", "http://127.0.0.1:8765"

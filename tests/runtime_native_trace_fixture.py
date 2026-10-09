@@ -99,7 +99,8 @@ async def trace_operation(operation, monkeypatch, tmp_path, module=None):
         output = {"action": "explain", "answer": "No changes", "question": "", "workflow_json": "null"}
     elif operation == "review_agent_feedback":
         output = {"action": "reply", "summary": {"zh": "未修改", "en": "Unchanged"},
-            "manifest_json": "", "readme": "", "rules_source": "", "files_json": "", "edits_json": ""}
+            "manifest_json": "", "readme": "", "rules_source": "", "files_json": "", "edits_json": "",
+            "required_changes": [], "clarification_json": ""}
     client = Client(trace, output)
     async def probe(*_, **__):
         trace.append(["preflight", {}])

@@ -55,20 +55,21 @@ def test_workflow_budget_defaults_to_one_hour_and_preserves_explicit_values(tmp_
     for invalid in (0, 3601):
         with pytest.raises(ValueError):
             payload(budgetSeconds=invalid)
-    service, _, draft = setup(tmp_path)
+    service, author, draft = setup(tmp_path)
     observed = []
-    original_timeout = asyncio.timeout
-    def timeout(seconds):
-        observed.append(seconds)
-        return original_timeout(seconds)
-    monkeypatch.setattr(asyncio, "timeout", timeout)
+    original_turn = author.author_workflow_v2
+    async def turn(**kwargs):
+        from sap_business_agents_platform.runtime_contract import remaining_budget
+        observed.append(remaining_budget(None))
+        return await original_turn(**kwargs)
+    monkeypatch.setattr(author, "author_workflow_v2", turn)
     async def check():
         service.assistant.submit(draft.draft_id, payload())
         await finished(service.assistant)
         round_ = state(service.get(draft.draft_id))["rounds"][0]
         assert round_["budget_seconds"] == 3600 and round_["status"] == "completed"
     asyncio.run(check())
-    assert observed == [3600]  # Controlled check: never waits an actual hour.
+    assert len(observed) == 1 and 3590 < observed[0] <= 3600  # No real wait.
 
 
 async def finished(assistant):

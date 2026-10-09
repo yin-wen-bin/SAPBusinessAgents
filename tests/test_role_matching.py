@@ -462,7 +462,8 @@ def test_codex_role_matching_uses_isolated_catalog_pages_and_compact_coverage_pr
                     }
                 )
             assert prompt.startswith("Finalize")
-            return response({"workflow_suggestions": [], "agent_gaps": []})
+            return SimpleNamespace(final_response=json.dumps({"summary_zh": "汇总", "summary_en": "Consolidated",
+                "workflow_suggestions": [], "agent_gaps": []}))
 
     class FakeCodex:
         async def __aenter__(self):
@@ -502,7 +503,7 @@ def test_codex_role_matching_uses_isolated_catalog_pages_and_compact_coverage_pr
             rematch_mode="full", locale="zh", thread_id=None,
         )
     )["analysis"]
-    assert len(started_threads) == 4  # primary, page A, failed page B, retried page B
+    assert len(started_threads) == 5  # primary, page A, failed/retried page B, isolated final phase
     assert page_attempts == {"agent-a": 1, "agent-b": 2}
     assert result["catalog_evaluation"]["agent_catalog_complete"] is True
     assert result["catalog_evaluation"]["evaluated_pair_count"] == 2

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import copy
 import asyncio
+import time
+from .runtime_contract import deadline_scope
 from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
@@ -12,6 +14,10 @@ from typing import Any
 from .models import PlannerDecision, RunPresentation
 from .runtime_contract import ApprovalMode, Sandbox
 from .runtime_workflow_contract import PROPOSAL_SCHEMA, EXPECTATIONS_SCHEMA, decode as decode_workflow, input_patch_schema
+from .runtime_role_consolidation import (
+    SCHEMA as ROLE_CONSOLIDATION_SCHEMA, VERSION as ROLE_CONSOLIDATION_VERSION,
+    decode as decode_consolidation, candidate_support_projection, candidate_support_instructions,
+)
 from .runtime_prompts import (
     PLANNER_OUTPUT_SCHEMA,
     SUMMARY_OUTPUT_SCHEMA,
@@ -47,143 +53,30 @@ from .runtime_prompts import (
 )
 
 class SharedPlanner:
+    async def review_agent_feedback(self, **kwargs):
+        from .runtime_agent_authoring import run_feedback
+        return await run_feedback(self, **kwargs)
+
     @property
     def current_operation(self):
-        return _operation_context.get() or "plan"
+        return _operation_context.get()
 
     def _runtime_client(self, **options):
+        if getattr(self._driver, "provider_id", None) == "workbuddy":
+            # These methods build complete prompts from saved platform context;
+            # reconnect is not native SDK thread continuation.
+            options["platform_context_restored"] = True
         if self.current_operation in {"compose_workflow", "review_workflow_feedback"}:
             from .runtime_workflow_contract import instructions
             options["format_instructions"] = instructions(feedback=self.current_operation == "review_workflow_feedback")
         return self._driver.client(**options)
 
-    async def plan(
-        self,
-        query: str,
-        catalog: dict[str, Any],
-        guidance: dict[str, Any],
-        skills: list[dict[str, Any]],
-        thread_id: str | None = None,
-    ) -> PlannerDecision:
-        try:
-            AsyncCodex = self._runtime_client
-        except ImportError as exc:  # pragma: no cover - exercised in installations without the optional runtime
-            raise RuntimeError(
-                "Codex Python SDK is unavailable. Install the project dependencies with pip install -e ."
-            ) from exc
+    async def plan(self, *args, **kwargs):
+        from .runtime_contract import RuntimeContractError
+        raise RuntimeContractError("runtime_operation_retired")
 
-        prompt = _planner_prompt(query, catalog, guidance, skills, continuing=bool(thread_id))
-        async with AsyncCodex() as codex:
-            if thread_id:
-                thread = await codex.thread_resume(
-                    thread_id,
-                    cwd=str(self.repository_root),
-                    sandbox=Sandbox.read_only,
-                    approval_mode=ApprovalMode.deny_all,
-                    model=self.model,
-                )
-            else:
-                thread = await codex.thread_start(
-                    cwd=str(self.repository_root),
-                    sandbox=Sandbox.read_only,
-                    approval_mode=ApprovalMode.deny_all,
-                    model=self.model,
-                    service_name="sap_business_agents_local",
-                    developer_instructions=(
-                        "You are a read-only SAP query planner. Never execute shell commands, edit files, "
-                        "or invent SAP services. Return only the requested structured output."
-                    ),
-                )
-            raw, plan = await _run_plan_turn(thread, prompt, phase="initial planning", reasoning_effort=self.reasoning_effort)
-            return PlannerDecision(
-                intent=str(raw.get("intent") or query),
-                needs_clarification=bool(raw.get("needs_clarification")),
-                clarification_question=str(raw.get("clarification_question") or ""),
-                plan=plan,
-                thread_id=thread.id,
-            )
-
-
-    async def ground_plan(
-        self,
-        *,
-        query: str,
-        decision: PlannerDecision,
-        schemas: list[dict[str, Any]],
-        relationships: dict[str, Any] | None = None,
-        validation_failures: list[dict[str, Any]] | None = None,
-        repair_attempt: int = 0,
-    ) -> PlannerDecision:
-        if not decision.thread_id or not decision.plan:
-            raise ValueError("A resumable Codex thread and candidate plan are required for grounding.")
-        AsyncCodex = self._runtime_client
-
-        prompt = _grounding_prompt(
-            query,
-            decision.plan,
-            schemas,
-            relationships or {},
-            validation_failures or [],
-            repair_attempt=repair_attempt,
-        )
-        async with AsyncCodex() as codex:
-            thread = await codex.thread_resume(
-                decision.thread_id,
-                cwd=str(self.repository_root),
-                sandbox=Sandbox.read_only,
-                approval_mode=ApprovalMode.deny_all,
-                model=self.model,
-            )
-            raw, plan = await _run_plan_turn(thread, prompt, phase="schema grounding", reasoning_effort=self.reasoning_effort)
-            if plan is not None:
-                from .runtime_query_contract import preserve_grounding
-                preserve_grounding(decision.plan, plan, schemas=schemas)
-            return PlannerDecision(
-                intent=str(raw.get("intent") or decision.intent or query),
-                needs_clarification=bool(raw.get("needs_clarification")),
-                clarification_question=str(raw.get("clarification_question") or ""),
-                plan=plan,
-                thread_id=thread.id,
-            )
-
-
-    async def summarize(
-        self,
-        *,
-        thread_id: str,
-        query: str,
-        plan: dict[str, Any],
-        evidence: list[dict[str, Any]],
-        rule_results: list[dict[str, Any]],
-    ) -> dict[str, str]:
-        AsyncCodex = self._runtime_client
-
-        prompt = f"""
-Explain the validated read-only SAP evidence for the user's question in concise Chinese and English.
-
-Question: {query}
-Executed plan: {_safe_json(plan, limit=20_000)}
-Evidence: {_safe_json(evidence, limit=80_000)}
-Deterministic rule results: {_safe_json(rule_results, limit=20_000)}
-
-Rules:
-1. Never alter, override, or contradict a deterministic rule result.
-2. Clearly say when evidence is bounded, incomplete, or insufficient.
-3. Do not infer that a business process is complete unless a deterministic rule explicitly supports it.
-4. Do not call tools. Return only the requested bilingual structured output.
-""".strip()
-        async with AsyncCodex() as codex:
-            thread = await codex.thread_resume(
-                thread_id,
-                cwd=str(self.repository_root),
-                sandbox=Sandbox.read_only,
-                approval_mode=ApprovalMode.deny_all,
-                model=self.model,
-            )
-            result = await thread.run(prompt, output_schema=SUMMARY_OUTPUT_SCHEMA, effort=self.reasoning_effort)
-            raw = json.loads(result.final_response)
-            return {"zh": str(raw["zh"]), "en": str(raw["en"])}
-
+    ground_plan = plan
+    summarize = plan
 
     async def review_free_query_feedback(
         self,
@@ -387,71 +280,72 @@ return non_sap_operation_count. Do not call tools, inspect files, execute SAP or
             # truncated or whose conclusions were based on an older catalog digest. Start a
             # clean read-only thread while keeping the same Runtime snapshot at the session
             # level. Incremental rematches may resume the existing conversation.
-            if thread_id and rematch_mode != "full":
-                try:
-                    thread = await _await_with_hard_timeout(
-                        codex.thread_resume(
-                            thread_id, cwd=str(self.repository_root), sandbox=Sandbox.read_only,
-                            approval_mode=ApprovalMode.deny_all, model=self.model,
-                        ),
-                        timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
-                    )
-                except Exception as exc:
-                    if not isinstance(exc, TimeoutError) and not _role_matching_thread_can_restart(exc):
-                        raise
+            with deadline_scope(time.monotonic() + ROLE_MATCHING_RUNTIME_TURN_SECONDS):
+                if thread_id and rematch_mode != "full":
+                    try:
+                        thread = await _await_with_hard_timeout(
+                            codex.thread_resume(
+                                thread_id, cwd=str(self.repository_root), sandbox=Sandbox.read_only,
+                                approval_mode=ApprovalMode.deny_all, model=self.model,
+                            ),
+                            timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
+                        )
+                    except Exception as exc:
+                        if not isinstance(exc, TimeoutError) and not _role_matching_thread_can_restart(exc):
+                            raise
+                        thread = await _await_with_hard_timeout(
+                            codex.thread_start(
+                                cwd=str(self.repository_root), sandbox=Sandbox.read_only,
+                                approval_mode=ApprovalMode.deny_all, model=self.model,
+                                service_name="sap_business_agents_role_matching",
+                                developer_instructions=(
+                                    "Analyze only supplied document text and Agent catalog. Never call "
+                                    "tools, read local paths, execute SAP, or modify files."
+                                ),
+                            ),
+                            timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
+                        )
+                else:
                     thread = await _await_with_hard_timeout(
                         codex.thread_start(
                             cwd=str(self.repository_root), sandbox=Sandbox.read_only,
                             approval_mode=ApprovalMode.deny_all, model=self.model,
                             service_name="sap_business_agents_role_matching",
                             developer_instructions=(
-                                "Analyze only supplied document text and Agent catalog. Never call "
-                                "tools, read local paths, execute SAP, or modify files."
+                                "Analyze only supplied document text and Agent catalog. Never call tools, "
+                                "read local paths, execute SAP, or modify files."
                             ),
                         ),
                         timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
                     )
-            else:
-                thread = await _await_with_hard_timeout(
-                    codex.thread_start(
-                        cwd=str(self.repository_root), sandbox=Sandbox.read_only,
-                        approval_mode=ApprovalMode.deny_all, model=self.model,
-                        service_name="sap_business_agents_role_matching",
-                        developer_instructions=(
-                            "Analyze only supplied document text and Agent catalog. Never call tools, "
-                            "read local paths, execute SAP, or modify files."
-                        ),
-                    ),
-                    timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
-                )
-            if reuse_business_understanding and previous_result:
-                canonical = {
-                    key: copy.deepcopy(previous_result.get(key) or [])
-                    for key in ("roles", "processes", "operations", "document_issues")
-                }
-                canonical["non_sap_operation_count"] = int(
-                    previous_result.get("non_sap_operation_count") or 0
-                )
-                understanding_summary = copy.deepcopy(
-                    previous_result.get("summary") or {"zh": "", "en": ""}
-                )
-            else:
-                understanding = _decode_role_matching_output(
-                    await _await_with_hard_timeout(
-                        thread.run(understanding_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort),
-                        timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
+                if reuse_business_understanding and previous_result:
+                    canonical = {
+                        key: copy.deepcopy(previous_result.get(key) or [])
+                        for key in ("roles", "processes", "operations", "document_issues")
+                    }
+                    canonical["non_sap_operation_count"] = int(
+                        previous_result.get("non_sap_operation_count") or 0
                     )
-                )
-                canonical = {
-                    key: understanding.get(key) or []
-                    for key in ("roles", "processes", "operations", "document_issues")
-                }
-                canonical["non_sap_operation_count"] = int(
-                    understanding.get("non_sap_operation_count") or 0
-                )
-                understanding_summary = copy.deepcopy(
-                    understanding.get("summary") or {"zh": "", "en": ""}
-                )
+                    understanding_summary = copy.deepcopy(
+                        previous_result.get("summary") or {"zh": "", "en": ""}
+                    )
+                else:
+                    understanding = _decode_role_matching_output(
+                        await _await_with_hard_timeout(
+                            thread.run(understanding_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort),
+                            timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
+                        )
+                    )
+                    canonical = {
+                        key: understanding.get(key) or []
+                        for key in ("roles", "processes", "operations", "document_issues")
+                    }
+                    canonical["non_sap_operation_count"] = int(
+                        understanding.get("non_sap_operation_count") or 0
+                    )
+                    understanding_summary = copy.deepcopy(
+                        understanding.get("summary") or {"zh": "", "en": ""}
+                    )
             canonical_json = _exact_json(canonical, limit=220_000, label="role understanding")
             candidate_matches: list[dict[str, Any]] = []
             rejected_candidates: list[dict[str, Any]] = []
@@ -500,65 +394,66 @@ files.
                     for agent in page.get("items") or []
                 }
                 accepted_page_records: list[dict[str, Any]] | None = None
-                for _attempt in range(2):
-                    try:
-                        page_thread = await _await_with_hard_timeout(
-                            codex.thread_start(
-                                cwd=str(self.repository_root), sandbox=Sandbox.read_only,
-                                approval_mode=ApprovalMode.deny_all, model=self.model,
-                                service_name="sap_business_agents_role_matching_catalog_page",
-                                developer_instructions=(
-                                    "Evaluate only the supplied canonical operations and complete Agent "
-                                    "catalog page. Never call tools, read files, execute SAP, or modify files."
-                                ),
-                            ),
-                            timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
-                        )
-                        page_analysis = _decode_role_matching_output(
-                            await _await_with_hard_timeout(
-                                page_thread.run(
-                                    page_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort
+                with deadline_scope(time.monotonic() + ROLE_MATCHING_RUNTIME_TURN_SECONDS):
+                    for _attempt in range(2):
+                        try:
+                            page_thread = await _await_with_hard_timeout(
+                                codex.thread_start(
+                                    cwd=str(self.repository_root), sandbox=Sandbox.read_only,
+                                    approval_mode=ApprovalMode.deny_all, model=self.model,
+                                    service_name="sap_business_agents_role_matching_catalog_page",
+                                    developer_instructions=(
+                                        "Evaluate only the supplied canonical operations and complete Agent "
+                                        "catalog page. Never call tools, read files, execute SAP, or modify files."
+                                    ),
                                 ),
                                 timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
                             )
-                        )
-                    except Exception:
-                        continue
-                    page_records = [
-                        item
-                        for item in [
-                            *(page_analysis.get("agent_matches") or []),
-                            *(page_analysis.get("rejected_candidates") or []),
+                            page_analysis = _decode_role_matching_output(
+                                await _await_with_hard_timeout(
+                                    page_thread.run(
+                                        page_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort
+                                    ),
+                                    timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
+                                )
+                            )
+                        except Exception:
+                            continue
+                        page_records = [
+                            item
+                            for item in [
+                                *(page_analysis.get("agent_matches") or []),
+                                *(page_analysis.get("rejected_candidates") or []),
+                            ]
+                            if isinstance(item, dict)
                         ]
-                        if isinstance(item, dict)
-                    ]
-                    actual_pairs = [
-                        (str(item.get("operation_id") or ""), str(item.get("agent_id") or ""))
-                        for item in page_records
-                    ]
-                    page_evaluation = page_analysis.get("catalog_evaluation") or {}
-                    evaluation_valid = (
-                        str(page_evaluation.get("catalog_digest") or "")
-                        == str(runtime_catalog.get("digest") or "")
-                        and int(page_evaluation.get("evaluated_agent_count") or 0)
-                        == len(page_agent_ids)
-                        and int(page_evaluation.get("evaluated_pair_count") or 0)
-                        == len(expected_pairs)
-                        and set(str(item) for item in page_evaluation.get("evaluated_agent_ids") or [])
-                        == set(page_agent_ids)
-                        and int(page_evaluation.get("catalog_page_count") or 0)
-                        == int(runtime_catalog.get("page_count") or 0)
-                        and bool(page_evaluation.get("agent_catalog_complete"))
-                        and bool(page_evaluation.get("matching_complete"))
-                        and not (page_evaluation.get("failed_pages") or [])
-                    )
-                    if (
-                        evaluation_valid
-                        and len(actual_pairs) == len(set(actual_pairs))
-                        and set(actual_pairs).issubset(expected_pairs)
-                    ):
-                        accepted_page_records = page_records
-                        break
+                        actual_pairs = [
+                            (str(item.get("operation_id") or ""), str(item.get("agent_id") or ""))
+                            for item in page_records
+                        ]
+                        page_evaluation = page_analysis.get("catalog_evaluation") or {}
+                        evaluation_valid = (
+                            str(page_evaluation.get("catalog_digest") or "")
+                            == str(runtime_catalog.get("digest") or "")
+                            and int(page_evaluation.get("evaluated_agent_count") or 0)
+                            == len(page_agent_ids)
+                            and int(page_evaluation.get("evaluated_pair_count") or 0)
+                            == len(expected_pairs)
+                            and set(str(item) for item in page_evaluation.get("evaluated_agent_ids") or [])
+                            == set(page_agent_ids)
+                            and int(page_evaluation.get("catalog_page_count") or 0)
+                            == int(runtime_catalog.get("page_count") or 0)
+                            and bool(page_evaluation.get("agent_catalog_complete"))
+                            and bool(page_evaluation.get("matching_complete"))
+                            and not (page_evaluation.get("failed_pages") or [])
+                        )
+                        if (
+                            evaluation_valid
+                            and len(actual_pairs) == len(set(actual_pairs))
+                            and set(actual_pairs).issubset(expected_pairs)
+                        ):
+                            accepted_page_records = page_records
+                            break
                 if accepted_page_records is None:
                     failed_pages.append(page_index)
                     continue
@@ -576,6 +471,7 @@ files.
             matching_complete = catalog_complete
             consolidation_complete = False
             final_analysis: dict[str, Any] = {}
+            consolidation_failure = None
             if catalog_complete:
                 accepted_ids = {
                     str(item.get("agent_id") or "") for item in candidate_matches
@@ -590,45 +486,77 @@ files.
                     "accepted": _compact_role_match_records(candidate_matches),
                     "rejected": _compact_role_match_records(rejected_candidates),
                 }
-                try:
-                    evaluation_json = _exact_json(
-                        evaluations, limit=220_000, label="Agent candidate evaluations"
-                    )
-                    contracts_json = _exact_json(
-                        candidate_contracts, limit=120_000, label="candidate Agent contracts"
-                    )
-                    final_prompt = f"""
-Finalize role-to-Agent matching from a complete catalog evaluation. Preserve the canonical roles,
-processes, operations, document issues and evidence references exactly. Use accepted candidates as
-full or partial matches and rejected candidates only for audit.
-
-Canonical understanding: {canonical_json}
-Candidate evaluations: {evaluation_json}
-Detailed accepted Agent contracts: {contracts_json}
-
-Return analysis_json with agent_matches containing only full/partial candidates,
-rejected_candidates containing none candidates, workflow_suggestions using only executable PASS
-Agents, and agent_gaps only where neither one Agent nor a valid combination covers the operation.
-Do not describe FI clearing as independent bank settlement evidence.
-
-Every workflow suggestion must be a complete compiler proposal: bilingual title, description and
-intent; ordered stages; executable agent_id; confidence=high; bilingual reason; declared bindings;
-and requested_outputs using only supplied ports. Cross-stage ports must have compatible types.
-Every conclusion must reuse an existing operation evidence_ref. Do not call tools, inspect files,
-execute SAP, edit files or invent Agents.
-""".strip()
-                    final_analysis = _decode_role_matching_output(
-                        await _await_with_hard_timeout(
-                            thread.run(final_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort),
-                            timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
+                candidate_support = candidate_support_projection(
+                    canonical["operations"], candidate_matches, agent_catalog,
+                )
+                final_prompt = None
+                consolidation_started = time.monotonic()
+                with deadline_scope(time.monotonic() + ROLE_MATCHING_RUNTIME_TURN_SECONDS):
+                    try:
+                        evaluation_json = _exact_json(
+                            evaluations, limit=220_000, label="Agent candidate evaluations"
                         )
-                    )
-                    consolidation_complete = True
-                except Exception:
-                    final_analysis = {}
+                        contracts_json = _exact_json(
+                            candidate_contracts, limit=120_000, label="candidate Agent contracts"
+                        )
+                        final_prompt = f"""
+    Finalize role-to-Agent matching from a complete catalog evaluation. Preserve the canonical roles,
+    processes, operations, document issues and evidence references exactly. Use accepted candidates as
+    full or partial matches and rejected candidates only for audit.
+
+    Canonical understanding: {canonical_json}
+    Candidate evaluations: {evaluation_json}
+    Detailed accepted Agent contracts: {contracts_json}
+    Candidate support projection: {_exact_json(candidate_support, limit=120_000, label='candidate support projection')}
+
+    {candidate_support_instructions()}
+
+    Final-phase contract: {ROLE_CONSOLIDATION_VERSION}.
+    Return exactly summary_zh, summary_en, workflow_suggestions and agent_gaps. Do not return
+    analysis_json or reproduce canonical or matching records: the platform preserves them verbatim.
+    Account for every operation_id with a full single-Agent match, a supported executable combination,
+    or an explicit capability gap. Suggestions and gaps must declare the covered operation_ids and
+    cite those operations' existing evidence_refs. Empty arrays are valid only when all operations
+    already have full single-Agent coverage. Coverage is distinct from executable availability.
+    Use only platform-eligible Agents in suggestions. Gaps belong only where neither one Agent nor
+    a valid combination covers the operation. Explain partial coverage without hiding requirements.
+    Do not describe FI clearing as independent bank settlement evidence.
+
+    Every workflow suggestion must be a complete compiler proposal: bilingual title, description and
+    intent; ordered stages; executable agent_id; confidence=high; bilingual reason; declared bindings;
+    and requested_outputs using only supplied ports. Cross-stage ports must have compatible types.
+    Every conclusion must reuse an existing operation evidence_ref. Do not call tools, inspect files,
+    execute SAP, edit files or invent Agents.
+
+    Applicable user feedback: {_exact_json(user_context, limit=30_000, label='role user feedback')}
+    Output Schema: {_exact_json(ROLE_CONSOLIDATION_SCHEMA, limit=30_000, label='role consolidation Schema')}
+    """.strip()
+                        # A separate phase cannot inherit the previous phase's full-report
+                        # output instruction. All required business context is supplied above.
+                        final_thread = await _await_with_hard_timeout(
+                            codex.thread_start(cwd=str(self.repository_root), sandbox=Sandbox.read_only,
+                                approval_mode=ApprovalMode.deny_all, model=self.model,
+                                service_name="sap_business_agents_role_consolidation",
+                                developer_instructions="Summarize only supplied frozen role understanding and catalog matches. Never call tools, read files, execute SAP, or modify files."),
+                            timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS)
+                        final_analysis = decode_consolidation(
+                            await _await_with_hard_timeout(
+                                final_thread.run(final_prompt, output_schema=ROLE_CONSOLIDATION_SCHEMA, effort=self.reasoning_effort),
+                                timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
+                            ), operation=self.current_operation,
+                        )
+                        consolidation_complete = True
+                    except Exception as exc:
+                        from .runtime_diagnostics import stage_failure
+                        consolidation_failure = stage_failure(exc,
+                            schema=ROLE_CONSOLIDATION_SCHEMA, prompt=final_prompt,
+                            budget_seconds=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
+                            elapsed_ms=int((time.monotonic() - consolidation_started) * 1000))
+                        final_analysis = {}
 
             analysis = {
                 **canonical,
+                "consolidation_contract": ROLE_CONSOLIDATION_VERSION,
                 # Page evaluation is the authoritative exhaustive match set. The final turn may
                 # explain and compose it, but cannot silently drop a candidate from another page.
                 "agent_matches": candidate_matches,
@@ -652,10 +580,12 @@ execute SAP, edit files or invent Agents.
                     "failed_pages": failed_pages,
                 },
                 "summary": (
-                    final_analysis.get("summary")
+                    {"zh": final_analysis["summary_zh"], "en": final_analysis["summary_en"]}
                     if consolidation_complete else understanding_summary
                 ) or {"zh": "", "en": ""},
             }
+            if consolidation_failure:
+                analysis["runtime_diagnostics"] = [consolidation_failure]
             return {"analysis": analysis, "thread_id": thread.id}
 
 
@@ -950,13 +880,17 @@ def _business_operation(name, method):
         # Nested phases stay bound to their original operation, not a new task.
         token = _operation_context.set(_operation_context.get() or name)
         try:
-            return await method(self, *args, **kwargs)
+            from .runtime_contract import business_scope, await_business
+            async with business_scope(self, _operation_context.get()):
+                if name in {"analyze_role_matching", "review_role_matching_feedback"}:
+                    return await method(self, *args, **kwargs)
+                return await await_business(method(self, *args, **kwargs))
         finally:
             _operation_context.reset(token)
     return call
 
 
-for _name in ("plan", "ground_plan", "summarize", "author_draft", "review_free_query_feedback",
+for _name in ("author_draft", "review_agent_feedback", "review_free_query_feedback",
               "revise_free_query_presentation", "analyze_role_matching", "review_role_matching_feedback",
               "compose_workflow", "review_workflow", "repair_workflow", "review_workflow_feedback"):
     setattr(SharedPlanner, _name, _business_operation(_name, getattr(SharedPlanner, _name)))

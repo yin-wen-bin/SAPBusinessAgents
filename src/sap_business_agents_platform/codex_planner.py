@@ -211,6 +211,7 @@ class Planner(Protocol):
 
 
 class CodexPlanner(SharedPlanner):
+    provider_id = "codex"
     @staticmethod
     def feedback_capabilities() -> dict[str, bool]:
         # Authoring still creates an isolated turn for each revision; SDK
@@ -232,112 +233,6 @@ class CodexPlanner(SharedPlanner):
 
 
 
-
-    async def review_agent_feedback(
-        self,
-        *,
-        feedback: str,
-        locale: str,
-        package: dict[str, Any],
-        history: list[dict[str, Any]] | None = None,
-        thread_id: str | None = None,
-        operation_id: str | None = None,
-        tool_policy: dict[str, Any] | None = None,
-        intent: str = "revise",
-        feedback_context: dict[str, Any] | None = None,
-        tool_session: dict[str, str] | None = None,
-        image_inputs: list[str] | None = None,
-    ) -> dict[str, Any]:
-        if not self.model:
-            raise ValueError("agent_runtime_binding_missing")
-        tool_workspace = None
-        preflight = None
-        full_access = False
-        if tool_policy is not None:
-            from .authoring_workspace import AuthoringWorkspace, sandbox_preflight
-            from .authoring_harness import AuthoringHarnessError
-            from .runtime_execution import FULL_ACCESS_POLICY, LEGACY_TOOL_POLICY
-            if tool_policy not in (FULL_ACCESS_POLICY, LEGACY_TOOL_POLICY):
-                raise AuthoringHarnessError("agent_harness_policy_invalid")
-            full_access = tool_policy == FULL_ACCESS_POLICY
-            tool_workspace = AuthoringWorkspace(self.repository_root,
-                self.data_root / "authoring-harness" / uuid.uuid4().hex)
-            # Snapshot from a pinned commit. Ignored data and credentials are not copied.
-            tool_workspace.prepare(package, current_source=full_access)
-            tool_workspace.full_access = full_access
-            (tool_workspace.source / ".authoring-tmp").mkdir()
-            # Until platform changeset approval is connected, platform source is
-            # readable for investigation but not editable through this entry point.
-            tool_workspace.read_only_source = True
-
-        from .runtime_agent_authoring import feedback_prompt
-        explain_only = intent == 'explain'
-        prompt = feedback_prompt(self.repository_root, feedback=feedback, locale=locale,
-            package=package, history=history, intent=intent, feedback_context=feedback_context,
-            tool_workspace=tool_workspace, full_access=full_access, tool_session=tool_session)
-        with tempfile.TemporaryDirectory(prefix="sapba-agent-authoring-") as isolated:
-            client = _tool_authoring_codex(tool_workspace, full_access=full_access) if tool_workspace else _agent_authoring_codex(Path(isolated))
-            if tool_session is not None:
-                client = _with_authoring_mcp(client, tool_session)
-            key = operation_id or f"local-{id(client)}"
-            # SDK startup uses to_thread. Shield it: cancelling the await must not lose
-            # ownership of a process that the worker thread may still create later.
-            start = asyncio.create_task(client.__aenter__())
-            state: dict[str, Any] = {"client": client, "start": start, "proc": None, "cleanup": None,
-                                     "tool_mode": tool_workspace is not None}
-            self._authoring_clients[key] = state
-            try:
-                if full_access:
-                    from .runtime_execution import RuntimeExecutionError
-                    try:
-                        codex = await asyncio.wait_for(asyncio.shield(start), timeout=30)
-                    except TimeoutError:
-                        raise RuntimeExecutionError("runtime_sdk_initialization_timeout") from None
-                else:
-                    codex = await asyncio.shield(start)
-                state["proc"] = self._authoring_process(client)
-                if tool_workspace:
-                    async def probe_command(workspace: Any, command: list[str], *, timeout: float = 30) -> Any:
-                        # Probe the same client/profile that will own tool calls.
-                        return await _authoring_preflight_command(codex, workspace, command, timeout=timeout)
-                    if full_access:
-                        from .runtime_execution import command_preflight, execution_snapshot
-                        preflight = await command_preflight(codex, tool_workspace.source)
-                    else:
-                        preflight = await sandbox_preflight(tool_workspace, accept_loopback_access=True, command_runner=probe_command)
-                    checks = []
-                    if full_access:
-                        from .runtime_agent_authoring import repair_feedback
-                        async def turn(candidate, issues, remaining):
-                            return await self._run_agent_feedback(codex,
-                                prompt + ("\nController check failures: " + json.dumps(issues) if issues else ""),
-                                candidate, None, str(tool_workspace.source), tool_workspace=tool_workspace,
-                                explain_only=explain_only, image_inputs=image_inputs)
-                        decision = await repair_feedback(package, tool_workspace, turn, checks=checks)
-                    else:
-                        decision = await self._run_agent_feedback(codex, prompt, package, None,
-                            str(tool_workspace.source), tool_workspace=tool_workspace,
-                            explain_only=explain_only, image_inputs=image_inputs)
-                    decision["harness"] = {"mode": "full_access" if full_access else "isolated_tools", "workspace_id": tool_workspace.root.name,
-                        "base_commit": tool_workspace.base_commit, "preflight": preflight,
-                        "live_testing": "not_performed", "platform_apply": "not_performed"}
-                    if full_access:
-                        decision["harness"].update(execution_snapshot(model=self.model, effort=self.reasoning_effort),
-                                                   base_digest=tool_workspace.base_digest, checks=checks)
-                        if tool_workspace.platform_changes():
-                            from .authoring_harness import AuthoringHarnessError
-                            raise AuthoringHarnessError("agent_harness_platform_approval_required")
-                    return decision
-                return await self._run_agent_feedback(
-                    codex, prompt, package, thread_id, isolated, explain_only=explain_only,
-                    image_inputs=image_inputs,
-                )
-            finally:
-                cleanup = asyncio.create_task(self._close_authoring_client(key, state))
-                state["cleanup"] = cleanup
-                # A second cancellation can end this coroutine, but not cleanup. Keep
-                # the state registered until shutdown is actually confirmed.
-                await asyncio.shield(cleanup)
 
     @staticmethod
     def _authoring_process(client: Any) -> Any:
@@ -425,7 +320,7 @@ class CodexPlanner(SharedPlanner):
         return bool(proc.poll() is not None and start is not None and start.done() and not start.cancelled()
                     and cleanup is not None and cleanup.done())
 
-    async def _run_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str, *, tool_workspace: Any = None, explain_only: bool = False, image_inputs: list[str] | None = None) -> dict[str, Any]:
+    async def _native_agent_feedback(self, codex: Any, prompt: str, package: dict[str, Any], thread_id: str | None, isolated: str, *, tool_workspace: Any = None, explain_only: bool = False, image_inputs: list[str] | None = None):
         from openai_codex import ApprovalMode, Sandbox
 
         full_access = bool(tool_workspace and getattr(tool_workspace, "full_access", False))
@@ -472,9 +367,16 @@ class CodexPlanner(SharedPlanner):
         else:
             prompt_input = prompt
         result = await thread.run(prompt_input, output_schema=AGENT_FEEDBACK_OUTPUT_SCHEMA, effort=self.reasoning_effort, **turn_options)
-        raw = json.loads(result.final_response)
+        from .runtime_diagnostics import checked_output
+        raw = checked_output(result.final_response, AGENT_FEEDBACK_OUTPUT_SCHEMA,
+                             operation="review_agent_feedback", output_format="native_json_schema")
+        return raw, thread.id
+
+    async def _run_agent_feedback(self, codex, prompt, package, thread_id, isolated, *, tool_workspace=None, explain_only=False, image_inputs=None):
+        raw, handle = await self._native_agent_feedback(codex, prompt, package, thread_id, isolated,
+            tool_workspace=tool_workspace, explain_only=explain_only, image_inputs=image_inputs)
         from .runtime_agent_authoring import decode_feedback
-        return decode_feedback(raw, package, thread.id, tool_workspace=tool_workspace, explain_only=explain_only)
+        return decode_feedback(raw, package, handle, tool_workspace=tool_workspace, explain_only=explain_only)
 
 
     async def author_workflow_v2(self, **kwargs: Any) -> dict[str, Any]:

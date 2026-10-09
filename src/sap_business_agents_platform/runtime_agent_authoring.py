@@ -228,3 +228,56 @@ async def repair_feedback(package, workspace, turn, *, checks):
     return await RepairLoop().run(package, revise=revise, check=check,
         checkpoint=checks.append, assert_current=lambda: None)
 
+
+async def run_feedback(planner, *, feedback, locale, package, history=None, thread_id=None,
+                       operation_id=None, intent="revise", feedback_context=None,
+                       tool_policy=None, tool_session=None, image_inputs=None):
+    """One workspace/context/check/repair controller; drivers own native calls."""
+    import tempfile
+    from .agent_feedback_context import safe_context
+    from .authoring_workspace import AuthoringWorkspace
+    if not planner.model:
+        raise ValueError("agent_runtime_binding_missing")
+    driver = planner._driver
+    profile = driver.feedback_options(tool_policy, intent=intent, image_inputs=image_inputs)
+    feedback, feedback_context = safe_context(feedback), safe_context(feedback_context or {})
+    # Size validation precedes context projection into files and SDK startup.
+    feedback_prompt(planner.repository_root, feedback=feedback, locale=locale, package=package,
+        history=history, intent=intent, feedback_context=feedback_context)
+    workspace = None
+    if profile["workspace"]:
+        import uuid
+        workspace = AuthoringWorkspace(planner.repository_root, planner.data_root / profile["directory"] / uuid.uuid4().hex)
+        workspace.prepare(package, current_source=profile["full_access"])
+        workspace.full_access = profile["full_access"]
+        workspace.read_only_source = True
+        (workspace.source / ".authoring-tmp").mkdir(exist_ok=True)
+    prompt = feedback_prompt(planner.repository_root, feedback=feedback, locale=locale,
+        package=package, history=history, intent=intent, feedback_context=feedback_context,
+        tool_workspace=workspace, full_access=profile["full_access"], tool_session=tool_session,
+        package_in_files=profile.get("package_in_files", False))
+    with tempfile.TemporaryDirectory(prefix="sapba-agent-authoring-") as isolated:
+        cwd = workspace.source if workspace else Path(isolated)
+        async with driver.feedback_session(workspace=workspace, cwd=cwd, operation_id=operation_id,
+                profile=profile, tool_session=tool_session) as session:
+            async def turn(candidate, issues=(), remaining=None):
+                from .runtime_contract import remaining_budget
+                remaining_budget(None)
+                raw, handle = await driver.feedback_turn(session,
+                    prompt + ("\nController check failures: " + json.dumps(issues) if issues else ""),
+                    cwd=cwd, workspace=workspace, thread_id=thread_id if workspace is None else None,
+                    intent=intent, image_inputs=image_inputs)
+                if workspace:
+                    workspace._check_links_and_size()
+                return decode_feedback(raw, candidate, handle, tool_workspace=workspace,
+                    explain_only=intent == "explain",
+                    file_package=workspace.read_package(exclude_test_artifacts=True) if workspace else None)
+            checks = []
+            decision = await repair_feedback(package, workspace, turn, checks=checks) if workspace and profile["full_access"] else await turn(package)
+            if workspace:
+                decision["harness"] = {"mode": profile["mode"], "workspace_id": workspace.root.name,
+                    "base_commit": workspace.base_commit, "preflight": session.get("preflight"),
+                    "checks": checks, "live_testing": "not_performed", "platform_apply": "not_performed"}
+                driver.feedback_metadata(decision["harness"], workspace, profile)
+            return decision
+

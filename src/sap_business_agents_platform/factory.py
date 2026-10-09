@@ -15,7 +15,10 @@ from .models import DraftRecord, RunMode, RunStatus, utc_now
 
 
 class DraftError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "draft_error", blocker: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.blocker = blocker
 
 
 def infer_catalog_module(value: Any) -> str:
@@ -64,7 +67,40 @@ class AgentDraftService:
         self.settings = settings
         self.store = store
         self.author = author
+        self.history: Any = None
         self._creation_locks: dict[str, asyncio.Lock] = {}
+
+    def source_eligibility(self, run_id: str, session_id: str | None = None) -> str | None:
+        """One conversion gate shared by API creation and history summaries."""
+        try:
+            run = self.store.get_run(run_id)
+            if run.mode != RunMode.free_query or run.status != RunStatus.completed:
+                return "query_not_successful"
+            if (not run.result or not run.result.completeness.source_complete
+                    or not run.result.completeness.business_complete):
+                return "incomplete_evidence"
+            if not session_id:
+                linked = self.store.get_free_query_session_by_run(run_id)
+                session_id = linked["session_id"] if linked else None
+            if session_id:
+                session = self.store.get_free_query_session(session_id)
+                item = self.store.get_free_query_iteration(session_id, session["current_iteration"])
+                if item["run_id"] != run_id:
+                    return "query_not_successful"
+                if self.store.active_free_query_feedback_request(session_id):
+                    return "query_not_successful"
+                with self.store._connect() as db:
+                    last_feedback = db.execute("SELECT status FROM free_query_feedback_requests WHERE session_id=? AND base_iteration=? ORDER BY created_at DESC,feedback_request_id DESC LIMIT 1", (session_id, session["current_iteration"])).fetchone()
+                if last_feedback and last_feedback[0] not in {"completed", "iteration_created", "new_session_required"}:
+                    return "query_not_successful"
+                run = self._resolve_session_execution_run(session_id, item)
+            plan = self._replay_plan(run)
+            if not plan or _contains_write_operation(plan):
+                return "invalid_execution_plan"
+            validate_execution(_manifest_from_run("free-query-validation", str(run.query or "SAP query"), plan, ""))
+        except (KeyError, DraftError, ManifestError, ValueError, TypeError):
+            return "invalid_execution_plan"
+        return None
 
     async def create_from_run(
         self,
@@ -74,6 +110,15 @@ class AgentDraftService:
         origin: dict[str, Any] | None = None,
         execution_plan: dict[str, Any] | None = None,
         module: str | None = None,
+    ) -> DraftRecord:
+        context = self.history.protect(run_id=run_id) if self.history else nullcontext()
+        with context:
+            return await self._create_from_run_request(run_id, correction, origin=origin,
+                execution_plan=execution_plan, module=module)
+
+    async def _create_from_run_request(
+        self, run_id: str, correction: str = "", *, origin: dict[str, Any] | None = None,
+        execution_plan: dict[str, Any] | None = None, module: str | None = None,
     ) -> DraftRecord:
         key = _content_digest({"run_id": run_id, "correction": correction, "origin": origin or {}, "plan": execution_plan, "module": module})
         async with self._creation_locks.setdefault(key, asyncio.Lock()):
@@ -97,14 +142,16 @@ class AgentDraftService:
         run = self.store.get_run(run_id)
         if run.mode != RunMode.free_query:
             raise DraftError("Only a free_query run can become an Agent draft.")
-        if run.status not in {RunStatus.completed, RunStatus.inconclusive} or not run.result or not run.plan:
-            raise DraftError("The free query must finish with a validated plan before drafting an Agent.")
+        blocker = self.source_eligibility(run_id)
+        if blocker is not None:
+            raise DraftError("Only a successful latest query with a validated plan can become an Agent draft.",
+                             code="free_query_source_ineligible", blocker=blocker)
         slug = f"free-query-{draft_id[-8:]}"
         draft_dir = (self.settings.draft_root / draft_id).resolve()
         if self.settings.draft_root.resolve() not in draft_dir.parents:
             raise DraftError("Draft path escaped the configured draft root.")
         query = str(run.query or "SAP free query")
-        draft_plan = json.loads(json.dumps(execution_plan or run.plan))
+        draft_plan = json.loads(json.dumps(execution_plan or self._replay_plan(run)))
         manifest = _manifest_from_run(slug, query, draft_plan, correction)
         manifest["module"] = module or infer_catalog_module(draft_plan)
         origin = json.loads(json.dumps(origin or {}))
@@ -236,8 +283,10 @@ class AgentDraftService:
         return self.validate(draft_id)
 
     async def create_from_session(self, session_id: str, *, module: str | None = None) -> DraftRecord:
-        async with self._creation_locks.setdefault(f"session:{session_id}", asyncio.Lock()):
-            return await self._create_from_session(session_id, module=module)
+        context = self.history.protect(session_id=session_id) if self.history else nullcontext()
+        with context:
+            async with self._creation_locks.setdefault(f"session:{session_id}", asyncio.Lock()):
+                return await self._create_from_session(session_id, module=module)
 
     async def _create_from_session(self, session_id: str, *, module: str | None) -> DraftRecord:
         session = self.store.get_free_query_session(session_id)
@@ -248,12 +297,18 @@ class AgentDraftService:
                 return existing
         if session.get("status") != "satisfied" or not session.get("accepted_iteration"):
             raise DraftError("The latest free-query result must be accepted before drafting an Agent.")
+        if session["accepted_iteration"] != session["current_iteration"]:
+            raise DraftError("Only the latest successful query can become an Agent draft.")
         iteration = self.store.get_free_query_iteration(
             session_id, int(session["accepted_iteration"])
         )
         if iteration.get("result_digest") != session.get("accepted_result_digest"):
             raise DraftError("The accepted free-query result digest no longer matches.")
         run = self.store.get_run(iteration["run_id"])
+        blocker = self.source_eligibility(run.run_id, session_id)
+        if blocker is not None:
+            raise DraftError("Only a successful latest query with a validated execution plan can become an Agent draft.",
+                             code="free_query_source_ineligible", blocker=blocker)
         if run.result is None:
             raise DraftError("The accepted free-query result is unavailable.")
         execution_run = self._resolve_session_execution_run(session_id, iteration)
@@ -335,7 +390,7 @@ class AgentDraftService:
             current = source_iteration
         source_run = self.store.get_run(str(current.get("run_id") or ""))
         if (
-            source_run.status not in {RunStatus.completed, RunStatus.inconclusive}
+            source_run.status != RunStatus.completed
             or source_run.result is None
             or source_run.plan is None
         ):

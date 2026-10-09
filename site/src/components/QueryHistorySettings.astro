@@ -1,0 +1,46 @@
+---
+import type { Locale } from "../lib/types";
+interface Props { locale: Locale }
+const { locale } = Astro.props;
+const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
+const copy = locale === "zh" ? {
+  title: "查询历史", label: "历史查询保留天数", save: "保存保留期限",
+  hint: "默认 30 天，从最后一轮查询结束起算。设置对所有历史生效，缩短期限可能使已有记录到期；已生成的 Agent 草稿继续保留。",
+  saved: "保留期限已保存。", error: "无法读取或保存设置，请检查本地运行服务后重试。", invalid: "请输入大于零的整数天数。",
+} : {
+  title: "Query history", label: "History retention in days", save: "Save retention",
+  hint: "Defaults to 30 days after the last query finishes. Changes apply to all history; shortening retention may expire existing records. Generated Agent drafts are retained.",
+  saved: "Retention saved.", error: "Cannot read or save settings. Check the local runtime and retry.", invalid: "Enter a positive whole number of days.",
+};
+---
+<section class="query-history-settings" data-history-settings data-api-base={apiBase}>
+  <h2>{copy.title}</h2><p>{copy.hint}</p>
+  <form><label for="history-retention-days">{copy.label}</label><input id="history-retention-days" name="retention_days" type="number" min="1" step="1" required disabled />
+    <button type="submit" disabled>{copy.save}</button></form><p role="status" aria-live="polite" data-history-settings-message></p>
+</section>
+<script is:inline define:vars={{ copy }}>
+(() => {
+  const root = document.querySelector("[data-history-settings]"); if (!root) return;
+  const input = root.querySelector("input"); const button = root.querySelector("button"); const message = root.querySelector("[data-history-settings-message]");
+  const url = root.dataset.apiBase + "/api/system/free-query-history";
+  fetch(url).then(async (response) => {
+    if (!response.ok) throw new Error(); input.value = String((await response.json()).retention_days); input.disabled = false; button.disabled = false;
+  }).catch(() => { message.textContent = copy.error; });
+  root.querySelector("form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const days = Number(input.value);
+    if (!Number.isSafeInteger(days) || days < 1) { message.textContent = copy.invalid; return; }
+    button.disabled = true; input.disabled = true;
+    try {
+      const response = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ retention_days: days }) });
+      if (!response.ok) throw new Error(); input.value = String((await response.json()).retention_days); message.textContent = copy.saved;
+    } catch { message.textContent = copy.error; }
+    finally { button.disabled = false; input.disabled = false; }
+  });
+})();
+</script>
+<style>
+  .query-history-settings { margin-top:2rem; padding-top:1.5rem; border-top:1px solid var(--color-border); }
+  form { display:flex; flex-wrap:wrap; align-items:center; gap:.75rem; } input { width:7rem; padding:.5rem; } button:disabled { opacity:.6; }
+  input { min-height:44px; border:1px solid var(--color-border-strong); border-radius:5px; font:inherit; }
+  button { min-height:44px; padding:.55rem .85rem; border:1px solid var(--color-primary); border-radius:5px; background:var(--color-primary); color:white; font:inherit; cursor:pointer; }
+</style>

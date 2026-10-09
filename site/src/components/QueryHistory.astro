@@ -1,0 +1,151 @@
+---
+import type { Locale } from "../lib/types";
+import { askPath, runPath, agentManagementPath } from "../lib/urls";
+interface Props { locale: Locale }
+const { locale } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
+const copy = locale === "zh" ? {
+  title: "历史查询记录", back: "返回自由查询", refresh: "刷新", loading: "正在读取历史记录…",
+  empty: "暂无查询历史。", unavailable: "无法读取历史记录，请检查本地运行服务后重试。",
+  query: "查询问题", time: "最近查询时间", status: "最新状态", rounds: "查询轮数", expiry: "到期时间", actions: "操作",
+  view: "查看会话", convert: "转为 Agent 草稿", openDraft: "打开 Agent 草稿", previous: "上一页", next: "下一页",
+  retention: "查询历史自动保存，保留 {days} 天；追加查询结束后重新计时。", count: "共 {total} 个会话",
+  blocked: "当前查询尚未成功完成，只有成功的查询才能转为 Agent。",
+  retry: "重新查询", abandon: "放弃转换", cancel: "取消", confirm: "确认并创建草稿", module: "Agent 所属模块",
+  confirmText: "将最新成功查询结果转为 Agent 草稿，并确认该结果。草稿仍需后续编辑和校验。",
+  creating: "正在生成草稿…", expired: "历史记录已过期或删除。", activeExpiry: "查询结束后起算",
+  draftError: "草稿生成失败，请重试。", changed: "查询状态已变化，请重新查看最新结果。", importError: "草稿已生成，但导入管理页失败。请重试打开。",
+  statuses: { queued: "排队中", planning: "准备查询", validating: "校验中", running: "查询中", waiting_input: "等待补充信息", completed: "成功", inconclusive: "结论不充分", failed: "失败", cancelled: "已取消", reviewing: "处理追问中" },
+  reasons: { query_not_successful: "查询失败、未完成或结论不充分。", incomplete_evidence: "查询结果或证据不完整。", invalid_execution_plan: "缺少有效、可重放的执行计划。" },
+} : {
+  title: "Query history", back: "Back to free query", refresh: "Refresh", loading: "Loading query history…",
+  empty: "No query history yet.", unavailable: "Cannot load history. Check the local runtime and retry.",
+  query: "Question", time: "Latest query", status: "Latest status", rounds: "Rounds", expiry: "Expires", actions: "Actions",
+  view: "View session", convert: "Create Agent draft", openDraft: "Open Agent draft", previous: "Previous", next: "Next",
+  retention: "Query history is saved automatically for {days} days, starting again after an additional query finishes.", count: "{total} sessions",
+  blocked: "This query has not completed successfully. Only successful queries can become Agents.",
+  retry: "Query again", abandon: "Cancel conversion", cancel: "Cancel", confirm: "Confirm and create draft", module: "Agent module",
+  confirmText: "Create an Agent draft from the latest successful result and confirm that result. The draft still requires editing and validation.",
+  creating: "Creating draft…", expired: "Query history expired or was deleted.", activeExpiry: "Starts when query finishes",
+  draftError: "Could not create the draft. Please retry.", changed: "The query changed. Review the latest result again.", importError: "The draft was created but could not be imported. Retry opening it.",
+  statuses: { queued: "Queued", planning: "Planning", validating: "Validating", running: "Running", waiting_input: "Waiting for input", completed: "Successful", inconclusive: "Inconclusive", failed: "Failed", cancelled: "Cancelled", reviewing: "Reviewing feedback" },
+  reasons: { query_not_successful: "The query failed, is unfinished or is inconclusive.", incomplete_evidence: "The result or evidence is incomplete.", invalid_execution_plan: "A validated, replayable execution plan is unavailable." },
+};
+---
+<section class="query-history" data-query-history data-api-base={apiBase} data-ask-path={askPath(base, locale)} data-run-path={runPath(base, locale)} data-management-path={agentManagementPath(base, locale)}>
+  <header><h1>{copy.title}</h1><div class="history-actions"><a class="secondary-button" href={askPath(base, locale)}>{copy.back}</a><button type="button" class="secondary-button" data-history-refresh>{copy.refresh}</button></div></header>
+  <p data-history-retention></p><p role="status" aria-live="polite" data-history-message>{copy.loading}</p>
+  <div class="history-table-wrap"><table data-history-table hidden><thead><tr>
+    <th scope="col">{copy.query}</th><th scope="col">{copy.time}</th><th scope="col">{copy.status}</th><th scope="col">{copy.rounds}</th><th scope="col">{copy.expiry}</th><th scope="col">{copy.actions}</th>
+  </tr></thead><tbody data-history-rows></tbody></table></div>
+  <nav class="history-pagination" aria-label={locale === "zh" ? "历史分页" : "History pages"}><button type="button" class="secondary-button" data-history-prev disabled>{copy.previous}</button><span data-history-count></span><button type="button" class="secondary-button" data-history-next disabled>{copy.next}</button></nav>
+  <dialog data-history-blocked aria-labelledby="history-blocked-title"><h2 id="history-blocked-title">{copy.blocked}</h2><p data-history-reason></p><div class="history-actions"><button type="button" data-history-retry>{copy.retry}</button><button type="button" class="secondary-button" data-history-abandon>{copy.abandon}</button></div></dialog>
+  <dialog data-history-convert aria-labelledby="history-convert-title"><h2 id="history-convert-title">{copy.convert}</h2><p>{copy.confirmText}</p><label for="history-module">{copy.module}</label><select id="history-module" data-history-module>{["Common", "CO", "FI", "MM", "PP", "SD"].map((module) => <option value={module}>{module}</option>)}</select><p role="status" data-history-draft-message></p><div class="history-actions"><button type="button" data-history-confirm>{copy.confirm}</button><button type="button" class="secondary-button" data-history-cancel>{copy.cancel}</button></div></dialog>
+</section>
+<script is:inline define:vars={{ copy, locale }}>
+(() => {
+  const root = document.querySelector("[data-query-history]"); if (!root) return;
+  const api = root.dataset.apiBase;
+  const message = root.querySelector("[data-history-message]");
+  const tbody = root.querySelector("[data-history-rows]");
+  const blocked = root.querySelector("[data-history-blocked]");
+  const convert = root.querySelector("[data-history-convert]");
+  let offset = 0, total = 0, selected = null, version = 0, focusButton = null, busy = false;
+  const date = (value) => value ? new Date(value).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") : copy.activeExpiry;
+  const node = (tag, text) => { const el = document.createElement(tag); if (text != null) el.textContent = text; return el; };
+  const request = async (path, options = {}) => {
+    const response = await fetch(api + path, options); const payload = await response.json();
+    if (!response.ok) { const error = new Error(response.status === 404 ? copy.expired : (payload.detail?.message || (typeof payload.detail === "string" ? payload.detail : copy.draftError))); error.status = response.status; error.code = payload.detail?.code; error.blocker = payload.detail?.blocker; throw error; }
+    return payload;
+  };
+  const close = (dialog) => { dialog.close(); focusButton?.focus(); };
+  const showBlocked = (item) => { selected = item; root.querySelector("[data-history-reason]").textContent = copy.reasons[item.draft_blocker] || copy.changed; blocked.showModal(); };
+  const management = (payload) => { if (!payload.managed_draft_id) { message.textContent = copy.importError; return; } window.location.href = `${root.dataset.managementPath}?draft=${encodeURIComponent(payload.managed_draft_id)}`; };
+  const openDraft = async (item) => {
+    if (item.managed_draft_id) return management(item);
+    try { management(await request(`/api/authoring/drafts/${encodeURIComponent(item.draft_id)}/import-to-management`, { method: "POST" })); }
+    catch (error) { message.textContent = error.message; }
+  };
+  const load = async () => {
+    const current = ++version; message.textContent = copy.loading;
+    root.querySelector("[data-history-prev]").disabled = true; root.querySelector("[data-history-next]").disabled = true;
+    try {
+      const payload = await request(`/api/free-query-sessions?limit=20&offset=${offset}`); if (current !== version) return;
+      total = payload.total;
+      if (offset >= total && offset > 0) { offset = Math.max(0, Math.floor((total - 1) / 20) * 20); return load(); }
+      root.querySelector("[data-history-retention]").textContent = copy.retention.replace("{days}", String(payload.retention_days));
+      root.querySelector("[data-history-count]").textContent = copy.count.replace("{total}", String(total));
+      tbody.replaceChildren();
+      for (const item of payload.items) {
+        const tr = node("tr"); tr.dataset.historyId = item.history_id;
+        for (const text of [item.query, date(item.activity_at), copy.statuses[item.status] || item.status, item.iteration, date(item.expires_at)]) tr.append(node("td", text));
+        const actions = node("td"); actions.className = "history-actions";
+        const view = node("a", copy.view); view.className = "secondary-button";
+        view.href = `${root.dataset.runPath}?${new URLSearchParams(item.session_id ? { session: item.session_id } : { run: item.run_id })}`;
+        const action = node("button", item.draft_id ? copy.openDraft : copy.convert); action.type = "button";
+        action.addEventListener("click", async () => {
+          focusButton = action; selected = item;
+          if (item.draft_id) return openDraft(item);
+          if (!item.can_create_draft) return showBlocked(item);
+          root.querySelector("[data-history-draft-message]").textContent = "";
+          convert.showModal();
+        }); actions.append(view, action); tr.append(actions); tbody.append(tr);
+      }
+      root.querySelector("[data-history-table]").hidden = payload.items.length === 0;
+      message.textContent = payload.items.length ? "" : copy.empty;
+      root.querySelector("[data-history-prev]").disabled = offset === 0;
+      root.querySelector("[data-history-next]").disabled = offset + 20 >= total;
+    } catch (error) { if (current === version) { root.querySelector("[data-history-table]").hidden = true; message.textContent = copy.unavailable; } }
+  };
+  root.querySelector("[data-history-refresh]").addEventListener("click", load);
+  root.querySelector("[data-history-prev]").addEventListener("click", () => { offset = Math.max(0, offset - 20); load(); });
+  root.querySelector("[data-history-next]").addEventListener("click", () => { offset += 20; load(); });
+  root.querySelector("[data-history-abandon]").addEventListener("click", () => close(blocked));
+  root.querySelector("[data-history-cancel]").addEventListener("click", () => { if (!busy) close(convert); });
+  convert.addEventListener("cancel", (event) => { if (busy) event.preventDefault(); });
+  root.querySelector("[data-history-retry]").addEventListener("click", () => { window.location.href = `${root.dataset.askPath}?retryHistory=${encodeURIComponent(selected.history_id)}`; });
+  root.querySelector("[data-history-confirm]").addEventListener("click", async () => {
+    if (busy || !selected) return; busy = true;
+    const button = root.querySelector("[data-history-confirm]"); const cancel = root.querySelector("[data-history-cancel]");
+    button.disabled = true; cancel.disabled = true; root.querySelector("[data-history-draft-message]").textContent = copy.creating;
+    try {
+      const module = root.querySelector("[data-history-module]").value; let path;
+      if (selected.session_id) {
+        const session = await request(`/api/free-query-sessions/${encodeURIComponent(selected.session_id)}`);
+        const latest = session.iterations.find((i) => i.iteration === session.current_iteration);
+        if (!session.can_create_draft || !latest || latest.status !== "completed") { close(convert); return showBlocked({ ...selected, draft_blocker: session.draft_blocker }); }
+        await request(`/api/free-query-sessions/${encodeURIComponent(selected.session_id)}/accept`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ iteration: session.current_iteration, expectedResultDigest: latest.result_digest }) });
+        path = `/api/free-query-sessions/${encodeURIComponent(selected.session_id)}/agent-draft`;
+      } else path = `/api/runs/${encodeURIComponent(selected.run_id)}/create-agent-draft`;
+      const result = await request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ module }) });
+      close(convert); await load(); management(result);
+    } catch (error) {
+      if (error.code === "free_query_source_ineligible" || error.code === "free_query_iteration_active") {
+        close(convert); showBlocked({ ...selected, draft_blocker: error.blocker || "query_not_successful" });
+      } else root.querySelector("[data-history-draft-message]").textContent = error.message;
+    }
+    finally { busy = false; button.disabled = false; cancel.disabled = false; }
+  });
+  load();
+})();
+</script>
+<style is:global>
+  .query-history header { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:1rem; }
+  .query-history .history-actions { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; }
+  .query-history .history-table-wrap { overflow-x:auto; }
+  .query-history table { width:100%; border-collapse:collapse; }
+  .query-history th,.query-history td { padding:.9rem .7rem; text-align:left; border-bottom:1px solid var(--border, #dce2e8); vertical-align:top; }
+  .query-history td:first-child { min-width:12rem; max-width:30rem; overflow-wrap:anywhere; white-space:pre-wrap; }
+  .query-history .history-pagination { display:flex; justify-content:space-between; gap:1rem; align-items:center; margin-top:1.25rem; }
+  .query-history button { cursor:pointer; }
+  .query-history button,.query-history a.secondary-button { display:inline-flex; justify-content:center; align-items:center; min-height:44px; padding:.55rem .85rem; border:1px solid var(--color-primary); border-radius:5px; background:var(--color-primary); color:white; font:inherit; font-size:.85rem; font-weight:600; text-decoration:none; }
+  .query-history button.secondary-button,.query-history a.secondary-button { background:white; color:var(--color-text); border-color:var(--color-border-strong); }
+  .query-history button:focus-visible,.query-history a:focus-visible { outline:2px solid var(--color-primary); outline-offset:3px; }
+  .query-history button:disabled { cursor:default; opacity:.6; }
+  .query-history dialog { width:min(32rem, calc(100vw - 2rem)); border:1px solid var(--color-border); border-radius:1rem; padding:1.5rem; color:var(--color-text); }
+  .query-history dialog::backdrop { background:rgb(0 0 0 / .35); }
+  .query-history dialog h2 { font-size:1.15rem; }
+  .query-history dialog select { display:block; width:100%; margin:.5rem 0 1rem; padding:.6rem; }
+  .query-history [data-history-message]:empty { display:none; }
+</style>

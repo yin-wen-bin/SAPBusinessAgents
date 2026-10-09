@@ -32,6 +32,7 @@ from .config import Settings
 from .database import RunStore
 from .engine import RunCoordinator, RunExecutionError, presentation_table_page
 from .factory import AgentDraftService, DraftError
+from .free_query_history import FreeQueryHistory
 from .harness import CodexHarnessController, HarnessToolBroker
 from .integrations import (
     IntegrationError,
@@ -135,6 +136,11 @@ from .workflow_presentation import (
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+class HistorySettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    retention_days: int = Field(gt=0, strict=True)
 
 
 def _safe_csv_cell(value: Any) -> str:
@@ -265,6 +271,7 @@ def create_app(
     embedded_provider: SapReadProvider | None = None,
     sdk_manager: SDKManager | None = None,
     integration_gateway: IntegrationGateway | None = None,
+    harness: Any | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     store = RunStore(settings.database_path)
@@ -357,7 +364,7 @@ def create_app(
         "approved_skills": 0,
     }
     harness_broker = HarnessToolBroker(settings, store, sap_read, skills)
-    harness = (
+    harness = harness or (
         CodexHarnessController(settings, store, harness_broker)
         if settings.free_query_runtime == "harness" and not planner_supplied
         else None
@@ -374,6 +381,9 @@ def create_app(
         integrations=integrations,
     )
     drafts = AgentDraftService(settings, store, agent_runtime)
+    query_history = FreeQueryHistory(store, settings.data_root, coordinator)
+    query_history.draft_check = drafts.source_eligibility
+    drafts.history = query_history
     if not planner_supplied:
         from .workbuddy_harness import WorkBuddyHarnessController
         if hasattr(sdk_registry, "workbuddy"):
@@ -441,12 +451,14 @@ def create_app(
             approved_skills=len(skill_registry.list()),
         )
         await coordinator.start()
+        await query_history.start()
         await role_matching.start()
         workflow_drafts.assistant.recover()
         await agent_lifecycle.start_feedback_image_cleanup()
         try:
             yield
         finally:
+            await query_history.stop()
             await workflow_drafts.assistant.stop()
             await acceptance_campaigns.stop()
             await sample_discovery.stop()
@@ -482,6 +494,7 @@ def create_app(
     app.state.agent_runtime = agent_runtime
     app.state.coordinator = coordinator
     app.state.drafts = drafts
+    app.state.query_history = query_history
     app.state.workflows = workflows
     app.state.workflow_drafts = workflow_drafts
     app.state.workflow_management = workflow_management
@@ -1372,6 +1385,26 @@ def create_app(
     def list_runs(limit: int = Query(50, ge=1, le=200)) -> list[dict[str, Any]]:
         return [item.model_dump(mode="json") for item in store.list_runs(limit)]
 
+    @app.get("/api/system/free-query-history")
+    def get_query_history_settings() -> dict[str, int]:
+        return query_history.settings()
+
+    @app.put("/api/system/free-query-history")
+    def update_query_history_settings(payload: HistorySettingsUpdate) -> dict[str, int]:
+        return query_history.update_settings(payload.retention_days)
+
+    @app.get("/api/free-query-sessions")
+    def list_query_history(limit: int = Query(20, ge=1, le=100),
+                           offset: int = Query(0, ge=0)) -> dict[str, Any]:
+        return query_history.list(limit=limit, offset=offset)
+
+    @app.get("/api/free-query-history/{history_id}/retry-query")
+    def get_query_history_retry(history_id: str) -> dict[str, str]:
+        try:
+            return query_history.retry_query(history_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Query history expired or deleted") from exc
+
     @app.post("/api/free-query-sessions", status_code=201)
     def create_free_query_session(payload: FreeQuerySessionCreate) -> dict[str, Any]:
         try:
@@ -1390,6 +1423,9 @@ def create_app(
             result = coordinator.free_query_session(session_id)
             imported = store.get_draft_import(result["draft_id"]) if result.get("draft_id") else None
             result["managed_draft_id"] = imported["managed_draft_id"] if imported else None
+            latest = next((i for i in result["iterations"] if i["iteration"] == result["current_iteration"]), None)
+            blocker = drafts.source_eligibility(latest["run_id"], session_id) if latest else "invalid_execution_plan"
+            result.update(can_create_draft=blocker is None, draft_blocker=blocker)
             return result
         except KeyError as exc:
             raise HTTPException(404, "Free-query session not found") from exc
@@ -1576,7 +1612,7 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(404, "Free-query session not found") from exc
         except DraftError as exc:
-            raise HTTPException(409, str(exc)) from exc
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "blocker": exc.blocker}) from exc
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
@@ -1601,6 +1637,9 @@ def create_app(
             )
             if derived:
                 payload["result"]["workflow_presentation"] = derived
+        if record.mode.value == "free_query":
+            blocker = drafts.source_eligibility(run_id)
+            payload.update(can_create_draft=blocker is None, draft_blocker=blocker)
         return payload
 
     def workflow_view_for(run_id: str) -> tuple[Any, dict[str, Any]]:
@@ -2081,7 +2120,7 @@ def create_app(
                 409, {"code": exc.code, "message": str(exc), "detail": exc.detail}
             ) from exc
         except DraftError as exc:
-            raise HTTPException(409, str(exc)) from exc
+            raise HTTPException(409, {"code": exc.code, "message": str(exc), "blocker": exc.blocker}) from exc
 
     @app.post("/api/authoring/drafts", status_code=201)
     async def create_authoring_draft(payload: DraftAuthoringCreate) -> dict[str, Any]:

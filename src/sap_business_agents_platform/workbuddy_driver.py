@@ -4,10 +4,16 @@ from __future__ import annotations
 import json
 import uuid
 import copy
+import asyncio
+import time
 from collections import OrderedDict
+from contextvars import ContextVar
+from contextlib import asynccontextmanager
 from typing import Any
 
-from .runtime_contract import RuntimeRequest, RuntimeResult, RuntimeSession, RuntimeContractError, session_id, execute_frozen
+from .runtime_contract import RuntimeRequest, RuntimeResult, RuntimeTurn, RuntimeSession, RuntimeContractError, session_id, execute_frozen, require_deadline
+
+_CLIENT_CLEANUP_SECONDS = 10
 
 
 class WorkBuddySDKDriver:
@@ -16,6 +22,7 @@ class WorkBuddySDKDriver:
     def __init__(self, owner: Any):
         self.owner = owner
         self.sessions: dict[str, dict[str, Any]] = OrderedDict()
+        self.turn_owner = ContextVar("workbuddy_client_turn_owner", default=None)
 
     def bind_session(self, key, state):
         self.sessions[key] = state
@@ -25,6 +32,39 @@ class WorkBuddySDKDriver:
 
     def client(self, **options: Any) -> Any:
         return WorkBuddyClient(self, options)
+
+    def feedback_options(self, policy, *, intent, image_inputs):
+        from .runtime_execution import FULL_ACCESS_POLICY
+        trusted = bool(intent == "revise" and policy and
+            (policy.get("mode") == "trusted_local" or policy == FULL_ACCESS_POLICY))
+        if image_inputs:
+            raise RuntimeContractError("agent_feedback_image_unsupported")
+        if policy and not trusted and intent != "explain":
+            raise RuntimeContractError("workbuddy_windows_restricted_unverified")
+        return {"workspace": trusted, "full_access": trusted, "mode": "trusted_local" if trusted else "bounded",
+                "directory": "workbuddy-authoring", "package_in_files": trusted}
+
+    @asynccontextmanager
+    async def feedback_session(self, *, workspace, cwd, operation_id, profile, tool_session):
+        owner = self.owner
+        tokens = (owner._feedback_operation.set(operation_id), owner._feedback_cwd.set(cwd),
+                  owner._authoring.set({"mode": "trusted_local", "session": tool_session} if profile["full_access"] else None))
+        try:
+            yield {"preflight": "operation_validation_required", "profile": profile}
+        finally:
+            owner._authoring.reset(tokens[2])
+            owner._feedback_cwd.reset(tokens[1])
+            owner._feedback_operation.reset(tokens[0])
+
+    async def feedback_turn(self, session, prompt, *, cwd, workspace, thread_id, intent, image_inputs):
+        from .runtime_prompts import AGENT_FEEDBACK_OUTPUT_SCHEMA
+        return await self.owner._structured_turn(prompt, AGENT_FEEDBACK_OUTPUT_SCHEMA, thread_id=None,
+            system_prompt=("Trusted local Agent authoring. No production writes; SAP via authorized platform tools only."
+                if session["profile"]["full_access"] else "Draft-only feedback. Only the local StructuredOutput formatter is allowed. Never access SAP or the checkout."),
+            native_schema=True, allow_repair=False)
+
+    def feedback_metadata(self, result, workspace, profile):
+        pass
 
     def workflow_options(self, mode):
         if mode != "full_access":
@@ -67,17 +107,54 @@ class WorkBuddySDKDriver:
             options = {"cwd": request.cwd, "model": request.binding.get("model"), **request.permissions}
             thread = await client.thread_resume(request.session, **options) if request.session else await client.thread_start(
                 **options, developer_instructions=request.instructions)
-            return await thread.run(request.prompt, output_schema=request.output_schema)
+            result = await thread.run(request.prompt, output_schema=request.output_schema)
+        return result.result(cleanup_complete=True)
 
 
 class WorkBuddyClient:
     def __init__(self, driver, options=None):
         self.driver, self.options = driver, options or {}
+        self.closed = False
+        self.turns = {}
+        self.jobs = set()
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *args):
+        # The common hard deadline intentionally returns without trusting SDK
+        # cancellation. Only this owned-worker driver drains its cancelled turn.
+        # Codex's request/timeout/cancellation path is unchanged.
+        self.closed = True
+        pending = {task: scope for task, scope in self.turns.items() if not task.done()}
+        supervisor = self.driver.owner.supervisor
+        pending_job_ids = {key for scope in pending.values() for key in scope["jobs"]}
+        job_ids = self.jobs | pending_job_ids
+        if not pending:
+            if job_ids and any(item["task_id"] in job_ids for item in supervisor.pending()):
+                raise RuntimeContractError("runtime_cleanup_incomplete")
+            return False
+        for task in pending:
+            if not task.cancelling():
+                task.cancel()
+        from .runtime_contract import cleanup_deadline
+        deadline = min([cleanup_deadline(), time.monotonic() + _CLIENT_CLEANUP_SECONDS,
+            # Completed turns keep their original audit deadlines. They cannot
+            # shorten the bounded drain of a different, still-pending turn.
+            *[supervisor.cleanup_deadlines[key] for key in pending_job_ids if key in supervisor.cleanup_deadlines]])
+        try:
+            await asyncio.wait(pending, timeout=max(0, deadline - time.monotonic()))
+        finally:
+            unfinished = {task for task in pending if not task.done()}
+            if unfinished:
+                # Do not cancel unrelated workers or reset another job's clock.
+                supervisor.mark_cleanup_pending({key for task in unfinished for key in pending[task]["jobs"]})
+            for task in pending:
+                task.add_done_callback(_consume_turn)
+        if unfinished:
+            raise RuntimeContractError("runtime_cleanup_incomplete")
+        if job_ids and any(item["task_id"] in job_ids for item in supervisor.pending()):
+            raise RuntimeContractError("runtime_cleanup_incomplete")
         return False
 
     async def thread_start(self, **options):
@@ -86,7 +163,7 @@ class WorkBuddyClient:
         state = {"options": options, "history": [], "index": 0,
                  "binding": copy.deepcopy(self.driver.owner.runtime_snapshot), "model": self.driver.owner.model}
         self.driver.bind_session(key, state)
-        return WorkBuddyThread(self.driver, key, state)
+        return WorkBuddyThread(self.driver, key, state, self)
 
     async def thread_resume(self, handle, **options):
         options = {**self.options, **options}
@@ -97,9 +174,10 @@ class WorkBuddyClient:
             raise ValueError("runtime_session_provider_mismatch")
         state = self.driver.sessions.get(key)
         if state and (state["binding"] != self.driver.owner.runtime_snapshot or state["model"] != self.driver.owner.model):
-            from .runtime_contract import RuntimeContractError
             raise RuntimeContractError("runtime_session_binding_changed")
         if state is None:
+            if self.options.get("platform_context_restored") is not True:
+                raise RuntimeContractError("runtime_platform_context_missing")
             # Reconnection carries platform context; never native cross-SDK resume.
             # Legacy native IDs are accepted only as compatibility input. They
             # cannot become platform keys: identical native IDs from unrelated
@@ -110,14 +188,35 @@ class WorkBuddyClient:
                 "binding": copy.deepcopy(self.driver.owner.runtime_snapshot), "model": self.driver.owner.model}
         self.driver.bind_session(key, state)
         state["options"].update(options)
-        return WorkBuddyThread(self.driver, key, state)
+        return WorkBuddyThread(self.driver, key, state, self)
+
+
+def _consume_turn(task):
+    try:
+        task.result()
+    except BaseException:
+        pass
 
 
 class WorkBuddyThread:
-    def __init__(self, driver, key, state):
+    def __init__(self, driver, key, state, client):
         self.driver, self.id, self.state = driver, key, state
+        self.client = client
 
     async def run(self, prompt, *, output_schema, effort=None, **options):
+        if self.client.closed or asyncio.current_task().cancelling():
+            raise RuntimeContractError("runtime_cancelled")
+        task, scope = asyncio.current_task(), {"jobs": set()}
+        self.client.turns[task] = scope
+        token = self.driver.turn_owner.set(scope)
+        try:
+            return await self._run(prompt, output_schema=output_schema, effort=effort, **options)
+        finally:
+            self.client.jobs.update(scope["jobs"])
+            self.driver.turn_owner.reset(token)
+            self.client.turns.pop(task, None)
+
+    async def _run(self, prompt, *, output_schema, effort=None, **options):
         owner = self.driver.owner
         config = self.state["options"]
         self.state["index"] += 1
@@ -126,6 +225,7 @@ class WorkBuddyThread:
             prompt, output_schema, cwd=config.get("cwd"), instructions=config.get("developer_instructions"),
             permissions={key: value for key, value in config.items() if key in {"sandbox", "approval_mode"}},
             session=RuntimeSession("workbuddy", self.id))
+        require_deadline()
         request.remaining()
         content = request.prompt
         if config.get("format_instructions"):
@@ -143,21 +243,34 @@ class WorkBuddyThread:
             )
         raw, returned_id = await owner._structured_turn(content, wire_schema, thread_id=self.id,
             system_prompt=request.instructions, native_schema=True, allow_repair=False)
+        if self.client.closed or asyncio.current_task().cancelling():
+            # A driver that returns late after cancellation cannot append history
+            # or provide a successful result to a completed platform operation.
+            raise RuntimeContractError("runtime_cancelled")
+        request.remaining()
+        # Keep native context in its already validated transport representation.
+        # Replaying the legacy string envelope to an object-Schema model forces
+        # it to decode escaped JSON and contradicts its native output examples.
+        native_context = copy.deepcopy(raw) if wire_schema != request.output_schema else None
         try:
             raw = canonical_output(raw, request.output_schema, operation=request.operation)
         except RuntimeContractError as exc:
             owner._emit("workbuddy_output_rejected", exc.detail)
             raise
+        from .runtime_diagnostics import checked_output
+        raw = checked_output(json.dumps(raw, ensure_ascii=False), request.output_schema,
+                             operation=request.operation, output_format="canonical_json")
         # Native IDs are metadata, not a platform conversation key. Two workers
         # may report identical IDs; they must never merge unrelated histories.
-        self.state["native_session_id"] = returned_id
-        self.state["history"].append({"prompt": prompt, "output": raw})
-        if len(json.dumps(self.state["history"], ensure_ascii=False).encode("utf-8")) > 524288:
-            from .runtime_contract import RuntimeContractError
+        history = self.state["history"] + [{"prompt": prompt, "output": native_context if native_context is not None else raw}]
+        if len(json.dumps(history, ensure_ascii=False).encode("utf-8")) > 524288:
             self.driver.sessions.pop(self.id, None)
             raise RuntimeContractError("runtime_context_too_large")
+        request.remaining()
+        self.state["native_session_id"] = returned_id
+        self.state["history"] = history
         self.driver.bind_session(self.id, self.state)
-        return RuntimeResult(raw, RuntimeSession("workbuddy", self.id),
+        return RuntimeTurn(raw, RuntimeSession("workbuddy", self.id),
                              actual_model=(getattr(owner, "_last_result", {}) or {}).get("actual_model"))
 
 
@@ -228,8 +341,11 @@ class WorkBuddyHarnessDriver:
     async def cleanup(self, run_id, context):
         import time
         from .workbuddy_environment import WorkBuddyError
+        if context["cleanup_state"].get("complete") is True:
+            return
         supervisor = self.owner.manager.supervisor
-        remaining = max(0, supervisor.cleanup_deadlines.get(run_id, time.monotonic() + 10) - time.monotonic())
+        from .runtime_contract import cleanup_deadline
+        remaining = max(0, min(cleanup_deadline(), supervisor.cleanup_deadlines.get(run_id, time.monotonic() + 10)) - time.monotonic())
         context["cleanup_state"]["started"] = True
         if not await self.owner.broker.cancel_tools(run_id, timeout=remaining) or supervisor.reconcile():
             self.owner.store.update_harness_state(run_id, {"cleanup_incomplete": True})
@@ -242,7 +358,7 @@ class WorkBuddyHarnessDriver:
         from .runtime_harness import tool_call
         from .runtime_query_contract import PLAN_SCHEMA
         from .runtime_diagnostics import output_diagnostic
-        from .workbuddy_harness import parse_output
+        from .workbuddy_harness import native_terminal_instructions, parse_output
         from .workbuddy_environment import WorkBuddyError
         from .workbuddy_compat import translate
         from .harness import AcceptanceReportValidationError
@@ -276,7 +392,7 @@ class WorkBuddyHarnessDriver:
             response = await owner.manager.supervisor.run(task_id=run_id, snapshot=snapshot,
                 operation=request.operation, payload={"prompt": request.prompt + ("\nPlatform-owned conversation context:\n" +
                     json.dumps(request.context, ensure_ascii=False) if request.context else ""),
-                    "system_prompt": (request.instructions or "") + "\nSDK terminal encoding: use StructuredOutput with the entire frozen output object, not a fragment.",
+                    "system_prompt": (request.instructions or "") + native_terminal_instructions(request.output_schema),
                     "cwd": request.cwd, "tools": tools, "output_schema": request.output_schema,
                     "timeout_ms": int(request.remaining() * 1000)}, seconds=request.remaining(),
                 tool_handler=handle, emit=lambda kind, data: owner.store.append_event(run_id, kind, data))
@@ -290,8 +406,9 @@ class WorkBuddyHarnessDriver:
             owner.store.update_run(run_id, thread_id=handle_id)
             owner.store.update_harness_state(run_id, {"thread_id": handle_id,
                 "turn_count": context["turn_count"], "native_session_id": response.get("session_id")})
+            await self.cleanup(run_id, context)
             return RuntimeResult(raw, RuntimeSession("workbuddy", handle_id),
-                actual_model=response.get("actual_model"))
+                actual_model=response.get("actual_model"), cleanup_complete=context["cleanup_state"].get("complete") is True)
         except WorkBuddyError as error:
             owner.store.append_event(run_id, "workbuddy_execution_failed", {"operation": request.operation,
                 "phase": "terminal_output" if error.code == "workbuddy_structured_output_missing" else "execution",

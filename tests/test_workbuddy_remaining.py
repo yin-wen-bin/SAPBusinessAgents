@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from contextlib import asynccontextmanager
@@ -17,6 +18,16 @@ from sap_business_agents_platform.workbuddy_role_contract import decode, prompt,
 PLAN = {"service_name": "API_PURCHASEORDER_PROCESS_SRV", "odata_version": "2.0", "entity_set": "A_PurchaseOrder",
         "http_method": "GET", "filters": [{"field": "PurchaseOrder", "operator": "eq", "value": "4500001466"}],
         "select_fields": ["PurchaseOrder", "Supplier", "CompanyCode"], "top": 1}
+
+
+def feedback_arguments(workflow):
+    from tests.runtime_trace_fixture import cases
+    return {**cases()['review_workflow_feedback'], 'workflow': workflow}
+
+
+def feedback_terminal(**updates):
+    from tests.runtime_trace_fixture import response
+    return {**response('review_workflow_feedback', ''), **updates}
 
 
 @pytest.mark.parametrize("key", ["filter", "keys", "select", "skip", "url", "headers"])
@@ -147,7 +158,7 @@ def test_workflow_compiler_contract_rejects_missing_confidence_and_patch_output(
     async def turn(prompt, schema, **kwargs):
         assert schema == WORKFLOW_COMPOSITION_OUTPUT_SCHEMA and kwargs["native_schema"]
         assert "confidence" in prompt and "COMPLETE compiler proposal" in prompt
-        return {"needs_clarification": False, "proposal_json": json.dumps(proposal)}, "session"
+        return {"needs_clarification": False, "clarification_question": "", "proposal_json": json.dumps(proposal)}, "session"
     monkeypatch.setattr(planner, "_structured_turn", turn)
     assert asyncio.run(planner.compose_workflow(requirement="Check", catalog={}, locale="en"))["proposal"] == proposal
 
@@ -160,15 +171,15 @@ def test_workflow_compiler_contract_rejects_missing_confidence_and_patch_output(
 def test_workflow_feedback_embedded_contract_and_safe_paths(tmp_path, monkeypatch, source, value, path):
     proposal = {"title": {"zh": "检查", "en": "Check"}, "stages": [{"id": "check", "agent_id": "fixed",
         "confidence": "high", "capability": {"zh": "检查", "en": "Check"}, "bindings": [], "requested_outputs": ["records"]}]}
-    raw = {"action": "revise_workflow", "proposal_json": json.dumps(proposal),
-           "validation_input_patch_json": "{}", "candidate_expectations_json": "[]"}
+    raw = feedback_terminal(action="revise_workflow", proposal_json=json.dumps(proposal),
+                            validation_input_patch_json="{}", candidate_expectations_json="[]")
     planner = WorkBuddyPlanner(tmp_path, "model")
     async def turn(prompt, schema, **kwargs):
         assert kwargs["native_schema"] and "not JSON Patch" in prompt
         return {**raw, source: json.dumps(value)}, "session"
     monkeypatch.setattr(planner, "_structured_turn", turn)
     with pytest.raises(WorkBuddyRuntimeError) as failure:
-        asyncio.run(planner.review_workflow_feedback(workflow={"inputSchema": {"properties": {"company_code": {"type": "string"}}}}))
+        asyncio.run(planner.review_workflow_feedback(**feedback_arguments({"inputSchema": {"properties": {"company_code": {"type": "string"}}}})))
     assert any(i["path"] == path for i in failure.value.detail["validation_issues"])
     assert "secret" not in json.dumps(failure.value.detail) and "invented" not in json.dumps(failure.value.detail)
 
@@ -176,10 +187,10 @@ def test_workflow_feedback_embedded_contract_and_safe_paths(tmp_path, monkeypatc
 def test_workflow_feedback_valid_patch_array_and_clarification(tmp_path, monkeypatch):
     planner = WorkBuddyPlanner(tmp_path, "model")
     async def turn(*_, **kwargs):
-        return {"action": "rerun_validation", "proposal_json": "null", "validation_input_patch_json": '{"company_code":"1010"}',
-                "candidate_expectations_json": '[{"output":"business_status","operator":"equals","expected":"normal"}]'}, "session"
+        return feedback_terminal(action="rerun_validation", proposal_json="null", validation_input_patch_json='{"company_code":"1010"}',
+                candidate_expectations_json='[{"output":"business_status","operator":"equals","expected":"normal"}]'), "session"
     monkeypatch.setattr(planner, "_structured_turn", turn)
-    value = asyncio.run(planner.review_workflow_feedback(workflow={"inputSchema": {"properties": {"company_code": {"type": "string"}}}}))
+    value = asyncio.run(planner.review_workflow_feedback(**feedback_arguments({"inputSchema": {"properties": {"company_code": {"type": "string"}}}})))
     assert value["proposal"] is None and value["validation_input_patch"] == {"company_code": "1010"}
     assert value["candidate_expectations"][0]["expected"] == "normal"
 
@@ -204,7 +215,7 @@ def test_workbuddy_proposal_uses_real_compiler_without_inventing_pins():
     assert node["agentDigest"] and "agentDigest" not in parsed["stages"][0]
 
 
-@pytest.mark.parametrize("operation,seconds", [("compose_workflow", 3600), ("review_workflow_feedback", 3600), ("plan", 120)])
+@pytest.mark.parametrize("operation,seconds", [("compose_workflow", 3600), ("review_workflow_feedback", 3600), ("review_workflow", 180)])
 def test_workbuddy_operation_budget_and_cleanup_do_not_mask_failure(tmp_path, monkeypatch, operation, seconds):
     observed, events = [], []
     class Supervisor:
@@ -223,16 +234,18 @@ def test_workbuddy_operation_budget_and_cleanup_do_not_mask_failure(tmp_path, mo
     try:
         with planner.bind_events(lambda kind, data: events.append((kind, data))):
             with pytest.raises(WorkBuddyRuntimeError, match="deadline_exceeded"):
-                asyncio.run(planner._query("test", thread_id=None, system_prompt=None))
+                from sap_business_agents_platform.runtime_contract import deadline_scope
+                with deadline_scope(time.monotonic() + seconds):
+                    asyncio.run(planner._query("test", thread_id=None, system_prompt=None))
     finally:
         planner._operation.reset(token)
-    assert observed[0]["seconds"] == seconds
-    assert observed[0]["payload"]["timeout_ms"] == seconds * 1000
+    assert seconds - 1 < observed[0]["seconds"] <= seconds
+    assert (seconds - 1) * 1000 < observed[0]["payload"]["timeout_ms"] <= seconds * 1000
     assert events[-1][0] == "workbuddy_workspace_cleanup_failed"
     assert "synthetic" not in json.dumps(events)
 
 
-def test_workflow_feedback_workbuddy_reserves_before_dispatch_codex_budget_unchanged(monkeypatch):
+def test_workflow_feedback_reserves_before_shared_3600_deadline(monkeypatch):
     from sap_business_agents_platform.workflow_factory import _await_feedback_runtime
     order = []
     @asynccontextmanager
@@ -240,17 +253,19 @@ def test_workflow_feedback_workbuddy_reserves_before_dispatch_codex_budget_uncha
         order.append("reserved")
         yield
     async def request():
+        from sap_business_agents_platform.runtime_contract import remaining_budget
+        assert 3599 < remaining_budget(None) <= 3600
         order.append("dispatch")
         return "done"
     async def wait_for(value, *, timeout):
         order.append(timeout)
         return await value
     monkeypatch.setattr("sap_business_agents_platform.workflow_factory.asyncio.wait_for", wait_for)
-    assert asyncio.run(_await_feedback_runtime(SimpleNamespace(workbuddy_reservation=reserve), "workbuddy", request(), timeout=180)) == "done"
+    assert asyncio.run(_await_feedback_runtime(SimpleNamespace(workbuddy_reservation=reserve), "workbuddy", request(), timeout=3600)) == "done"
     assert order == ["reserved", "dispatch"]
     order.clear()
-    assert asyncio.run(_await_feedback_runtime(None, "codex", request(), timeout=180)) == "done"
-    assert order == [180, "dispatch"]
+    assert asyncio.run(_await_feedback_runtime(None, "codex", request(), timeout=3600)) == "done"
+    assert order == ["dispatch"]
 
 
 @pytest.mark.parametrize("bad", ["unknown", "missing", "normalized"])

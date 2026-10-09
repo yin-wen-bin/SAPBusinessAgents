@@ -28,7 +28,7 @@ def test_native_schema_options_and_terminal_output(monkeypatch, scenario):
             pass
         async def query(self, _):
             pass
-        async def receive_response(self):
+        async def receive_messages(self):
             yield Assistant()
             yield Result()
     monkeypatch.setitem(sys.modules, "codebuddy_agent_sdk", SimpleNamespace(

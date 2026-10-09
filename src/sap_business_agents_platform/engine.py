@@ -483,6 +483,11 @@ class RunCoordinator:
                         str(exc),
                         code=str(getattr(exc, "code", "runtime_not_selectable")),
                     ) from exc
+        if request.mode == RunMode.free_query:
+            from .runtime_policy import ORCHESTRATION_VERSION
+            runtime_snapshot = {**(runtime_snapshot or {"provider_id": "codex", "sdk_id": "codex-python-sdk",
+                "configuration_digest": "injected", "capabilities": []}),
+                "execution_flow": "harness", "orchestration_version": ORCHESTRATION_VERSION}
         self.store.create_run(run_id, request, runtime=runtime_snapshot)
         if request.mode == RunMode.free_query:
             if request.acceptance_spec is not None:
@@ -644,6 +649,8 @@ class RunCoordinator:
                 code="acceptance_sensitive_input_unsupported",
                 detail={"fields": unknown_sensitive},
             )
+        from .runtime_policy import ORCHESTRATION_VERSION
+        runtime = {**runtime, "execution_flow": "harness", "orchestration_version": ORCHESTRATION_VERSION}
         RuntimeSnapshot.model_validate(runtime)
         run_id = f"acceptance_{uuid.uuid4().hex[:16]}"
         public_input = copy.deepcopy(request.input)
@@ -864,6 +871,8 @@ class RunCoordinator:
                 "Supplemental input must not be blank.", code="input_blank"
             )
         record = self.store.get_run(run_id)
+        if record.mode == RunMode.free_query:
+            self._require_harness_history(record)
         if sensitive_inputs:
             if record.mode != RunMode.free_query or set(sensitive_inputs) != {
                 "receipt_reference"
@@ -980,6 +989,7 @@ class RunCoordinator:
                 queue_position = self.scheduler.queue_position(str(job["job_id"]))
         return {
             **session,
+            "execution_flow": self._query_flow(self.store.get_run(iterations[-1]["run_id"]), session.get("runtime")),
             "iterations": iterations,
             "active_feedback_request": active_feedback,
             "scheduler_status": scheduler_status,
@@ -1074,6 +1084,8 @@ class RunCoordinator:
         self, session_id: str, base_iteration: int
     ) -> tuple[dict[str, Any], Any]:
         session = self.store.get_free_query_session(session_id)
+        latest = self.store.get_free_query_iteration(session_id, session["current_iteration"])
+        self._require_harness_history(self.store.get_run(latest["run_id"]), session.get("runtime"))
         if session["status"] == "draft_created":
             raise RunExecutionError(
                 "This session is locked to an Agent draft.",
@@ -3136,6 +3148,11 @@ class RunCoordinator:
 
     async def _execute_free_query(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
+        self._require_harness_history(record)
+        if (record.runtime.provider_id if record.runtime else "codex") == "codex":
+            check = getattr(self.planner, "require_harness_available", None)
+            if callable(check):
+                check()
         iteration = self.store.get_free_query_iteration_by_run(run_id)
         if iteration and iteration.get("execution_action") == "reinterpret":
             await self._execute_free_query_reinterpret(run_id, iteration)
@@ -3170,7 +3187,18 @@ class RunCoordinator:
             ):
                 await self._execute_free_query_harness(run_id)
                 return
-            await self._execute_free_query_legacy(run_id)
+            raise RunExecutionError("The query Harness is unavailable; check the local Runtime configuration.",
+                                    code="runtime_harness_unavailable")
+
+    def _query_flow(self, record, snapshot=None):
+        from .runtime_query_history import query_flow
+        return query_flow(record, self.store.events_after(record.run_id), snapshot)
+
+    def _require_harness_history(self, record, snapshot=None):
+        flow = self._query_flow(record, snapshot)
+        if flow != "harness":
+            raise RunExecutionError("This historical query cannot be resumed; start a new Harness query.",
+                code="runtime_operation_retired" if flow == "planner_legacy" else "runtime_query_history_unknown")
 
     async def _execute_free_query_reinterpret(
         self, run_id: str, iteration: dict[str, Any]
@@ -3687,477 +3715,6 @@ class RunCoordinator:
             extension_count=outcome.extension_count,
         )
         self._complete_result(run_id, result)
-
-    async def _execute_free_query_legacy(self, run_id: str) -> None:
-        free_query_started = time.monotonic()
-        record = self.store.get_run(run_id)
-        query = str(record.query or "").strip()
-        planner_query = query
-        if record.agent_id:
-            try:
-                guided_agent = self.agents.get(str(record.agent_id))
-            except (KeyError, PluginError) as exc:
-                raise RunExecutionError(
-                    f"Guided Agent context is unavailable: {record.agent_id}",
-                    code="guided_agent_not_found",
-                ) from exc
-            planner_query = _guided_agent_question(guided_agent, query)
-        self.store.update_run(run_id, status=RunStatus.planning)
-        self._set_progress(run_id, phase="preparing", state="active", determinate=False)
-        self.store.append_event(
-            run_id,
-            "planning_started",
-            {"query": query, "agent_id": record.agent_id},
-        )
-        catalog = await self.sap_read.catalog(
-            query=planner_query,
-            limit=min((self.settings.max_tool_calls or 25) * 4, 100),
-        )
-        guidance = await self.sap_read.guidance(planner_query)
-        guidance_data = guidance.get("data") if isinstance(guidance, dict) else None
-        guidance = {
-            **(guidance if isinstance(guidance, dict) else {}),
-            "data": {
-                **(guidance_data if isinstance(guidance_data, dict) else {}),
-                "business_relationship_knowledge": self.relationships.knowledge_snapshot(),
-                "max_tool_calls": self.settings.max_tool_calls,
-            },
-        }
-        decision: PlannerDecision = await self.planner.plan(
-            planner_query,
-            catalog,
-            guidance,
-            self.skills.list_all_approved_skills(),
-            thread_id=record.thread_id,
-        )
-        self.store.update_run(run_id, thread_id=decision.thread_id)
-        if decision.needs_clarification:
-            self.store.update_run(
-                run_id,
-                status=RunStatus.waiting_input,
-                error_json={"code": "clarification_required", "message": decision.clarification_question},
-            )
-            self._set_progress(
-                run_id, phase="preparing", state="waiting_input", determinate=False
-            )
-            self.store.append_event(
-                run_id,
-                "waiting_input",
-                {"question": decision.clarification_question, "intent": decision.intent},
-            )
-            session = self.store.get_free_query_session_by_run(run_id)
-            if session is not None:
-                self.store.update_free_query_session(
-                    session["session_id"], thread_id=decision.thread_id, status="waiting_input"
-                )
-            return
-        if not decision.plan:
-            raise RunExecutionError(
-                "The selected Agent Runtime did not return a query plan.",
-                code="codex_plan_missing",
-            )
-        decision = await self._ground_and_validate_free_plan(run_id, planner_query, decision)
-        if not decision.plan:
-            raise RunExecutionError(
-                "The selected Agent Runtime could not produce a plan supported by the live SAP schemas.",
-                code="codex_grounded_plan_missing",
-            )
-        self.store.update_run(run_id, thread_id=decision.thread_id)
-        harness_steps = _normalize_free_steps(decision.plan)
-        self.store.update_run(run_id, status=RunStatus.validating, plan_json=decision.plan)
-        self.store.append_event(
-            run_id, "plan_created", {"intent": decision.intent, "plan": decision.plan}
-        )
-        self.store.update_run(run_id, status=RunStatus.running)
-        context: dict[str, Any] = {"query": query, "steps": {}}
-        actual_steps: list[dict[str, Any]] = []
-        tool_calls: list[dict[str, Any]] = []
-        evidence: list[dict[str, Any]] = []
-        last_sap_response: dict[str, Any] | None = None
-
-        for index, step in enumerate(harness_steps, start=1):
-            self._ensure_not_cancelled(run_id)
-            step_id = str(step.get("id") or f"step_{index}")
-            tool = str(step.get("tool") or "")
-            reason = str(step.get("reason") or step.get("purpose") or "")
-            started_monotonic = time.perf_counter()
-            call_id = f"call_{uuid.uuid4().hex[:16]}"
-            self._set_progress(
-                run_id,
-                phase="reading_sap",
-                state="active",
-                current_step_id=step_id,
-                current_tool="sap_read" if tool == "sap_read" else tool,
-                determinate=False,
-            )
-            self.store.append_event(
-                run_id,
-                "step_started",
-                {"step_id": step_id, "tool": tool, "reason": reason},
-            )
-            if tool in {"sap_read"}:
-                sap_plan = step.get("plan")
-                if not isinstance(sap_plan, dict):
-                    raise RunExecutionError(
-                        f"Free-query step {step_id} has no SAP read plan.",
-                        code="invalid_codex_plan",
-                    )
-                sap_plan = self.normalizer.normalize_plan(sap_plan)
-                step["plan"] = sap_plan
-                validation = await self.sap_read.validate_plan(sap_plan, query)
-                if validation.get("ok") is not True:
-                    raise RunExecutionError(
-                        f"The selected SAP Provider rejected Agent Runtime step {step_id}.",
-                        code="free_query_plan_rejected",
-                        detail=validation,
-                    )
-                self.store.append_event(
-                    run_id,
-                    "tool_started",
-                    {
-                        "step_id": step_id,
-                        "tool": "sap_read.execute-plan",
-                        "reason": reason,
-                        "call_id": call_id,
-                        **_sap_plan_trace_fields(sap_plan),
-                        **_plugin_trace(self.sap_read, "sap_read.v2", "execute_plan"),
-                    },
-                )
-                output = await self.sap_read.execute_plan(
-                    sap_plan, query, conversation_id=decision.thread_id
-                )
-                output = _redact_sensitive(output)
-                last_sap_response = output
-                call = {
-                    **_plugin_trace(self.sap_read, "sap_read.v2", "execute_plan"),
-                    "step_id": step_id,
-                    "tool": "sap_read",
-                    "operation": "execute_plan",
-                    **_sap_plan_trace_fields(sap_plan),
-                    "reason": reason or sap_plan.get("rationale"),
-                }
-            elif tool == "skill":
-                skill_id = str(step.get("skill_id") or "")
-                try:
-                    skill = self.skills.get(skill_id)
-                except KeyError as exc:
-                    raise RunExecutionError(
-                        f"The selected Agent Runtime chose an unregistered Skill: {skill_id}",
-                        code="unregistered_skill_rejected",
-                    ) from exc
-                rendered_input = _render_template(step.get("input") or {}, context)
-                if not isinstance(rendered_input, dict):
-                    raise RunExecutionError(
-                        f"Skill step {step_id} input must be an object.",
-                        code="invalid_codex_plan",
-                    )
-                rendered_input = self.normalizer.normalize_input(
-                    rendered_input,
-                    skill.get("input_schema") or {"type": "object"},
-                )
-                self.store.append_event(
-                    run_id,
-                    "tool_started",
-                    {
-                        "step_id": step_id,
-                        "tool": "skill",
-                        "skill_id": skill_id,
-                        "reason": reason,
-                        "call_id": call_id,
-                        **_plugin_trace(self.skills, "skill_execute.v1", "execute"),
-                    },
-                )
-                output = await self.skills.execute(skill_id, rendered_input)
-                output = _redact_sensitive(output)
-                call = {
-                    **_plugin_trace(self.skills, "skill_execute.v1", "execute"),
-                    "step_id": step_id,
-                    "tool": "skill",
-                    "operation": "execute",
-                    "skill_id": skill["skill_id"],
-                    "reason": reason,
-                }
-            else:
-                raise RunExecutionError(
-                    f"The selected Agent Runtime chose an unsupported tool: {tool}",
-                    code="unregistered_tool_rejected",
-                )
-            context["steps"][step_id] = {"output": output}
-            call["call_id"] = call_id
-            call["status"] = "completed" if output.get("ok", True) else "failed"
-            call["duration_ms"] = round((time.perf_counter() - started_monotonic) * 1000, 3)
-            actual_steps.append(
-                {
-                    "step_id": step_id,
-                    "executor": "sap_read" if tool in {"sap_read"} else tool,
-                    "operation": call["operation"],
-                    "status": "completed" if output.get("ok", True) else "failed",
-                }
-            )
-            tool_calls.append(call)
-            evidence.append(
-                {
-                    "source": "sap_read" if tool in {"sap_read"} else tool,
-                    "step_id": step_id,
-                    "payload": output,
-                    "call_id": call["call_id"],
-                    "plugin_id": call["plugin_id"],
-                    "plugin_version": call["plugin_version"],
-                    "capability": call["capability"],
-                }
-            )
-            self.store.append_event(
-                run_id,
-                "tool_completed",
-                {
-                    "step_id": step_id,
-                    "tool": "sap_read" if tool in {"sap_read"} else tool,
-                    "ok": output.get("ok", True),
-                    "call_id": call["call_id"],
-                    "plugin_id": call["plugin_id"],
-                },
-            )
-            self.store.append_event(
-                run_id,
-                "evidence_received",
-                {"step_id": step_id, "source": "sap_read" if tool in {"sap_read"} else tool, "case_id": output.get("case_id")},
-            )
-
-        self._set_progress(
-            run_id, phase="validating_evidence", state="active", determinate=False
-        )
-        rule_result = rules.evidence_summary({"evidence": evidence})
-        self.store.append_event(run_id, "rule_completed", {"rule": rule_result})
-        summary = {
-            "zh": _safe_message(last_sap_response or {}, "zh", "基于当前只读 SAP 证据返回结果。"),
-            "en": _safe_message(last_sap_response or {}, "en", "Result based on the current read-only SAP evidence."),
-        }
-        summary_errors: list[dict[str, Any]] = []
-        summarize = getattr(self.planner, "summarize", None)
-        supports = getattr(self.planner, "supports", None)
-        summary_supported = not callable(supports) or bool(supports("summarize"))
-        if callable(summarize) and summary_supported and decision.thread_id:
-            self._set_progress(
-                run_id, phase="preparing_result", state="active", determinate=False
-            )
-            self.store.append_event(run_id, "summary_started", {})
-            remaining = (
-                self.settings.max_run_seconds
-                - (time.monotonic() - free_query_started)
-                - 1.0
-            )
-            if remaining <= 0:
-                summary_errors.append(
-                    {
-                        "code": "codex_summary_skipped_deadline",
-                        "message": "Agent Runtime explanation was skipped to preserve the run deadline.",
-                        "detail": "SAP evidence and deterministic rule results remain available.",
-                    }
-                )
-            else:
-                try:
-                    summary = await asyncio.wait_for(
-                        summarize(
-                            thread_id=decision.thread_id,
-                            query=query,
-                            plan=decision.plan,
-                            evidence=evidence,
-                            rule_results=[rule_result],
-                        ),
-                        timeout=min(20.0, remaining),
-                    )
-                except TimeoutError:
-                    summary_errors.append(
-                        {
-                            "code": "codex_summary_timeout",
-                            "message": "Agent Runtime explanation exceeded its bounded summary time.",
-                            "detail": "SAP evidence and deterministic rule results remain available.",
-                        }
-                    )
-                except Exception as exc:
-                    summary_errors.append(
-                        {
-                            "code": "codex_summary_failed",
-                            "message": str(exc),
-                            "detail": "SAP evidence and deterministic rule results remain available.",
-                        }
-                    )
-        result = RunResult(
-            run_id=run_id,
-            mode=RunMode.free_query,
-            agent_id=record.agent_id,
-            query=query,
-            plan=decision.plan,
-            steps=actual_steps,
-            tool_calls=tool_calls,
-            rule_results=[rule_result],
-            evidence=evidence,
-            summary=summary,
-            errors=summary_errors,
-            thread_id=decision.thread_id,
-            started_at=record.started_at,
-        )
-        self._set_progress(
-            run_id, phase="preparing_result", state="active", determinate=False
-        )
-        self._complete_result(run_id, result)
-
-    async def _ground_and_validate_free_plan(
-        self,
-        run_id: str,
-        query: str,
-        decision: PlannerDecision,
-    ) -> PlannerDecision:
-        if not decision.plan:
-            return decision
-        decision = decision.model_copy(
-            update={"plan": self.normalizer.normalize_plan(decision.plan)}
-        )
-        _validate_free_plan_limits(decision.plan, self.settings.max_tool_calls)
-        original_refs = _collect_sap_entity_refs(decision.plan)
-        if not original_refs:
-            return decision
-        self.store.update_run(run_id, status=RunStatus.validating)
-        self.store.append_event(
-            run_id,
-            "validation_started",
-            {"phase": "live_schema_grounding", "entity_count": len(original_refs)},
-        )
-        schemas = await self._load_live_schemas(query, original_refs)
-        metadata_rules = {
-            (
-                str(field.get("service_name") or ""),
-                str(field.get("odata_version") or ""),
-                str(field.get("entity_set") or ""),
-                str(field.get("field_name") or ""),
-            ): field
-            for response in schemas
-            for field in ((response.get("data") or {}).get("fields") or [])
-            if isinstance(field, dict) and field.get("field_name")
-        }
-        decision = decision.model_copy(
-            update={
-                "plan": self.normalizer.normalize_plan(
-                    decision.plan, metadata=metadata_rules
-                )
-            }
-        )
-        relationship_contract = self.relationships.knowledge_snapshot_for(original_refs)
-        self.store.append_event(
-            run_id,
-            "schema_received",
-            {
-                "services": len({(service, version) for service, version, _entity in original_refs}),
-                "entities": len(original_refs),
-                "authoritative": True,
-            },
-        )
-
-        decision, canonicalized_order_fields = _canonicalize_plan_order_by(decision)
-        decision, removed_unsupported_order_fields = _remove_unsupported_order_by(
-            decision, schemas
-        )
-        if canonicalized_order_fields:
-            self.store.append_event(
-                run_id,
-                "plan_canonicalized",
-                {
-                    "rule": "sap_read_bare_order_by_fields",
-                    "field_count": canonicalized_order_fields,
-                },
-            )
-        if removed_unsupported_order_fields:
-            self.store.append_event(
-                run_id,
-                "plan_canonicalized",
-                {
-                    "rule": "remove_metadata_unsupported_order_by",
-                    "field_count": removed_unsupported_order_fields,
-                },
-            )
-
-        relationship_findings = self._validate_harness_relationships(decision.plan)
-        relationship_failures, relationship_advisories = self.relationships.partition_findings(
-            relationship_findings
-        )
-        failures = relationship_failures
-        failures.extend(await self._validate_harness_sap_plans(decision.plan, query))
-        repair_used = False
-        supports = getattr(self.planner, "supports", None)
-        grounding_supported = (
-            callable(getattr(self.planner, "ground_plan", None))
-            and (not callable(supports) or bool(supports("ground_plan")))
-        )
-        if failures and grounding_supported:
-            repair_used = True
-            repaired = await self.planner.ground_plan(
-                query=query,
-                decision=decision,
-                schemas=schemas,
-                relationships=relationship_contract,
-                validation_failures=failures,
-                repair_attempt=1,
-            )
-            decision = _require_grounded_decision(repaired, original_refs)
-            if decision.plan:
-                decision = decision.model_copy(
-                    update={
-                        "plan": self.normalizer.normalize_plan(
-                            decision.plan, metadata=metadata_rules
-                        )
-                    }
-                )
-            decision, repaired_order_fields = _canonicalize_plan_order_by(decision)
-            decision, repaired_removed_order_fields = _remove_unsupported_order_by(
-                decision, schemas
-            )
-            canonicalized_order_fields += repaired_order_fields
-            removed_unsupported_order_fields += repaired_removed_order_fields
-            _validate_free_plan_limits(decision.plan, self.settings.max_tool_calls)
-            self.store.append_event(
-                run_id,
-                "plan_repaired",
-                {"attempt": 1, "previous_validation_failures": len(failures)},
-            )
-            relationship_findings = self._validate_harness_relationships(decision.plan)
-            relationship_failures, relationship_advisories = self.relationships.partition_findings(
-                relationship_findings
-            )
-            failures = relationship_failures
-            failures.extend(await self._validate_harness_sap_plans(decision.plan, query))
-        if failures:
-            raise RunExecutionError(
-                "The schema-grounded Agent Runtime plan is technically invalid or was rejected by the selected SAP Provider.",
-                code="free_query_plan_rejected",
-                detail={"attempts": 1 if grounding_supported else 0, "failures": failures},
-            )
-        if relationship_advisories:
-            decision = decision.model_copy(
-                update={
-                    "plan": {
-                        **decision.plan,
-                        "advisories": relationship_advisories,
-                    }
-                }
-            )
-            self.store.append_event(
-                run_id,
-                "relationship_advisories_recorded",
-                {
-                    "count": len(relationship_advisories),
-                    "codes": sorted({str(item.get("code") or "") for item in relationship_advisories}),
-                },
-            )
-        self.store.append_event(
-            run_id,
-            "plan_validated",
-            {
-                "entity_count": len(original_refs),
-                "repair_used": repair_used,
-                "advisory_count": len(relationship_advisories),
-            },
-        )
-        return decision
 
     def _validate_harness_relationships(
         self,
@@ -5675,6 +5232,12 @@ def _count_free_query_top_bounds(plan: dict[str, Any]) -> int:
         return 0
     count = 0
     for harness_step in _normalize_free_steps(plan):
+        # The model Harness records successful OData plans directly; the old
+        # audit envelope wrapped them as tool=sap_read/plan. Accept both without
+        # counting unrelated Skill/local limits as business result bounds.
+        if harness_step.get("service_name") and harness_step.get("entity_set"):
+            count += visit(harness_step)
+            continue
         if harness_step.get("tool") not in {"sap_read"}:
             continue
         sap_plan = harness_step.get("plan")
