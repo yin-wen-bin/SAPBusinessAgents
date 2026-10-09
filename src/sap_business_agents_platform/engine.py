@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from datetime import date
 from io import StringIO
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -284,7 +284,9 @@ class RunCoordinator:
         )
         return job
 
-    async def submit(self, request: RunCreate) -> str:
+    async def submit(
+        self, request: RunCreate, *, query_origin: Literal["user", "system"] = "system"
+    ) -> str:
         defaulted_fields: list[str] = []
         workflow: dict[str, Any] | None = None
         agent_package: dict[str, Any] | None = None
@@ -487,7 +489,7 @@ class RunCoordinator:
             runtime_snapshot = {**(runtime_snapshot or {"provider_id": "codex", "sdk_id": "codex-python-sdk",
                 "configuration_digest": "injected", "capabilities": []}),
                 "execution_flow": "harness", "orchestration_version": ORCHESTRATION_VERSION}
-        self.store.create_run(run_id, request, runtime=runtime_snapshot)
+        self.store.create_run(run_id, request, runtime=runtime_snapshot, query_origin=query_origin)
         if request.mode == RunMode.free_query:
             if request.acceptance_spec is not None:
                 self.store.update_harness_state(run_id, {
@@ -665,7 +667,7 @@ class RunCoordinator:
             }
             protected_secrets.append(("receipt_reference", secret_ref, protected, descriptor))
         safe_request = request.model_copy(update={"input": public_input, "sensitive_inputs": {}})
-        self.store.create_run(run_id, safe_request, runtime=runtime)
+        self.store.create_run(run_id, safe_request, runtime=runtime, query_origin="system")
         state: dict[str, Any] = {
             "acceptance_spec": request.acceptance_spec.model_dump(mode="json"),
             "acceptance_direct_baseline": direct_baseline,
@@ -1257,7 +1259,10 @@ class RunCoordinator:
         query = str(decision.get("revised_query") or previous.query or session["original_query"])
         run_request = RunCreate(mode=RunMode.free_query, query=query)
         run_id = f"run_{uuid.uuid4().hex[:16]}"
-        self.store.create_run(run_id, run_request, runtime=session["runtime"])
+        self.store.create_run(
+            run_id, run_request, runtime=session["runtime"],
+            query_origin=previous.query_origin or "system",
+        )
         self.store.update_run(run_id, thread_id=previous.thread_id)
         source_run_id = previous.run_id if action == "reinterpret" else None
         if action == "reinterpret":

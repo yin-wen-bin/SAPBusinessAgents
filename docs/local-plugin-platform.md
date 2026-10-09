@@ -97,13 +97,15 @@ See [Runtime settings](runtime-settings.md) and [connection/mail guidance](runti
 
 ## 查询历史 / Query history
 
-自由查询页的“历史查询记录”按钮打开会话列表，每页 20 条。提交的查询自动保存，同一会话的追问合并为一条历史；最后一轮查询结束后起算保留期限，默认 30 天，可在“系统配置 → 查询历史”修改。查看、确认结果和生成草稿不重置期限。
+自由查询页的“历史查询记录”按钮打开会话列表，每页 20 条。仅用户主动提交的查询自动保存，同一会话的追问合并为一条历史；最后一轮查询结束后起算保留期限，默认 30 天，可在“系统配置 → 查询历史”修改。查看、确认结果和生成草稿不重置期限。
+
+三级验收（包括直接基线和自由查询对照）、样本发现等系统任务不计入查询历史，也不受查询历史到期清理影响；其运行证据继续保留供验收和审计使用。来源由后端持久化为 `query_origin`，追问继承原会话来源，客户端不能指定该标记。已有记录根据验收、样本发现和用户提交事件进行迁移；无法确认由用户提交的旧记录不计入历史。
 
 服务启动时及每分钟检查到期历史，删除会话、查询轮次、事件、受限数据和运行制品。正在执行或用于草稿生成的源记录受到保护；等待补充信息的到期任务先取消，清理失败会自动重试。已经生成的 Agent 草稿及其管理记录继续保留。
 
 只有最新查询成功、证据完整且执行计划有效时才能转为 Agent 草稿。失败、取消、未完成或结论不充分的查询会显示“重新查询 / 放弃转换”；重新查询预填原问题、追问和公开补充信息，由用户确认后建立新会话。安全参数需要重新输入。生成的草稿仍需编辑、校验和正式验收。
 
-The free-query page opens a session history list with 20 rows per page. Queries are saved automatically and retained for 30 days after the last round finishes; retention is configurable in System settings. Startup and minute-based cleanup retries failures, protects active authoring sources, and preserves generated drafts. Conversion requires a successful latest query, complete evidence and a valid replayable plan. Retrying prefills public question history and waits for user confirmation before starting a new session.
+The free-query page opens a session history list with 20 rows per page. Only user-submitted queries and their follow-ups are saved automatically and retained for 30 days after the last round finishes; retention is configurable in System settings. System acceptance (including direct baselines and free-query comparisons) and sample discovery tasks are excluded from history and its expiry cleanup; their execution evidence remains available for acceptance and audit. The server persists the origin and feedback inherits it. Legacy records are classified using acceptance, discovery and submission evidence; records without confirmed user provenance are excluded. Startup and minute-based cleanup retries failures, protects active authoring sources, and preserves generated drafts. Conversion requires a successful latest query, complete evidence and a valid replayable plan. Retrying prefills public question history and waits for user confirmation before starting a new session.
 
 ```text
 GET /api/free-query-sessions?limit=20&offset=0

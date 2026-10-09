@@ -100,7 +100,7 @@ def test_stop_before_task_starts_also_releases_lock(tmp_path):
 
 def test_success_binds_sol_and_immutable_draft_without_normal_session(tmp_path):
     async def scenario():
-        jobs, store, sdk, service, _ = setup_jobs(tmp_path)
+        jobs, store, sdk, service, settings = setup_jobs(tmp_path)
         started = jobs.start("draft_sample", request(requestId="same-input"))
         run_id = started["run_id"]
         replay = jobs.start("draft_sample", request(requestId="same-input"))
@@ -109,6 +109,9 @@ def test_success_binds_sol_and_immutable_draft_without_normal_session(tmp_path):
         sdk.runtime_snapshot_for_model.assert_called_once_with("codex", "gpt-5.6-sol")
         assert service.discover.call_args.kwargs["model"] == "gpt-5.6-sol"
         assert store.get_run(run_id).runtime.model == "gpt-5.6-sol"
+        assert store.get_run(run_id).query_origin == "system"
+        from sap_business_agents_platform.free_query_history import FreeQueryHistory
+        assert FreeQueryHistory(store, settings.data_root).list()["total"] == 0
         assert store.get_run(run_id).runtime.reasoning_effort == "medium"
         assert store.get_agent_run_snapshot(run_id)["validation_revision"] == 1
         assert store.get_free_query_session_by_run(run_id) is None

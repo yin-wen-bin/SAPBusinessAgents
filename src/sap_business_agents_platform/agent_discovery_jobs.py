@@ -78,7 +78,7 @@ class AgentDiscoveryJobs:
                 raise AgentLifecycleError("The sample Runtime binding is inconsistent.", code="sample_discovery_model_mismatch")
             RuntimeSnapshot.model_validate(runtime)
             request = RunCreate(mode=RunMode.free_query, query="Find validation sample inputs for the isolated Agent draft.", input=supplied)
-            self.store.create_run(run_id, request, runtime=runtime)
+            self.store.create_run(run_id, request, runtime=runtime, query_origin="system")
             created_run = True
             self.store.save_agent_run_snapshot(run_id, manifest, rules_source=package.get("rules"),
                                                draft_id=draft_id, revision=revision)

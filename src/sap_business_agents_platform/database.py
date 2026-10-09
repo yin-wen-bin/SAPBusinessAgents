@@ -7,7 +7,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Literal
 
 from .models import (
     DraftRecord,
@@ -47,6 +47,7 @@ class RunStore:
                     status TEXT NOT NULL,
                     agent_id TEXT,
                     query TEXT,
+                    query_origin TEXT CHECK(query_origin IN ('user', 'system')),
                     input_json TEXT NOT NULL,
                     plan_json TEXT,
                     result_json TEXT,
@@ -620,6 +621,9 @@ class RunStore:
                 connection.execute("ALTER TABLE runs ADD COLUMN progress_json TEXT")
             if "runtime_json" not in columns:
                 connection.execute("ALTER TABLE runs ADD COLUMN runtime_json TEXT")
+            if "query_origin" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN query_origin TEXT CHECK(query_origin IN ('user', 'system'))")
+            self._migrate_query_origins(connection)
             draft_columns = {
                 str(row[1]) for row in connection.execute("PRAGMA table_info(drafts)").fetchall()
             }
@@ -655,6 +659,52 @@ class RunStore:
                 "ON agent_conversation_turns(draft_id, request_id) WHERE request_id IS NOT NULL"
             )
 
+    def _migrate_query_origins(self, connection: sqlite3.Connection) -> None:
+        # Old runs did not persist their initiator. Positive public-submission
+        # evidence admits user queries; formal acceptance/discovery wins over it.
+        connection.execute("""
+            WITH roots AS (
+              SELECT r.run_id, COALESCE((
+                SELECT first.run_id FROM free_query_iterations current
+                JOIN free_query_iterations first ON first.session_id=current.session_id
+                  AND first.iteration=1 WHERE current.run_id=r.run_id
+              ),r.run_id) AS root_run_id
+              FROM runs r WHERE r.mode='free_query' AND r.query_origin IS NULL
+            ), system_sources AS (
+              SELECT run_id FROM runs WHERE run_id GLOB 'acceptance_*'
+              UNION SELECT run_id FROM harness_state
+                WHERE json_extract(state_json,'$.acceptance_spec') IS NOT NULL
+              UNION SELECT run_id FROM events
+                WHERE event_type IN ('sample_discovery_started','sample_discovery_finished')
+                  OR json_extract(data_json,'$.acceptance_campaign')=1
+              UNION SELECT baseline_run_id FROM agent_acceptance_cases
+              UNION SELECT free_query_run_id FROM agent_acceptance_cases
+              UNION SELECT operation_id FROM agent_draft_operations WHERE kind='sample_discovery'
+            ), manual_sources AS (
+              SELECT run_id FROM runs WHERE query_origin='user'
+              UNION SELECT run_id FROM events WHERE event_type='run_queued'
+                AND json_extract(data_json,'$.mode')='free_query'
+            )
+            UPDATE runs SET query_origin=CASE WHEN
+              (SELECT root_run_id FROM roots WHERE roots.run_id=runs.run_id)
+                IN (SELECT run_id FROM manual_sources)
+              AND run_id NOT IN (SELECT run_id FROM system_sources WHERE run_id IS NOT NULL)
+              AND (SELECT root_run_id FROM roots WHERE roots.run_id=runs.run_id)
+                NOT IN (SELECT run_id FROM system_sources WHERE run_id IS NOT NULL)
+              THEN 'user' ELSE 'system' END
+            WHERE mode='free_query' AND query_origin IS NULL
+        """)
+        # Revoke old history cleanup jobs that would delete system audit runs.
+        # This never removes the acceptance/discovery evidence itself.
+        retired_jobs = [row[0] for row in connection.execute("""
+            SELECT DISTINCT c.history_id FROM free_query_history_cleanup c
+            JOIN json_each(c.run_ids_json) ids JOIN runs r ON r.run_id=ids.value
+            WHERE COALESCE(r.query_origin,'system')!='user'
+        """)]
+        for history_id in retired_jobs:
+            connection.execute("DELETE FROM free_query_history_expired_runs WHERE history_id=?", (history_id,))
+            connection.execute("DELETE FROM free_query_history_cleanup WHERE history_id=?", (history_id,))
+
     def create_run(
         self,
         run_id: str,
@@ -663,14 +713,15 @@ class RunStore:
         parent_run_id: str | None = None,
         node_id: str | None = None,
         runtime: RuntimeSnapshot | dict[str, Any] | None = None,
+        query_origin: Literal["user", "system"] = "system",
     ) -> RunRecord:
         created_at = utc_now()
         with self._lock, self._connect() as connection:
             connection.execute(
                 """INSERT INTO runs
                 (run_id, mode, status, agent_id, workflow_id, parent_run_id, node_id,
-                 query, input_json, created_at, progress_json, runtime_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 query, input_json, created_at, progress_json, runtime_json, query_origin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     request.mode.value,
@@ -684,6 +735,7 @@ class RunStore:
                     created_at,
                     _dump(RunProgress(updated_at=created_at)),
                     _dump(runtime) if runtime is not None else None,
+                    query_origin if request.mode == RunMode.free_query else None,
                 ),
             )
         return self.get_run(run_id)
@@ -3666,6 +3718,7 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         parent_run_id=row["parent_run_id"],
         node_id=row["node_id"],
         query=row["query"],
+        query_origin=row["query_origin"],
         input=_load(row["input_json"], {}),
         plan=_load(row["plan_json"], None),
         result=RunResult.model_validate(result_data) if result_data else None,

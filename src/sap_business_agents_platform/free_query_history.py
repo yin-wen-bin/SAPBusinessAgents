@@ -52,12 +52,18 @@ WITH latest_feedback AS (
  JOIN free_query_iterations i ON i.session_id=s.session_id AND i.iteration=s.current_iteration
  JOIN runs r ON r.run_id=i.run_id
  LEFT JOIN latest_feedback f ON f.session_id=s.session_id
+ WHERE r.query_origin='user' AND EXISTS (
+   SELECT 1 FROM free_query_iterations first JOIN runs original ON original.run_id=first.run_id
+   WHERE first.session_id=s.session_id AND first.iteration=1 AND original.query_origin='user')
+ AND NOT EXISTS (
+   SELECT 1 FROM free_query_iterations si JOIN runs sr ON sr.run_id=si.run_id
+   WHERE si.session_id=s.session_id AND COALESCE(sr.query_origin,'system')!='user')
  UNION ALL
  SELECT r.run_id, NULL, r.run_id, r.query, 1, NULL, r.created_at,
    (SELECT d.draft_id FROM drafts d WHERE d.run_id=r.run_id ORDER BY d.created_at DESC LIMIT 1),
    COALESCE(r.completed_at,r.created_at), COALESCE(r.completed_at,r.created_at), r.status,
    r.status IN ('queued','planning','validating','running')
- FROM runs r WHERE r.mode='free_query'
+ FROM runs r WHERE r.mode='free_query' AND r.query_origin='user'
  AND NOT EXISTS(SELECT 1 FROM free_query_iterations i WHERE i.run_id=r.run_id)
 )
 """
@@ -173,7 +179,8 @@ class FreeQueryHistory:
                 history_id = session["session_id"] if session else run_id
                 ids = [run_id]
             rows, _ = self._rows(available=True, history_id=history_id)
-            if not rows and not any(self._protected[item] for item in ids):
+            user_history = self.store.get_run(ids[0]).query_origin == "user"
+            if user_history and not rows and not any(self._protected[item] for item in ids):
                 raise KeyError(history_id)
             self._protected.update(ids)
         try:

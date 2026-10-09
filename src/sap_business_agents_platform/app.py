@@ -1345,7 +1345,9 @@ def create_app(
     @app.post("/api/runs", status_code=202)
     async def create_run(payload: RunCreate) -> dict[str, Any]:
         try:
-            run_id = await coordinator.submit(payload)
+            run_id = await coordinator.submit(
+                payload, query_origin="user" if payload.acceptance_spec is None else "system"
+            )
             response: dict[str, Any] = {"run_id": run_id, "status": "queued"}
             if payload.mode.value == "free_query":
                 session = store.get_free_query_session_by_run(run_id)

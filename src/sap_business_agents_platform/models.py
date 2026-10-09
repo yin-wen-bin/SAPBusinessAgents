@@ -400,6 +400,7 @@ class RunRecord(BaseModel):
     parent_run_id: str | None = None
     node_id: str | None = None
     query: str | None = None
+    query_origin: Literal["user", "system"] | None = None
     input: dict[str, Any] = Field(default_factory=dict)
     plan: dict[str, Any] | None = None
     result: RunResult | None = None

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,9 +23,9 @@ PLAN = {"service_name": "API_PURCHASEORDER_PROCESS_SRV", "odata_version": "2.0",
         "filters": [], "top": 10}
 
 
-def seed(store, run_id, *, age=0, status="completed", session=None, iteration=1):
+def seed(store, run_id, *, age=0, status="completed", session=None, iteration=1, query_origin="user"):
     stamp = (NOW - timedelta(days=age)).isoformat()
-    store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="Synthetic query"))
+    store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="Synthetic query"), query_origin=query_origin)
     result = RunResult(run_id=run_id, mode=RunMode.free_query, plan=PLAN,
                        completeness=Completeness(source_complete=True, business_complete=True))
     store.update_run(run_id, status=RunStatus(status), plan_json=PLAN, result_json=result,
@@ -46,6 +49,105 @@ def service(tmp_path):
     store = RunStore(tmp_path / "data" / "platform.sqlite3")
     history = FreeQueryHistory(store, tmp_path / "data", now=lambda: NOW)
     return store, history
+
+
+def test_system_queries_are_excluded_and_their_audit_evidence_never_expires(tmp_path):
+    store, history = service(tmp_path)
+    seed(store, "manual", age=1, session="user-session")
+    seed(store, "expired-manual", age=31)
+    seed(store, "acceptance", age=31, session="acceptance-session", query_origin="system")
+    seed(store, "acceptance-follow-up", age=31, session="acceptance-session", iteration=2, query_origin="system")
+    seed(store, "sample", age=31, query_origin="system")
+    for run_id in ("acceptance", "acceptance-follow-up", "sample"):
+        store.append_event(run_id, "audit_evidence", {"synthetic": True})
+        directory = history.data_root / "artifacts" / run_id
+        directory.mkdir(parents=True)
+        (directory / "evidence.txt").write_text("synthetic")
+    listing = history.list(limit=1)
+    assert listing["total"] == 1
+    assert listing["items"][0]["history_id"] == "user-session"
+    with pytest.raises(KeyError):
+        history.retry_query("acceptance-session")
+    # Internal authoring can still use system evidence outside user history.
+    with history.protect(session_id="acceptance-session"):
+        asyncio.run(history.cleanup())
+    with pytest.raises(KeyError):
+        store.get_run("expired-manual")
+    for run_id in ("acceptance", "acceptance-follow-up", "sample"):
+        assert store.get_run(run_id).query_origin == "system"
+        assert store.events_after(run_id)[0].type == "audit_evidence"
+        assert (history.data_root / "artifacts" / run_id / "evidence.txt").exists()
+    assert store.get_free_query_session("acceptance-session")
+
+
+def test_internal_queries_default_to_system_even_after_restart(tmp_path):
+    store, history = service(tmp_path)
+    store.create_run("run_internal", RunCreate(mode=RunMode.free_query, query="Synthetic internal query"))
+    store.append_event("run_internal", "run_queued", {"mode": "free_query"})
+    reopened = RunStore(store.path)
+    assert reopened.get_run("run_internal").query_origin == "system"
+    assert FreeQueryHistory(reopened, history.data_root, now=lambda: NOW).list()["total"] == 0
+
+
+def test_legacy_origin_migration_preserves_manual_queries_and_excludes_system_sources(tmp_path):
+    store, history = service(tmp_path)
+    seed(store, "manual-first", session="manual-session")
+    seed(store, "manual-follow-up", session="manual-session", iteration=2)
+    seed(store, "legacy-manual")
+    seed(store, "acceptance_native", session="acceptance-session")
+    seed(store, "run_acceptance_follow_up", session="acceptance-session", iteration=2)
+    seed(store, "run_cli_acceptance")
+    seed(store, "run_sample")
+    seed(store, "run_campaign")
+    seed(store, "unknown")
+    for run_id in ("manual-first", "manual-follow-up", "legacy-manual", "acceptance_native",
+                   "run_acceptance_follow_up", "run_cli_acceptance", "run_sample", "run_campaign"):
+        store.append_event(run_id, "run_queued", {"mode": "free_query"})
+    store.update_harness_state("run_cli_acceptance", {"acceptance_spec": {"record_fields": ["document"]}})
+    store.append_event("run_sample", "sample_discovery_started", {})
+    store.append_event("run_campaign", "run_queued", {"mode": "free_query", "acceptance_campaign": True})
+    with store._connect() as db:
+        db.execute("ALTER TABLE runs DROP COLUMN query_origin")
+    reopened = RunStore(store.path)
+    manual = {"manual-first", "manual-follow-up", "legacy-manual"}
+    assert {run.run_id for run in reopened.list_runs() if run.query_origin == "user"} == manual
+    assert {row["history_id"] for row in FreeQueryHistory(reopened, history.data_root, now=lambda: NOW).list()["items"]} == {"manual-session", "legacy-manual"}
+    # Migrating and excluding system records keeps their runtime evidence intact.
+    assert reopened.get_run("run_cli_acceptance")
+    assert reopened.get_harness_state("run_cli_acceptance")["acceptance_spec"]
+    assert reopened.get_free_query_session("acceptance-session")
+
+
+def test_upgrade_revokes_pending_history_deletion_of_system_evidence(tmp_path):
+    store, history = service(tmp_path)
+    seed(store, "run_acceptance", age=31, session="acceptance-session")
+    store.update_harness_state("run_acceptance", {"acceptance_spec": {"record_fields": ["document"]}})
+    directory = history.data_root / "artifacts" / "run_acceptance"
+    directory.mkdir(parents=True)
+    (directory / "audit.txt").write_text("synthetic")
+    with store._connect() as db:
+        db.execute("ALTER TABLE runs DROP COLUMN query_origin")
+        db.execute("INSERT INTO free_query_history_cleanup VALUES (?,?,?,?,?,?)",
+                   ("acceptance-session", "acceptance-session", json.dumps(["run_acceptance"]), "[]", NOW.isoformat(), "pending"))
+        db.execute("INSERT INTO free_query_history_expired_runs VALUES (?,?)", ("run_acceptance", "acceptance-session"))
+    reopened = RunStore(store.path)
+    assert reopened.get_run("run_acceptance").query_origin == "system"
+    assert reopened.get_free_query_session("acceptance-session")
+    asyncio.run(FreeQueryHistory(reopened, history.data_root, now=lambda: NOW).cleanup())
+    assert (directory / "audit.txt").exists()
+    with reopened._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM free_query_history_cleanup").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM free_query_history_expired_runs").fetchone()[0] == 0
+
+
+def test_mixed_origin_session_is_not_eligible_for_user_history_cleanup(tmp_path):
+    store, history = service(tmp_path)
+    seed(store, "first", age=31, session="mixed")
+    seed(store, "system-evidence", age=31, session="mixed", iteration=2, query_origin="system")
+    seed(store, "latest", age=31, session="mixed", iteration=3)
+    assert history.list()["total"] == 0
+    asyncio.run(history.cleanup())
+    assert store.get_run("system-evidence")
 
 
 def test_history_groups_sessions_and_paginates_before_loading_results(tmp_path):
@@ -257,9 +359,62 @@ def test_submitted_query_is_automatically_saved_without_acceptance(tmp_path):
         assert row["session_id"] == created["session_id"]
         assert row["query"] == "Synthetic submitted question"
         assert row["status"] == run["status"] == "completed"
+        assert run["query_origin"] == "user"
         assert row["draft_id"] is None and row["can_create_draft"] is True
     reopened = FreeQueryHistory(RunStore(settings.database_path), settings.data_root)
     assert reopened.list()["items"][0]["session_id"] == created["session_id"]
+
+
+def test_public_and_native_acceptance_submissions_are_excluded_from_history(tmp_path, monkeypatch):
+    from tests.test_platform_runtime import create_app as harness_app, _wait
+    app = harness_app(_settings(tmp_path), planner=FakePlanner(), embedded_provider=FakeEmbeddedProvider())
+    with TestClient(app) as client:
+        user = client.post("/api/runs", json={"mode": "free_query", "query": "Synthetic user query"}).json()
+        _wait(client, user["run_id"])
+        request = {"mode": "free_query", "query": "Synthetic system query", "acceptanceSpec": {"record_fields": ["document"]}}
+        public = client.post("/api/runs", json=request)
+        assert public.status_code == 202, public.text
+        public_run = _wait(client, public.json()["run_id"])
+        assert public_run["query_origin"] == "system"
+        monkeypatch.setattr(app.state.coordinator, "_schedule_run", AsyncMock())
+        native = client.portal.call(partial(app.state.coordinator.submit_acceptance_query,
+            RunCreate.model_validate(request), runtime=app.state.store.get_run(user["run_id"]).runtime.model_dump(mode="json")))
+        assert app.state.store.get_run(native).query_origin == "system"
+        listing = client.get("/api/free-query-sessions").json()
+        assert listing["total"] == 1
+        assert listing["items"][0]["run_id"] == user["run_id"]
+        # Origin is server metadata, not an admitted client parameter.
+        assert client.post("/api/runs", json={**request, "query_origin": "user"}).status_code == 422
+        assert client.post("/api/runs", json={"mode": "free_query", "query": "Synthetic", "queryOrigin": "system"}).status_code == 422
+
+
+@pytest.mark.parametrize("origin", ["user", "system"])
+@pytest.mark.parametrize("feedback_type", ["scope_or_filter", "presentation"])
+def test_follow_up_inherits_origin_for_requery_and_evidence_reuse(tmp_path, origin, feedback_type):
+    from tests.test_platform_runtime import create_app as harness_app, FeedbackPlanner, _wait, _wait_feedback
+    app = harness_app(_settings(tmp_path), planner=FeedbackPlanner(), embedded_provider=FakeEmbeddedProvider())
+    with TestClient(app) as client:
+        request = RunCreate(mode=RunMode.free_query, query="Synthetic purchase order query")
+        if origin == "user":
+            run_id = client.post("/api/runs", json=request.model_dump(mode="json", by_alias=True)).json()["run_id"]
+        else:
+            run_id = client.portal.call(app.state.coordinator.submit, request)
+        first = _wait(client, run_id)
+        assert first["status"] == "completed", first.get("error")
+        session_id = app.state.store.get_free_query_session_by_run(run_id)["session_id"]
+        feedback = client.post(f"/api/free-query-sessions/{session_id}/feedback",
+            json={"baseIteration": 1, "feedback": "Synthetic follow-up", "feedbackTypeHint": feedback_type, "locale": "en"})
+        assert feedback.status_code == 202, feedback.text
+        reviewed = _wait_feedback(client, session_id, feedback.json()["feedback_request_id"])
+        assert reviewed["status"] == "iteration_created", reviewed
+        latest = _wait(client, reviewed["run_id"])
+        assert latest["status"] == "completed", latest.get("error")
+        assert latest["query_origin"] == origin
+        listing = client.get("/api/free-query-sessions").json()
+        assert listing["total"] == (1 if origin == "user" else 0)
+        if origin == "user":
+            assert listing["items"][0]["iteration"] == 2
+            assert listing["items"][0]["run_id"] == latest["run_id"]
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled", "inconclusive", "running"])

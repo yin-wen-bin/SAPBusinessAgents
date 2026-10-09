@@ -5,11 +5,11 @@ const { locale } = Astro.props;
 const apiBase = import.meta.env.PUBLIC_SAPBA_API_URL || "http://127.0.0.1:8765";
 const copy = locale === "zh" ? {
   title: "查询历史", label: "历史查询保留天数", save: "保存保留期限",
-  hint: "默认 30 天，从最后一轮查询结束起算。设置对所有历史生效，缩短期限可能使已有记录到期；已生成的 Agent 草稿继续保留。",
+  hint: "仅保存用户主动提交的查询和追问，默认保留 30 天，从最后一轮查询结束起算。系统验收、样本发现等查询不计入历史。缩短期限可能使已有历史到期；已生成的 Agent 草稿继续保留。",
   saved: "保留期限已保存。", error: "无法读取或保存设置，请检查本地运行服务后重试。", invalid: "请输入大于零的整数天数。",
 } : {
   title: "Query history", label: "History retention in days", save: "Save retention",
-  hint: "Defaults to 30 days after the last query finishes. Changes apply to all history; shortening retention may expire existing records. Generated Agent drafts are retained.",
+  hint: "Only user-submitted queries and follow-ups are saved, defaulting to 30 days after the last query finishes. System acceptance and sample discovery queries are excluded. Shortening retention may expire existing history. Generated Agent drafts are retained.",
   saved: "Retention saved.", error: "Cannot read or save settings. Check the local runtime and retry.", invalid: "Enter a positive whole number of days.",
 };
 ---
