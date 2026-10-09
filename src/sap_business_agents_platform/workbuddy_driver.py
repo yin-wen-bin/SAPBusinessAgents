@@ -313,10 +313,14 @@ class WorkBuddySampleDriver:
         except WorkBuddyError as error:
             primary = error
             if error.code == "workbuddy_deadline_exceeded":
-                raise TimeoutError from error
+                primary = TimeoutError()
+                primary.detail = dict(getattr(error, "detail", {}) or {})
+                raise primary from error
             if error.code == "workbuddy_cancelled":
                 import asyncio
-                raise asyncio.CancelledError from error
+                primary = asyncio.CancelledError()
+                primary.detail = dict(getattr(error, "detail", {}) or {})
+                raise primary from error
             raise
         except BaseException as error:
             primary = error

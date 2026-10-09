@@ -409,6 +409,7 @@ def test_codex_role_matching_uses_isolated_catalog_pages_and_compact_coverage_pr
 ) -> None:
     started_threads: list[object] = []
     page_attempts: dict[str, int] = {}
+    evidence_ref = {"document_id": "fixture-document", "chunk_id": "fixture-operation"}
 
     def response(analysis: dict) -> SimpleNamespace:
         return SimpleNamespace(
@@ -431,7 +432,9 @@ def test_codex_role_matching_uses_isolated_catalog_pages_and_compact_coverage_pr
                 return response(
                     {
                         "roles": [], "processes": [], "document_issues": [],
-                        "operations": [{"operation_id": "op-1", "evidence_refs": []}],
+                        "operations": [{"operation_id": "op-1", "evidence_refs": [evidence_ref]}],
+                        "agent_matches": [], "rejected_candidates": [],
+                        "workflow_suggestions": [], "agent_gaps": [],
                         "non_sap_operation_count": 0,
                     }
                 )
@@ -444,7 +447,7 @@ def test_codex_role_matching_uses_isolated_catalog_pages_and_compact_coverage_pr
                 candidate = {
                     "operation_id": "op-1", "agent_id": agent_id,
                     "coverage": coverage, "confidence": "medium", "reason": "test",
-                    "uncovered_capabilities": [], "evidence_refs": [],
+                    "uncovered_capabilities": [], "evidence_refs": [evidence_ref],
                 }
                 return response(
                     {
@@ -499,7 +502,9 @@ def test_codex_role_matching_uses_isolated_catalog_pages_and_compact_coverage_pr
     }
     result = asyncio.run(
         CodexPlanner(tmp_path).analyze_role_matching(
-            documents=[], agent_catalog=catalog, previous_result=None, user_context="",
+            documents={"documents": [{"document_id": evidence_ref["document_id"],
+                "chunks": [{"chunk_id": evidence_ref["chunk_id"], "text": "Fixture operation"}]}]},
+            agent_catalog=catalog, previous_result=None, user_context="",
             rematch_mode="full", locale="zh", thread_id=None,
         )
     )["analysis"]

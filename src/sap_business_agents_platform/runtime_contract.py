@@ -301,6 +301,8 @@ def session_id(value: str | RuntimeSession, provider_id: str) -> str:
 
 async def execute_frozen(driver, request: RuntimeRequest, *, emit=None):
     """Enforce one caller-issued deadline; drivers cannot replenish its budget."""
+    from .runtime_policy import require_operation
+    require_operation(request.operation)
     if request.provider_id != driver.provider_id:
         raise RuntimeContractError("runtime_binding_provider_mismatch")
     remaining = request.remaining()

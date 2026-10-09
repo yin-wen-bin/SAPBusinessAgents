@@ -4,9 +4,32 @@
 
 ## 状态与边界 / Status and boundaries
 
-Codex 仍为默认，WorkBuddy 保持禁用。本轮共享编排重构仅进行离线验证；18 项首期操作的新编排摘要都需要各自真实验证后才能开放选择，不沿用旧代码的成功资格。历史通过、失败、环境和任务绑定保留原样，详见验证记录。锁定 SDK `codebuddy-agent-sdk 0.3.247`、内置 CLI `2.141.0`、已有独立安装、认证和模型状态没有在本轮升级或切换。模型兼容性通过不等于业务操作通过；已有任务不能自动更换 Provider、模型或环境。
+Codex 仍为默认，WorkBuddy 的启停状态不由本轮修改。本轮仅进行离线一致性补齐；当前有效操作来自 `runtime_policy.OPERATIONS`（本版 15 项），新编排摘要需要真实验证后才能开放选择。已退役的计划、计划补全和旧总结不再计入门禁，历史资格不会自动迁移。历史通过、失败、环境和任务绑定保留原样，详见验证记录。锁定 SDK `codebuddy-agent-sdk 0.3.247`、内置 CLI `2.141.0`、已有独立安装、认证和模型状态没有在本轮升级或切换。模型兼容性通过不等于业务操作通过；已有任务不能自动更换 Provider、模型或环境。
 
-Codex remains the default and WorkBuddy stays disabled. This shared-orchestration migration is validated offline only; all eighteen operations need live checks against their new orchestration digests before selection can be enabled. Historical results and task/environment bindings remain unchanged; consult the validation record. The pinned SDK `codebuddy-agent-sdk 0.3.247`, bundled CLI `2.141.0`, independent installation, authentication and model state are neither upgraded nor switched here. Model compatibility does not certify business operations, and existing tasks cannot silently change Provider, model or environment.
+Codex remains the default; this change does not alter WorkBuddy's enabled state. Only offline consistency checks are performed here. The current operation set is defined by `runtime_policy.OPERATIONS` (15 in this revision), and new orchestration digests need live validation before selection can be enabled. Retired planning, grounding and legacy summarization no longer count toward qualification; historical passes are not migrated. Historical results and task/environment bindings remain unchanged. The pinned SDK `codebuddy-agent-sdk 0.3.247`, CLI `2.141.0`, installation, authentication and model state are not upgraded or switched. Model compatibility does not certify business operations, and existing tasks cannot silently change Provider, model or environment.
+
+## 2026-10-09 一致性补齐 / Consistency completion
+
+新查询仅通过 Harness 执行。`plan`、`ground_plan`、`summarize` 及其旧续接操作明确返回 `runtime_operation_retired`；缺少 Harness 时直接报告不可用，不回退。历史记录按显式执行链路、保存的 Harness 制品和阶段事件识别，矛盾或缺少依据时仅可查看，并提示发起新查询；不会根据 Provider 或线程 ID 猜测。旧记录和旧验收结论不重写。
+
+New queries execute through the Harness only. Retired planning, grounding, summarization and continuation calls fail explicitly; a missing Harness never triggers fallback. Historical flow classification uses explicit bindings, saved Harness artifacts and phase events, not Provider/thread identities. Conflicting or unknown histories remain view-only and require a new query; records and acceptance conclusions are not rewritten.
+
+| 业务操作 / Operation | 共用执行预算 / Shared execution budget |
+|---|---|
+| Agent 创建、草稿反馈 / Agent authoring and draft feedback | 3600 秒；较短的已绑定回合预算不延长 / 3600 seconds; shorter bound budgets remain shorter |
+| 工作流创建、反馈、v2 / Workflow composition, feedback, v2 | 3600 秒 / seconds |
+| 工作流检查、修复 / Workflow review and repair | 180 秒 / seconds |
+| 岗位理解、每页匹配、最终汇总 / Role understanding, each catalog page, consolidation | 每个模型阶段 300 秒，不新增岗位作业总上限 / 300 seconds per model stage; no new job-wide cap |
+| 普通查询、反馈、重新解释 / Ordinary query, feedback, reinterpretation | 沿用查询配置，默认 1800 秒 / configured query budget, default 1800 seconds |
+| 选样、独立基线、验收自由查询 / Sampling, baseline, acceptance query | 沿用各流程专用预算 / retain dedicated workflow budgets |
+
+首次容量排队不计执行预算。执行开始后，阶段启动、SDK 调用、内部等待和纠错共用截止时间，下游只得到剩余预算；运行途中不能重新签发完整预算。取消与超时后共用最多 10 秒清理窗口，原始故障与清理故障分别保存。清理未经确认、缺少有效结构化终态或迟到输出均不能登记成功。草稿反馈共用上下文、候选检查和修复流程；驱动只负责原生协议。输出必须经过无损编码、共用 Schema、嵌套 JSON 和业务／引用／证据检查，不截取文本或补造缺失字段。
+
+Initial capacity queueing is excluded from execution time. After execution starts, startup, native calls, internal waits and corrections share the same deadline; downstream calls receive only the remainder. Cancellation and timeout share at most ten seconds for cleanup, recorded separately from the primary failure. Unconfirmed cleanup, a missing structured terminal or late output cannot qualify as success. Draft feedback shares context, candidate checks and repairs; drivers own native protocol conversion only. Lossless encoding, common Schema, embedded JSON and business/reference/evidence checks remain mandatory; no text extraction or fabricated fields are permitted.
+
+私有离线／真实验证入口仍只能绕过“停用／业务操作尚未验证”的选择门禁，不能绕过冻结绑定、认证、模型、范围、截止时间和清理确认。本轮不创建或切换已安装 worker release，不运行真实模型或 SAP，不重启服务、启用、发布、提交或推送。下列按日期记录的旧 18 项结果保留历史含义，不作为本版资格。
+
+Private verification bypasses only disabled/unverified selection gates, never frozen bindings, authentication, model, scope, deadlines or cleanup confirmation. This round does not install/switch worker releases, run models/SAP, restart services, enable, publish, commit or push. The dated historical eighteen-operation results below retain their original meaning, not current qualification.
 
 ## 2026-10-06 共享编排迁移 / Shared-orchestration migration
 

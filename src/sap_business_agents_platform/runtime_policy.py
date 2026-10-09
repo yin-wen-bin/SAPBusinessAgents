@@ -61,6 +61,7 @@ def orchestration_digest(operation: str) -> str:
              "codex_planner.py", "workbuddy_planner.py", "workbuddy_harness.py", "workbuddy_authoring.py",
              "workbuddy_sample.py", "workbuddy_diagnostics.py", "workbuddy_supervisor.py",
              "runtime_execution.py", "runtime_query_history.py", "runtime.py", "engine.py",
+             "workbuddy_environment.py", "workbuddy_verification.py",
              "workflow_factory.py", "workflow_assistant.py", "factory.py")
     # Compatibility facades still own native startup/formatting helpers. Their
     # behavior cannot change underneath an earlier operation qualification.

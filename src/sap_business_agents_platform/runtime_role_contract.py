@@ -8,7 +8,10 @@ from .runtime_contract import RuntimeContractError as WorkBuddyError
 COLLECTIONS = ("roles", "processes", "operations", "agent_matches", "rejected_candidates", "workflow_suggestions", "agent_gaps")
 REF = {"type": "object", "properties": {"document_id": {"type": "string"}, "chunk_id": {"type": "string"}},
        "required": ["document_id", "chunk_id"]}
-SCHEMA = {"type": "object", "required": [*COLLECTIONS, "document_issues", "catalog_evaluation"],
+# Material understanding has no catalogue evaluation yet. The shared page
+# validator separately requires exact catalogue/digest/completion metadata;
+# requiring it here would invent a catalogue claim in the initial stage.
+SCHEMA = {"type": "object", "required": [*COLLECTIONS, "document_issues"],
           "properties": {**{name: {"type": "array", "items": {"type": "object", "required": ["evidence_refs"],
                "properties": {"evidence_refs": {"type": "array", "minItems": 1, "items": REF}}}} for name in COLLECTIONS},
               "document_issues": {"type": "array"}, "catalog_evaluation": {"type": "object"}}}

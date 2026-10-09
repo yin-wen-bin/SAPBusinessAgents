@@ -177,6 +177,35 @@ class WorkBuddyEnvironment:
                 "python_path": str(directory / value["python"]),
                 "cli_path": str(directory / value["cli"])}
 
+    def assert_verification_binding(self, snapshot: dict, *, formal: bool = False) -> dict:
+        """Private validation skips selection gates, never identity or login."""
+        from .workbuddy_identity import checked_identity
+        release = self.release(snapshot.get("environment_digest"))
+        if (snapshot.get("provider_id") != "workbuddy" or snapshot.get("reasoning_effort") is not None
+                or not isinstance(snapshot.get("model"), str) or not snapshot["model"]):
+            raise WorkBuddyError("workbuddy_binding_invalid")
+        if (snapshot.get("version") != release["sdk_version"]
+                or snapshot.get("cli_version") != release["cli_version"]
+                or snapshot.get("sdk_fingerprint") != digest(release["files"])):
+            raise WorkBuddyError("workbuddy_environment_digest_mismatch")
+        state = self.state()
+        if (state.get("authenticated") is not True
+                or state.get("authentication_environment") != release["environment_digest"]):
+            raise WorkBuddyError("workbuddy_authentication_required")
+        check = (state.get("models") or {}).get(snapshot["model"], {})
+        if (check.get("compatible") is not True or check.get("environment_digest") != release["environment_digest"]
+                or not check.get("check_digest") or snapshot.get("model_check_digest") != check["check_digest"]):
+            raise WorkBuddyError("runtime_model_check_required")
+        if (snapshot.get("actual_model") != check.get("actual_model")
+                or snapshot.get("model_identity_known") is not checked_identity(check)
+                or snapshot.get("model_identity_source") != check.get("model_identity_source")):
+            raise WorkBuddyError("workbuddy_model_identity_changed")
+        if formal and (not checked_identity(check) or not checked_identity(snapshot, flag="model_identity_known")):
+            raise WorkBuddyError("workbuddy_model_identity_unknown")
+        if formal and snapshot["model"] != check.get("actual_model"):
+            raise WorkBuddyError("workbuddy_model_alias_not_allowed")
+        return release
+
     def assert_operation(self, snapshot: dict, operation: str, *, mode: str = "bounded") -> dict:
         from .runtime_policy import ORCHESTRATION_VERSION, orchestration_digest
         release = self.release(snapshot.get("environment_digest"))

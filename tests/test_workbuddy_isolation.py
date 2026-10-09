@@ -316,6 +316,7 @@ def test_acceptance_worker_must_report_frozen_model(tmp_path, monkeypatch, actua
 
 def test_validation_scope_is_exact_and_does_not_escape_to_other_operations(tmp_path, monkeypatch):
     owner, binding = supervisor(tmp_path, monkeypatch)
+    binding = verified_binding(owner, binding)
     def reject(*_, **__):
         raise WorkBuddyError("runtime_operation_unavailable")
     monkeypatch.setattr(owner.environment, "assert_operation", reject)
@@ -326,6 +327,17 @@ def test_validation_scope_is_exact_and_does_not_escape_to_other_operations(tmp_p
                 owner.check_operation(snapshot, operation)
     with pytest.raises(WorkBuddyError, match="runtime_operation_unavailable"):
         owner.check_operation(binding, "sample_discovery")
+
+
+def verified_binding(owner, binding):
+    value = owner.environment.release(binding["environment_digest"])
+    check = {"compatible": True, "environment_digest": binding["environment_digest"], "check_digest": "checked-model",
+        "actual_model": "fixture-model", "identity_known": True, "model_identity_source": "assistant_message"}
+    owner.environment.mutate(lambda state: state.update(authenticated=True,
+        authentication_environment=binding["environment_digest"], models={"fixture-model": check}))
+    return {**binding, "model": "fixture-model", "version": value["sdk_version"], "cli_version": value["cli_version"],
+        "sdk_fingerprint": digest(value["files"]), "model_check_digest": check["check_digest"],
+        "actual_model": check["actual_model"], "model_identity_known": True, "model_identity_source": "assistant_message"}
 
 
 def test_platform_history_excludes_secrets_sdk_ids_and_acceptance_answers():

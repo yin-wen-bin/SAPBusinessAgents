@@ -7,7 +7,7 @@ import time
 import pytest
 
 from sap_business_agents_platform.runtime_contract import RuntimeContractError, deadline_scope
-from sap_business_agents_platform.runtime_prompts import PLANNER_OUTPUT_SCHEMA, ROLE_MATCHING_OUTPUT_SCHEMA
+from sap_business_agents_platform.runtime_prompts import WORKFLOW_REVIEW_OUTPUT_SCHEMA, ROLE_MATCHING_OUTPUT_SCHEMA
 from sap_business_agents_platform.runtime_role_contract import (
     COLLECTIONS, native_output_schema, canonical_output, decode,
 )
@@ -35,7 +35,7 @@ def test_role_native_wire_is_typed_and_lossless_without_mutating_shared_schema()
     assert canonical['summary_zh'] == raw['summary_zh']
     assert decode(canonical['analysis_json'], {'documents': [{'document_id': 'd1', 'chunks': [{'chunk_id': 'c1'}]}]},
                   'analyze_role_matching') == raw['analysis_json']
-    assert native_output_schema(PLANNER_OUTPUT_SCHEMA) == PLANNER_OUTPUT_SCHEMA
+    assert native_output_schema(WORKFLOW_REVIEW_OUTPUT_SCHEMA) == WORKFLOW_REVIEW_OUTPUT_SCHEMA
 
 
 @pytest.mark.parametrize('value', ['{"invalid":"sensitive-original"', [], None])

@@ -853,3 +853,37 @@ WorkBuddy analysis/feedback take **706.18/695.08 seconds**, with **twenty valid 
 The following import-only fixture failure occurs before model dispatch and is preserved. Seven fixture imports and four negative guard probes pass offline. A task-local current-binding monitor fixes loading without changing locked source, worker, runtime binding or qualification rules; only never-dispatched operations continue in a new record. Plan and the independent summary then time out after **122.80/122.58 seconds**, on their existing **120-second** budgets. Input lengths and Schema digests are saved, but neither a valid terminal nor a definitive native error is available. Startup, handshake and model-wait locations remain unconfirmed; these are not evidence of another empty-stream, Schema, SAP or prompt-size failure. Both owned jobs clean up successfully. Dependent grounding and every subsequent family/SAP stage stop before dispatch, without model retry or budget extension.
 
 The final independent audit confirms **2/18, can_enable=false**, disabled WorkBuddy, default Codex, identical protected/frozen controls, healthy API/bilingual pages and no active or cleanup-pending jobs. There are **zero SAP reads and zero Campaigns**. Historical results stay intact, real-query nullable guidance remains untested, and no new full-suite/build, upgrade, enablement, publication, mail, commit or push is claimed.
+
+## 共享编排一致性补齐 2026 10 10 / Shared-orchestration consistency completion
+
+当前有效操作从 `runtime_policy.OPERATIONS` 读取，本版为 **15 项**。`plan`、`ground_plan`、`summarize` 及旧查询续接被明确退役；旧计划、提示、解析及范围修补分支不再作为另一套可执行算法保留。新的自由查询只使用 Harness，缺少 Harness 不回退。历史查询按显式绑定、保存制品和阶段事件判断；依据不足或矛盾时仅可查看并要求新查询，不按 Provider 或线程 ID 猜测，也不重写历史记录。
+
+业务预算、剩余时间、候选检查、嵌套 JSON、岗位引用及草稿反馈由共享层维护，原生协议差异留在驱动。首次容量排队不计执行时间；启动、内部等待和纠错不重新计时。取消／超时只使用同一个最多 10 秒清理窗口；未确认清理、迟到结果、无结构化终态或非法输出不能登记 WorkBuddy 资格。原始执行错误与清理错误分开保存。岗位材料理解不虚构尚未检查的目录完整性，分页摘要、引用、匹配与最终业务对账仍由原校验器核对。
+
+Codex 的迁移前离线轨迹保持为只读对照，不重新生成基线或放宽旧断言。工作流 3600 秒、检查／修复 180 秒、岗位每个模型阶段 300 秒及查询配置预算属于本次明确的共用策略；岗位不新增整轮总上限。已保存历史会话、验收、固定 Agent 和工作流绑定不迁移。依赖、SDK／CLI、模型、连接配置和已发布 Agent 未在本轮升级或修改。
+
+本节仅记录离线实现与检查。历史 **2/18**、**14/18** 等记录保留原含义，不能直接为当前 15 项和新摘要背书。本轮没有运行真实模型、SAP 或 Campaign，没有切换 worker release、重启服务、启用、发布、发送邮件、提交或推送。当前服务是否已加载新代码不由离线测试证明。
+
+私有验证在进入上下文及每次派发前重新核对环境指纹、同环境登录、已检查模型及其检查摘要；正式验收另核对具体身份及别名限制。它仅绕过启停与操作资格，不绕过认证、模型或授权。新增离线拒绝用例覆盖登录失效、环境变化、模型未通过、检查摘要过期、SDK 指纹变化及正式验收路由别名。
+
+The current gate is the **15-operation** policy registry. Legacy planning, grounding, summary and query continuation fail explicitly; their duplicate algorithms and text extractors are removed. New queries require the Harness, while ambiguous historical flows remain view-only rather than being inferred from SDK/thread identity or rewritten.
+
+Private verification rechecks environment fingerprints, same-environment login and the checked model/digest both on entry and at dispatch. Formal acceptance additionally requires concrete checked identity, not a route alias. Only enablement/operation-qualification gates are bypassed. Offline rejection cases cover stale authentication/environment, failed or stale model checks, SDK fingerprints and formal route aliases.
+
+Shared orchestration owns budgets, remaining time, draft candidates, embedded JSON, references and business checks. Initial capacity waiting is excluded; startup, internal waits and corrections cannot renew the deadline. Cancellation/timeout share one bounded cleanup cutoff, and primary failures remain distinct from cleanup failures. Invalid or late outputs and unconfirmed cleanup cannot qualify WorkBuddy. Material understanding does not fabricate a catalogue evaluation; page coverage and final reconciliation remain mandatory.
+
+Immutable before-source Codex traces protect native options and compatible behavior without regenerating baselines. The explicit shared budget changes are documented in the Runtime guide. Published definitions, historical bindings, dependencies, SDK/CLI, models and connection configuration are not migrated or upgraded. This is offline implementation, not live qualification, a loaded-service assertion or automatic enablement. Historical eighteen-operation records remain historical; no model/SAP/Campaign, release switch, restart, enablement, publication, mail, commit or push occurs.
+
+后续真实验证须先确认没有相关活动任务或待清理进程，受控加载新编排并核对安装 worker 与源码是否一致；需要更新 worker 时创建不可变 release，不原地改写。重新冻结环境／模型／摘要后验证当前 15 项，沿用批准的只读范围和一次隔离验收，不复制历史通过、不自动反复重跑。
+
+Live validation remains separate: load the new orchestration only when idle and cleanup is confirmed, verify the installed worker against source, create an immutable release if required, then freeze the environment/model/digests and validate the current fifteen operations. Approved read-only scopes, independent evidence and the single isolated acceptance boundary remain unchanged; historical passes are not copied and failed jobs are not automatically rerun.
+
+### 最终离线门禁 / Final offline gate
+
+最终完整 Python 回归为 **1717 passed、1 skipped、1 warning**，耗时 **1325.03 秒**。跳过项为本机无法建立符号链接的既有外部附件测试；警告为既有 Starlette TestClient 弃用提示，没有跳过 DPAPI 断言。前端 **120 项**通过；Astro 检查 **53 个文件、零错误／零警告／零提示**；隔离生产构建生成 **84 页**。目录校验覆盖 **34 个正式包、6 个模块**，文档索引 **55 项、零变更块、零错误**。依赖、配置、已发布 Agent 及两份迁移前 Codex 轨迹夹具的 Git 差异为空。
+
+首次全量回归发现 5 项旧岗位模拟输出与共享嵌套 Schema、证据登记不一致。修正夹具中必需的空集合与实际文档／片段登记，保留分页数量、阶段顺序、权限和候选支持断言；另增加原生与规范输出均拒绝未知引用的用例。对应定向回归 **58 项**通过，原失败报告保留，没有放宽引用或结构检查。最终报告保存在 `.local-data/shared-orchestration-check/python-final-verified.xml`；站点制品位于同目录的 `site-dist-final/`，未覆盖或切换正在使用的站点。
+
+The final full Python regression passes **1717 tests**, with **one existing skip** (host symlink support unavailable) and **one existing Starlette deprecation warning**, in **1325.03 seconds**. DPAPI assertions are not skipped. The frontend passes **120 tests**; Astro checks **53 files** with no errors, warnings or hints; the isolated production build generates **84 pages**. Catalogue validation covers **34 packages/six modules**, and the documentation index checks **55 documents** with no changed blocks or errors. Dependencies, configuration, published Agents and immutable before-source Codex trace fixtures have no Git changes.
+
+Five initial regression failures came from old role-test outputs missing mandatory collections or citing unregistered fixture references. The fixtures now provide their actual document/chunk registry, retaining page counts, phase order, permissions and candidate-support assertions. Both native and canonical outputs explicitly reject unknown references; the targeted **58-test** regression passes. The first failure report remains intact, and checks are not weakened. The final XML and isolated site artifact remain in the ignored check directory. These are offline results only: no real SDK/model qualification, SAP reads, Campaign, service/release switch, enablement, project commit or push is performed.

@@ -31,7 +31,6 @@ from .models import (
     HarnessLimitUsage,
     HarnessResult,
     LocalizedText,
-    PlannerDecision,
     PresentationBlock,
     PresentationColumn,
     PresentationEntry,
@@ -3716,107 +3715,6 @@ class RunCoordinator:
         )
         self._complete_result(run_id, result)
 
-    def _validate_harness_relationships(
-        self,
-        plan: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        sap_plans: list[tuple[str, dict[str, Any]]] = []
-        for step in _normalize_free_steps(plan):
-            if step.get("tool") not in {"sap_read"}:
-                continue
-            sap_plan = step.get("plan")
-            if isinstance(sap_plan, dict):
-                sap_plans.append((str(step.get("id") or "sap_read_plan"), sap_plan))
-        return self.relationships.validate_plans(sap_plans)
-
-    async def _load_live_schemas(
-        self,
-        query: str,
-        refs: set[tuple[str, str, str]],
-    ) -> list[dict[str, Any]]:
-        grouped: dict[tuple[str, str], list[str]] = {}
-        for service_name, odata_version, entity_set in sorted(refs):
-            grouped.setdefault((service_name, odata_version), []).append(entity_set)
-        responses: list[dict[str, Any]] = []
-        confirmed: set[tuple[str, str, str]] = set()
-        issues: list[dict[str, Any]] = []
-        for (service_name, odata_version), entity_sets in grouped.items():
-            response = await self.sap_read.schema(
-                service_name,
-                entity_sets,
-                query,
-                odata_version=odata_version,
-                include_fields=True,
-                max_fields=5000,
-            )
-            responses.append(response)
-            data = response.get("data") if isinstance(response, dict) else None
-            if response.get("ok") is not True or not isinstance(data, dict):
-                issues.append(
-                    {
-                        "service_name": service_name,
-                        "odata_version": odata_version,
-                        "entity_sets": entity_sets,
-                        "validation_issues": response.get("validation_issues") or [],
-                    }
-                )
-                continue
-            if data.get("schema_authority") is not True or data.get("fields_truncated") is True:
-                issues.append(
-                    {
-                        "service_name": service_name,
-                        "odata_version": odata_version,
-                        "entity_sets": entity_sets,
-                        "schema_authority": data.get("schema_authority"),
-                        "fields_truncated": data.get("fields_truncated"),
-                    }
-                )
-                continue
-            for entity in data.get("entities") or []:
-                if isinstance(entity, dict) and entity.get("runtime_available") is not False:
-                    confirmed.add(
-                        (
-                            str(entity.get("service_name") or service_name),
-                            str(entity.get("odata_version") or odata_version),
-                            str(entity.get("entity_set") or ""),
-                        )
-                    )
-        missing = sorted(refs.difference(confirmed))
-        if issues or missing:
-            raise RunExecutionError(
-                "Live SAP schema grounding is unavailable for one or more planned entities.",
-                code="free_query_schema_unavailable",
-                detail={"issues": issues, "missing_entities": missing},
-            )
-        return responses
-
-    async def _validate_harness_sap_plans(
-        self,
-        plan: dict[str, Any],
-        query: str,
-    ) -> list[dict[str, Any]]:
-        failures: list[dict[str, Any]] = []
-        for step in _normalize_free_steps(plan):
-            if step.get("tool") not in {"sap_read"}:
-                continue
-            sap_plan = step.get("plan")
-            if not isinstance(sap_plan, dict):
-                failures.append(
-                    {"step_id": step.get("id"), "code": "missing_sap_read_plan"}
-                )
-                continue
-            validation = await self.sap_read.validate_plan(sap_plan, query)
-            if validation.get("ok") is not True:
-                failures.append(
-                    {
-                        "step_id": step.get("id"),
-                        "layer": "sap_read_schema",
-                        "status": validation.get("status"),
-                        "validation_issues": validation.get("validation_issues") or [],
-                        "error": validation.get("error"),
-                    }
-                )
-        return failures
 
     def _complete_result(
         self,
@@ -5148,25 +5046,6 @@ def _guided_agent_question(agent: dict[str, Any], query: str) -> str:
     )
 
 
-def _collect_sap_entity_refs(plan: dict[str, Any]) -> set[tuple[str, str, str]]:
-    refs: set[tuple[str, str, str]] = set()
-    for harness_step in _normalize_free_steps(plan):
-        if harness_step.get("tool") not in {"sap_read"}:
-            continue
-        sap_plan = harness_step.get("plan")
-        if not isinstance(sap_plan, dict):
-            continue
-        candidates = [sap_plan]
-        nested = sap_plan.get("steps")
-        if isinstance(nested, list):
-            candidates.extend(item for item in nested if isinstance(item, dict))
-        for candidate in candidates:
-            service_name = str(candidate.get("service_name") or "").strip()
-            odata_version = str(candidate.get("odata_version") or "").strip()
-            entity_set = str(candidate.get("entity_set") or "").strip()
-            if service_name and odata_version and entity_set:
-                refs.add((service_name, odata_version, entity_set))
-    return refs
 
 
 def _sap_plan_trace_fields(plan: dict[str, Any]) -> dict[str, Any]:
@@ -5246,155 +5125,6 @@ def _count_free_query_top_bounds(plan: dict[str, Any]) -> int:
     return count
 
 
-def _require_grounded_decision(
-    decision: PlannerDecision,
-    allowed_refs: set[tuple[str, str, str]],
-) -> PlannerDecision:
-    if decision.needs_clarification or not isinstance(decision.plan, dict):
-        raise RunExecutionError(
-            "Codex could not ground the candidate plan in the live SAP schemas.",
-            code="codex_grounded_plan_missing",
-        )
-    grounded_refs = _collect_sap_entity_refs(decision.plan)
-    unexpected = sorted(grounded_refs.difference(allowed_refs))
-    if unexpected:
-        raise RunExecutionError(
-            "Codex schema grounding introduced an unapproved service or entity.",
-            code="codex_grounding_scope_expanded",
-            detail={"unexpected_entities": unexpected},
-        )
-    return decision
-
-
-def _canonicalize_plan_order_by(
-    decision: PlannerDecision,
-) -> tuple[PlannerDecision, int]:
-    if not isinstance(decision.plan, dict):
-        return decision, 0
-    count = 0
-
-    def visit(value: Any) -> Any:
-        nonlocal count
-        if isinstance(value, dict):
-            normalized = {key: visit(child) for key, child in value.items()}
-            order_by = normalized.get("order_by")
-            if isinstance(order_by, list):
-                fields: list[str] = []
-                for item in order_by:
-                    text = str(item or "").strip()
-                    match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s+(asc|desc)", text, re.I)
-                    if match and match.group(2).lower() == "desc":
-                        raise RunExecutionError(
-                            "Descending order expressions are not supported by the guarded SAP read plan contract.",
-                            code="unsupported_order_direction",
-                            detail={"order_by": text},
-                        )
-                    if match:
-                        text = match.group(1)
-                        count += 1
-                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
-                        raise RunExecutionError(
-                            "SAP read order_by entries must be bare field names.",
-                            code="invalid_order_by_expression",
-                        )
-                    if text not in fields:
-                        fields.append(text)
-                normalized["order_by"] = fields
-            return normalized
-        if isinstance(value, list):
-            return [visit(child) for child in value]
-        return value
-
-    return decision.model_copy(update={"plan": visit(decision.plan)}), count
-
-
-def _remove_unsupported_order_by(
-    decision: PlannerDecision,
-    schemas: list[dict[str, Any]],
-) -> tuple[PlannerDecision, int]:
-    """Remove only order fields that live metadata explicitly marks unsupported.
-
-    Sorting is a transport/paging concern, so dropping an unsupported optional order
-    expression does not change the business filter or expand the query scope. The
-    Provider will report an inconclusive result if it cannot prove stable pagination.
-    """
-
-    if not isinstance(decision.plan, dict):
-        return decision, 0
-    field_sortability: dict[tuple[str, str, str, str], bool] = {}
-    for response in schemas:
-        data = response.get("data") if isinstance(response, dict) else None
-        if not isinstance(data, dict):
-            continue
-        default_service = str((data.get("service") or {}).get("service_name") or "")
-        default_version = str((data.get("service") or {}).get("odata_version") or "")
-        for field in data.get("fields") or []:
-            if not isinstance(field, dict):
-                continue
-            service = str(field.get("service_name") or default_service)
-            version = str(field.get("odata_version") or default_version)
-            entity = str(field.get("entity_set") or "")
-            name = str(field.get("field_name") or "")
-            if service and version and entity and name:
-                field_sortability[(service, version, entity, name)] = field.get("sortable") is not False
-
-    copied = copy.deepcopy(decision.plan)
-    removed = 0
-    for harness_step in _normalize_free_steps(copied):
-        if harness_step.get("tool") not in {"sap_read"}:
-            continue
-        sap_plan = harness_step.get("plan")
-        if not isinstance(sap_plan, dict):
-            continue
-        candidates = [sap_plan]
-        nested = sap_plan.get("steps")
-        if isinstance(nested, list):
-            candidates.extend(item for item in nested if isinstance(item, dict))
-        for candidate in candidates:
-            service = str(candidate.get("service_name") or sap_plan.get("service_name") or "")
-            version = str(candidate.get("odata_version") or sap_plan.get("odata_version") or "")
-            entity = str(candidate.get("entity_set") or "")
-            order_by = candidate.get("order_by")
-            if not isinstance(order_by, list):
-                continue
-            kept: list[str] = []
-            for field in order_by:
-                name = str(field)
-                if field_sortability.get((service, version, entity, name)) is False:
-                    removed += 1
-                else:
-                    kept.append(name)
-            candidate["order_by"] = kept
-    return decision.model_copy(update={"plan": copied}), removed
-
-
-def _validate_free_plan_limits(plan: dict[str, Any], max_tool_calls: int | None) -> None:
-    call_count = 0
-    for step in _normalize_free_steps(plan):
-        tool = step.get("tool")
-        if tool in {"sap_read"}:
-            sap_plan = step.get("plan")
-            if not isinstance(sap_plan, dict):
-                raise RunExecutionError("SAP read harness step has no plan object.", code="invalid_codex_plan")
-            _reject_non_get(sap_plan)
-            nested_steps = sap_plan.get("steps") or []
-            if not isinstance(nested_steps, list):
-                raise RunExecutionError("SAP read plan steps must be an array.", code="invalid_codex_plan")
-            call_count += max(1, len(nested_steps))
-        elif tool == "skill":
-            if not str(step.get("skill_id") or ""):
-                raise RunExecutionError("Skill harness step has no skill_id.", code="invalid_codex_plan")
-            call_count += 1
-        else:
-            raise RunExecutionError(
-                f"Codex selected an unsupported tool: {tool}", code="unregistered_tool_rejected"
-            )
-    if max_tool_calls is not None and call_count > max_tool_calls:
-        raise RunExecutionError(
-            f"Codex plan exceeds the {max_tool_calls}-call prototype limit.",
-            code="tool_call_limit_exceeded",
-            detail={"planned_call_count": call_count, "max_tool_calls": max_tool_calls},
-        )
 
 
 def _completeness_evidence_scope(
@@ -5478,17 +5208,6 @@ def _collect_final_evidence_refs(value: Any) -> set[str]:
     return references
 
 
-def _reject_non_get(value: Any) -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if key in {"http_method", "httpMethod", "method"} and str(child).upper() != "GET":
-                raise RunExecutionError(
-                    "Codex plan contains a non-GET operation.", code="write_operation_rejected"
-                )
-            _reject_non_get(child)
-    elif isinstance(value, list):
-        for child in value:
-            _reject_non_get(child)
 
 
 def _find_business_report(rule_results: list[dict[str, Any]]) -> dict[str, Any] | None:

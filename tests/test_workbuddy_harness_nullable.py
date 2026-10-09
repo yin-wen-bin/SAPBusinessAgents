@@ -135,12 +135,15 @@ def test_harness_driver_changes_only_native_format_guidance(tmp_path, output_for
     store = SimpleNamespace(get_run=lambda _: SimpleNamespace(runtime=runtime),
         get_harness_state=lambda _: {}, append_event=lambda *args: events.append(args),
         update_run=lambda *args, **kwargs: None, update_harness_state=lambda *args, **kwargs: None)
-    owner = SimpleNamespace(store=store, manager=SimpleNamespace(supervisor=SimpleNamespace(run=native)))
+    async def cancel_tools(*args, **kwargs):
+        return True
+    owner = SimpleNamespace(store=store, broker=SimpleNamespace(cancel_tools=cancel_tools),
+        manager=SimpleNamespace(supervisor=SimpleNamespace(run=native, cleanup_deadlines={}, reconcile=lambda: [])))
     frozen = schema()
     request = RuntimeRequest("workbuddy", "free_query", "turn", binding, "Original user query", frozen,
         cwd=str(tmp_path), instructions="Original shared policy.",
         permissions={"acceptance_direct_baseline": False}, deadline=time.monotonic() + 60)
-    context = {"run_id": "fixture-run", "state": {}, "turn_count": 1}
+    context = {"run_id": "fixture-run", "state": {}, "turn_count": 1, "cleanup_state": {"complete": False}}
     task = WorkBuddyHarnessDriver(owner).harness_turn(request, context)
     if output_format == "native_json_schema":
         assert asyncio.run(task).output == raw

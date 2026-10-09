@@ -9,7 +9,7 @@ import pytest
 
 from sap_business_agents_platform.sdk_manager import SDKManager, SDKManagerError, _normalize_model
 from sap_business_agents_platform.runtime import RuntimeRouter
-from sap_business_agents_platform.codex_planner import CodexPlanner, _run_plan_turn
+from sap_business_agents_platform.codex_planner import CodexPlanner
 from tests.test_sdk_manager import FakeAdapter, FakeRuntimeProbe, _write_runtime_registry
 from tests.test_runtime_router import FakeManager
 
@@ -119,7 +119,7 @@ def test_router_has_isolated_concurrent_effort_instances_and_pins_snapshot():
     assert len(made) == 2
 
 
-def test_planner_repair_and_authoring_resume_explicit_effort(tmp_path):
+def test_authoring_resume_preserves_explicit_effort(tmp_path):
     efforts = []
     class Thread:
         id = "isolated-test-thread"
@@ -131,7 +131,6 @@ def test_planner_repair_and_authoring_resume_explicit_effort(tmp_path):
             return SimpleNamespace(final_response=json.dumps({"intent": "test", "needs_clarification": False,
                 "clarification_question": "", "plan_json": "{" if len(efforts) == 1 else "{}"}))
     thread = Thread()
-    asyncio.run(_run_plan_turn(thread, "test", phase="fixture", reasoning_effort="high"))
     class Client:
         async def thread_resume(self, thread_id, **kwargs):
             assert thread_id == "old-thread"
@@ -139,7 +138,7 @@ def test_planner_repair_and_authoring_resume_explicit_effort(tmp_path):
             return thread
     planner = CodexPlanner(tmp_path, model="gpt-5.6-sol", reasoning_effort="medium")
     asyncio.run(planner._run_agent_feedback(Client(), "test", {}, "old-thread", str(tmp_path)))
-    assert efforts == ["high", "high", "medium"]
+    assert efforts == ["medium"]
 
 
 def test_legacy_future_binding_keeps_model_and_does_not_mutate_history(tmp_path):

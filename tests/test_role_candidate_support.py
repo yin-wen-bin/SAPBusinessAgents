@@ -9,7 +9,7 @@ import pytest
 from sap_business_agents_platform.runtime_role_consolidation import (
     candidate_support_issues, candidate_support_projection, checked_candidate, reconcile,
 )
-from tests.test_role_consolidation_contract import match, operation, suggestion
+from tests.test_role_consolidation_contract import REF, match, operation, suggestion
 
 
 def catalog(*ids, executable=True, verdict="PASS"):
@@ -140,6 +140,10 @@ def test_shared_prompt_contains_authoritative_support_and_preserves_audit(monkey
         planner._driver = SimpleNamespace(client=lambda **options: Client(trace, operation_name, **options))
     kwargs = copy.deepcopy(cases()[operation_name])
     kwargs["agent_catalog"] = frozen
+    # This fixture introduces cited operations/matches, unlike the empty trace
+    # fixture. Supply their actual registry; never bypass shared reference checks.
+    kwargs["documents"] = {"documents": [{"document_id": REF["document_id"],
+        "chunks": [{"chunk_id": REF["chunk_id"], "text": "Fixture business material"}]}]}
     result = asyncio.run(getattr(planner, operation_name)(**kwargs))
     final = prompts[-1]
     projection_json = final.split("Candidate support projection: ", 1)[1].split("\n", 1)[0]

@@ -8,14 +8,10 @@ import pytest
 
 from sap_business_agents_platform.codex_planner import (
     FREE_QUERY_PRESENTATION_REVISION_SCHEMA,
-    _planner_prompt,
-    _run_plan_turn,
+    CodexPlanner,
 )
-from sap_business_agents_platform.engine import (
-    RunExecutionError,
-    _canonicalize_plan_order_by,
-)
-from sap_business_agents_platform.models import PlannerDecision
+from sap_business_agents_platform.harness_query_adapter import normalize_ascending_order
+from sap_business_agents_platform.sap_read.base import SapReadError
 
 
 class FakeThread:
@@ -40,87 +36,45 @@ def test_presentation_revision_schema_keeps_definitions_at_response_root() -> No
     assert set(presentation["required"]) == set(presentation["properties"])
 
 
-def test_plan_turn_repairs_malformed_plan_json_exactly_once() -> None:
-    thread = FakeThread(
-        [
-            {
-                "intent": "fixture",
-                "needs_clarification": False,
-                "clarification_question": "",
-                "plan_json": '{"service_name":"API_FIXTURE_SRV","odata_version":"2.0" "entity_set":"A_Fixture"}',
-            },
-            {
-                "intent": "fixture",
-                "needs_clarification": False,
-                "clarification_question": "",
-                "plan_json": '{"service_name":"API_FIXTURE_SRV","odata_version":"2.0","entity_set":"A_Fixture"}',
-            },
-        ]
-    )
-    raw, plan = asyncio.run(_run_plan_turn(thread, "initial", phase="test"))
-    assert raw["intent"] == "fixture"
-    assert plan == {
-        "service_name": "API_FIXTURE_SRV",
-        "odata_version": "2.0",
-        "entity_set": "A_Fixture",
-    }
-    assert len(thread.prompts) == 2
-    assert "Change only the JSON syntax" in thread.prompts[1]
+@pytest.mark.parametrize("operation", ["plan", "ground_plan", "summarize"])
+def test_retired_query_operations_cannot_dispatch_a_model(tmp_path, operation):
+    from sap_business_agents_platform.runtime_contract import RuntimeContractError
+    planner = CodexPlanner(tmp_path, model="offline")
+    class ForbiddenDriver:
+        def client(self, **kwargs):
+            raise AssertionError("retired operation dispatched a model")
+    planner._driver = ForbiddenDriver()
+    with pytest.raises(RuntimeContractError, match="runtime_operation_retired"):
+        asyncio.run(getattr(planner, operation)("fixture"))
 
 
 def test_order_by_is_canonicalized_to_guarded_bare_field_contract() -> None:
-    decision = PlannerDecision(
-        intent="fixture",
-        plan={
+    plan = {
             "service_name": "API_FIXTURE_SRV",
             "odata_version": "2.0",
             "entity_set": "A_Fixture",
-            "order_by": ["Document asc", "Document asc", "Item"],
-        },
-    )
-    normalized, count = _canonicalize_plan_order_by(decision)
-    assert normalized.plan is not None
-    assert normalized.plan["order_by"] == ["Document", "Item"]
-    assert count == 2
+            "order_by": ["Document asc", {"field": "Item", "direction": "asc"}],
+    }
+    normalized, diagnostics = normalize_ascending_order(plan)
+    assert normalized["order_by"] == ["Document", "Item"]
+    assert len(diagnostics) == 2
+    assert plan["order_by"][0] == "Document asc"
 
 
 def test_order_by_desc_fails_closed_instead_of_changing_semantics() -> None:
-    decision = PlannerDecision(
-        intent="fixture",
-        plan={
+    plan = {
             "service_name": "API_FIXTURE_SRV",
             "odata_version": "2.0",
             "entity_set": "A_Fixture",
             "order_by": ["Document desc"],
-        },
-    )
-    with pytest.raises(RunExecutionError, match="Descending order"):
-        _canonicalize_plan_order_by(decision)
+    }
+    with pytest.raises(SapReadError, match="descending"):
+        normalize_ascending_order(plan)
 
 
-def test_initial_planner_receives_non_exhaustive_relationship_knowledge() -> None:
-    prompt = _planner_prompt(
-        "fixture",
-        {"data": {"items": []}},
-        {
-            "data": {
-                "business_relationship_knowledge": {
-                    "role": "advisory",
-                    "exhaustive": False,
-                    "field_semantics": [
-                        {
-                            "entity_set": "A_OperationalAcctgDocItemCube",
-                            "field": "BillingDocument",
-                            "semantic": "billing_document_id",
-                        }
-                    ],
-                    "relationships": [{"id": "o2c-billing-operational-fi"}],
-                }
-            }
-        },
-        [],
-        continuing=False,
-    )
-    assert "o2c-billing-operational-fi" in prompt
-    assert "non-exhaustive" in prompt
-    assert "not as an exhaustive allowlist" in prompt
+def test_retired_query_prompts_are_not_exported():
+    from sap_business_agents_platform import runtime_prompts
+    # Relationship semantics remain covered by the real Broker/catalog suite;
+    # retired planner prompts must not remain as an alternative implementation.
+    for name in ("_planner_prompt", "_grounding_prompt", "_run_plan_turn", "SUMMARY_OUTPUT_SCHEMA"):
+        assert not hasattr(runtime_prompts, name)

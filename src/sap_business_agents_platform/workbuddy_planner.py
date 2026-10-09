@@ -14,14 +14,9 @@ from jsonschema import ValidationError, validate
 from .workbuddy_prompts import (
     AUTHOR_OUTPUT_SCHEMA,
     AGENT_FEEDBACK_OUTPUT_SCHEMA,
-    PLANNER_OUTPUT_SCHEMA,
-    SUMMARY_OUTPUT_SCHEMA,
     WORKFLOW_COMPOSITION_OUTPUT_SCHEMA,
     WORKFLOW_REPAIR_OUTPUT_SCHEMA,
     WORKFLOW_REVIEW_OUTPUT_SCHEMA,
-    _decode_plan_json,
-    _grounding_prompt,
-    _planner_prompt,
     _safe_json,
     _workflow_composition_prompt,
 )
@@ -152,27 +147,6 @@ class WorkBuddyPlanner(SharedPlanner):
 
 
 
-    def _workflow_output(self, text, schema, path):
-        from .workbuddy_workflow_contract import decode
-        try:
-            return decode(text, schema, operation=self._operation.get(), path=path)
-        except WorkBuddyError as exc:
-            self._emit("workbuddy_output_rejected", exc.detail)
-            raise WorkBuddyRuntimeError("Invalid workflow JSON contract.",
-                code="workbuddy_structured_output_invalid", detail=exc.detail) from exc
-
-    def _embedded_output(self, text, kind, path):
-        from .workbuddy_diagnostics import checked_output
-        try:
-            return checked_output(text, {"type": kind}, operation=self._operation.get(), output_format="embedded_json")
-        except WorkBuddyError as exc:
-            for issue in exc.detail["validation_issues"]:
-                issue["path"] = path
-            self._emit("workbuddy_output_rejected", exc.detail)
-            raise WorkBuddyRuntimeError("Invalid embedded JSON.", code="workbuddy_structured_output_invalid", detail=exc.detail) from exc
-
-
-
     async def _query(
         self, prompt: str, *, thread_id: str | None, system_prompt: str | None,
         output_schema: dict[str, Any] | None = None,
@@ -274,23 +248,3 @@ for _name in ("author_draft", "review_agent_feedback",
               "revise_free_query_presentation", "review_workflow_feedback", "analyze_role_matching",
               "review_role_matching_feedback"):
     setattr(WorkBuddyPlanner, _name, _bind_operation(_name, getattr(WorkBuddyPlanner, _name)))
-
-
-def _parse_json_object(value: str) -> dict[str, Any]:
-    text = value.strip()
-    fence = chr(96) * 3
-    if text.startswith(fence) and text.endswith(fence):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1]).strip()
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        if start < 0:
-            raise
-        payload, end = json.JSONDecoder().raw_decode(text[start:])
-        if text[start + end :].strip():
-            raise ValueError("Structured output contains trailing text.")
-    if not isinstance(payload, dict):
-        raise ValueError("Structured output is not an object.")
-    return payload

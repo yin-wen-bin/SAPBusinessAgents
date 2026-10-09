@@ -61,7 +61,8 @@ class WorkBuddySupervisor:
         from .workbuddy_environment import OPERATIONS
         if not operations or not operations.issubset(OPERATIONS) or snapshot.get("provider_id") != "workbuddy":
             raise WorkBuddyError("workbuddy_validation_scope_invalid")
-        self.environment.release(snapshot.get("environment_digest"))
+        self.environment.assert_verification_binding(snapshot,
+            formal=bool(operations & {"acceptance_baseline", "acceptance_free_query"}))
         token = self._verification.set((digest(snapshot), frozenset(operations)))
         try:
             yield
@@ -72,7 +73,8 @@ class WorkBuddySupervisor:
         verification = self._verification.get()
         if (verification and verification[0] == digest(snapshot) and operation in verification[1]
                 and mode in {"bounded", "trusted_local"}):
-            return self.environment.release(snapshot.get("environment_digest"))
+            return self.environment.assert_verification_binding(snapshot,
+                formal=operation in {"acceptance_baseline", "acceptance_free_query"})
         return self.environment.assert_operation(snapshot, operation, mode=mode)
 
     @asynccontextmanager
@@ -239,11 +241,15 @@ class WorkBuddySupervisor:
                     worker = Path(release["directory"]) / release["worker"]
                     if release["worker"] not in release["files"]:
                         raise WorkBuddyError("workbuddy_environment_invalid")
-                    process = await asyncio.create_subprocess_exec(release["python_path"], "-I", "-B", str(worker),
-                        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                        env=env, limit=FRAME_LIMIT + 1, start_new_session=os.name != "nt",
-                        creationflags=0x08000000 if os.name == "nt" else 0)
+                    async with asyncio.timeout(max(0, deadline - time.monotonic())):
+                        process = await asyncio.create_subprocess_exec(release["python_path"], "-I", "-B", str(worker),
+                            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                            env=env, limit=FRAME_LIMIT + 1, start_new_session=os.name != "nt",
+                            creationflags=0x08000000 if os.name == "nt" else 0)
                     job.attach(process.pid)  # Worker waits for request; SDK cannot spawn before attach.
+                except TimeoutError:
+                    job.close()
+                    raise WorkBuddyError("workbuddy_deadline_exceeded") from None
                 except BaseException:
                     job.close()
                     if "process" in locals() and process.returncode is None:
@@ -342,6 +348,8 @@ class WorkBuddySupervisor:
                         elif kind == "result":
                             if not isinstance(message.get("result"), dict):
                                 raise WorkBuddyError("workbuddy_result_invalid")
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError
                             if operation in {"acceptance_baseline", "acceptance_free_query"}:
                                 actual = message["result"].get("actual_model")
                                 from .workbuddy_identity import checked_identity, is_concrete_model
@@ -391,7 +399,8 @@ class WorkBuddySupervisor:
                 raise
             finally:
                 from .runtime_contract import cleanup_deadline as inherited_cleanup_deadline
-                deadline = item.setdefault("cleanup_deadline", inherited_cleanup_deadline())
+                deadline = min(item.get("cleanup_deadline", float("inf")), inherited_cleanup_deadline())
+                item["cleanup_deadline"] = deadline
                 self.cleanup_deadlines[task_id] = deadline
                 record["cleanup_started_at"] = time.time()
                 async def finish_owned_job():
@@ -418,20 +427,28 @@ class WorkBuddySupervisor:
                 try:
                     done, _ = await asyncio.wait({cleanup}, timeout=max(0, deadline - time.monotonic()))
                 except asyncio.CancelledError:
-                    # Shield keeps the owned cleanup alive, but does not wait
-                    # for it when the caller is cancelled. Persist its outcome
-                    # before returning, including cancellation during cleanup.
+                    # asyncio.wait leaves owned cleanup running on cancellation.
+                    # Persist its outcome within the original cutoff; never
+                    # replace an existing failure with a cleanup exception.
                     status = "cancelled"
                     try:
                         done, _ = await asyncio.wait({cleanup}, timeout=max(0, deadline - time.monotonic()))
                     except asyncio.CancelledError:
                         self.mark_cleanup_pending({task_id})
                         cleanup.add_done_callback(_consume_cleanup)
-                        raise
+                        if primary is None:
+                            primary = asyncio.CancelledError()
+                        primary.detail = dict(getattr(primary, "detail", {}) or {},
+                                              cleanup_failure_code="runtime_cleanup_incomplete")
+                        raise primary
                     if not done:
                         self.mark_cleanup_pending({task_id})
                         cleanup.add_done_callback(_consume_cleanup)
-                        raise WorkBuddyError("runtime_cleanup_incomplete") from None
+                        if primary is None:
+                            primary = asyncio.CancelledError()
+                        primary.detail = dict(getattr(primary, "detail", {}) or {},
+                                              cleanup_failure_code="runtime_cleanup_incomplete")
+                        raise primary
                     # Persist the owned cleanup before propagating cancellation.
                     if primary is None:
                         primary = asyncio.CancelledError()

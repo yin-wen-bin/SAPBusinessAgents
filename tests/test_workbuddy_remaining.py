@@ -278,7 +278,8 @@ def test_harness_denies_before_business_read_and_uses_native_schema(tmp_path, mo
     monkeypatch.setattr("sap_business_agents_platform.runtime_harness_result.finalize",
         lambda *_, **__: SimpleNamespace(status="completed", clarification_question=""))
     state, calls, events = {}, [], []
-    record = SimpleNamespace(input={}, query="Bound query", runtime=SimpleNamespace(model_dump=lambda **_: {"model": "bound"}))
+    record = SimpleNamespace(input={}, query="Bound query", started_at=None,
+        runtime=SimpleNamespace(model_dump=lambda **_: {"model": "bound"}))
     store = SimpleNamespace(get_run=lambda _: record, get_harness_state=lambda _: state,
         update_harness_state=lambda _, value: state.update(value), append_event=lambda *value: events.append(value),
         get_free_query_session_by_run=lambda _: None, update_run=lambda *_, **__: None)

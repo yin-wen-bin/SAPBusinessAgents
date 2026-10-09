@@ -19,8 +19,6 @@ from .runtime_role_consolidation import (
     decode as decode_consolidation, candidate_support_projection, candidate_support_instructions,
 )
 from .runtime_prompts import (
-    PLANNER_OUTPUT_SCHEMA,
-    SUMMARY_OUTPUT_SCHEMA,
     AUTHOR_OUTPUT_SCHEMA,
     WORKFLOW_REVIEW_OUTPUT_SCHEMA,
     AGENT_FEEDBACK_OUTPUT_SCHEMA,
@@ -38,12 +36,6 @@ from .runtime_prompts import (
     _workflow_assistant_tool_catalog,
     _workflow_feedback_prompt,
     _workflow_composition_prompt,
-    _planner_prompt,
-    _run_plan_turn,
-    _decode_plan_json,
-    _grounding_prompt,
-    _schema_snapshot,
-    _RUNTIME_PLAN_CONTRACT,
     _SECRET_KEYS,
     _decode_role_matching_output,
     _role_matching_thread_can_restart,
@@ -334,7 +326,7 @@ return non_sap_operation_count. Do not call tools, inspect files, execute SAP or
                         await _await_with_hard_timeout(
                             thread.run(understanding_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort),
                             timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
-                        )
+                        ), documents, self.current_operation
                     )
                     canonical = {
                         key: understanding.get(key) or []
@@ -415,7 +407,7 @@ files.
                                         page_prompt, output_schema=ROLE_MATCHING_OUTPUT_SCHEMA, effort=self.reasoning_effort
                                     ),
                                     timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
-                                )
+                                ), documents, self.current_operation
                             )
                         except Exception:
                             continue
@@ -751,7 +743,7 @@ Rules:
             result = await thread.run(prompt, output_schema=WORKFLOW_COMPOSITION_OUTPUT_SCHEMA, effort=self.reasoning_effort)
             raw = json.loads(result.final_response)
             try:
-                proposal = json.loads(str(raw.get("proposal_json") or "{}"))
+                proposal = json.loads(raw["proposal_json"])
             except json.JSONDecodeError as exc:
                 repair = await thread.run(
                     (
@@ -764,7 +756,7 @@ Rules:
                     effort=self.reasoning_effort,
                 )
                 raw = json.loads(repair.final_response)
-                proposal = json.loads(str(raw.get("proposal_json") or "{}"))
+                proposal = json.loads(raw["proposal_json"])
             if not isinstance(proposal, dict):
                 raise ValueError("Codex workflow composition did not return a JSON object.")
             if not raw.get("needs_clarification"):
@@ -834,20 +826,16 @@ Rules:
             result = await thread.run(prompt, output_schema=WORKFLOW_FEEDBACK_OUTPUT_SCHEMA, effort=self.reasoning_effort)
             raw = json.loads(result.final_response)
             schema = PROPOSAL_SCHEMA if raw.get("action") == "revise_workflow" else {"type": "null"}
-            decode_workflow(str(raw.get("proposal_json") or "null"), schema,
+            decode_workflow(raw["proposal_json"], schema,
                             operation="review_workflow_feedback", path="/proposal_json")
-            decode_workflow(str(raw.get("validation_input_patch_json") or "{}"), input_patch_schema(workflow),
+            decode_workflow(raw["validation_input_patch_json"], input_patch_schema(workflow),
                             operation="review_workflow_feedback", path="/validation_input_patch_json")
-            decode_workflow(str(raw.get("candidate_expectations_json") or "[]"), EXPECTATIONS_SCHEMA,
+            decode_workflow(raw["candidate_expectations_json"], EXPECTATIONS_SCHEMA,
                             operation="review_workflow_feedback", path="/candidate_expectations_json")
             try:
-                proposal = json.loads(str(raw.get("proposal_json") or "null"))
-                validation_input_patch = json.loads(
-                    str(raw.get("validation_input_patch_json") or "{}")
-                )
-                candidate_expectations = json.loads(
-                    str(raw.get("candidate_expectations_json") or "[]")
-                )
+                proposal = json.loads(raw["proposal_json"])
+                validation_input_patch = json.loads(raw["validation_input_patch_json"])
+                candidate_expectations = json.loads(raw["candidate_expectations_json"])
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Workflow feedback returned invalid embedded JSON: {exc}") from exc
             if proposal is not None and not isinstance(proposal, dict):

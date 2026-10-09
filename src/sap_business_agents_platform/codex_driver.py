@@ -252,6 +252,7 @@ class CodexSampleDriver:
 
 async def run_codex_sample(service, run_id, context, capability):
     import asyncio
+    import time
     from .sample_discovery import SampleDiscoveryError, SAMPLE_MODEL, sample_output_schema
     from .runtime_sample import native_sample_allowed
     from .harness import (_safe_codex, _approval_mode, _sandbox, _event_item,
@@ -296,6 +297,10 @@ async def run_codex_sample(service, run_id, context, capability):
                 else:
                     await stream_task
             finally:
+                import sys
+                from .runtime_contract import begin_cleanup, cleanup_deadline, drain_cleanup
+                primary = sys.exception()
+                begin_cleanup()
                 if not stream_task.done():
                     # SDK 0.147 uses to_thread(queue.get). Cancelling the
                     # asyncio wrapper unregisters that queue, leaving the
@@ -304,11 +309,18 @@ async def run_codex_sample(service, run_id, context, capability):
                     router = getattr(getattr(getattr(codex, "_client", None), "_sync", None), "_router", None)
                     if router is not None and callable(getattr(router, "fail_all", None)):
                         router.fail_all(RuntimeError("sample_stream_closed"))
-                        await asyncio.wait({stream_task}, timeout=1)
+                        await asyncio.wait({stream_task}, timeout=min(1, max(0, cleanup_deadline() - time.monotonic())))
                 for task in (stream_task, ready_task):
                     if not task.done():
                         task.cancel()
-                await asyncio.gather(stream_task, ready_task, return_exceptions=True)
+                try:
+                    await drain_cleanup(asyncio.gather(stream_task, ready_task, return_exceptions=True))
+                except BaseException:
+                    self.store.update_harness_state(run_id, {"cleanup_incomplete": True})
+                    if primary is None:
+                        raise
+                    primary.detail = dict(getattr(primary, "detail", {}) or {},
+                                          cleanup_failure_code="runtime_cleanup_incomplete")
     return final_response
 
 
