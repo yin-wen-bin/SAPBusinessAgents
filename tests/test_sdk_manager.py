@@ -360,6 +360,7 @@ def test_runtime_selection_is_gated_and_persisted(tmp_path: Path) -> None:
         item for item in manager.list() if item["provider_id"] == "workbuddy"
     )["selectable"] is False
 
+    manager.migrate_workbuddy_site()
     checked = asyncio.run(manager.check_provider("workbuddy"))
     # Platform packages/probes may no longer make an independent runtime ready.
     assert checked["authenticated"] is False
@@ -369,7 +370,7 @@ def test_runtime_selection_is_gated_and_persisted(tmp_path: Path) -> None:
     assert catalog["model_catalog_complete"] is False
     revision = manager.configuration_revision
     import pytest
-    with pytest.raises(Exception, match="operation validation"):
+    with pytest.raises(Exception, match="SDK integration"):
         manager.set_enabled("workbuddy", True)
     with pytest.raises(Exception):
         manager.set_default("workbuddy")
@@ -547,6 +548,35 @@ def test_authentication_state_change_invalidates_prior_model_checks(tmp_path: Pa
     rechecked = asyncio.run(manager.check_model("codex", "test-model"))
     assert rechecked["check"]["authentication_revision"] == 2
     assert manager.models("codex")["items"][0]["check_status"] == "compatible"
+
+
+def test_unified_authentication_invalidates_only_changed_accounts(tmp_path: Path) -> None:
+    from sap_business_agents_platform.runtime_authentication import RuntimeAuthenticationService
+    class Account:
+        account_url = configuration_url = usage_url = None
+        identity = "original@example.test"
+        def capabilities(self): return dict(check=True, login=True, logout=True, switch_account=True)
+        async def check(self): return dict(authenticated=True, identity=self.identity, method="browser", source="official_cli")
+    registry = tmp_path / "sdks.json"
+    _write_runtime_registry(registry)
+    manager = SDKManager(registry, tmp_path, adapters={"python": FakeAdapter()}, runtime_probes={"codex": FakeRuntimeProbe()},
+                         selection_path=tmp_path / "runtime.json")
+    asyncio.run(manager.refresh_models("codex"))
+    asyncio.run(manager.check_model("codex", "test-model"))
+    account = Account()
+    auth = RuntimeAuthenticationService(tmp_path / "authentication", {d.provider_id: account for d in manager.definitions},
+                                        changed=manager.apply_authentication_state)
+    manager.authentication_service = auth
+    asyncio.run(auth.check("codex"))
+    assert manager.models("codex")["items"][0]["check_status"] == "compatible"
+    default = manager.default_provider_id
+    enabled = manager._provider_runtime_state(manager._get_provider("codex"))["enabled"]
+    account.identity = "another@example.test"
+    asyncio.run(auth.check("codex"))
+    assert manager.models("codex")["items"][0]["check_status"] == "check_required"
+    assert manager.default_provider_id == default
+    assert manager._provider_runtime_state(manager._get_provider("codex"))["enabled"] == enabled
+    assert manager.list()[0]["authentication"]["identity"] == "an***@example.test"
 
 
 def test_v1_runtime_state_preserves_unsupported_legacy_model_without_fallback(

@@ -6,6 +6,8 @@ from .runtime_diagnostics import checked_output
 from .runtime_contract import RuntimeContractError as WorkBuddyError
 
 COLLECTIONS = ("roles", "processes", "operations", "agent_matches", "rejected_candidates", "workflow_suggestions", "agent_gaps")
+# Identifies the existing inner schema in safe diagnostics, not a new output schema.
+DIAGNOSTIC_CONTRACT = "sapba.role-analysis/1"
 REF = {"type": "object", "properties": {"document_id": {"type": "string"}, "chunk_id": {"type": "string"}},
        "required": ["document_id", "chunk_id"]}
 # Material understanding has no catalogue evaluation yet. The shared page
@@ -63,13 +65,18 @@ def prompt(data):
 
 
 def decode(text, data, operation):
-    value = checked_output(text, SCHEMA, operation=operation, output_format="embedded_json")
+    try:
+        value = checked_output(text, SCHEMA, operation=operation, output_format="embedded_json")
+    except WorkBuddyError as error:
+        error.detail["output_contract_id"] = DIAGNOSTIC_CONTRACT
+        raise
     allowed = references(data)
     for name in COLLECTIONS:
         for index, item in enumerate(value[name]):
             if any((r["document_id"], r["chunk_id"]) not in allowed for r in item["evidence_refs"]):
                 error = WorkBuddyError("role_matching_evidence_ref_invalid")
-                error.detail = {"validation_issues": [{"code": error.code,
+                error.detail = {"output_contract_id": DIAGNOSTIC_CONTRACT,
+                    "validation_issues": [{"code": error.code,
                     "path": f"/{name}/{index}/evidence_refs", "constraint": "known_document_reference"}]}
                 raise error
     return value

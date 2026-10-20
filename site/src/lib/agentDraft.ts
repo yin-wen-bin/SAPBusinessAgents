@@ -63,6 +63,14 @@ export function feedbackDuration(seconds: number | null, locale: Locale): string
 export function feedbackFailureText(code: unknown, locale: Locale): string {
   const labels: Record<string, [string, string]> = {
     agent_feedback_timeout: ["本轮超过记录的处理时限，未应用修改。请核对当前修订后重试。", "This turn exceeded its recorded processing limit; no changes were applied. Review the current revision before retrying."],
+    runtime_authentication_check_required: ["Runtime 认证尚未通过，未进入草稿修改。请先重新核对认证；仅凭本提示不能认定账号已退出。", "Runtime authentication is not confirmed; draft editing has not started. Recheck authentication first; this message alone does not mean you signed out."],
+    workbuddy_authentication_confirmation_required: ["WorkBuddy 官方初始化未提供完整账号信息，尚不能确认登录；未修改草稿。请重新核对认证，不要反复提交修改。", "Official WorkBuddy initialization did not provide a complete account, so sign-in is unconfirmed. The draft was not changed. Recheck authentication instead of repeatedly submitting edits."],
+    runtime_authentication_binding_changed: ["草稿绑定的账号修订与当前认证不同。仅在原账号、站点、模型和 worker 均有有效恢复依据时才能继续；不会自动换账号或模型。", "The draft account revision differs from current authentication. Continuing requires verified recovery of the same account, site, model and worker; no account or model is switched automatically."],
+    runtime_authentication_operation_active: ["账号认证操作仍在进行，请等待完成；尚未执行草稿修改。", "An account authentication operation is still active. Wait for it to finish; draft editing has not started."],
+    runtime_authentication_context_changed: ["认证运行环境发生变化，未应用修改。请在系统配置重新核对原站点认证。", "The authentication context changed; no edits were applied. Recheck the original site's authentication in system settings."],
+    runtime_authentication_context_unavailable: ["无法核对认证运行环境，未应用修改。请检查本机运行账户与系统配置。", "The authentication context could not be verified; no edits were applied. Check the local process account and system settings."],
+    workbuddy_authentication_required: ["WorkBuddy 认证未通过，尚未执行修改。请核对国内／国际站及原账号认证。", "WorkBuddy authentication is not confirmed; editing has not started. Check the selected service site and original account."],
+    workbuddy_authentication_refresh_failed: ["WorkBuddy 认证续期失败，未应用修改。请先核对认证状态，不要重复提交。", "WorkBuddy authentication renewal failed; no edits were applied. Check authentication before submitting again."],
     runtime_model_authentication_failed: ["Runtime 登录已失效或认证失败，请在系统配置中重新登录。", "Runtime authentication failed or expired. Sign in again in system settings."],
     runtime_model_incompatible: ["草稿绑定模型与当前 SDK 不兼容，请检查模型目录；不会自动切换模型。", "The draft model is incompatible with the installed SDK. Check the model catalog; no automatic fallback is used."],
     runtime_model_access_unavailable: ["当前账号无权使用草稿绑定模型，请核对账号与模型权限。", "The current account cannot access this draft's model. Check account and model permissions."],
@@ -87,7 +95,7 @@ export function feedbackFailureText(code: unknown, locale: Locale): string {
     agent_feedback_selection_invalid: ["选中文字与保存的对象不一致，请保存并重新选择。", "The selected text does not match the saved object. Save and select again."],
     agent_harness_platform_approval_required: ["草稿助手尝试修改平台源码，控制器已拒绝；本轮未应用修改。", "The draft assistant attempted a platform source edit. The controller rejected it; no changes were applied."],
     runtime_not_selectable: ["本轮使用的 Runtime 暂不可用，请检查系统配置后重试。", "The Runtime for this turn is unavailable. Check system settings before retrying."],
-    runtime_model_check_required: ["本轮模型与推理强度尚未通过兼容检查，请在系统配置中完成检查。", "The model and reasoning effort require a compatibility check in system settings."],
+    runtime_model_check_required: ["草稿绑定模型缺少当前适用的兼容检查或安全承接依据；不会自动切换模型。请到系统配置核对。", "The draft model lacks an applicable compatibility check or verified recovery evidence. Check system settings; the model is not switched automatically."],
     runtime_reasoning_effort_unsupported: ["本轮推理强度不受支持，请检查该模型的配置。", "The reasoning effort for this turn is unsupported. Check this model's settings."],
     runtime_reasoning_effort_invalid: ["本轮推理强度不在该模型的支持列表中，请重新选择并检查兼容性。", "This reasoning effort is not supported by the model. Select another value and check compatibility."],
     runtime_model_catalog_required: ["本轮模型目录尚不可用，请在系统配置中刷新目录并检查兼容性。", "The model catalog is unavailable. Refresh it in system settings and check compatibility."],
@@ -121,7 +129,7 @@ export type FeedbackRequest = {
   baseTurn: number; baseRevision: number; feedback: string; locale: Locale;
   intent: "explain" | "revise"; step?: DraftStep; fieldPath?: string;
     runId?: string; acceptanceCampaignId?: string; retryOfTurn?: number; requestId: string;
-    annotations?: { kind: "manifest_field" | "static_issue" | "trial_issue" | "acceptance_issue"; path: string; comment: string; revision: number; sourceId?: string; sourceDigest?: string }[];
+    annotations?: { kind: "manifest_field" | "readme" | "rules" | "static_issue" | "trial_issue" | "acceptance_issue"; path: string; comment: string; revision: number; sourceId?: string; sourceDigest?: string }[];
     replyToClarificationId?: string; clarificationOptionId?: string; enqueueIfBusy?: boolean;
     imageIds?: string[];
     executionMode?: "trusted_local" | "restricted"; trustedLocalConfirmed?: boolean;

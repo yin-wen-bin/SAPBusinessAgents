@@ -194,6 +194,38 @@ def test_contract_derives_boolean_facts_and_business_status_domain_from_output_s
     assert value["business_status_values"] == ["normal", "attention", "inconclusive"]
 
 
+@pytest.mark.parametrize("provider", ["codex", "workbuddy"])
+def test_legacy_incomplete_baseline_never_starts_comparison_stages(monkeypatch, provider):
+    import scripts.run_three_stage_acceptance as adapter
+    import sap_business_agents_platform.agent_acceptance_campaigns as module
+    calls = []
+    async def submit(*args, **kwargs):
+        calls.append("baseline")
+        return "baseline-run"
+    async def wait(*args, **kwargs):
+        return {"status": "completed"}
+    monkeypatch.setattr(module, "_canonical_case", lambda *args: None)
+    monkeypatch.setattr(module, "_required_projection", lambda *args, **kwargs: {})
+    monkeypatch.setattr(adapter, "_acceptance_prompt", lambda *args: "Independent business request")
+    monkeypatch.setattr(adapter, "_normalize_acceptance_projection", lambda *args: {
+        "source_complete": True, "evidence_complete": False, "business_complete": False,
+        "evidence_gap_codes": ["missing_evidence"]})
+    jobs = object.__new__(AgentAcceptanceJobs)
+    jobs.store = SimpleNamespace(update_agent_acceptance_campaign=lambda *a, **k: None,
+        update_agent_acceptance_case=lambda *a, **k: None)
+    jobs.coordinator = SimpleNamespace(submit_acceptance_query=submit)
+    jobs.active_runs = {}
+    jobs._wait_run = wait
+    jobs._proven_evidence_gap = lambda *a: False
+    jobs._run_diagnostics = lambda *a: {}
+    with pytest.raises(module.AcceptanceCampaignOperationalError) as failure:
+        asyncio.run(jobs._run_case("campaign", "draft", 1, 0,
+            {"case_id": "case", "input": {}, "sensitive_inputs": {}}, {"manifest": {}},
+            {"business_keys": ["id"]}, {"provider_id": provider}))
+    assert failure.value.code == "independent_baseline_gap_unverified"
+    assert calls == ["baseline"]
+
+
 class _AnchorBroker:
     def __init__(self, raw):
         self.raw = raw

@@ -1,9 +1,9 @@
 ---
 import SiteLayout from "../../layouts/SiteLayout.astro";
-import Sidebar from "../../components/Sidebar.astro";
+import { Settings, Bot, History } from "@lucide/astro";
 import SystemSettingsPanel from "../../components/SystemSettingsPanel.astro";
 import QueryHistorySettings from "../../components/QueryHistorySettings.astro";
-import { moduleCounts } from "../../lib/catalog";
+import "../../styles/settings-layout.css";
 import { settingsPath } from "../../lib/urls";
 import type { Locale } from "../../lib/types";
 
@@ -21,8 +21,19 @@ const base = import.meta.env.BASE_URL;
   locale={locale}
   alternateHref={settingsPath(base, other)}
 >
-  <div class="app-shell">
-    <Sidebar locale={locale} counts={moduleCounts()} />
-    <main id="main-content" class="main-content runtime-main"><SystemSettingsPanel locale={locale} /><QueryHistorySettings locale={locale} /></main>
+  <div class="app-shell settings-shell" data-settings-shell data-locale={locale}>
+    <nav class="settings-navigation" aria-label={locale === "zh" ? "系统配置导航" : "Settings navigation"}>
+      <h2><Settings size={18} />{locale === "zh" ? "系统配置" : "Settings"}</h2>
+      <a href="?section=runtime" data-settings-section="runtime"><Bot size={20} />AI Runtime</a>
+      <a href="?section=history" data-settings-section="history"><History size={20} />{locale === "zh" ? "查询历史" : "Query history"}</a>
+    </nav>
+    <main id="main-content" class="main-content runtime-main">
+      <div data-settings-pane="runtime"><SystemSettingsPanel locale={locale} /></div>
+      <div data-settings-pane="history" hidden><QueryHistorySettings locale={locale} /></div>
+    </main>
   </div>
 </SiteLayout>
+<script>
+  import { initializeSettingsNavigation } from "../../lib/settingsNavigation";
+  initializeSettingsNavigation();
+</script>

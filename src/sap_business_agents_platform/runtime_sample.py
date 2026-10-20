@@ -31,9 +31,11 @@ async def _discover(service, run_id, manifest, supplied_inputs, *, revision, mod
     context.progress("preparing")
     def adapt(value):
         return {**value, "model": model} if driver.provider_id != "codex" else value
-    gaps = context.preflight_gaps()
+    readiness = context.readiness()
+    gaps = readiness["blocking_fields"]
     if gaps:
-        return adapt(context.result("needs_input", missing=gaps, codes=["sample_input_requires_manual_entry"]))
+        return adapt(context.result("needs_input", missing=gaps,
+            codes=["sample_input_requires_manual_entry", *readiness.get("codes", [])]))
     if not context.missing_fields():
         return adapt(context.result("needs_input", codes=["sample_inputs_already_provided"]))
     service.broker._sample_contexts[run_id] = context

@@ -14,7 +14,7 @@ OPERATIONS = (
     "review_role_matching_feedback", "workflow_authoring.v2", "free_query",
     "sample_discovery", "acceptance_baseline", "acceptance_free_query",
 )
-ROLE_MATCHING_RUNTIME_TURN_SECONDS = 300
+ROLE_MATCHING_RUNTIME_TURN_SECONDS = 3600
 WORKFLOW_AUTHORING_SECONDS = 3600
 # Compatibility import; policy belongs to the business operation, not the SDK.
 WORKBUDDY_WORKFLOW_SECONDS = WORKFLOW_AUTHORING_SECONDS
@@ -25,7 +25,8 @@ OPERATION_BUDGETS = {
     "review_free_query_feedback": 1800, "revise_free_query_presentation": 1800,
     "free_query": 1800, "sample_discovery": 600,
     "acceptance_baseline": 600, "acceptance_free_query": 1800,
-    "analyze_role_matching": 300, "review_role_matching_feedback": 300,
+    "analyze_role_matching": ROLE_MATCHING_RUNTIME_TURN_SECONDS,
+    "review_role_matching_feedback": ROLE_MATCHING_RUNTIME_TURN_SECONDS,
 }
 OPERATION_METHODS = {name: name for name in OPERATIONS}
 OPERATION_METHODS["workflow_authoring.v2"] = "author_workflow_v2"
@@ -52,21 +53,30 @@ def operation_seconds(provider_id: str, operation: str, *, existing: float | Non
 def orchestration_digest(operation: str) -> str:
     if operation not in OPERATIONS:
         raise ValueError("runtime_operation_unavailable")
-    root = Path(__file__).parent
-    names = ("runtime_contract.py", "runtime_policy.py", "runtime_prompts.py", "shared_planner.py",
+    return orchestration_digests((operation,))[operation]
+
+
+ORCHESTRATION_FILES = ("runtime_contract.py", "runtime_policy.py", "runtime_prompts.py", "shared_planner.py",
+             "runtime_report_contract.py", "runtime_report_convergence.py",
              "runtime_query_contract.py", "runtime_workflow_contract.py", "runtime_agent_authoring.py",
              "runtime_workflow_authoring.py", "runtime_harness_contract.py", "runtime_harness_result.py",
              "runtime_role_contract.py", "runtime_role_consolidation.py", "role_matching.py", "runtime_diagnostics.py", "runtime_sample.py", "runtime_harness.py",
-             "codex_driver.py", "workbuddy_driver.py", "workflow_authoring_runtime.py", "sample_discovery.py", "harness.py",
+             "codex_driver.py", "workbuddy_driver.py", "workflow_authoring_runtime.py", "sample_discovery.py", "sample_scope_graph.py", "sample_read_budget.py", "harness.py",
              "codex_planner.py", "workbuddy_planner.py", "workbuddy_harness.py", "workbuddy_authoring.py",
              "workbuddy_sample.py", "workbuddy_diagnostics.py", "workbuddy_supervisor.py",
              "runtime_execution.py", "runtime_query_history.py", "runtime.py", "engine.py",
              "workbuddy_environment.py", "workbuddy_verification.py",
-             "workflow_factory.py", "workflow_assistant.py", "factory.py")
+             "workflow_factory.py", "workflow_assistant.py", "workflow_candidate.py", "runtime_stage.py", "factory.py")
+
+
+def orchestration_digests(operations=OPERATIONS) -> dict[str, str]:
+    if any(operation not in OPERATIONS for operation in operations):
+        raise ValueError("runtime_operation_unavailable")
+    root = Path(__file__).parent
     # Compatibility facades still own native startup/formatting helpers. Their
     # behavior cannot change underneath an earlier operation qualification.
     # A checkout's CRLF policy must not change business qualification.
     values = {name: hashlib.sha256((root / name).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-              for name in names}
-    return hashlib.sha256(json.dumps({"version": ORCHESTRATION_VERSION, "operation": operation,
-                                      "files": values}, sort_keys=True).encode()).hexdigest()
+              for name in ORCHESTRATION_FILES}
+    return {operation: hashlib.sha256(json.dumps({"version": ORCHESTRATION_VERSION, "operation": operation,
+                                      "files": values}, sort_keys=True).encode()).hexdigest() for operation in operations}

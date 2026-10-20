@@ -8,6 +8,7 @@ import pytest
 
 from sap_business_agents_platform import workbuddy_worker
 from sap_business_agents_platform.workbuddy_diagnostics import safe_progress
+from sap_business_agents_platform.workbuddy_site import make_configuration, routing
 
 
 def test_saved_diagnostics_allowlist_is_workbuddy_only():
@@ -42,6 +43,7 @@ def test_native_progress_separates_tool_result_and_sdk_close(monkeypatch, scenar
     class Client:
         def __init__(self, *, options):
             assert options.tools is None and options.setting_sources == []
+            assert options.env["CODEBUDDY_INTERNET_ENVIRONMENT"] == "internal"
         async def __aenter__(self):
             return self
         async def __aexit__(self, *_):
@@ -70,7 +72,8 @@ def test_native_progress_separates_tool_result_and_sdk_close(monkeypatch, scenar
             assert kind == "event"
             events.append((kwargs["event"], kwargs["data"]))
     run = workbuddy_worker.execute({"operation": "review_agent_feedback", "mode": "trusted_local",
-        "cli_path": "fixture-cli", "snapshot": {"model": "concrete-model"},
+        "cli_path": "fixture-cli", "snapshot": {"model": "concrete-model", **make_configuration("china", 1)},
+        "service_site_config": routing(make_configuration("china", 1)),
         "payload": {"cwd": "fixture", "prompt": "probe"}}, send)
     if scenario == "closing_timeout":
         with pytest.raises(TimeoutError):

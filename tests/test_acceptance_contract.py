@@ -145,6 +145,39 @@ def test_legacy_definitions_are_diagnostic_not_implicitly_upgraded():
     assert manifest == before
 
 
+def test_legacy_output_types_are_preserved_without_copying_candidate_logic():
+    from scripts.run_three_stage_acceptance import _projection_spec
+    manifest = {"execution": {"acceptance": {"businessKeys": ["id"],
+        "metrics": ["count", "ratio", "unknown"]}, "outputSchema": {"properties": {
+            "count": {"type": "integer", "title": {"zh": "计数", "en": "Count"}},
+            "ratio": {"type": ["string", "null"]}}}}}
+    before = copy.deepcopy(manifest)
+    contract = compile_contract(manifest)
+    assert contract["required_metric_values"] == ["count"]
+    assert contract["metric_output_descriptions"] == {"count": {"zh": "计数", "en": "Count"}}
+    assert _projection_spec(contract)["required_metric_values"] == ["count"]
+    assert "contract_version" not in contract and manifest == before
+
+
+def test_acceptance_scope_guidance_uses_shared_constraints_without_values_or_candidate_answers():
+    from scripts.run_three_stage_acceptance import _acceptance_prompt
+    from sap_business_agents_platform.acceptance import CanonicalTestCase
+    from sap_business_agents_platform.runtime_query_contract import ReadScope
+    supplied = {"purchase_order": "sensitive-test-order", "schedule_line_delivery_date": "2099-01-01",
+        "purchasing_organization": "private-test-org"}
+    case = CanonicalTestCase(schema_version="1.0", case_id="scope", agent_id="not-a-plan",
+        question={"zh": "业务问题", "en": "Business request"}, input=supplied,
+        business_conditions={}, expected_grain=("document",))
+    prompt = _acceptance_prompt(case, {"business_keys": ["document"]})
+    for names, _values in ReadScope("", supplied).constraints:
+        for name in names:
+            assert name in prompt
+    assert all(value not in prompt for value in supplied.values())
+    assert "server-side eq/in filter" in prompt
+    assert "filtering dates, organizations or other conditions locally is not equivalent" in prompt
+    assert "fully_received" not in prompt and "A_MaterialDocumentItem" not in prompt
+
+
 def test_required_assessments_distinguish_missing_empty_supported_and_unknown():
     manifest = sample_manifest()
     compiled = compile_contract(manifest)

@@ -14,6 +14,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import WorkflowAssistant from "./WorkflowAssistant";
+import { workflowAnnotationHost, workflowConnectionKey } from "../lib/workflowAnnotationHost";
 import type {
   AgentDefinition,
   ExecutionInputProperty,
@@ -435,11 +436,13 @@ function emptyWorkflow(): WorkflowDefinition {
 }
 
 function connectionId(item: WorkflowConnectionDefinition): string {
-  const from = item.from.scope === "node_output" ? `${item.from.nodeId}:${item.from.port}` : item.from.scope === "iteration_item" ? `iteration:${item.from.pointer ?? "/"}` : `${item.from.scope}:${item.from.port ?? "value"}`;
-  return `${from}->${item.to.nodeId}:${item.to.port}`;
+  return workflowConnectionKey(item);
 }
 
 export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onPublished }: BuilderProps) {
+  const annotationRoot = useRef<HTMLElement | null>(null);
+  const annotationLeaveGuard = useRef<() => boolean>(() => true);
+  const registerAnnotationLeave = useCallback((guard: () => boolean) => { annotationLeaveGuard.current = guard; }, []);
   const t = labels[locale];
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -447,6 +450,9 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
   const [clarificationInput, setClarificationInput] = useState("");
   const [advanced, setAdvanced] = useState(false);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [assistantField, setAssistantField] = useState<string | undefined>();
+  const [assistantOpen, setAssistantOpen] = useState(0);
+  useEffect(() => { if (selectedNode) setAssistantField(undefined); }, [selectedNode]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [validating, setValidating] = useState(false);
@@ -690,6 +696,7 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
   }, [mutateWorkflow]);
 
   const compose = async () => {
+    if (!annotationLeaveGuard.current()) return;
     if (!requirement.trim()) return;
     setBusy(true); setMessage(""); setAdvanced(false); setValidationInputs({});
     try {
@@ -742,6 +749,7 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
   };
 
   const createManualDraft = async () => {
+    if (!annotationLeaveGuard.current()) return;
     setBusy(true); setMessage(""); setAdvanced(true); setValidationInputs({});
     try {
       const workflow = emptyWorkflow();
@@ -1054,20 +1062,29 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
   };
 
   return (
-    <main className="workflow-builder-shell">
+    <main ref={annotationRoot} className="workflow-builder-shell">
       <WorkflowAssistant apiBase={apiBase} locale={locale} draftId={draft?.draft_id} revision={draft?.revision}
-        step={activeStep} fieldPath={selectedNode && draft?.workflow.nodes.some(node => node.id === selectedNode) ? `/nodes/${draft.workflow.nodes.findIndex(node => node.id === selectedNode)}` : undefined}
+        step={activeStep} fieldPath={assistantField ?? (selectedNode && draft?.workflow.nodes.some(node => node.id === selectedNode) ? `/nodes/${draft.workflow.nodes.findIndex(node => node.id === selectedNode)}` : undefined)}
+        fieldLabel={assistantField === "/title" ? (locale === "zh" ? "名称" : "Name") : assistantField === "/description" ? (locale === "zh" ? "描述" : "Description") : selectedNode ?? undefined} openRequest={assistantOpen}
         published={draft?.status === "published"} dirty={dirty} busy={busy}
-        prepare={prepareAssistant} refresh={refreshAssistantDraft} />
+        prepare={prepareAssistant} refresh={refreshAssistantDraft} onLeaveGuard={registerAnnotationLeave}
+        annotationHost={draft ? workflowAnnotationHost({
+          workflow: draft.workflow, draftId: draft.draft_id, revision: draft.revision, root: () => annotationRoot.current,
+          reveal: reference => { moveToStep("review", draft.draft_id); setAdvanced(true); if (reference.objectKind === "node" && reference.objectId) setSelectedNode(reference.objectId); },
+        }) : undefined} />
       <header className="workflow-builder-heading">
         <div><p className="eyebrow">Workflow Factory</p><h1>{t.title}</h1><p>{t.lead}</p></div>
       </header>
+      {draft && <div className="workflow-assistant-buttons">
+        <button type="button" onClick={() => { setSelectedNode(null); setAssistantField("/title"); setAssistantOpen(n => n + 1); }}>{locale === "zh" ? "让 AI 调整名称" : "Adjust name with AI"}</button>
+        <button type="button" onClick={() => { setSelectedNode(null); setAssistantField("/description"); setAssistantOpen(n => n + 1); }}>{locale === "zh" ? "让 AI 调整描述" : "Adjust description with AI"}</button>
+      </div>}
 
       <nav className="workflow-wizard" aria-label={locale === "zh" ? "工作流构建步骤" : "Workflow authoring steps"}>
         <ol>{(["compose", "review", "validate", "publish"] as WizardStep[]).map((step, index) => {
           const enabled = step === "compose" || step === "review" && Boolean(draft) || step === "validate" && canValidate || step === "publish" && publishable;
           return <li className={activeStep === step ? "is-active" : enabled ? "is-available" : ""} key={step}>
-            <button disabled={!enabled} aria-current={activeStep === step ? "step" : undefined} onClick={() => moveToStep(step, draft?.draft_id)}><span>{index + 1}</span><strong>{t.steps[index]}</strong></button>
+            <button data-annotation-navigation disabled={!enabled} aria-current={activeStep === step ? "step" : undefined} onClick={() => moveToStep(step, draft?.draft_id)}><span>{index + 1}</span><strong>{t.steps[index]}</strong></button>
           </li>;
         })}</ol>
       </nav>
@@ -1093,11 +1110,32 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
       </section>}
 
       {activeStep === "review" && draft && <section className="workflow-wizard-stage">
+        <section className="workflow-annotation-definition">
+          <h2 data-workflow-ref={`/title/${locale}`} data-assistant-label={t.workflowName} tabIndex={0}>{draft.workflow.title[locale]}</h2>
+          <p data-workflow-ref={`/description/${locale}`} data-assistant-label={locale === "zh" ? "工作流描述" : "Workflow description"} tabIndex={0}>{draft.workflow.description[locale] || (locale === "zh" ? "尚未填写描述" : "No description yet")}</p>
+          <details><summary>{locale === "zh" ? "输入、输出与连接" : "Inputs, outputs and connections"}</summary>
+            <div className="workflow-annotation-ports">
+              <section><h3>{locale === "zh" ? "输入" : "Inputs"}</h3>{Object.entries(draft.workflow.inputSchema.properties).map(([name, field]) => <p key={name} tabIndex={0} data-workflow-ref={`/inputSchema/properties/${name.replace(/~/g, "~0").replace(/\//g, "~1")}`} data-assistant-label={field.title?.[locale] || name}>{field.title?.[locale] || name}</p>)}</section>
+              <section><h3>{locale === "zh" ? "输出" : "Outputs"}</h3>{Object.entries(draft.workflow.outputSchema.properties).map(([name, field]) => <p key={name} tabIndex={0} data-workflow-ref={`/outputSchema/properties/${name.replace(/~/g, "~0").replace(/\//g, "~1")}`} data-assistant-label={field.title?.[locale] || name}>{field.title?.[locale] || name}</p>)}</section>
+            </div>
+            <ol>{draft.workflow.connections.map((connection, index) => <li key={index} data-workflow-connection={connectionId(connection)} tabIndex={0} data-assistant-label={connectionId(connection)}>{connectionId(connection)}</li>)}</ol>
+          </details>
+          <ol className="workflow-annotation-nodes">{draft.workflow.nodes.map(node => <li key={node.id} data-workflow-node={node.id} tabIndex={0} data-assistant-label={agentMap.get(node.agentId)?.title[locale] || node.id}><strong>{agentMap.get(node.agentId)?.title[locale] || node.id}</strong><small>{node.id}</small></li>)}</ol>
+        </section>
         {dismissedRequestedOutputs.length > 0 && <section className="workflow-normalization-note" role="note"><strong>{t.normalizedOutputs} · {dismissedRequestedOutputs.length}</strong><p>{t.normalizedOutputsHelp}</p><code>{dismissedRequestedOutputs.map((item) => `${item.stage_id}.${item.port}`).join(" · ")}</code></section>}
         {hasComposition && <section className="workflow-composition-summary"><div className="workflow-intent-summary"><span>{t.intent}</span><h2>{localizedText(composition?.intent, locale) || requirement}</h2></div><div className="workflow-route-heading"><h2>{t.route}</h2><small>{draft.workflow.nodes.length} / {(composition?.stages ?? []).length} {t.matchedAgent}</small></div><ol className="workflow-route-list">{(composition?.stages ?? []).map((stage, index) => { const gap = gaps.find((item) => item.stage_id === stage.id); const agent = stage.agent_id ? agentMap.get(stage.agent_id) : undefined; return <li className={gap ? "is-gap" : "is-matched"} key={stage.id}><span className="workflow-route-index">{index + 1}</span><div><strong>{localizedText(stage.capability, locale)}</strong><small>{gap ? t.missingAgent : `${t.matchedAgent} · ${agent?.title[locale] ?? stage.agent_id}`}</small></div></li>; })}</ol></section>}
         {gaps.length > 0 && <section className="workflow-gap-panel"><header><div><p className="eyebrow">Blocked</p><h2>{t.gapTitle}</h2><p>{t.gapHelp}</p></div><strong>{gaps.length}</strong></header><div className="workflow-gap-list">{gaps.map((gap) => { const agentGap = (gap.gap_type ?? "agent_missing") === "agent_missing"; const pluginPath = `/${locale}/plugins?capability=${encodeURIComponent(gap.required_capability ?? "mail.v1")}&operation=${encodeURIComponent(gap.required_operation ?? "")}&runtime=${encodeURIComponent(gap.target_runtime_provider_id ?? "")}&workflowDraft=${encodeURIComponent(draft.draft_id)}&gap=${encodeURIComponent(gap.gap_id)}`; return <article key={gap.gap_id}><div><small>{agentGap ? t.missingAgent : `${t.integrationGap} · ${gap.gap_type}`}</small><h3>{localizedText(gap.title, locale)}</h3><p>{localizedText(gap.description, locale)}</p></div>{agentGap && <dl><div><dt>Inputs</dt><dd>{(gap.required_inputs ?? []).map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div><div><dt>Outputs</dt><dd>{(gap.required_outputs ?? []).map((port) => `${port.name}: ${port.type}`).join(" · ") || "—"}</dd></div></dl>}{gap.agent_draft_id && <p className="workflow-gap-draft"><strong>{t.gapDraft}: {gap.agent_draft_id}</strong><br /><span>{t.awaitingCatalog}</span></p>}<a className="workflow-gap-action" href={agentGap ? `${askPath}?workflowDraft=${encodeURIComponent(draft.draft_id)}&gap=${encodeURIComponent(gap.gap_id)}` : pluginPath}>{agentGap ? t.createGapAgent : t.resolvePluginGap}</a></article>; })}</div></section>}
-        <div className="workflow-review-toolbar"><button onClick={() => setAdvanced((value) => !value)}>{advanced ? t.hideAdvanced : t.advanced}</button>{advanced && <button disabled={busy} onClick={save}>{t.save}</button>}</div>
-        {advanced && <section className="workflow-builder-grid"><aside className="workflow-agent-palette"><h2>{t.agents}</h2>{agents.map((agent) => <button key={agent.slug} onClick={() => addAgent(agent)}><strong>{agent.title[locale]}</strong><small>{agent.module} · {agent.slug}</small></button>)}</aside><div className="workflow-canvas" aria-label={t.title}><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onConnect={onConnect} onNodeClick={(_, node) => setSelectedNode(node.id)} onNodesChange={(changes) => mutateWorkflow((workflow) => { for (const change of changes) if (change.type === "position" && change.position) { const item = workflow.nodes.find((node) => node.id === change.id); if (item) item.position = change.position; } })} fitView><Background /><MiniMap /><Controls /></ReactFlow></div><aside className="workflow-inspector"><h2>{t.metadata}</h2><div className="workflow-metadata-fields"><label><span>{t.workflowId}</span><input value={draft.workflow.id} pattern="[a-z][a-z0-9-]*" onChange={(event) => mutateWorkflow((workflow) => { workflow.id = event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"); })} /></label><label><span>{t.workflowName}</span><input value={draft.workflow.title[locale]} onChange={(event) => mutateWorkflow((workflow) => { workflow.title[locale] = event.target.value; })} /></label></div><h2>{t.mapping}</h2>{selected && selectedAgent ? <NodeInspector workflow={draft.workflow} nodeId={selected.id} agent={selectedAgent} agents={agentMap} locale={locale} onChange={mutateWorkflow} onRemove={() => { mutateWorkflow((workflow) => removeNode(workflow, selected.id)); setSelectedNode(null); }} removeLabel={t.remove} /> : <p>{t.selectNode}</p>}</aside></section>}
+        <div className="workflow-review-toolbar"><button data-annotation-navigation onClick={() => setAdvanced((value) => !value)}>{advanced ? t.hideAdvanced : t.advanced}</button>{advanced && <button disabled={busy} onClick={save}>{t.save}</button>}</div>
+        {advanced && <section className="workflow-builder-grid"><aside className="workflow-agent-palette"><h2>{t.agents}</h2>{agents.map((agent) => <button key={agent.slug} onClick={() => addAgent(agent)}><strong>{agent.title[locale]}</strong><small>{agent.module} · {agent.slug}</small></button>)}</aside><div className="workflow-canvas" aria-label={t.title}><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onConnect={onConnect} onNodeClick={(_, node) => setSelectedNode(node.id)} onNodesChange={(changes) => {
+          const moves = changes.flatMap(change => {
+            if (change.type !== "position" || !change.position) return [];
+            const displayed = nodes.find(node => node.id === change.id)?.position;
+            return displayed?.x === change.position.x && displayed?.y === change.position.y ? [] : [{ id: change.id, position: change.position }];
+          });
+          if (moves.length) mutateWorkflow(workflow => { for (const move of moves) {
+            const item = workflow.nodes.find(node => node.id === move.id); if (item) item.position = move.position;
+          } });
+        }} fitView><Background /><MiniMap /><Controls /></ReactFlow></div><aside className="workflow-inspector"><h2>{t.metadata}</h2><div className="workflow-metadata-fields"><label><span>{t.workflowId}</span><input value={draft.workflow.id} pattern="[a-z][a-z0-9-]*" onChange={(event) => mutateWorkflow((workflow) => { workflow.id = event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"); })} /></label><label data-workflow-ref={`/title/${locale}`} data-assistant-label={t.workflowName}><span>{t.workflowName}</span><input value={draft.workflow.title[locale]} onChange={(event) => mutateWorkflow((workflow) => { workflow.title[locale] = event.target.value; })} /></label></div><h2>{t.mapping}</h2>{selected && selectedAgent ? <div data-workflow-node={selected.id} tabIndex={0}><NodeInspector workflow={draft.workflow} nodeId={selected.id} agent={selectedAgent} agents={agentMap} locale={locale} onChange={mutateWorkflow} onRemove={() => { mutateWorkflow((workflow) => removeNode(workflow, selected.id)); setSelectedNode(null); }} removeLabel={t.remove} /></div> : <p>{t.selectNode}</p>}</aside></section>}
         {designAccepted && <p className="workflow-acceptance-note">{t.designAccepted}</p>}
         <div className="workflow-stage-actions"><button onClick={() => moveToStep("compose", draft.draft_id)}>{t.back}</button><button className="primary" disabled={!designReady || busy} onClick={acceptDesign}>{t.acceptDesign}</button></div>
       </section>}
@@ -1294,7 +1332,7 @@ function NodeInspector({ workflow, nodeId, agent, agents, locale, onChange, onRe
     {mappings.map((port) => {
       const connection = workflow.connections.find((item) => item.to.nodeId === nodeId && item.to.port === port);
       const value = connection?.from.scope === "node_output" ? `${connection.from.nodeId}:${connection.from.port}` : connection?.from.scope === "workflow_input" ? `input:${connection.from.port}` : connection?.from.scope === "iteration_item" ? `iteration:${connection.from.pointer ?? "/"}` : "constant";
-      return <label className="workflow-mapping-row" key={port}><span>{port}</span><select value={value} onChange={(event) => onChange((next) => {
+      return <label className="workflow-mapping-row" key={port} data-workflow-connection={connection ? connectionId(connection) : undefined} data-assistant-label={`${nodeId} → ${port}`}><span>{port}</span><select value={value} onChange={(event) => onChange((next) => {
         removeTargetMapping(next, nodeId, port, false);
         const selected = event.target.value;
         if (selected.startsWith("input:")) next.connections.push({ from: { scope: "workflow_input", port: selected.slice(6) }, to: { nodeId, port }, transform: { type: "identity" } });

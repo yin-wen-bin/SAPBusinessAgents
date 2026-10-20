@@ -13,7 +13,7 @@ from sap_business_agents_platform.workbuddy_authoring import OUTPUT_SCHEMA
 @pytest.mark.parametrize("form", ["plain", "fenced", "extra_field", "trailing", "missing_field", "nested_json", "enum", "non_object", "legacy_worker"])
 def test_workflow_output_uses_shared_parser_and_safe_failure_diagnostics(tmp_path, monkeypatch, form):
     monkeypatch.setattr(AuthoringWorkspace, "prepare", lambda self, *_, **__: self.source.mkdir(parents=True))
-    workflow = {"id": "saved", "version": "1.0.0", "nodes": [{"agentId": "fixed", "agentVersion": "0.1.0", "agentDigest": "immutable"}]}
+    workflow = {"schemaVersion": 1, "id": "saved", "version": "1.0.0", "nodes": [{"agentId": "fixed", "agentVersion": "0.1.0", "agentDigest": "immutable"}]}
     output = {"action": "revise", "answer": "Done", "question": "", "workflow_json": json.dumps(workflow)}
     if form == "extra_field":
         output["private-secret-value"] = "not-to-log"

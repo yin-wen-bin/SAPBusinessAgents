@@ -224,14 +224,31 @@ def test_workbuddy_adapter_denies_builtin_tools_and_resumes_session(
         rejected = asyncio.run(captured["can_use_tool"](tool, {}, None))
         assert rejected.kwargs["message"] == "tool_not_enabled_for_task"
     assert "Return exactly one JSON object" in captured["prompt"]
-    assert [event_type for event_type, _data in events] == [
+    # Preserve the exact legacy order; the new WorkBuddy-only diagnostics are
+    # additive and explicitly checked rather than hiding arbitrary new events.
+    followup_events = {"workbuddy_native_budget", "workbuddy_native_wait", "workbuddy_formatter_progress"}
+    assert [event_type for event_type, _data in events if event_type not in followup_events] == [
         "agent_runtime_turn_started",
-        "agent_runtime_response_received",
+        "agent_runtime_connected",
+        "agent_runtime_query_submitted",
+        "agent_runtime_activity",
         "agent_runtime_result_received",
         "agent_runtime_sdk_closing",
         "agent_runtime_sdk_closed",
         "agent_runtime_turn_completed",
     ]
+    budget = [data for kind, data in events if kind == "workbuddy_native_budget"]
+    assert len(budget) == 1 and budget[0]["budget_strategy"] == "supervisor_deadline"
+    assert budget[0]["native_timeout_propagation"] == "unverified"
+    waits = [data["worker_wait_state"] for kind, data in events if kind == "workbuddy_native_wait"]
+    assert waits[0] == "sdk_connecting" and waits[-1] == "sdk_closed"
+    formatter = [data for kind, data in events if kind == "workbuddy_formatter_progress"]
+    assert len(formatter) == 1 and formatter[0]["formatter_stage"] == "terminal_checked"
+    assert "schema_valid" not in formatter[0]  # Inline fixture has no checker negotiation.
+    activity = next(data for kind, data in events if kind == "agent_runtime_activity")
+    assert activity["message_count"] == 2 and activity["assistant_message_count"] == 1
+    assert activity["terminal_result_received"] is True
+    assert "first_response_ms" in activity and "first_assistant_ms" in activity
     assert all(data["provider_id"] == "workbuddy" for _event, data in events)
 
 
@@ -266,7 +283,9 @@ def test_workbuddy_authentication_probe_rejects_login_flow(
     from sap_business_agents_platform.workbuddy_manager import WorkBuddyManager
     async def isolated_login(self):
         from sap_business_agents_platform.workbuddy_worker import execute
-        return await execute({"operation": "authentication", "payload": {}, "cli_path": "locked-fixture-cli"}, lambda *_args, **_kwargs: None)
+        from sap_business_agents_platform.workbuddy_site import make_configuration, routing
+        return await execute({"operation": "authentication", "payload": {}, "cli_path": "locked-fixture-cli",
+            "snapshot": make_configuration("china", 1), "service_site_config": routing(make_configuration("china", 1))}, lambda *_args, **_kwargs: None)
     monkeypatch.setattr(WorkBuddyManager, "check", isolated_login)
     # SDK import is exercised only inside the worker, not the management facade.
     import codebuddy_agent_sdk

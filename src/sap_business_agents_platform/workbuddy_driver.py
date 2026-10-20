@@ -344,12 +344,14 @@ class WorkBuddyHarnessDriver:
         self.owner = owner
 
     def binding(self, run_id, state, model, reasoning_effort):
-        snapshot = self.owner.manager.bound_snapshot(
-            self.owner.store.get_run(run_id).runtime.model_dump(mode="json"),
-            formal=bool(state.get("acceptance_spec")))
         operation = "acceptance_baseline" if state.get("acceptance_direct_baseline") is True else "acceptance_free_query" if state.get("acceptance_spec") else "free_query"
-        self.owner.manager.supervisor.check_operation(snapshot, operation)
-        return snapshot
+        from .workbuddy_inspection import inspect
+        with inspect(self.owner.manager.environment):
+            snapshot = self.owner.manager.bound_snapshot(
+                self.owner.store.get_run(run_id).runtime.model_dump(mode="json"),
+                formal=bool(state.get("acceptance_spec")))
+            self.owner.manager.supervisor.check_operation(snapshot, operation)
+            return snapshot
 
     async def cleanup(self, run_id, context):
         import time
@@ -371,13 +373,16 @@ class WorkBuddyHarnessDriver:
         from .runtime_harness import tool_call
         from .runtime_query_contract import PLAN_SCHEMA
         from .runtime_diagnostics import output_diagnostic
-        from .workbuddy_harness import native_terminal_instructions, parse_output
+        from .workbuddy_harness import native_terminal_instructions, parse_output, budgeted_tool_response
         from .workbuddy_environment import WorkBuddyError
         from .workbuddy_compat import translate
         from .harness import AcceptanceReportValidationError
         from .mcp_server import _SAP_TOOLS, _TOOL_TOOLS
+        from .runtime_report_contract import tools_for_contract
+        from .runtime_report_convergence import stop_state, raise_if_stopped
         owner, run_id = self.owner, context["run_id"]
-        tools = copy.deepcopy(_SAP_TOOLS if request.permissions["acceptance_direct_baseline"] else _SAP_TOOLS + _TOOL_TOOLS)
+        contract = context.get("report_contract") or owner.broker.report_contract(run_id)
+        tools = tools_for_contract(_SAP_TOOLS if request.permissions["acceptance_direct_baseline"] else _SAP_TOOLS + _TOOL_TOOLS, contract)
         for tool in tools:
             if tool["name"] in {"sap_query_validate", "sap_query_execute"}:
                 tool["inputSchema"]["properties"]["plan"] = PLAN_SCHEMA
@@ -387,10 +392,13 @@ class WorkBuddyHarnessDriver:
             except RuntimeContractError as error:
                 failure = translate(error)
                 owner.store.append_event(run_id, "workbuddy_tool_rejected", {"tool": name, "code": failure.code, **failure.detail})
-                return {"ok": False, "code": failure.code, **failure.detail}
-            if (owner.store.get_harness_state(run_id).get("acceptance_validation_failure") or {}).get("terminal") is True:
-                result = {**result, "_workbuddy_stop_after_response": True}
-            return result
+                result = {"ok": False, "code": failure.code, **failure.detail}
+            stopped = stop_state(owner.store.get_harness_state(run_id))
+            if stopped:
+                result = {**result, "_workbuddy_stop_after_response": True,
+                    "_runtime_report_stop_code": stopped.get("stop_code") or "acceptance_report_validation_failed"}
+            return budgeted_tool_response(result, broker=owner.broker, run_id=run_id,
+                deadline=request.deadline, tool_name=name)
         snapshot = {k: v for k, v in request.binding.items()
                     if k not in {"workspace_id", "candidate_access", "base_digest", "base_commit"}}
         # provider_id is omitted only when a historical snapshot did not carry it.
@@ -411,6 +419,7 @@ class WorkBuddyHarnessDriver:
                 tool_handler=handle, emit=lambda kind, data: owner.store.append_event(run_id, kind, data))
             owner.store.append_event(run_id, "workbuddy_terminal_output", output_diagnostic(response.get("text"),
                 operation=request.operation, output_format=response.get("output_format")))
+            raise_if_stopped(owner.store.get_harness_state(run_id))
             if response.get("output_format") != "native_json_schema":
                 raise WorkBuddyError("workbuddy_structured_output_missing")
             raw = parse_output(response.get("text"), request.output_schema, formal=bool(context["state"].get("acceptance_spec")))
@@ -426,6 +435,8 @@ class WorkBuddyHarnessDriver:
             owner.store.append_event(run_id, "workbuddy_execution_failed", {"operation": request.operation,
                 "phase": "terminal_output" if error.code == "workbuddy_structured_output_missing" else "execution",
                 "failure_code": error.code, **getattr(error, "detail", {})})
+            if error.code in {"report_correction_stalled", "acceptance_report_validation_failed"}:
+                raise_if_stopped(owner.store.get_harness_state(run_id))
             if error.code == "acceptance_report_validation_failed":
                 failure = owner.store.get_harness_state(run_id).get("acceptance_validation_failure") or {}
                 raise AcceptanceReportValidationError(list(failure.get("validation_issues") or [])) from error

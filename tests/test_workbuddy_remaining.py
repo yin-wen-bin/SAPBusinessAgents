@@ -285,7 +285,8 @@ def test_harness_denies_before_business_read_and_uses_native_schema(tmp_path, mo
         get_free_query_session_by_run=lambda _: None, update_run=lambda *_, **__: None)
     broker = SimpleNamespace(open_session=lambda _: "cap", close_session=lambda _: None,
         budget_snapshot=lambda _: {"hard_limit_seconds": 600, "query_seconds_granted": 540, "finalization_seconds_reserved": 60},
-        review_deadline=lambda _: None, _elapsed_seconds=lambda _: 0,
+        review_deadline=lambda _: {"deadline_phase": "querying", "hard_limit_seconds": 600,
+            "elapsed_seconds": 0}, _elapsed_seconds=lambda _: 0,
         normalizer=SimpleNamespace(normalize_plan=copy.deepcopy))
     async def handle(run_id, token, name, arguments):
         calls.append(name)

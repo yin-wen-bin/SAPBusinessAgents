@@ -1,19 +1,79 @@
 """Before-source captures are immutable; never invoke a live SDK or SAP."""
 import asyncio
+import copy
 import json
 from pathlib import Path
 
 import pytest
 
 from tests.runtime_native_trace_fixture import OPERATIONS, trace_operation
+from tests.runtime_native_trace_fixture import normalized
 
 BEFORE = json.loads((Path(__file__).parent / "fixtures/codex-native-orchestration-before.json").read_text(encoding="utf-8"))
+LEGACY_PRESENTATION = json.loads((Path(__file__).parent / "fixtures/report-presentation-before.json").read_text(encoding="utf-8"))
+
+
+def report_schema_delta(operation, current):
+    """Verify ALL non-report members against the immutable historical capture."""
+    legacy = copy.deepcopy(current)
+    legacy["properties"]["presentation"]["anyOf"][0] = LEGACY_PRESENTATION
+    old_hash = next(event[1]["output_schema"] for event in BEFORE[operation]["trace"] if event[0] == "turn")
+    assert normalized({"output_schema": legacy})["output_schema"] == old_hash
+    from sap_business_agents_platform.runtime_report_contract import presentation_schema
+    assert current["properties"]["presentation"]["anyOf"][0] == presentation_schema(strict=True)
+    return normalized({"output_schema": current})["output_schema"]
 
 
 @pytest.mark.parametrize("operation", OPERATIONS)
 def test_native_codex_behavior_matches_before_source(operation, monkeypatch, tmp_path):
     value = asyncio.run(trace_operation(operation, monkeypatch, tmp_path))
-    assert value == BEFORE[operation]
+    expected = BEFORE[operation]
+    if operation in {"free_query", "acceptance_baseline", "acceptance_free_query"}:
+        from sap_business_agents_platform.runtime_harness_contract import _HARNESS_OUTPUT_SCHEMA, turn_prompt, _developer_instructions
+        from sap_business_agents_platform.runtime_report_contract import instructions, HANDOFF_DEFINITION
+        from sap_business_agents_platform.acceptance_projection import output_schema
+        from sap_business_agents_platform.config import Settings
+        spec = None if operation == "free_query" else {
+            "record_fields": ["object_id"], "metric_fields": ["object_count"], "required_assessments": []}
+        current_schema = output_schema(_HARNESS_OUTPUT_SCHEMA, spec)
+        expected = copy.deepcopy(expected)
+        settings = Settings(repository_root=tmp_path, data_root=tmp_path / "data")
+        current_instructions = _developer_instructions(full_access=operation != "acceptance_baseline", budget={
+            "hard_limit_seconds": settings.free_query_run_seconds,
+            "finalization_seconds_reserved": settings.free_query_finalization_budget_seconds})
+        starting = next(item for item in expected["trace"] if item[0] == "thread_start")
+        clarification = "\n" + HANDOFF_DEFINITION
+        assert current_instructions.count(clarification) == 1
+        assert normalized(current_instructions.replace(clarification, "", 1)) == starting[1]["developer_instructions"]
+        starting[1]["developer_instructions"] = normalized(current_instructions)
+        event = next(item for item in expected["trace"] if item[0] == "turn")
+        event[1]["output_schema"] = report_schema_delta(operation, current_schema)
+        prompt = turn_prompt("Inspect supplier", continuing=False, acceptance_spec=spec)
+        addition = "\n" + instructions(acceptance=spec is not None)
+        assert prompt.count(addition) == 1
+        assert normalized(prompt.replace(addition, "", 1)) == event[1]["prompt"]
+        event[1]["prompt"] = normalized(prompt)
+    if operation == "workflow_authoring.v2":
+        # The only planned change to this native seam is the shared candidate
+        # boundary instruction. Keep the immutable old capture and verify all
+        # other text/options/events/results against it, not a rewritten fixture.
+        from copy import deepcopy
+        from sap_business_agents_platform.runtime_workflow_authoring import instructions
+        addition = (
+            "Only the workflow object is the definition. Never copy references, history, intent or other "
+            "conversation metadata into workflow_json. Preserve source extensions verbatim; do not add "
+            "unknown root fields or alter platform-managed status, validation, acceptance or publication. "
+            "When allowedChangePaths is present, change only those JSON Pointer subtrees; otherwise ask "
+            "for clarification if related changes outside that scope are necessary. "
+        )
+        current = instructions()
+        assert current.count(addition) == 1
+        old = current.replace(addition, "")
+        expected = deepcopy(expected)
+        event = next(item for item in expected["trace"] if item[0] == "thread_start")
+        assert normalized(old) == event[1]["developer_instructions"]
+        event[1]["developer_instructions"] = normalized(current)
+    assert value == expected
 
 
 @pytest.mark.parametrize("operation", ["free_query", "acceptance_baseline", "acceptance_free_query"])
@@ -48,8 +108,7 @@ def test_common_harness_stages_schema_and_result_do_not_depend_on_driver(operati
                 "original_query": "Inspect supplier", "previous_user_requests": [], "pending_question": None})
             # Compare the complete common business schema to the immutable old
             # native trace; only native encoding and identity may differ.
-            assert normalized({"output_schema": request.output_schema})["output_schema"] == next(
-                event[1]["output_schema"] for event in BEFORE[operation]["trace"] if event[0] == "turn")
+            assert normalized({"output_schema": request.output_schema})["output_schema"] == report_schema_delta(operation, request.output_schema)
             payload = {"status": "inconclusive", "intent": "read", "clarification_question": "",
                 "input_kind": None, "input_field": None, "summary": {"zh": "证据不足", "en": "Insufficient evidence"},
                 "source_complete": False, "business_complete": False, "missing_evidence": ["offline_probe"],
@@ -84,7 +143,8 @@ def test_workbuddy_driver_reports_worker_identity_and_timeout_without_guessing(t
         {"type": "object", "properties": {"status": {"const": "completed"}}, "required": ["status"]},
         cwd=str(tmp_path), permissions={"acceptance_direct_baseline": False}, deadline=__import__('time').monotonic() + 600)
     result = asyncio.run(WorkBuddyHarnessDriver(owner).harness_turn(request, {
-        "run_id": "owned", "state": {}, "turn_count": 1, "cleanup_state": {}}))
+        "run_id": "owned", "state": {}, "turn_count": 1, "cleanup_state": {},
+        "report_contract": __import__('sap_business_agents_platform.runtime_report_contract', fromlist=['freeze']).freeze('owned', 'offline', request.binding)}))
     assert result.actual_model == "verified-native"
     async def timeout(**_):
         raise WorkBuddyError("workbuddy_deadline_exceeded")

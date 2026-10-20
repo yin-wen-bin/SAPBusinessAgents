@@ -835,6 +835,10 @@ async def _wait_api(client: httpx.AsyncClient, api_url: str, run_id: str, timeou
 
 def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
     """Append only the value-free reporting contract required for comparison."""
+    from sap_business_agents_platform.runtime_query_contract import ReadScope
+    frozen_scope = ReadScope("", case.input)
+    scope_requirements = [{"field_aliases": list(names), "allowed_operators": ["eq", "in"]}
+        for names, _values in frozen_scope.constraints]
     grain = ", ".join(str(item) for item in contract.get("business_keys") or [])
     fact_fields = list(
         dict.fromkeys(
@@ -874,7 +878,16 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
         "- This is an acceptance-mode run. Populate acceptance_projection with the same complete canonical records and metrics shown in the validated presentation.",
         "- acceptance_projection must separately report business_status, source_complete, evidence_complete, business_complete, evidence_gap_codes, and only run-scoped verified evidence_refs.",
         "- Never infer acceptance_projection from prose and never omit a required record merely because it is normal, zero, or not_found.",
+        "- Before adding filters to a new source, obtain its complete authoritative Schema (sap_schema_get max_fields=5000; fields_truncated must be false). A scope rejection without Schema is not proof that the missing field exists on that source. Preserve all confirmed conditions, prove applicable conditions and associations using live metadata/evidence, and never invent fields or use unrestricted reads.",
+        "- Frozen read-scope requirements from confirmed inputs: " + json.dumps(scope_requirements) + ". For each source, retain every applicable requirement using the confirmed input value and an exact server-side eq/in filter. Reading the whole order/source then filtering dates, organizations or other conditions locally is not equivalent authorization and will be rejected. A field absent from authoritative metadata must instead be proved through an authorized association; never invent it or drop the overall condition.",
+        "- source_complete describes completeness of the reads actually performed, not whether all evidence required for the business conclusion was obtained. If a required fact/metric remains unknown due to missing evidence, disclose a specific evidence gap and keep evidence_complete and business_complete false. Required limitation codes alone do not explain missing evidence.",
     ]
+    if contract.get("required_metric_values"):
+        instructions.append("- These metrics are declared non-null by the business output Schema when business_complete=true: "
+            + json.dumps(contract["required_metric_values"]) + ". Incomplete evidence may be reported honestly with null; it cannot be declared a complete business result.")
+    if contract.get("metric_output_descriptions"):
+        instructions.append("- Declared metric display meanings (not answers or calculations): "
+            + json.dumps(contract["metric_output_descriptions"], ensure_ascii=False))
     if contract.get("contract_version"):
         instructions.extend([
             "- Record definition: " + str(contract.get("record_definition") or ""),
@@ -989,6 +1002,7 @@ def _projection_spec(contract: JsonObject) -> JsonObject:
         metric_fields=metric_fields,
         decimal_fields=list(contract.get("decimal_fields") or []),
         decimal_metrics=list(contract.get("decimal_metrics") or []),
+        required_metric_values=list(contract.get("required_metric_values") or []),
         boolean_fields=list(contract.get("boolean_fields") or []),
         semantic_profile=semantic_profile,
         required_limitation_codes=list(contract.get("required_limitations") or []),

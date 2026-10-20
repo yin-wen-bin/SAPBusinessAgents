@@ -16,9 +16,12 @@ $verificationCode = @'
 import json, sys
 from pathlib import Path
 from sap_business_agents_platform.workbuddy_environment import WorkBuddyEnvironment, WorkBuddyError
+from sap_business_agents_platform.workbuddy_site import configuration, routing
 try:
-    release = WorkBuddyEnvironment(Path(sys.argv[1])).release()
-    print(json.dumps({name: release[name] for name in ('environment_digest', 'python_path', 'cli_path', 'sdk_version', 'cli_version')}))
+    registry = WorkBuddyEnvironment(Path(sys.argv[1]))
+    release = registry.release()
+    site = routing(configuration(registry.state(), required=True))
+    print(json.dumps({**{name: release[name] for name in ('environment_digest', 'python_path', 'cli_path', 'sdk_version', 'cli_version')}, 'sdk_environment': site['sdk_environment'], 'service_site': site['service_site'], 'auth_hosts': site['auth_hosts']}))
 except WorkBuddyError as exc:
     print(exc.code, file=sys.stderr)
     sys.exit(1)
@@ -40,7 +43,8 @@ if (-not (Test-Path -LiteralPath $loginHelper -PathType Leaf)) {
     throw 'WorkBuddy authentication helper is missing; no login process was started.'
 }
 Write-Host ('Verified WorkBuddy SDK {0}, CLI {1}. Starting authentication check.' -f $release.sdk_version, $release.cli_version)
-$loginArguments = @('-I', '-B', $loginHelper, '--cli-path', $release.cli_path, '--method-id', $MethodId)
+$loginArguments = @('-I', '-B', $loginHelper, '--cli-path', $release.cli_path, '--method-id', $MethodId, '--sdk-environment', $release.sdk_environment)
+foreach ($authHost in $release.auth_hosts) { $loginArguments += @('--auth-host', $authHost) }
 if ($CheckLogin) { $loginArguments += '--check-only' }
 if ($NoBrowser) { $loginArguments += '--no-browser' }
 & $release.python_path @loginArguments

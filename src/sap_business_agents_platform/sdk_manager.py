@@ -282,6 +282,7 @@ class SDKManager:
         self._runtime_config = self._load_runtime_config()
         from .workbuddy_manager import WorkBuddyManager
         self.workbuddy = WorkBuddyManager(self.repository_root)
+        self.authentication_service = None
 
     @property
     def default_provider_id(self) -> str | None:
@@ -295,6 +296,87 @@ class SDKManager:
     def list(self) -> list[dict[str, Any]]:
         return [self._snapshot(item) for item in self.definitions]
 
+    def admission_status(self, provider_id: str) -> dict[str, Any]:
+        """Full uncached gate for only the chosen Runtime; never display state."""
+        if provider_id == "workbuddy":
+            return self._snapshot(self._get_provider(provider_id), admission=True)
+        return self._snapshot(self._get_provider(provider_id))
+
+    def installation_status(self, provider_id: str) -> dict[str, Any]:
+        """Installation metadata only; never a model or execution admission."""
+        definition = self._get_provider(provider_id)
+        if provider_id == 'workbuddy':
+            from .workbuddy_environment import WorkBuddyError
+            try:
+                version = self.workbuddy.environment.release()['sdk_version']
+            except WorkBuddyError:
+                version = None
+        else:
+            version = self.adapters[definition.ecosystem].installed_version(definition)
+        return {'provider_id': provider_id, 'installed': version is not None, 'current_version': version}
+
+    def save_workbuddy_site(self, service_site, expected_revision, request_id):
+        prior = self.workbuddy.site_request_result(service_site, expected_revision, request_id)
+        if prior:
+            return prior
+        if self.authentication_service:
+            with self.authentication_service.configuration_change("workbuddy"):
+                result = self.workbuddy.save_site(service_site, expected_revision, request_id,
+                    selected=self.default_provider_id == "workbuddy")
+                if result.get("changed"):
+                    from .workbuddy_site import binding
+                    self.authentication_service.invalidate_configuration("workbuddy", binding(result))
+                return result
+        return self.workbuddy.save_site(service_site, expected_revision, request_id,
+                                       selected=self.default_provider_id == "workbuddy")
+
+    def migrate_workbuddy_site(self, *, only_existing=False):
+        current = self.workbuddy.site_configuration()
+        # Merely starting the API/status projection must not materialize an
+        # uninstalled Provider's registry inside a managed Git checkout.
+        if only_existing and not self.workbuddy.environment.state_path.exists():
+            return current
+        if current.get("service_site_migration_required"):
+            return self.save_workbuddy_site("china", 0, "initial-china-site-1")
+        return current
+
+    def apply_authentication_state(self, provider_id, account):
+        """Account-dependent checks only; environment/operation evidence is preserved."""
+        if provider_id == "workbuddy":
+            from .workbuddy_site import assert_binding, binding
+            context = assert_binding(self.workbuddy.environment.state(), account)
+            def update(state):
+                state.update(authenticated=account["authenticated"], authentication_status=account["status"],
+                             authentication_revision=account["revision"], checked_at=account["checked_at"],
+                             authentication_environment=self.workbuddy.environment.release()["environment_digest"],
+                             authentication_site=binding(context),
+                             error={"code": account["failure_code"]} if account.get("failure_code") else None)
+                if account.get('authenticated') is True:
+                    state['authentication_identity_digest'] = (account.get('confirmed_binding') or {}).get('identity_digest')
+                # Preserve historical checks instead of rewriting them. A new
+                # account revision is checked alongside the site before reuse.
+                if account.get("changed"):
+                    state["model_authentication_revision"] = account["revision"]
+                    for check in state.get("models", {}).values():
+                        import copy
+                        state.setdefault("model_check_history", []).append(copy.deepcopy(check))
+                        check.update(compatible=False, status="authentication_changed")
+            self.workbuddy.environment.mutate(update)
+            return
+        definition = self._get_provider(provider_id)
+        with self._config_lock:
+            self._state[definition.sdk_id].update(authenticated=account["authenticated"],
+                # This legacy value participates in model check digests. Keep
+                # its original encoding; the unified projection has new labels.
+                authentication_status="existing_login" if account["authenticated"] is True else account["status"], authentication_error=None)
+            if account.get("changed"):
+                self._provider_runtime_state(definition)["authentication_revision"] = account["revision"]
+                checks = self._runtime_config.setdefault("model_checks", {})
+                for key in list(checks):
+                    if str(key).startswith(provider_id + ":"):
+                        checks.pop(key)
+                self._persist_runtime_config()
+
     async def check_all(self) -> list[dict[str, Any]]:
         await asyncio.gather(*(self.check(item.sdk_id) for item in self.definitions
             if item.provider_id != "workbuddy" or self.workbuddy.snapshot().get("enabled")))
@@ -302,6 +384,20 @@ class SDKManager:
 
     async def check(self, sdk_id: str) -> dict[str, Any]:
         definition = self._get_sdk(sdk_id)
+        if self.authentication_service and definition.provider_id in {"codex", "workbuddy"}:
+            await self.authentication_service.check(definition.provider_id)
+            if definition.provider_id == "codex":
+                # Preserve the legacy explicit installation/version check too;
+                # the dedicated authentication route never performs this step.
+                async with self._locks[sdk_id]:
+                    try:
+                        latest = await self.adapters[definition.ecosystem].latest_version(definition)
+                    except SDKManagerError as exc:
+                        self._state[sdk_id].update(latest_version=None, checked_at=_timestamp(),
+                                                  error={"code": exc.code, "message": str(exc)})
+                    else:
+                        self._state[sdk_id].update(latest_version=latest, checked_at=_timestamp(), error=None)
+            return next(v for v in self.list() if v["sdk_id"] == sdk_id)
         if definition.provider_id == "workbuddy":
             await self.workbuddy.check()
             return self._snapshot(definition)
@@ -355,6 +451,12 @@ class SDKManager:
         }
 
     async def refresh_models(self, provider_id: str) -> dict[str, Any]:
+        if self.authentication_service:
+            async with self.authentication_service.use(provider_id, self.authentication_service.bind(provider_id, {})):
+                return await self._refresh_models(provider_id)
+        return await self._refresh_models(provider_id)
+
+    async def _refresh_models(self, provider_id: str) -> dict[str, Any]:
         if provider_id == "workbuddy":
             return await self.workbuddy.refresh_models()
         definition = self._get_provider(provider_id)
@@ -446,9 +548,15 @@ class SDKManager:
             self._persist_runtime_config()
             return self.models(provider_id)
 
-    async def check_model(self, provider_id: str, model_id: str, reasoning_effort: str | None = None) -> dict[str, Any]:
+    async def check_model(self, provider_id: str, model_id: str, reasoning_effort: str | None = None, request_id: str | None = None) -> dict[str, Any]:
+        if self.authentication_service:
+            async with self.authentication_service.use(provider_id, self.authentication_service.bind(provider_id, {})):
+                return await self._check_model(provider_id, model_id, reasoning_effort, request_id)
+        return await self._check_model(provider_id, model_id, reasoning_effort, request_id)
+
+    async def _check_model(self, provider_id: str, model_id: str, reasoning_effort: str | None = None, request_id: str | None = None) -> dict[str, Any]:
         if provider_id == "workbuddy":
-            return await self.workbuddy.check_model(model_id, reasoning_effort)
+            return await self.workbuddy.check_model(model_id, reasoning_effort, request_id=request_id)
         definition = self._get_provider(provider_id)
         model_id = _validate_model_id(model_id)
         async with self._locks[definition.sdk_id]:
@@ -574,6 +682,12 @@ class SDKManager:
         return self.models(provider_id)
 
     async def set_default_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+        if self.authentication_service:
+            async with self.authentication_service.use(provider_id, self.authentication_service.bind(provider_id, {})):
+                return await self._set_default_model(provider_id, model_id)
+        return await self._set_default_model(provider_id, model_id)
+
+    async def _set_default_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
         if provider_id == "workbuddy":
             await self.workbuddy.set_default_model(model_id)
             return self._snapshot(self._get_provider(provider_id))
@@ -601,6 +715,8 @@ class SDKManager:
         return self._snapshot(definition)
 
     def set_enabled(self, provider_id: str, enabled: bool) -> dict[str, Any]:
+        if enabled and self.authentication_service:
+            self.authentication_service.assert_binding(provider_id, self.authentication_service.bind(provider_id, {}))
         if provider_id == "workbuddy":
             self.workbuddy.set_enabled(enabled)
             return self._snapshot(self._get_provider(provider_id))
@@ -623,6 +739,14 @@ class SDKManager:
         return self._snapshot(definition)
 
     async def update(self, sdk_id: str) -> dict[str, Any]:
+        provider_id = self._get_sdk(sdk_id).provider_id
+        if self.authentication_service:
+            # Installation may precede authentication: protect mutation, not sign-in eligibility.
+            async with self.authentication_service.use(provider_id, self.authentication_service.bind(provider_id, {}), require_authenticated=False):
+                return await self._update(sdk_id)
+        return await self._update(sdk_id)
+
+    async def _update(self, sdk_id: str) -> dict[str, Any]:
         definition = self._get_sdk(sdk_id)
         if definition.provider_id == "workbuddy":
             return await self.workbuddy.update()
@@ -655,7 +779,7 @@ class SDKManager:
 
     def set_default(self, provider_id: str) -> dict[str, Any]:
         definition = self._get_provider(provider_id)
-        snapshot = self._snapshot(definition)
+        snapshot = self.admission_status(provider_id) if provider_id == "workbuddy" else self._snapshot(definition)
         if not snapshot["selectable"]:
             raise SDKManagerError(
                 "The selected Agent Runtime has not passed all availability gates.",
@@ -668,6 +792,10 @@ class SDKManager:
         return self._snapshot(definition)
 
     def runtime_snapshot(self, provider_id: str | None = None) -> dict[str, Any]:
+        snapshot = self._runtime_snapshot(provider_id)
+        return self.authentication_service.bind(snapshot["provider_id"], snapshot) if self.authentication_service else snapshot
+
+    def _runtime_snapshot(self, provider_id: str | None = None) -> dict[str, Any]:
         selected = provider_id or self.default_provider_id
         if selected == "workbuddy":
             return self.workbuddy.runtime_snapshot()
@@ -706,6 +834,10 @@ class SDKManager:
         }
 
     def runtime_snapshot_for_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
+        snapshot = self._runtime_snapshot_for_model(provider_id, model_id)
+        return self.authentication_service.bind(provider_id, snapshot) if self.authentication_service else snapshot
+
+    def _runtime_snapshot_for_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
         """Bind a checked task model without mutating the user's system default."""
         if provider_id == "workbuddy":
             return self.workbuddy.runtime_snapshot(model_id)
@@ -824,7 +956,20 @@ class SDKManager:
             checks.pop(key, None)
         self._persist_runtime_config()
 
-    def _snapshot(self, definition: SDKDefinition) -> dict[str, Any]:
+    def _snapshot(self, definition: SDKDefinition, *, admission=False) -> dict[str, Any]:
+        value = (self.workbuddy.snapshot(definition, selected=self.default_provider_id == "workbuddy", admission=True)
+                 if admission and definition.provider_id == "workbuddy" else self._snapshot_raw(definition))
+        if self.authentication_service:
+            authentication = self.authentication_service.view(definition.provider_id)
+            value["authentication"] = authentication
+            active = authentication.get("operation", {}).get("status") if authentication.get("operation") else None
+            if active in {"queued", "running", "waiting_authentication", "cancelling", "cleanup_pending"} or authentication["status"] in {"signed_out", "expired", "check_failed"}:
+                code = "runtime_authentication_operation_active" if active in {"queued", "running", "waiting_authentication", "cancelling", "cleanup_pending"} else "runtime_authentication_check_required"
+                value["blockers"] = list(dict.fromkeys([*value.get("blockers", []), code]))
+                value.update(selectable=False, can_enable=False)
+        return value
+
+    def _snapshot_raw(self, definition: SDKDefinition) -> dict[str, Any]:
         if definition.provider_id == "workbuddy":
             return self.workbuddy.snapshot(definition, selected=self.default_provider_id == "workbuddy")
         adapter = self.adapters[definition.ecosystem]
@@ -1141,6 +1286,7 @@ class SDKManager:
         return value
 
     def _decorate_model(self, definition: SDKDefinition, item: dict[str, Any]) -> dict[str, Any]:
+        from .model_compatibility_view import projection
         model_id = str(item.get("model_id") or "")
         try:
             effort, effort_source = self.reasoning_configuration(definition.provider_id, model_id)
@@ -1170,6 +1316,10 @@ class SDKManager:
                 and check.get("compatible") is True
             ),
             "check": check,
+            "compatibility_applicability": projection(
+                check=check or {}, current=check is not None,
+                authenticated=self._state[definition.sdk_id].get("authenticated"),
+                ready=self._catalog_status(definition) == "ready" and effort_error is None),
         }
 
     def _client_version(self, definition: SDKDefinition) -> str | None:

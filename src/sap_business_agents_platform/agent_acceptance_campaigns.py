@@ -6,6 +6,7 @@ import copy
 import json
 import time
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
@@ -384,11 +385,13 @@ class AgentAcceptanceJobs:
             issues = normalized_issues(baseline_normalized, contract)
             if issues:
                 raise BusinessContractError(issues, "independent_baseline")
-            if not all(baseline_normalized.get(name) is True for name in ("source_complete", "evidence_complete", "business_complete")) or baseline_normalized.get("evidence_gap_codes"):
-                if self._proven_evidence_gap(baseline_id):
-                    return self._complete_blocked_case(campaign_id, case_id, baseline_id, code="independent_baseline_evidence_incomplete")
-                raise AcceptanceCampaignOperationalError("independent_baseline_gap_unverified", failure_stage="baseline",
-                                                        diagnostics=self._run_diagnostics(baseline_id))
+        # No incomplete model answer is a standard of truth, including legacy
+        # contracts. Historical records are not reclassified by this live gate.
+        if not all(baseline_normalized.get(name) is True for name in ("source_complete", "evidence_complete", "business_complete")) or baseline_normalized.get("evidence_gap_codes"):
+            if self._proven_evidence_gap(baseline_id):
+                return self._complete_blocked_case(campaign_id, case_id, baseline_id, code="independent_baseline_evidence_incomplete")
+            raise AcceptanceCampaignOperationalError("independent_baseline_gap_unverified", failure_stage="baseline",
+                                                    diagnostics=self._run_diagnostics(baseline_id))
         baseline_payload = _baseline_payload(baseline_run, baseline_normalized, runtime)
         validate_direct_baseline(baseline_payload, case)
         anchor_before = await self._capture_source_anchor(
@@ -571,13 +574,25 @@ class AgentAcceptanceJobs:
         baseline_run: dict[str, Any], *, position: str,
     ) -> dict[str, Any]:
         """Replay every independent baseline GET plan and retain hashes only."""
+        sap_read = getattr(self.coordinator, 'sap_read', None)
+        metadata_scope = getattr(sap_read, 'metadata_scope', None)
+        clear_scope = getattr(sap_read, 'clear_schema_scope', None)
+        # Reuse only metadata freshly read inside this single anchor capture.
+        # Business evidence is still replayed for every source. Never inherit
+        # a baseline/other-anchor cache, or leave this scope alive after exit.
+        scoped = callable(metadata_scope) and callable(clear_scope)
+        scope = f'{campaign_id}:anchor:{position}:{uuid.uuid4().hex}'
         try:
             async with asyncio.timeout(FINALIZE_SECONDS):
-                return await self._capture_source_anchor_within_deadline(
-                    draft_id, campaign_id, baseline_run_id, baseline_run, position=position,
-                )
+                with metadata_scope(scope) if scoped else nullcontext():
+                    return await self._capture_source_anchor_within_deadline(
+                        draft_id, campaign_id, baseline_run_id, baseline_run, position=position,
+                    )
         except TimeoutError:
             return {"verdict": "UNAVAILABLE", "reason_code": "source_anchor_timeout"}
+        finally:
+            if scoped:
+                clear_scope(scope)
 
     async def _capture_source_anchor_within_deadline(
         self, draft_id: str, campaign_id: str, baseline_run_id: str,

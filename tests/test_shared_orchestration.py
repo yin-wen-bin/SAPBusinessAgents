@@ -97,7 +97,9 @@ def test_budget_policy_is_shared_and_preserves_shorter_deadlines():
         assert operation_seconds('codex', operation, existing=123) == 123
     assert operation_seconds('workbuddy', 'compose_workflow') == 3600
     assert operation_seconds('codex', 'review_workflow_feedback') == 3600
-    assert operation_seconds('workbuddy', 'analyze_role_matching') == 300
+    assert operation_seconds('workbuddy', 'analyze_role_matching') == 3600
+    assert operation_seconds('codex', 'analyze_role_matching') == 3600
+    assert operation_seconds('codex', 'review_role_matching_feedback') == 3600
 
 
 def test_old_workbuddy_qualification_is_not_reused_or_rewritten(tmp_path, monkeypatch):

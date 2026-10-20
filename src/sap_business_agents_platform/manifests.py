@@ -67,6 +67,7 @@ class ManifestError(ValueError):
             "execution_relationship_policy_invalid",
             "agent_optional_input_unguarded", "agent_optional_filter_invalid",
             "agent_optional_filter_unguarded", "agent_input_reference_unknown",
+            "agent_business_output_contract_missing",
         }
         path = self.path if isinstance(self.path, str) and len(self.path) <= 512 and re.fullmatch(
             r"/manifest(?:/(?:[A-Za-z_][A-Za-z0-9_-]{0,79}|[0-9]+))*", self.path

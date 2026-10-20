@@ -219,6 +219,56 @@ def test_role_matching_session_is_immutable_and_does_not_persist_body(tmp_path: 
     asyncio.run(_role_matching_session_scenario(tmp_path))
 
 
+@pytest.mark.parametrize("cleanup_pending", [False, True])
+def test_role_native_events_and_failure_are_safe_bound_and_recoverable(tmp_path, cleanup_pending):
+    from sap_business_agents_platform.runtime_stage import role_stage
+    from sap_business_agents_platform.workbuddy_environment import WorkBuddyError
+    class Runtime(_FakeRuntime):
+        @contextmanager
+        def bind_events(self, emit):
+            self.emit = emit
+            yield
+        async def analyze_role_matching(self, **kwargs):
+            with role_stage("role_understanding", schema={}, operation="analyze_role_matching"):
+                self.emit("agent_runtime_connected", {"provider_id": "workbuddy", "message_count": 0})
+                self.emit("agent_runtime_activity", {"provider_id": "workbuddy", "message_count": 4,
+                    "first_response_ms": 20, "terminal_result_received": False, "raw_log": "SECRET_EVENT"})
+                failure = WorkBuddyError("workbuddy_upstream_empty_stream")
+                failure.detail = {"message_count": 4, "terminal_result_received": False,
+                    "failure_source": "error_message", "raw_log": "SECRET_ERROR",
+                    **({"cleanup_failure_code": "runtime_cleanup_incomplete"} if cleanup_pending else {})}
+                raise failure
+    async def check():
+        root = Path(__file__).resolve().parents[1]
+        settings = replace(Settings(), repository_root=root, data_root=tmp_path / "data", draft_root=tmp_path / "drafts")
+        store = RunStore(settings.database_path)
+        runtime = Runtime()
+        service = RoleMatchingService(settings, store, AgentRepository(root / "agents"), runtime, _Drafts())
+        await service.start()
+        try:
+            session = await service.create(paths=[], role_description="采购专员查询采购订单", locale="zh", consent=True)
+            for _ in range(100):
+                current = service.get(session["session_id"])
+                if current["status"] in {"failed", "cleanup_pending"}: break
+                await asyncio.sleep(.02)
+            assert current["status"] == ("cleanup_pending" if cleanup_pending else "failed")
+            assert current["error"]["code"] == "workbuddy_upstream_empty_stream"
+            assert current["error"]["detail"]["phase"] == "role_understanding"
+            assert current["error"]["detail"]["budget_seconds"] == 3600
+            progress = current["runtime_progress"]
+            assert progress["message_count"] == 4 and progress["sdk_connected"] is True
+            assert current["current_revision"] == 0
+            assert bool(current["active_job_id"]) is cleanup_pending
+            saved = json.dumps(store.role_matching_events_after(session["session_id"]), ensure_ascii=False)
+            assert "SECRET_EVENT" not in saved and "SECRET_ERROR" not in saved
+            before = saved
+            runtime.emit("agent_runtime_activity", {"message_count": 99})
+            assert json.dumps(store.role_matching_events_after(session["session_id"]), ensure_ascii=False) == before
+        finally:
+            await service.stop()
+    asyncio.run(check())
+
+
 async def _description_source_scenario(tmp_path: Path) -> None:
     repository_root = Path(__file__).resolve().parents[1]
     description = "仓库主管在SAP中处理收货和盘点 UNIQUE_ROLE_TEXT_19384"

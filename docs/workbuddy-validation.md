@@ -1,6 +1,48 @@
 # WorkBuddy 实施与验证记录 / Implementation and validation record
 
-最近检查日期 / Latest check date: **2026-10-08**。以下分阶段记录按其标注日期保留；最新状态见文末 / Dated stage records are retained; see the final section for current status.
+## 2026-10-14：分层与增量验证 / Layered incremental validation
+
+本轮仅交付离线实现及历史只读审计。共用规则、案例矩阵和后续执行边界见 [Runtime 验证方法](runtime-validation.md)。未调用模型／SAP，未创建 Campaign、应用承接或激活协议；不能把新工具的离线检查称为新的业务 PASS。
+
+Offline implementation and read-only history audit only. No model/SAP calls, new Campaigns, applied reuse receipts or protocol activation; offline checks are not live qualification.
+
+说明更新日期 / Documentation update: **2026-10-13**。各节数字对应其当时冻结的模型、环境及源码，不直接代表当前资格。国内站真实续接与定向选样见后续日期章节；新的离线资格协议见[资格管理](workbuddy-qualification.md)，未自动迁移旧 PASS 或执行新模型验证。 / Counts below belong to their dated frozen bindings, not the current eligibility. See the dated China-site continuation and targeted sampling sections and the new qualification guide; historical PASS records are not rebound and no new model validation is automatic.
+
+## 2026-10-12 国内／国际站配置 / China and International site configuration
+
+站点配置、请求幂等、认证协议路由及模型／操作资格绑定已实现。缺少站点的配置按安全门禁首次迁移为国内站；不退出旧账号、不删除认证缓存。切换后认证待核对，模型检查过期但不因此宣称模型已下架；旧检查、资格及安装 release 保留。Codex 仍为默认，WorkBuddy 仍停用。
+
+Site configuration, idempotent requests, authentication routing and qualification bindings are implemented. Guarded legacy migration defaults to China without signing out an account or deleting caches. Switching requires new authentication/model/operation checks; expiration does not prove model retirement. Historical evidence and releases are retained. Codex remains default and WorkBuddy remains disabled.
+
+| 本轮检查 / Check | 结果 / Result |
+|---|---|
+| 相关 Python 回归 / Scoped Python regression | 195 passed；1 条现有 Starlette 弃用警告 / one existing deprecation warning |
+| 前端回归 / Frontend regression | 136 passed，0 failures |
+| Astro / TypeScript | 0 errors、0 warnings、0 hints |
+| 正式目录 / Published catalog | 34 manifests across 6 modules |
+| 文档检查 / Documentation | 55 documents，0 stale blocks，0 errors |
+| 隔离生产构建 / Isolated production build | 84 pages |
+| 合成 API 浏览器检查 / Synthetic API browser checks | 中英文 × 1440/550/390px；键盘保存、刷新恢复、无横向溢出、无自动登录／模型调用 / bilingual keyboard save, reload, no overflow or implicit calls |
+| 独立安装 / Independent installation | SDK 0.3.247、CLI 2.141.0；依赖锁不变，旧 983 个文件完整核验 / dependency lock unchanged; all 983 old files verified |
+| 登录入口 / Console sign-in entry | `-VerifyOnly` 读取同一国内站配置并通过完整性检查；没有执行登录 / same saved China site; no sign-in performed |
+
+新 worker release：`3dae7c1d0ff09889171a9e517c56434de0b2b5245832c5ddb3a43ef5b3d34600`。旧 release `c339f85fc46162c120e174b15b9b54780908dedb2a3d1b8a96365814267f907e` 未改写。两者 SDK、CLI、依赖锁相同；站点摘要与安装摘要分别核对。本轮未运行真实认证或模型探针、不访问 SAP、不执行退出、不启用、不提交或推送。额外全量 Python 尝试未完成，在服务切换前停止，不计为通过结果。
+
+The immutable worker release changed, not the SDK/CLI/dependency lock. Installation and site digests remain separate. No real authentication/model probe, SAP access, sign-out, enablement, commit or push was performed. An additional full-suite Python attempt was stopped before service switching and is not counted as passing.
+
+站点功能交付时，新绑定下为 **0/15** 业务操作资格；这表示当时需要重新验证，不表示 15 项均失败。以下为当时的验证清单；本次国内站业务续接结果见末节：
+
+At site-feature delivery, the new binding was **0/15**, meaning renewal was required, not fifteen failed executions. The original checklist follows; see the final section for the current China-site continuation:
+
+- Agent：`author_draft`、`review_agent_feedback`（反馈包含 `bounded` 与 `trusted_local`）。
+- 工作流 / Workflow：`compose_workflow`、`review_workflow`、`repair_workflow`、`review_workflow_feedback`、`workflow_authoring.v2`（v2 使用 `trusted_local`）。
+- 岗位 / Role：`analyze_role_matching`、`review_role_matching_feedback`。
+- 查询 / Query：`free_query`、`review_free_query_feedback`、`revise_free_query_presentation`。
+- 选样及验收 / Sampling and acceptance：`sample_discovery`、`acceptance_baseline`、`acceptance_free_query`。
+
+该站点功能验证本身未执行真实登录或模型探针，不授予业务资格。本次国内站业务续接复用用户之后完成的有效认证及模型检查；国际站未做真实验证，后续 SAP 或三级验收仍需另行确认。
+
+Real authentication and structured model probes for both sites await user sign-in. Offline site checks grant no business qualification; later SAP/acceptance validation requires separate authorization.
 
 ## 2026年10月4日续接检查 / Continuation checks on 2026-10-04
 
@@ -887,3 +929,572 @@ Live validation remains separate: load the new orchestration only when idle and 
 The final full Python regression passes **1717 tests**, with **one existing skip** (host symlink support unavailable) and **one existing Starlette deprecation warning**, in **1325.03 seconds**. DPAPI assertions are not skipped. The frontend passes **120 tests**; Astro checks **53 files** with no errors, warnings or hints; the isolated production build generates **84 pages**. Catalogue validation covers **34 packages/six modules**, and the documentation index checks **55 documents** with no changed blocks or errors. Dependencies, configuration, published Agents and immutable before-source Codex trace fixtures have no Git changes.
 
 Five initial regression failures came from old role-test outputs missing mandatory collections or citing unregistered fixture references. The fixtures now provide their actual document/chunk registry, retaining page counts, phase order, permissions and candidate-support assertions. Both native and canonical outputs explicitly reject unknown references; the targeted **58-test** regression passes. The first failure report remains intact, and checks are not weakened. The final XML and isolated site artifact remain in the ignored check directory. These are offline results only: no real SDK/model qualification, SAP reads, Campaign, service/release switch, enablement, project commit or push is performed.
+
+## 当前十五项验证入口 2026 10 10 / Current fifteen-operation verification entry
+
+以提交 `44b64cf` 和现有不可变 worker 为基线，[当前验证入口](../scripts/verify-workbuddy-operations.py)读取十五项操作清单，独立拆出 Agent 创建，保留历史十八项脚本与失败报告。默认命令只做导入检查；显式 `--execute` 才准备新批次、探针或执行作业。每组在同一新批次中只派发一次，原管理服务继续依据真实终态、业务检查和进程清理登记资格，没有修改资格记录结构或新增公开接口。
+
+Agent 创建采用明确标注的完整合成来源，满足当前成功来源门禁；其完整性仅描述封闭离线样例，不代表 SAP 已读取或业务验收通过。其余样例沿用现有编译、引用、证据、修订和比较校验，不将中间工具输出当作终态。草稿反馈分别验证 `bounded`、`trusted_local`，工作流 v2验证 `trusted_local`；其余操作保持原模式和预算。
+
+相关 Python 回归 **255 passed、1 个既有 Starlette warning**，另 **4 项**当前夹具准备测试通过，均不授予真实资格。正确 Windows 账户下核对合成来源创建及幂等保存，没有跳过 DPAPI 断言。前端 **120 项**通过，Astro **53 个文件零错误／零警告／零提示**，生产构建 **84 页**；构建的 `site/dist` 与实际前台的稳定目录分离，未切换服务。目录 **34 包／6 模块**、文档索引 **55 项**检查通过。这些是当前相关回归，不宣称再次运行完整 1717 项 Python。
+
+当前批次资料在 `.local-data/workbuddy-validation/validation-20261010/`，包含基线、探针、冻结快照、逐组报告和安全事件。运行中 API与当前十五项源码摘要一致，启动器复用健康服务。一次登录及模型探针分别 **4.95 秒、28.65 秒**通过，实际身份为 `hy4-preview`，清理完成；原 SDK **0.3.247**、CLI **2.141.0**及 worker 环境保持不变。探针通过不等于全部业务操作通过。
+
+The current runner reads the fifteen-operation registry and separates Agent creation from retired planning fixtures. Historical scripts and failures remain intact. Import-only checks are the default; each explicit live family is once-only in a fresh batch. The existing manager still owns qualification after native terminal, business and cleanup checks. No qualification-state redesign or public API is introduced.
+
+A complete, explicitly synthetic source exercises the current creation gate without claiming SAP evidence. Focused regressions pass **255 tests** with one existing warning, plus **four** fixture-preparation tests under the signed-in Windows account. Frontend **120**, Astro **53 files without issues**, the separate **84-page** build, catalogue and documentation checks pass. The active site artifact is not replaced. This is not a new full Python run.
+
+The batch directory preserves its source/worker controls, one authentication/model probe, frozen binding and safe live reports. Authentication/model probes pass in **4.95/28.65 seconds** with concrete `hy4-preview` identity and confirmed cleanup. SDK, CLI and the existing worker release remain pinned; a successful probe alone cannot open business selection.
+
+### 本批次真实结果 / Live result of this batch
+
+当前运行中 API 确认 **8/15** 项有效资格：Agent 创建、草稿反馈、工作流创建／检查／修复／反馈、自由查询反馈分类和仅重新解释。草稿反馈的 `bounded` 与 `trusted_local` 均通过，解释未修改修订；修改只产生一个 README 修订。工作流固定 Agent ID、版本及 Digest 未变，仅重新解释零次 SAP 读取。通过项的原生终态、平台业务检查与所属进程清理均已核对；没有以探针或模拟结果授予资格。
+
+| 未通过项 | 本轮证据与处置 |
+|---|---|
+| `workflow_authoring.v2` | 解释通过（68.79 秒）；修改取得有效结构化终态并完成清理（175.31 秒），但除了标题额外新增 `/references`。该字段来自对话引用而非原工作流。固定绑定未变，但“只改标题”断言失败，不登记资格。 |
+| `analyze_role_matching` | 首个业务理解阶段在原 300 秒截止时间内未取得有效终态，worker 为 `workbuddy_deadline_exceeded`，会话耗时 302.01 秒，清理完成。平台报告仍为泛化的 `role_matching_failed`；本阶段未保存原生事件流，不能据此认定上游空流或模型故障。 |
+
+岗位反馈因没有有效初始修订而未执行。自由查询、选样及两项验收操作因非 SAP 门禁未通过而暂停，本批次 **零次 SAP 调用、零个真实验收 Campaign**。每个已执行案例只派发一次，没有自动重跑失败作业、补字段、放宽断言或延长预算。原失败报告保留，具体诊断另存于批次的 `workflow_v2-diagnosis.json` 和 `role-diagnosis.json`，汇总为 `result-summary.json`；岗位原报告位于 `.local-data/workbuddy-baseline/validation-20261010-role/report.json`。
+
+后续修复方向：在共享工作流契约和应用前检查中区分会话引用与工作流定义，拒绝不当附加字段，不静默删除字段；岗位失败保留具体阶段、截止时间与安全原生事件，再进行单独授权的定向复现，不将当前未知底层原因写成已确认的 SDK／网关故障。任何编排改动都须重新冻结并核对资格，不能将本轮通过记录直接挪给新代码。
+
+最终核对：Codex 配置、默认选择、依赖、编排摘要和 worker 与冻结基线一致，无待清理进程；API 健康、前台 HTTP 200。WorkBuddy 仍停用，`can_enable=false`，阻断为 `workbuddy_operation_validation_required` 和 `runtime_disabled`，Codex 仍默认。本轮未启用 Runtime、发布业务对象、提交或推送。
+
+The running API confirms **8/15** current qualifications, including both required draft-feedback permission modes. Each pass has a native terminal, persisted business checks and confirmed owned cleanup. Workflow v2 explanation passes, but the title-only revision adds conversation `/references` to the definition; the exact-scope assertion fails despite valid native output and unchanged fixed bindings. Role analysis exceeds its unchanged 300-second first-understanding deadline and cleans its worker. Its generic platform error does not prove an upstream empty stream; native message counts are unavailable for this attempt.
+
+Role feedback and all four SAP/acceptance operations remain unstarted behind their prerequisites. No SAP reads, real acceptance Campaigns, automatic retries, relaxed assertions or budget increases occur. Source failures remain intact, with separate safe diagnoses and a batch summary. Shared-contract repairs and additional native diagnostics require a newly frozen validation binding. Codex controls and the immutable worker remain unchanged; local services are healthy, no cleanup is pending, and WorkBuddy stays disabled with `can_enable=false`. Nothing is published, committed or pushed.
+
+## 共享候选契约与岗位诊断修复 2026 10 10 / Shared candidate and role diagnostics repair
+
+共享候选入口区分定义与对话引用，拒绝新增未知根字段、会话元数据以及平台维护字段变更；历史来源扩展仅能原样保留。可选 `allowedChangePaths` 绑定当前字段引用及修订，按结构和数组位置检查全部差异，不依赖展示 Diff 的粗粒度数组替换。失败不创建修订、不覆盖原定义或验证资格；解释不产生修改。前台提供默认不勾选的“仅修改已选字段”，修订、字段或未保存状态变化取消勾选，响应不确定时仅重传原范围和意图。文件调查、编辑与本地测试能力不变，约束只作用于候选应用。
+
+岗位理解、每页匹配和最终汇总的共享阶段预算现为 **3600 秒**，同时适用于 Codex 和 WorkBuddy；阶段内纠错不续期，整轮观察窗口由实际页数推导，不设置一小时整轮上限。其他操作预算不变。此次延长是用户明确选择的策略，不是对原 300 秒失败原因的认定。
+
+岗位服务接通现有事件及 SSE，持久化阶段、连接、查询提交、消息计数、首次响应、结构化终态及关闭状态。高频计数最多每秒汇总一次，错误及终态立即上报；Supervisor 保留最后确认统计，外层超时及清理不丢失它们。没有已确认信息时不补零。原始失败、清理失败和未知底层原因分开表达，不保存 SDK 原日志、推理、命令、凭据或受限业务行。未确认清理及迟到结果继续阻断资格。
+
+The shared candidate gate rejects conversation pollution, newly unknown roots and altered platform-owned fields without stripping them. Source extensions remain immutable. Optional, revision-bound field scopes use structural/array-position checks; failure never applies a revision or resets qualification. Opt-in scope and uncertain-request retries preserve the exact authorized paths while native SDK investigation/edit/test abilities remain intact.
+
+Role understanding, each catalogue page and consolidation now have **3600 seconds per model phase for both Providers**. Corrections cannot renew a phase deadline; observation is derived from frozen page count, not a one-hour whole-job cap. Other budgets remain unchanged. This explicit policy change does not prove why the historical 300-second attempt failed.
+
+Existing persistent events/SSE expose safe phases and confirmed native milestones/counters. Periodic counts are bounded to once per second; errors and terminals are immediate. Owned timeout/cleanup retains last confirmed telemetry, never invented zero values or raw SDK logs, reasoning, commands, credentials or restricted rows. Primary failure and cleanup remain separate; unconfirmed cleanup/late outputs cannot qualify a job. The worker change requires a new immutable release, retaining the pinned SDK/CLI/lock and old environments/history; live qualification remains a separate gate.
+
+### 本轮离线门禁 / Offline gate for this repair
+
+正常 Windows 登录账户下完整 Python 回归为 **1751 passed、1 skipped、1 warning**，耗时 **899.63 秒**，报告为 `.local-data/workbuddy-validation/shared-contract-20261010-python-confirmed.xml`。唯一跳过项是本机不支持符号链接的既有外部附件测试；Starlette 弃用警告保留，DPAPI 断言未跳过。新增共享版本检查所需的两份工作流模拟样例补齐 `schemaVersion`，固定绑定、历史上下文和非法输出拒绝断言未放宽；迁移前 Codex 轨迹文件保持不变。
+
+前端 **123 项**通过，Astro **54 个文件、零错误／零警告／零提示**，隔离生产构建 **84 页**；目录 **34 个包／6 个模块**和文档 **55 项**通过。中英文桌面、550px、390px 六组组件浏览器检查覆盖默认不勾选的范围、键盘操作、未保存及修订重置、同范围幂等重传、刷新后重传和诊断无横向溢出。构建位于 `.local-data/workbuddy-validation/shared-contract-20261010-site-verified/dist/`，浏览器报告位于同前缀的 `browser-final/report.json`；这些不是实际 SDK 或 SAP 资格。
+
+The complete regression under the signed-in Windows account passes **1751 tests**, with one existing host-symlink skip and one retained Starlette warning, in **899.63 seconds**. DPAPI assertions are executed. Two workflow mocks now include the version required by candidate validation without relaxing fixed bindings, history or invalid-output rejection. Immutable pre-migration Codex traces are not rewritten.
+
+Frontend **123**, Astro **54 files with no issues**, the isolated **84-page** build, **34 packages/six modules** and **55 documentation entries** pass. Six Chinese/English desktop and narrow component-browser cases validate keyboard operation, opt-in scopes, dirty/revision resets, identical retries across reload and safe, non-overflowing diagnostics. Offline checks do not grant live SDK, SAP or acceptance qualification.
+
+### 新绑定真实验证：按停止条件暂停 / Live verification paused at prerequisite failures
+
+通过现有管理器创建新的不可变 release `70a826ce93d9d14d3db9f583ae72638c6561552692cf82f59aa5916a8c69da59`，保持 SDK **0.3.247**、CLI **2.141.0**、依赖锁及安装输入不变，旧 release `7f50527c…` 及历史资格保留。空闲时启动器先构建并验证新前台，再受控重启服务；API 和前台健康，正在运行的十五项编排摘要与当前源码一致。Codex 配置、默认选择、依赖及受保护文件与基线一致。
+
+| 一次性验证 | 结果 |
+|---|---|
+| WorkBuddy 登录 | `existing_login`，15.62 秒通过，所属进程清理完成。 |
+| `hy4-preview` 身份探针 | 原有管理预算 **90 秒**内未取得有效终态，91.66 秒返回 `workbuddy_deadline_exceeded`，清理完成。SDK 已连接并提交查询；确认收到 1 条消息、0 条助手消息、0 条流事件，无终态。首次 SDK 消息为 20.497 秒，不代表模型答复。没有明确上游错误信号，当前实际模型身份及底层原因未知。 |
+| Codex 工作流解释 | 77.12 秒通过，无修订变更；同请求编号重传不重复执行。 |
+| Codex 限字段工作流修改 | 46.86 秒通过，仅中英文 `/title` 改变，单次新修订，固定绑定及正式来源文件不变。 |
+| Codex 岗位分析 | `role_understanding` 模型阶段约 50.156 秒返回 `runtime_execution_failed`，会话耗时 60.56 秒，清理无待确认状态。远早于本轮 **3600 秒**阶段上限，现有安全记录不足以定位原生原因；不能认定为阶段预算不足或已证明的回归。 |
+| Codex 岗位反馈 | 没有有效初始修订，未运行。 |
+
+按照计划，没有重跑失败探针／岗位案例、延长预算、切换模型、升级 SDK 或放宽检查。WorkBuddy 身份前置失败，因此其工作流、岗位、其余非 SAP、SAP 选样及隔离验收均未派发：本轮 **零次 SAP 调用、零个 Campaign**。新绑定有效资格 **0/15** 是未完成验证，不是十五项都运行失败；旧 8/15 历史报告没有删除或改写。运行 API 确认 `can_enable=false`，阻断为操作验证、模型检查及用户停用；WorkBuddy 仍停用，Codex 仍默认。
+
+一次性探针、当前结论及停止条件保存在 `.local-data/workbuddy-validation/shared-contract-20261010-live/probes-report.json`、`result-summary.json`；Codex 对照在 `.local-data/workbuddy-baseline/shared-contract-20261010-codex-workflow/report.json` 和 `shared-contract-20261010-codex-role/report.json`。下一步须分别核对 HY4 的终态响应及 Codex 岗位的安全原生错误诊断；这些记录不能证明 SDK／网关／平台哪一层为根因，也不能为新业务操作授予资格。未启用、发布、提交或推送。
+
+A new immutable worker release retains SDK **0.3.247**, CLI **2.141.0**, the dependency lock, old environments and historical qualifications. Idle, controlled service loading validates the frontend before stopping the old processes. API/site health and loaded orchestration digests are checked, and Codex controls remain unchanged.
+
+One authentication probe passes. The **90-second management** model probe times out with confirmed connection/query submission and one non-assistant message, but no terminal or verified model identity. No explicit upstream error proves an empty stream. Independent Codex workflow explanation and scoped revision pass; role understanding fails well before its **3600-second** phase deadline, with insufficient safe native detail to establish a root cause. Feedback lacks a valid initial revision and is not dispatched.
+
+Dependent WorkBuddy cases stop, with **zero SAP reads/Campaigns and no automatic retries**. **0/15** new-binding qualifications means not yet validated, not fifteen executed failures; the historical 8/15 report remains intact. The live API confirms `can_enable=false`, WorkBuddy stays disabled and Codex stays default. Native response/diagnostic investigation remains necessary; neither offline success nor these partial live results establishes complete Codex non-regression or WorkBuddy enablement.
+
+### 安全诊断补齐与一次定向验证 / Safe diagnostics and one targeted verification
+
+继续保持 SDK **0.3.247**、CLI **2.141.0**、`hy4-preview` 和原预算。本轮没有修改或新建 worker release：对照 `7f50527c…` 与 `70a826ce…`，SDK 配置、查询提交和终态采集路径相同，新增部分是安全连接里程碑、计数和时间统计。这不能证明上游无故障，也没有证据据此将超时归因于新的 worker。
+
+Codex 岗位驱动以锁定 SDK 的原结果收集器观察原生流；参数、Schema、权限和成功结果保持对照，不重新实现 SDK 结果组装。保存允许的错误类型、数字 RPC 错误码、结构化错误类别和终态；不保存异常正文、SDK 原始日志、推理或业务行。共享阶段诊断兼容增加 Schema 摘要。前台只显示白名单诊断。
+
+WorkBuddy 模型检查采用 `sapba.workbuddy.model-check/2`，向已有 worker 传入固定原生 Schema 和同一 **90 秒**截止预算；只有真实原生结构化结果且通过平台 Schema 检查才可能标为兼容。合法 JSON 文本不代替原生结构化终态，模型身份仍须来自助手消息，不使用初始化信息回显。失败的安全统计同时保存在模型检查和验证报告中。
+
+两项定向真实验证各派发一次：
+
+| 验证 | 实际结果 |
+|---|---|
+| WorkBuddy 登录 | 4.66 秒通过；已有登录有效。 |
+| WorkBuddy 新结构化模型检查 | 90.59 秒到期，连接与查询提交已确认；仅 1 条 SDK 消息，0 条助手消息，未取得终态或实际模型身份。没有明确上游错误，根因仍未知。 |
+| Codex 岗位材料理解 | 模型阶段约 67.19 秒，整轮 72.48 秒失败；输入摘要与原案例一致，远未达到 3600 秒上限。原生错误信息仍不足，岗位反馈未派发。 |
+
+报告分别位于 `.local-data/workbuddy-validation/native-diagnostics-20261010-live/probes-report.json` 与 `.local-data/workbuddy-baseline/native-diagnostics-20261010-codex-role/report.json`。登录成功、SDK 连接和本地提交均不证明上游推理可用。Codex 此次记录也不能证明是模型前、模型内或模型后的故障。
+
+随后只补充**离线**诊断覆盖：连接/线程启动错误，以及模型成功终态后平台解码或引用校验错误，都须保留安全阶段、错误类型及已确认的终态。不再派发同一失败作业。真实报告仍绑定其执行时摘要，不能给后续诊断改动背书或重新认定 PASS；当前完整业务资格仍未取得。
+
+所有所属进程清理已确认，未访问 SAP、未创建验收 Campaign。WorkBuddy 仍停用、Codex 仍默认；没有自动启用、重试、延长预算、切换模型、升级依赖、发布、提交或推送。下一次定向验证须重新冻结最终诊断实现，成功后再恢复依赖项。
+
+The new management probe uses the existing immutable worker's native Schema capture, keeps its **90-second** deadline and records only safe failures. A valid JSON text response cannot certify native structured compatibility or model identity. One targeted attempt still times out after confirmed local connection/submission, with one non-assistant message and no terminal. This does not identify an upstream, SDK or platform root cause.
+
+One independent Codex role attempt also fails well before the unchanged **3600-second** role deadline. Its safe record does not yet distinguish initialization, native execution or post-response decoding. Subsequent changes only extend offline diagnostic coverage at these boundaries; no second live job runs, and old reports/qualifications are not rebound. SAP reads and Campaigns remain zero, owned cleanup is confirmed, WorkBuddy stays disabled and Codex stays default.
+
+最终离线复核：**135** 项驱动/诊断定向回归、**138** 项共享编排及兼容回归通过（两组有重叠，不相加作为全量测试数）；前端全量 **124** 项通过，最终安全展示定向测试 3 项通过，Astro 54 文件零错误，目录 34 个正式包/6 模块，隔离构建 84 页，文档 55 份无变化块和错误。现有 Starlette 弃用警告保留；本轮没有宣称重新执行全量 Python 测试。
+
+无活动任务及待清理 worker 后受控加载最终诊断实现。API 健康、中英文设置页面 HTTP 200；`can_enable=false`、当前业务资格 **0/15**，仍须完成模型检查和操作验证。Codex 默认选择、平台依赖、SDK 清单、既有 Codex Planner/执行策略及锁定 worker 均保持，Codex 驱动的安全诊断改动属于本轮预期变更。启动器清理一个过期页面构建缓存，可重新构建；当前及回退构建保留。
+
+Final targeted offline suites pass (**135** and **138**, overlapping), all **124** frontend tests pass, and Astro/catalog/docs/isolated build checks pass. This is not a new full-Python-suite claim. The final diagnostic implementation is loaded only while idle; API/bilingual page health passes. Current qualification remains **0/15**, model and business validation remain required, and no failed live case is automatically repeated.
+
+### 定向诊断：共享解码缺陷与无 Schema 探针 / Focused decoding and plain-response diagnostics
+
+本次只调查两个阻碍，不重复前端、Astro、目录和生产构建检查。Codex 与 WorkBuddy 各派发一个不同目的的隔离诊断作业，均无工具、无 SAP；没有自动重跑同一作业或授予资格。
+
+Codex 岗位理解的安全记录确认 **743 条原生事件、1 条助手消息以及 `completed` 终态**。模型阶段约 70.00 秒、会话 75.14 秒，仍在原 3600 秒预算内。因此本次失败属于模型返回后的平台处理，而非模型没有返回。报告保留原来的失败结论，位于 `.local-data/workbuddy-baseline/narrow-diagnostics-20261010-codex-role/report.json`。
+
+离线按实际调用形态复现了确定性平台缺陷：`SharedPlanner` 将非空文档列表传给共用解码器，但底层引用校验接收的是包含 `documents` 的字典；调用 `.get()` 产生 `AttributeError`。共享入口现将列表包装为文档上下文，同时兼容旧字典调用。没有修改提示、Schema、引用规则、模型、SDK、权限或预算；有效引用仍需匹配实际文档及片段，未知引用仍拒绝。诊断白名单补充 `AttributeError` 类名，不保存异常正文。
+
+原离线编排样例使用空列表，解码单测使用字典包装，因此未覆盖实际的非空列表边界。新增测试覆盖两种传参形式、Codex 字符串封装及 WorkBuddy 原生对象封装、合法和伪造引用，以及两种 Provider 的完整模拟阶段。**147 项定向 Python 回归通过**，保留现有 Starlette 弃用警告；本次没有宣称全量 Python、前端或生产构建重验。修复后没有再次执行真实岗位作业，历史报告不得据此改为 PASS，真实岗位分析及反馈仍待验证。
+
+WorkBuddy 使用同一不可变环境、SDK **0.3.247**、CLI **2.141.0** 和 `hy4-preview` 做一次不带 Schema、不开放工具的固定短答查询。**90.06 秒**仍未取得助手消息或终态；仅确认本地 SDK 连接、提交及 1 条非助手消息。与先前原生 Schema 探针一同看，不能把无响应仅归因于结构化输出。根因在 SDK、连接/路由或上游服务哪一层仍未知；登录记录不是模型推理可用性的证明，未取得实际模型身份。
+
+该探针不修改模型兼容检查或启用资格。报告 `.local-data/workbuddy-validation/narrow-diagnostics-20261010/plain-response-report.json` 确认所属进程清理完成、无 `cleanup_pending`、平台控制及管理状态不变；临时目录清理另有警告，不覆盖主要超时，也不自动删除残留目录。后续须定向核对独立 CLI/SDK 的响应链路，不能继续用相同探针或更长预算代替原因调查。
+
+The new Codex trace confirms a completed native turn before platform failure. Offline replay identifies a deterministic shared decoder bug: the actual nonempty document list reached a dictionary-only reference registry. The boundary now normalizes the list while retaining legacy wrappers and exact reference checks. Existing empty-list/wrapped-context fixtures missed this seam; **147 focused regressions pass**, including both Provider encodings and unknown-reference rejection. The corrected code has not yet completed a new live role analysis or feedback, and historical failures remain unchanged.
+
+One diagnostic-only WorkBuddy request without a Schema also reaches the unchanged **90-second** deadline without assistant output or a terminal. This excludes a Schema-only explanation but does not identify a vendor/SDK/network root cause or verify model identity. No tools, SAP reads, qualifications, model-check updates or enablement occur. Owned process cleanup is confirmed, a separate temporary-directory warning is retained, and dependent business validation remains paused.
+
+无活动任务及待清理 worker 后，通过现有安全启动器加载共享解码修复。启动记录 `.local-data/startup/20261010T141139/result.json` 确认前台复用缓存、构建耗时 **0 ms**；API 与前台 HTTP 200。WorkBuddy 保持停用、`can_enable=false`、当前有效资格 **0/15**，Codex 仍默认。未提交、推送、发布或启用业务对象。The fix is loaded only while idle; the existing frontend build is reused without rebuilding, both services are healthy, and Runtime defaults/enablement remain unchanged.
+
+### 独立 CLI / SDK 响应链路对照 / Independent CLI and SDK response comparison
+
+在正常登录账户、同一不可变 release `70a826ce…`、SDK **0.3.247**、CLI **2.141.0** 和请求模型 `hy4-preview` 下，使用同一固定短答问题、空工作目录、无工具、无 Schema、无个人 MCP/插件配置，分别检查独立 CLI 与独立 SDK。观察上限保持 **90 秒**，不使用岗位或工作流的 3600 秒业务预算替代管理探针；只有所属 Job Object 进程树被清理。独立 SDK helper 不导入平台业务编排、worker 或 Supervisor。
+
+| 入口 | 本次结果与边界 |
+|---|---|
+| 首次 CLI 测试夹具 | 4.27 秒本地参数解析失败、零条输出消息；离线核对确认独立 CLI 不接受 SDK 所用的 `--request-timeout-ms`。这是夹具错误，不能判断模型可用性。原报告保留。 |
+| 修正后的独立 CLI | 仅移除不受支持的参数，外层 90 秒截止不变；90.01 秒到期，2 条系统消息、0 条助手消息、无终态，所属进程清理完成。 |
+| 独立 SDK | 90.02 秒到期，连接和查询提交已确认；2 条 `SystemMessage`、0 条助手消息、无终态，所属进程清理完成。没有因 CLI 夹具修正再次调用 SDK。 |
+
+报告位于 `.local-data/workbuddy-validation/cli-sdk-response-20261010/` 的 `cli-report.json`、`cli-corrected-report.json`、`sdk-report.json` 与 `corrected-summary.json`。只保存白名单消息类型、计数、耗时、安全错误码和摘要；不保存原始 SDK 日志、推理、凭据或业务行。平台控制和管理状态摘要前后一致，未登记资格、未更新模型检查、未启用 Runtime，SAP 调用为零。
+
+此次已将“没有助手回复”复现到平台业务编排及 worker/Supervisor 之外。但独立 SDK 仍依赖同一个 headless CLI，二者也共享账户、模型路由和网络，**不能据此判定 SDK、CLI、认证、网络或上游服务哪一层是根因**。本地初始化/提交不是已确认的上游模型响应；没有明确错误信号，不能将其命名为已证明的“上游空流”。当前阻碍仍是取得可核对的助手身份及有效终态，后续业务资格验证暂停。
+
+The first standalone CLI fixture fails locally on the SDK-only timeout option and never tests the model. Its report remains unchanged. After correcting only that option, the external **90-second** deadline is retained: CLI and the separately dispatched SDK both receive two system messages but no assistant message or terminal. Owned cleanup succeeds; the SDK case is not retried.
+
+The independent SDK helper does not load platform orchestration, worker or Supervisor. This reproduces the symptom outside those layers, but both paths still share the same headless CLI, account, route and network. No layer-specific root cause or upstream empty-stream error is established. Safe reports preserve the fixture/model distinction, unchanged controls, zero SAP reads and no qualifications; dependent business validation stays paused.
+
+### 共享解码修复后的 Codex 完整对照 / Full Codex comparison after the decoder repair
+
+修复后的隔离岗位分析派发一次，**954.92 秒**结束，未访问 SAP。材料理解取得正常结果，原非空文档列表触发的 `AttributeError` 未再出现；但最终目录检查仅完成 **31 个 Agent 中的 22 个**，8 页中的第 **2、7 页**未通过报告/目录完整性门禁。报告为 `role_business_validation_incomplete`，不登记通过资格。服务保存的 `completed` 仅表示已产出可查看的部分报告，并非完整业务验证 PASS；`role_stage_finished` 也仅表示阶段退出，不能当作该页检查通过。
+
+目录不完整时未启动最终汇总；没有满足前置门禁的初始结果，因此岗位反馈未派发。原报告 `.local-data/workbuddy-baseline/decoder-fix-20261010-codex-role/report.json` 保留 `failed`，不重跑作业、不补造缺失字段、不重新认定历史结果。
+
+离线随后复现并修复了两个**诊断**问题，不改变提示、Schema、引用、业务校验或预算：
+
+- 内嵌 `analysis_json` 的字段问题被按外层字符串封装 Schema 过滤，模拟 `{}` 的 8 个字段问题全部丢失。现以已知的 `sapba.role-analysis/1` 诊断标识核对既有内嵌 Schema，在阶段及持久化投影中保留安全路径、约束和引用错误；未知契约、任意路径及原值继续过滤。这不是新的业务 Schema，也不能证明此次真实失败缺少这 8 个字段。
+- 诊断仍最多保存 5 条，但未解决的失败页和最终汇总问题优先于已经纠正的早期尝试，避免阻断原因被较早记录占满。历史报告不重写；本次未保存的字段细节不能从摘要恢复。
+
+正常 Windows 账户的定向回归为 **140 passed、1 warning**，耗时 **27.29 秒**，报告 `.local-data/workbuddy-validation/cli-sdk-response-20261010/diagnostic-tests-confirmed.xml`。最初沙盒测试在 pytest 临时目录创建阶段报 setup 错误，未用于代码结论；改用全新仓库内测试目录后运行原断言，未跳过检查。Starlette 既有警告保留；未重新执行全量 Python、前端、Astro 或生产构建。
+
+诊断补丁再次改变编排摘要。本次 Codex 真机结果绑定的是补丁前代码，只能确认原解码崩溃不再出现，不能为补丁后完整流程背书。新增诊断尚未受控加载或派发新真实作业。WorkBuddy 仍停用、Codex 仍默认，零次 SAP 调用、零个 Campaign；未提交、推送、发布或启用。
+
+One isolated Codex role job finishes in **954.92 seconds**. Material understanding now succeeds without the original list-context `AttributeError`, but only **22/31** Agents are validated: pages **2 and 7** fail report/catalogue gates. Completion events describe execution progress, not business PASS. Consolidation and feedback are not dispatched without complete catalogue coverage; the failed report remains unchanged.
+
+Offline diagnostics now retain inner-schema issues using a known diagnostic contract and prioritize unresolved failures within the existing five-entry limit. No prompt, business Schema, evidence gate, budget or result is relaxed. **140 focused tests pass**, with one existing warning, under the signed-in Windows account after correcting a sandbox temporary-directory setup problem. The actual failed output was not retained, so its missing fields cannot be inferred from synthetic replay. The new diagnostic binding is not live-qualified or loaded yet; dependent WorkBuddy/SAP validation remains paused and no enablement or publication occurs.
+
+## 国内站业务验证续接 / China-site business validation continuation
+
+### 复用有效检查 / Reusing valid checks
+
+私有验证脚本增加 `freeze-current`，只读取已成功且仍有效的国内站认证及模型检查，不重新登录、不调用模型探针、不重新准备独立安装环境。它冻结站点和认证修订、实际模型身份、检查摘要、安装环境、编排及夹具摘要，并保存本批次的完整岗位目录与案例材料。
+
+新批次必须位于 `.local-data/workbuddy-validation/` 的独立子目录。以下准备命令均不调用模型或 SAP；已有批次不得重新准备或改写冻结文件：
+
+```powershell
+$validationBatch = ".local-data/workbuddy-validation/china-YYYYMMDD-01" # 改为全新批次名称
+.venv\Scripts\python.exe -B scripts\verify-workbuddy-operations.py prepare --batch $validationBatch --execute
+.venv\Scripts\python.exe -B scripts\verify-workbuddy-operations.py freeze-current --batch $validationBatch --execute
+```
+
+该入口要求 WorkBuddy 停用、无活动业务／认证操作及待清理进程。缺少认证、过期检查、跨站绑定或模型身份不符时明确拒绝，不以历史资格背书。每次派发前、SDK 返回后及资格写回前再次核对冻结绑定；资格写回复用现有管理锁与业务检查。
+
+本轮顺序为 `author` → `agent_explain` → `agent_modify` → `workflows` → `workflow_v2` → `feedback` → `roles`。每个案例族只允许派发一次；失败记录也阻止重复派发。岗位分析与反馈复用同一 Runtime 快照和冻结目录，不能自行重新选择默认模型；完整分析未通过时不派发岗位反馈。`sample` 和 `acceptance` 不属于该非 SAP 批次，必须拒绝执行。
+
+所有案例禁用平台外部工具桥接，SAP 工具调用必须为零；`trusted_local` 仍保留经批准的本地编写能力，不是操作系统级沙盒。岗位阶段仍为 3600 秒，观察窗口按实际目录页数和阶段预算推导；其余预算及最多 10 秒清理窗口保持原规则。结构化终态、业务校验、实际身份、隔离保存与所属进程清理全部通过后，才登记现有操作资格。
+
+The private `freeze-current` entry reuses successful, unexpired China-site authentication/model checks without signing in, probing a model or rebuilding a release. It freezes site/account revisions, actual model identity, check/environment/orchestration/fixture digests, the complete public role catalogue and case material. Dispatch, native completion and qualification writeback recheck the same binding.
+
+Each case family is dispatched once in a fresh isolated batch. Role analysis and feedback share the frozen Runtime/catalogue; failed analysis prevents dependent feedback. SAP/acceptance families are outside this batch. Platform tool bridges are absent, SAP reads remain zero, and trusted local authoring is explicitly not an OS sandbox. Existing deadlines and cleanup rules remain; only verified native terminals, business validation, persisted results, matching identities and confirmed owned cleanup can qualify an operation.
+
+### 2026-10-12 实际续接结果 / Verified continuation results
+
+隔离批次：`.local-data/workbuddy-validation/china-20261012-current/`。准备与 `freeze-current` 均为零次模型／SAP 调用，复用国内站修订 **1**、认证修订 **4** 的有效检查；实际模型为 `hy4-preview`。SDK **0.3.247**、CLI **2.141.0**、release `3dae7c1d…` 未变。没有重新登录、发起认证／模型探针、准备新环境或重启服务。
+
+| 操作 / Operation | 权限模式 / Mode | 结果 / Result | 案例耗时 / Case seconds |
+|---|---|---|---:|
+| `author_draft` | bounded | PASS：完整候选及隔离保存 / candidate and isolated persistence | 233.54 |
+| `review_agent_feedback` | bounded + trusted_local | PASS：解释无修改；README 修改生成新修订 / explanation unchanged; README revision saved | 57.35 + 134.44 |
+| `compose_workflow` | bounded | PASS：真实编译、固定绑定及保存 / compilation, pins and persistence | 76.23 |
+| `review_workflow` | bounded | PASS：完整候选及双语契约 / full bilingual candidate | 77.34 |
+| `repair_workflow` | bounded | PASS：仅修复损坏连接，固定绑定未变 / connection repair without repinning | 49.45 |
+| `review_workflow_feedback` | bounded | PASS：标题修改保存，绑定不变 / title revision persisted; pins preserved | 69.71 |
+| `workflow_authoring.v2` | trusted_local | PASS：解释无修改；仅 `/title` 修改、逐轮 Diff 与幂等 / explanation, title scope, per-turn Diff and idempotency | 94.11 + 90.39 |
+| `review_free_query_feedback` | bounded | PASS：展示、重新取证、新问题及澄清分类 / four feedback classifications | 815.25 |
+| `revise_free_query_presentation` | bounded | PASS：展示保存、事实／完整性／证据关联不变 / saved presentation; facts, completeness and lineage preserved | 36.89 |
+| `analyze_role_matching` | bounded | PASS：31/31 Agent、8/8 页，引用及操作对账完整 / full catalogue, references and reconciliation | 994.03 |
+| `review_role_matching_feedback` | bounded | PASS：完整覆盖、新修订保存、历史修订摘要不变 / complete coverage, new revision, immutable historical digest | 1422.02 |
+
+耗时为各案例阶段计时，包含既有作业内纠错，不等同于单次模型调用。创建案例的早期 `rule_notes` 类型问题由既有纠错处理，保留诊断；没有重新派发案例、放宽断言或人工补字段。岗位材料只有一个采购入库状态操作，本次对账为可执行的 `mm-po-gr-status` 单 Agent 完整覆盖；没有声称真实验证了非空组合建议或真实能力缺口。
+
+全部登记均取得有效结构化终态，通过平台业务检查并核对实际模型身份，隔离结果正确保存，所属进程清理已确认。最终冻结绑定、Codex 控制文件与依赖、安装清单、夹具及编排摘要保持一致，无活动任务或 `cleanup_pending`。Codex 对照为脱敏配置／依赖／文件及离线行为检查；本轮没有额外调用 Codex 模型，不宣称完成新的 Codex 真机回归。
+
+相关 Python 回归 **239 passed、1 failed、1 warning**；唯一失败为临时合成安装目录重命名的 Windows `WinError 5`，正常账户下独立复核同一用例 **1 passed**，没有修改或跳过断言。两份 XML 为 `.local-data/workbuddy-china-continuation-20261012.xml` 与 `.local-data/workbuddy-china-permission-recheck-20261012.xml`。既有 Starlette 弃用警告保留；没有重复无关前端、Astro 或生产构建。
+
+运行 API 健康正常，实际有效资格 **11/15**；认证及模型检查仍有效，`can_enable=false`。仅剩 `free_query`、`sample_discovery`、`acceptance_baseline`、`acceptance_free_query` 四项尚未验证，阻断为 `workbuddy_operation_validation_required` 和 `runtime_disabled`。这些是未派发的后续门禁，不是本轮运行失败。平台 SAP 调用、Campaign 和邮件发送均为零；WorkBuddy 仍停用、Codex 仍默认，没有发布、启用、提交或推送。
+
+详细矩阵与对照位于批次的 `result-summary.json`，逐项报告位于 `*-data/report.json`，安全事件、冻结材料及历史记录均保留。国际站没有真实验证，国内站通过记录不跨站复用。
+
+All **11 non-SAP operations** pass under the same China-site revision **1**, authentication revision **4**, verified `hy4-preview` identity, immutable SDK/CLI release and orchestration binding. Existing checks are reused without another login, probe, environment preparation or service restart. Every qualification requires a valid native terminal, platform business checks, isolated persistence and confirmed owned cleanup. Role analysis and feedback both cover **31/31 Agents across 8/8 pages**; the one-operation fixture resolves to a single executable Agent, not a live nonempty workflow/gap scenario.
+
+The targeted suite records **239 passes and one Windows temporary-installation rename failure**; the unchanged failing test passes in a separate signed-in-account rerun. The original warning/report are retained. No unrelated frontend rebuild or additional Codex model task runs. Final control/binding checks and the live API agree on **11/15**; four SAP/acceptance operations remain unexecuted. WorkBuddy stays disabled, Codex stays default, SAP reads/Campaigns remain zero, and no publication, enablement, commit or push occurs. Historical/international-site evidence is not rebound.
+
+### 2026-10-12 SAP 只读续接：范围门禁停止 / SAP read-only continuation stopped at the scope gate
+
+用户随后批准四项 SAP／验收操作。新的私有续接入口不扩大旧非 SAP 批次，保留其冻结文件与通过记录，单独冻结只读批次及唯一一个隔离 Campaign 的参数。沿用国内站修订 **1**、认证修订 **4**、`hy4-preview`、SDK **0.3.247**、CLI **2.141.0** 与现有 release，没有重新登录、探针、准备 SDK 环境或改变业务算法。
+
+准备阶段修正验证入口的 Manifest 键名（`slug`），新增回归。六项旧原生终态测试缺少已实施协议的站点参数，仅补齐真实国内站请求结构并新增环境断言；原失败 XML 保留，没有修改 worker 或删除断言。最终相关离线检查 **102 passed**，记录 `.local-data/workbuddy-sap-auth-bound-20261012.xml`；早期 6 项失败仍记录在 `.local-data/workbuddy-sap-continuation-20261012.xml`。
+
+首个隔离 App 在模型派发前被 `runtime_authentication_check_required` 拦截：业务数据目录被隔离后，它也获得了空的认证存储。这是验证夹具没有承接真实认证证明，并不表示真实账户登录失效；该尝试没有 worker 记录，也没有 SAP 业务查询。报告保留在 `.local-data/workbuddy-validation/china-20261012-sap/limited_sample-data/report.json`。
+
+夹具现在从真实、当前仍有效的记录复制白名单安全认证元数据到隔离目录，并绑定其摘要与修订。正常 `RuntimeAuthenticationService` 的站点、修订及租约检查保留；不复制凭据、登录链接、操作历史或其他账户，不改写真实认证记录。未知字段、认证失效、摘要变化或非法目标目录仍拒绝。既有样例的隔离 App 构造也复用该入口，不改变控制器或 SDK 执行逻辑。
+
+修正后使用新批次 `.local-data/workbuddy-validation/china-20261012-sap-auth-bound/`，派发一次真正的有限样本作业，**188.63 秒**停止。SDK 已返回助手消息；两次目录搜索、一次实时 Schema 获取及一次查询验证完成。Schema 确认 `A_PurchaseOrder` 的唯一键为 `PurchaseOrder`。但 SDK 未取得有效最终终态，业务读取前触发 `verification_read_scope_rejected`；平台保留 `inconclusive`，验证为 `verification_report_or_evidence_invalid`，没有登记资格。
+
+最后保存的验证计划为正确的 V2 GET 抬头、目标 PO `4500001466` 和三个约定字段，**`top=null`**。离线回放显示它不符合有限样本的显式 `top=1` 契约，却符合完整唯一键案例的计划检查。这个离线结果不是成功执行，也不能授予完整查询资格。被拒绝的执行请求参数没有持久化，不能据较早计划推断其他差异；还需明确区分“最多展示一条”与“仅从 SAP 读取一条样本”，并保存安全的拒绝约束诊断。当前证据不能据此断定 SDK、账号或额度故障。
+
+该作业没有执行 SAP **业务查询**、没有业务行；Schema／元数据读取与业务数据读取分别报告。清理完成，无 `cleanup_pending`。完整查询、选样及三级验收均因前置失败暂停，**零个 Campaign、零次固定 Agent 试运行**，没有自动重跑真实模型作业、放宽范围检查或把离线回放认定 PASS。
+
+运行 API 和最终冻结检查确认仍为 **11/15**，认证及模型检查有效，WorkBuddy 停用、Codex 默认、`can_enable=false`。新的诊断矩阵位于该批次 `result-summary.json`。本轮没有发送邮件、发布、启用、提交或推送；需要核对样本契约与安全诊断后再决定下一次真实验证。
+
+The read-only continuation preserves the completed non-SAP batch and reuses the same site/account/model/release binding. An initial isolated-app attempt fails before worker dispatch because its new data root lacks the already verified authentication record. Fixture-only repair copies allowlisted, credential-free proof into the isolated store while retaining the real authentication service's site/revision/lease checks; the actual account remains unchanged. **102 focused offline tests pass**, with earlier malformed-protocol fixture failures retained.
+
+One real limited-sample job then returns assistant/tool progress but stops after **188.63 seconds** at `verification_read_scope_rejected`. Catalogue, live Schema and plan validation succeed; no business query or row read occurs, and no valid SDK terminal qualifies the operation. The last saved validated plan has the exact PO/fields but no explicit read cap. Offline replay accepts it only as a complete unique-key plan, not as the frozen limited sample; the rejected execute payload was not retained, so further differences remain unknown.
+
+Dependent complete-query, sampling and acceptance cases are not dispatched. No Campaign or fixed-Agent trial runs, owned cleanup is confirmed, and the API still reports **11/15** with valid authentication/model checks. WorkBuddy stays disabled and Codex stays default. Clarifying display versus read limits and capturing safe rejection diagnostics precede any new authorized live attempt; no model/SDK upgrade or eligibility bypass is inferred.
+
+### 2026-10-12 读取上限续验：完整 SDK 终态阻断 / Read-limit continuation: native-envelope blocker
+
+用户再次批准继续后，仅修正私有验证问题中的读取含义：明确“从 SAP 最多读取一条样本”，不是只限制页面展示或完整读取后筛选。严格 `top=1` 门禁保持原样；新增拒绝诊断只保存固定字段路径、范围匹配布尔值、有界计数及摘要，不回显过滤值、凭据或业务行。新的独立批次为 `.local-data/workbuddy-validation/china-20261012-sap-read-limit/`；旧失败批次和非 SAP 通过记录不改写。相关离线回归 **109 passed**，XML 为 `.local-data/workbuddy-sap-read-limit-20261012.xml`。
+
+准备仍复用国内站修订 **1**、认证修订 **4**、`hy4-preview` 和同一不可变 release，零次认证／模型探针及 SAP 调用。有限样本仅派发一次：`wb_validation_fc14eaa600214873`，案例总耗时 **263.71 秒**。目录发现、实时 Schema、查询校验正常；实际执行计划保留 **`top=1`**，SAP 业务查询成功一次、返回 **1 行**、`source_complete=false`。证据评估与 `sap_final_report_validate` 成功，没有范围拒绝。
+
+但完整原生终态没有通过：**4 次** `StructuredOutput` 候选均在 `/input_kind`、`/input_field` 产生枚举错误；最终 SDK 返回 `error_during_execution`、`is_error=true`、`structured_output_present=false`。因此保留平台 `inconclusive`，验证结果为失败，不授予 `free_query` 资格。成功的展示报告校验不能替代完整 SDK 信封校验。
+
+这两个字段用于安全引用澄清，不是采购订单输入或输出列；无需该澄清时，现有契约及 WorkBuddy 原生编码说明已经要求字面量 JSON `null`。离线测试能验证正确空值通过、错误字符串与非法枚举被拒绝。本次安全事件没有保留具体错误值，不能断定模型填写了哪一个值，也不能将根因直接归为 SDK、网关或额度。下一步应离线定位原生编码／格式化器及错误反馈链，不放宽枚举、不补造字段、不再用 SAP 重复读取定位终态问题。
+
+所属 worker 已失败终止并确认清理，最终冻结检查通过，无 `cleanup_pending`，API 健康，资格仍 **11/15**、`can_enable=false`。完整唯一键案例、选样及三级验收因前置失败未派发，**零个 Campaign、零次固定 Agent 试运行**。WorkBuddy 仍停用，Codex 默认；SDK／worker／业务算法／预算未变，没有自动重跑、发布、启用、提交或推送。逐项证据与剩余门禁见新批次 `result-summary.json`。
+
+The new authorized batch clarifies the SAP **read** cap without weakening scope assertions and adds value-free rejection diagnostics. **109 offline tests pass**. One live limited-sample job executes a successful, exact **top=1** Broker query returning **one row**, honestly incomplete; evidence assessment and presentation validation pass. However, all four native candidates fail enum validation at `/input_kind` and `/input_field`, followed by an error terminal with no structured output. No operation is qualified.
+
+Existing prompts and Schema already require literal JSON null for these clarification-only fields when inapplicable. Safe events do not retain their invalid values, so SDK/gateway/model root cause remains unconfirmed. Diagnose the native formatter/encoding/error-feedback chain offline rather than repeating SAP reads or repairing values. Cleanup, frozen bindings and Codex controls pass; eligibility remains **11/15**. Dependent cases and the one allowed Campaign are not dispatched. WorkBuddy remains disabled and Codex default; historical records, worker release, budgets and business definitions remain unchanged.
+
+### 2026-10-12 Nullable 格式化器反馈离线修复 / Offline nullable-formatter feedback repair
+
+用户批准仅离线排查和修复。核对锁定 SDK **0.3.247** 的消息解析、Hook 控制协议及 CLI **2.141.0** 的内置格式化器代码后，未发现平台删除枚举中的 `null` 或 SDK 将字面量 `null` 改成字符串的证据。锁定 SDK 的真实离线编码检查确认 Schema、工具参数及结构化终态中的空值原样传递。旧作业没有保存具体无效值，不能事后断言模型填了空字符串、字符串 `null` 或某个 SAP 列名。
+
+确定的缺口是平台检查反馈只用于诊断：Supervisor 仅回传校验布尔值，worker 记录无效 `StructuredOutput` 候选后继续；平台的具体字段诊断没有进入模型的纠错上下文。原生格式化器 `needsApproval=false`，不能仅依赖权限回调拦截。修复限定在 WorkBuddy：
+
+- Supervisor 的现有 `schema_check_result` 兼容增加同一冻结检查器产生的安全问题路径。
+- worker 通过锁定 SDK 的 `PreToolUse` Hook，精确匹配 `^StructuredOutput$`。无效完整对象被拒绝，向模型提供已声明字段路径及约束，提醒不适用的安全澄清字段必须使用字面量 JSON `null`；不拷贝原始值，不改变候选，也不放宽枚举或给其他工具增加权限。
+- 有效候选不产生额外 allow 授权，继续由原生格式化器捕获；最终输出仍须存在并通过相同 Schema。缺少终态或绕过 Hook 后返回非法终态仍失败，不把中间工具参数提升为最终结果。
+- 新诊断仅记录这两个字段是否存在、JSON 类型、是否属于枚举，不保存字段内容，便于下一次区分缺字段、字符串与真正空值。历史事件不补写。
+
+离线定向测试 **78 passed**，覆盖无效候选拒绝、模型自行提供正确对象、合法安全澄清枚举、缺字段、缺终态、绕过 Hook、脱敏及协议绑定。较广相关回归最初 **509 passed、5 failed**：失败全来自五个旧进度夹具缺少现行必填站点绑定；只补齐国内站请求并增加环境断言，没有删除旧断言，单独复核 **6 passed**。最终全套相关 WorkBuddy／共享编排／Codex／Harness 回归为 **514 passed、1 个既有 Starlette 弃用警告**，XML 为 `.local-data/workbuddy-formatter-codex-final-20261012.xml`；早期 XML 保留。
+
+`scripts/verify-workbuddy-formatter-codec.py` 使用现有独立解释器以 `-I -B` 核对完整安装摘要及清单，再直接验证锁定 SDK 的 Hook 注册、拒绝反馈控制编码、工具参数和终态空值往返。它不创建 SDK 客户端或传输、不运行模型／认证探针／SAP、不登记操作资格，前后安装清单及内容摘要一致。此结果证明离线协议兼容，不等于一次真实模型纠错成功。
+
+Codex 驱动、Planner、共享 Harness Schema、`config/sdks.json` 和 `pyproject.toml` 摘要前后一致；既有原生请求及业务行为对照通过，没有改模型、权限、预算、依赖或 Codex 安装。本轮没有服务重启、准备／切换 worker release、发送邮件、发布、启用、提交或推送。新的 worker 源码必须经正常流程创建新的不可变 release 后生效；不得复制覆盖旧安装或沿用旧绑定的验证资格。旧 **11/15** 通过记录保留，仅代表修复前绑定。现有宽粒度编排摘要变化意味着新绑定需重新核对操作资格，本轮不改造摘要机制，也不声称 WorkBuddy 已可以启用。
+
+Offline diagnosis confirms a feedback gap, not a demonstrated null-conversion defect: the pinned SDK preserves literal JSON null and Schema enums. WorkBuddy now blocks invalid formatter calls through an exact PreToolUse Hook and returns only declared paths/constraints from the existing frozen platform checker. It never repairs candidate values, weakens enums or replaces a missing native terminal. New field-shape diagnostics contain no supplied values.
+
+**514 related offline tests pass** with one existing warning; malformed old site-binding fixtures are corrected without removing assertions. The actual pinned SDK's offline Hook/control/null codecs pass and the complete immutable installation inventory remains unchanged. Codex source/configuration/dependency hashes and native behavior comparisons remain intact. No model, SAP, authentication probe, release switch, service restart or qualification occurs. Apply through a newly prepared immutable worker release and verify under its new binding; historical results remain unchanged and offline success is not enablement permission.
+
+### 2026-10-12 新不可变 release 与一次无 SAP 终态验证 / New release and one no-SAP terminal probe
+
+用户随后批准按正常流程准备新环境，并做一次国内站 `hy4-preview` 无 SAP 终态验证。先冻结安装、Codex 源码／配置／账号／依赖、站点及验证入口，核对无活动任务和待清理进程。定向离线门禁 **133 passed**，保留一个既有弃用警告，XML 为 `.local-data/workbuddy-formatter-new-release-offline-20261012.xml`。
+
+通过现有 `/api/system/sdks/codebuddy-agent-sdk/update` 受管理入口及原监督安装器创建新 release **`88695af7b74f20c5fef3949898c72e22368952328227cc788b0d87ef2d439096`**。SDK **0.3.247**、CLI **2.141.0**、原官方 wheel、依赖锁和依赖版本未变，CLI 字节摘要相同；新 worker 与冻结源码一致。旧 `3dae7c1d…` release 保留，完整安装清单和内容校验通过，没有覆盖文件或改写安装摘要。安装成功后新环境成为 WorkBuddy 入口，仍停用，不影响 Codex 默认或运行进程。
+
+新 release 中以 `-I -B` 再次执行离线 Hook／空值 codec 检查，前后完整文件清单一致。通过原认证接口核对一次现有国内站登录成功，站点修订 **1**、认证修订 **4**；没有重新登录或退出账号，也不把旧环境的模型／业务资格绑定到新环境。
+
+私有 `verify-workbuddy-formatter-terminal.py` 只使用现有 `model_check` 管理探针权限，发送共享完整 Harness Schema 下的合成信封；没有 SAP/MCP 工具或 Broker 处理函数，只允许本地 `StructuredOutput`。这是格式化器专项诊断，**不登记标准模型兼容检查，也不授予任何业务操作资格**。沿用现有管理探针 **90 秒**预算，不修改业务预算。
+
+唯一作业 `wb_formatter_probe_fb5b8dbefa7c4966` 于 **45.87 秒**失败，并非超时。SDK 在同一作业内调用格式化器 **4 次**，记录 **8 次**前置／观察检查（不是八个模型作业）。候选摘要始终相同、长度 **97 字节**；缺少 `/input_kind`、`/input_field`、`/summary`、`/source_complete`、`/business_complete`、`/missing_evidence`、`/evidence_refs`、`/executed_plans`、`/presentation` 共 **9 个必填字段**。新字段形态诊断明确两个澄清字段均为 `present=false / json_type=missing`，不是已存在但枚举非法。
+
+前置 Hook 向 SDK 返回具体缺字段约束，但没有得到完整合规候选。最终为 `error_during_execution`、`is_error=true`、`structured_output_present=false`，错误码 `workbuddy_execution_failed`。仅执行 **1 次模型作业、0 次 SAP 读取**，没有补字段、放宽契约或重新派发。该失败终态没有成功结果可供确认实际模型身份；请求模型固定为 `hy4-preview`，未切换模型。
+
+所属进程清理成功，无 `cleanup_pending`。最终新旧 release、账号／站点绑定及 Codex 对照通过；API 健康，API PID **14456**、前台 PID **16944** 前后一致，没有重启服务。新环境有效业务资格 **0/15**、模型状态 `not_checked`、`can_enable=false`；旧 **11/15** 通过记录仍保留在原绑定，这不表示十五项都执行失败。本轮没有标准兼容性模型探针，不把专项格式化诊断当成该资格的替代。
+
+下一步应离线核对完整 Schema 到格式化参数／模型工具投影的链路；当前证据不足以认定 SDK 或 Provider 的哪一层截断字段。环境准备成功与终态失败分别报告，不自动延长预算、升级 SDK、重复读取 SAP 或重跑模型。本轮没有发送邮件、发布或启用业务对象、提交或推送。完整结果位于 `.local-data/workbuddy-validation/china-20261012-formatter-new-release/result-summary.json`。
+
+The existing guarded installer prepares immutable release **88695af7…** with unchanged SDK/CLI/wheel/dependency lock and identical CLI bytes; the old release is retained and fully verified. One existing-login check succeeds on China-site revision **1**, account revision **4**. **133 offline tests pass** before dispatch, and the new release's offline Hook/null codecs pass without modifying its inventory.
+
+Exactly one no-SAP full-envelope management probe fails after **45.87 seconds**, before its existing **90-second** limit. Four formatter calls in that one job omit nine required fields, including both clarification fields; eight checks include pre-tool and observation checks, not eight model jobs. The SDK returns an error terminal without structured output. No standard model compatibility or business qualification is registered, no values are repaired, and no retry occurs. Cleanup and Codex/service controls pass. New-environment eligibility is **0/15**, not fifteen new failures; old eleven passes remain bound to the old release. Investigate Schema/tool projection offline next, without an automatic model/SAP rerun or SDK upgrade.
+
+### 2026-10-12 完整 Schema 投影离线核对 / Offline full-Schema projection checks
+
+继续离线核对，没有重复真实模型、认证或 SAP 调用。平台的原始冻结 Schema 有 **12 个字段，12 个必填项**，摘要仍为 `1a9ab93f…`。用锁定 SDK 的真实 `SubprocessTransport` **仅构造选项和命令行，不 connect**：完整 `--json-schema`、全部字段、枚举、`null` 及系统说明原样保留。SDK 工具参数与终态解析也能原样往返完整合成对象。
+
+读取同一 CLI 制品的静态代码显示：动态格式化器参数返回完整普通 JSON Schema，使用 AJV 校验；普通 JSON Schema 的函数参数分支原样返回 Schema，参数解码为 `JSON.parse`，该分支没有字段筛选。静态源码核对不是本次实际模型端 Schema 的观测，不能据此宣称远端产品配置／Provider 或模型没有改变字段。当前能排除已检查的平台转发、Python SDK 构造／解码及本地普通 Schema 参数分支截断；远端投影和模型／网关参数生成仍未定位。
+
+新增 **仅在 scripts 和离线测试中使用**的等价编码对照：将 `type: ["string", "null"]` 之类类型数组表示为等价 `anyOf`，保持所有字段、必填项、枚举、未知字段拒绝及既有交集约束。它不转换输出值、不填空值、不放宽原始业务 Schema，也没有被生产驱动或 worker 引用。两种编码都拒绝已保存的三字段失败形态、字符串 `null` 和未知字段；正确完整空值对象、合法枚举、嵌套记录等接受范围一致。相关离线检查 **83 passed**，XML 为 `.local-data/workbuddy-schema-projection-offline-20261012.xml`。
+
+真实锁定 SDK 的原编码与等价编码命令行构造均通过，SDK／CLI／worker 及完整 release 清单未变；Codex 源码、共享 Schema、配置和依赖摘要保持原样。没有切换环境、重启服务、改写历史或授予资格。等价编码只是可核对的实验候选，**未做真实模型验证，不能声称已经修复线上失败或证明 SDK 内部缺陷**。
+
+若下一步获准做专项对照，仅派发一个新的无 SAP 作业，沿用原站点、模型、release、提示及预算，只改变 Schema 表达形式；对结果继续使用原始 Schema 校验，不把其登记成模型兼容或业务资格。原失败报告仍保留。阶段证据位于 `.local-data/workbuddy-schema-projection-offline-20261012/result-summary.json`。
+
+Offline checks confirm that the full **12-property/12-required** Schema reaches the pinned Python SDK's constructed CLI arguments unchanged and that full synthetic values round-trip. Static CLI code preserves ordinary JSON Schema and uses JSON.parse for that argument branch; this is not observation of the actual remote/model tool definition. Provider projection and argument generation remain unconfirmed.
+
+An equivalent type-union encoding is prepared only as a script/test contrast candidate, with unchanged enums/required fields and no value repair. **83 tests pass**, and both encodings survive real pinned SDK argument construction without starting a client. No production driver/worker uses it, no real call/release switch occurs, and no qualification is granted. Only an explicitly authorized, single no-SAP contrast can test this candidate; it cannot retrospectively reclassify the failed job.
+
+### 2026-10-12 一次等价 Schema 无 SAP 终态对照 / One equivalent-Schema no-SAP terminal contrast
+
+用户明确批准沿用当前国内站、`hy4-preview` 和现有 worker 做一次专项对照。私有入口 `scripts/verify-workbuddy-schema-terminal-contrast.py` 冻结国内站修订 **1**、认证修订 **4**、release **`88695af7…`**，复用上次合成对象、用户与系统提示和管理探针 **90 秒**预算；只有传给 SDK 的类型联合 Schema 表达改变。字段、必填、枚举、原始业务 Schema、生产驱动及 worker 均未修改。返回终态若存在，仍须通过原始 Schema 和相同合成数据检查。定向离线门禁 **35 passed**，XML 为 `.local-data/workbuddy-schema-terminal-contrast-offline-20261012.xml`。
+
+唯一作业 **`wb_schema_contrast_b3826fe0ce104e5c`** 在 **90.08 秒**结束，主错误为 `workbuddy_deadline_exceeded`。SDK 已连接并提交查询，收到 **4 条助手消息**，同一作业内尝试 **2 次 StructuredOutput**；**4 次**前置／观察检查均只报告 `/input_kind`、`/input_field` 的 `enum` 错误，形态是 `present=true / json_type=string / enum_member=false`。候选分别为 **385、377 字节**，不再出现原作业的九个必填字段缺失，但没有取得有效结构化终态。没有保存具体非法值，不推断它是空字符串或字符串 `null`。
+
+这不是新的明确上游空流错误：有助手消息及工具候选，截止时未收到任何终态。原作业与本次候选形态不同，**仅一次历史配对不能证明是编码改变造成，也不能据此将等价编码作为生产修复**；nullable 枚举问题仍未解除，底层模型／网关／SDK 参数生成层原因未知。保留原失败和本次超时记录，不重新分类为 PASS。`terminal-report.json` 的安全失败投影中通用 `workbuddy_execution_failed / unknown` 是回退字段，不是主原因；监督作业明确保留 `workbuddy_deadline_exceeded`。
+
+本轮 **1 个模型作业、0 次认证探针、0 次 SAP 读取**，不提供平台工具或 SAP 凭据，不自动重跑。监督作业 `timed_out / cleanup_complete=true / validation_job=false`，无待清理进程。结束后完整 release 清单、原报告／作业摘要、站点／账号／模型／资格记录和 Codex 对照全部通过；没有准备或切换环境、重启服务、登记标准模型检查、沿用旧资格或启用 WorkBuddy。结果位于 `.local-data/workbuddy-validation/china-20261012-equivalent-schema-terminal/result-summary.json`。
+
+One explicitly authorized **no-SAP** contrast keeps China-site/account revisions **1/4**, `hy4-preview`, immutable release **88695af7…**, the synthetic prompts, and the existing **90-second** management budget. Only the equivalent type-union wire encoding changes; the canonical validator, enums and required fields remain unchanged. **35 offline tests pass**.
+
+The single job times out after **90.08 seconds**. Two formatter calls produce complete-field candidates but still violate the two nullable enums with invalid strings; no valid structured terminal arrives. Four assistant messages are observed, so this is not an observed empty-stream error. One paired observation does not establish encoding causality or cure the upstream argument issue. Cleanup, immutable inventory, historical records and Codex controls pass. No SAP/authentication call, model/operation qualification, retry, release switch, enablement or commit occurs.
+
+### 2026-10-12 等价编码纠错一致性修复、新 release 与一次终态验证 / Equivalent guidance fix and new-release terminal verification
+
+只读排查随后确认一个平台侧缺口：worker 的专项空值纠错说明只识别 `type: ["string", "null"]`，不识别等价的纯 `anyOf` 类型联合。通用枚举校验始终拒绝非法值，原系统提示也保留空值要求；差异位于模型调用被拒绝后的**专项纠错反馈**，不能将所有失败直接归因于模型。
+
+用户批准先离线修复，再正常准备新环境并执行一次无 SAP 终态验证。新增 worker 本地 `declared_nullable_enum` 只识别上述受支持编码，确认枚举声明 JSON `null`；复杂、未知或冲突约束保守地不追加专项说明。它不是 Schema 校验器，不修改 Schema 或候选值，也不为其他工具增加权限。冻结的完整平台校验及原生终态门禁仍是唯一通过依据。原编码与等价编码下的非法字符串得到相同安全纠错提示；数值／布尔值的真实 `type` 与 `anyOf` 诊断保留，不通过改写校验结果伪造一致。
+
+定向离线结果 **112 passed**；较广 WorkBuddy、共享编排、Codex、Router、SDK 管理及验收投影回归 **540 passed**，保留一个既有 Starlette 弃用警告。两组测试有重叠，不相加计数。首次定向 XML 中两项新测试错误地要求 `type` 与 `anyOf` 的诊断字符串完全相同；修正为明确核对真实诊断差异、相同空值指导以及相同拒绝／终态语义，未删除原断言或放宽契约。早期和最终 XML 均保留。
+
+经现有公开 `/api/system/sdks/codebuddy-agent-sdk/update` 及受监督安装器创建新不可变 release **`2223d96a09fb68ed853496c1c0daead9f64eae437c92f85042706676b8045cf4`**，worker 源码摘要 **`e78b8210…`**。SDK **0.3.247**、CLI **2.141.0**、wheel、依赖锁、依赖版本、bootstrap 及 CLI 字节与旧 release 相同。旧 **`88695af7…`** release 保留且完整安装清单通过，没有覆盖文件或改写安装摘要。安装作业 **`636dd92c124d4fe1920320787ae45ab8`** 完成并清理成功。
+
+新环境中以独立解释器 `-I -B` 直接读取**实际安装 worker**，使用锁定 SDK 的真实 Hook 控制编码分别核对两种 Schema。两者空值纠错内容相同，均 deny 非法对象、保留原值，完整文件清单在检查前后相同；没有启动 SDK 客户端。通过原认证接口仅复核一次现有国内站登录成功，站点修订 **1**、认证修订 **4**，没有重新登录、退出或切换账号。
+
+唯一终态作业 **`wb_equivalent_feedback_987905097de74001`** 沿用 `hy4-preview`、同一合成输入和原系统提示、相同等价 Schema 及 **90 秒管理探针预算**。共收到 **4 条助手消息**、**2 次 StructuredOutput** 调用及 **4 次**前置／观察检查。首个 **544 字节**候选同时包含根级额外字段与两个枚举错误；后一个 **385 字节**候选不再报告额外字段，但 `/input_kind`、`/input_field` 仍为非法字符串。没有保存具体非法值，不猜测额外字段名称或无效字符串内容。截止前没有收到任何终态，最终 **90.06 秒**超时，主错误 `workbuddy_deadline_exceeded`；未观察到新的明确上游空流错误。
+
+这分别证明了“平台专项反馈一致性修复与离线／安装检查通过”和“真实完整终态仍未通过”。不能据此认定 SDK、网关、模型参数生成或反馈消费的哪一层是根因；不把中间候选提升为成功结果。仅 **1 个模型作业、0 次 SAP 调用**，没有追加作业、延长预算或自动补值。
+
+所属作业 `timed_out / cleanup_complete=true / validation_job=false`，无 `cleanup_pending`。收尾核对新旧 release、历史报告、冻结输入、站点／账号及模型／资格记录全部通过。运行中 API 健康，API PID **14456**、前台 PID **16944** 前后一致，没有重启服务；Codex 源码、配置、账号和依赖摘要未变。新环境资格仍 **0/15**、模型状态 `not_checked`、`can_enable=false`；历史通过记录保留但不改绑。没有标准模型检查、业务资格登记、启用、提交或推送。结果位于 `.local-data/workbuddy-validation/china-20261012-equivalent-feedback-release/result-summary.json`。
+
+The confirmed platform feedback defect is fixed narrowly in the standalone WorkBuddy worker: canonical nullable type arrays and supported equivalent pure-anyOf unions receive the same literal-null correction guidance. Complex/conflicting constraints fail closed, actual type/anyOf diagnostics remain intact, and no Schema, candidate value or permission is repaired. **112 targeted tests and 540 related tests pass** (overlapping suites, one existing warning).
+
+The guarded installer prepares immutable release **2223d96a…**, retaining old release **88695af7…** and the same SDK **0.3.247**, CLI **2.141.0**, wheel, lock, dependencies and CLI bytes. The installed worker passes both feedback codecs through the pinned SDK without starting a client or changing its inventory. One existing-login check succeeds on China-site/account revisions **1/4**.
+
+The single authorized no-SAP terminal job still times out after **90.06 seconds**: the extra-property issue disappears within that job, but both nullable enums remain invalid strings and no native terminal arrives. Cleanup and Codex/service/history controls pass. Platform feedback repair does not establish that the live model/SDK/gateway terminal issue is cured. No retry, qualification, enablement, service restart, commit or push occurs; new-binding eligibility remains **0/15**.
+
+### 2026-10-12 枚举与终态超时的进一步离线定位 / Further offline enum and terminal-timeout diagnosis
+
+本轮仅诊断并提出修复方案，没有修改生产 worker／驱动、安装清单或资格，也没有运行真实 SDK 客户端、CLI、认证、模型或 SAP。新增 `scripts/diagnose-workbuddy-native-terminal-offline.py` 使用当前 release 的独立解释器 `-I -B`，只构造真实 SDK 选项／命令行、执行真实 SDK 的内存 Hook 控制派发，并用假 SDK 和可控时钟重放实际安装 worker。完整清单、源码／配置、账号状态和历史证据在诊断前后相同。
+
+新增的关键证据不是只检查反馈编码：利用已保存的安全问题路径重新生成平台反馈，再按 CLI 的文本工具返回形态 `[{"type":"text","text":"Error: " + feedback}]` 计算长度和摘要。它与本次真实 **2 次**工具返回分别 **841／741 字节**及 SHA-256 **完全匹配**；两份内容都包含字面量 `null` 的明确指导，不包含被拒绝的值。因此反馈已进入 SDK 返回的工具消息，可以排除这两次调用中“平台只记录诊断、没有送出具体反馈”的解释。不能进一步推定远端模型已经消费或遵守了反馈。
+
+真实锁定 SDK 的内存控制请求派发及写入通过；完整 Schema、提示和合成 JSON `null` 保留，非法字符串不被转换。CLI 静态代码中的动态格式化器使用原始 JSON Schema／AJV；普通参数解析为 `JSON.parse`，已检查的工具参数重写器对 `null` 原样返回，只包含两个项目说明文件名的字符串替换。这些是局部离线／静态边界，不是实际 `hy4-preview` 服务端工具请求的观测，不能排除未观测的远端投影或模型参数生成差异。
+
+同时确认两项独立缺口：
+
+- SDK `SubprocessTransport` 重建 `CodeBuddyAgentOptions` 时未复制 `request_timeout_ms`。请求值为 **90000**，复制后为 `None`，实际构造命令行没有 `--request-timeout-ms`。Python Query 的控制请求可使用原始选项，Supervisor 的外层截止和清理仍有效，所以这不是“平台没有时间限制”，也不能据此认定枚举错误由超时参数造成。锁定 CLI 中未找到该 flag 的明确字面量，不能直接补一个未经核对的参数作为修复。
+- worker 的 `ToolResult` 分支用 `index, name, started = pending` 覆盖整轮开始时间。可控时钟重放在整轮 **45 秒**时报告 **40 秒**；历史消息中的进展耗时倒退与此一致。它污染进展诊断，但不改变 Supervisor 的独立 90 秒截止。
+
+还存在提示歧义：worker 要求 `StructuredOutput exactly once`，同时拒绝反馈又要求纠正完整对象后重提。应改为“一个成功捕获；无效且未捕获的尝试可在既有预算／重试上限内纠正；成功后立即收尾”，而不是删除错误门禁或增加无限重试。该歧义是源码可确认的改进项，不是已经证明的超时根因。
+
+建议顺序：先分开整轮与工具计时、明确成功捕获语义；审计已支持的 SDK／CLI 参数而不盲加未知 flag；补安全 Hook 进入／校验／响应、反馈摘要匹配和最后等待阶段诊断；若仍无法定位远端参数／原生收尾，交付无 SAP、无凭据的合成厂商复现材料。worker 的实际修复须经新的不可变 release 和离线门禁；下一次真实验证需另行授权，只做一次无 SAP 作业。保留原契约、真实终态、模型身份与清理门禁，不补值、不放宽校验、不改 Codex、不延长预算或升级模型追求 PASS。
+
+离线证据与未实施方案分别位于 `.local-data/workbuddy-native-terminal-offline-20261012/result-summary.json`、`repair-plan.json`。现有两次非法字符串的具体内容和最后原生等待位置仍未知；本轮不将历史失败重新认定为 PASS，不创建或授予新的资格。
+
+Offline reconstruction exactly matches both saved real SDK tool-result hashes (**841/741 bytes**) using only safe platform rejection feedback, including the literal-null instructions. Thus these two feedback messages were emitted into SDK tool results; actual remote model consumption remains unknown. Full Schema/null preservation and real in-memory SDK hook/control dispatch pass without starting a client.
+
+Two independent issues are reproduced: the pinned SDK transport drops `request_timeout_ms` during option copying, and the worker's tool-result tuple assignment overwrites run-start timing. The outer Supervisor deadline remains authoritative. The native “exactly once” wording also conflicts with rejected-call correction, without proving that it caused the historical timeout. Proposed fixes and safe instrumentation are recorded separately; production source, immutable release, qualification and Codex remain unchanged, with zero live/authentication/SAP calls.
+
+### 2026-10-12 终态收尾、计时与安全诊断的离线实施 / Offline terminal-lifecycle and diagnostics implementation
+
+随后继续实施**仅离线**部分：修改范围限定为 WorkBuddy worker、诊断投影和 Supervisor 三个源文件，没有准备／切换 release 或重启服务。整轮计时统一使用 `run_started`，单次工具计时使用 `tool_started`，可控时钟覆盖多个工具及完整终态，整轮进展不再因工具返回而倒退；原截止、模型、SDK、权限、`max_turns` 及清理窗口不变。
+
+WorkBuddy 格式化指令改为“一个**成功**捕获”，明确拒绝或失败的尝试不算捕获，允许在既有 SDK 重试上限和签发截止内纠正完整对象；成功后收尾，不开始无关调查。它不补值、不改 Schema，也不把合法中间候选当成最终结果。旧无 Schema 路径的提示保持原样；Codex 不引用该指令。
+
+新增受白名单投影的 WorkBuddy 诊断事件，记录 Hook 进入／检查／拒绝反馈准备／返回／失败、反馈预期摘要与 SDK 工具返回摘要是否匹配，以及 worker 最后可确认的本地等待状态。未知匹配使用 `unavailable`，远端模型状态不猜测。只记录阶段、计数和摘要，不存 SDK 工具 ID、参数、非法值、命令或原始日志。Hook 校验／协议异常在 SDK 有机会吞掉异常并等待之前先向 Supervisor 上报安全错误，主失败不被关闭挂起覆盖。
+
+Supervisor 将自身用冻结 Schema 生成的最后一次检查保存为 `last_output_check`；超时、取消、无终态退出及明确错误的诊断均保留对应字段路径和约束。保留完整原生终态、业务检查及所属进程清理门禁，不授予资格。新增预算事件如实说明 `supervisor_deadline / native_timeout_propagation=unverified`；没有盲加未确认的 CLI flag，没有修补或重写锁定 SDK 的安装文件。
+
+定向 **77 passed**，追加生命周期场景 **8 passed**，兼容性复核 **15 passed**；最终较广 WorkBuddy／共享编排／Codex／Router／SDK 管理／验收投影回归 **548 passed**，仅一个既有 Starlette 弃用警告。上述用例有重叠，不相加。初次较广回归中的旧“只调用一次”文本断言按明确策略变化更新；旧事件序列断言保留原顺序，新增安全事件单独核对；诊断不再依赖 SDK 选项对象的具体属性形态。早期失败及最终 XML 都保留，没有删掉 Schema、权限或终态断言。
+
+本地厂商复现材料已准备在 `.local-data/workbuddy-terminal-followup-offline-20261012/vendor-reproduction/`：完整合成 Schema／期望结果、历史原始系统提示、两个真实匹配的安全反馈及版本／制品摘要。没有凭据、账号、个人路径、SAP 行或原始日志，**未对外发送**，也不是模型执行授权。
+
+最终控制检查覆盖 Codex 源码／配置／账号及依赖、当前安装 release **2223d96a…** 的完整清单、认证及资格状态、原诊断报告与方案；只有上述三个 WorkBuddy 源文件改变。本轮真实模型／认证／SAP 调用均为 **0**，没有启用、提交或推送。结果位于 `.local-data/workbuddy-terminal-followup-offline-20261012/result-summary.json`。现有 release 的实际 worker 仍是修复前版本；新代码需后续按不可变安装流程生效，Supervisor／诊断修改也需受控 API 更新。真实非法枚举与无终态问题**尚未被证明解除**，下一次真实调用仍需单独授权。
+
+Offline-only implementation separates run/tool clocks, clarifies one successful native capture, and adds allowlisted Hook/feedback/local-wait diagnostics. The Supervisor preserves its authoritative last frozen-Schema check across timeout, cancellation and missing-terminal failures. Unknown native timeout propagation is explicit; no unverified flag or SDK-installation patch is introduced. **548 related tests pass**, with one existing warning and unchanged Codex controls. The synthetic vendor package remains local and unsent. No release preparation, restart, live/authentication/SAP call or qualification occurs; live enum/terminal success remains unproven.
+
+### 2026-10-12 新不可变环境、API 更新与唯一终态验证 / New immutable release and one terminal probe
+
+经用户授权，在重新确认无活动平台任务或待清理 WorkBuddy 进程后，使用现有受管理安装入口准备新 release **943f926f…**。SDK **0.3.247**、CLI **2.141.0**、CLI 字节、官方 wheel、依赖锁、解释器来源及依赖指纹与旧 release **2223d96a…** 一致。旧环境完整清单和内容保留，没有改写其安装摘要。新环境实际 worker 与已通过 **548 项**离线回归的源码一致；独立解释器 `-I -B` 下的真实 SDK Schema／Hook／拒绝反馈编码检查通过，清单前后不变。
+
+再次确认空闲及 API PID／启动标识后，仅停止原 API **14456**，通过原启动器恢复为 **13708**。前台继续使用 **16944**，没有重建或停止前台。API 健康及中文首页 HTTP 200。仅复核一次新环境的现有国内站登录，站点修订 **1**、账号修订 **4**，没有重新登录、退出或切换站点。
+
+新隔离批次 `china-20261012-terminal-followup-release` 使用原完整合成输入、原系统提示、原规范 Schema 和相同等价 wire Schema，派发唯一作业 **`wb_terminal_followup_798bc951b7464e34`**。请求模型仍为 **hy4-preview**，沿用 **90 秒管理探针预算**，不改变业务预算。作业内出现 **3 次 StructuredOutput** 尝试和 **6 次**前置／观察校验；首个 544 字节候选包含额外根字段与两个枚举错误，后两个候选 385／377 字节只剩 `/input_kind`、`/input_field` 枚举错误，均为非法字符串。没有保存具体非法值，也没有转换成 `null`。
+
+新诊断确认三次 Hook 都完成检查、准备拒绝并返回；三次 SDK 工具结果的反馈摘要分别与平台准备的反馈**完全匹配**。这排除了本次三次调用“平台没有发出拒绝反馈”的解释，不证明远端模型实际消费或遵守反馈。最后本地观察为 `waiting_sdk_message`；没有原生终态，也没有观察到明确上游空流错误。作业 **90.05 秒**超时，主错误为 `workbuddy_deadline_exceeded`，Supervisor 在作业记录中保留 `last_output_check` 的两个枚举字段路径；`timed_out / cleanup_complete=true / validation_job=false`，无待清理项。
+
+终态问题仍未解除，不授予业务或模型兼容资格。只有 **1 个模型作业、0 次 SAP 调用**，没有自动重跑、放宽契约或补字段。收尾核对当前／旧环境、历史记录、Codex 源码／配置／账号／平台依赖、冻结输入和绑定通过；Codex 仍默认、WorkBuddy 仍停用，当前有效资格 **0/15**、模型状态 `not_checked`、`can_enable=false`。没有提交或推送。安全事件、一次性请求绑定及分项结果保存在 `.local-data/workbuddy-validation/china-20261012-terminal-followup-release/`。
+
+The managed installer creates immutable release **943f926f…** without changing SDK **0.3.247**, CLI **2.141.0**, locked dependencies or old-release contents. Installed-worker codec checks pass. Only the API restarts (**14456 → 13708**); the frontend stays on **16944**. One China-site authentication recheck retains revisions **1/4**.
+
+The single authorized no-SAP **hy4-preview** terminal job still times out after **90.05 seconds**. All three invalid formatter attempts receive exactly matched rejection feedback, but both nullable enums remain illegal strings and no native terminal arrives. The authoritative last Schema diagnosis survives the timeout; cleanup completes. This confirms feedback delivery, not remote compliance or a cured terminal defect. Codex controls/default, old releases/history and qualification gates remain intact; WorkBuddy stays disabled at **0/15**, with no retry, qualification, enablement, commit or push.
+
+### 2026-10-12 DeepSeek 相同完整 Schema 终态对照 / DeepSeek full-Schema model contrast
+
+经用户另行授权，保留当前国内站修订 **1**、账号修订 **4**及 release **943f926f…**（SDK **0.3.247**、CLI **2.141.0**），不登录、不安装、不重启服务。采用该环境下已通过的 **deepseek-v4.1-flash** 模型检查绑定，仅作为本次请求身份前置检查；没有继承或登记业务资格。先运行一次性派发／严格 Schema／身份／清理入口的 **36 项**无网络定向测试，全部通过。
+
+对照沿用上一作业 `wb_terminal_followup_798bc951b7464e34` 的完整合成输入、系统提示、12 字段规范 Schema（摘要 **1a9ab93f…**）、等价 wire Schema（摘要 **98f6c0f9…**）和 **90 秒**管理探针预算；只将请求模型换为 **deepseek-v4.1-flash**，使用新的隔离工作目录。本次唯一作业 **`wb_deepseek_contrast_dcab1e10ce5d490e`** 在 **15.03 秒**完成，实际原生模型身份与请求一致，首次 StructuredOutput 即为合法对象，**0 次拒绝反馈**。前置、观察和原生终态三次检查都没有问题；`input_kind`、`input_field` 均为真正的 JSON `null`，不是字符串。最终结果另外经过原规范 Schema 及原合成范围检查，未产生计划、SAP 证据或展示数据。
+
+所属进程完成关闭与清理，作业为 `completed / cleanup_complete=true / validation_job=false`，无活动任务或待清理项。只有 **1 个模型作业、0 次 SAP 调用**，没有自动重跑、补值、放宽契约或把中间候选当作终态。Codex 源码／配置／账号／依赖、已有模型与业务资格、安装清单、站点和历史对照记录的摘要前后不变；API **13708**健康、前台 **16944**未重启。默认 Provider 仍 Codex，WorkBuddy 默认模型仍 `hy4-preview`、仍停用，业务资格仍 **0/15**、`can_enable=false`。
+
+该结果证明相同 SDK／worker／完整契约可以在 DeepSeek 执行链路下完成，不代表已定位 `hy4-preview` 的模型／路由／服务端根因，也不代表全部业务操作通过。没有追加 SAP 或三级验收、发布、启用、提交或推送。一次性请求、绑定、安全事件和结果保存在 `.local-data/workbuddy-validation/china-20261012-deepseek-full-schema-terminal/`。
+
+The single authorized **deepseek-v4.1-flash** contrast completes in **15.03 seconds** on the same China site and immutable worker, with identical full input, prompts, canonical/wire Schemas and 90-second budget. The first formatter attempt produces literal JSON nulls for both clarification fields, followed by a valid native terminal and canonical validation. Cleanup and Codex/history/install controls pass. No SAP, repair, qualification, enablement, service restart or retry occurs; business eligibility remains **0/15**. Success on this execution path does not diagnose HY4's root cause or validate all business operations.
+
+### 2026-10-12 DeepSeek 11 项非 SAP 业务重验 / DeepSeek non-SAP business revalidation
+
+经用户授权开始重新验证 15 项操作中的 **11 项非 SAP 操作**。沿用国内站修订 **1**、账号修订 **4**、worker release **943f926f…**、SDK **0.3.247**、CLI **2.141.0**及已通过的 **deepseek-v4.1-flash** 模型检查；没有重新登录、重复模型探针、准备环境或重启服务。新隔离批次为 `china-20261012-deepseek-non-sap`，初始资格 **0/15**，冻结目录、材料、业务参数、模型身份、安装及编排摘要，不复制旧资格。
+
+只调整验证夹具：批次冻结增加显式 `--model-id`，共享监视器和岗位验证从冻结模型读取，不再为新批次写死 `hy4-preview`。省略参数的旧入口仍保持原行为；WorkBuddy 默认模型仍为 `hy4-preview`，没有切换默认或修改 Codex 路径。**38 项**定向离线回归通过，覆盖显式模型、身份不一致阻断、默认不变、无 SAP 工具、队列／绑定与原终态检查。生产业务实现、worker、Schema 和预算均未修改。
+
+真实重验结果：
+
+| 业务范围 | 本轮检查与结果 |
+| --- | --- |
+| Agent 创建 | `author_draft` 通过；隔离保存、双语、只读 Manifest、幂等通过（43.51 秒）。 |
+| 草稿反馈 | `review_agent_feedback` 的 bounded 解释及 trusted_local 修改均通过；解释无 Diff（31.80 秒），修改仅 `/readme` 且字节精确追加（70.91 秒），执行与规则不变。 |
+| 工作流旧入口 | 创建、检查、修复、反馈全部通过（54.77／66.21／32.49／41.83 秒）；编译、端口、固定绑定和隔离保存通过。 |
+| 工作流 v2 | 解释及限标题修改通过（86.72／80.07 秒）；原生 JSON、请求幂等、引用隔离、逐轮 Diff 通过，修改仅 `/title/zh`、`/title/en`，固定引用不变。 |
+| 查询反馈 | 四种反馈分类通过（124.24 秒），只检查决定，不执行重新取证；仅重新解释通过（28.26 秒），原事实值、证据、完整性、限制及历史来源保留。 |
+| 岗位分析／反馈 | 分别 732.06／687.98 秒通过；本批次完整覆盖 31 个 Agent、8 页及 31 对操作匹配，引用、操作对账、汇总、保存修订及首轮历史摘要通过，无失败页面或工作流问题。数量为本次冻结目录快照，不是固定目录常量。 |
+
+最终审计 **34 个同批次模型作业全部 completed**，均为新绑定的真实验证作业且清理完成；每个案例只派发一次，保留作业内既有受控纠错，没有自动重跑失败作业。所有新资格的作业 `runtime_digest` 与该批次 DeepSeek 快照一致；旧资格及已有模型记录摘要不变。平台 SAP 工具为空、调用 **0**，没有执行工作流、发送邮件、发布或启用业务对象。
+
+本环境登记结果为 **11/15**，WorkBuddy 仍停用、Codex 仍默认；API **13708**健康、前台 **16944**未重启。Codex 源码／配置／账号及平台依赖、安装清单、冻结编排和目录前后控制检查通过。`can_enable=false`：剩余 `free_query`、`sample_discovery`、`acceptance_baseline`、`acceptance_free_query` 尚未执行，而且默认 WorkBuddy 模型未从 `hy4-preview` 切换为 DeepSeek；不能把本轮 DeepSeek 记录称为 HY4 的真实重验结果。没有自动启用、提交或推送。
+
+逐项模式与新作业编号、阶段耗时和审计结果位于 `.local-data/workbuddy-validation/china-20261012-deepseek-non-sap/result-summary.json`；服务门禁核对另存 `service-status.json`。本阶段在 11 项非 SAP 验证完成后停止，不追加 SAP 查询或三级验收。
+
+All **11 non-SAP operations** pass fresh **deepseek-v4.1-flash** validation on the same China site and immutable release. **34 owned model jobs** complete and clean up, with zero platform SAP calls and no reused business qualification. Agent feedback covers bounded/trusted-local modes; workflow v2 preserves fixed bindings and restricts edits to the bilingual title. Both role rounds cover the entire frozen catalog and preserve revision history. Only private fixtures gain explicit model selection (**38 offline tests pass**); Codex, SDK/worker, contracts and budgets are unchanged. Eligibility reaches **11/15**, but WorkBuddy stays disabled and its default remains HY4. The four SAP/acceptance operations are not run; no restart, enablement, commit or push occurs.
+
+### 2026-10-12 DeepSeek 剩余 SAP 操作续接 / Remaining SAP-operation continuation
+
+用户另行批准继续剩余四项，沿用国内站修订 **1**、账号修订 **4**、`deepseek-v4.1-flash` 及不可变 release **943f926f…**（SDK **0.3.247**、CLI **2.141.0**）。新子批次 `china-20261012-deepseek-sap` 冻结相同 Runtime 快照、来源 Agent 与案例；原非 SAP 批次的冻结文件、快照和最终报告保持不变，不复制旧资格。
+
+只调整私有验证入口：SAP 子批次及隔离认证元数据复用显式冻结模型，不再误用默认 `hy4-preview`；兼容读取新旧父批次汇总结构，并核对其模型与环境。没有改变认证证明、读取范围、Schema、worker、生产业务代码或 Codex 路径。**56 项**定向离线测试通过；保留首次错误测试路径产生的 XML，不将其计为通过。
+
+| 案例 | 结果及门禁 |
+| --- | --- |
+| PO `4500001466` 抬头有限样本 | 129.15 秒通过；精确订单过滤、显式 `top=1`、仅三项批准字段，业务数据读取一次。最终报告如实标记来源不完整，**不单独登记** `free_query` 资格。 |
+| 同一 PO 完整唯一键查询 | 141.08 秒通过；本轮实时 Schema 确认 `PurchaseOrder` 唯一键，精确过滤、不主动截断，业务数据读取一次。规范终态、证据、完整性及进程清理全部通过，登记新的 `free_query` 资格。 |
+| 自动选样 `plant` | 使用交货日期 `2022-11-15`、采购组织 `1010`及该 PO；600 秒预算内没有形成有效终态，阶段记录 603.13 秒后失败。业务数据读取为 **0**；未取得可用样本，不登记资格。 |
+| 单案例三级验收 | 自动选样前置失败，**未派发、未创建 Campaign**；`acceptance_baseline` 与 `acceptance_free_query` 保持未验证。 |
+
+自动选样作业 **`wb_live_c71be1ec05774844`** 的平台结果是 `timed_out / sample_discovery_timeout`，所属监督作业保存 `workbuddy_deadline_exceeded`，状态为 `cancelled / cleanup_complete=true`。外层夹具的 `AssertionError` 只是对 `status=ready` 的严格断言失败，不能替代实际超时原因。最后安全统计确认 SDK 已连接并提交查询，收到 **77 条消息、47 条助手消息**，但 `terminal_result_received=false`；不是已观察到的空流或明确上游错误。保存的调用表现为目录搜索、实时 Schema、重复查询验证及工具发现，未推进到业务数据读取。现有诊断不能进一步确认反复验证的具体阻断原因，也不能将超时直接归因于某个 SDK、模型或 SAP 权限问题。
+
+本子批次总计 **2 次批准的业务数据 GET 读取**，元数据读取另行区分；每个案例仅派发一次，没有自动重跑、扩大范围、补造字段或放宽检查。结束后冻结绑定、来源 Agent、历史模型／资格、原父批次和 Codex 对照通过，无活动或待清理 worker。API **13708**及前台 **16944**保持原 PID，API 健康、中文前台 HTTP 200，没有服务重启。
+
+当前资格为 **12/15**，剩余 `sample_discovery`、`acceptance_baseline`、`acceptance_free_query`。运行中 API 仍 `can_enable=false`；WorkBuddy 停用，Codex 默认，WorkBuddy 默认模型仍为 `hy4-preview`。本轮 DeepSeek 的通过记录不代表 HY4 已验证。安全汇总和服务核对位于 `.local-data/workbuddy-validation/china-20261012-deepseek-sap/result-summary.json` 与 `service-status.json`。没有执行三级验收、发布、启用、提交或推送。
+
+The continuation uses the same China-site/account revisions **1/4**, immutable worker and **deepseek-v4.1-flash** binding, preserving the completed non-SAP batch. **56 fixture-only tests pass**; production contracts, budgets, worker and Codex are unchanged. The bounded sample and complete unique-key PO queries pass with one authorized business-data GET each; only the complete case grants fresh `free_query` qualification.
+
+Automatic sample discovery reaches its **600-second deadline** without a valid terminal or business-data read. Recorded assistant messages rule out an observed empty stream, but the exact repeated-validation blocker remains unknown. Cleanup completes. Its failed prerequisite prevents dispatch of the single acceptance Campaign; both acceptance operations remain unverified. Eligibility is **12/15**, WorkBuddy remains disabled, Codex/default settings and services are unchanged. There is no retry, expanded read, weaker check, enablement, publication, commit or push.
+
+### 2026-10-13 选样范围的离线定位与提前拦截 / Offline sample-scope diagnosis and early admission
+
+本轮仅离线排查，没有重新派发模型、读取 SAP 或创建 Campaign。确认共享平台存在两项缺口：
+
+- 原预检仅确认 `plant` 有已声明的字段映射，未核对已有三个范围条件能否由同一声明查询承载。保存的案例中，交货日期与采购订单映射到计划行，采购组织映射到抬头，`plant` 映射到项目；现有 `check_plan` 要求每次单实体选样保留所有已提供且已映射的范围，所有声明均无法满足。预检允许启动，但原有读取门禁不允许任何这样的计划。这是可离线证明的平台预检／执行不一致，不是重新认定模型枚举或 SDK 错误。
+- 读取前的 `allow_tool` 拒绝直接返回，未保存安全事件；除排序格式外，反馈均使用同一泛化说明。失败作业中反复调用 `sap_query_validate`，却没有相应 Broker 调用记录。原始被拒绝的模型参数未保存，不能逐次还原实际错误或断言每次拒绝都由同一原因造成。
+
+修复让共享预检返回 `manual / cross_source_scope_unproven`，原案例在启动模型或读取前返回 `needs_input / sample_cross_source_scope_unproven`。合法同源映射和现有多来源样本的共同业务键校验保持原样，不将不同声明的字段拼成未证明的关联。前台中英文说明需手工补充范围，并禁止仅剩不可用已选字段时继续启动。
+
+早期拒绝新增 `sample_tool_denied` 安全事件及最后拒绝工具、计数、固定字段路径和错误码；按真实错误提供纠错提示。不保存被拒绝的参数、具体值、异常文本或受限行，关闭／过期后不更新诊断。已有读取、稳定键、Skill、证据及预算门禁的函数体经过 AST 对照确认未变；不开放跨来源读取或放宽范围。两种 Provider 共用该预检与诊断，Codex SDK 参数、驱动、模型、配置和依赖不变，既有合法请求对照通过。
+
+验证结果：定向选样、API 和原生驱动对照 **107 passed**；共享 Broker、Router、编排、SDK 管理及输出回归 **164 passed**（一个既有 Starlette 弃用警告）；前端组件 **51 passed**；Astro **0 errors / 0 warnings**；隔离生产构建成功，生成 **84 页**（本次目录事实，不是永久数量断言）。初次测试导入和新增测试的事件字段名称错误已修正；C 盘临时空间不足导致的 SQLite／临时目录错误用 D 盘全新隔离目录复核，不删除用户文件或跳过断言，早期 XML 保留。
+
+`scripts/diagnose-workbuddy-sample-offline.py` 只根据冻结草稿声明重建诊断投影，明确不是原模型参数重放。最终诊断位于 `.local-data/workbuddy-validation/china-20261013-sample-scope-offline/diagnosis-final.json`。来源 Agent／规则、Codex 控制文件、worker 源码及原父／子批次报告摘要均保持不变，没有修改安装环境或资格记录。
+
+这修复了“预检误放行与拒绝诊断缺失”，**没有解除跨来源自动选样能力缺口**。若仍要求在原日期、组织和采购订单范围内自动找到 `plant`，必须另行实现并验证逐步绑定、每次有界读取和关联证据证明，不能删除范围来让案例通过。本轮共享文件修改按既有摘要机制改变全部操作的编排绑定：原 **12/15** 通过记录保留为历史，新代码不得沿用其资格，后续必须冻结新摘要重验。没有重启或切换服务、升级 SDK／CLI、准备新 worker、启用、发布、提交或推送。
+
+Offline analysis confirms a shared admission mismatch: no single declared source in the saved PO case can preserve all three supplied scope inputs, although the old preflight allowed discovery. Early scope refusals also lacked durable safe diagnostics; the lost model arguments are not reconstructed or guessed. The fix fails closed before a model/read for this unsupported scope, retains strict execution guards, and records only allowlisted rejection metadata with actionable guidance.
+
+**107 targeted and 164 related Python tests, 51 frontend tests, Astro checks and an isolated 84-page build pass.** Existing valid Codex requests and all scope/evidence/budget guard bodies are preserved. There are zero live model/SAP calls, no service/release switch and no qualification rewrite. Cross-source discovery remains unsupported for the original case; safely implementing its provenance chain is separate work. Old 12/15 results remain historical and cannot qualify the changed orchestration binding.
+
+收尾服务核对需单独说明：API／前台仍监听，PID 分别 **13708／16944**，`/openapi.json` 与中文前台均 HTTP 200；但 `/api/health` 和 SDK Runtime 列表分别在 **10／25 秒**内未返回。不能将普通路由可达等同于健康检查通过，也不能从空响应推定资格为零或自动启用。原因本轮未确认，没有重启或终止服务；后续真实验证前必须先核对这两条状态查询。
+
+Final service checks are separate from the offline gates: existing API/frontend PIDs and ordinary HTTP routes remain reachable, but health and SDK-status requests exceed their 10/25-second observation limits. Service health and the live enablement response are therefore unconfirmed, not inferred from null responses. No restart is attempted; this status-query issue must be checked before another live validation.
+
+## 2026-10-13：共享关联选样与状态查询修复
+
+本次扩展为声明的 OData 关系证明，而不是放宽单来源或证据检查。保存的原案例采用必要的计划行、项目、抬头三节点，不执行物料凭证等无关来源。模型查询仍是单实体有界 GET；本地条件全部保留，复合关联键取自同一上游行。全范围证明前候选值不可通过平台预览或 `sap_evidence_read` 取得；证明由平台写入 `field_sources.scope_proof`。实际分页 GET 也计入十次业务读取门禁。普通查询和固定执行不携带此关联上下文。
+
+### 状态问题与实测
+
+修复前本次健康请求 **8.23 秒**、SDK 列表 **2.94 秒**。独立进程中目录/工作流加载合计约 5 秒；WorkBuddy 状态约 2.7～3.3 秒，983 项安装清单检查占主要成本，操作摘要反复读取共享源码。第一次快照是在控制清单校验之后测量，不能称为完全冷的安装哈希检查。此前 10/25 秒超时的所有底层原因并未证明，仅确认这些同步成本进入请求路径。
+
+健康统计与 SDK 展示检查移到独立后台，单次展示刷新复用状态与安装检查，操作摘要批量读取共享源码一次，摘要算法与真实资格门禁不变。健康 `ok` 仍表示 API 存活；未知统计不伪造为零。慢 Provider 超时单独展示，不能拖住其他 Provider；展示缓存不授予执行权。
+
+服务空闲后经启动器先验证新前台再受控重启，API/前台新 PID 为 **17368/28248**。首轮三次健康 **615/160/22ms**，SDK 列表 **268/186/141ms**，均 HTTP 200；后台约 6.7 秒目录检查及 8.8 秒 WorkBuddy 检查不再拖住请求。Codex 默认、配置、依赖及源码对照，WorkBuddy SDK/CLI、worker及安装清单均未改变。启动器清理了一个过期生成的前台缓存；当前及回退构建保留，删除缓存可由源码重建。
+
+### 定向结果与剩余阻碍
+
+- WorkBuddy 国内站修订1、认证修订4、`deepseek-v4.1-flash`，沿原 worker 环境执行一次。运行 `scope_workbuddy_1945060f381343f8`：**PASS**，总约 **281.58 秒**，实际 **3 次业务 GET**，仅三个必要来源；订单 `4500001466`、日期 `2022-11-15`、采购组织 `1010` 全部覆盖，核对出的工厂为 **1010**。有效结构化终态、模型身份、平台证明及进程清理均通过。作业内3次早期拒绝保留，模型纠正后才执行读取；没有自动重派作业。
+- Codex：尚未派发真实选样。运行中 API确认固定选样模型 `gpt-5.6-sol` 是 `check_required`，错误 `runtime_model_check_required`。不替换为默认 `gpt-6.1-sol`、不沿用旧检查或绕过资格；一次无 SAP兼容检查需另行确认。
+- 新绑定下有效 WorkBuddy操作为 **1/15**，仅本轮选样。旧记录保留但不能为新摘要背书。WorkBuddy仍停用，默认模型仍为 `hy4-preview`，其当前兼容资格不足；平台默认仍为 Codex。没有补跑其他14项或三级验收。
+
+离线检查：116项共享选样/预算/状态及Codex原生对照、147项SDK/Harness/隔离兼容回归通过；扩展平台回归最初163通过、4失败（未安装WorkBuddy启动迁移产生本地状态），修复后4项严格Git状态断言通过。138项前端测试、中英文1440/772/390px合成浏览器测试、34包校验、55文档检查、Astro零错误及84页隔离/受控生产构建通过。仅既有Starlette测试客户端弃用警告；不把离线结果冒充SAP验收。
+
+制品保存在忽略的 `.local-data/status-sample-repair-20261013/` 和 `.local-data/workbuddy-validation/shared-scope-20261013/`，包含原始基线、状态分段计时、冻结绑定、原案例证明及安全结果。入口 `scripts/verify-shared-sample-scope.py` 私有且每个案例只派发一次，不新增公开执行API。没有启用WorkBuddy、发布业务对象、提交或推送。
+
+Shared declared-relationship discovery passed the original WorkBuddy China/DeepSeek case with three bounded business GETs and full PO/date/purchasing-organization provenance; plant 1010 is proven, not guessed. The valid native terminal, reported model identity and owned process cleanup passed. Codex live validation remains blocked by the fixed sample model's current compatibility gate; no probe or replacement is automatic. Health/SDK display latency now meets the one/two-second targets, while slow checks remain independent background work. Current effective WorkBuddy qualification is 1/15, not historical 12/15; it remains disabled. No acceptance Campaign, publication, commit or push is performed.
+
+### 经用户确认的 Codex 续接验证 / User-approved Codex continuation
+
+用户随后明确批准一次无 SAP 兼容检查，保持原模型和推理配置。检查使用 `gpt-5.6-sol`、`max`，约 **10.57 秒 PASS**，SAP 调用为零。原检查绑定 SDK/CLI **0.147.0**，本机已有安装是 **0.162.0**，因此旧记录不能为当前安装背书。本轮没有安装或升级 SDK/CLI；仅通过现有管理入口保存新的兼容检查，默认模型仍为 `gpt-6.1-sol`，账号、推理选择及 WorkBuddy 状态未改变。
+
+为保存旧结果与原冻结快照，使用新的隔离批次 `shared-scope-20261013-codex`，没有改绑旧记录或重跑 WorkBuddy。Codex 运行 `scope_codex_ca2fdb3b040a4b2c`：**PASS**，总约 **121.75 秒**，**3次只读业务 GET**，保留采购订单 `4500001466`、日期 `2022-11-15`、采购组织 `1010`，同样核对工厂 **1010**。三节点、两条关系、稳定键及证据哈希均通过，共享编排摘要与先前 WorkBuddy 相同。作业内一次私有字段选择在读取前被拒绝并纠正；没有自动重派作业。原有 Codex 确定性选样就绪中断与 SDK 清理流程正常结束，没有保留活动操作。
+
+至此原计划的两种 Provider 定向选样均有真实结果，但不等于完整业务资格或正式验收。WorkBuddy有效资格仍为 **1/15**，仍停用、默认模型仍为 `hy4-preview`；平台默认仍为 Codex。本轮没有发布、启用、三级验收、提交或推送，也没有修改平台业务代码或追加无关回归构建。兼容检查及收尾对照保存在 `.local-data/status-sample-repair-20261013/codex-*.json`。
+
+The user explicitly approved one no-SAP compatibility probe using unchanged `gpt-5.6-sol`/`max`. It passed against the already-installed SDK/CLI 0.162.0; the old 0.147.0 check was not reused and no package upgrade occurred. A fresh isolated Codex case then passed with three readonly business GETs, full scope proof and plant 1010, matching the earlier WorkBuddy result under the same orchestration digest. WorkBuddy was not rerun or enabled; its effective qualification remains 1/15. Neither result is a formal acceptance Campaign.
+
+## 2026-10-13：按模型资格与增量验证的离线实现
+
+新增 `sapba.workbuddy.qualification/1`，按模型、权限模式、操作依赖和执行组件管理追加式记录。新环境的完整安装校验不变；业务复用须有原始真实作业、目标启动/认证/清理制品及可核对的等价组件。公共管理与原生终态构造链也参与复用依据。新失败和未完成验证阻止回退旧 PASS；私有管理脚本只读取其他控制器的运行记录，不清理其 worker。
+
+操作依赖由版本化显式组件闭包维护。离线证明选样专属修改不使岗位资格失效、公共授权/传输变化影响全部使用者、Codex 驱动文件不进入 WorkBuddy 资格摘要。单体公共模块仍保守处理，不用 AST 截取或文字描述忽略实际变更。Codex 原摘要算法、源码、依赖和默认配置的前后摘要一致；未改其资格规则或 SDK 请求。
+
+收尾检查：**585 项相关 Python 回归通过**（不是全库测试），包括34项新增资格专项及 Codex 原生请求对照；**142 项前端测试通过**。最终隔离构建通过 Astro 54文件零错误/警告/提示、34包目录校验及84页生成；文档检查55项零漂移。中英文1440/550/390px共6组模拟浏览器检查通过模型切换、键盘、旧记录不授权、无横向溢出与零写请求。仅既有 Starlette TestClient 弃用警告，没有跳过 DPAPI 断言或运行真实模型。
+
+当前只读分类识别：管理存储跨旧环境累计69条旧资格记录；当前环境/站点13项旧格式通过记录。新协议尚无已登记的真实资格，缺少原模型和依赖证明时只作历史，**离线投影0/15不是13项运行失败，也不是已切换服务后的实测**。精确原 Runtime 快照可用于追加模型归属索引，但不能凭当前源码补造原依赖或改绑旧 PASS。此次未运行迁移/复用写入，WorkBuddy实际管理状态和Codex默认状态文件的SHA256保持不变。
+
+只读增量报告位于 `.local-data/workbuddy-qualification-reports/deepseek-plan.json` 和 `hy4-plan.json`，均未调用模型。完整操作15项包含16个必需权限案例，不能混加案例数和操作数。最终前台制品位于同目录 `site-build-final/`，未覆盖运行中的构建、未重启API。使用说明见[资格管理](workbuddy-qualification.md)。后续受控上线和历史核查/必要真实验证需分别安排；本轮没有准备新worker、访问SAP、三级验收、启用、发布、提交或推送。
+
+The model-scoped append-only ledger and explicit dependency graph pass offline tests. Audited reuse requires proven original jobs, matching execution/business components and target startup/authentication/cleanup receipts; an inspector never reaps another API's worker. **585 related Python tests, 142 frontend tests and six synthetic bilingual responsive/keyboard checks pass**, along with Astro/catalog/documentation and an isolated 84-page build. Legacy evidence stays unchanged. The new-protocol offline projection is unqualified where old bindings cannot be established, not a reclassification of historical PASS or a live rollout. No model/SAP call, release preparation, service switch, enablement, publication, commit or push occurs.
+
+## 2026-10-15：验收日期范围与字段诊断的离线修复 / Offline acceptance scope repair
+
+本轮仅只读重放 `wb_validation_campaign_ae441aef80464262` 的已保存计划、工具结果及 Schema，没有调用模型、读取 SAP 或创建新 Campaign。历史基线达到600秒时限、两项验收未完成的结论保持不变。
+
+- 五次计划行范围拒绝中，四次确实缺少必需的交货日期条件，继续拒绝；另一次使用同日 `T00:00:00`，保存的权威完整 Schema 明确为 OData V2 `Edm.DateTime`、`display_format=Date`。共享范围检查现在识别这种不带时区的零点日期表示与已确认日期等价，与既有 OData 序列化器一致。不修改请求值，不接受另一日期、非零时间、时区偏移或模型自行声明的日期语义。
+- 两次计划结构失败均缺少 `service_name`，现在返回 `/service_name / required`，不猜测或补造服务。漏筛选条件、非精确运算符、范围外值分别返回安全的字段级诊断；响应、工具记录和事件使用同一问题列表，不包含具体业务值。
+- 两次 ADT Skill 请求未证明全部输入范围，继续阻断；不推断 DDIC 别名，不增加跨来源 Skill 关联。请求未注册的 V4 服务也不被自动改为 V2 或注册新来源。
+- 初次元数据错误可定位到 HTTP 响应前的传输失败；现有安全制品不足以确认其底层网络原因，不将其归因为 SAP 无数据或权限失败。
+
+只使用权威、未截断的 Schema 判断某个范围字段是否适用于实体；证据不全时保持保守拒绝。此修改属于共享 Broker 范围检查，不改 Codex SDK 参数、提示、输出 Schema、配置、模型、依赖或预算。原 Campaign 和旧 PASS 不重写；离线通过不授予新资格，也不代表 WorkBuddy 已可启用。
+
+相关 Python 回归 **307 passed**（一个既有 Starlette 弃用警告），日期序列化与 Broker 路径的30项测试另行复核通过。重放报告、回归 XML、控制对照及983个 worker 文件的完整性结果保存在 `.local-data/runtime-validation-audit/20261015/evidence-contract-offline/`。没有前端变更，因此未重复前端构建。后续真实验收须单独获得授权并冻结新代码绑定；本轮不准备新 worker、不重启服务、不启用或切换默认 Runtime，不提交或推送。
+
+Saved-artifact replay distinguishes four genuinely missing date predicates from one equivalent midnight date rejected by the platform. The shared admission check accepts only the metadata-proven V2 date-only equivalence, without rewriting model values or weakening exact-scope requirements. Missing service names and unproven Skill scopes remain rejected with value-free field diagnostics. Codex native request settings, prompts, schemas and budgets are unchanged. No model/SAP call, new Campaign, qualification grant, worker update or enablement occurs; historical acceptance remains uncompleted, not a business PASS.

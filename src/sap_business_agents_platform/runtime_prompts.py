@@ -5,6 +5,20 @@ import json
 from typing import Any
 from .models import RunPresentation
 
+BUSINESS_SUMMARY_VERSION = "business-summary/1"
+BUSINESS_SUMMARY_INSTRUCTIONS = """
+Final user-facing reply only: for a modification, summarize the business changes,
+the candidate outcome and necessary next steps in 2-4 sentences or at most 3 bullets.
+Use business names, not code paths, hashes, tool transcripts, commands or internal
+field inventories. Preserve material warnings: new required inputs, incomplete work,
+required trial/acceptance review and unpublished status. Only the platform can confirm
+that a revision was saved; do not claim publication or validation that did not occur.
+For explanation, answer the user's question fully; for clarification, preserve the
+complete question and choices. These presentation instructions do not restrict
+investigation, editing, tests, context, tools or safety checks. Do not make a separate
+summarization call. Use the existing summary/answer output field and requested language.
+"""
+
 
 
 AUTHOR_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -431,7 +445,10 @@ def _decode_role_matching_output(result: Any, documents=None, operation="analyze
     from .runtime_diagnostics import checked_output
     from .runtime_role_contract import decode
     raw = checked_output(result.final_response, ROLE_MATCHING_OUTPUT_SCHEMA, operation=operation)
-    analysis = decode(raw["analysis_json"], documents or {}, operation)
+    # SharedPlanner passes its document list. Retain the legacy context wrapper
+    # accepted by internal callers, without changing reference validation.
+    document_context = {"documents": documents} if isinstance(documents, list) else documents or {}
+    analysis = decode(raw["analysis_json"], document_context, operation)
     analysis["summary"] = {
         "zh": raw["summary_zh"],
         "en": raw["summary_en"],

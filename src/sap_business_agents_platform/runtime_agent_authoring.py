@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from .runtime_prompts import BUSINESS_SUMMARY_INSTRUCTIONS, BUSINESS_SUMMARY_VERSION
 
 def feedback_prompt(repository_root, *, feedback, locale, package, history=None,
                     intent='revise', feedback_context=None, tool_workspace=None,
@@ -133,9 +134,15 @@ Broker call, whose internal loopback transport is owned by the platform.
 The Broker can reject calls when the request, revision or deadline no longer
 matches. The local full-access shell is not an OS security boundary.
 """
-    return prompt
+    return prompt + "\n" + BUSINESS_SUMMARY_INSTRUCTIONS
 
 def decode_feedback(raw, package, thread_id, *, tool_workspace=None, explain_only=False, file_package=None):
+    return {**_decode_feedback(raw, package, thread_id, tool_workspace=tool_workspace,
+            explain_only=explain_only, file_package=file_package),
+            "presentation_version": BUSINESS_SUMMARY_VERSION}
+
+
+def _decode_feedback(raw, package, thread_id, *, tool_workspace=None, explain_only=False, file_package=None):
     if explain_only and raw.get('action') not in {'reply', 'clarify'}:
         raise ValueError('agent_explanation_write_rejected')
     # Reply/clarify never apply package payload fields; preserve the original

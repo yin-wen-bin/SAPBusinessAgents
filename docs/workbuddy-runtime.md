@@ -2,6 +2,18 @@
 
 实施检查结果与未通过门禁见[验证记录 / Validation record](workbuddy-validation.md)。
 
+新的按模型资格、操作依赖摘要、审计复用及离线增量清单见[资格管理 / Qualification management](workbuddy-qualification.md)。旧通过记录不改绑为新 PASS；模型兼容检查与业务资格分别管理。
+
+系统配置中的统一登录、退出及账号绑定说明见[账号与认证 / Account & authentication](runtime-authentication.md)。登录不会自动检查模型或启用 Runtime。
+
+服务站点在系统配置的 WorkBuddy 卡片保存，首次默认国内站。登录脚本、认证刷新和模型调用读取同一配置；切换后必须重新核对资格，不自动退出原账号。旧 worker 需要通过“重新准备独立环境”创建支持站点协议的新 release，SDK／CLI 版本和依赖锁保持不变，不能原地改写安装摘要。
+
+Save the service site in the WorkBuddy settings card; the first default is China. Console sign-in, authentication and model calls share this configuration. Switching requires renewed checks without signing out the former account. Prepare a new isolated release for an older worker; pinned SDK/CLI versions and the dependency lock stay unchanged, and old installation digests are never rewritten.
+
+WorkBuddy 的已有登录／启动检查在空临时目录中执行，单次上限 60 秒，不发送模型任务或访问 SAP，不自动重试或开启登录。该管理预算不改变模型兼容检查、业务操作、三级验收或 Codex 的时限。宿主状态与作业日志使用有界读写协调，真实权限错误及未取得原生终态仍会阻断资格；安装 release 内不写协调文件。
+
+WorkBuddy checks existing login/startup once in an empty temporary directory, with a 60-second management limit and no model or SAP calls. It neither retries nor initiates sign-in. Model, business, acceptance and Codex deadlines are unchanged. Bounded host-journal coordination does not ignore access-denied errors or replace native terminals; no coordination files are written inside immutable releases.
+
 ## 状态与边界 / Status and boundaries
 
 Codex 仍为默认，WorkBuddy 的启停状态不由本轮修改。本轮仅进行离线一致性补齐；当前有效操作来自 `runtime_policy.OPERATIONS`（本版 15 项），新编排摘要需要真实验证后才能开放选择。已退役的计划、计划补全和旧总结不再计入门禁，历史资格不会自动迁移。历史通过、失败、环境和任务绑定保留原样，详见验证记录。锁定 SDK `codebuddy-agent-sdk 0.3.247`、内置 CLI `2.141.0`、已有独立安装、认证和模型状态没有在本轮升级或切换。模型兼容性通过不等于业务操作通过；已有任务不能自动更换 Provider、模型或环境。
@@ -19,7 +31,7 @@ New queries execute through the Harness only. Retired planning, grounding, summa
 | Agent 创建、草稿反馈 / Agent authoring and draft feedback | 3600 秒；较短的已绑定回合预算不延长 / 3600 seconds; shorter bound budgets remain shorter |
 | 工作流创建、反馈、v2 / Workflow composition, feedback, v2 | 3600 秒 / seconds |
 | 工作流检查、修复 / Workflow review and repair | 180 秒 / seconds |
-| 岗位理解、每页匹配、最终汇总 / Role understanding, each catalog page, consolidation | 每个模型阶段 300 秒，不新增岗位作业总上限 / 300 seconds per model stage; no new job-wide cap |
+| 岗位理解、每页匹配、最终汇总 / Role understanding, each catalog page, consolidation | 每个模型阶段 3600 秒，Codex 与 WorkBuddy 相同；整轮可超过一小时 / 3600 seconds per model stage for both Providers; a complete job may exceed one hour |
 | 普通查询、反馈、重新解释 / Ordinary query, feedback, reinterpretation | 沿用查询配置，默认 1800 秒 / configured query budget, default 1800 seconds |
 | 选样、独立基线、验收自由查询 / Sampling, baseline, acceptance query | 沿用各流程专用预算 / retain dedicated workflow budgets |
 

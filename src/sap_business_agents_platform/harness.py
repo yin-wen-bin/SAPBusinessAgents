@@ -28,6 +28,9 @@ from .agent_rules import evaluate_business_agent
 from .acceptance_projection import output_schema, validate_projection, visible_projection_issues
 from .database import RunStore
 from .models import RunPresentation, RunStatus, TERMINAL_STATUSES
+from .runtime_report_contract import (freeze as freeze_report, save_contract, contract_reference,
+    schema_feedback, repair_feedback, ReportContractError)
+from .runtime_report_convergence import advance as advance_report, stop_state as report_stop_state
 from .month_end import assess_current_month_end_status_evidence
 from .normalization import SapInputNormalizationError, SapValueNormalizer
 from .restricted_artifacts import RestrictedArtifactStore
@@ -128,6 +131,7 @@ class HarnessToolBroker:
         self._run_clocks: dict[str, tuple[str, float]] = {}
         self._tool_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._closed_runs: set[str] = set()
+        self._report_locks: dict[str, asyncio.Lock] = {}
         self._authoring_sessions: dict[str, tuple[str, str, AssistantToolContext, dict[str, str]]] = {}
         self._authoring_tool_tasks: dict[str, set[asyncio.Task[Any]]] = {}
 
@@ -212,7 +216,21 @@ class HarnessToolBroker:
 
     def _assistant_catalog(self, context: AssistantToolContext, *, query: str = "", limit: int = 30) -> list[dict[str, Any]]:
         return assistant_catalog(context, approved_skills=self.skills.list_all_approved_skills(),
-                                 query=query, limit=limit)
+                                 query=query, limit=limit,
+                                 report_contract=self.store.get_harness_state(context.target_id).get("report_contract")
+                                 if context.kind in {"free_query", "acceptance_baseline", "acceptance_free_query", "sample_discovery"} else None)
+
+    def report_contract(self, run_id: str) -> dict[str, Any]:
+        state = self.store.get_harness_state(run_id)
+        runtime = self.store.get_run(run_id).runtime
+        expected = freeze_report(run_id, self._run_request_digest(run_id, state),
+            runtime.model_dump(mode="json") if runtime else None, state.get("acceptance_spec"))
+        if state.get("report_contract") != expected:
+            raise ReportContractError()
+        reference = contract_reference(self.settings.data_root, run_id)
+        if reference != state.get("report_contract_file"):
+            raise ReportContractError()
+        return expected
 
     def open_session(self, run_id: str) -> str:
         self._closed_runs.discard(run_id)
@@ -240,6 +258,16 @@ class HarnessToolBroker:
                     }
                 },
             )
+        runtime = self.store.get_run(run_id).runtime
+        contract = freeze_report(run_id, self._run_request_digest(run_id, state),
+            runtime.model_dump(mode="json") if runtime else None, state.get("acceptance_spec"))
+        previous_contract = state.get("report_contract")
+        if previous_contract and previous_contract.get("request_digest") == contract["request_digest"]:
+            self.report_contract(run_id)  # Never silently upgrade a running binding.
+            reference = state["report_contract_file"]
+        else:
+            reference = save_contract(self.settings.data_root, contract)
+        self.store.update_harness_state(run_id, {"report_contract": contract, "report_contract_file": reference})
         frozen = state.get("assistant_tool_authorization")
         if (not isinstance(frozen, dict)
                 or frozen.get("request_digest") != self._run_request_digest(run_id, state)):
@@ -248,11 +276,11 @@ class HarnessToolBroker:
                 "kind": context.kind, "request_digest": context.request_digest,
                 "target_id": context.target_id, "revision": context.revision,
                 "expires_at": context.expires_at.isoformat(),
-                "tool_contracts": assistant_contract_snapshot(context.kind),
+                "tool_contracts": assistant_contract_snapshot(context.kind, contract),
             }})
         elif not isinstance(frozen.get("tool_contracts"), dict):
             updated = dict(frozen)
-            updated["tool_contracts"] = assistant_contract_snapshot(str(updated.get("kind") or ""))
+            updated["tool_contracts"] = assistant_contract_snapshot(str(updated.get("kind") or ""), contract)
             self.store.update_harness_state(run_id, {"assistant_tool_authorization": updated})
         return token
 
@@ -541,6 +569,15 @@ class HarnessToolBroker:
     async def handle(
         self, run_id: str, token: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if (tool_name == "sap_final_report_validate" and run_id not in self._authoring_sessions
+                and self.authenticate(run_id, token)):
+            async with self._report_locks.setdefault(run_id, asyncio.Lock()):
+                return await self._handle_run(run_id, token, tool_name, arguments)
+        return await self._handle_run(run_id, token, tool_name, arguments)
+
+    async def _handle_run(
+        self, run_id: str, token: str, tool_name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         if run_id in self._authoring_sessions:
             return await self._handle_authoring(run_id, token, tool_name, arguments)
         if not self.authenticate(run_id, token):
@@ -551,26 +588,32 @@ class HarnessToolBroker:
         if allowed and context.request_digest != self._run_request_digest(run_id, self.store.get_harness_state(run_id)):
             allowed, reason = False, "tool_session_stale"
         frozen = (self.store.get_harness_state(run_id).get("assistant_tool_authorization") or {}).get("tool_contracts") or {}
-        if allowed and frozen.get(tool_name) != assistant_contract_digest(tool_name):
+        try:
+            report_contract = self.report_contract(run_id) if allowed else None
+        except ReportContractError as exc:
+            return {"ok": False, "code": exc.code}
+        if allowed and frozen.get(tool_name) != assistant_contract_digest(tool_name, report_contract):
             allowed, reason = False, "tool_contract_changed"
         if (not allowed or run.cancel_requested or run.status in TERMINAL_STATUSES
                 or run.status == RunStatus.waiting_input or run_id in self._closed_runs):
             code = reason if not allowed else "harness_run_closed"
             self.store.append_event(run_id, "tool_denied", {"tool": tool_name[:80], "code": code})
             return {"ok": False, "code": code}
+        stopped = report_stop_state(self.store.get_harness_state(run_id))
+        if stopped and tool_name != "sap_final_report_validate":
+            return {"ok": False, "code": stopped.get("stop_code") or "acceptance_report_validation_failed",
+                    "terminal_validation_failure": True}
         sample_context = self._sample_contexts.get(run_id)
         if sample_context is not None:
+            sample_context.evidence_reader = lambda ref: self._read_evidence(run_id, ref)
             try:
                 sample_context.allow_tool(tool_name, arguments)
             except ValueError as exc:
-                if getattr(exc, "code", "") == "invalid_order_by_expression":
-                    sample_context.validation_issues = [{"code": "invalid_order_by_expression"}]
-                    sample_context.progress("validating_query")
-                    return {"ok": False, "code": "invalid_order_by_expression",
-                            "validation_issues": sample_context.validation_issues,
-                            "message": "order_by must contain bare field names, e.g. [\"PurchasingDocument\"]. Do not append asc or desc."}
-                return {"ok": False, "code": getattr(exc, "code", "sample_request_denied"),
-                        "message": "The sample request is outside the verified draft scope or budget."}
+                output = sample_context.denied_tool(tool_name, getattr(exc, "code", ""))
+                if not sample_context.closed and sample_context.remaining():
+                    self.store.append_event(run_id, "sample_tool_denied", {
+                        **sample_context.last_denied_tool, "validation_issues": output["validation_issues"]})
+                return output
         budget = ({"deadline_phase": "querying" if sample_context.remaining(external=True) else "finalizing"}
                   if sample_context is not None else self.review_deadline(run_id))
         if budget["deadline_phase"] == "deadline_exceeded":
@@ -629,6 +672,11 @@ class HarnessToolBroker:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
+        if tool_name == "sap_final_report_validate":
+            request_hash = hashlib.sha256(f"{request_hash}:{call_id}".encode()).hexdigest()
+            prior_id = next((call for call in calls if call.get("call_id") == call_id), None)
+            if prior_id is not None and prior_id.get("request_hash") != request_hash:
+                return {"ok": False, "code": "harness_tool_call_conflict"}
         existing = next(
             (
                 call
@@ -649,7 +697,7 @@ class HarnessToolBroker:
         }))
         if (
             existing is not None
-            and (tool_name == "sap_final_report_validate" or transient_failure)
+            and transient_failure
             and existing.get("status") == "failed"
             and existing.get("call_id") != call_id
         ):
@@ -666,6 +714,10 @@ class HarnessToolBroker:
             ):
                 return self._completed_tool_replay(run_id, tool_name, existing["output"])
             return _unknown_recovered_call(existing)
+        if stopped:
+            return {"ok": False, "code": stopped.get("stop_code") or "acceptance_report_validation_failed",
+                "validation_issues": stopped.get("validation_issues") or [], "terminal_validation_failure": True,
+                "report_validated": False, "validation_ref": None}
         budgeted_calls = [
             call for call in calls if call.get("tool_name") != "sap_final_report_validate"
         ]
@@ -738,6 +790,7 @@ class HarnessToolBroker:
                     with scope(run_id) if callable(scope) else nullcontext():
                         output = await self._dispatch(run_id, tool_name, arguments)
                 self._ensure_writable(run_id)
+                self.report_contract(run_id)
             if normalization_diagnostics:
                 output = {**output, "normalization_diagnostics": normalization_diagnostics}
             output = _safe_public(output, preserve_rows=True)
@@ -754,6 +807,11 @@ class HarnessToolBroker:
             detail = getattr(exc, "detail", None)
             if isinstance(detail, dict) and sample_context is None:
                 output["detail"] = _safe_public(detail)
+                from .runtime_contract import RuntimeContractError
+                if isinstance(exc, RuntimeContractError):
+                    # Use the same value-free diagnostics in the tool response,
+                    # saved call and event; do not drop nested scope failures.
+                    output["validation_issues"] = _safe_public(detail.get("validation_issues") or [])
             status = "failed"
         finally:
             self._tool_tasks.get(run_id, set()).discard(task)
@@ -880,7 +938,7 @@ class HarnessToolBroker:
                     query=str(arguments.get("query") or "")[:120],
                     limit=min(max(int(arguments.get("limit") or 30), 1), 50))}
             item = assistant_inspect(context, str(arguments.get("tool_id") or ""),
-                approved_skills=self.skills.list_all_approved_skills())
+                approved_skills=self.skills.list_all_approved_skills(), report_contract=self.report_contract(run_id))
             return {"ok": item is not None, "catalog_version": CATALOG_VERSION, "tool": item,
                     "code": None if item is not None else "tool_not_found"}
         if tool_name == "list_all_approved_skills":
@@ -937,6 +995,8 @@ class HarnessToolBroker:
                 preserve_grounding(plan, normalized_plan)
                 if run_id in self._read_scopes:
                     self._read_scopes[run_id].check(normalized_plan)
+                if run_id in self._sample_contexts:
+                    self._sample_contexts[run_id].check_plan(normalized_plan)
             response = {
                 **result,
                 "validated_plan": (
@@ -968,11 +1028,14 @@ class HarnessToolBroker:
                 # Recheck the Provider-normalized plan, not only Runtime input.
                 sample_context.check_plan(plan)
                 sample_context.check_stable_keys(plan)
-            raw = await self.sap_read.execute_plan(
-                plan,
-                str(arguments.get("query") or ""),
-                conversation_id=self.store.get_run(run_id).thread_id,
-            )
+            from contextlib import nullcontext
+            from .sample_read_budget import bind
+            with bind(sample_context) if sample_context is not None else nullcontext():
+                raw = await self.sap_read.execute_plan(
+                    plan,
+                    str(arguments.get("query") or ""),
+                    conversation_id=self.store.get_run(run_id).thread_id,
+                )
             if sample_context is not None:
                 raw = sample_context.project_evidence(raw, plan=plan)
             if run_id in self._read_scopes and not raw.get("rows_redacted") and not raw.get("restricted_artifact_ref"):
@@ -987,7 +1050,9 @@ class HarnessToolBroker:
                 "evidence_ref": evidence_ref,
                 "source_complete": _source_complete(raw),
                 "row_count": _row_count(raw),
-                "preview": _bounded_preview(raw),
+                "preview": (_bounded_preview({**raw, "rows": sample_context.public_evidence_rows(
+                    evidence_ref, lambda ref: self._read_evidence(run_id, ref))}) if sample_context is not None
+                    else _bounded_preview(raw)),
                 "odata_version": plan.get("odata_version"),
             }
             if business_advisories:
@@ -1003,6 +1068,10 @@ class HarnessToolBroker:
             offset = max(int(arguments.get("offset") or 0), 0)
             limit = min(max(int(arguments.get("limit") or 100), 1), 200)
             rows = _extract_rows(raw)
+            sample_context = self._sample_contexts.get(run_id)
+            if sample_context is not None:
+                rows = sample_context.public_evidence_rows(str(arguments.get("evidence_ref") or ""),
+                    lambda ref: self._read_evidence(run_id, ref))
             fields = [str(item) for item in arguments.get("fields") or []]
             page = rows[offset : offset + limit]
             if fields:
@@ -1167,7 +1236,10 @@ class HarnessToolBroker:
         meta_path = directory / f"{evidence_ref}.meta.json"
         if not path.is_file() or not meta_path.is_file():
             raise ToolAdmissionError("Evidence reference is not available for this run.")
-        return json.loads(path.read_text(encoding="utf-8")), json.loads(
+        encoded = path.read_bytes()
+        if evidence_ref != f"ev_{hashlib.sha256(encoded).hexdigest()[:24]}":
+            raise ToolAdmissionError("Evidence digest does not match.", code="evidence_digest_mismatch")
+        return json.loads(encoded), json.loads(
             meta_path.read_text(encoding="utf-8")
         )
 
@@ -1791,20 +1863,22 @@ class HarnessToolBroker:
 
     def _validate_report(self, run_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self._ensure_writable(run_id)
-        report = _require_object(arguments.get("report"), "report")
+        stopped = report_stop_state(self.store.get_harness_state(run_id))
+        if stopped:
+            return {"ok": False, "report_validated": False, "validation_ref": None,
+                "code": stopped.get("stop_code") or "acceptance_report_validation_failed",
+                "terminal_validation_failure": True, "validation_issues": stopped.get("validation_issues") or []}
+        report = arguments.get("report")
         presentation: RunPresentation | None = None
         issues: list[dict[str, Any]] = []
         try:
-            presentation = RunPresentation.model_validate(report)
+            presentation = RunPresentation.model_validate(report, strict=True)
         except ValidationError as exc:
-            for item in exc.errors(include_url=False, include_input=False)[:50]:
-                path = "/report" + "".join(f"/{part}" for part in item.get("loc") or [])
-                issues.append({
-                    "code": "acceptance_report_schema_invalid",
-                    "path": path,
-                    "constraint": str(item.get("type") or "schema"),
-                    "message": "The report field does not satisfy the declared presentation schema.",
-                })
+            issues.extend(schema_feedback(report, exc.errors(include_url=False, include_input=False)))
+        if set(arguments) - {"report", "acceptance_projection", "tool_call_id"}:
+            issues.append({"code": "acceptance_report_schema_invalid", "path": "/<unknown>",
+                "constraint": "extra_forbidden", "expected": "declared_arguments_only", "actual_type": "object",
+                "repair_action": "Remove undeclared tool arguments; do not change the business report."})
         known = {
             item["evidence_ref"]: item
             for item in self.snapshot(run_id)[1]
@@ -1817,8 +1891,10 @@ class HarnessToolBroker:
             issues.extend(validate_projection(spec, projection, known))
             if not issues:
                 issues.extend(visible_projection_issues(spec, projection, report))
-        elif projection is not None:
-            issues.append({"code": "acceptance_projection_not_requested"})
+        elif "acceptance_projection" in arguments:
+            issues.append({"code": "acceptance_projection_not_requested", "path": "/acceptance_projection",
+                "expected": "absent", "actual_type": "object" if isinstance(projection, dict) else "null",
+                "repair_action": "Omit acceptance_projection: this is an ordinary query, not an acceptance run."})
         if "inventory_fifo" in set(state.get("required_assessments") or []):
             fifo_calls = [
                 call
@@ -1867,47 +1943,40 @@ class HarnessToolBroker:
         )
         output: dict[str, Any] = {
             "ok": not issues,
+            "report_validated": not issues,
             "validation_issues": issues,
             "report_hash": report_hash,
-            "validation_ref": f"validation_{report_hash.removeprefix('sha256:')[:24]}",
+            "validation_ref": f"validation_{report_hash.removeprefix('sha256:')[:24]}" if not issues else None,
+            "repair_feedback": repair_feedback(issues, acceptance=spec is not None),
             **({"code": "acceptance_report_validation_failed"} if issues else {}),
             # Persist the exact validated object with the tool call. It is
             # stripped from the response returned to Codex below.
-            "_validated_report": presentation.model_dump(mode="json") if presentation else None,
+            "_validated_report": presentation.model_dump(mode="json") if presentation and not issues else None,
             "_validated_acceptance_projection": projection if spec is not None and not issues else None,
         }
-        if issues and spec is not None:
+        if not issues:
+            output["validated_report"] = {**presentation.model_dump(mode="json"),
+                "validation_ref": output["validation_ref"]}
+        if issues:
             progress = _acceptance_validation_progress(
-                report=report,
+                report=report if presentation is not None else {},
                 projection=projection,
                 known=known,
                 assessment_calls=self.store.list_harness_tool_calls(run_id),
             )
-            issue_digest = _json_fingerprint({"issues": issues})
-            progress_digest = _json_fingerprint(progress)
-            previous = state.get("acceptance_validation_failure") or {}
-            count = (
-                int(previous.get("consecutive") or 0) + 1
-                if previous.get("issue_digest") == issue_digest
-                and previous.get("progress_digest") == progress_digest
-                else 1
-            )
-            failure = {
-                "issue_digest": issue_digest,
-                "progress_digest": progress_digest,
-                "consecutive": count,
-                "validation_issues": _safe_public(issues),
-            }
-            if count >= 2:
-                failure["terminal"] = True
+            failure = advance_report(state.get("report_convergence") or {}, issues=_safe_public(issues),
+                acceptance=spec is not None, legacy_progress=progress,
+                relevant_generation=_json_fingerprint({"evidence": progress["evidence"],
+                    "assessments": progress["assessments"]}))
+            if failure["terminal"]:
                 output["terminal_validation_failure"] = True
-            self.store.update_harness_state(
-                run_id, {"acceptance_validation_failure": failure}
-            )
-        elif not issues and spec is not None:
-            self.store.update_harness_state(
-                run_id, {"acceptance_validation_failure": None}
-            )
+                output["code"] = failure["stop_code"]
+            output["report_convergence"] = {k: failure[k] for k in ("without_progress", "terminal", "stop_code")}
+            self.store.update_harness_state(run_id, {"report_convergence": failure,
+                **({"acceptance_validation_failure": failure} if spec is not None else {})})
+        else:
+            self.store.update_harness_state(run_id, {"report_convergence": None,
+                **({"acceptance_validation_failure": None} if spec is not None else {})})
         return output
 
 
@@ -2050,6 +2119,10 @@ def _mcp_overrides(
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
     }
+    reference = contract_reference(settings.data_root, run_id)
+    common_env.update(SAPBA_REPORT_CONTRACT_FILE=reference["path"],
+        SAPBA_REPORT_CONTRACT_SHA256=reference["sha256"],
+        SAPBA_REPORT_CONTRACT_ROOT=str(settings.data_root.resolve()))
     for server_name, mode in (
         ("sap_business_agents", "sap"),
         ("sap_tool_discovery", "tools"),
@@ -2587,6 +2660,8 @@ def _validated_payload_from_store(
         "evidence_refs": _presentation_evidence_refs(presentation),
         "executed_plans": _executed_plans_from_calls(raw_calls),
         "clarification_question": "",
+        "input_kind": None,
+        "input_field": None,
         "presentation": presentation.model_dump(mode="json"),
         **({"acceptance_projection": projection} if projection is not None else {}),
     }

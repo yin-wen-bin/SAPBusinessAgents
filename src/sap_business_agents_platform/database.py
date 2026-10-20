@@ -31,6 +31,37 @@ class RunStore:
         self._lock = RLock()
         self._initialize()
 
+    def runtime_authentication_blockers(self, provider_id: str) -> list[dict]:
+        """Read existing activity only. No schema changes or deterministic-run lock."""
+        result = []
+        with self._connect() as connection:
+            for table, key in (("runs", "run_id"), ("role_matching_sessions", "session_id"),
+                               ("agent_acceptance_campaigns", "campaign_id")):
+                # Table/column identifiers are constants, not request input.
+                rows = connection.execute(f"SELECT * FROM {table} WHERE status IN ('queued','running','cancelling','cleanup_pending','planning','executing','summarizing','reviewing')").fetchall()
+                for row in rows:
+                    if table == "runs" and row["mode"] != "free_query":
+                        continue
+                    binding = _load(row["runtime_json"], {})
+                    if binding.get("provider_id", "codex") == provider_id:
+                        result.append({"code": "runtime_authentication_business_active", "task_id": row[key]})
+            # Operations do not all carry a Runtime. Unknown active authoring
+            # bindings conservatively block credential mutation for both SDKs.
+            rows = connection.execute("SELECT operation_id,kind,detail_json FROM agent_draft_operations WHERE status IN ('queued','running','cancelling','cleanup_pending')").fetchall()
+            for row in rows:
+                if row["kind"] in {"publish", "activate", "refresh_site"}:
+                    continue
+                binding = _load(row["detail_json"], {}).get("runtime") or {}
+                if not binding or binding.get("provider_id") == provider_id:
+                    result.append({"code": "runtime_authentication_business_active", "task_id": row["operation_id"]})
+        for draft in self.list_workflow_drafts():
+            assistant = (draft.composition or {}).get("assistant_v2") or {}
+            binding = assistant.get("runtime_snapshot") or {}
+            if any(r.get("status") in {"running", "cancelling", "cleanup_pending"} for r in assistant.get("rounds", [])):
+                if not binding or binding.get("provider_id") == provider_id:
+                    result.append({"code": "runtime_authentication_business_active", "task_id": draft.draft_id})
+        return result
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
@@ -1609,6 +1640,15 @@ class RunStore:
         return [{"sequence": int(row["sequence"]), "session_id": session_id,
                  "type": row["event_type"], "data": _load(row["data_json"], {}),
                  "created_at": row["created_at"]} for row in rows]
+
+    def latest_role_runtime_event(self, session_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("""SELECT data_json, created_at FROM role_matching_events
+                WHERE session_id = ? AND event_type IN ('role_stage_started', 'role_stage_finished',
+                'role_stage_failed', 'agent_runtime_activity', 'agent_runtime_connected',
+                'agent_runtime_query_submitted', 'agent_runtime_sdk_closing', 'agent_runtime_sdk_closed')
+                ORDER BY sequence DESC LIMIT 1""", (session_id,)).fetchone()
+        return {"data": _load(row["data_json"], {}), "created_at": row["created_at"]} if row else None
 
     def save_role_matching_job(self, *, session_id: str, job_id: str, turn: int, mode: str, status: str) -> None:
         now = utc_now()

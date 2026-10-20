@@ -171,6 +171,11 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             ) from exc
 
     def catalog(self, state: str = "all") -> list[dict[str, Any]]:
+        from .agent_catalog import management_catalog
+
+        return management_catalog(self, state)
+
+    def _catalog_from_context(self, state: str = "all") -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         published_drafts = [
             draft for draft in self.store.list_agent_authoring_drafts()
@@ -2807,6 +2812,8 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
 
     def _audit(self, agent_id: str, action: str, from_version: str | None, to_version: str | None, digest: str | None, branch: str | None, commit: str | None, detail: dict[str, Any]) -> None:
         self.store.append_agent_management_event(event_id=f"agent_event_{uuid.uuid4().hex[:16]}", agent_id=agent_id, action=action, from_version=from_version, to_version=to_version, agent_hash=digest, branch=branch, commit_sha=commit, detail=detail)
+        if getattr(self, "catalog_projection", None) is not None:
+            self.catalog_projection.invalidate(agent_id)
 
     @staticmethod
     def _publication_package(draft: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:

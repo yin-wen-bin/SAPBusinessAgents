@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import AgentDraftWorkspace from "./AgentDraftWorkspace";
 import AgentActivationDialog from "./AgentActivationDialog";
 import { ListResource, managementRows, filterManagementRows, pollingDelay } from "../lib/agentManagement";
+import { CatalogResource, catalogPollingDelay } from "../lib/agentCatalog";
 import { legacyDraftStep } from "../lib/agentDraft";
 import type { DraftStep } from "../lib/agentDraft";
 
@@ -138,11 +139,11 @@ async function request(url: string, init?: RequestInit) {
 export default function AgentManagementCenter({ apiBase, locale, runPath, askPath }: Props) {
   const t = text[locale];
   const [, renderResources] = useState(0);
-  const loadersRef = useRef<{ catalog: ListResource; drafts: ListResource } | null>(null);
+  const loadersRef = useRef<{ catalog: CatalogResource; drafts: ListResource } | null>(null);
   if (!loadersRef.current) {
     const changed = () => renderResources((value) => value + 1);
     loadersRef.current = {
-      catalog: new ListResource((signal) => request(`${apiBase}/api/agents/catalog?state=all`, { signal }), changed),
+      catalog: new CatalogResource(apiBase, (signal, force) => request(`${apiBase}/api/agents/catalog?view=summary&state=all${force ? '&refresh=true' : ''}`, { signal }), changed),
       drafts: new ListResource((signal) => request(`${apiBase}/api/authoring/agents?state=unpublished`, { signal }), changed),
     };
   }
@@ -151,10 +152,12 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   const drafts = loaders.drafts.state.data;
   const [filters, setFilters] = useState({ module: "", state: "", acceptance: "" });
   const selectionInitialized = useRef(false);
-  const refreshRef = useRef<() => Promise<unknown>>(() => Promise.resolve());
+  const refreshRef = useRef<(force?: boolean) => Promise<unknown>>(() => Promise.resolve());
   const retrySourceRef = useRef<(name: "catalog" | "drafts") => Promise<unknown>>(() => Promise.resolve());
-  const load = () => refreshRef.current();
+  const load = (force = false) => refreshRef.current(force);
   const [selected, setSelected] = useState<any>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+  const detailGeneration = useRef(0);
   const [draft, setDraft] = useState<any>(null);
   const [step, setStep] = useState<DraftStep>("purpose");
   const [busy, setBusy] = useState(false);
@@ -180,6 +183,8 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let catalogTimer: ReturnType<typeof setTimeout> | undefined;
+    let catalogAttempt = 0;
     let failures = 0;
     const schedule = () => {
       clearTimeout(timer);
@@ -190,23 +195,43 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
         schedule();
       }, pollingDelay(failures));
     };
-    const refresh = async () => {
+    const scheduleCatalog = () => {
+      clearTimeout(catalogTimer);
+      if (stopped || document.hidden || loaders.catalog.state.error) return;
+      catalogTimer = setTimeout(async () => {
+        await loaders.catalog.refresh();
+        catalogAttempt += 1;
+        scheduleCatalog();
+      }, loaders.catalog.snapshot?.refreshing ? catalogPollingDelay(catalogAttempt)
+        : Math.max(1000, 60000 - (Date.now() - (loaders.catalog.state.updatedAt || 0))));
+    };
+    const refresh = async (force = false) => {
       clearTimeout(timer);
-      await Promise.allSettled([loaders.catalog.refresh(), loaders.drafts.refresh()]);
+      await Promise.allSettled([loaders.catalog.refresh(force),
+        force || !loaders.drafts.state.loaded || !loaders.drafts.state.updatedAt || Date.now() - loaders.drafts.state.updatedAt >= 60000
+          ? loaders.drafts.refresh() : Promise.resolve()]);
+      catalogAttempt = 0;
+      scheduleCatalog();
       schedule();
     };
     refreshRef.current = refresh;
-    retrySourceRef.current = async (name) => { await loaders[name].refresh(); schedule(); };
+    retrySourceRef.current = async (name) => {
+      if (name === 'catalog') await loaders.catalog.refresh(true); else await loaders.drafts.refresh();
+      catalogAttempt = 0; scheduleCatalog(); schedule();
+    };
     const onFocus = () => { if (!document.hidden) void refresh(); };
     const onVisibility = () => {
-      if (document.hidden) { clearTimeout(timer); loaders.catalog.dispose(); loaders.drafts.dispose(); }
-      else void refresh();
+      if (document.hidden) { clearTimeout(timer); clearTimeout(catalogTimer); loaders.catalog.dispose(); loaders.drafts.dispose(); }
+      else {
+        if (loaders.drafts.state.data.some((item) => item.status === 'validating')) loaders.drafts.state.updatedAt = null;
+        void refresh();
+      }
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
     void refresh();
     return () => {
-      stopped = true; clearTimeout(timer);
+      stopped = true; clearTimeout(timer); clearTimeout(catalogTimer);
       loaders.catalog.dispose(); loaders.drafts.dispose();
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
@@ -216,15 +241,14 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   useEffect(() => {
     if (!loaders.catalog.state.loaded || selectionInitialized.current) return;
     selectionInitialized.current = true;
-    const requestedAgent = new URLSearchParams(window.location.search).get("agent");
-    if (requestedAgent) setSelected(catalog.find((item: any) => item.id === requestedAgent) || null);
+    // Agent deep links are loaded directly; they never wait for a full catalog.
   }, [catalog, loaders]);
 
   useEffect(() => {
-    if (!selected) return;
+    if (!selected?._management_ready) return;
     const fresh = catalog.find((item: any) => item.id === selected.id);
-    if (fresh && (fresh.digest !== selected.digest || JSON.stringify(fresh.lifecycle) !== JSON.stringify(selected.lifecycle) || JSON.stringify(fresh.pending_activation) !== JSON.stringify(selected.pending_activation) || JSON.stringify(fresh.latest_activation) !== JSON.stringify(selected.latest_activation))) setSelected(fresh);
-  }, [catalog, selected]);
+    if (fresh && (fresh.digest !== selected.digest || JSON.stringify(fresh.lifecycle) !== JSON.stringify(selected.lifecycle))) void openAgent(fresh);
+  }, [catalog, selected?.id]);
 
   useEffect(() => {
     if (!selected?.id) return;
@@ -251,7 +275,9 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
           if (latest) {
             setActivation(latest);
             setActivationConnectionError(false);
-            if (!["queued", "running"].includes(latest.status)) void loaders.catalog.refresh();
+            if (!["queued", "running"].includes(latest.status)) {
+              loaders.catalog.invalidate(); void retrySourceRef.current('catalog'); void openAgent(selected);
+            }
           }
         })
         .catch(() => setActivationConnectionError(true));
@@ -263,13 +289,14 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     const params = new URLSearchParams(window.location.search);
     const draftId = params.get("draft");
     if (draftId) void openDraft(draftId, params.get("step") || undefined);
+    else if (params.get('agent')) void openAgent({ id: params.get('agent') });
     const onPopState = () => {
       const next = new URLSearchParams(window.location.search);
       const nextDraft = next.get("draft");
       if (nextDraft) void openDraft(nextDraft, next.get("step") || undefined, false);
       else if (next.get("agent")) {
         const item = loaders.catalog.state.data.find((entry: any) => entry.id === next.get("agent"));
-        setDraft(null); setSelected(item || null); setSelectedModule(item?.module || "Common");
+        setDraft(null); void openAgent(item || { id: next.get('agent') });
       } else backToList(false);
     };
     window.addEventListener("popstate", onPopState);
@@ -279,7 +306,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   const rows = useMemo(() => managementRows(catalog, drafts, locale), [catalog, drafts, locale]);
   const list = useMemo(() => filterManagementRows(rows, filters), [rows, filters]);
   const modules = [...new Set(rows.map((item) => item.module || "unknown"))].sort();
-  const complete = [loaders.catalog.state, loaders.drafts.state].every((state) => state.loaded && !state.error);
+  const complete = [loaders.catalog.state, loaders.drafts.state].every((state) => state.loaded && !state.error) && !loaders.catalog.snapshot?.stale;
   const firstLoadPending = [loaders.catalog.state, loaders.drafts.state].some((state) => !state.loaded && !state.error);
   const previousList = useRef<{ filters: string; keys: string[] }>({ filters: "", keys: [] });
   useEffect(() => {
@@ -289,6 +316,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     previousList.current = { filters: filterKey, keys };
   }, [list, rows, filters, t.changedFilter]);
   const backToList = (writeHistory = true) => {
+    ++detailGeneration.current; setDetailBusy(false);
     setDraft(null); setSelected(null); setSelectedModule("");
     setActivationDialogOpen(false); setActivationConfirming(false);
     setActivation(null); setActivationDraftId(""); setActivationConnectionError(false);
@@ -296,7 +324,24 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     void load();
   };
 
+  const openAgent = async (item: any) => {
+    const generation = ++detailGeneration.current;
+    setSelected({ ...item, _management_ready: false }); setDetailBusy(true); setError('');
+    try {
+      const value = await request(`${apiBase}/api/agents/${encodeURIComponent(item.id)}?view=management`);
+      if (generation !== detailGeneration.current) return null;
+      setSelected({ ...value, _management_ready: true }); setSelectedModule(value.module || 'Common');
+      return value;
+    } catch (failure: any) {
+      if (generation === detailGeneration.current) setError(failure.message);
+      return null;
+    } finally {
+      if (generation === detailGeneration.current) setDetailBusy(false);
+    }
+  };
+
   const openDraft = async (draftId: string, requestedStep?: unknown, writeHistory = true) => {
+    ++detailGeneration.current; setDetailBusy(false);
     setBusy(true); setError("");
     try {
       const value = await request(`${apiBase}/api/authoring/agents/${encodeURIComponent(draftId)}`);
@@ -309,7 +354,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   };
 
   const createVersion = async () => {
-    if (!selected) return;
+    if (!selected?._management_ready || detailBusy) return;
     setBusy(true); setError("");
     try {
       const value = await request(`${apiBase}/api/agents/${encodeURIComponent(selected.id)}/versions/draft`, {
@@ -320,13 +365,14 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   };
 
   const lifecycleAction = async (action: string, version?: string) => {
-    if (!selected) return; setBusy(true); setError("");
+    if (!selected?._management_ready || detailBusy) return; setBusy(true); setError("");
     try {
       const body: any = { expectedVersion: selected.version, expectedAgentHash: selected.digest, reason };
       if (version) body.version = version;
       if (action === "delete") body.confirmAgentId = confirmId;
       const result = await request(`${apiBase}/api/agents/${encodeURIComponent(selected.id)}${action === "delete" ? "" : `/${action}`}`, { method: action === "delete" ? "DELETE" : "POST", body: JSON.stringify(body) });
-      setNotice(`${result.branch || ""} ${result.commit_sha || ""}`); setSelected(null); await load();
+      setNotice(`${result.branch || ""} ${result.commit_sha || ""}`); setSelected(null);
+      loaders.catalog.invalidate(); await retrySourceRef.current('catalog');
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
@@ -334,12 +380,10 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     setDraft(null);
     setNotice(`${result.branch || ""} · ${result.commit_sha || ""} · ${locale === "zh" ? "未推送" : "not pushed"}`);
     try {
-      const rows = await request(`${apiBase}/api/agents/catalog?state=all`);
-      const item = rows.find((entry: any) => entry.id === result.agent_id);
+      const item = await openAgent({ id: result.agent_id });
       if (!item) { backToList(); return; }
-      setSelected(item); setSelectedModule(item.module || "Common");
       history.pushState({}, "", `${window.location.pathname}?agent=${encodeURIComponent(item.id)}`);
-      await loaders.catalog.refresh();
+      loaders.catalog.invalidate(); void retrySourceRef.current('catalog');
       if (confirmActivation && item.pending_activation?.version === result.version) {
         setActivationDraftId(item.pending_activation.draft_id);
         setActivationConfirming(true);
@@ -350,7 +394,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
 
   const confirmActivation = async () => {
     const pending = selected?.pending_activation;
-    if (!selected || !pending?.can_activate) return;
+    if (!selected?._management_ready || detailBusy || !pending?.can_activate) return;
     const draftId = pending.draft_id;
     const body = {
       requestId: crypto.randomUUID(), expectedRevision: pending.draft_revision,
@@ -393,7 +437,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
   };
 
   const saveSelectedModule = async () => {
-    if (!selected || !selectedModule || selectedModule === selected.module) return;
+    if (!selected?._management_ready || detailBusy || !selectedModule || selectedModule === selected.module) return;
     setBusy(true); setError("");
     try {
       const result = await request(`${apiBase}/api/agents/${encodeURIComponent(selected.id)}/catalog-module`, {
@@ -407,7 +451,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
       });
       setSelected({ ...selected, module: result.catalog_module, catalog_module: result.catalog_module, catalog_revision: result.catalog_revision });
       setNotice(result.reload_required ? t.moduleReloadRequired : t.moduleSaved);
-      await load();
+      loaders.catalog.invalidate(); await retrySourceRef.current('catalog');
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
@@ -433,14 +477,17 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
         body: JSON.stringify({ expectedRevision: item.revision, confirmAgentId: draftConfirmId }),
       });
       setDeleteCandidate(null); setDraftConfirmId("");
-      await load(); setNotice(t.draftDeleted);
+      await loaders.drafts.refresh(); setNotice(t.draftDeleted);
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
-  if (draft) return <AgentDraftWorkspace key={draft.draft_id} initialDraft={draft} apiBase={apiBase} locale={locale} runPath={runPath} initialStep={step} onBack={() => backToList()} onPublished={(result) => { void openPublishedAgent(result); }} onActivatePublished={(result) => { void openPublishedAgent(result, true); }} />;
+  if (draft) return <AgentDraftWorkspace key={draft.draft_id} initialDraft={draft} apiBase={apiBase} locale={locale} runPath={runPath} initialStep={step} onBack={() => { loaders.drafts.state.updatedAt = null; backToList(); }} onPublished={(result) => { void openPublishedAgent(result); }} onActivatePublished={(result) => { void openPublishedAgent(result, true); }} />;
 
   if (selected) return <main className="agent-management agent-management-detail">
     <header className="agent-detail-header"><button className="agent-secondary-action" onClick={() => backToList()}>{t.back}</button><div><p className="eyebrow">{t.eyebrow}</p><h1>{localized(selected.title, locale)}</h1><p>{localized(selected.summary, locale)}</p></div></header>
+    {detailBusy && <p role="status">{locale === 'zh' ? '正在核对该 Agent 的管理状态…' : 'Checking this Agent’s management status…'}</p>}
+    {error && !selected._management_ready && <p role="alert">{error} <button onClick={() => void openAgent(selected)}>{t.retry}</button></p>}
+    <fieldset disabled={busy || detailBusy || !selected._management_ready} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
     <dl className="agent-detail-overview"><div><dt>ID</dt><dd><code>{selected.id}</code></dd></div><div><dt>{t.catalogModule}</dt><dd>{selected.module}</dd></div><div><dt>{t.activeVersion}</dt><dd>{selected.lifecycle?.active_version || t.noActiveVersion}</dd></div><div><dt>{t.validation}</dt><dd>{selected.validation?.verdict || "—"}</dd></div><div><dt>{t.dependencies}</dt><dd>{selected.workflow_dependencies?.length || 0}</dd></div></dl>
     {error && <p className="agent-alert error" role="alert">{error}</p>}{notice && <p className="agent-alert" role="status">{notice}</p>}
     {selected.pending_activation && <section className="agent-panel agent-activation-card"><div><h2>{t.pendingVersion} {selected.pending_activation.version}</h2><p>{selected.lifecycle?.state === "active" && selected.lifecycle?.active_version ? `${t.activeVersion} ${selected.lifecycle.active_version} → ${t.pendingVersion} ${selected.pending_activation.version}` : t.activationHelp}</p></div><p>{t.activationHelp}</p><div className="agent-actions"><button disabled={busy || !selected.pending_activation.can_activate || ["starting", "queued", "running"].includes(String(activation?.status))} onClick={() => { setActivationDraftId(selected.pending_activation.draft_id); setActivationConfirming(true); setActivationDialogOpen(true); }}>{t.activateVersion}</button>{activation && <button className="agent-secondary-action" onClick={() => { setActivationConfirming(false); setActivationDialogOpen(true); }}>{t.activationProgress}</button>}</div>{!selected.pending_activation.can_activate && <div role="status"><p>{t.activationBlocked}</p><ul>{selected.pending_activation.blockers.map((item: string) => <li key={item}>{(t.activationBlockerLabels as Record<string, string>)[item] || item}</li>)}</ul></div>}</section>}
@@ -452,6 +499,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     </div>
     <details className="agent-panel danger agent-detail-danger"><summary>{t.delete}</summary>{(selected.management?.delete_blockers || []).length > 0 && <ul>{selected.management.delete_blockers.map((item: string) => <li key={item}>{item}</li>)}</ul>}<label>{t.confirmId}<input value={confirmId} onChange={(e) => setConfirmId(e.target.value)} /></label><button disabled={busy || !selected.management?.can_delete || confirmId !== selected.id} onClick={() => lifecycleAction("delete")}>{t.delete}</button></details>
     <AgentActivationDialog open={activationDialogOpen} confirming={activationConfirming} value={activation} pending={selected.pending_activation} currentVersion={selected.lifecycle?.state === "active" ? selected.lifecycle?.active_version : null} locale={locale} connectionError={activationConnectionError} onClose={() => { setActivationDialogOpen(false); setActivationConfirming(false); }} onConfirm={() => { void confirmActivation(); }} onRetrySite={() => { void retryActivationSite(); }} />
+    </fieldset>
   </main>;
 
   return <main className="agent-management">
@@ -466,17 +514,19 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
       <label>{t.module}<select value={filters.module} onChange={(e) => { setFilters({ ...filters, module: e.target.value }); setDeleteCandidate(null); }}><option value="">{t.all}</option>{modules.map((module) => <option key={module} value={module}>{module === "unknown" ? "—" : module}</option>)}</select></label>
       <label>{t.state}<select value={filters.state} onChange={(e) => { setFilters({ ...filters, state: e.target.value }); setDeleteCandidate(null); }}><option value="">{t.all}</option>{["active", "inactive", "unpublished"].map((state) => <option key={state} value={state}>{mappedLabel(t.statusLabels, state)}</option>)}</select></label>
       <label>{t.validation}<select value={filters.acceptance} onChange={(e) => { setFilters({ ...filters, acceptance: e.target.value }); setDeleteCandidate(null); }}><option value="">{t.all}</option>{["PASS", "PARTIAL", "BLOCKED", "FAIL", "INCONCLUSIVE", "NOT_TESTED", "PENDING", "UNRECORDED"].map((state) => <option key={state} value={state}>{mappedLabel(t.statusLabels, state)}</option>)}</select></label>
-      <div className="agent-filter-actions"><button className="agent-secondary-action" onClick={() => { setFilters({ module: "", state: "", acceptance: "" }); setDeleteCandidate(null); }}>{t.reset}</button><button className="agent-secondary-action" onClick={() => void load()}>{t.refresh}</button></div>
+      <div className="agent-filter-actions"><button className="agent-secondary-action" onClick={() => { setFilters({ module: "", state: "", acceptance: "" }); setDeleteCandidate(null); }}>{t.reset}</button><button className="agent-secondary-action" onClick={() => void load(true)}>{t.refresh}</button></div>
     </section>
     <div className="agent-resource-status" aria-live="polite">
       {(["catalog", "drafts"] as const).map((name) => {
         const state = loaders[name].state;
-        return (state.loading || state.error) && <p key={name} className={state.error ? "agent-alert error" : ""}>
-          <strong>{name === "catalog" ? t.catalogSource : t.draftSourceName}</strong> · {state.loading ? t.loading : state.error}
+        const refreshing = state.loading || name === 'catalog' && loaders.catalog.snapshot?.refreshing;
+        return (refreshing || state.error) && <p key={name} className={state.error ? "agent-alert error" : ""}>
+          <strong>{name === "catalog" ? t.catalogSource : t.draftSourceName}</strong> · {refreshing ? t.loading : state.error}
           {state.error && <>{state.loaded && <> · {t.stale} · {t.lastLoaded}: {formattedDate(state.updatedAt ? new Date(state.updatedAt).toISOString() : "", locale)}</>} <button className="agent-secondary-action" disabled={state.loading} onClick={() => void retrySourceRef.current(name)}>{t.retry}</button></>}
         </p>;
       })}
     </div>
+    {loaders.catalog.state.loaded && <p role="status" className="agent-catalog-snapshot">{t.catalogSource} · {t.lastLoaded}: {formattedDate(loaders.catalog.snapshot?.checked_at, locale)}{loaders.catalog.snapshot?.stale && <> · {t.stale}</>}</p>}
     <p className="agent-result-count" aria-live="polite">{!complete && <>{t.partialData} · </>}{list.length} {t.count}</p>
     {list.length === 0 ? <p>{firstLoadPending ? t.loading : !loaders.catalog.state.loaded && !loaders.drafts.state.loaded && loaders.catalog.state.error && loaders.drafts.state.error ? t.allFailed : !complete ? t.partialEmpty : rows.length === 0 ? t.allEmpty : t.empty}</p> :
       <section className="agent-management-list agent-management-list-unified" aria-label={t.heading}>
@@ -489,7 +539,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
             <div data-label={t.state}><span className="agent-list-status">{mappedLabel(t.statusLabels, item.state)}</span>{item.kind === "draft" && <small>{mappedLabel(t.statusLabels, item.status)}</small>}</div>
             <div data-label={t.validation}>{mappedLabel(t.statusLabels, item.acceptance)}{item.sync_error && <small role="status">{t.syncError}</small>}</div>
             <div className="agent-list-actions" data-label={t.actions}>
-              <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id, draftPrimaryStep(item)); else { setSelected(item); setSelectedModule(item.module || "Common"); history.pushState({}, "", `${window.location.pathname}?agent=${encodeURIComponent(item.id)}`); } }}>{item.kind !== "draft" ? t.view : item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status) ? t.viewProgress : item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available" ? t.reviewPublish : Object.values(item.wizard?.steps || {}).includes("needs_action") ? t.handleIssue : t.continueDraft}</button>
+              <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id, draftPrimaryStep(item)); else { void openAgent(item); history.pushState({}, "", `${window.location.pathname}?agent=${encodeURIComponent(item.id)}`); } }}>{item.kind !== "draft" ? t.view : item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status) ? t.viewProgress : item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available" ? t.reviewPublish : Object.values(item.wizard?.steps || {}).includes("needs_action") ? t.handleIssue : t.continueDraft}</button>
               {item.kind === "draft" && <button className="agent-danger-action" disabled={busy || !item.management?.can_delete} title={(item.management?.delete_blockers || []).join(", ")} onClick={() => { setDeleteCandidate(item); setDraftConfirmId(""); setError(""); }}>{t.deleteDraft}</button>}
             </div>
           </div>

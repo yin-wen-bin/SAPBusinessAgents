@@ -251,6 +251,10 @@ class AgentAuthoringMixin:
                     if not path.startswith("/manifest/") or item.get("source_id") or item.get("source_digest"):
                         raise self._authoring_error("The annotation target is invalid.", "agent_feedback_annotation_invalid")
                     source: Any = current_package
+                elif kind in {"readme", "rules"}:
+                    if path != f"/{kind}" or item.get("source_id") or item.get("source_digest"):
+                        raise self._authoring_error("The annotation target is invalid.", "agent_feedback_annotation_invalid")
+                    source = current_package
                 else:
                     if not item.get("source_digest"):
                         raise self._authoring_error("The diagnostic binding is missing.", "agent_feedback_annotation_invalid")
@@ -465,7 +469,7 @@ class AgentAuthoringMixin:
         return {"draft_id": draft_id, "baseline": "revision", "from_revision": source,
                 "to_revision": target, "changes": package_changes(before, after)}
 
-    def _apply_package(self, draft_id: str, expected_revision: int, package: dict[str, Any], *, kind: str, operation_id: str, record_turn: bool = True, decision: dict[str, Any] | None = None, safe_runtime: bool = False, deadline_check: Any = None, runtime_thread_id: str | None = None, allow_catalog_module_change: bool = False, preserve_validation: bool = False) -> dict[str, Any]:
+    def _apply_package(self, draft_id: str, expected_revision: int, package: dict[str, Any], *, kind: str, operation_id: str, record_turn: bool = True, decision: dict[str, Any] | None = None, safe_runtime: bool = False, deadline_check: Any = None, runtime_thread_id: str | None = None, runtime_snapshot: dict | None = None, allow_catalog_module_change: bool = False, preserve_validation: bool = False) -> dict[str, Any]:
         self._assert_operation(draft_id, operation_id, expected_revision)
         draft = self.store.get_agent_authoring_draft(draft_id)
         self._assert_editable(draft)
@@ -538,6 +542,8 @@ class AgentAuthoringMixin:
         )
         if runtime_thread_id:
             draft["thread_id"] = runtime_thread_id
+        if runtime_snapshot and runtime_snapshot.get('authentication_recovery_id'):
+            draft['metadata'] = {**draft.get('metadata',{}), 'runtime_snapshot': copy.deepcopy(runtime_snapshot)}
         if preserve_validation:
             static_checks = copy.deepcopy(preserved_metadata.get("static_checks"))
             if isinstance(static_checks, dict):
@@ -639,6 +645,16 @@ class AgentAuthoringMixin:
 
     def _feedback_runtime_snapshot(self, draft: dict[str, Any]) -> dict[str, Any]:
         previous = (draft.get("metadata") or {}).get("runtime_snapshot") or {}
+        if previous.get('provider_id')=='workbuddy':
+            recover=getattr(self.runtime,'authoring_snapshot_for_binding',None)
+            if callable(recover):
+                return copy.deepcopy(recover(previous))
+        # Resolve the original account binding before refreshing model settings.
+        # A new model check must not silently migrate an existing draft account.
+        if previous.get("provider_id") and previous.get("model"):
+            resolve_binding = getattr(self.runtime, "snapshot_for_binding", None)
+            if callable(resolve_binding):
+                previous = copy.deepcopy(resolve_binding(previous))
         if previous.get("provider_id") == "workbuddy":
             resolve = getattr(self.runtime, "snapshot_for_binding", None)
             if not callable(resolve):
@@ -956,7 +972,7 @@ class AgentAuthoringMixin:
             pin = getattr(self.runtime, "pin", None)
             pin_options = {"reasoning_effort": snapshot["reasoning_effort"]} if snapshot.get("reasoning_effort") is not None else {}
             context = pin(snapshot["provider_id"], snapshot["model"], **pin_options) if callable(pin) else nullcontext()
-            if snapshot.get("provider_id") == "workbuddy":
+            if snapshot.get("provider_id") == "workbuddy" or "authentication_binding_revision" in snapshot:
                 context = self.runtime.pin_snapshot(snapshot)
             history = conversation_context(self.store.list_agent_conversation_turns(draft_id), int(turn["base_revision"]), int(turn["turn"]))
             with context:
@@ -1025,7 +1041,7 @@ class AgentAuthoringMixin:
                         package["manifest"]["managedRule"]["sha256"] = source_digest(package["rules"])
                 check_deadline()
                 progress("applying_revision", 3)
-                result = self._apply_package(draft_id, int(turn["base_revision"]), package, kind="feedback", operation_id=operation_id, record_turn=False, safe_runtime=True, deadline_check=check_deadline, runtime_thread_id=decision.get("thread_id"))
+                result = self._apply_package(draft_id, int(turn["base_revision"]), package, kind="feedback", operation_id=operation_id, record_turn=False, safe_runtime=True, deadline_check=check_deadline, runtime_thread_id=decision.get("thread_id"), runtime_snapshot=snapshot)
             changed = bool(result and int(result["revision"]) != int(turn["base_revision"]))
             if changed:
                 # The thread and content revision share one commit. A later
@@ -1040,6 +1056,8 @@ class AgentAuthoringMixin:
             completed_decision = {**turn["decision"], "action": action,
                                   "summary": decision["summary"],
                                   "assistant_message": decision["summary"], "changed": changed}
+            if decision.get("presentation_version"):
+                completed_decision["presentation_version"] = decision["presentation_version"]
             if action == "clarify":
                 verified_target = {key: turn["decision"].get("context", {})[key]
                                    for key in ("step", "field_path", "run_id", "acceptance_campaign_id")

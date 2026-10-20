@@ -9,6 +9,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from .runtime_report_contract import tool_schema as report_tool_schema
+
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {
@@ -240,7 +242,7 @@ _SAP_TOOLS = [
         "name": "sap_final_report_validate",
         "description": "Validate that customer-business claims cite run-scoped SAP evidence references.",
         "inputSchema": _schema(
-            {"report": {"type": "object"}, "acceptance_projection": {"type": "object"}}, ["report"]
+            report_tool_schema()["properties"], ["report"]
         ),
     },
 ]
@@ -370,6 +372,15 @@ def _call_platform(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
 def serve(mode: str) -> None:
     tools = {"sap": _SAP_TOOLS, "tools": _TOOL_TOOLS, "authoring": _AUTHORING_TOOLS}[mode]
+    def current_tools():
+        if mode != "sap":
+            return tools
+        from .runtime_report_contract import load_contract, tools_for_contract
+        contract = load_contract(os.environ.get("SAPBA_REPORT_CONTRACT_FILE", ""),
+            os.environ.get("SAPBA_REPORT_CONTRACT_SHA256", ""),
+            run_id=os.environ.get("SAPBA_HARNESS_RUN_ID", ""),
+            root=os.environ.get("SAPBA_REPORT_CONTRACT_ROOT", ""))
+        return tools_for_contract(tools, contract)
     allowed = {item["name"] for item in tools}
     for line in sys.stdin:
         try:
@@ -397,7 +408,7 @@ def serve(mode: str) -> None:
                                 "openWorldHint": mode == "tools",
                             },
                         }
-                        for item in tools
+                        for item in current_tools()
                     ]
                 }
             elif method == "tools/call":
@@ -407,6 +418,7 @@ def serve(mode: str) -> None:
                 if name not in allowed or not isinstance(arguments, dict):
                     result = _result({"ok": False, "code": "unregistered_tool_rejected"})
                 else:
+                    current_tools()  # No execution after a missing/stale/tampered contract.
                     result = _result(_call_platform(name, arguments))
             elif method and str(method).startswith("notifications/"):
                 continue

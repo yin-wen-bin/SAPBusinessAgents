@@ -10,7 +10,7 @@ const copy = locale === "zh" ? {
   body: "管理新任务使用的 Runtime、SDK 客户端和系统默认模型。模型切换只影响新会话；固定 Agent 与确定性工作流不受 Runtime 启停影响。",
   checkAll: "检查全部 Runtime", loading: "正在读取本机 Agent Runtime 信息…", unavailable: "无法连接本机 API，请先启动 SAPBusinessAgents。",
   noDefault: "当前没有默认 Runtime。Runtime 相关的新任务不可用，固定 Agent 仍可执行。",
-  sdkClient: "SDK 与客户端", runtimeState: "Runtime 状态", modelCatalog: "模型目录",
+  sdkClient: "SDK 与客户端", runtimeState: "Runtime 状态", modelCatalog: "模型配置",
   chooseModel: "选择模型", customModel: "输入其他模型 ID", modelHint: "选择仅用于查看；检查或保存需点击对应按钮。", technicalDetails: "技术详情", sdkReportedModel: "SDK 返回的模型标识",
   current: "SDK 版本", cliVersion: "绑定 CLI 版本", latest: "最新版本", package: "安装包", ecosystem: "运行环境",
   checkedAt: "检查时间", notChecked: "尚未检查", notInstalled: "未安装", check: "检查安装与登录", checking: "正在检查…",
@@ -25,11 +25,13 @@ const copy = locale === "zh" ? {
   switchConfirm: "只会影响新创建的任务；运行中和等待补充信息的任务继续使用原 Runtime。确定切换吗？", switched: "默认 Agent Runtime 已更新，新任务将使用该 Runtime。",
   refreshModels: "刷新模型目录", refreshingModels: "正在刷新模型…", catalogUnavailable: "此 Runtime 不支持从当前 SDK 发现模型。",
   catalogNotLoaded: "尚未读取当前 SDK 的模型目录。", catalogIncomplete: "模型目录不完整，暂时不能检查或保存模型。", catalogStale: "这是过期缓存。请刷新后再修改模型。", catalogFailed: "模型目录读取失败。",
-  sdkDefault: "SDK 默认", currentModel: "当前系统默认", modalities: "输入模态", reasoning: "推理强度", tiers: "服务等级",
+  sdkDefault: "SDK 默认", currentModel: "此 Runtime 的已保存模型", modalities: "输入模态", reasoning: "推理强度", tiers: "服务等级",
   reasoningDefault: "SDK 建议默认", reasoningSaved: "用户已保存", saveReasoning: "保存推理强度", reasoningSavedDone: "推理强度已保存；新会话和该模型草稿的下一轮修改生效，正在运行的轮次不变。", reasoningUnavailable: "当前目录未提供有效推理强度，请刷新目录。", chooseReasoning: "选择推理强度", effortNone: "无", effortMinimal: "最低", effortLow: "低", effortMedium: "中", effortHigh: "高", effortXhigh: "超高", effortMax: "最大", effortUltra: "极高", effortUnconfigured: "未保存",
   checkModel: "检查兼容性", checkingModel: "正在检查…", modelCompatible: "兼容性检查通过", modelCheckRequired: "需要兼容性检查", modelIncompatible: "兼容性检查未通过", modelRetired: "当前 SDK 已不再提供",
   setModel: "设为默认模型", settingModel: "正在设置…", modelSet: "系统默认模型已更新，只影响新会话和新草稿。", upgradeTo: "建议迁移到", emptyModels: "当前完整目录中没有可显示的非隐藏模型。",
   blockerLabels: {
+    workbuddy_sdk_integration_required: "SDK 接入认证尚未通过", workbuddy_admission_migration_required: "三层策略尚未受控迁移", workbuddy_sdk_operation_not_certified: "此操作或权限模式尚未取得 SDK 接入认证", runtime_model_protocol_changed: "模型协议已变化，需要兼容检查",
+    runtime_control_unknown: "启停状态尚未核对", runtime_status_pending: "资格状态正在核对", status_refresh_timeout: "状态核对超过展示等待时间，后台可能仍在继续", status_binding_changed: "配置已变化，正在核对新状态", status_projection_failed: "状态读取失败",
     runtime_reasoning_effort_invalid: "当前模型未提供所选推理强度，请刷新目录并重新选择", runtime_reasoning_effort_unsupported: "当前 Runtime 适配器尚不能明确传递推理强度",
     runtime_model_probe_timeout: "兼容性检查超时，尚不能确认是否兼容，请重试", runtime_model_authentication_failed: "登录验证失败，请重新登录后检查", runtime_model_access_unavailable: "当前账号无法使用该模型", runtime_model_incompatible: "模型与当前 SDK 或 CLI 不兼容", runtime_model_probe_failed: "模型检查执行失败，请重试", runtime_model_probe_invalid_response: "模型未返回预期的验证响应",
     native_windows_runtime_unavailable: "官方 Runtime 暂不支持原生 Windows", sdk_not_installed: "SDK 尚未安装", platform_not_supported: "当前操作系统不受支持",
@@ -48,7 +50,7 @@ const copy = locale === "zh" ? {
   body: "Manage the Runtime, SDK client, and system-default model used by new tasks. Model changes affect only new sessions; fixed Agents and deterministic workflows are unaffected by Runtime enablement.",
   checkAll: "Check all runtimes", loading: "Reading local Agent Runtime information…", unavailable: "Cannot reach the local API. Start SAPBusinessAgents first.",
   noDefault: "No default Runtime is configured. New Runtime tasks are unavailable; fixed Agents remain executable.",
-  sdkClient: "SDK and client", runtimeState: "Runtime status", modelCatalog: "Model catalog",
+  sdkClient: "SDK and client", runtimeState: "Runtime status", modelCatalog: "Model configuration",
   chooseModel: "Choose model", customModel: "Enter another model ID", modelHint: "Selection is for viewing only. Use the buttons to check or save.", technicalDetails: "Technical details", sdkReportedModel: "SDK-reported model ID",
   current: "SDK version", cliVersion: "Bundled CLI version", latest: "Latest version", package: "Package", ecosystem: "Runtime",
   checkedAt: "Last checked", notChecked: "Not checked", notInstalled: "Not installed", check: "Check installation and login", checking: "Checking…",
@@ -63,11 +65,13 @@ const copy = locale === "zh" ? {
   switchConfirm: "Only new tasks will switch. Running and waiting tasks remain pinned to their original Runtime. Continue?", switched: "The default Agent Runtime was updated for new tasks.",
   refreshModels: "Refresh model catalog", refreshingModels: "Refreshing models…", catalogUnavailable: "This Runtime cannot discover models from its current SDK.",
   catalogNotLoaded: "The current SDK model catalog has not been loaded.", catalogIncomplete: "The model catalog is incomplete. Models cannot be checked or saved.", catalogStale: "This is a stale cache. Refresh it before changing the model.", catalogFailed: "The model catalog could not be loaded.",
-  sdkDefault: "SDK default", currentModel: "Current system default", modalities: "Input modalities", reasoning: "Reasoning effort", tiers: "Service tiers",
+  sdkDefault: "SDK default", currentModel: "Saved model for this Runtime", modalities: "Input modalities", reasoning: "Reasoning effort", tiers: "Service tiers",
   reasoningDefault: "SDK recommended default", reasoningSaved: "User selection", saveReasoning: "Save reasoning effort", reasoningSavedDone: "Reasoning effort saved for new sessions and the next Agent editing turn using this model; running turns are unchanged.", reasoningUnavailable: "The current catalog does not provide valid reasoning efforts. Refresh it first.", chooseReasoning: "Choose reasoning effort", effortNone: "None", effortMinimal: "Minimal", effortLow: "Low", effortMedium: "Medium", effortHigh: "High", effortXhigh: "Extra high", effortMax: "Maximum", effortUltra: "Ultra", effortUnconfigured: "Not saved",
   checkModel: "Check compatibility", checkingModel: "Checking…", modelCompatible: "Compatibility check passed", modelCheckRequired: "Compatibility check required", modelIncompatible: "Compatibility check failed", modelRetired: "No longer offered by the current SDK",
   setModel: "Set as default model", settingModel: "Setting…", modelSet: "The system-default model was updated for new sessions and drafts only.", upgradeTo: "Recommended upgrade", emptyModels: "The complete catalog contains no visible models.",
   blockerLabels: {
+    workbuddy_sdk_integration_required: "SDK integration certification required", workbuddy_admission_migration_required: "Controlled three-layer migration required", workbuddy_sdk_operation_not_certified: "SDK operation or permission mode is not certified", runtime_model_protocol_changed: "Model protocol changed; compatibility check required",
+    runtime_control_unknown: "Enablement state is not confirmed", runtime_status_pending: "Qualification status is being checked", status_refresh_timeout: "Status checking exceeded the display wait; background work may still be running", status_binding_changed: "Configuration changed; checking the new state", status_projection_failed: "Status could not be read",
     runtime_reasoning_effort_invalid: "The current model does not offer this reasoning effort. Refresh the catalog and choose again.", runtime_reasoning_effort_unsupported: "This Runtime adapter cannot explicitly send reasoning effort.",
     runtime_model_probe_timeout: "Compatibility check timed out; compatibility remains unconfirmed. Retry the check.", runtime_model_authentication_failed: "Authentication failed. Sign in again before checking.", runtime_model_access_unavailable: "This account cannot access the model.", runtime_model_incompatible: "The model is incompatible with the current SDK or CLI.", runtime_model_probe_failed: "The model check failed. Retry the check.", runtime_model_probe_invalid_response: "The model did not return the expected verification response.",
     native_windows_runtime_unavailable: "The official Runtime does not support native Windows", sdk_not_installed: "The SDK is not installed", platform_not_supported: "The current operating system is unsupported",
@@ -87,11 +91,18 @@ const copy = locale === "zh" ? {
 <section class="sdk-manager" data-sdk-manager data-api-base={apiBase}>
   <header class="plugin-manager-header">
     <div><p class="runtime-eyebrow"><Settings size={16} aria-hidden="true" />{copy.eyebrow}</p><h1>{copy.title}</h1><p>{copy.body}</p></div>
-    <button type="button" class="secondary-button" data-check-all><RefreshCw size={16} aria-hidden="true" />{copy.checkAll}</button>
   </header>
+  <div class="settings-default-strip"><strong data-default-summary>{copy.loading}</strong><button type="button" class="secondary-button" data-reread><RefreshCw size={16} aria-hidden="true" />{locale === "zh" ? "重新读取状态" : "Read status again"}</button></div>
+  <div class="settings-runtime-navigation">
+    <div role="tablist" aria-label={locale === "zh" ? "查看 Runtime" : "View Runtime"} data-runtime-tabs></div>
+    <label class="settings-more" hidden>{locale === "zh" ? "更多" : "More"}<select data-runtime-more aria-label={locale === "zh" ? "更多 Runtime" : "More runtimes"}></select></label>
+    <label class="settings-runtime-picker">{locale === "zh" ? "查看 Runtime" : "View Runtime"}<select data-runtime-picker></select></label>
+  </div>
   <div class="plugin-alert" data-sdk-alert>{copy.loading}</div>
   <div class="plugin-alert" data-no-default hidden>{copy.noDefault}</div>
   <div class="sdk-grid" data-sdk-grid></div>
+  <details class="settings-other"><summary>{locale === "zh" ? "其他 Runtime" : "Other runtimes"}</summary><div data-other-runtimes></div></details>
+  <details class="settings-global-maintenance"><summary>{locale === "zh" ? "全局高级维护" : "Global advanced maintenance"}</summary><p>{locale === "zh" ? "执行实际安装与认证检查，不是重新读取展示状态。" : "Runs installation and authentication checks, not a display-state refresh."}</p><button type="button" class="secondary-button" data-check-all><RefreshCw size={16} aria-hidden="true" />{copy.checkAll}</button></details>
 </section>
 
 <script is:inline define:vars={{ copy, locale }}>
@@ -100,16 +111,40 @@ const copy = locale === "zh" ? {
   const alert = root?.querySelector("[data-sdk-alert]");
   const noDefault = root?.querySelector("[data-no-default]");
   const apiBase = root?.dataset.apiBase;
+  const navigationEnabled = Boolean(root?.querySelector("[data-runtime-tabs]"));
+  const initialParams = navigationEnabled ? new URL(window.location.href).searchParams : null;
+  let viewedProvider = initialParams?.get("provider") || null;
+  let viewedSection = initialParams?.get("section") === "history" ? "history" : "runtime";
+  const notifySettings = () => { if (navigationEnabled) document.dispatchEvent(new CustomEvent("sapba:settings-state", {detail: {items: [...runtimeViews.values()].filter(view => listedProviders.has(view.sdk.provider_id)).map(view => view.sdk), defaultProviderId: latestDefault}})); };
+  const activity = (section, message) => {
+    if (!navigationEnabled) return;
+    const card = section.closest(".sdk-card"); if (card) { card.dataset.activity = message; card.dataset.busy = String(message === (locale === "zh" ? "操作进行中" : "Operation in progress")); }
+    document.dispatchEvent(new CustomEvent("sapba:settings-activity"));
+  };
+  let stateGeneration = 0;
   const element = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
   const localized = (value) => value?.[locale] || value?.zh || value?.en || "";
   const checkedTime = (value) => value ? new Date(value).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") : copy.notChecked;
   const blockerText = (value) => copy.blockerLabels?.[value] || value;
   const showMessage = (message, tone = "") => { alert.hidden = false; alert.dataset.tone = tone; alert.textContent = message; };
-  const responseError = async (response) => { try { const payload = await response.json(); return copy.blockerLabels?.[payload?.detail?.code] || payload?.detail?.message || payload?.detail?.detail?.message || payload?.detail || response.statusText; } catch { return response.statusText; } };
-  const request = async (url, options = {}) => { const response = await fetch(url, options); if (!response.ok) throw new Error(await responseError(response)); return await response.json(); };
+  const responseError = async (response) => { try { const payload = await response.json(); return authenticationErrors[payload?.detail?.code] || copy.blockerLabels?.[payload?.detail?.code] || payload?.detail?.message || payload?.detail?.detail?.message || payload?.detail || response.statusText; } catch { return response.statusText; } };
+  const request = async (url, options = {}) => { const response = await fetch(url, options); if (!response.ok) { const error = new Error(await responseError(response)); error.confirmed = response.status >= 400 && response.status < 500; throw error; } const payload = await response.json(); if (options.method && !["GET", "HEAD"].includes(options.method)) { stateGeneration++; const match = url.match(/\/sdk-runtimes\/([^/]+)\/(default-model|models\/check|models\/[^/]+\/reasoning-effort)$/); if (navigationEnabled && match) { const view = runtimeViews.get(decodeURIComponent(match[1])); if (view) view.acceptedFormChange = true; } } return payload; };
+  const workbuddyModelCheck = async (body) => {
+    const response = await fetch(`${apiBase}/api/system/sdk-runtimes/workbuddy/models/check`, {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    if (!response.ok) {
+      const error = new Error(await responseError(response));
+      error.confirmed = response.status >= 400 && response.status < 500;
+      throw error;
+    }
+    const payload = await response.json(); stateGeneration++; if (navigationEnabled && payload.check) { const view = runtimeViews.get("workbuddy"); if (view) view.acceptedFormChange = true; } return payload;
+  };
 
   const stateFor = (sdk) => {
-    if (sdk.selected) return { key: "ready", text: copy.selected };
+    if (sdk.enabled == null) return { key: "pending", text: locale === "zh" ? "状态待核对" : "State not confirmed" };
+    if (sdk.control_status && sdk.enabled === true && sdk.status_refresh?.stale) return { key: "ready", text: locale === "zh" ? "已启用 · 资格核对中" : "Enabled · qualification pending" };
+    if (sdk.status_refresh?.stale) return { key: "pending", text: copy.notChecked };
+    if (sdk.selected && !navigationEnabled) return { key: "ready", text: copy.selected };
     if (!sdk.enabled) return { key: "pending", text: copy.disabled };
     if (["reserved", "reserved_blocked"].includes(sdk.availability)) return { key: "pending", text: copy.reserved };
     if (sdk.availability === "planned") return { key: "pending", text: copy.planned };
@@ -120,6 +155,16 @@ const copy = locale === "zh" ? {
   };
   const modelState = (model) => {
     if (model.retired) return { key: "failed", text: copy.modelRetired };
+    const status = model.compatibility_applicability?.status;
+    const labels = {
+      reusable: ["兼容结果有效，可直接保存", "Compatible result reusable; ready to save"],
+      authentication_required: ["认证待核对，并非模型不兼容", "Authentication needs review; not a model incompatibility"],
+      recovery_pending: ["历史结果待承接，请核对认证绑定；无需先重复检查", "Historical result awaits authentication-binding review; do not repeat the check first"],
+      check_required: ["缺少适用结果，需要轻量兼容检查", "No applicable result; a lightweight compatibility check is needed"],
+      failed: ["最近兼容检查失败", "The latest compatibility check failed"],
+      blocked: ["安装、接入能力或运行条件待核对", "Installation, integration or execution prerequisites need review"],
+    };
+    if (labels[status]) return { key: status === "reusable" ? "ready" : status === "failed" ? "failed" : "pending", text: labels[status][locale === "zh" ? 0 : 1] };
     if (model.check_status === "compatible") return { key: "ready", text: copy.modelCompatible };
     if (model.check_status === "check_required") return { key: "pending", text: copy.modelCheckRequired };
     if (model.check_status === "not_checked") return { key: "pending", text: copy.notChecked };
@@ -129,6 +174,23 @@ const copy = locale === "zh" ? {
   // View selection is local UI state, never the saved Runtime default.
   const modelSelections = new Map();
   const customModelIds = new Map();
+  const modelCheckPending = new Map();
+  const codexCheckPending = new Set();
+  const checkBlocked = (model) => ["authentication_required", "recovery_pending", "blocked"].includes(model?.compatibility_applicability?.status);
+  const compatibleView = (model) => !model?.compatibility_applicability || model.compatibility_applicability.status === "reusable";
+  const modelBinding = (payload, model) => JSON.stringify([
+    payload.catalog_digest, payload.environment_digest, payload.service_site_digest,
+    model.reasoning_effort, model.check || null]);
+  const confirmModelSave = async (sdk, payload, model, requireCompatible = true) => {
+    const generation = stateGeneration;
+    const latest = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models`);
+    const current = latest.items?.find(item => item.model_id === model.model_id);
+    if (generation !== stateGeneration || !current || checkBlocked(current)
+        || requireCompatible && (!current.selectable || !compatibleView(current))
+        || modelBinding(latest, current) !== modelBinding(payload, model)) {
+      throw new Error(locale === "zh" ? "模型或认证绑定已变化，请重新读取状态后核对。没有保存或重新检查模型。" : "The model or authentication binding changed. Reload and review; no model was saved or rechecked.");
+    }
+  };
   const modelPicker = (sdk, payload, allowCustom = false) => {
     const field = element("label", "sdk-reasoning-field sdk-model-picker");
     field.append(element("span", "", copy.chooseModel));
@@ -151,63 +213,103 @@ const copy = locale === "zh" ? {
 
   const renderModels = (sdk, section, payload) => {
     section.replaceChildren();
+    section.dataset.operationError = "";
+    const modelMessage = (message, tone = "") => {
+      section.dataset.operationError = tone === "error" ? (locale === "zh" ? "需处理" : "Needs attention") : "";
+      showMessage(message, tone);
+    };
     if (sdk.provider_id === "workbuddy") {
       const heading = element("div", "sdk-model-heading");
       const headingText = element("div"); headingText.append(element("h3", "", copy.modelCatalog), element("p", "",
-        locale === "zh" ? "由 SDK 决定推理强度。目录候选不代表已验证，可输入其他模型 ID。" : "Reasoning is decided by the SDK. Catalog candidates are not verified; another model ID can be entered."));
+        locale === "zh" ? "仅显示 SDK 自动发现的模型，兼容性需单独核对；推理强度由 SDK 决定。" : "Only SDK-discovered models are listed. Compatibility is checked separately; reasoning is decided by the SDK."));
       const refresh = element("button", "secondary-button", copy.refreshModels); refresh.type = "button";
       refresh.disabled = !sdk.installed;
       refresh.addEventListener("click", async () => {
         refresh.disabled = true; refresh.textContent = copy.refreshingModels;
         try { const refreshed = await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/models/refresh`, { method: "POST" }); renderModels(sdk, section, refreshed); }
-        catch (error) { showMessage(String(error.message || error), "error"); refresh.disabled = !sdk.installed; refresh.textContent = copy.refreshModels; }
+        catch (error) { modelMessage(String(error.message || error), "error"); refresh.disabled = !sdk.installed; refresh.textContent = copy.refreshModels; }
       });
       heading.append(headingText, refresh); section.append(heading);
-      const { field: pickerField, picker } = modelPicker(sdk, payload, true); section.append(pickerField);
-      const field = element("label", "sdk-reasoning-field");
-      field.append(element("span", "", locale === "zh" ? "模型 ID" : "Model ID"));
-      const input = element("input"); input.type = "text"; input.maxLength = 128;
-      input.setAttribute("aria-label", locale === "zh" ? "WorkBuddy 模型 ID" : "WorkBuddy model ID"); field.append(input);
-      input.value = customModelIds.get(sdk.provider_id) || "";
-      input.addEventListener("input", () => { customModelIds.set(sdk.provider_id, input.value); });
+      const { field: pickerField, picker } = modelPicker(sdk, payload); section.append(pickerField);
+      if (sdk.default_model_id && !(payload.items || []).some(item => item.model_id === sdk.default_model_id)) {
+        section.append(element("p", "sdk-update-note", locale === "zh"
+          ? "已保存模型不在当前 SDK 目录中；配置保持不变，请刷新目录后核对。"
+          : "The saved model is absent from the current SDK catalog. Configuration is unchanged; refresh the catalog to review."));
+      }
       const list = element("div", "sdk-model-list"); section.append(list);
       const showSelected = () => {
         const model = (payload.items || []).find((item) => item.model_id === picker.value);
+        if (!model) {
+          list.replaceChildren(element("p", "sdk-update-note", locale === "zh"
+            ? "尚未取得 SDK 模型目录，请点击“刷新模型目录”。"
+            : "No SDK model catalog is available. Select Refresh model catalog."));
+          return;
+        }
         const row = element("article", "sdk-model-row sdk-workbuddy-model");
         const identity = element("div", "sdk-model-identity"); const actions = element("div", "sdk-model-actions");
-        field.hidden = picker.value !== "__custom__";
-        identity.append(element("strong", "", model?.model_id || copy.customModel));
+        identity.append(element("strong", "", model.model_id));
         if (model) {
           const state = modelState(model);
-          identity.append(element("span", `sdk-status status-${state.key}`, model.check_status === "not_checked" ? (locale === "zh" ? "CLI 声明，尚未验证" : "CLI-declared, not checked") : state.text));
+          const checkLabel = model.compatibility_applicability ? state.text : model.check_stale
+            ? (locale === "zh" ? "当前站点、账号或环境需要重新核对" : "Recheck for the current site, account or environment")
+            : model.check_status === "not_checked"
+              ? (model.source === "locked_cli_help" ? (locale === "zh" ? "CLI 声明，尚未验证" : "CLI-declared, not checked") : copy.notChecked)
+              : state.text;
+          identity.append(element("span", `sdk-status status-${state.key}`, checkLabel));
           if (model.selected) identity.append(element("span", "sdk-model-badge is-selected", copy.currentModel));
           row.append(identity, element("p", "sdk-update-note", `${copy.sdkReportedModel}: ${model.actual_model || (locale === "zh" ? "未知（不能用于正式验收）" : "unknown (not eligible for formal acceptance)")}`));
         } else row.append(identity);
-        row.append(field);
         let modelBusy = false; let previousDisabled = [];
         const setModelBusy = (busy) => {
-          if (busy) { previousDisabled = [picker, input, refresh, ...row.querySelectorAll("button")].map((control) => [control, control.disabled]); for (const [control] of previousDisabled) control.disabled = true; }
+          activity(section, busy ? (locale === "zh" ? "操作进行中" : "Operation in progress") : (section.dataset.operationError || ""));
+          if (busy) { previousDisabled = [picker, refresh, ...row.querySelectorAll("button")].map((control) => [control, control.disabled]); for (const [control] of previousDisabled) control.disabled = true; }
           else { for (const [control, disabled] of previousDisabled) control.disabled = disabled; }
           modelBusy = busy; row.setAttribute("aria-busy", String(busy));
         };
         const check = element("button", "secondary-button", copy.checkModel); check.type = "button";
-        check.disabled = !sdk.model_check_supported || sdk.authenticated !== true;
+        check.disabled = !sdk.model_check_supported || sdk.authenticated !== true || checkBlocked(model);
         check.addEventListener("click", async () => {
           if (modelBusy) return;
-          const modelId = model?.model_id || input.value.trim(); if (!modelId) { input.focus(); return; }
+          const modelId = model.model_id;
           setModelBusy(true);
-          try { const result = await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/models/check`, {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: modelId }) });
-            await load(false); showMessage(result.check?.compatible ? copy.modelCompatible : copy.modelIncompatible, result.check?.compatible ? "success" : "error");
-          } catch (error) { showMessage(String(error.message || error), "error"); }
+          const pendingKey = `sapba.workbuddy.model-check.${modelId}`;
+          let pending = modelCheckPending.get(modelId);
+          try { pending = pending || JSON.parse(sessionStorage.getItem(pendingKey) || "null"); } catch { /* optional */ }
+          const body = pending || {model_id: modelId, requestId: crypto.randomUUID()};
+          const unknown = () => modelMessage(locale === "zh" ? "检查结果尚未确认。只读取原检查状态，不重新派发。" : "Check outcome is unconfirmed. Reading the original status only; no redispatch.", "error");
+          if (pending) {
+            try {
+              const status = await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/models`);
+              const original = status.model_check_requests?.find(item => item.request_id === pending.requestId);
+              if (original && original.status !== "running") {
+                modelCheckPending.delete(modelId);
+                try { sessionStorage.removeItem(pendingKey); } catch { /* optional */ }
+                renderModels(sdk, section, status);
+              } else unknown();
+            } catch { unknown(); }
+            finally { setModelBusy(false); }
+            return;
+          }
+          modelCheckPending.set(modelId, body);
+          try { sessionStorage.setItem(pendingKey, JSON.stringify(body)); } catch { /* memory fallback */ }
+          try { const result = await workbuddyModelCheck(body);
+            if (!result.check) { unknown(); return; }
+            modelCheckPending.delete(modelId);
+            try { sessionStorage.removeItem(pendingKey); } catch { /* optional */ }
+            await load(false); modelMessage(result.check.compatible ? copy.modelCompatible : copy.modelIncompatible, result.check.compatible ? "success" : "error");
+          } catch (error) {
+            if (error.confirmed) { modelCheckPending.delete(modelId); try { sessionStorage.removeItem(pendingKey); } catch { /* optional */ } modelMessage(String(error.message || error), "error"); }
+            else unknown();
+          }
           finally { setModelBusy(false); }
         }); actions.append(check);
         if (model && model.selectable && !model.selected) {
           const select = element("button", "sdk-update-button", copy.setModel); select.type = "button";
-          select.addEventListener("click", async () => { if (modelBusy) return; setModelBusy(true);
-            try { await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/default-model`, {
-              method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id }) }); await load(false); showMessage(copy.modelSet, "success"); }
-            catch (error) { showMessage(String(error.message || error), "error"); }
+          select.disabled = !compatibleView(model);
+          select.addEventListener("click", async () => { if (modelBusy || !compatibleView(model)) return; setModelBusy(true);
+            try { await confirmModelSave(sdk, payload, model); await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/default-model`, {
+              method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id }) }); await load(false); modelMessage(copy.modelSet, "success"); }
+            catch (error) { modelMessage(String(error.message || error), "error"); }
             finally { setModelBusy(false); }
           }); actions.append(select);
         }
@@ -215,22 +317,81 @@ const copy = locale === "zh" ? {
       };
       picker.addEventListener("change", showSelected); showSelected();
       if (sdk.authenticated !== true) {
-        section.append(element("p", "sdk-update-note", copy.blockerLabels.workbuddy_authentication_required));
+        section.append(element("p", "sdk-update-note", locale === "zh"
+          ? "请先在账号区核对认证状态。尚未确认不等于未登录，不会自动登录或检查模型。"
+          : "Review authentication in the account section first. Unconfirmed does not mean signed out; no automatic sign-in or model check."));
         if (sdk.installed) {
-          section.append(element("p", "sdk-update-note", locale === "zh"
-            ? "在 SAPBusinessAgents 仓库根目录的终端执行以下命令，完成浏览器登录后退出，再点击“检查安装与登录”。不会改动 Codex，也不会自动启用 WorkBuddy。"
-            : "Run this in a terminal at the SAPBusinessAgents repository root. Complete browser sign-in, exit, then click Check installation and login. Codex is unchanged; WorkBuddy is not enabled automatically."),
-            element("code", "sdk-update-note sdk-login-command", "powershell -ExecutionPolicy Bypass -File .\\scripts\\login-workbuddy-runtime.ps1"));
+          if (sdk.authenticated === false) {
+            const manual = element("details", "sdk-technical-details");
+            manual.append(element("summary", "", locale === "zh" ? "手动登录说明" : "Manual sign-in instructions"),
+              element("p", "sdk-update-note", locale === "zh" ? "仅在已确认需要登录时使用；不会自动执行或启用 WorkBuddy。" : "Use only when sign-in is confirmed necessary; never executed automatically. WorkBuddy is not enabled automatically."),
+              element("code", "sdk-update-note sdk-login-command", "powershell -ExecutionPolicy Bypass -File .\\scripts\\login-workbuddy-runtime.ps1"));
+            section.append(manual);
+          }
         }
       }
       const setup = element("a", "sdk-update-note", locale === "zh" ? "独立安装与验证说明" : "Independent installation and validation");
       setup.href = "https://github.com/yin-wen-bin/SAPBusinessAgents/blob/main/docs/workbuddy-runtime.md";
       setup.target = "_blank"; setup.rel = "noopener noreferrer"; section.append(setup);
-      const operations = element("details", "sdk-technical-details"); operations.append(element("summary", "", locale === "zh" ? "操作能力与隔离状态" : "Operation capabilities and isolation"));
-      for (const [name, capability] of Object.entries(sdk.operation_capabilities || {}))
-        operations.append(element("p", "sdk-update-note", `${name}: ${capability.status}${capability.reason ? " · " + (copy.blockerLabels[capability.reason] || capability.reason) : ""}`));
+      const operations = element("details", "sdk-technical-details");
+      const qualificationReasons = locale === "zh" ? {
+        workbuddy_qualification_validation_required: "此模型与当前执行绑定尚未验证",
+        workbuddy_qualification_legacy_binding_missing: "历史通过记录缺少模型或依赖绑定，需核对；旧 PASS 未改写",
+        workbuddy_qualification_latest_failure: "存在较新的失败或未完成验证，不能回退使用旧 PASS",
+        workbuddy_qualification_model_missing: "尚未明确验证模型",
+      } : {
+        workbuddy_qualification_validation_required: "This model and execution binding need validation",
+        workbuddy_qualification_legacy_binding_missing: "Historical evidence lacks model/dependency bindings; original PASS is unchanged",
+        workbuddy_qualification_latest_failure: "A newer failed or unfinished validation blocks fallback to an old PASS",
+        workbuddy_qualification_model_missing: "No explicit validation model",
+      };
+      const showQualification = () => {
+      operations.replaceChildren(element("summary", "", locale === "zh" ? "操作能力与隔离状态" : "Operation capabilities and isolation"));
+      const qualification = payload.items?.find(item => item.model_id === picker.value)?.qualification
+        || (sdk.qualification?.model === picker.value ? sdk.qualification : null);
+      const selectedModel = payload.items?.find(item => item.model_id === picker.value);
+      const quality = selectedModel?.business_evaluation || sdk.business_evaluation;
+      operations.append(element("h4", "", locale === "zh" ? "SDK 接入认证" : "SDK integration certification"));
+      operations.append(element("p", "sdk-update-note", sdk.sdk_integration?.status === "certified"
+        ? (locale === "zh" ? "接入已认证；操作与权限模式仍逐次校验。" : "Integration certified; operation and permission modes remain checked on every dispatch.")
+        : (locale === "zh" ? "接入认证待核对；历史业务 PASS 不自动转换成 SDK 认证。" : "Integration pending; business PASS is not automatically converted to SDK certification.")));
+      for (const [name, capability] of Object.entries(sdk.operation_availability || {})) {
+        operations.append(element("p", "sdk-update-note", `${name}: ${(capability.permission_modes || []).join(", ") || (locale === "zh" ? "未认证" : "not certified")}${capability.status === "partially_certified" ? (locale === "zh" ? " · 部分模式" : " · partial modes") : ""}`));
+      }
+      operations.append(element("h4", "", locale === "zh" ? "模型兼容" : "Model compatibility"));
+      operations.append(element("p", "sdk-update-note", (selectedModel?.model_compatibility?.compatible || selectedModel?.check?.compatible || selectedModel?.selectable)
+        ? (locale === "zh" ? "兼容通过；业务尚未评测不阻断已认证操作。" : "Compatible; prior business evaluation is not required for certified operations.")
+        : (locale === "zh" ? "需要适用的模型兼容检查。" : "An applicable model compatibility check is required.")));
+      if (selectedModel?.check_contract) operations.append(element("p", "sdk-update-note", `${locale === "zh" ? "检查版本" : "Check contract"}: ${selectedModel.check_contract}`));
+      operations.append(element("h4", "", locale === "zh" ? "业务质量评测（仅提示）" : "Business quality evaluation (advisory)"));
+      if (quality && !qualification) operations.append(element("p", "sdk-update-note", quality.status === "not_evaluated"
+        ? (locale === "zh" ? "业务尚未评测。" : "Business quality has not been evaluated.")
+        : (locale === "zh" ? `历史通过 ${quality.historical_pass_count ?? "—"} 项；当前适用性待核对，原始 PASS 保留。` : `${quality.historical_pass_count ?? "—"} historical passes; current applicability pending review. Original PASS retained.`)));
+      if (qualification) {
+        operations.append(element("p", "sdk-update-note", locale === "zh"
+          ? `当前模型 ${qualification.model || "未选择"}：有效 ${qualification.effective_pass_count}/${quality?.required_operation_count ?? "—"}；此模型历史通过 ${qualification.historical_pass_count} 项。旧格式通过 ${qualification.legacy_pass_count} 项，模型绑定待核对，不计入当前质量记录。`
+          : `Current model ${qualification.model || "not selected"}: ${qualification.effective_pass_count}/${quality?.required_operation_count ?? "—"} effective; ${qualification.historical_pass_count} historical operations for this model. ${qualification.legacy_pass_count} legacy passes await binding verification.`));
+        operations.append(element("p", "sdk-update-note", locale === "zh"
+          ? "质量记录按模型和依赖独立保留，不作为启用、模型选择或正式验收启动的统一门禁。"
+          : "Model-scoped quality history is retained, not a universal gate for enablement, model selection or starting formal acceptance."));
+      } else {
+        operations.append(element("p", "sdk-update-note", locale === "zh"
+          ? "后端尚未提供此模型的资格资料。旧版未按模型绑定的计数不能证明此模型可执行。"
+          : "The backend has not supplied this model's qualification. Legacy unscoped counts do not prove that this model is eligible."));
+      }
+      for (const [name, capability] of Object.entries(qualification?.operations || {})) {
+        const origins = Object.values(capability.validation_origins || {});
+        const eligible = (capability.required_permission_modes || []).every(mode => (capability.permission_modes || []).includes(mode));
+        const status = capability.status === "validated" && eligible
+          ? (origins.some(origin => origin.kind === "reuse") ? (locale === "zh" ? "评测通过 · 审计复用" : "Evaluated PASS · audited reuse") : (locale === "zh" ? "评测通过 · 真实验证" : "Evaluated PASS · live validation"))
+          : (locale === "zh" ? "待验证／核对" : "Needs validation/review");
+        const reason = qualificationReasons[capability.reason] || copy.blockerLabels[capability.reason] || capability.reason;
+        operations.append(element("p", "sdk-update-note", `${name}: ${status}${reason ? " · " + reason : ""}${capability.change_reasons?.length ? " · " + capability.change_reasons.join(", ") : ""}`));
+      }
       operations.append(element("p", "sdk-update-note", locale === "zh" ? "Windows 受限模式、原生续接、图片、运行中补充及子 Agent 尚未验证。可信本地模式不是操作系统沙盒。" : "Windows restricted mode, native resume, images, steering and subagents are unverified. Trusted local mode is not an OS sandbox."));
-      section.append(operations); return;
+      };
+      picker.addEventListener("change", showQualification); showQualification();
+      section.append(operations); organizeView(runtimeViews.get(sdk.provider_id)); return;
     }
     const heading = element("div", "sdk-model-heading");
     const headingText = element("div");
@@ -241,7 +402,7 @@ const copy = locale === "zh" ? {
     refresh.addEventListener("click", async () => {
       refresh.disabled = true; refresh.textContent = copy.refreshingModels;
       try { const updated = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/refresh`, { method: "POST" }); renderModels(sdk, section, updated); await load(false); }
-      catch (error) { showMessage(String(error.message || error), "error"); refresh.disabled = false; refresh.textContent = copy.refreshModels; }
+      catch (error) { modelMessage(String(error.message || error), "error"); refresh.disabled = false; refresh.textContent = copy.refreshModels; }
     });
     heading.append(headingText, refresh); section.append(heading);
     const { field: pickerField, picker } = modelPicker(sdk, payload); section.append(pickerField);
@@ -254,10 +415,14 @@ const copy = locale === "zh" ? {
       const name = element("div", "sdk-model-name"); name.append(element("strong", "", model.display_name || model.model_id), element("code", "", model.model_id));
       const badges = element("div", "sdk-model-badges"); if (model.is_sdk_default) badges.append(element("span", "sdk-model-badge", copy.sdkDefault)); if (model.selected) badges.append(element("span", "sdk-model-badge is-selected", copy.currentModel)); badges.append(element("span", `sdk-status status-${state.key}`, state.text)); identity.append(name, badges);
       const facts = element("dl", "sdk-model-facts"); facts.append(element("dt", "", copy.modalities), element("dd", "", (model.input_modalities || []).join(", ") || "—"), element("dt", "", copy.reasoning), element("dd", "", (model.supported_reasoning_efforts || []).join(", ") || "—"), element("dt", "", copy.tiers), element("dd", "", (model.service_tiers || []).join(", ") || "—"));
-      row.append(identity, facts); if (model.upgrade_target) row.append(element("p", "sdk-model-upgrade", `${copy.upgradeTo}: ${model.upgrade_target}`));
+      if (navigationEnabled) { const protocol = element("details", "settings-model-details"); protocol.append(element("summary", "", locale === "zh" ? "模型能力详情" : "Model capability details"), facts); row.append(identity, protocol); }
+      else row.append(identity, facts);
+      if (model.upgrade_target) row.append(element("p", "sdk-model-upgrade", `${copy.upgradeTo}: ${model.upgrade_target}`));
       const actions = element("div", "sdk-model-actions");
+      const checkedEfforts = new Set(model.check_status === "compatible" && compatibleView(model) ? [model.reasoning_effort] : []);
       let modelBusy = false; let previousDisabled = [];
       const setModelBusy = (busy) => {
+        activity(section, busy ? (locale === "zh" ? "操作进行中" : "Operation in progress") : (section.dataset.operationError || ""));
         if (busy) { previousDisabled = [picker, refresh, ...row.querySelectorAll("button, select")].map((control) => [control, control.disabled]); for (const [control] of previousDisabled) control.disabled = true; }
         else { for (const [control, disabled] of previousDisabled) control.disabled = disabled; }
         modelBusy = busy; row.setAttribute("aria-busy", String(busy));
@@ -276,20 +441,52 @@ const copy = locale === "zh" ? {
       if (!efforts.length) row.append(element("p", "sdk-error", copy.reasoningUnavailable));
       if (!effortSelect.disabled) {
         const save = element("button", "secondary-button", copy.saveReasoning); save.type = "button";
-        save.disabled = !effortSelect.value;
-        effortSelect.addEventListener("change", () => { save.disabled = !effortSelect.value; });
-        save.addEventListener("click", async () => { if (modelBusy) return; setModelBusy(true); save.disabled = true; save.textContent = copy.checkingModel; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/${encodeURIComponent(model.model_id)}/reasoning-effort`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reasoning_effort: effortSelect.value }) }); await load(false); showMessage(copy.reasoningSavedDone, "success"); } catch (error) { showMessage(String(error.message || error), "error"); save.disabled = false; save.textContent = copy.saveReasoning; } finally { setModelBusy(false); } }); actions.append(save);
+        save.disabled = !effortSelect.value || !checkedEfforts.has(effortSelect.value) || checkBlocked(model);
+        effortSelect.addEventListener("change", () => { save.disabled = !effortSelect.value || !checkedEfforts.has(effortSelect.value) || checkBlocked(model); });
+        save.addEventListener("click", async () => { if (modelBusy || !checkedEfforts.has(effortSelect.value)) return; setModelBusy(true); save.disabled = true; save.textContent = copy.checkingModel; try { await confirmModelSave(sdk, payload, model, false); await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/${encodeURIComponent(model.model_id)}/reasoning-effort`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reasoning_effort: effortSelect.value }) }); await load(false); modelMessage(copy.reasoningSavedDone, "success"); } catch (error) { modelMessage(String(error.message || error), "error"); save.disabled = false; } finally { setModelBusy(false); save.textContent = copy.saveReasoning; } }); actions.append(save);
       }
       if (!model.retired && payload.model_catalog_complete) {
         const check = element("button", "secondary-button", copy.checkModel); check.type = "button";
-        check.disabled = !effortSelect.value || effortSelect.disabled;
-        effortSelect.addEventListener("change", () => { check.disabled = !effortSelect.value || effortSelect.disabled; });
-        check.addEventListener("click", async () => { if (modelBusy) return; const testedEffort = effortSelect.value; setModelBusy(true); check.disabled = true; check.textContent = copy.checkingModel; try { const result = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/check`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id, reasoning_effort: effortSelect.value }) }); if (testedEffort === model.reasoning_effort) await load(false); showMessage(`${effortLabel(testedEffort)} · ${result.check?.compatible ? copy.modelCompatible : (copy.blockerLabels?.[result.check?.status] || copy.modelIncompatible)}`, result.check?.compatible ? "success" : "error"); check.disabled = false; check.textContent = copy.checkModel; } catch (error) { showMessage(String(error.message || error), "error"); check.disabled = false; check.textContent = copy.checkModel; } finally { setModelBusy(false); } }); actions.append(check);
+        check.disabled = !effortSelect.value || effortSelect.disabled || checkBlocked(model);
+        effortSelect.addEventListener("change", () => { check.disabled = !effortSelect.value || effortSelect.disabled || checkBlocked(model); });
+        check.addEventListener("click", async () => {
+          if (modelBusy) return;
+          const testedEffort = effortSelect.value;
+          const key = `sapba.codex.model-check.${model.model_id}.${testedEffort}`;
+          let pending = codexCheckPending.has(key);
+          try { pending ||= sessionStorage.getItem(key) === "unknown"; } catch { /* optional */ }
+          setModelBusy(true);
+          const unknown = () => modelMessage(locale === "zh" ? "检查结果尚未确认。只读取状态，不自动重发；现有接口无法确认原作业时请先核对。" : "Check outcome unconfirmed. Read status only; do not redispatch when the existing API cannot identify the original job.", "error");
+          if (pending) {
+            try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models`); } catch { /* retain uncertainty */ }
+            unknown(); setModelBusy(false); return;
+          }
+          codexCheckPending.add(key);
+          try { sessionStorage.setItem(key, "unknown"); } catch { /* memory fallback */ }
+          const clearPending = () => { codexCheckPending.delete(key); try { sessionStorage.removeItem(key); } catch { /* optional */ } };
+          try {
+            const result = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/check`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id, reasoning_effort: effortSelect.value }) });
+            if (!result.check) { unknown(); return; }
+            clearPending();
+            if (result.check.compatible) checkedEfforts.add(testedEffort);
+            else checkedEfforts.delete(testedEffort);
+            if (testedEffort === model.reasoning_effort) await load(false);
+            modelMessage(`${effortLabel(testedEffort)} · ${result.check.compatible ? copy.modelCompatible : (copy.blockerLabels?.[result.check.status] || copy.modelIncompatible)}`, result.check.compatible ? "success" : "error");
+          } catch (error) {
+            if (error.confirmed) { clearPending(); modelMessage(String(error.message || error), "error"); }
+            else unknown();
+          } finally {
+            setModelBusy(false);
+            // Restore the saved controls, then update only the effort save guard.
+            const save = [...actions.querySelectorAll("button")].find(button => button.textContent === copy.saveReasoning);
+            if (save) save.disabled = !checkedEfforts.has(effortSelect.value) || checkBlocked(model);
+          }
+        }); actions.append(check);
       }
-      if (model.selectable && !model.selected && payload.model_catalog_complete) {
+      if (model.selectable && !model.selected && payload.model_catalog_complete && compatibleView(model)) {
         const select = element("button", "sdk-update-button", copy.setModel); select.type = "button";
         effortSelect.addEventListener("change", () => { select.disabled = effortSelect.value !== model.reasoning_effort; });
-        select.addEventListener("click", async () => { if (modelBusy) return; setModelBusy(true); select.disabled = true; select.textContent = copy.settingModel; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/default-model`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id }) }); showMessage(copy.modelSet, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); select.disabled = false; } finally { setModelBusy(false); } }); actions.append(select);
+        select.addEventListener("click", async () => { if (modelBusy) return; setModelBusy(true); select.disabled = true; select.textContent = copy.settingModel; try { await confirmModelSave(sdk, payload, model); await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/default-model`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model_id: model.model_id }) }); modelMessage(copy.modelSet, "success"); await load(false); } catch (error) { modelMessage(String(error.message || error), "error"); select.disabled = false; } finally { setModelBusy(false); select.textContent = copy.setModel; } }); actions.append(select);
       }
       row.append(actions); list.append(row);
     };
@@ -297,46 +494,455 @@ const copy = locale === "zh" ? {
   };
 
   const loadModels = async (sdk, section) => {
+    const view = runtimeViews.get(sdk.provider_id);
+    const issuedBinding = bindingSignature(sdk);
+    const applicable = () => !navigationEnabled || !view || (!view.stale && bindingSignature(view.sdk) === issuedBinding);
     if (sdk.provider_id === "workbuddy") {
-      try { renderModels(sdk, section, await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/models`)); }
+      try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/models`); if (applicable()) renderModels(sdk, section, payload); }
       catch (error) { section.append(element("p", "sdk-error", String(error.message || error))); }
       return;
     }
     if (!sdk.model_discovery_supported) { section.append(element("h3", "", copy.modelCatalog), element("p", "sdk-update-note", copy.catalogUnavailable)); return; }
-    try { let payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models`); if (["not_loaded", "stale", "failed"].includes(payload.catalog_status)) payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models/refresh`, { method: "POST" }); renderModels(sdk, section, payload); }
+    try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models`); if (applicable()) renderModels(sdk, section, payload); }
     catch (error) { section.replaceChildren(element("h3", "", copy.modelCatalog), element("p", "sdk-error", String(error.message || error))); }
   };
 
-  const render = (sdks, defaultProviderId) => {
-    grid.replaceChildren(); alert.hidden = true; noDefault.hidden = Boolean(defaultProviderId);
-    for (const sdk of sdks) {
-      const state = stateFor(sdk); const card = element("article", "sdk-card"); const heading = element("header", "sdk-card-heading"); const titleWrap = element("div");
-      titleWrap.append(element("h2", "", localized(sdk.name) || sdk.sdk_id), element("p", "", localized(sdk.description))); heading.append(titleWrap, element("span", `sdk-status status-${state.key}`, state.text));
-      const sdkSection = element("section", "sdk-settings-section"); sdkSection.append(element("h3", "", copy.sdkClient)); const versions = element("div", "sdk-version-grid");
-      for (const [label, value] of [[copy.current, sdk.current_version || copy.notInstalled], [copy.cliVersion, sdk.cli_version || copy.notInstalled], [copy.latest, sdk.latest_version || copy.notChecked]]) { const block = element("section", "sdk-version-block"); block.append(element("span", "", label), element("strong", "", value)); versions.append(block); } sdkSection.append(versions);
+  const authenticationCopy = locale === "zh" ? {
+    title: "账号与认证", login: "登录", logout: "退出登录", switch_account: "切换账号", check: "刷新认证",
+    unknown: "身份未知", method: "认证方式", source: "认证来源", checked: "上次检查", quota: "额度：未核对",
+    note: "登录不等于模型可用，也不会自动启用 Runtime。", shared: "官方 CLI 的登录缓存可能与其他本机客户端共享。",
+    confirm: "此操作会改变共享的官方登录缓存，使账号相关模型检查失效。既有会话不会自动换账号。确认继续？",
+    cancel: "取消", waiting: "等待完成官方认证", link: "打开官方登录页面", retry: "重传原请求", uncertain: "响应未确认，请重传原请求；不要重复创建操作。",
+    account: "官方账号页", config: "认证配置说明", not_checked: "尚未核对", signed_out: "未登录", authenticated: "已认证",
+    expired: "认证已失效", check_failed: "认证核对失败", waiting_authentication: "等待登录", completed: "操作完成", failed: "操作失败",
+    cancelled: "已取消", interrupted: "服务中断，请刷新认证", cleanup_pending: "进程清理尚未确认", queued: "准备中", running: "认证处理中", cancelling: "取消中",
+    external: "由外部配置管理，请在官方客户端调整；此处不收集 API Key。", blocked: "有活动任务，结束后再调整账号。"
+  } : {
+    title: "Account & authentication", login: "Sign in", logout: "Sign out", switch_account: "Switch account", check: "Refresh authentication",
+    unknown: "Identity unknown", method: "Method", source: "Source", checked: "Last checked", quota: "Usage: not checked",
+    note: "Sign-in does not verify models or enable this Runtime.", shared: "The official CLI cache may be shared with other local clients.",
+    confirm: "This changes the shared official login cache and invalidates account-dependent model checks. Existing sessions will not switch accounts. Continue?",
+    cancel: "Cancel", waiting: "Complete official authentication", link: "Open official sign-in page", retry: "Resend original request", uncertain: "Response not confirmed. Resend the original request instead of creating another operation.",
+    account: "Official account page", config: "Authentication instructions", not_checked: "Not checked", signed_out: "Signed out", authenticated: "Authenticated",
+    expired: "Authentication expired", check_failed: "Authentication check failed", waiting_authentication: "Waiting for sign-in", completed: "Completed", failed: "Failed",
+    cancelled: "Cancelled", interrupted: "Interrupted; refresh authentication", cleanup_pending: "Process cleanup unconfirmed", queued: "Preparing", running: "Authenticating", cancelling: "Cancelling",
+    external: "Managed externally. Change it in the official client; API keys are not collected here.", blocked: "Finish active tasks before changing accounts."
+  };
+  const authenticationPending = new Map();
+  const sitePending = new Map();
+  const authenticationErrors = Object.fromEntries([
+    ["runtime_authentication_busy", "请先结束活动任务，再调整账号。", "Finish active tasks before changing accounts."],
+    ["runtime_authentication_operation_active", "认证操作正在进行，请稍后重试。", "An authentication operation is active."],
+    ["runtime_authentication_check_required", "请先刷新认证，确认当前登录有效。", "Refresh authentication before using this Runtime."],
+    ["runtime_authentication_binding_changed", "账号已变化，原会话不能自动换账号；请创建新会话。", "The account changed. Start a new session; the old session cannot switch silently."],
+    ["runtime_authentication_install_required", "请先安装已验证的 SDK 环境。", "Install the verified SDK environment first."],
+    ["runtime_authentication_action_unavailable", "此 SDK 尚未实现该认证操作。", "This SDK does not implement this authentication action."],
+    ["runtime_authentication_external_configuration", "认证由外部配置管理，请在官方客户端调整。", "Authentication is managed externally; change it in the official client."],
+    ["runtime_authentication_state_invalid", "本地认证记录损坏，已阻止操作；请核对记录，不会自动重置。", "Local authentication records are invalid. Actions are blocked; records are not reset automatically."],
+    ["runtime_authentication_provider_failed", "官方认证未完成，请刷新认证或重试。", "Official authentication did not complete. Refresh authentication or retry."],
+    ["runtime_authentication_timeout", "认证等待超时，请刷新认证后再试。", "Authentication timed out. Refresh authentication before retrying."],
+    ["runtime_authentication_cleanup_pending", "所属认证进程清理尚未确认，请刷新认证重新核对。", "Owned process cleanup is unconfirmed. Refresh authentication to recheck."],
+    ["runtime_authentication_interrupted", "服务中断，请刷新认证核对当前状态。", "The service was interrupted. Refresh authentication to confirm the current state."],
+    ["runtime_authentication_cancelled", "认证操作已取消，请刷新认证核对状态。", "Authentication was cancelled. Refresh authentication to confirm its state."],
+    ["workbuddy_service_site_migration_required", "请保存国内站配置后重新核对认证。", "Save the China site configuration, then refresh authentication."],
+    ["workbuddy_service_site_worker_update_required", "请重新准备支持站点配置的独立环境；旧安装保持不变。", "Prepare a site-aware isolated environment; the old installation is preserved."],
+    ["workbuddy_service_site_changed", "站点已变化，请创建新请求；原会话不能自动切换站点。", "The site changed. Create a new request; existing sessions cannot switch silently."],
+    ["workbuddy_service_site_revision_conflict", "站点配置已更新，请刷新后重新确认。", "The site configuration changed. Refresh and confirm again."],
+    ["workbuddy_service_site_runtime_active", "请先停用 WorkBuddy，并确认它不是默认 Runtime。", "Disable WorkBuddy and ensure it is not the default Runtime first."],
+    ["workbuddy_service_site_busy", "有 WorkBuddy 作业或待清理进程，请结束后再切换。", "Finish WorkBuddy jobs and pending process cleanup before switching."],
+    ["workbuddy_service_site_request_conflict", "请求编号已被其他站点设置使用，请重新确认。", "This request ID belongs to different site settings. Confirm a new request."],
+    ["runtime_authentication_url_invalid", "官方登录链接与所选站点不匹配，已阻止打开。", "The official login URL does not match the selected site; opening was blocked."],
+  ].map(([code, zh, en]) => [code, locale === "zh" ? zh : en]));
+  const authenticationTimers = new Map();
+  const authenticationActive = (op) => ["queued", "running", "waiting_authentication", "cancelling", "cleanup_pending"].includes(op?.status);
+  const authRequest = async (url, options = {}, timeoutMs = 12000) => {
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      if (!response.ok) { const error = new Error(await responseError(response)); error.confirmed = true; throw error; }
+      return await response.json();
+    } finally { clearTimeout(timer); }
+  };
+  const renderServiceSite = (sdk, section, authentication) => {
+    if (sdk.provider_id !== "workbuddy") return;
+    const text = locale === "zh" ? {
+      label: "服务站点", china: "国内站", international: "国际站", save: "保存站点", retry: "重传原站点设置",
+      note: "登录、认证和模型调用使用已保存的站点。切换不退出原账号，但需重新核对认证、模型及操作资格。",
+      confirm: "确认切换服务站点？原账号不会退出，现有认证、模型及操作资格需重新检查；不会自动启用 WorkBuddy。",
+      blocked: "切换前请停用 WorkBuddy、取消默认选择，并结束相关作业。", external: "由外部配置管理，不能在此覆盖站点。"
+    } : {
+      label: "Service site", china: "China", international: "International", save: "Save site", retry: "Resend original site settings",
+      note: "Sign-in, authentication and model calls use the saved site. Switching does not sign out the old account, but authentication, models and operations must be rechecked.",
+      confirm: "Switch service site? The old account stays signed in. Authentication, model and operation checks must be renewed; WorkBuddy will not be enabled automatically.",
+      blocked: "Disable WorkBuddy, remove its default selection and finish related jobs before switching.", external: "Managed externally; the site cannot be overridden here."
+    };
+    const key = "sapba-workbuddy-site-request";
+    if (!sitePending.has("workbuddy")) {
+      try { const body = JSON.parse(sessionStorage.getItem(key)); if (body?.requestId) sitePending.set("workbuddy", body); } catch { /* optional */ }
+    }
+    const wrapper = element("div", "sdk-service-site"); const label = element("label", "sdk-model-picker", text.label);
+    const select = element("select", ""); select.setAttribute("aria-label", text.label);
+    for (const name of ["china", "international"]) { const option = element("option", "", text[name]); option.value = name; select.append(option); }
+    select.value = sdk.service_site || "china"; label.append(select);
+    const save = element("button", "secondary-button", text.save); save.type = "button";
+    const busy = authenticationActive(authentication.operation) || authenticationPending.has("workbuddy") || Boolean(authentication.blockers?.length);
+    const external = sdk.service_site_external_configuration || authentication.capabilities?.reason === "runtime_authentication_external_configuration";
+    const allowed = sdk.service_site_switch_allowed && !busy && !external;
+    select.disabled = !allowed || sitePending.has("workbuddy");
+    const refreshSave = () => { save.disabled = !allowed || sitePending.has("workbuddy") || (select.value === sdk.service_site && !sdk.service_site_migration_required); };
+    refreshSave(); select.addEventListener("change", refreshSave);
+    const submit = async (body) => {
+      sitePending.set("workbuddy", body); try { sessionStorage.setItem(key, JSON.stringify(body)); } catch { /* optional */ }
+      for (const control of section.closest(".sdk-card")?.querySelectorAll("button, select, input") || []) control.disabled = true;
+      try {
+        await authRequest(`${apiBase}/api/system/sdk-runtimes/workbuddy/service-site`, {method: "PUT", headers: {"Content-Type": "application/json", "X-SAPBA-Action": "runtime-authentication"}, body: JSON.stringify(body)});
+        sitePending.delete("workbuddy"); try { sessionStorage.removeItem(key); } catch { /* optional */ }
+        await load(false);
+      } catch (error) {
+        if (error.confirmed) { sitePending.delete("workbuddy"); try { sessionStorage.removeItem(key); } catch { /* optional */ } }
+        try { await load(false); } catch {
+          if (sitePending.has("workbuddy")) {
+            const retry = element("button", "secondary-button", text.retry); retry.type = "button";
+            retry.addEventListener("click", async () => { retry.disabled = true; await submit(body); }); wrapper.append(retry);
+          }
+        }
+        showMessage(String(error.message || error), "error");
+      }
+    };
+    save.addEventListener("click", async () => {
+      if (!window.confirm(text.confirm)) return;
+      await submit({service_site: select.value, expected_revision: sdk.service_site_revision, requestId: crypto.randomUUID()});
+    });
+    wrapper.append(label, save, element("p", "sdk-update-note", text.note));
+    if (!allowed) wrapper.append(element("p", "sdk-update-note", external ? text.external : text.blocked));
+    if (sitePending.has("workbuddy")) {
+      const retry = element("button", "secondary-button", text.retry); retry.type = "button";
+      retry.addEventListener("click", async () => { retry.disabled = true; await submit(sitePending.get("workbuddy")); }); wrapper.append(retry);
+    }
+    if (navigationEnabled) {
+      const details = element("details", "settings-site-editor");
+      details.append(element("summary", "", `${text.label}: ${text[sdk.service_site] || copy.notChecked} · ${locale === "zh" ? "更改" : "Change"}`), wrapper);
+      details.open = sitePending.has("workbuddy"); section.append(details);
+    } else section.append(wrapper);
+  };
+  const renderAuthentication = (sdk, section, authentication) => {
+    const text = authenticationCopy; const provider = sdk.provider_id;
+    const base = `${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(provider)}/authentication`;
+    const headers = { "Content-Type": "application/json", "X-SAPBA-Action": "runtime-authentication",
+      ...(provider === "workbuddy" ? {"X-SAPBA-Service-Site-Digest": sdk.service_site_digest} : {}) };
+    const pendingKey = `sapba-auth-request:${provider}`;
+    if (!authenticationPending.has(provider)) {
+      try { const saved = JSON.parse(sessionStorage.getItem(pendingKey)); if (saved?.requestId) authenticationPending.set(provider, saved); } catch { /* optional browser storage */ }
+    }
+    clearTimeout(authenticationTimers.get(provider));
+    section.replaceChildren(element("h3", "", text.title));
+    renderServiceSite(sdk, section, authentication);
+    const facts = element("dl", "plugin-facts sdk-facts");
+    facts.append(element("dt", "", copy.authentication), element("dd", "", text[authentication.status] || text.not_checked),
+      element("dt", "", locale === "zh" ? "账号" : "Account"), element("dd", "", authentication.identity || text.unknown));
+    const extraFacts = element("dl", "plugin-facts sdk-facts");
+    extraFacts.append(element("dt", "", text.method), element("dd", "", authentication.method === "browser" ? (locale === "zh" ? "官方网页登录" : "Official browser login") : authentication.method === "external_key" ? (locale === "zh" ? "外部密钥配置" : "External key configuration") : text.unknown),
+      element("dt", "", text.source), element("dd", "", authentication.source === "official_cli" ? (locale === "zh" ? "官方 CLI 共享缓存" : "Official CLI shared cache") : authentication.source === "external_configuration" ? (locale === "zh" ? "外部 SDK 认证配置" : "External SDK authentication configuration") : text.unknown),
+      element("dt", "", text.checked), element("dd", "", checkedTime(authentication.checked_at)));
+    section.append(facts);
+    const authDetails = element("details", "settings-auth-details"); authDetails.append(element("summary", "", locale === "zh" ? "认证详情" : "Authentication details"), extraFacts, element("small", "sdk-update-note", text.quota), element("p", "sdk-update-note", text.note), element("p", "sdk-update-note", text.shared));
+    if (authentication.failure_code) section.append(element("p", "sdk-error", authenticationErrors[authentication.failure_code] || blockerText(authentication.failure_code)));
+    if (authentication.capabilities?.reason) section.append(element("p", "sdk-update-note", authentication.capabilities.reason === "runtime_authentication_external_configuration" ? text.external : authenticationErrors[authentication.capabilities.reason] || blockerText(authentication.capabilities.reason)));
+    if (authentication.blockers?.length) section.append(element("p", "sdk-update-note", text.blocked));
+    const actions = element("div", "plugin-card-actions sdk-authentication-actions"); section.append(actions);
+    const progress = element("div", "sdk-authentication-progress"); progress.setAttribute("role", "status"); section.append(progress);
+    const links = element("div", "sdk-authentication-links");
+    for (const [url, label] of [[authentication.account_url, text.account], [authentication.configuration_url, text.config]]) {
+      if (!url?.startsWith("https://")) continue;
+      const link = element("a", "", label); link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; links.append(link);
+    } authDetails.append(links); section.append(authDetails);
+    let polling = 0;
+    const showOperation = (operation) => {
+      activity(section, authenticationActive(operation) ? (locale === "zh" ? "操作进行中" : "Operation in progress") : operation.failure_code ? (locale === "zh" ? "需处理" : "Needs attention") : "");
+      clearTimeout(authenticationTimers.get(provider));
+      progress.replaceChildren(element("p", "", text[operation.status] || operation.status));
+      if (operation.failure_code) progress.append(element("p", "sdk-error", authenticationErrors[operation.failure_code] || blockerText(operation.failure_code)));
+      if (operation.status === "waiting_authentication" && operation.auth_url?.startsWith("https://")) {
+        const link = element("a", "secondary-button", text.link); link.href = operation.auth_url; link.target = "_blank"; link.rel = "noopener noreferrer";
+        progress.append(link, element("small", "sdk-update-note", text.waiting));
+      }
+      if (authenticationActive(operation) && operation.status !== "cleanup_pending") {
+        const cancel = element("button", "secondary-button", text.cancel); cancel.type = "button";
+        cancel.addEventListener("click", async () => { cancel.disabled = true; try { const result = await authRequest(`${base}/operations/${operation.operation_id}/cancel`, {method: "POST", headers}); showOperation(result.operation); if (!authenticationActive(result.operation)) await load(false); } catch { showMessage(text.uncertain, "error"); cancel.disabled = false; } });
+        progress.append(cancel);
+        if (++polling <= 220) authenticationTimers.set(provider, setTimeout(async () => {
+          try { const result = await authRequest(`${base}/operations/${operation.operation_id}`); showOperation(result.operation); if (!authenticationActive(result.operation)) await load(false); }
+          catch { progress.append(element("p", "sdk-error", text.uncertain)); }
+        }, 2000));
+      }
+    };
+    const submit = async (body) => {
+      activity(section, locale === "zh" ? "操作进行中" : "Operation in progress");
+      authenticationPending.set(provider, body); try { sessionStorage.setItem(pendingKey, JSON.stringify(body)); } catch { /* memory-only fallback */ }
+      for (const button of actions.querySelectorAll("button")) button.disabled = true;
+      const card = section.closest?.(".sdk-card");
+      for (const control of card?.querySelectorAll("button, select, input") || []) control.disabled = true;
+      try {
+        const result = await authRequest(`${base}/operations`, {method: "POST", headers, body: JSON.stringify(body)});
+        authenticationPending.delete(provider); try { sessionStorage.removeItem(pendingKey); } catch { /* optional */ }
+        showOperation(result.operation);
+        if (!authenticationActive(result.operation)) await load(false);
+      } catch (error) {
+        if (error.confirmed) {
+          authenticationPending.delete(provider); try { sessionStorage.removeItem(pendingKey); } catch { /* optional */ }
+          await load(false); showMessage(String(error.message || error), "error");
+        } else { progress.append(element("p", "sdk-error", text.uncertain)); addRetry(); }
+      }
+    };
+    const addRetry = () => {
+      const retry = element("button", "secondary-button", text.retry); retry.type = "button";
+      retry.addEventListener("click", async () => { retry.disabled = true; await submit(authenticationPending.get(provider)); }); progress.append(retry);
+    };
+    const active = authenticationActive(authentication.operation);
+    const pending = authenticationPending.has(provider) || sitePending.has(provider);
+    for (const action of authentication.authenticated === true ? ["switch_account", "check", "logout"] : ["login", "check"]) {
+      const button = element("button", action === "logout" ? "danger-outline-button" : "secondary-button", text[action]); button.type = "button";
+      button.disabled = pending || active || !authentication.capabilities?.[action] || action !== "check" && Boolean(authentication.blockers?.length);
+      // Cleanup reconciliation is read-only and remains available after an interrupted operation.
+      if (action === "check" && authentication.operation?.status === "cleanup_pending") button.disabled = false;
+      button.addEventListener("click", async () => {
+        // The explicit check has a 30-second backend budget plus owned cleanup.
+        if (action === "check") { button.disabled = true; try { await authRequest(`${base}/check`, {method: "POST", headers}, 45000); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); button.disabled = false; } return; }
+        if (action !== "login" && !window.confirm(text.confirm)) return;
+        const body = {action, requestId: crypto.randomUUID()}; if (action !== "login") body.confirm_provider_id = provider;
+        if (provider === "workbuddy") body.service_site_digest = sdk.service_site_digest;
+        await submit(body);
+      }); button.dataset.authAction = action; actions.append(button);
+    }
+    if (authenticationPending.has(provider)) { progress.append(element("p", "sdk-error", text.uncertain)); addRetry(); }
+    else if (authentication.operation) showOperation(authentication.operation);
+    if (navigationEnabled) section.updateOperation = showOperation;
+  };
+
+  const runtimeViews = new Map();
+  let listedProviders = new Set();
+  let latestDefault = null;
+  const bindingSignature = sdk => JSON.stringify([sdk.runtime_configuration_revision, sdk.default_model_id, sdk.service_site_digest, sdk.authentication?.authentication_revision, sdk.authentication?.revision, sdk.authentication?.identity, sdk.environment_digest]);
+  const formSignature = sdk => JSON.stringify([bindingSignature(sdk), sdk.authenticated, sdk.authentication?.status, sdk.authentication?.capabilities, sdk.authentication?.blockers, sdk.authentication?.failure_code, sdk.service_site_switch_allowed, sdk.service_site_external_configuration]);
+  const organizeView = (view) => {
+    if (!navigationEnabled || !view) return;
+    const {card, maintenance, mainActions, maintenanceActions, modelSection, accountSection} = view;
+    const unavailable = view.sdk.provider_implemented === false || view.sdk.platform_supported === false;
+    card.querySelector('.settings-overview').hidden = unavailable;
+    mainActions.hidden = unavailable; maintenance.hidden = unavailable;
+    if (unavailable && !view.unavailableNote) {
+      view.unavailableNote = element('p', 'settings-unavailable sdk-update-note');
+      card.append(view.unavailableNote);
+    }
+    if (view.unavailableNote) {
+      view.unavailableNote.hidden = !unavailable;
+      view.unavailableNote.textContent = view.sdk.provider_implemented === false ? (locale === 'zh' ? '此 Runtime 尚未接入，暂不提供账号和模型配置。' : 'This Runtime is not integrated; account and model configuration is unavailable.') : (locale === 'zh' ? '此 Runtime 不支持当前平台。' : 'This Runtime does not support the current platform.');
+      if (view.sdk.blockers?.length) view.unavailableNote.textContent += ' ' + view.sdk.blockers.map(blockerText).join('；');
+    }
+    const logout = accountSection.querySelector('[data-auth-action="logout"]');
+    // Move existing controls, never recreate their authority or event handlers.
+    if (logout) { view.logout?.remove(); view.logout = logout; maintenanceActions.append(logout); }
+    view.blockers?.remove();
+    if (view.sdk.blockers?.length) { view.blockers = element("p", "sdk-update-note settings-visible-blockers", view.sdk.blockers.map(blockerText).join("；")); mainActions.append(view.blockers); }
+    for (const button of [...view.actions.children]) {
+      if (button.textContent === copy.select || button.textContent === copy.enable) mainActions.append(button);
+    }
+    const quality = modelSection.querySelector(".sdk-technical-details");
+    if (quality) { view.quality?.remove(); view.quality = quality; maintenance.append(quality); }
+    card.hidden = sdkHidden(view.sdk.provider_id);
+  };
+  const sdkHidden = provider => navigationEnabled && (provider !== viewedProvider || !listedProviders.has(provider));
+  const refreshViewForms = (view) => {
+    view.logout?.remove(); view.logout = null; view.quality?.remove(); view.quality = null;
+    if (view.sdk.authentication) renderAuthentication(view.sdk, view.accountSection, view.sdk.authentication);
+    view.dirty = false; view.stale = false; view.acceptedFormChange = false; view.binding = bindingSignature(view.sdk); view.formSignature = formSignature(view.sdk);
+    view.modelsLoaded = false; view.bindingWarning?.remove(); view.bindingWarning = null;
+    view.modelSection.replaceChildren(element("p", "sdk-update-note", copy.loading));
+    maybeLoadModels(view.sdk, view); organizeView(view);
+  };
+  const actionSignature = (sdk) => JSON.stringify([sdk.enabled, sdk.can_enable, sdk.selectable, sdk.selected,
+    sdk.update_available, sdk.can_update, sdk.update_enabled, sdk.check_status,
+    authenticationActive(sdk.authentication?.operation), authenticationPending.has(sdk.provider_id), sitePending.has(sdk.provider_id)]);
+  const renderRuntime = (sdk) => {
       const runtimeSection = element("section", "sdk-settings-section"); runtimeSection.append(element("h3", "", copy.runtimeState)); const facts = element("dl", "plugin-facts sdk-facts");
-      facts.append(element("dt", "", copy.runtimeState), element("dd", "", sdk.enabled ? copy.enabled : copy.disabled), element("dt", "", copy.currentModel), element("dd", "", sdk.default_model_id || "—"), element("dt", "", copy.authentication), element("dd", "", sdk.authenticated === true ? copy.authenticated : sdk.authenticated === false ? copy.unauthenticated : copy.authUnknown), element("dt", "", copy.platform), element("dd", "", sdk.platform_supported ? copy.supported : copy.unsupported));
+      if (sdk.status_refresh) {
+        const refresh = sdk.status_refresh;
+        const running = refresh.running ?? refresh.status === "refreshing";
+        const failed = refresh.status === "failed" && !running;
+        runtimeSection.append(element("p", failed ? "sdk-error" : "sdk-update-note", failed
+          ? (locale === "zh" ? "资格状态读取失败；不代表 Runtime 已停用。" : "Qualification status could not be read; this does not mean the Runtime is disabled.")
+          : refresh.stale ? (running && refresh.wait_exceeded
+            ? (locale === "zh" ? "资格核对耗时较长，后台仍在继续。" : "Qualification checking is taking longer; it is still running.")
+            : (locale === "zh" ? "资格核对中；启停状态单独显示。" : "Qualification pending; enablement is shown separately."))
+          : (locale === "zh" ? "展示状态已核对；执行前仍会完整检查。" : "Display status checked; execution still requires full validation.")));
+        runtimeSection.append(element("small", "sdk-update-note", `${copy.checkedAt}: ${checkedTime(refresh.checked_at)}${refresh.error_code ? ` · ${refresh.error_code}` : ""}`));
+        if (failed || sdk.control_status?.error_code && !sdk.control_status.running) {
+          const reread = element("button", "secondary-button", locale === "zh" ? "重新读取状态" : "Read status again"); reread.type = "button";
+          reread.addEventListener("click", () => load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error"))); runtimeSection.append(reread);
+        }
+      }
+      facts.append(element("dt", "", copy.runtimeState), element("dd", "", sdk.enabled == null ? (locale === "zh" ? "状态待核对" : "State not confirmed") : sdk.enabled ? copy.enabled : copy.disabled), element("dt", "", copy.currentModel), element("dd", "", sdk.default_model_id || "—"), element("dt", "", copy.platform), element("dd", "", sdk.platform_supported == null ? copy.notChecked : sdk.platform_supported ? copy.supported : copy.unsupported));
       if (sdk.blockers?.length) facts.append(element("dt", "", copy.blockers), element("dd", "sdk-error", sdk.blockers.map(blockerText).join(locale === "zh" ? "；" : "; "))); if (sdk.error?.message) facts.append(element("dt", "", copy.failedState), element("dd", "sdk-error", sdk.error.message)); runtimeSection.append(facts);
       const technical = element("details", "sdk-technical-details"); technical.append(element("summary", "", copy.technicalDetails));
       const technicalFacts = element("dl", "plugin-facts sdk-facts");
       technicalFacts.append(element("dt", "", copy.provider), element("dd", "", sdk.provider_id), element("dt", "", copy.package), element("dd", "", sdk.package_name), element("dt", "", copy.ecosystem), element("dd", "", sdk.ecosystem), element("dt", "", copy.capabilities), element("dd", "", (sdk.capabilities || []).join(", ") || "—"), element("dt", "", copy.checkedAt), element("dd", "", checkedTime(sdk.checked_at)));
       technical.append(technicalFacts); runtimeSection.append(technical);
       const actions = element("footer", "plugin-card-actions sdk-card-actions"); const check = element("button", "secondary-button", copy.check); check.type = "button";
-      check.addEventListener("click", async () => { check.disabled = true; check.textContent = copy.checking; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/check`, { method: "POST" }); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); check.disabled = false; } }); actions.append(check);
-      if (sdk.enabled) {
+      check.addEventListener("click", async () => { check.disabled = true; check.textContent = copy.checking; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/check`, { method: "POST" }); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); check.disabled = false; } });
+      if (sdk.enabled === true) {
         const disable = element("button", "danger-outline-button", copy.disable); disable.type = "button";
-        disable.addEventListener("click", async () => { const confirmation = window.prompt(`${copy.confirmDisable}\n${sdk.provider_id}`); if (confirmation !== sdk.provider_id) return; disable.disabled = true; disable.textContent = copy.disabling; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/disable`, { method: "POST", headers: { "Content-Type": "application/json", "X-SAPBA-Action": "runtime-disable" }, body: JSON.stringify({ confirm_provider_id: confirmation }) }); showMessage(copy.disabledDone, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); disable.disabled = false; } }); actions.append(disable);
+        disable.addEventListener("click", async () => { const confirmation = window.prompt(`${copy.confirmDisable}\n${sdk.provider_id}`); if (confirmation !== sdk.provider_id) return; disable.disabled = true; disable.textContent = copy.disabling; try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/disable`, { method: "POST", headers: { "Content-Type": "application/json", "X-SAPBA-Action": "runtime-disable" }, body: JSON.stringify({ confirm_provider_id: confirmation }) }); applyRuntimeResult(payload); showMessage(copy.disabledDone, "success"); await load(false, {incremental: true, afterMutation: true}); } catch (error) { showMessage(String(error.message || error), "error"); disable.disabled = false; } }); actions.append(disable);
       } else {
-        const enable = element("button", "secondary-button", copy.enable); enable.type = "button"; enable.disabled = !sdk.can_enable;
-        enable.addEventListener("click", async () => { enable.disabled = true; enable.textContent = copy.enabling; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/enable`, { method: "POST" }); showMessage(copy.enabledDone, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); enable.disabled = false; } }); actions.append(enable);
+        const enable = element("button", "secondary-button", copy.enable); enable.type = "button"; enable.disabled = sdk.enabled == null || !sdk.can_enable;
+        enable.addEventListener("click", async () => { enable.disabled = true; enable.textContent = copy.enabling; try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/enable`, { method: "POST" }); applyRuntimeResult(payload); showMessage(copy.enabledDone, "success"); await load(false, {incremental: true, afterMutation: true}); } catch (error) { showMessage(String(error.message || error), "error"); enable.disabled = false; } }); actions.append(enable);
       }
       if (sdk.selectable && !sdk.selected) { const select = element("button", "sdk-update-button", copy.select); select.type = "button"; select.addEventListener("click", async () => { if (!window.confirm(copy.switchConfirm)) return; select.disabled = true; select.textContent = copy.selecting; try { await request(`${apiBase}/api/system/sdk-runtimes/default`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider_id: sdk.provider_id }) }); showMessage(copy.switched, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); select.disabled = false; } }); actions.append(select); }
       if ((sdk.update_available || sdk.provider_id === "workbuddy" && sdk.can_update) && sdk.update_enabled) { const update = element("button", "sdk-update-button", sdk.provider_id === "workbuddy" ? (locale === "zh" ? "重新准备独立环境" : "Prepare a new isolated environment") : copy.update); update.type = "button"; update.addEventListener("click", async () => { if (!window.confirm(copy.confirmUpdate)) return; update.disabled = true; update.textContent = copy.updating; try { const payload = await request(`${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/update`, { method: "POST", headers: { "X-SAPBA-Action": "sdk-update" } }); showMessage(payload.restart_required ? copy.restart : copy.updated, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); update.disabled = false; } }); actions.append(update); } else if (sdk.check_status === "checked" && !sdk.update_enabled) actions.append(element("small", "sdk-update-note", copy.updateDisabled));
-      const overview = element("div", "sdk-overview"); overview.append(sdkSection, runtimeSection);
-      const modelSection = element("section", "sdk-settings-section sdk-model-section"); card.append(heading, overview, actions, modelSection); grid.append(card); loadModels(sdk, modelSection);
-    }
+      if (authenticationActive(sdk.authentication?.operation) || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id)) for (const button of actions.querySelectorAll("button")) button.disabled = true;
+      return {runtimeSection, actions, check};
   };
-  const load = async (showLoading = true) => { if (showLoading) showMessage(copy.loading); const payload = await request(apiBase + "/api/system/sdk-runtimes"); render(payload.items || [], payload.default_provider_id); };
+  const maybeLoadModels = (sdk, view) => {
+    if (navigationEnabled && (viewedSection !== "runtime" || sdk.provider_id !== viewedProvider || view.stale)) return;
+    if (navigationEnabled && (sdk.provider_implemented === false || sdk.platform_supported === false)) {
+      view.modelSection.replaceChildren(element("h3", "", copy.modelCatalog), element("p", "sdk-update-note", copy.catalogUnavailable)); return;
+    }
+    if (view.modelsLoaded || authenticationActive(sdk.authentication?.operation) || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id)) return;
+    if (sdk.status_refresh?.stale || ["refreshing", "unknown", "failed"].includes(sdk.status_refresh?.status)) return;
+    view.modelsLoaded = true; loadModels(sdk, view.modelSection);
+  };
+  const render = (sdks, defaultProviderId, incremental = false) => {
+    listedProviders = new Set(sdks.map(sdk => sdk.provider_id));
+    if (!incremental && !navigationEnabled) { grid.replaceChildren(); runtimeViews.clear(); }
+    latestDefault = defaultProviderId; noDefault.hidden = Boolean(defaultProviderId);
+    if (navigationEnabled && !sdks.some(sdk => sdk.provider_id === viewedProvider)) viewedProvider = sdks.find(sdk => sdk.provider_id === defaultProviderId)?.provider_id || sdks.find(sdk => sdk.provider_implemented !== false && sdk.platform_supported !== false)?.provider_id || sdks[0]?.provider_id;
+    if (!incremental) alert.hidden = true;
+    for (const sdk of sdks) {
+      const old = runtimeViews.get(sdk.provider_id);
+      const revision = sdk.control_status?.revision;
+      if (old && revision != null && old.sdk.control_status?.revision != null && revision < old.sdk.control_status.revision) continue;
+      const state = stateFor(sdk);
+      const parts = renderRuntime(sdk);
+      if ((incremental || navigationEnabled) && old) {
+        old.badge.className = `sdk-status status-${state.key}`; if (old.badge.textContent !== state.text) old.badge.textContent = state.text;
+        // These regions contain no account/model inputs. Keep their node and
+        // all form nodes stable so polling cannot erase typing or focus.
+        const oldTechnical = old.runtimeSection.querySelector("details");
+        const focusedTechnical = oldTechnical?.querySelector("summary") === document.activeElement;
+        const technicalOpen = oldTechnical?.open;
+        old.runtimeSection.replaceChildren(...parts.runtimeSection.children);
+        const newTechnical = old.runtimeSection.querySelector("details");
+        if (newTechnical) newTechnical.open = Boolean(technicalOpen);
+        if (focusedTechnical) newTechnical?.querySelector("summary")?.focus();
+        if (old.actionSignature !== actionSignature(sdk)) {
+          old.mainActions?.replaceChildren();
+          const focusedAction = [...old.actions.querySelectorAll("button")].find(button => button === document.activeElement)?.textContent;
+          old.actions.replaceChildren(...parts.actions.children);
+          if (focusedAction) [...old.actions.querySelectorAll("button")].find(button => button.textContent === focusedAction && !button.disabled)?.focus();
+          old.actionSignature = actionSignature(sdk);
+        }
+        old.sdk = sdk;
+        if (navigationEnabled && sdk.authentication?.operation && JSON.stringify(sdk.authentication.operation) !== old.operationSignature) {
+          old.accountSection.updateOperation?.(sdk.authentication.operation);
+          old.operationSignature = JSON.stringify(sdk.authentication.operation);
+        }
+        if (navigationEnabled && (old.binding !== bindingSignature(sdk) || old.formSignature !== formSignature(sdk) || !incremental)) {
+          if (old.acceptedFormChange && !old.stale) { refreshViewForms(old); }
+          else if ((old.dirty || old.card.dataset.busy === "true") && old.formSignature !== formSignature(sdk)) {
+            old.stale = true;
+            for (const button of old.card.querySelectorAll("button,input,select")) button.disabled = true;
+            if (!old.bindingWarning) {
+              const warning = element("div", "sdk-error settings-binding-warning");
+              warning.append(element("p", "", locale === "zh" ? "配置或账号绑定已变化。未保存输入已保留，请核对后重新载入；不会自动保存或套用。" : "Configuration or account binding changed. Unsaved input is retained; review and reload before applying it."));
+              const reload = element("button", "secondary-button", locale === "zh" ? "放弃未保存输入并重新核对" : "Discard unsaved input and reload"); reload.type = "button";
+              reload.addEventListener("click", () => { if (!window.confirm(locale === "zh" ? "放弃此 SDK 的未保存输入并读取当前配置？" : "Discard this SDK's unsaved input and read its current configuration?")) return; modelSelections.delete(sdk.provider_id); customModelIds.delete(sdk.provider_id); refreshViewForms(old); old.actionSignature = null; load(false, {incremental:true}); }); warning.append(reload); old.card.prepend(warning); old.bindingWarning = warning;
+            }
+            old.bindingWarning.querySelector("button").disabled = false;
+          } else if (!old.dirty && old.card.dataset.busy !== "true" && !authenticationPending.has(sdk.provider_id) && !sitePending.has(sdk.provider_id)) refreshViewForms(old);
+        }
+        if (!old.accountSection.children.length && sdk.authentication) renderAuthentication(sdk, old.accountSection, sdk.authentication);
+        maybeLoadModels(sdk, old);
+        organizeView(old);
+        continue;
+      }
+      const card = element("article", "sdk-card"); const heading = element("header", "sdk-card-heading"); const titleWrap = element("div");
+      const badge = element("span", `sdk-status status-${state.key}`, state.text);
+      badge.setAttribute("role", "status"); badge.setAttribute("aria-live", "polite");
+      titleWrap.append(element("h2", "", localized(sdk.name) || sdk.sdk_id)); heading.append(titleWrap, badge);
+      const sdkSection = element("section", "sdk-settings-section"); sdkSection.append(element("h3", "", copy.sdkClient)); const versions = element("div", "sdk-version-grid");
+      const statusUnknown = sdk.status_refresh && !sdk.status_refresh.checked_at;
+      for (const [label, value] of [[copy.current, sdk.current_version || (statusUnknown ? copy.notChecked : copy.notInstalled)], [copy.cliVersion, sdk.cli_version || (statusUnknown ? copy.notChecked : copy.notInstalled)], [copy.latest, sdk.latest_version || copy.notChecked]]) { const block = element("section", "sdk-version-block"); block.append(element("span", "", label), element("strong", "", value)); versions.append(block); } sdkSection.append(versions);
+      const accountSection = element("section", "sdk-settings-section sdk-authentication-section");
+      if (sdk.authentication) renderAuthentication(sdk, accountSection, sdk.authentication);
+      const sdkDetails = element("details", "sdk-technical-details"); sdkDetails.append(element("summary", "", copy.sdkClient), sdkSection);
+      sdkDetails.append(parts.check);
+      const modelSection = element("section", "sdk-settings-section sdk-model-section");
+      const maintenance = element("details", "settings-maintenance"); maintenance.append(element("summary", "", locale === "zh" ? "高级维护" : "Advanced maintenance"));
+      const mainActions = element("div", "settings-main-actions"), maintenanceActions = element("div", "settings-maintenance-actions");
+      if (navigationEnabled) {
+        card.dataset.providerPanel = sdk.provider_id; card.id = `runtime-panel-${sdk.provider_id}`; card.setAttribute("role", "tabpanel"); card.setAttribute("aria-label", localized(sdk.name) || sdk.provider_id);
+        const overview = element("div", "settings-overview"); overview.append(accountSection, modelSection);
+        maintenance.append(parts.actions, maintenanceActions, parts.runtimeSection, sdkDetails);
+        card.append(heading, mainActions, overview, maintenance);
+      } else card.append(heading, accountSection, modelSection, parts.runtimeSection, parts.actions, sdkDetails);
+      grid.append(card);
+      const view = {sdk, card, badge, accountSection, modelSection, maintenance, mainActions, maintenanceActions, runtimeSection: parts.runtimeSection, actions: parts.actions, modelsLoaded: false, actionSignature: actionSignature(sdk), binding: bindingSignature(sdk), formSignature: formSignature(sdk), dirty:false};
+      if (navigationEnabled) {
+        for (const name of ["input", "change"]) card.addEventListener(name, event => { if (event.target.matches("input,select,textarea")) view.dirty = true; });
+        card.addEventListener("click", event => { if (view.stale && !view.bindingWarning?.contains(event.target)) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+      }
+      runtimeViews.set(sdk.provider_id, view);
+      modelSection.append(element("h3", "", copy.modelCatalog), element("p", "sdk-update-note", locale === "zh" ? "正在读取已保存状态…" : "Loading saved status…"));
+      maybeLoadModels(sdk, view);
+      organizeView(view);
+    }
+    notifySettings();
+  };
+  const applyRuntimeResult = (payload) => {
+    if (!payload.item) return;
+    stateGeneration++;
+    const item = {...payload.item, status_refresh: {status: "ready", stale: false, running: false, checked_at: new Date().toISOString()}};
+    const controlRevision = Number.isInteger(item.control_status?.revision) ? item.control_status.revision : -1;
+    if (item.provider_id === "workbuddy" && Number.isInteger(item.runtime_configuration_revision) && item.runtime_configuration_revision > controlRevision) item.control_status = {status: "ready", revision: item.runtime_configuration_revision, checked_at: new Date().toISOString()};
+    const items = [...runtimeViews.values()].filter(view => !navigationEnabled || listedProviders.has(view.sdk.provider_id)).map(view => view.sdk.provider_id === item.provider_id ? item : view.sdk);
+    render(items, latestDefault, true);
+  };
+  let statusPolls = 0;
+  let statusTimer;
+  let listRequest;
+  let latestPayload;
+  const needsRefresh = (sdk) => sdk.status_refresh?.running ?? sdk.status_refresh?.status === "refreshing";
+  const scheduleStatus = () => {
+    clearTimeout(statusTimer);
+    if (document.hidden || !(latestPayload?.items || []).some(sdk => needsRefresh(sdk) || sdk.control_status?.running)) { statusPolls = 0; return; }
+    const delay = latestPayload.items.some(sdk => sdk.control_status?.running) ? 2000 : statusPolls < 15 ? 2000 : statusPolls < 30 ? 5000 : 15000;
+    statusPolls++;
+    statusTimer = setTimeout(() => load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")), delay);
+  };
+  const load = (showLoading = true, {incremental = false, afterMutation = false} = {}) => {
+    if (listRequest) {
+      if (afterMutation || !incremental) return listRequest.catch(() => {}).then(() => load(showLoading, {incremental}));
+      return listRequest;
+    }
+    if (showLoading) showMessage(copy.loading);
+    const generation = stateGeneration;
+    listRequest = (async () => {
+      try {
+        const payload = await request(apiBase + "/api/system/sdk-runtimes", {cache: "no-store"});
+        if (generation === stateGeneration) { latestPayload = payload; render(payload.items || [], payload.default_provider_id, incremental); }
+      } finally { listRequest = null; scheduleStatus(); }
+    })();
+    return listRequest;
+  };
+  document.addEventListener("visibilitychange", () => { clearTimeout(statusTimer); if (!document.hidden) load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")); });
+  window.addEventListener("pagehide", () => clearTimeout(statusTimer));
   root?.querySelector("[data-check-all]")?.addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; showMessage(copy.checking); try { const payload = await request(apiBase + "/api/system/sdk-runtimes/check", { method: "POST" }); render(payload.items || [], payload.default_provider_id); } catch (error) { showMessage(String(error.message || error), "error"); } finally { button.disabled = false; } });
+  root?.querySelector("[data-reread]")?.addEventListener("click", () => load(false, {incremental:true}).catch(() => showMessage(copy.unavailable, "error")));
+  if (navigationEnabled) {
+    document.addEventListener("sapba:settings-request-state", notifySettings);
+    document.addEventListener("sapba:settings-select", event => {
+      viewedProvider = event.detail.provider; viewedSection = event.detail.section;
+      for (const view of runtimeViews.values()) { view.card.hidden = sdkHidden(view.sdk.provider_id); maybeLoadModels(view.sdk, view); }
+    });
+  }
   load().catch(() => showMessage(copy.unavailable, "error"));
 </script>

@@ -1,0 +1,762 @@
+{
+  "kind": "offline-reviewed-unapplied-proposal",
+  "draft_id": "agent_draft_b947ebc1029ae8f81b28512c",
+  "base_revision": 1,
+  "source_read_plan_preserved": true,
+  "technical_id_suggestion": "supplier-historical-open-items",
+  "edits": [
+    {
+      "op": "replace",
+      "path": "/manifest/title",
+      "value": {
+        "zh": "供应商历史未清项目与发票校验助手",
+        "en": "Supplier Historical Open Items and Invoice Verification Assistant"
+      }
+    },
+    {
+      "op": "replace",
+      "path": "/manifest/summary",
+      "value": {
+        "zh": "按供应商和过账截止日重建历史未清项目，区分全部未清行项目与 RE 发票校验子集，并分币种汇总；证据不足不猜测。",
+        "en": "Reconstruct historical supplier open items at a posting cutoff, distinguish all open items from the RE invoice-verification subset, and aggregate signed amounts by currency without guessing incomplete evidence."
+      }
+    },
+    {
+      "op": "replace",
+      "path": "/manifest/owner",
+      "value": "应付账款 / Accounts Payable"
+    },
+    {
+      "op": "replace",
+      "path": "/manifest/sapModules",
+      "value": [
+        "FI-AP"
+      ]
+    },
+    {
+      "op": "replace",
+      "path": "/manifest/tables",
+      "value": []
+    },
+    {
+      "op": "replace",
+      "path": "/manifest/inputs",
+      "value": {
+        "zh": [
+          "供应商",
+          "过账截止日"
+        ],
+        "en": [
+          "Supplier",
+          "Posting cutoff date"
+        ]
+      }
+    },
+    {
+      "op": "replace",
+      "path": "/manifest/outputs",
+      "value": {
+        "zh": [
+          "执行状态",
+          "查询源完整性",
+          "成功数据源数量",
+          "规范行项目",
+          "供应商未清项目数",
+          "RE 发票校验子集数",
+          "分币种金额",
+          "业务结论",
+          "业务证据完整",
+          "业务计算完整",
+          "精确重复记录数",
+          "证据缺口与限制",
+          "业务报告"
+        ],
+        "en": [
+          "Execution status",
+          "Query-source completeness",
+          "Successful source count",
+          "Canonical account items",
+          "Supplier open-item count",
+          "RE invoice-verification subset count",
+          "Amounts by currency",
+          "Business conclusion",
+          "Business evidence complete",
+          "Business calculation complete",
+          "Exact duplicate count",
+          "Evidence gaps and limitations",
+          "Business report"
+        ]
+      }
+    },
+    {
+      "op": "replace",
+      "path": "/manifest/workflow",
+      "value": [
+        {
+          "id": "execute-validated-plan",
+          "title": {
+            "zh": "执行已验证查询计划",
+            "en": "Execute validated query plan"
+          },
+          "description": {
+            "zh": "通过已选择的 SAP 只读 Provider 验证并执行从成功自由查询保存的 GET-only 计划。",
+            "en": "Validate and execute the saved GET-only plan through the selected SAP read Provider."
+          },
+          "tools": [
+            {
+              "name": "sap_read_execute_plan",
+              "kind": "SAP Read Provider",
+              "purpose": {
+                "zh": "执行只读 SAP 查询。",
+                "en": "Execute the read-only SAP query."
+              }
+            }
+          ],
+          "executionStepIds": [
+            "sap_query_1"
+          ],
+          "operations": {
+            "zh": [
+              "使用原保存的 GET-only 计划，保留供应商、K 类账户、过账截止日、全部选择字段与读取限制。"
+            ],
+            "en": [
+              "Use the unchanged saved GET-only plan, preserving supplier, account type K, posting cutoff, selected fields and read bounds."
+            ]
+          }
+        },
+        {
+          "id": "validate-evidence",
+          "title": {
+            "zh": "验证证据完整性",
+            "en": "Validate evidence completeness"
+          },
+          "description": {
+            "zh": "执行本地确定性完整性规则，不访问或修改 SAP。",
+            "en": "Run the local deterministic completeness rule without accessing or changing SAP."
+          },
+          "tools": [
+            {
+              "name": "evidence_summary",
+              "kind": "Local deterministic rule",
+              "purpose": {
+                "zh": "汇总证据完整性。",
+                "en": "Summarize evidence completeness."
+              }
+            }
+          ],
+          "executionStepIds": [
+            "validate_evidence"
+          ],
+          "operations": {
+            "zh": [
+              "仅核对已取得证据的完整性；不重新访问 SAP。"
+            ],
+            "en": [
+              "Check completeness of supplied evidence only; never fetch SAP again."
+            ]
+          }
+        },
+        {
+          "id": "derive-historical-open-items",
+          "title": {
+            "zh": "计算历史未清项目",
+            "en": "Calculate historical open items"
+          },
+          "description": {
+            "zh": "使用确定性本地规则生成业务记录、RE 子集和分币种金额。",
+            "en": "Use the deterministic local rule for canonical records, the RE subset and per-currency amounts."
+          },
+          "operations": {
+            "zh": [
+              "按四字段业务键去重；冲突和缺键列为缺口。",
+              "截止日当天清账不属于未清；资料不足数量为未知，不猜测。",
+              "保留源金额符号，用 Decimal 分币种汇总，并输出 RE 子集与完整性。"
+            ],
+            "en": [
+              "Deduplicate the four-part business key; report conflicts or missing keys.",
+              "Clearing on the cutoff is not open; incomplete evidence yields unknown counts.",
+              "Preserve the signed source measure; aggregate Decimal values per currency and expose the RE subset and completeness."
+            ]
+          },
+          "tools": [
+            {
+              "name": "managed_agent_rule",
+              "kind": "Sandboxed local deterministic rule",
+              "purpose": {
+                "zh": "只计算已提供的结构化证据。",
+                "en": "Compute only supplied structured evidence."
+              }
+            }
+          ],
+          "executionStepIds": [
+            "calculate_open_items"
+          ]
+        }
+      ]
+    },
+    {
+      "op": "replace",
+      "path": "/manifest/execution",
+      "value": {
+        "mode": "deterministic",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "supplier": {
+              "type": "string",
+              "minLength": 1,
+              "title": {
+                "zh": "供应商",
+                "en": "Supplier"
+              }
+            },
+            "posting_date_to": {
+              "type": "string",
+              "minLength": 1,
+              "format": "date",
+              "title": {
+                "zh": "过账截止日",
+                "en": "Posting cutoff date"
+              }
+            }
+          },
+          "required": [
+            "supplier",
+            "posting_date_to"
+          ],
+          "additionalProperties": false
+        },
+        "steps": [
+          {
+            "id": "sap_query_1",
+            "executor": "sap_read",
+            "operation": "execute_plan",
+            "readOnly": true,
+            "request": {
+              "plan": {
+                "entity_set": "A_OperationalAcctgDocItemCube",
+                "filters": [
+                  {
+                    "field": "Supplier",
+                    "operator": "eq",
+                    "value": "{{input.supplier}}",
+                    "value_type": "Edm.String"
+                  },
+                  {
+                    "field": "FinancialAccountType",
+                    "operator": "eq",
+                    "value": "K",
+                    "value_type": "Edm.String"
+                  },
+                  {
+                    "field": "PostingDate",
+                    "operator": "le",
+                    "value": "{{input.posting_date_to}}",
+                    "value_type": "Edm.DateTime"
+                  }
+                ],
+                "http_method": "GET",
+                "odata_version": "2.0",
+                "order_by": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem"
+                ],
+                "output_contract": {
+                  "display_grain": "supplier account item",
+                  "mode": "explicit",
+                  "reason": "Complete historical supplier account-item read scoped by supplier, account type K, and posting cutoff; clearing classification comes from ClearingDate.",
+                  "requested_fields": [
+                    "CompanyCode",
+                    "FiscalYear",
+                    "AccountingDocument",
+                    "AccountingDocumentItem",
+                    "Supplier",
+                    "SupplierName",
+                    "AccountingDocumentType",
+                    "PostingDate",
+                    "DocumentDate",
+                    "ClearingDate",
+                    "DebitCreditCode",
+                    "AmountInTransactionCurrency",
+                    "TransactionCurrency",
+                    "AssignmentReference",
+                    "InvoiceReference"
+                  ],
+                  "support_fields": [
+                    "FinancialAccountType",
+                    "SpecialGLCode",
+                    "PaymentTerms",
+                    "ClearingAccountingDocument",
+                    "ClearingDocFiscalYear"
+                  ]
+                },
+                "plan_kind": "direct",
+                "rationale": "Supplier <input:supplier> open invoice verification items as of <input:posting_date_to> require one complete supplier account-item read up to the posting cutoff; open-at-cutoff status is derived from ClearingDate relative to the cutoff, not from current IsCleared.",
+                "schema_version": "1.0",
+                "select_fields": [
+                  "CompanyCode",
+                  "FiscalYear",
+                  "AccountingDocument",
+                  "AccountingDocumentItem",
+                  "Supplier",
+                  "SupplierName",
+                  "FinancialAccountType",
+                  "AccountingDocumentType",
+                  "PostingDate",
+                  "DocumentDate",
+                  "ClearingDate",
+                  "ClearingAccountingDocument",
+                  "ClearingDocFiscalYear",
+                  "DebitCreditCode",
+                  "AmountInTransactionCurrency",
+                  "TransactionCurrency",
+                  "AssignmentReference",
+                  "InvoiceReference",
+                  "SpecialGLCode",
+                  "PaymentTerms"
+                ],
+                "service_name": "API_OPLACCTGDOCITEMCUBE_SRV"
+              }
+            }
+          },
+          {
+            "id": "validate_evidence",
+            "executor": "rule",
+            "operation": "evidence_summary",
+            "inputMapping": {
+              "sap_query_1": "{{steps.sap_query_1.output}}"
+            }
+          },
+          {
+            "id": "calculate_open_items",
+            "executor": "rule",
+            "operation": "managed_agent_rule",
+            "inputMapping": {
+              "run_input": {
+                "supplier": "{{input.supplier}}",
+                "posting_date_to": "{{input.posting_date_to}}"
+              },
+              "evidence": "{{steps.sap_query_1.output}}"
+            }
+          }
+        ],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "title": {
+                "zh": "执行状态",
+                "en": "Execution status"
+              }
+            },
+            "source_complete": {
+              "type": "boolean",
+              "title": {
+                "zh": "查询源完整性",
+                "en": "Query-source completeness"
+              }
+            },
+            "successful_source_count": {
+              "type": "integer",
+              "title": {
+                "zh": "成功数据源数量",
+                "en": "Successful source count"
+              }
+            },
+            "records": {
+              "type": "array",
+              "title": {
+                "zh": "规范行项目",
+                "en": "Canonical account items"
+              },
+              "items": {
+                "type": "object",
+                "properties": {
+                  "company_code": {
+                    "type": "string",
+                    "title": {
+                      "zh": "公司代码",
+                      "en": "Company code"
+                    }
+                  },
+                  "fiscal_year": {
+                    "type": "string",
+                    "title": {
+                      "zh": "会计年度",
+                      "en": "Fiscal year"
+                    }
+                  },
+                  "accounting_document": {
+                    "type": "string",
+                    "title": {
+                      "zh": "会计凭证",
+                      "en": "Accounting document"
+                    }
+                  },
+                  "accounting_document_item": {
+                    "type": "string",
+                    "title": {
+                      "zh": "会计凭证行项目",
+                      "en": "Accounting document item"
+                    }
+                  },
+                  "posting_date": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "title": {
+                      "zh": "过账日期",
+                      "en": "Posting date"
+                    },
+                    "format": "date"
+                  },
+                  "clearing_date": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "title": {
+                      "zh": "清账日期",
+                      "en": "Clearing date"
+                    },
+                    "format": "date"
+                  },
+                  "document_type": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "title": {
+                      "zh": "会计凭证类型",
+                      "en": "Accounting document type"
+                    }
+                  },
+                  "classification": {
+                    "type": "string",
+                    "title": {
+                      "zh": "截止日状态",
+                      "en": "Status at cutoff"
+                    },
+                    "enum": [
+                      "open_at_cutoff",
+                      "cleared_at_cutoff",
+                      "unknown"
+                    ],
+                    "x-sapba-display": {
+                      "format": "enum",
+                      "labels": {
+                        "open_at_cutoff": {
+                          "zh": "截止日未清",
+                          "en": "Open at cutoff"
+                        },
+                        "cleared_at_cutoff": {
+                          "zh": "截止日已清",
+                          "en": "Cleared at cutoff"
+                        },
+                        "unknown": {
+                          "zh": "证据不足",
+                          "en": "Unknown"
+                        }
+                      }
+                    }
+                  },
+                  "invoice_verification": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "title": {
+                      "zh": "RE 发票校验子集",
+                      "en": "RE invoice-verification subset"
+                    }
+                  },
+                  "amount": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "title": {
+                      "zh": "已带符号交易币金额",
+                      "en": "Signed transaction-currency amount"
+                    }
+                  },
+                  "currency": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "title": {
+                      "zh": "交易币种",
+                      "en": "Transaction currency"
+                    }
+                  }
+                },
+                "required": [
+                  "company_code",
+                  "fiscal_year",
+                  "accounting_document",
+                  "accounting_document_item",
+                  "posting_date",
+                  "clearing_date",
+                  "document_type",
+                  "classification",
+                  "invoice_verification",
+                  "amount",
+                  "currency"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "open_item_count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "title": {
+                "zh": "供应商未清项目数",
+                "en": "Supplier open-item count"
+              },
+              "minimum": 0
+            },
+            "invoice_verification_count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "title": {
+                "zh": "RE 发票校验子集数",
+                "en": "RE invoice-verification subset count"
+              },
+              "minimum": 0
+            },
+            "amounts_by_currency": {
+              "type": "array",
+              "title": {
+                "zh": "分币种金额",
+                "en": "Amounts by currency"
+              },
+              "items": {
+                "type": "object",
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "title": {
+                      "zh": "币种",
+                      "en": "Currency"
+                    }
+                  },
+                  "open_amount": {
+                    "type": "string",
+                    "title": {
+                      "zh": "未清金额",
+                      "en": "Open-item amount"
+                    }
+                  },
+                  "invoice_verification_amount": {
+                    "type": "string",
+                    "title": {
+                      "zh": "RE 子集金额",
+                      "en": "RE subset amount"
+                    }
+                  }
+                },
+                "required": [
+                  "currency",
+                  "open_amount",
+                  "invoice_verification_amount"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "business_status": {
+              "type": "string",
+              "title": {
+                "zh": "业务结论",
+                "en": "Business conclusion"
+              },
+              "enum": [
+                "needs_evidence",
+                "open_items",
+                "no_open_items"
+              ],
+              "x-sapba-display": {
+                "format": "enum",
+                "labels": {
+                  "needs_evidence": {
+                    "zh": "证据不足",
+                    "en": "Needs evidence"
+                  },
+                  "open_items": {
+                    "zh": "存在未清项目",
+                    "en": "Open items found"
+                  },
+                  "no_open_items": {
+                    "zh": "无未清项目",
+                    "en": "No open items"
+                  }
+                }
+              }
+            },
+            "evidence_complete": {
+              "type": "boolean",
+              "title": {
+                "zh": "业务证据完整",
+                "en": "Business evidence complete"
+              }
+            },
+            "business_complete": {
+              "type": "boolean",
+              "title": {
+                "zh": "业务计算完整",
+                "en": "Business calculation complete"
+              }
+            },
+            "duplicate_count": {
+              "type": "integer",
+              "title": {
+                "zh": "精确重复记录数",
+                "en": "Exact duplicate count"
+              },
+              "minimum": 0
+            },
+            "limitations": {
+              "type": "array",
+              "title": {
+                "zh": "证据缺口与限制",
+                "en": "Evidence gaps and limitations"
+              },
+              "items": {
+                "type": "string"
+              }
+            },
+            "business_report": {
+              "type": "object",
+              "title": {
+                "zh": "业务报告",
+                "en": "Business report"
+              }
+            }
+          },
+          "required": [
+            "status",
+            "source_complete",
+            "successful_source_count",
+            "records",
+            "open_item_count",
+            "invoice_verification_count",
+            "amounts_by_currency",
+            "business_status",
+            "evidence_complete",
+            "business_complete",
+            "duplicate_count",
+            "limitations",
+            "business_report"
+          ],
+          "additionalProperties": false
+        },
+        "outputMapping": {
+          "status": "{{steps.validate_evidence.output.status}}",
+          "source_complete": "{{steps.calculate_open_items.output.workflow_output.source_complete}}",
+          "successful_source_count": "{{steps.validate_evidence.output.successful_source_count}}",
+          "records": "{{steps.calculate_open_items.output.workflow_output.records}}",
+          "open_item_count": "{{steps.calculate_open_items.output.workflow_output.open_item_count}}",
+          "invoice_verification_count": "{{steps.calculate_open_items.output.workflow_output.invoice_verification_count}}",
+          "amounts_by_currency": "{{steps.calculate_open_items.output.workflow_output.amounts_by_currency}}",
+          "business_status": "{{steps.calculate_open_items.output.workflow_output.business_status}}",
+          "evidence_complete": "{{steps.calculate_open_items.output.workflow_output.evidence_complete}}",
+          "business_complete": "{{steps.calculate_open_items.output.workflow_output.business_complete}}",
+          "duplicate_count": "{{steps.calculate_open_items.output.workflow_output.duplicate_count}}",
+          "limitations": "{{steps.calculate_open_items.output.workflow_output.limitations}}",
+          "business_report": "{{steps.calculate_open_items.output.workflow_output.business_report}}"
+        },
+        "acceptance": {
+          "contractVersion": "1.0",
+          "requiredAssessments": [],
+          "comparisonMode": "business_semantic",
+          "businessKeys": [
+            "company_code",
+            "fiscal_year",
+            "accounting_document",
+            "accounting_document_item"
+          ],
+          "facts": [
+            "posting_date",
+            "clearing_date",
+            "document_type",
+            "classification",
+            "invoice_verification",
+            "amount",
+            "currency"
+          ],
+          "metrics": [
+            "open_item_count",
+            "invoice_verification_count"
+          ],
+          "currencyAndUnitPolicy": "compare_only_when_same_or_conversion_validated",
+          "requiredLimitations": [],
+          "recordScope": "records",
+          "recordDefinition": "One unique supplier account item per CompanyCode, FiscalYear, AccountingDocument, AccountingDocumentItem; include cleared, open and unknown classifications.",
+          "scopeDefinition": "Keep the original supplier, account-type K and posting-date cutoff GET plan. Derive historical openness only from complete, consistent supplied clearing evidence. RE is an invoice-verification subset, not all supplier open items. Duplicate keys are deduplicated only when all business fields agree. Missing/conflicting evidence blocks a complete conclusion. No currency conversion, posting, or new data source.",
+          "businessStatusDefinition": "needs_evidence if source/evidence/calculation is incomplete; otherwise open_items when open_item_count > 0, otherwise no_open_items. Clearing on the cutoff is already cleared.",
+          "factDefinitions": {
+            "company_code": "Supplied SAP account-item evidence: CompanyCode",
+            "fiscal_year": "Supplied SAP account-item evidence: FiscalYear",
+            "accounting_document": "Supplied SAP account-item evidence: AccountingDocument",
+            "accounting_document_item": "Supplied SAP account-item evidence: AccountingDocumentItem",
+            "posting_date": "Supplied SAP account-item evidence: PostingDate",
+            "clearing_date": "Supplied SAP account-item evidence: ClearingDate",
+            "document_type": "Supplied SAP account-item evidence: AccountingDocumentType",
+            "classification": "Supplied SAP account-item evidence: local cutoff classification; clearing on/before cutoff is not open",
+            "invoice_verification": "Supplied SAP account-item evidence: AccountingDocumentType equals RE; distinct from all supplier open items",
+            "amount": "Supplied SAP account-item evidence: AmountInTransactionCurrency (already signed)",
+            "currency": "Supplied SAP account-item evidence: TransactionCurrency"
+          },
+          "metricDefinitions": {
+            "open_item_count": "Count unique records classified open_at_cutoff only after full evidence checks; otherwise null. A complete empty source yields zero.",
+            "invoice_verification_count": "Count the RE subset of unique open_at_cutoff records only after full evidence checks; otherwise null. Never count all open supplier items as RE invoices."
+          },
+          "decimalFields": [
+            "amount"
+          ],
+          "currencyFields": [
+            "currency"
+          ],
+          "dateFields": [
+            "posting_date",
+            "clearing_date"
+          ]
+        },
+        "relationshipPolicy": "advisory"
+      }
+    },
+    {
+      "op": "add",
+      "path": "/manifest/managedRule",
+      "value": {
+        "entrypoint": "evaluate",
+        "sha256": "sha256:4bf385f7d347a10eb1b807644644f2d3920905f00c385cc46fd49bd116040421"
+      }
+    },
+    {
+      "op": "replace",
+      "path": "/rules",
+      "value": "\"\"\"Pure reference rule for the approved draft, not a published Agent or SAP evidence.\"\"\"\nfrom calendar import monthrange\nfrom datetime import datetime, timezone\nfrom decimal import Decimal\nimport re\n\n\nKEYS = ('CompanyCode', 'FiscalYear', 'AccountingDocument', 'AccountingDocumentItem')\nDECIMAL = re.compile(r'^-?[0-9]+(?:\\.[0-9]+)?$')\nISO = re.compile(r'^([0-9]{4})-([0-9]{2})-([0-9]{2})(?:T.*)?$')\nSAP = re.compile(r'^/Date\\((-?[0-9]+)(?:[+-][0-9]{4})?\\)/$')\n\n\ndef text(value):\n    return str(value).strip() if value is not None else ''\n\n\ndef date(value):\n    value = text(value)\n    match = ISO.fullmatch(value)\n    if match:\n        year, month, day = [int(x) for x in match.groups()]\n        if 1 <= year <= 9999 and 1 <= month <= 12 and 1 <= day <= monthrange(year, month)[1]:\n            return value[:10]\n    match = SAP.fullmatch(value)\n    if match and -62135596800000 <= int(match[1]) <= 253402300799000:\n        return datetime.fromtimestamp(int(match[1]) / 1000, timezone.utc).date().isoformat()\n    return None\n\n\ndef evaluate(inputs):\n    run_input = inputs.get('run_input') or {}\n    source = inputs.get('evidence') or {}\n    data = source.get('data') or {}\n    rows = data.get('results') if isinstance(data.get('results'), list) else None\n    complete = (source.get('ok') is True and data.get('source_complete') is True\n                and data.get('source_truncated') is not True and rows is not None)\n    rows = rows or []\n    cutoff = date(run_input.get('posting_date_to'))\n    supplier = text(run_input.get('supplier'))\n    gaps = set()\n    if not complete:\n        gaps.add('source_incomplete')\n    if not cutoff or not supplier:\n        gaps.add('input_scope_missing')\n    unique, conflicts = {}, set()\n    duplicates = 0\n    for row in rows:\n        key = tuple(text(row.get(k)) for k in KEYS)\n        if not all(key):\n            gaps.add('business_key_missing')\n        elif key in unique:\n            # Transport-only OData metadata does not change business identity.\n            prior = {k: v for k, v in unique[key].items() if k != '__metadata'}\n            current = {k: v for k, v in row.items() if k != '__metadata'}\n            if prior == current:\n                duplicates += 1\n            else:\n                conflicts.add(key)\n                gaps.add('business_key_conflict')\n        else:\n            unique[key] = row\n    records, totals, invoices = [], {}, {}\n    count, invoice_count = 0, 0\n    for key in sorted(unique):\n        row = unique[key]\n        classification = 'unknown'\n        amount_text = text(row.get('AmountInTransactionCurrency'))\n        amount = Decimal(amount_text) if DECIMAL.fullmatch(amount_text) else None\n        currency = text(row.get('TransactionCurrency'))\n        posted, cleared = date(row.get('PostingDate')), date(row.get('ClearingDate'))\n        clearing_text = text(row.get('ClearingDate'))\n        # Blank and the SAP zero date are explicit no-clearing representations.\n        no_date = clearing_text in {'', '0000-00-00', '00000000'}\n        clearing_document = text(row.get('ClearingAccountingDocument'))\n        clearing_year = text(row.get('ClearingDocFiscalYear'))\n        no_document = clearing_document in {'', '0000000000'}\n        no_year = clearing_year in {'', '0', '0000'}\n        invoice = text(row.get('AccountingDocumentType')) == 'RE'\n        if key in conflicts:\n            amount, currency = None, ''\n        elif any(name not in row for name in ('ClearingDate', 'ClearingAccountingDocument', 'ClearingDocFiscalYear')):\n            gaps.add('clearing_evidence_missing')\n        elif not cutoff or not supplier or not posted:\n            gaps.add('posting_date_or_scope_missing')\n        elif text(row.get('Supplier')) != supplier or text(row.get('FinancialAccountType')) != 'K' or posted > cutoff:\n            gaps.add('source_scope_mismatch')\n        elif cleared and not no_document and not no_year:\n            classification = 'cleared_at_cutoff' if cleared <= cutoff else 'open_at_cutoff'\n        elif no_date and no_document and no_year:\n            classification = 'open_at_cutoff'\n        else:\n            gaps.add('clearing_evidence_conflict')\n        if amount is None or not currency:\n            gaps.add('amount_or_currency_missing')\n        if not text(row.get('AccountingDocumentType')):\n            gaps.add('document_type_missing')\n        if classification == 'open_at_cutoff':\n            count += 1\n            if invoice:\n                invoice_count += 1\n            if amount is not None and currency:\n                # This OData measure is already signed. Never multiply again\n                # by DebitCreditCode; never net different currencies together.\n                totals[currency] = totals.get(currency, Decimal(0)) + amount\n                if invoice:\n                    invoices[currency] = invoices.get(currency, Decimal(0)) + amount\n        records.append({'company_code': key[0], 'fiscal_year': key[1],\n            'accounting_document': key[2], 'accounting_document_item': key[3],\n            'posting_date': posted if key not in conflicts else None,\n            'clearing_date': cleared if key not in conflicts else None,\n            'document_type': text(row.get('AccountingDocumentType')) if key not in conflicts else None,\n            'classification': classification, 'invoice_verification': invoice if key not in conflicts else None,\n            'amount': format(amount, 'f') if amount is not None else None, 'currency': currency or None})\n    evidence_complete = complete and not gaps\n    metrics = [{'currency': code, 'open_amount': format(totals[code], 'f'),\n                'invoice_verification_amount': format(invoices.get(code, Decimal(0)), 'f')}\n               for code in sorted(totals)]\n    status = 'needs_evidence' if not evidence_complete else 'open_items' if count else 'no_open_items'\n    output = {'records': records, 'open_item_count': count if evidence_complete else None,\n        'invoice_verification_count': invoice_count if evidence_complete else None,\n        'amounts_by_currency': metrics, 'business_status': status, 'source_complete': complete,\n        'evidence_complete': evidence_complete, 'business_complete': evidence_complete,\n        'duplicate_count': duplicates, 'limitations': sorted(gaps)}\n    columns = [{'key': key, 'label': {'zh': zh, 'en': en}} for key, zh, en in (\n        ('company_code', '公司代码', 'Company code'), ('fiscal_year', '会计年度', 'Fiscal year'),\n        ('accounting_document', '会计凭证', 'Accounting document'), ('accounting_document_item', '行项目', 'Item'),\n        ('classification', '截止日状态', 'Status at cutoff'), ('document_type', '单据类型', 'Document type'),\n        ('amount', '带符号金额', 'Signed amount'), ('currency', '币种', 'Currency'))]\n    report = {'schema_version': '1.0', 'records': records,\n        'title': {'zh': '供应商历史未清项目与发票校验子集', 'en': 'Historical supplier open items and invoice-verification subset'},\n        'headline': {'zh': '证据不足，不能断言完整业务结论。' if not evidence_complete else '已完成截止日未清项目计算。',\n                     'en': 'Evidence insufficient for a complete conclusion.' if not evidence_complete else 'Historical open-item calculation completed.'},\n        'metrics': [{'id': name, 'label': {'zh': zh, 'en': en}, 'value': output[name]}\n                    for name, zh, en in (('open_item_count', '供应商未清项目数', 'Supplier open-item count'),\n                                        ('invoice_verification_count', 'RE 发票校验子集数', 'RE invoice-verification subset count'))],\n        'business_status': status, 'source_complete': complete, 'evidence_complete': evidence_complete,\n        'limitations': sorted(gaps), 'amounts_by_currency': metrics,\n        'evidence_tables': [{'id': 'supplier_items', 'title': {'zh': '规范项目明细', 'en': 'Canonical items'},\n            'columns': columns, 'rows': records, 'total_rows': len(records), 'source_complete': complete}],\n        'missing_evidence': [{'code': gap} for gap in sorted(gaps)]}\n    output['business_report'] = report\n    return {**output, 'workflow_output': output}\n"
+    },
+    {
+      "op": "replace",
+      "path": "/readme",
+      "value": "# Supplier Historical Open Items and Invoice Verification Assistant\n\n按供应商和过账截止日重建历史未清项目，区分全部未清行项目与 RE 发票校验子集，并分币种汇总；证据不足不猜测。\n\nReconstruct historical supplier open items at a posting cutoff, distinguish all open items from the RE invoice-verification subset, and aggregate signed amounts by currency without guessing incomplete evidence.\n\nCatalog grouping remains MM. SAP component: FI-AP. Technical ID changes require the independent confirmation flow. No live SAP trial or formal acceptance was performed.\n"
+    }
+  ],
+  "checks": {
+    "candidate": "passed",
+    "business_contract": "passed",
+    "presentation": "ready",
+    "sap_calls": 0,
+    "applied": false
+  }
+}

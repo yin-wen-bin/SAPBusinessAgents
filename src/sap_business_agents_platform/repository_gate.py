@@ -19,6 +19,7 @@ class RepositoryReadWriteGate:
         self._readers: dict[int, int] = {}
         self._writer: int | None = None
         self._writer_depth = 0
+        self.generation = 0
 
     @contextmanager
     def read(self) -> Iterator[None]:
@@ -59,6 +60,7 @@ class RepositoryReadWriteGate:
                 self._writer_depth -= 1
                 if self._writer_depth == 0:
                     self._writer = None
+                    self.generation += 1
                     self._condition.notify_all()
 
 

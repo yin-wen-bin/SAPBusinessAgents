@@ -529,7 +529,7 @@ class AgentDraftDeleteRequest(BaseModel):
 class AgentFeedbackAnnotation(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    kind: Literal["manifest_field", "static_issue", "trial_issue", "acceptance_issue"]
+    kind: Literal["manifest_field", "readme", "rules", "static_issue", "trial_issue", "acceptance_issue"]
     path: str = Field(min_length=1, max_length=512)
     comment: str = Field(min_length=1, max_length=2000)
     revision: int = Field(ge=1)
@@ -761,6 +761,19 @@ class WorkflowAssistantReference(BaseModel):
     draftId: str
     revision: int = Field(ge=1)
     path: str = Field(min_length=1, max_length=500)
+    comment: str | None = Field(default=None, min_length=1, max_length=2000)
+    objectId: str | None = Field(default=None, min_length=1, max_length=500)
+    objectKind: Literal["node", "connection"] | None = None
+
+    @model_validator(mode="after")
+    def annotation_binding(self) -> "WorkflowAssistantReference":
+        if self.comment is not None:
+            self.comment = self.comment.strip()
+            if not self.comment:
+                raise ValueError("annotation comment must not be blank")
+        if (self.objectId is None) != (self.objectKind is None):
+            raise ValueError("objectId and objectKind must be supplied together")
+        return self
 
 
 class WorkflowCompositionCreate(BaseModel):
@@ -816,6 +829,7 @@ class WorkflowFeedbackRequest(BaseModel):
     trusted_local_confirmed: bool = Field(default=False, alias="trustedLocalConfirmed")
     budget_seconds: int = Field(default=3600, ge=1, le=3600, alias="budgetSeconds")
     references: list[WorkflowAssistantReference] = Field(default_factory=list, max_length=20)
+    allowed_change_paths: list[str] | None = Field(default=None, alias="allowedChangePaths", min_length=1, max_length=20)
     reply_to_clarification_id: str | None = Field(default=None, alias="replyToClarificationId", max_length=150)
 
     @model_validator(mode="after")
@@ -825,6 +839,9 @@ class WorkflowFeedbackRequest(BaseModel):
             raise ValueError("feedback must not be blank")
         if self.intent and not self.request_id:
             raise ValueError("workflow authoring v2 requires requestId")
+        if self.allowed_change_paths is not None:
+            from .workflow_candidate import checked_scope
+            checked_scope(self.allowed_change_paths, [r.model_dump() for r in self.references], intent=self.intent)
         return self
 
 

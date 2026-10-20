@@ -196,10 +196,15 @@ class WorkBuddyPlanner(SharedPlanner):
                     mode=authoring.get("mode", "bounded"), tool_handler=tool_handler,
                     emit=self._event_sink.get())
             except WorkBuddyError as exc:
-                self._emit("workbuddy_execution_failed", {"operation": self._operation.get(),
-                    "phase": "terminal_output" if exc.code == "workbuddy_structured_output_missing" else "execution",
-                    "failure_code": exc.code, "output_format": "native_missing" if exc.code == "workbuddy_structured_output_missing" else None,
-                    "output_length": None, "output_sha256": None, **getattr(exc, "detail", {})})
+                try:
+                    self._emit("workbuddy_execution_failed", {"operation": self._operation.get(),
+                        "phase": "terminal_output" if exc.code == "workbuddy_structured_output_missing" else "execution",
+                        "failure_code": exc.code, "output_format": "native_missing" if exc.code == "workbuddy_structured_output_missing" else None,
+                        "output_length": None, "output_sha256": None, **getattr(exc, "detail", {})})
+                except Exception:
+                    # The owned job already has the primary failure. A broken
+                    # event sink must not mask it by failing a second time.
+                    exc.detail = {**(getattr(exc, "detail", {}) or {}), "failure_event_delivery_failed": True}
                 raise WorkBuddyRuntimeError(str(exc), code=exc.code, detail=getattr(exc, "detail", {})) from exc
         finally:
             try:
@@ -231,8 +236,10 @@ def _bind_operation(name: str, method: Any) -> Any:
         try:
             return await method(self, *args, **kwargs)
         except RuntimeContractError as exc:
-            raise WorkBuddyRuntimeError("The shared output contract rejected the result.",
-                code=exc.code, detail=exc.detail) from exc
+            error = WorkBuddyRuntimeError("The shared output contract rejected the result.", code=exc.code, detail=exc.detail)
+            if getattr(exc, "runtime_diagnostic", None):
+                error.runtime_diagnostic = exc.runtime_diagnostic
+            raise error from exc
         except ValueError as exc:
             code = str(exc)
             if not code.replace("_", "").isalnum() or len(code) > 100:

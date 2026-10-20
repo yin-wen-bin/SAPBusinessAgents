@@ -9,6 +9,7 @@ _LOCALIZED_TEXT_SCHEMA = {
 
 def turn_prompt(query, *, continuing, acceptance_spec=None):
     prompt = _turn_prompt(query, continuing=continuing)
+    prompt += "\n" + report_instructions(acceptance=acceptance_spec is not None)
     if acceptance_spec:
         prompt += (
             "\nAcceptance mode: pass acceptance_projection together with report to "
@@ -24,110 +25,9 @@ def turn_prompt(query, *, continuing, acceptance_spec=None):
         )
     return prompt
 
-_PRESENTATION_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["schema_version", "title", "blocks", "validation_ref"],
-    "properties": {
-        "schema_version": {"type": "string", "enum": ["1.0"]},
-        "title": _LOCALIZED_TEXT_SCHEMA,
-        "validation_ref": {"type": ["string", "null"]},
-        "blocks": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": [
-                    "type", "title", "tone", "claim_scope", "evidence_refs", "text",
-                    "entries", "metrics", "columns", "rows", "items", "total_rows",
-                    "display_truncated", "source_complete",
-                ],
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        "enum": ["text", "key_value", "metrics", "table", "bullet_list", "notice"],
-                    },
-                    "title": {"anyOf": [_LOCALIZED_TEXT_SCHEMA, {"type": "null"}]},
-                    "tone": {
-                        "type": "string",
-                        "enum": ["neutral", "success", "warning", "error", "info"],
-                    },
-                    "claim_scope": {
-                        "type": "string",
-                        "enum": [
-                            "customer_business_fact", "product_documentation",
-                            "business_semantics", "diagnostic",
-                        ],
-                    },
-                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                    "text": {"anyOf": [_LOCALIZED_TEXT_SCHEMA, {"type": "null"}]},
-                    "entries": {
-                        "type": "array",
-                        "items": {
-                            "type": "object", "additionalProperties": False,
-                            "required": ["label", "value", "evidence_refs"],
-                            "properties": {
-                                "label": _LOCALIZED_TEXT_SCHEMA,
-                                "value": _LOCALIZED_TEXT_SCHEMA,
-                                "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                            },
-                        },
-                    },
-                    "metrics": {
-                        "type": "array",
-                        "items": {
-                            "type": "object", "additionalProperties": False,
-                            "required": ["id", "label", "value", "evidence_refs", "tone"],
-                            "properties": {
-                                "id": {"type": "string"},
-                                "label": _LOCALIZED_TEXT_SCHEMA,
-                                "value": _LOCALIZED_TEXT_SCHEMA,
-                                "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                                "tone": {
-                                    "type": "string",
-                                    "enum": ["neutral", "success", "warning", "error"],
-                                },
-                            },
-                        },
-                    },
-                    "columns": {
-                        "type": "array",
-                        "items": {
-                            "type": "object", "additionalProperties": False,
-                            "required": ["key", "label", "format"],
-                            "properties": {
-                                "key": {"type": "string"},
-                                "label": _LOCALIZED_TEXT_SCHEMA,
-                                "format": {
-                                    "type": "string",
-                                    "enum": [
-                                        "text", "date", "datetime", "integer", "decimal",
-                                        "currency", "status",
-                                    ],
-                                },
-                            },
-                        },
-                    },
-                    "rows": {
-                        "type": "array", "maxItems": 200,
-                        "items": {
-                            "type": "object", "additionalProperties": False,
-                            "required": ["values", "evidence_refs"],
-                            "properties": {
-                                "values": {"type": "array", "items": _LOCALIZED_TEXT_SCHEMA},
-                                "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                            },
-                        },
-                    },
-                    "items": {"type": "array", "items": _LOCALIZED_TEXT_SCHEMA},
-                    "total_rows": {"type": ["integer", "null"], "minimum": 0},
-                    "display_truncated": {"type": "boolean"},
-                    "source_complete": {"type": ["boolean", "null"]},
-                },
-            },
-        },
-    },
-}
+from .runtime_report_contract import presentation_schema, instructions as report_instructions
+
+_PRESENTATION_SCHEMA = presentation_schema(strict=True)
 
 _HARNESS_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -295,6 +195,8 @@ final presentation without changing any other presentation content. Prioritize t
 validation over optional document expansion after the core business result is supported. Return exactly the requested
 structured output.
 """.strip()
+    from .runtime_report_contract import HANDOFF_DEFINITION
+    instructions += "\n" + HANDOFF_DEFINITION
     if full_access:
         instructions = instructions.replace(
             "The only executable tools are the two provided MCP servers plus native Web Search. Never use shell,\nfiles, browser automation, computer use, subagents, or write-capable actions.",

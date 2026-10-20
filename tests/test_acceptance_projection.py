@@ -70,6 +70,23 @@ def test_projection_zero_requires_live_empty_evidence():
     assert validate_projection(SPEC, {**value, "evidence_refs": []}, KNOWN)
 
 
+def test_nonnullable_metric_unknown_cannot_claim_complete_but_is_not_repaired_to_zero():
+    spec = {**SPEC, "required_metric_values": ["count"]}
+    value = copy.deepcopy(PROJECTION)
+    value["metrics"]["count"] = None
+    original = copy.deepcopy(value)
+    issue = validate_projection(spec, value, KNOWN)
+    assert issue[0]["code"] == "acceptance_projection_complete_metric_unknown"
+    assert issue[0]["path"] == "/metrics/count"
+    assert value == original
+    value.update(evidence_complete=False, business_complete=False, evidence_gap_codes=["missing_evidence"])
+    assert validate_projection(spec, value, KNOWN) == []
+    # A genuinely nullable metric is not made non-null by inference.
+    assert validate_projection(SPEC, original, KNOWN) == []
+    with pytest.raises(ValidationError):
+        AcceptanceProjectionSpec.model_validate({**SPEC, "required_metric_values": ["other"]})
+
+
 def test_checklist_readiness_projection_enforces_conservative_root_and_complete_sources():
     spec = {
         "record_fields": [

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Locale } from "../lib/types";
-import { canRetryFeedback, feedbackDuration, feedbackEffort, feedbackFailureText, feedbackTiming } from "../lib/agentDraft";
+import { canRetryFeedback, feedbackDuration, feedbackEffort, feedbackFailureText, feedbackTiming, feedbackValidationIssues } from "../lib/agentDraft";
 
 const activeStates = new Set(["starting", "start_uncertain", "queued", "running", "cancelling"]);
 const phaseLabels: Record<string, [string, string]> = {
@@ -62,6 +62,7 @@ export function FeedbackProgressSummary({ turn, operation, locale, connectionErr
   const completedUnits = detail.completed_units;
   const totalUnits = detail.total_units;
   const changed = turn?.decision?.changed === true || (Number.isInteger(turn?.result_revision) && Number.isInteger(turn?.base_revision) && turn.result_revision !== turn.base_revision);
+  const validationIssues = feedbackValidationIssues(turn, locale);
   const outcome = active ? phase || (explain ? tr("正在解释问题", "Explaining the issue") : tr("正在处理修改意见", "Processing revision request"))
     : status === "completed" && changed ? tr(`修改已完成，已保存修订 ${turn.result_revision}`, `Changes completed and saved as revision ${turn.result_revision}`)
     : status === "completed" ? explain ? tr("解释已完成，草稿未修改", "Explanation completed; the draft was not modified") : tr("本轮处理已完成", "This revision turn is complete")
@@ -78,6 +79,10 @@ export function FeedbackProgressSummary({ turn, operation, locale, connectionErr
     {Number.isInteger(completedUnits) && Number.isInteger(totalUnits) && <p>{tr("已完成阶段", "Completed stages")}: {completedUnits} / {totalUnits}</p>}
     {timing.deadline_reached && <p role="status">{tr("已到本轮截止时间，正在等待服务确认终态；请勿重复发送。", "The turn deadline has been reached. Waiting for the server to confirm the terminal state; do not submit a duplicate.")}</p>}
     {!active && status !== "completed" && <p className="draft-feedback-failure" role="alert">{feedbackFailureText(failureCode(turn), locale)}</p>}
+    {!active && status !== "completed" && validationIssues.length > 0 && <ul aria-label={tr("定义校验阻断原因", "Definition validation blockers")}>
+      {validationIssues.map((issue, index) => <li key={`${issue.path}-${index}`}>{issue.text} <code>{issue.path}</code></li>)}
+    </ul>}
+    {snapshot?.authentication_recovery_id && <p>{tr("已恢复的是草稿原账号引用；本轮认证是否通过以上方结果为准。站点、模型和 worker 保持不变。", "The draft's original account reference was restored; current authentication is a separate check shown above. The site, model and worker are unchanged.")}</p>}
     {connectionError && <p role="alert">{tr("进度连接异常，正在重连；任务仍在后台保存和执行。", "Progress connection was interrupted. Reconnecting; the task remains saved and continues in the background.")}</p>}
   </div>;
 }
@@ -93,6 +98,7 @@ export default function AgentFeedbackProgress({ open, turn, operation, locale, c
   const active = activeStates.has(status);
   const explain = (turn?.decision?.intent || operation?.detail?.intent) === "explain";
   const retryable = canRetryFeedback(turn);
+  const authenticationBlocked = /^(?:runtime_authentication_|workbuddy_authentication_)/.test(failureCode(turn));
   const changed = turn?.decision?.changed === true || (Number.isInteger(turn?.result_revision) && Number.isInteger(turn?.base_revision) && turn.result_revision !== turn.base_revision);
   const turnNumber = operation?.detail?.turn ?? turn?.turn ?? turn?.turn_number;
 
@@ -116,7 +122,7 @@ export default function AgentFeedbackProgress({ open, turn, operation, locale, c
     <footer>{active ? <>
       <button type="button" className="agent-secondary-action" onClick={onClose}>{tr("后台继续", "Continue in background")}</button>
       <button type="button" disabled={!Number.isInteger(turnNumber) || status === "cancelling"} onClick={onCancel}>{status === "cancelling" ? tr("正在取消", "Cancelling") : tr("取消本轮", "Cancel turn")}</button>
-    </> : retryable ? <button type="button" onClick={onRetry}>{tr("返回并重试", "Return and retry")}</button>
+    </> : retryable ? <button type="button" onClick={authenticationBlocked ? onClose : onRetry}>{authenticationBlocked ? tr("返回核对认证", "Return to check authentication") : tr("返回并重试", "Return and retry")}</button>
       : changed ? <button type="button" onClick={onReview}>{tr("查看修改前后对比", "Review before and after")}</button>
       : <button type="button" onClick={onClose}>{tr("返回修改意见", "Return to feedback")}</button>}</footer>
   </dialog>;

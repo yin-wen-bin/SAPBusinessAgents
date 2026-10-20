@@ -1638,6 +1638,9 @@ class EmbeddedODataProvider:
                 transport=self.transport,
             ) as client:
                 try:
+                    if accept != "application/xml":
+                        from ..sample_read_budget import before_get
+                        before_get()
                     response = await client.get(request_target, params=request_params)
                 except httpx.TimeoutException as exc:
                     raise SapReadError("SAP GET timed out.", code="sap_read_timeout") from exc

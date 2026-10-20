@@ -9,6 +9,7 @@ import pytest
 from sap_business_agents_platform import workbuddy_worker
 from sap_business_agents_platform.workbuddy_diagnostics import native_output_diagnostic, safe_progress
 from tests.test_workbuddy_isolation import supervisor
+from sap_business_agents_platform.workbuddy_site import make_configuration, routing
 
 SCHEMA = {"type": "object", "additionalProperties": False,
           "properties": {"answer": {"type": "string", "enum": ["private-business-value"]}}, "required": ["answer"]}
@@ -37,7 +38,8 @@ def test_valid_tool_argument_does_not_replace_missing_terminal(monkeypatch, term
     monkeypatch.setitem(sys.modules, "codebuddy_agent_sdk", SimpleNamespace(
         CodeBuddyAgentOptions=lambda **kwargs: SimpleNamespace(**kwargs), CodeBuddySDKClient=Client,
         AssistantMessage=Assistant, ResultMessage=Result, TextBlock=type("Text", (), {}),
-        ToolUseBlock=ToolUse, ToolResultBlock=ToolResult, PermissionResultAllow=SimpleNamespace, PermissionResultDeny=SimpleNamespace))
+        ToolUseBlock=ToolUse, ToolResultBlock=ToolResult, PermissionResultAllow=SimpleNamespace,
+        PermissionResultDeny=SimpleNamespace, HookMatcher=SimpleNamespace))
     public, pending = [], []
     def send(kind, **data):
         if kind == "schema_check":
@@ -53,7 +55,9 @@ def test_valid_tool_argument_does_not_replace_missing_terminal(monkeypatch, term
     monkeypatch.setattr(workbuddy_worker, "read_frame", lambda: pending.pop(0))
     request = {"operation": "free_query", "mode": "bounded", "cli_path": "fixture-cli",
         "task_id": "task", "attempt_id": "attempt", "native_output_diagnostics": workbuddy_worker.NATIVE_DIAGNOSTICS,
-        "snapshot": {"model": "hy4-preview"}, "payload": {"cwd": "fixture", "prompt": "probe", "output_schema": SCHEMA}}
+        "snapshot": {"model": "hy4-preview", **make_configuration("china", 1)},
+        "service_site_config": routing(make_configuration("china", 1)),
+        "payload": {"cwd": "fixture", "prompt": "probe", "output_schema": SCHEMA}}
     if terminal is None:
         with pytest.raises(ValueError, match="workbuddy_structured_output_missing"):
             asyncio.run(workbuddy_worker.execute(request, send))
@@ -99,7 +103,7 @@ def test_schema_reply_requires_matching_binding(monkeypatch, field):
         CodeBuddyAgentOptions=lambda **kwargs: SimpleNamespace(**kwargs), CodeBuddySDKClient=Client,
         AssistantMessage=type("Assistant", (), {}), ResultMessage=Result, TextBlock=type("Text", (), {}),
         ToolUseBlock=type("ToolUse", (), {}), ToolResultBlock=type("ToolResult", (), {}),
-        PermissionResultAllow=SimpleNamespace, PermissionResultDeny=SimpleNamespace))
+        PermissionResultAllow=SimpleNamespace, PermissionResultDeny=SimpleNamespace, HookMatcher=SimpleNamespace))
     response = {}
     def send(kind, **data):
         if kind == "schema_check":
@@ -109,7 +113,8 @@ def test_schema_reply_requires_matching_binding(monkeypatch, field):
     monkeypatch.setattr(workbuddy_worker, "read_frame", lambda: response)
     with pytest.raises(ValueError, match="workbuddy_schema_check_response_invalid"):
         asyncio.run(workbuddy_worker.execute({"operation": "free_query", "mode": "bounded", "cli_path": "fixture",
-            "task_id": "task", "attempt_id": "attempt", "snapshot": {"model": "hy4-preview"},
+            "task_id": "task", "attempt_id": "attempt", "snapshot": {"model": "hy4-preview", **make_configuration("china", 1)},
+            "service_site_config": routing(make_configuration("china", 1)),
             "native_output_diagnostics": workbuddy_worker.NATIVE_DIAGNOSTICS,
             "payload": {"cwd": "fixture", "prompt": "probe", "output_schema": SCHEMA}}, send))
 
@@ -132,7 +137,10 @@ def test_owned_protocol_checks_use_frozen_schema_not_worker_schema(tmp_path, mon
         with pytest.raises(Exception, match=error): asyncio.run(run)
     else:
         result = asyncio.run(run)
-        assert json.loads(result["text"])["schema_valid"] is False
+        response = json.loads(result["text"])
+        assert response["schema_valid"] is False
+        assert response["validation_issues"] == [{"code": "runtime_report_schema_invalid", "path": "/other", "constraint": "required"}]
+        assert "private-business-value" not in json.dumps(response)
         assert "native_json_schema" != result.get("output_format")
         assert events[0][0] == "workbuddy_native_output_checked"
         assert any(item["path"] == "/other" for item in events[0][1]["validation_issues"])

@@ -18,6 +18,7 @@ from sap_business_agents_platform.database import RunStore
 from sap_business_agents_platform.manifests import AgentRepository
 from sap_business_agents_platform.role_matching import RoleMatchingService
 from sap_business_agents_platform.runtime_policy import orchestration_digest
+from sap_business_agents_platform.runtime_stage import role_observation_seconds
 from sap_business_agents_platform.workbuddy_environment import atomic_json, digest
 from sap_business_agents_platform.workbuddy_diagnostics import safe_progress
 from sap_business_agents_platform.workbuddy_manager import WorkBuddyManager
@@ -33,6 +34,9 @@ class Runtime:
         self.current_provider_id, self.binding, self.planner = provider, binding, planner
     def snapshot(self, *_): return copy.deepcopy(self.binding)
     def supports(self, operation): return operation in OPERATIONS
+    def bind_events(self, sink):
+        method = getattr(self.planner, 'bind_events', None)
+        return method(sink) if callable(method) else nullcontext()
     @contextmanager
     def pin(self, provider, model=None, effort=None):
         assert provider == self.current_provider_id
@@ -45,10 +49,18 @@ class Runtime:
     async def review_role_matching_feedback(self, **kwargs): return await self.planner.review_role_matching_feedback(**kwargs)
 
 async def verify(arguments):
+    from runtime_validation_cases import active_adapter, selected
+    scoped = active_adapter()
     destination = Path(arguments.data_root).resolve()
-    allowed_root = (ROOT / '.local-data/workbuddy-baseline').resolve()
-    assert destination.is_relative_to(allowed_root) and destination != allowed_root and not destination.exists(), 'fresh_isolated_directory_required'
-    destination.mkdir(parents=True)
+    batch = getattr(arguments, 'batch', None)
+    if batch:
+        from workbuddy_live_cases.live_guard import check_batch
+        batch = Path(batch).resolve()
+        assert arguments.provider == 'workbuddy' and (batch == scoped.batch if scoped else batch.is_relative_to(ROOT / '.local-data/workbuddy-validation')), 'verification_batch_directory_invalid'
+    allowed_root = batch if batch else (ROOT / '.local-data/workbuddy-baseline').resolve()
+    continuing = scoped is not None and selected('review_role_matching_feedback')
+    assert destination.is_relative_to(allowed_root) and destination != allowed_root and (not destination.exists() or continuing), 'fresh_isolated_directory_required'
+    destination.mkdir(parents=True, exist_ok=continuing)
     manager = WorkBuddyManager(ROOT)
     assert not manager.snapshot()['enabled'] and not manager.supervisor.reconcile()
     for path in (manager.environment.root / 'jobs').glob('*.json'):
@@ -56,8 +68,16 @@ async def verify(arguments):
     jobs = []
     if arguments.provider == 'workbuddy':
         from sap_business_agents_platform.workbuddy_planner import WorkBuddyPlanner
-        binding = manager.runtime_snapshot(require_enabled=False, formal=True)
-        assert binding['model'] == binding['actual_model'] == 'hy4-preview'
+        if batch:
+            binding = check_batch(manager, batch)
+            from workbuddy_live_cases.live_guard import attach_validation_monitor, configure
+            configure(batch, OPERATIONS, {'bounded'})
+            attach_validation_monitor(manager, binding, destination / 'safe-events.jsonl')
+        else:
+            binding = manager.runtime_snapshot(require_enabled=False, formal=True)
+        expected_model = (scoped.manifest['runtime']['model'] if scoped else json.loads((batch / 'freeze.json').read_text(encoding='utf-8')).get('validation_model_id', 'hy4-preview')
+                          if batch else 'hy4-preview')
+        assert binding['model'] == binding['actual_model'] == expected_model
         planner = WorkBuddyPlanner(ROOT, binding['model'], supervisor=manager.supervisor, runtime_snapshot=binding)
         original = manager.supervisor.run
         async def monitored(**kwargs):
@@ -96,24 +116,34 @@ async def verify(arguments):
     settings = Settings(repository_root=ROOT, data_root=destination / 'data', draft_root=destination / 'drafts')
     store = RunStore(settings.database_path)
     service = RoleMatchingService(settings, store, AgentRepository(ROOT / 'agents'), Runtime(arguments.provider, binding, planner), None)
+    description, feedback = DESCRIPTION, FEEDBACK
+    if batch and not scoped:
+        frozen = json.loads((batch / 'freeze.json').read_text(encoding='utf-8'))
+        frozen_catalog = json.loads((batch / 'catalog-snapshot.json').read_text(encoding='utf-8'))
+        assert digest(service._catalog()) == frozen['catalog_sha256'], 'verification_catalog_changed'
+        service._catalog = lambda: copy.deepcopy(frozen_catalog)
+        description = frozen['case_parameters']['roles']['description']
+        feedback = frozen['case_parameters']['roles']['feedback']
     report = {'phase': 'running', 'provider': arguments.provider, 'runtime': binding, 'sap_calls': 0,
         'automatic_retry': False, 'operation_digests': {op: orchestration_digest(op) for op in OPERATIONS},
         'stages': [], 'qualified_operations': []}
-    report_path = destination / 'report.json'
+    from sap_business_agents_platform.runtime_validation import current_scope
+    report_path = destination / ((current_scope()['case'].id + '.json') if scoped else 'report.json')
     atomic_json(report_path, report)
 
     async def finish(session_id, revision, operation, started):
-        # Observation only; each actual model phase retains its 300s deadline.
-        async with asyncio.timeout(3600):
+        # Observation only, derived from the actual frozen catalog phase count.
+        async with asyncio.timeout(role_observation_seconds(len(service._catalog()['runtime_catalog']['pages']))):
             while True:
                 current = service.get(session_id)
-                if current['status'] in {'completed', 'failed', 'cancelled'}: break
+                if current['status'] in {'completed', 'failed', 'cancelled', 'cleanup_pending'}: break
                 await asyncio.sleep(.2)
         entry = {'operation': operation, 'status': current['status'], 'session_id': session_id,
                  'elapsed_seconds': round(time.monotonic() - started, 2)}
         report['stages'].append(entry)
         if current['status'] != 'completed':
-            entry.update(phase='failed', failure_code=(current.get('error') or {}).get('code', 'role_validation_incomplete'))
+            entry.update(phase='failed', failure_code=(current.get('error') or {}).get('code', 'role_validation_incomplete'),
+                diagnostics=(current.get('error') or {}).get('detail'))
             return False
         saved = service.revision(session_id, revision)
         result = saved['result']
@@ -151,18 +181,27 @@ async def verify(arguments):
             await service.start()
             try:
                 started = time.monotonic()
-                session = await service.create(paths=[], role_description=DESCRIPTION, locale='zh', consent=True)
-                passed = await finish(session['session_id'], 1, 'analyze_role_matching', started)
+                if selected('analyze_role_matching'):
+                    session = await service.create(paths=[], role_description=description, locale='zh', consent=True)
+                    passed = await finish(session['session_id'], 1, 'analyze_role_matching', started)
+                    if scoped and passed:
+                        atomic_json(destination / 'analysis-precursor.json', {'session_id': session['session_id'],
+                            'first_revision_digest': digest(service.revision(session['session_id'], 1))})
+                else:
+                    session = json.loads((destination / 'analysis-precursor.json').read_text(encoding='utf-8'))
+                    assert digest(service.revision(session['session_id'], 1)) == session['first_revision_digest']
+                    passed = True
                 atomic_json(report_path, report)
-                print(json.dumps(report['stages'][-1], ensure_ascii=False), flush=True)
-                if passed:
+                if report['stages']:
+                    print(json.dumps(report['stages'][-1], ensure_ascii=False), flush=True)
+                if passed and selected('review_role_matching_feedback'):
                     report['first_revision_digest'] = digest(service.revision(session['session_id'], 1))
                     started = time.monotonic()
-                    await service.feedback(session['session_id'], base_revision=1, message=FEEDBACK,
+                    await service.feedback(session['session_id'], base_revision=1, message=feedback,
                         mode='incremental', added_paths=[], added_role_description=None, excluded_document_ids=[])
                     await finish(session['session_id'], 2, 'review_role_matching_feedback', started)
                     print(json.dumps(report['stages'][-1], ensure_ascii=False), flush=True)
-                else:
+                elif not passed and selected('review_role_matching_feedback'):
                     report['stages'].append({'operation': 'review_role_matching_feedback', 'phase': 'not_run', 'reason': 'no_valid_initial_revision'})
             finally:
                 await service.stop()
@@ -170,7 +209,7 @@ async def verify(arguments):
         report['failure_code'] = getattr(error, 'code', 'role_verification_failed')
     finally:
         await manager.supervisor.close()
-        report.update(phase='passed' if len(report['stages']) == 2 and all(s['phase'] == 'passed' for s in report['stages']) else 'failed',
+        report.update(phase='passed' if len(report['stages']) == (1 if scoped else 2) and all(s['phase'] == 'passed' for s in report['stages']) else 'failed',
             cleanup_pending=bool(manager.supervisor.pending()), enabled=manager.snapshot()['enabled'])
         atomic_json(report_path, report)
     print(json.dumps({'report': str(report_path), 'phase': report['phase'], 'cleanup_pending': report['cleanup_pending'], 'sap_calls': 0}), flush=True)
@@ -181,6 +220,7 @@ if __name__ == '__main__':
     parser.add_argument('--provider', required=True, choices=['codex', 'workbuddy'])
     parser.add_argument('--data-root', required=True)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--batch')
     arguments = parser.parse_args()
     if not arguments.execute:
         print(json.dumps({'provider': arguments.provider, 'operations': sorted(OPERATIONS), 'sap_calls': 0, 'execute': False}))

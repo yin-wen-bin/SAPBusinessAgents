@@ -5,8 +5,10 @@ param(
     [ValidateRange(5, 300)] [int]$StartupTimeoutSeconds = 90,
     [switch]$NoBrowser,
     [switch]$Restart,
+    [switch]$RestartSiteOnly,
     [switch]$Dev,
-    [switch]$RebuildSite
+    [switch]$RebuildSite,
+    [switch]$PreserveSiteBuilds
 )
 
 Set-StrictMode -Version Latest
@@ -444,6 +446,112 @@ function Save-AttemptState {
     if ($Successful) { $json | Set-Content -LiteralPath $LatestPath -Encoding UTF8 }
 }
 
+function Test-SiteCandidate {
+    param([string]$Url)
+    try {
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
+        return ($response.StatusCode -eq 200 -and $response.Content -match 'data-submit-status')
+    }
+    catch { return $false }
+}
+
+function Switch-SiteOnly {
+    # No API start/stop, SDK probes, qualification writes or build deletion.
+    if (-not (Test-PlatformHealth) -or -not (Test-SiteHealth)) {
+        throw "Site-only switching requires an already healthy API and Web UI. Use normal startup separately."
+    }
+    $script:PlatformProcessId = Get-ListenerProcessId -Port $ApiPort
+    $script:PlatformHealthy = $true
+    $oldSitePid = Get-ListenerProcessId -Port $SitePort
+    $pointerPath = Join-Path $SiteBuildRoot 'current.json'
+    $oldPointer = Get-Content -LiteralPath $pointerPath -Raw | ConvertFrom-Json
+    Assert-PathWithinRoot -Path $oldPointer.dist_path -Root $SiteBuildRoot
+    if (-not (Test-SiteReleaseBuild -DistPath $oldPointer.dist_path) -or
+        [int]$oldPointer.pid -ne $oldSitePid -or
+        -not (Test-ProcessBelongsToProject -ProcessId $oldSitePid -ExpectedRoot $ProjectRoot)) {
+        throw "Cannot prove the current Web UI rollback target and process ownership."
+    }
+    $script:SiteFingerprint = Get-SiteFingerprint -SiteRoot $SiteRoot -AgentsRoot $AgentsRoot -NodeVersion $NodeVersion
+    $script:SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) 'dist'
+    if (-not (Test-SiteReleaseBuild -DistPath $SiteDist) -or $RebuildSite) {
+        $script:SiteDist = Build-SiteCache -Fingerprint $SiteFingerprint -SiteRoot $SiteRoot `
+            -NodePath $NodeCommand.Source -NpmPath $NpmCommand.Source -AstroPath $AstroCli
+    }
+    # Serve the actual build on a private temporary port before touching 4321.
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $listener.Start(); $probePort = $listener.LocalEndpoint.Port; $listener.Stop()
+    $probe = $null
+    $oldBase = [Environment]::GetEnvironmentVariable('PUBLIC_SITE_BASE', 'Process')
+    $env:PUBLIC_SITE_BASE = '/'
+    try {
+        $probe = Start-LocalProcess -Name 'Web UI candidate' -Port $probePort -FilePath $NodeCommand.Source `
+            -Arguments @($AstroCli, 'preview', '--host', '127.0.0.1', '--port', [string]$probePort, '--outDir', $SiteDist, '--ignore-lock') `
+            -WorkingDirectory $SiteRoot -StdoutPath (Join-Path $LogRoot 'candidate.stdout.log') -StderrPath (Join-Path $LogRoot 'candidate.stderr.log')
+        $candidateDeadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+        while (-not (Test-SiteCandidate -Url "http://127.0.0.1:$probePort/zh/ask/")) {
+            $probe.Refresh()
+            if ($probe.HasExited -or (Get-Date) -ge $candidateDeadline) { throw 'Web UI candidate failed validation; current services were preserved.' }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+    finally {
+        if ($null -ne $probe) {
+            $probe.Refresh()
+            if (-not $probe.HasExited) { Stop-Process -Id $probe.Id }
+        }
+        # Only the disposable probe was started so far. Never leave its port in
+        # generic failure cleanup where an unrelated future PID could own it.
+        $script:StartedProcesses.Clear(); $script:StartedServices.Clear()
+        if ($null -eq $oldBase) { Remove-Item Env:PUBLIC_SITE_BASE -ErrorAction SilentlyContinue }
+        else { $env:PUBLIC_SITE_BASE = $oldBase }
+    }
+    if ((Get-ListenerProcessId -Port $ApiPort) -ne $PlatformProcessId -or
+        (Get-ListenerProcessId -Port $SitePort) -ne $oldSitePid) { throw 'Services changed during the candidate check; no switch performed.' }
+    $switched = $false
+    try {
+        Stop-ExpectedListener -Name 'Web UI' -Port $SitePort -ExpectedRoot $ProjectRoot
+        $switched = $true
+        $env:PUBLIC_SITE_BASE = '/'
+        $site = Start-LocalProcess -Name 'Web UI' -Port $SitePort -FilePath $NodeCommand.Source `
+            -Arguments @($AstroCli, 'preview', '--host', '127.0.0.1', '--port', [string]$SitePort, '--outDir', $SiteDist, '--ignore-lock') `
+            -WorkingDirectory $SiteRoot -StdoutPath $SiteStdout -StderrPath $SiteStderr
+        $script:SiteProcessId = $site.Id
+        $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+        while (-not (Test-SiteCandidate -Url "${SiteHealthUrl}zh/ask/")) {
+            $site.Refresh()
+            if ($site.HasExited -or (Get-Date) -ge $deadline) { throw 'New Web UI did not become healthy.' }
+            Start-Sleep -Milliseconds 250
+        }
+        if ((Get-ListenerProcessId -Port $ApiPort) -ne $PlatformProcessId -or -not (Test-PlatformHealth)) { throw 'API identity or health changed during Web UI switch.' }
+        $script:SiteHealthy = $true
+        Write-JsonAtomic -Path (Join-Path $SiteBuildRoot 'previous.json') -Value $oldPointer
+        Write-JsonAtomic -Path $pointerPath -Value ([ordered]@{fingerprint=$SiteFingerprint; dist_path=$SiteDist; pid=$SiteProcessId; recorded_at=(Get-Date).ToString('o')})
+        Save-AttemptState -State (New-AttemptState -Status 'completed') -Successful
+        Write-LauncherMessage "Site-only switch completed. API PID $PlatformProcessId was preserved."
+    }
+    catch {
+        $primary = $_
+        if ($switched) {
+            Stop-ExpectedListener -Name 'Web UI candidate' -Port $SitePort -ExpectedRoot $ProjectRoot
+            $rollback = Start-LocalProcess -Name 'Web UI rollback' -Port $SitePort -FilePath $NodeCommand.Source `
+                -Arguments @($AstroCli, 'preview', '--host', '127.0.0.1', '--port', [string]$SitePort, '--outDir', $oldPointer.dist_path, '--ignore-lock') `
+                -WorkingDirectory $SiteRoot -StdoutPath (Join-Path $LogRoot 'rollback.stdout.log') -StderrPath (Join-Path $LogRoot 'rollback.stderr.log')
+            $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+            while (-not (Test-SiteHealth)) {
+                $rollback.Refresh()
+                if ($rollback.HasExited -or (Get-Date) -ge $deadline) { throw 'Web UI rollback failed. API was not stopped; inspect rollback logs.' }
+                Start-Sleep -Milliseconds 250
+            }
+            $oldPointer.pid = $rollback.Id
+            Write-JsonAtomic -Path $pointerPath -Value $oldPointer
+            # Outer failure cleanup must not stop the healthy restored site.
+            $script:StartedProcesses.Clear(); $script:StartedServices.Clear()
+            Write-LauncherMessage 'Restored the previous Web UI build; API was not stopped.' 'WARN' Yellow
+        }
+        throw $primary
+    }
+}
+
 $PlatformPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $SiteRoot = Join-Path $ProjectRoot "site"
 $AgentsRoot = Join-Path $ProjectRoot "agents"
@@ -458,6 +566,7 @@ $NodeVersion = $null
 
 try {
     Invoke-StartupPhase -Name "preflight" -Action {
+        if ($RestartSiteOnly -and ($Restart -or $Dev)) { throw '-RestartSiteOnly cannot be combined with -Restart or -Dev.' }
         if ($Dev -and $RebuildSite) { throw "-RebuildSite cannot be combined with -Dev because development mode does not use the build cache." }
         if (-not (Test-Path -LiteralPath $PlatformPython -PathType Leaf)) { throw "SAPBusinessAgents virtual environment is missing. Follow the first-start commands in README.md." }
         $script:NodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
@@ -486,6 +595,12 @@ try {
     $env:PUBLIC_SAPBA_API_URL = $ApiUrl
     $env:SAPBA_INTERNAL_API_URL = $ApiUrl
     Write-LauncherMessage "Using the Embedded GET-only SAP Provider."
+
+    if ($RestartSiteOnly) {
+        Invoke-StartupPhase -Name 'site_only_switch' -Action { Switch-SiteOnly }
+        $DeploymentLock.Dispose(); $DeploymentLock = $null
+        return
+    }
 
     if ($Restart -and -not $Dev) {
         $SiteFingerprint = Invoke-StartupPhase -Name "site_fingerprint_before_restart" -Action {
@@ -600,7 +715,7 @@ try {
                 -not (Test-SiteReleaseBuild -DistPath $SiteDist)) {
                 throw "The validated Web UI build path is unavailable before preview startup."
             }
-            Remove-OldSiteBuilds -CurrentFingerprint $SiteFingerprint
+            if (-not $PreserveSiteBuilds) { Remove-OldSiteBuilds -CurrentFingerprint $SiteFingerprint }
             $SiteProcess = Invoke-StartupPhase -Name "site_process_start" -Action {
                 $env:PUBLIC_SITE_BASE = "/"
                 Start-LocalProcess -Name "Web UI" -Port $SitePort -FilePath $NodeCommand.Source `

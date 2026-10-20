@@ -7,6 +7,7 @@ import copy
 import asyncio
 import time
 from .runtime_contract import deadline_scope
+from .runtime_stage import role_stage
 from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
@@ -272,7 +273,8 @@ return non_sap_operation_count. Do not call tools, inspect files, execute SAP or
             # truncated or whose conclusions were based on an older catalog digest. Start a
             # clean read-only thread while keeping the same Runtime snapshot at the session
             # level. Incremental rematches may resume the existing conversation.
-            with deadline_scope(time.monotonic() + ROLE_MATCHING_RUNTIME_TURN_SECONDS):
+            with role_stage("role_understanding", schema=ROLE_MATCHING_OUTPUT_SCHEMA,
+                            operation=self.current_operation, prompt=understanding_prompt):
                 if thread_id and rematch_mode != "full":
                     try:
                         thread = await _await_with_hard_timeout(
@@ -344,6 +346,7 @@ return non_sap_operation_count. Do not call tools, inspect files, execute SAP or
             evaluated_agent_ids: list[str] = []
             evaluated_pair_count = 0
             failed_pages: list[int] = []
+            page_failures: list[dict[str, Any]] = []
             for page in pages:
                 page_index = int(page.get("page_index") or 0)
                 page_json = _exact_json(page, limit=60_000, label="Agent catalog page")
@@ -386,7 +389,8 @@ files.
                     for agent in page.get("items") or []
                 }
                 accepted_page_records: list[dict[str, Any]] | None = None
-                with deadline_scope(time.monotonic() + ROLE_MATCHING_RUNTIME_TURN_SECONDS):
+                with role_stage("role_catalog_page", schema=ROLE_MATCHING_OUTPUT_SCHEMA,
+                                operation=self.current_operation, prompt=page_prompt, page_index=page_index):
                     for _attempt in range(2):
                         try:
                             page_thread = await _await_with_hard_timeout(
@@ -409,7 +413,14 @@ files.
                                     timeout=ROLE_MATCHING_RUNTIME_TURN_SECONDS,
                                 ), documents, self.current_operation
                             )
-                        except Exception:
+                        except Exception as exc:
+                            from .runtime_diagnostics import stage_failure
+                            page_failures.append({**stage_failure(exc, schema=ROLE_MATCHING_OUTPUT_SCHEMA,
+                                prompt=page_prompt, operation=self.current_operation, phase="role_catalog_page",
+                                budget_seconds=ROLE_MATCHING_RUNTIME_TURN_SECONDS), "page_index": page_index})
+                            if (getattr(exc, "code", None) == "runtime_cleanup_incomplete"
+                                    or getattr(exc, "detail", {}).get("cleanup_failure_code") == "runtime_cleanup_incomplete"):
+                                raise
                             continue
                         page_records = [
                             item
@@ -483,7 +494,8 @@ files.
                 )
                 final_prompt = None
                 consolidation_started = time.monotonic()
-                with deadline_scope(time.monotonic() + ROLE_MATCHING_RUNTIME_TURN_SECONDS):
+                with role_stage("role_consolidation", schema=ROLE_CONSOLIDATION_SCHEMA,
+                                operation=self.current_operation):
                     try:
                         evaluation_json = _exact_json(
                             evaluations, limit=220_000, label="Agent candidate evaluations"
@@ -576,8 +588,8 @@ files.
                     if consolidation_complete else understanding_summary
                 ) or {"zh": "", "en": ""},
             }
-            if consolidation_failure:
-                analysis["runtime_diagnostics"] = [consolidation_failure]
+            if consolidation_failure or page_failures:
+                analysis["runtime_diagnostics"] = [*page_failures, *([consolidation_failure] if consolidation_failure else [])]
             return {"analysis": analysis, "thread_id": thread.id}
 
 

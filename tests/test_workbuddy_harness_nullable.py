@@ -17,6 +17,7 @@ from sap_business_agents_platform.workbuddy_driver import WorkBuddyHarnessDriver
 from sap_business_agents_platform.workbuddy_environment import WorkBuddyError
 from sap_business_agents_platform.workbuddy_harness import native_terminal_instructions, parse_output
 from sap_business_agents_platform import workbuddy_worker
+from sap_business_agents_platform.workbuddy_site import make_configuration, routing
 
 
 def schema():
@@ -101,9 +102,11 @@ def test_full_nullable_envelope_crosses_pinned_worker_codec_but_needs_real_termi
         CodeBuddyAgentOptions=lambda **kwargs: SimpleNamespace(**kwargs), CodeBuddySDKClient=Client,
         AssistantMessage=Assistant, ResultMessage=Result, TextBlock=type("Text", (), {}),
         ToolUseBlock=ToolUse, ToolResultBlock=type("ToolResult", (), {}),
-        PermissionResultAllow=SimpleNamespace, PermissionResultDeny=SimpleNamespace))
+        PermissionResultAllow=SimpleNamespace, PermissionResultDeny=SimpleNamespace, HookMatcher=SimpleNamespace))
+    site = make_configuration("china", 1)
     request = {"operation": "free_query", "mode": "bounded", "cli_path": "locked-fixture-cli",
-        "snapshot": {"model": "hy4-preview"}, "payload": {"cwd": "fixture", "prompt": "offline",
+        "snapshot": {"model": "hy4-preview", **site}, "service_site_config": routing(site),
+        "payload": {"cwd": "fixture", "prompt": "offline",
         "output_schema": frozen, "system_prompt": native_terminal_instructions(frozen)}}
     events = []
     task = workbuddy_worker.execute(request, lambda kind, **data: events.append((kind, data)))
@@ -120,6 +123,7 @@ def test_full_nullable_envelope_crosses_pinned_worker_codec_but_needs_real_termi
     assert None in forwarded["properties"]["input_field"]["enum"]
     assert observed[0].tools == observed[0].allowed_tools == ["StructuredOutput"]
     assert observed[0].setting_sources == [] and observed[0].persist_session is False
+    assert observed[0].env["CODEBUDDY_INTERNET_ENVIRONMENT"] == "internal"
 
 
 @pytest.mark.parametrize("output_format", ["native_json_schema", "text"])
@@ -144,6 +148,8 @@ def test_harness_driver_changes_only_native_format_guidance(tmp_path, output_for
         cwd=str(tmp_path), instructions="Original shared policy.",
         permissions={"acceptance_direct_baseline": False}, deadline=time.monotonic() + 60)
     context = {"run_id": "fixture-run", "state": {}, "turn_count": 1, "cleanup_state": {"complete": False}}
+    from sap_business_agents_platform.runtime_report_contract import freeze, tools_for_contract
+    context["report_contract"] = freeze("fixture-run", "offline", binding)
     task = WorkBuddyHarnessDriver(owner).harness_turn(request, context)
     if output_format == "native_json_schema":
         assert asyncio.run(task).output == raw
@@ -159,7 +165,7 @@ def test_harness_driver_changes_only_native_format_guidance(tmp_path, output_for
     assert 0 < sent["seconds"] <= 60 and 0 < sent["payload"]["timeout_ms"] <= 60000
     from sap_business_agents_platform.mcp_server import _SAP_TOOLS, _TOOL_TOOLS
     from sap_business_agents_platform.runtime_query_contract import PLAN_SCHEMA
-    expected_tools = copy.deepcopy(_SAP_TOOLS + _TOOL_TOOLS)
+    expected_tools = tools_for_contract(_SAP_TOOLS + _TOOL_TOOLS, context["report_contract"])
     for tool in expected_tools:
         if tool["name"] in {"sap_query_validate", "sap_query_execute"}:
             tool["inputSchema"]["properties"]["plan"] = PLAN_SCHEMA

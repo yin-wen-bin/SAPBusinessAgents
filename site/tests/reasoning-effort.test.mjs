@@ -23,13 +23,14 @@ test("checking and independently saving send explicit chosen effort", () => {
   assert.match(source, /row\.setAttribute\("aria-busy", String\(busy\)\)/);
 });
 
-test("WorkBuddy candidates are explicit, unverified and cannot probe before authentication", () => {
+test("WorkBuddy uses SDK catalog candidates and cannot probe before authentication", () => {
   const branch = source.slice(source.indexOf('if (sdk.provider_id === "workbuddy")'), source.indexOf('const statusText = payload.catalog_status'));
   assert.match(branch, /refresh\.disabled = !sdk\.installed/);
   assert.match(branch, /\/workbuddy\/models\/refresh/);
   assert.match(branch, /check\.disabled = !sdk\.model_check_supported \|\| sdk\.authenticated !== true/);
-  assert.match(branch, /modelPicker\(sdk, payload, true\)/);
-  assert.match(branch, /const modelId = model\?\.model_id \|\| input\.value\.trim\(\)/);
+  assert.match(branch, /modelPicker\(sdk, payload\)/);
+  assert.doesNotMatch(branch, /modelPicker\(sdk, payload, true\)|__custom__|input\.value\.trim\(\)/);
+  assert.match(branch, /const modelId = model\.model_id/);
   assert.match(branch, /if \(model && model\.selectable && !model\.selected\)/);
   for (const text of ["CLI 声明，尚未验证", "CLI-declared, not checked"]) assert.ok(branch.includes(text));
   assert.doesNotMatch(branch, /reasoning_effort: effortSelect/);

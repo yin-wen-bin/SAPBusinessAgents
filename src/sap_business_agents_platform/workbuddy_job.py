@@ -65,6 +65,35 @@ class WindowsJob:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
 
+    def cli_processes(self, cli_path):
+        """Only matching images inside this exact Job Object; no global scan."""
+        if self.handle is None:
+            return {}
+        class Members(ctypes.Structure):
+            _fields_ = [('assigned', w.DWORD), ('count', w.DWORD), ('pids', ctypes.c_size_t * 256)]
+        members = Members()
+        if not self.kernel.QueryInformationJobObject(self.handle, 3, ctypes.byref(members), ctypes.sizeof(members), None):
+            raise OSError(ctypes.get_last_error(), 'job_members_unavailable')
+        if members.count > 256:
+            raise OSError('job_members_limit')
+        self.kernel.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, ctypes.POINTER(w.DWORD)]
+        self.kernel.QueryFullProcessImageNameW.restype = w.BOOL
+        result = {}
+        for pid in members.pids[:members.count]:
+            handle = self.kernel.OpenProcess(0x1000, False, pid)
+            if not handle:
+                continue
+            try:
+                size = w.DWORD(32768)
+                name = ctypes.create_unicode_buffer(size.value)
+                if self.kernel.QueryFullProcessImageNameW(handle, 0, name, ctypes.byref(size)) and os.path.normcase(os.path.abspath(name.value)) == os.path.normcase(os.path.abspath(cli_path)):
+                    identity = process_identity(pid)
+                    if identity not in {None, 'unknown'}:
+                        result[int(pid)] = identity
+            finally:
+                self.kernel.CloseHandle(handle)
+        return result
+
     def terminate(self) -> None:
         if self.handle and not self.kernel.TerminateJobObject(self.handle, 1):
             raise OSError(ctypes.get_last_error(), "TerminateJobObject")

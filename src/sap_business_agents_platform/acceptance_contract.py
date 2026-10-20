@@ -90,6 +90,15 @@ def compile_contract(manifest: dict[str, Any]) -> dict[str, Any]:
         "test_data_qualification_definition": value.get("testDataQualificationDefinition") or "",
         "composite_key_parts": copy.deepcopy(value.get("compositeKeyParts") or {}),
         "business_status_values": [str(item) for item in status_values if str(item)],
+        # Existing output declarations remain authoritative even for legacy
+        # acceptance contracts. These are reporting types, not candidate logic.
+        "required_metric_values": [str(name) for name in value.get("metrics") or []
+            if set(_types(output_properties.get(str(name)) or {})) & {"integer", "number", "string"}
+            and "null" not in _types(output_properties.get(str(name)) or {})],
+        "metric_output_descriptions": {str(name): copy.deepcopy(schema.get("title"))
+            for name in value.get("metrics") or []
+            if isinstance((schema := output_properties.get(str(name))), dict)
+            and isinstance(schema.get("title"), (str, dict))},
     }
 TECHNICAL = {"status", "successful_source_count", "tool_call_count", "query_count", "elapsed_seconds"}
 

@@ -653,6 +653,9 @@ select {
 .workflow-assistant-v2 { position: fixed; right: 1rem; top: 82px; bottom: 1rem; width: 350px; z-index: 25; padding: 1rem; background: white; border: 1px solid #cbd9df; border-radius: .8rem; overflow: auto; box-shadow: 0 8px 28px #1232; color: #173847; }
 .workflow-assistant-v2 header, .workflow-assistant-buttons { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; }
 .workflow-assistant-v2 label { display: grid; gap: .4rem; margin: .65rem 0; }
+.workflow-assistant-v2 .workflow-assistant-scope { grid-template-columns: auto 1fr; align-items: start; overflow-wrap: anywhere; }
+.workflow-assistant-scope input { width: auto; min-height: 1.2rem; }
+.workflow-assistant-scope small { grid-column: 1 / -1; }
 .workflow-assistant-v2 textarea, .workflow-assistant-v2 select { width: 100%; min-width: 0; }
 .workflow-assistant-v2 button { padding: .5rem .7rem; border: 1px solid #a9bac8; border-radius: .4rem; background: white; color: #173847; }
 .workflow-assistant-v2 button:disabled { opacity: .5; }
@@ -1650,6 +1653,7 @@ select {
 .role-progress-track span.active { width: 35%; animation: role-progress 1.4s ease-in-out infinite alternate; }
 @keyframes role-progress { from { transform: translateX(-100%); } to { transform: translateX(280%); } }
 .role-error { padding: 14px 18px; border: 1px solid #e8a5a5; border-radius: 9px; background: #fff4f4; color: #842626; }
+.role-error pre, .role-runtime-progress pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .role-consolidation-diagnostic code { white-space: normal; overflow-wrap: anywhere; }
 .role-preflight-ready { margin-top: 10px; padding: 12px 15px; border: 1px solid #9bcbb4; border-radius: 9px; background: #effaf4; color: #235c3c; }
 .role-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
@@ -5281,4 +5285,21 @@ details[open] > summary .disclosure-chevron {
     flex-direction: column;
     gap: 3px;
   }
+}
+/* Shared SDK account/authentication controls; technical details stay secondary. */
+.sdk-authentication-section .sdk-facts { margin-block: .5rem; }
+.sdk-service-site { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; padding-block: .5rem; }
+.sdk-service-site label { flex: 1 1 12rem; min-width: 0; }
+.sdk-service-site select { width: 100%; }
+.sdk-service-site p { flex-basis: 100%; }
+.sdk-authentication-section p { margin-block: .4rem; }
+.sdk-authentication-links { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .6rem; }
+.sdk-authentication-actions { gap: .5rem; }
+.sdk-authentication-progress:empty { display: none; }
+.sdk-authentication-progress a { overflow-wrap: anywhere; }
+.sdk-authentication-progress { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.sdk-authentication-progress > p { flex-basis: 100%; }
+.sdk-card > .sdk-settings-section { padding: .8rem 1rem; }
+@media (max-width: 390px) {
+  .sdk-authentication-actions { flex-direction: column; align-items: stretch; }
 }

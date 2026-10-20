@@ -14,6 +14,25 @@ const labels = locale === "zh" ? {
   connecting: "正在连接查询服务…",
   progress: "查询进度",
   progressHint: "页面会自动更新，查询期间无需反复刷新。",
+  elapsedRunning: "已运行 {seconds} 秒",
+  runtimeWaiting: "等待模型回复（尚不代表 SAP 读取进展）",
+  runtimeChecking: "正在核对 Runtime 与执行环境",
+  runtimeActivity: {
+    agent_runtime_turn_started: "已启动模型分析轮次",
+    agent_runtime_connected: "已连接 SDK",
+    agent_runtime_query_submitted: "问题已提交，等待模型回复",
+    agent_runtime_activity: "已收到 SDK 消息，等待业务结果",
+    agent_runtime_response_received: "已收到模型分析结果",
+    agent_runtime_result_received: "已收到模型终态，正在核验",
+    agent_runtime_sdk_closing: "正在关闭本轮 SDK 连接",
+    agent_runtime_sdk_closed: "本轮 SDK 连接已关闭",
+    agent_runtime_turn_completed: "模型轮次完成，正在核验结果",
+    agent_runtime_turn_failed: "模型轮次未完成",
+    workbuddy_native_failure: "SDK 报告执行异常",
+    workbuddy_formatter_progress: "正在核验结构化输出",
+    workbuddy_execution_failed: "Runtime 执行未完成",
+    workbuddy_native_wait: "等待 SDK 响应",
+  },
   conclusion: "业务结论",
   stages: "各阶段结果",
   metrics: "关键业务指标",
@@ -94,7 +113,7 @@ const labels = locale === "zh" ? {
     cancellation_requested: "正在取消查询", run_cancelled: "查询已取消",
     agent_runtime_turn_started: "Agent Runtime 开始新的分析轮次", agent_runtime_response_received: "Agent Runtime 已返回新的分析结果",
     agent_runtime_turn_completed: "Agent Runtime 分析轮次完成", agent_runtime_turn_failed: "Agent Runtime 分析轮次失败",
-    harness_started: "Codex Harness 已启动", harness_resumed: "Codex Harness 已从持久线程恢复", codex_turn_started: "Codex 开始新的分析轮次",
+    harness_started: "查询 Harness 已启动", harness_resumed: "查询 Harness 已从持久线程恢复", codex_turn_started: "Codex 开始新的分析轮次",
     assistant_message: "Codex 已更新查询判断", web_search_started: "正在联网检索参考资料",
     web_search_completed: "联网检索完成", tool_discovery_started: "正在发现可用工具",
     tool_discovery_completed: "工具发现完成", tool_admission_passed: "只读工具已通过准入",
@@ -159,7 +178,7 @@ const labels = locale === "zh" ? {
   fallbackAction: "请根据未确认的阶段核对相应业务单据，必要时联系采购、销售或财务同事。",
   failureAction: "请记录运行编号并联系系统支持人员核对失败原因，然后重新执行。",
   pendingConclusion: "正在查询，完成后将在这里显示业务结论",
-  pendingOverview: "系统正在读取 SAP 数据并核验证据，请留在本页等待结果。",
+  pendingOverview: "系统正在处理本轮问题。当前阶段与 SAP 读取情况以查询进度及处理记录为准；页面关闭不会取消查询。",
   runtimeLabel: "Agent Runtime",
   mode: { agent: "固定 Agent", free_query: "自由 SAP 查询", workflow: "组合工作流", guided: "Agent 引导查询" },
   freeQuerySession: {
@@ -189,6 +208,25 @@ const labels = locale === "zh" ? {
   connecting: "Connecting to the query service…",
   progress: "Query progress",
   progressHint: "This page updates automatically. You do not need to refresh it.",
+  elapsedRunning: "Running for {seconds}s",
+  runtimeWaiting: "Waiting for the model (not SAP read progress)",
+  runtimeChecking: "Checking Runtime admission and execution environment",
+  runtimeActivity: {
+    agent_runtime_turn_started: "Model analysis turn started",
+    agent_runtime_connected: "SDK connected",
+    agent_runtime_query_submitted: "Question submitted; waiting for the model",
+    agent_runtime_activity: "SDK message received; waiting for a business result",
+    agent_runtime_response_received: "Model analysis received",
+    agent_runtime_result_received: "Model terminal received; validating",
+    agent_runtime_sdk_closing: "Closing the SDK connection",
+    agent_runtime_sdk_closed: "SDK connection closed",
+    agent_runtime_turn_completed: "Model turn completed; validating the result",
+    agent_runtime_turn_failed: "Model turn did not complete",
+    workbuddy_native_failure: "SDK reported an execution error",
+    workbuddy_formatter_progress: "Checking structured output",
+    workbuddy_execution_failed: "Runtime execution did not complete",
+    workbuddy_native_wait: "Waiting for the SDK",
+  },
   conclusion: "Business conclusion",
   stages: "Results by stage",
   metrics: "Key business metrics",
@@ -269,7 +307,7 @@ const labels = locale === "zh" ? {
     cancellation_requested: "Cancelling the query", run_cancelled: "Query cancelled",
     agent_runtime_turn_started: "Agent Runtime analysis turn started", agent_runtime_response_received: "Agent Runtime returned an analysis update",
     agent_runtime_turn_completed: "Agent Runtime analysis turn completed", agent_runtime_turn_failed: "Agent Runtime analysis turn failed",
-    harness_started: "Codex Harness started", harness_resumed: "Codex Harness resumed from its persistent thread", codex_turn_started: "Codex analysis turn started",
+    harness_started: "Query Harness started", harness_resumed: "Query Harness resumed from its persistent thread", codex_turn_started: "Codex analysis turn started",
     assistant_message: "Codex updated its query assessment", web_search_started: "Searching public references",
     web_search_completed: "Web search completed", tool_discovery_started: "Discovering useful tools",
     tool_discovery_completed: "Tool discovery completed", tool_admission_passed: "Read-only tool admitted",
@@ -334,7 +372,7 @@ const labels = locale === "zh" ? {
   fallbackAction: "Review the document for each unconfirmed stage and contact the relevant procurement, sales, or finance colleague if needed.",
   failureAction: "Record the run ID, ask system support to review the failure, and then run the query again.",
   pendingConclusion: "The business conclusion will appear here when the query finishes",
-  pendingOverview: "The system is reading SAP data and validating evidence. Keep this page open for the result.",
+  pendingOverview: "The request is being processed. Query progress and the processing log show the actual stage and SAP reads. Closing this page does not cancel the query.",
   runtimeLabel: "Agent Runtime",
   mode: { agent: "Fixed Agent", free_query: "Free SAP query", workflow: "Composite workflow", guided: "Agent-guided query" },
   freeQuerySession: {
@@ -418,6 +456,7 @@ const labels = locale === "zh" ? {
       <div>
         <h2 id="run-progress-title">{labels.progress}</h2>
         <p data-progress-message>{labels.connecting}</p>
+        <p data-runtime-activity role="status" aria-live="polite" hidden></p>
         <small>{labels.progressHint}</small>
         <small class="run-limit-summary" data-limit-summary hidden></small>
       </div>
@@ -594,6 +633,11 @@ const labels = locale === "zh" ? {
   let feedbackSource;
   let activeFeedbackRequestId = "";
   let currentRun;
+  let runtimeActivity;
+  let runLoad;
+  let runLoadId;
+  let progressTimer;
+  let refreshTimer;
   let currentSession;
   let selectedFeedbackType = "";
   let inputDisplayMode = "";
@@ -807,7 +851,7 @@ const labels = locale === "zh" ? {
     return { tone: firstGap ? "warning" : "success", headline, overview, stages: rows, next_actions: [labels.fallbackAction] };
   };
 
-  const businessReportFor = (run) => conditionalSkipBusinessReport(run) || firstRule(run)?.business_report || fallbackBusinessReport(run);
+  const businessReportFor = (run) => executionInterruption(run) || conditionalSkipBusinessReport(run) || firstRule(run)?.business_report || fallbackBusinessReport(run);
   const legacyBusinessSections = () => [
     "[data-business-stages-wrap]", "[data-business-metrics-wrap]", "[data-business-findings-wrap]",
     "[data-missing-evidence-wrap]", "[data-next-actions-wrap]",
@@ -1271,7 +1315,7 @@ const labels = locale === "zh" ? {
       root.querySelector("[data-business-result]").hidden = false;
       return;
     }
-    if (run.result?.presentation) {
+    if (run.result?.presentation && !executionInterruption(run)) {
       renderPresentation(run, run.result.presentation);
       root.querySelector("[data-business-result]").hidden = false;
       return;
@@ -1451,6 +1495,14 @@ const labels = locale === "zh" ? {
 
   const renderCompleteness = (run) => {
     const node = root.querySelector("[data-completeness]"); node.replaceChildren();
+    const interruption = executionInterruption(run);
+    if (interruption) {
+      node.dataset.complete = "unknown";
+      const heading = document.createElement("strong"); heading.textContent = interruption.headline;
+      const reason = document.createElement("p"); reason.textContent = interruption.overview;
+      node.append(heading, reason);
+      return;
+    }
     if (run.status === "failed") {
       node.dataset.complete = "unknown";
       const heading = document.createElement("strong"); heading.textContent = labels.notEvaluated;
@@ -1480,6 +1532,7 @@ const labels = locale === "zh" ? {
 
   const eventDetail = (name, payload) => {
     const data = payload?.data || {};
+    if (labels.runtimeActivity[name]) return labels.runtimeActivity[name];
     if (name === "step_started") return friendlyId(data.step_id || data.id);
     if (name.startsWith("node_") || name === "mapping_failed") return friendlyId(data.node_id || data.agent_id);
     if (name === "tool_started" || name === "tool_completed") return friendlyId(data.step_id || data.operation || data.plugin_id);
@@ -1502,13 +1555,57 @@ const labels = locale === "zh" ? {
     item.append(marker, content, time); root.querySelector("[data-timeline]").append(item);
   };
   const progressPhases = ["received", "preparing", "reading_sap", "validating_evidence", "preparing_result"];
+  const executionInterruption = (run) => {
+    // Historical result facts only; no SDK calls, inferred model error or history rewrite.
+    // Keep Codex and non-free-query rendering on their existing path.
+    if (run.mode !== "free_query" || run.runtime?.provider_id !== "workbuddy" || !["inconclusive", "failed"].includes(run.status)) return null;
+    const result = run.result;
+    const missing = result?.completeness?.missing_evidence;
+    if (!Array.isArray(missing) || !missing.includes("harness_deadline_exceeded")) return null;
+    const noReads = Array.isArray(result.tool_calls) && result.tool_calls.length === 0
+      && result.harness?.tool_call_count === 0 && Array.isArray(result.evidence) && result.evidence.length === 0;
+    return {
+      tone: "warning", noReads,
+      headline: locale === "zh"
+        ? (noReads ? "模型响应超时，未开始 SAP 取证" : "查询超时，尚未形成完整结论")
+        : (noReads ? "Model response timed out before SAP evidence collection" : "Query timed out without a complete conclusion"),
+      overview: locale === "zh"
+        ? (noReads ? "未取得 SAP 业务证据，不能据此判定 SAP 中没有数据。超时不代表查询成功，也不能单凭此结果判断登录、额度或网络故障。"
+          : "仅保留截止前已取得的证据；这不表示查询或业务核验已经完成。")
+        : (noReads ? "No SAP business evidence was collected. This does not establish that SAP has no data, or identify an authentication, quota or network failure."
+          : "Only evidence obtained before the deadline is retained. The query and business verification did not complete."),
+      stages: [], next_actions: [locale === "zh" ? "先核对 Runtime 诊断，再决定是否重新查询；页面不会自动重发业务请求。" : "Inspect Runtime diagnostics before deciding whether to retry. This page does not resubmit the business request automatically."],
+    };
+  };
   const progressIndex = (run) => Math.max(0, progressPhases.indexOf(run.progress?.phase || "received"));
+  const observeRuntimeEvent = (name, payload) => {
+    if (!labels.runtimeActivity[name]) return;
+    const sequence = Number(payload?.sequence || 0);
+    if (runtimeActivity?.runId === runId && sequence <= runtimeActivity.sequence) return;
+    const data = payload?.data || {};
+    let text = labels.runtimeActivity[name];
+    if (name === "agent_runtime_activity" && !(Number(data.assistant_message_count) > 0)) text = labels.runtimeWaiting;
+    if (name === "workbuddy_native_wait") {
+      const states = {
+        sdk_connecting: labels.runtimeChecking,
+        query_submitting: labels.runtimeActivity.agent_runtime_connected,
+        waiting_sdk_message: labels.runtimeWaiting,
+        sdk_closing: labels.runtimeActivity.agent_runtime_sdk_closing,
+        sdk_closed: labels.runtimeActivity.agent_runtime_sdk_closed,
+      };
+      text = states[data.worker_wait_state] || text;
+    }
+    // Only platform-authored labels are rendered, never SDK logs or reasoning.
+    runtimeActivity = {runId, sequence, text};
+    if (currentRun?.run_id === runId) renderProgress(currentRun);
+  };
   const renderProgress = (run) => {
-    const index = progressIndex(run);
+    const interruption = executionInterruption(run);
+    const index = interruption?.noReads ? 1 : progressIndex(run);
     const progress = run.progress || {};
     const state = progress.state || (terminal.has(run.status) ? run.status : "active");
-    const finished = state === "completed" || state === "inconclusive";
-    const failed = state === "failed" || state === "cancelled";
+    const finished = !interruption && (state === "completed" || state === "inconclusive");
+    const failed = Boolean(interruption) || state === "failed" || state === "cancelled";
     const waiting = state === "waiting_input";
     const showUnits = run.mode !== "free_query" && progress.determinate && Number(progress.total_units) > 0;
     const unitText = showUnits
@@ -1517,15 +1614,24 @@ const labels = locale === "zh" ? {
     const activityId = progress.current_step_id || progress.current_node_id || "";
     const activity = activityId ? friendlyId(activityId) : "";
     const phaseText = labels.phaseLabels[index] || labels.phaseLabels[0];
-    const elapsedText = run.mode === "free_query" && Number(progress.hard_limit_seconds) > 0
-      ? labels.freeQuerySession.elapsed.replace("{elapsed}", String(progress.elapsed_seconds || 0)).replace("{hard}", String(progress.hard_limit_seconds))
-      : "";
+    const active = !terminal.has(run.status);
+    const anchor = Number(progress.hard_limit_seconds) > 0 ? progress.updated_at : (run.started_at || run.created_at);
+    const since = Date.parse(anchor || "");
+    const delta = active && Number.isFinite(since) ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
+    const elapsed = Math.max(0, Number(progress.hard_limit_seconds) > 0 ? Number(progress.elapsed_seconds || 0) + delta : delta);
+    const elapsedText = run.mode === "free_query" && (active || Number(progress.hard_limit_seconds) > 0)
+      ? (Number(progress.hard_limit_seconds) > 0
+        ? labels.freeQuerySession.elapsed.replace("{elapsed}", String(elapsed)).replace("{hard}", String(progress.hard_limit_seconds))
+        : labels.elapsedRunning.replace("{seconds}", String(elapsed))) : "";
     const deadlineText = progress.deadline_phase === "finalizing"
       ? labels.freeQuerySession.finalizing
       : Number(progress.extension_count || 0) > 0
         ? labels.freeQuerySession.extended.replace("{count}", String(progress.extension_count))
         : "";
-    root.querySelector("[data-progress-message]").textContent = [labels.progressState[state] || phaseText, activity, unitText, elapsedText, deadlineText].filter(Boolean).join(" · ");
+    root.querySelector("[data-progress-message]").textContent = [interruption?.headline || labels.progressState[state] || phaseText, activity, unitText, elapsedText, deadlineText].filter(Boolean).join(" · ");
+    const runtimeStatus = root.querySelector("[data-runtime-activity]");
+    runtimeStatus.hidden = run.mode !== "free_query" || !active;
+    runtimeStatus.textContent = runtimeActivity?.runId === run.run_id ? runtimeActivity.text : labels.runtimeChecking;
     const indicator = root.querySelector("[data-progress-indicator]");
     indicator.className = `run-progress-indicator ${finished ? "is-complete" : failed ? "is-stopped" : waiting ? "is-paused" : "is-active"}`;
     let percent;
@@ -1801,7 +1907,7 @@ const labels = locale === "zh" ? {
       : "";
     root.querySelector("[data-run-identity]").textContent = `${modeLabel}${subject ? ` · ${subject}` : ""}${runtimeIdentity} · ${run.run_id}`;
     const progressState = run.progress?.state || (terminal.has(run.status) ? run.status : "active");
-    root.querySelector("[data-run-status]").textContent = labels.progressState[progressState] || labels.phaseLabels[progressIndex(run)] || labels.connecting;
+    root.querySelector("[data-run-status]").textContent = executionInterruption(run)?.headline || labels.progressState[progressState] || labels.phaseLabels[progressIndex(run)] || labels.connecting;
     const progressDisclosure = root.querySelector("[data-progress-disclosure]");
     const progressMode = terminal.has(run.status) ? "terminal" : "active";
     if (progressDisclosure.dataset.displayMode !== progressMode) {
@@ -1856,18 +1962,34 @@ const labels = locale === "zh" ? {
     });
     downloads.hidden = downloadLinks.querySelectorAll("a").length === 0;
     root.querySelector("[data-cancel]").hidden = terminal.has(run.status);
+    if (terminal.has(run.status)) stopProgressUpdates();
   };
 
-  const loadRun = async () => {
+  const readRun = async () => {
     if (!runId && sessionId) {
       const session = await loadSession();
       const latest = (session?.iterations || []).find((item) => Number(item.iteration) === Number(session.current_iteration));
       if (latest) runId = String(latest.run_id);
     }
     if (!runId || !apiBase) return;
-    const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}`);
-    if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
-    const run = await response.json(); renderRun(run); return run;
+    const requestedRun = runId;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(requestedRun)}`, {signal: controller.signal, cache: "no-store"});
+      if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
+      const run = await response.json();
+      if (requestedRun === runId) renderRun(run);
+      return run;
+    } finally { window.clearTimeout(timeout); }
+  };
+  const loadRun = () => {
+    if (!runLoad || runLoadId !== runId) {
+      runLoadId = runId;
+      const pending = readRun().finally(() => { if (runLoad === pending) runLoad = undefined; });
+      runLoad = pending;
+    }
+    return runLoad;
   };
   const eventNames = [
     "run_queued", "run_started", "progress_changed", "planning_started", "plan_created", "validation_started", "schema_received",
@@ -1882,16 +2004,22 @@ const labels = locale === "zh" ? {
     "agent_runtime_tool_started", "agent_runtime_tool_completed", "harness_time_extended", "harness_finalization_started",
     "evidence_gap_assessed", "codex_turn_completed", "harness_completed", "harness_interrupted",
     "feedback_reinterpretation_started",
+    ...Object.keys(labels.runtimeActivity),
   ];
   const connect = () => {
     source?.close();
     if (!runId || !apiBase) { showAlert(labels.noRun); return; }
+    startProgressUpdates();
     root.querySelector("[data-reconnect]").hidden = true;
     source = new EventSource(`${apiBase}/api/runs/${encodeURIComponent(runId)}/events`);
     source.onopen = () => { root.querySelector("[data-reconnect]").hidden = true; };
-    eventNames.forEach((name) => source.addEventListener(name, (event) => {
+    [...new Set(eventNames)].forEach((name) => source.addEventListener(name, (event) => {
+      let payload = {};
+      try { payload = JSON.parse(event.data); } catch { /* Ignore malformed event data. */ }
+      observeRuntimeEvent(name, payload);
+      if (name === "agent_runtime_activity" || name === "workbuddy_formatter_progress" || name === "workbuddy_native_wait") return;
       if (name !== "progress_changed") {
-        try { appendEvent(name, JSON.parse(event.data)); } catch { appendEvent(name, {}); }
+        appendEvent(name, payload);
       }
       loadRun().catch(() => showAlert(labels.unavailable));
       if (sessionId) loadSession().catch(() => {});
@@ -1902,6 +2030,34 @@ const labels = locale === "zh" ? {
       loadRun().catch(() => showAlert(labels.unavailable));
     };
   };
+
+  const stopProgressUpdates = () => {
+    window.clearInterval(progressTimer);
+    window.clearTimeout(refreshTimer);
+  };
+  const scheduleStatusRefresh = () => {
+    window.clearTimeout(refreshTimer);
+    if (document.hidden || !runId || (currentRun?.run_id === runId && terminal.has(currentRun.status))) return;
+    refreshTimer = window.setTimeout(async () => {
+      try { await loadRun(); }
+      catch { root.querySelector("[data-reconnect]").hidden = false; }
+      finally { scheduleStatusRefresh(); }
+    }, 5000);
+  };
+  const startProgressUpdates = () => {
+    stopProgressUpdates();
+    if (document.hidden || (currentRun?.run_id === runId && terminal.has(currentRun.status))) return;
+    progressTimer = window.setInterval(() => {
+      if (currentRun && !terminal.has(currentRun.status)) renderProgress(currentRun);
+    }, 1000);
+    scheduleStatusRefresh();
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopProgressUpdates();
+    else { startProgressUpdates(); if (runId) void loadRun().catch(() => {}); }
+  });
+  window.addEventListener("pagehide", () => { stopProgressUpdates(); source?.close(); feedbackSource?.close(); });
+  window.addEventListener("pageshow", () => { startProgressUpdates(); if (runId && source?.readyState === EventSource.CLOSED) connect(); });
 
   root?.querySelector("[data-reconnect]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -2150,6 +2306,7 @@ const labels = locale === "zh" ? {
     }
   });
   if (runId || sessionId) {
+    startProgressUpdates();
     Promise.all([loadRun(), sessionId ? loadSession() : Promise.resolve()]).then(connect).catch((error) => {
       showAlert(error.status === 404 ? labels.historyExpired : labels.unavailable);
       root.querySelector("[data-reconnect]").hidden = false;

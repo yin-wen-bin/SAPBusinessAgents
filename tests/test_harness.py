@@ -1990,6 +1990,8 @@ def test_app_server_overrides_disable_inherited_mcp_and_strip_sap_secrets(
     )
     settings = _settings(tmp_path)
     with patch("sap_business_agents_platform.harness.Path.home", return_value=tmp_path):
+        from sap_business_agents_platform.runtime_report_contract import freeze, save_contract
+        save_contract(settings.data_root, freeze("run", "offline-override", None))
         overrides = _mcp_overrides(settings, "run", "cap", sys.executable)
     assert "mcp_servers.unapproved_external_runtime.enabled=false" in overrides
     assert any(item.startswith("mcp_servers.sap_business_agents.command=") for item in overrides)

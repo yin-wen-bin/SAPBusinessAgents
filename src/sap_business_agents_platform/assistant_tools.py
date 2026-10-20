@@ -97,17 +97,21 @@ def _digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
-def contract_digest(tool_id: str) -> str | None:
+def contract_digest(tool_id: str, report_contract=None) -> str | None:
     from .mcp_server import _SAP_TOOLS, _TOOL_TOOLS, _AUTHORING_TOOLS
     for item in (*_SAP_TOOLS, *_TOOL_TOOLS, *_AUTHORING_TOOLS):
         if item["name"] == tool_id:
-            return _digest({"catalog_version": CATALOG_VERSION, "input_schema": item["inputSchema"]})
+            schema = item["inputSchema"]
+            if tool_id == "sap_final_report_validate" and report_contract is not None:
+                from .runtime_report_contract import verify
+                schema = verify(report_contract)["input_schema"]
+            return _digest({"catalog_version": CATALOG_VERSION, "input_schema": schema})
     return None
 
 
-def contract_snapshot(kind: str) -> dict[str, str]:
+def contract_snapshot(kind: str, report_contract=None) -> dict[str, str]:
     return {tool_id: digest for tool_id in _ASSISTANT_ALLOWED.get(kind, ())
-            if (digest := contract_digest(tool_id)) is not None}
+            if (digest := contract_digest(tool_id, report_contract)) is not None}
 
 
 def catalog(
@@ -117,6 +121,7 @@ def catalog(
     mail_bindings: list[dict[str, Any]] | None = None,
     query: str = "",
     limit: int = 30,
+    report_contract=None,
 ) -> list[dict[str, Any]]:
     """Return relevant public descriptors; this performs no external reads."""
     from .mcp_server import _SAP_TOOLS, _TOOL_TOOLS, _AUTHORING_TOOLS
@@ -127,6 +132,9 @@ def catalog(
     for item in (*_SAP_TOOLS, *_TOOL_TOOLS, *_AUTHORING_TOOLS):
         tool_id = str(item["name"])
         schema = item["inputSchema"]
+        if tool_id == "sap_final_report_validate" and report_contract is not None:
+            from .runtime_report_contract import verify
+            schema = verify(report_contract)["input_schema"]
         effect = ("sap_read" if tool_id.startswith("sap_") else
                   "external_read" if tool_id == "external_tool_execute" else
                   "session_write" if tool_id == "tool_discovery_activate" else

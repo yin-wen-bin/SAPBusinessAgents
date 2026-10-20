@@ -199,6 +199,9 @@ class RunCoordinator:
 
     def _future_session_binding(self, session: dict[str, Any]) -> dict[str, Any]:
         snapshot = session.get("runtime") or {}
+        auth = getattr(getattr(self.planner, "manager", None), "authentication_service", None)
+        if auth:
+            auth.assert_binding(str(snapshot.get("provider_id") or "codex"), snapshot)
         if snapshot.get("provider_id") == "workbuddy":
             return self.planner.snapshot_for_binding(snapshot)
         resolve = getattr(self.planner, "resolve_legacy_snapshot", None)
@@ -210,6 +213,9 @@ class RunCoordinator:
 
     def _future_runtime_binding(self, record: Any) -> dict[str, Any]:
         original = record.runtime.model_dump(mode="json") if record.runtime else {}
+        auth = getattr(getattr(self.planner, "manager", None), "authentication_service", None)
+        if auth:
+            auth.assert_binding(str(original.get("provider_id") or "codex"), original)
         if original.get("provider_id") == "workbuddy":
             return self.planner.snapshot_for_binding(original)
         if original.get("reasoning_effort") is not None:
@@ -478,7 +484,9 @@ class RunCoordinator:
             snapshot = getattr(self.planner, "snapshot", None)
             if callable(snapshot):
                 try:
-                    runtime_snapshot = snapshot()
+                    from .runtime_admission import prepare, snapshot as original_snapshot, RuntimeAdmissionRequest
+                    runtime_snapshot = (await original_snapshot(snapshot) if request.acceptance_spec is not None
+                        else await prepare(self.planner, RuntimeAdmissionRequest(operation='free_query')))
                 except Exception as exc:
                     raise RunExecutionError(
                         str(exc),
@@ -1186,7 +1194,7 @@ class RunCoordinator:
         try:
             pin = getattr(self.planner, "pin", None)
             context = pin(provider_id, model_id, runtime_snapshot.get("reasoning_effort")) if callable(pin) else nullcontext()
-            if provider_id == "workbuddy":
+            if provider_id == "workbuddy" or "authentication_binding_revision" in runtime_snapshot:
                 context = self.planner.pin_snapshot(runtime_snapshot)
             with context:
                 decision = await feedback_reviewer(
@@ -1422,7 +1430,7 @@ class RunCoordinator:
         model_id = runtime_snapshot.get("model")
         pin = getattr(self.planner, "pin", None)
         context = pin(provider_id, model_id, runtime_snapshot.get("reasoning_effort")) if callable(pin) else nullcontext()
-        if provider_id == "workbuddy":
+        if provider_id == "workbuddy" or "authentication_binding_revision" in runtime_snapshot:
             context = self.planner.pin_snapshot(runtime_snapshot)
         with context:
             cancel = getattr(self.planner, "cancel", None)
@@ -3165,34 +3173,37 @@ class RunCoordinator:
         model_id = record.runtime.model if record.runtime else None
         pin = getattr(self.planner, "pin", None)
         context = pin(provider_id, model_id, self._future_runtime_binding(record).get("reasoning_effort")) if callable(pin) else nullcontext()
-        if provider_id == "workbuddy":
+        if provider_id == "workbuddy" or "authentication_binding_revision" in self._future_runtime_binding(record):
             context = self.planner.pin_snapshot(self._future_runtime_binding(record))
         bind_events = getattr(self.planner, "bind_events", None)
-        event_context = (
-            bind_events(
-                lambda event_type, data: self.store.append_event(
-                    run_id, event_type, data
+        # Resolving an event sink selects a Provider too. Enter the saved
+        # Runtime binding first; never consult another/global default here.
+        with context:
+            event_context = (
+                bind_events(
+                    lambda event_type, data: self.store.append_event(
+                        run_id, event_type, data
+                    )
                 )
+                if callable(bind_events)
+                else nullcontext()
             )
-            if callable(bind_events)
-            else nullcontext()
-        )
-        with context, event_context:
-            if provider_id == "workbuddy":
-                if not getattr(self, "workbuddy_harness", None):
-                    raise RunExecutionError("WorkBuddy harness is unavailable.", code="runtime_operation_unavailable")
-                with self.planner.pin_snapshot(self._future_runtime_binding(record)):
-                    await self._execute_workbuddy_harness(run_id)
-                return
-            if (
-                provider_id == "codex"
-                and self.harness is not None
-                and self.settings.free_query_runtime == "harness"
-            ):
-                await self._execute_free_query_harness(run_id)
-                return
-            raise RunExecutionError("The query Harness is unavailable; check the local Runtime configuration.",
-                                    code="runtime_harness_unavailable")
+            with event_context:
+                if provider_id == "workbuddy":
+                    if not getattr(self, "workbuddy_harness", None):
+                        raise RunExecutionError("WorkBuddy harness is unavailable.", code="runtime_operation_unavailable")
+                    with self.planner.pin_snapshot(self._future_runtime_binding(record)):
+                        await self._execute_workbuddy_harness(run_id)
+                    return
+                if (
+                    provider_id == "codex"
+                    and self.harness is not None
+                    and self.settings.free_query_runtime == "harness"
+                ):
+                    await self._execute_free_query_harness(run_id)
+                    return
+                raise RunExecutionError("The query Harness is unavailable; check the local Runtime configuration.",
+                                        code="runtime_harness_unavailable")
 
     def _query_flow(self, record, snapshot=None):
         from .runtime_query_history import query_flow
@@ -3257,7 +3268,7 @@ class RunCoordinator:
             pin = getattr(self.planner, "pin", None)
             model_id = record.runtime.model if record.runtime else None
             context = pin(provider_id, model_id, self._future_runtime_binding(record).get("reasoning_effort")) if callable(pin) else nullcontext()
-            if provider_id == "workbuddy":
+            if provider_id == "workbuddy" or "authentication_binding_revision" in self._future_runtime_binding(record):
                 context = self.planner.pin_snapshot(self._future_runtime_binding(record))
             with context:
                 revised = await presentation_reviser(

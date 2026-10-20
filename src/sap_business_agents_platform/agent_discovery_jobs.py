@@ -69,11 +69,16 @@ class AgentDiscoveryJobs:
         created_run = False
         try:
             bound = (draft.get("metadata") or {}).get("runtime_snapshot") or {}
+            auth = getattr(self.sdk_manager, "authentication_service", None)
+            if auth:
+                auth.assert_binding(str(bound.get("provider_id") or "codex"), bound)
             if bound.get("provider_id") == "workbuddy":
                 runtime = self.sdk_manager.workbuddy.bound_snapshot(bound)
                 self.sdk_manager.workbuddy.environment.assert_operation(runtime, "sample_discovery")
             else:
                 runtime = self.sdk_manager.runtime_snapshot_for_model("codex", SAMPLE_MODEL)
+            if auth:
+                runtime = auth.bind(runtime["provider_id"], runtime)
             if runtime.get("provider_id") != "workbuddy" and (runtime.get("provider_id") != "codex" or runtime.get("model") != SAMPLE_MODEL):
                 raise AgentLifecycleError("The sample Runtime binding is inconsistent.", code="sample_discovery_model_mismatch")
             RuntimeSnapshot.model_validate(runtime)

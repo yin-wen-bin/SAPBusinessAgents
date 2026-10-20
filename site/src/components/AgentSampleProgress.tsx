@@ -11,6 +11,12 @@ const phases: Record<string, [string, string]> = {
 const activeStates = new Set(["starting", "queued", "running", "cancelling"]);
 const formatTime = (seconds: number) => `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
 const sampleCodeText: Record<string, [string, string]> = {
+  sample_cross_source_scope_unproven: ["已填条件分布在不同SAP来源，当前选样不能在保留全部条件时证明关联范围；未启动模型或读取，请手工补充参数。", "Supplied scope spans different SAP sources. Discovery cannot prove their relationship while retaining every condition; no model or read was started. Enter inputs manually."],
+  sample_relationship_proof_missing: ["关联证据尚未覆盖全部已填条件，未提供候选参数。", "Relationship evidence does not cover all supplied conditions; no candidate input was released."],
+  sample_relationship_types_unproven: ["关联字段尚未通过实时Schema类型核对。", "Relationship field types have not been verified against live Schema."],
+  sample_relationship_tuple_unproven: ["关联键必须来自同一条上游证据记录，不能交叉组合。", "Relationship keys must come from the same upstream evidence row; cross-products are forbidden."],
+  sample_relationship_conflict: ["同一稳定键存在冲突证据，已阻断选样。", "Conflicting evidence for a stable key blocked discovery."],
+  sample_scope_not_preserved: ["候选查询未能保留全部已填条件或固定筛选，已在读取前拒绝。", "The candidate query did not preserve all supplied scope or constant filters and was rejected before reading."],
   sample_live_stable_key_unproven: ["SAP元数据无法证明候选查询具有稳定排序，未读取候选数据。", "SAP metadata could not prove a stable candidate-query order, so candidate data was not read."],
   sample_combination_unproven: ["来自不同SAP对象的参数无法通过共同业务键证明属于同一组样本。", "Inputs from different SAP objects could not be linked into one sample through shared business keys."],
   schema_field_not_sortable: ["候选查询使用了SAP元数据标记为不可排序的字段。", "The candidate query used a field that SAP metadata marks as non-sortable."],
@@ -69,6 +75,7 @@ export default function AgentSampleProgress({ open, value, locale, canRetry, onC
   const ready = ["ready", "completed", "found"].includes(value?.status);
   const active = activeStates.has(value?.status);
   const selecting = fields !== undefined;
+  const hasSelectableField = selectedFields.some((key) => fields?.some((item) => item.key === key && !item.disabled));
   useEffect(() => {
     // Switching from selection removes the focused Start button. Keep focus
     // inside the native modal rather than leaving it on document.body.
@@ -84,7 +91,7 @@ export default function AgentSampleProgress({ open, value, locale, canRetry, onC
     {selecting ? <fieldset className="sample-parameter-selection"><legend>{tr("当前输入参数", "Current input parameters")}</legend>{fields.map((item) => <label key={item.key} className="draft-checkbox"><input type="checkbox" checked={selectedFields.includes(item.key)} disabled={item.disabled} onChange={(event) => onSelection?.(event.target.checked ? [...selectedFields, item.key] : selectedFields.filter((key) => key !== item.key))} /><span>{item.label} · {item.requirement}{item.reason && <small> · {item.reason}</small>}</span></label>)}</fieldset> : value && <SampleProgressSummary value={value} locale={locale} />}
     {!selecting && ready && <p>{tr("已核对参数数量", "Verified parameters")}: {Object.keys(value.field_sources || {}).length}</p>}
     <footer>
-      {selecting ? <><button type="button" className="agent-secondary-action" onClick={onClose}>{tr("暂不查找", "Not now")}</button><button type="button" disabled={!canRetry || !selectedFields.length || preflightBusy || preflightError || scopeRequired} onClick={onStart}>{tr("开始查找", "Start discovery")}</button></> : active ? <><button type="button" className="agent-secondary-action" onClick={onClose}>{tr("后台继续", "Continue in background")}</button><button type="button" disabled={!value.run_id || value.status === "cancelling"} onClick={onCancel}>{tr(value.status === "cancelling" ? "正在取消" : "取消查找", value.status === "cancelling" ? "Cancelling" : "Cancel discovery")}</button></>
+      {selecting ? <><button type="button" className="agent-secondary-action" onClick={onClose}>{tr("暂不查找", "Not now")}</button><button type="button" disabled={!canRetry || !hasSelectableField || preflightBusy || preflightError || scopeRequired} onClick={onStart}>{tr("开始查找", "Start discovery")}</button></> : active ? <><button type="button" className="agent-secondary-action" onClick={onClose}>{tr("后台继续", "Continue in background")}</button><button type="button" disabled={!value.run_id || value.status === "cancelling"} onClick={onCancel}>{tr(value.status === "cancelling" ? "正在取消" : "取消查找", value.status === "cancelling" ? "Cancelling" : "Cancel discovery")}</button></>
         : ready ? <button type="button" onClick={onReview}>{tr("查看并确认参数", "Review and confirm inputs")}</button>
         : <><button type="button" className="agent-secondary-action" onClick={onReview}>{tr("返回填写参数", "Return to inputs")}</button><button type="button" disabled={!canRetry} onClick={onRetry}>{tr(value?.status === "start_uncertain" ? "重新连接" : "重新查找", value?.status === "start_uncertain" ? "Reconnect" : "Retry discovery")}</button></>}
     </footer>

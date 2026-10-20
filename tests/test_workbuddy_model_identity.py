@@ -9,6 +9,40 @@ from sap_business_agents_platform import workbuddy_worker
 from sap_business_agents_platform.workbuddy_identity import ROUTING_ALIASES
 from sap_business_agents_platform.workbuddy_manager import MODEL_CHECK_SECONDS, WorkBuddyManager
 from tests.test_workbuddy_isolation import release, supervisor
+from sap_business_agents_platform.workbuddy_site import make_configuration, routing
+
+
+def test_probe_uses_native_schema_and_keeps_safe_timeout_diagnosis(tmp_path, monkeypatch):
+    from sap_business_agents_platform.workbuddy_manager import MODEL_CHECK_SCHEMA, MODEL_CHECK_CONTRACT
+    from sap_business_agents_platform.workbuddy_environment import WorkBuddyError, digest
+    manager, _ = manager_fixture(tmp_path, monkeypatch)
+    calls = []
+    async def probe(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["payload"]["output_schema"] == MODEL_CHECK_SCHEMA
+        assert kwargs["payload"]["timeout_ms"] == kwargs["seconds"] * 1000 == 90000
+        assert kwargs["payload"]["tools"][0]["name"] == "compatibility_echo" and kwargs["probe"] is True
+        error = WorkBuddyError("workbuddy_deadline_exceeded")
+        error.detail = {"sdk_connected": True, "query_submitted": True, "message_count": 1,
+            "assistant_message_count": 0, "terminal_result_received": False, "message": "secret-token",
+            "native_error_code": "secret-token"}
+        raise error
+    monkeypatch.setattr(manager.supervisor, "run", probe)
+    record = asyncio.run(manager.check_model("hy4-preview"))["check"]
+    assert len(calls) == 1 and record["compatible"] is False and record["identity_known"] is False
+    assert record["probe_contract"] == MODEL_CHECK_CONTRACT
+    assert record["schema_sha256"] == digest(MODEL_CHECK_SCHEMA)
+    assert record["diagnostics"]["query_submitted"] and record["diagnostics"]["message_count"] == 1
+    assert record["diagnostics"]["failure_category"] == "timeout" and "secret-token" not in str(record)
+
+
+def test_text_json_cannot_certify_native_structured_probe(tmp_path, monkeypatch):
+    manager, _ = manager_fixture(tmp_path, monkeypatch)
+    async def probe(**_):
+        return {"text": '{"status":"ok"}', "actual_model": "hy4-preview", "model_identity_source": "assistant_message"}
+    monkeypatch.setattr(manager.supervisor, "run", probe)
+    record = asyncio.run(manager.check_model("hy4-preview"))["check"]
+    assert not record["compatible"] and record["status"] == "runtime_report_validation_failed"
 
 
 def manager_fixture(tmp_path, monkeypatch):
@@ -18,6 +52,8 @@ def manager_fixture(tmp_path, monkeypatch):
     manager.environment.mutate(lambda state: state.update(
         environment_digest=value["environment_digest"], authenticated=True,
         authentication_environment=value["environment_digest"]))
+    from tests.workbuddy_integration_fakes import install_certificate
+    install_certificate(manager, value)
     return manager, value
 
 
@@ -33,14 +69,15 @@ def test_bounded_explanation_never_certifies_trusted_revision_or_allows_enable(t
     operations = {name: {"status": "validated", "implemented": True,
         "permission_modes": ["trusted_local"] if name == "workflow_authoring.v2" else ["bounded"]}
         for name in OPERATIONS}
-    monkeypatch.setattr(manager, "capabilities", lambda *_: operations)
-    assert "workbuddy_operation_validation_required" in manager.snapshot()["blockers"]
+    monkeypatch.setattr(manager, "capabilities", lambda *_, **__: operations)
+    manager.environment.mutate(lambda state: state.update(sdk_integration_records={}))
+    assert "workbuddy_sdk_integration_required" in manager.snapshot()["blockers"]
     with pytest.raises(Exception) as failure:
         manager.set_enabled(True)
     assert failure.value.code == "runtime_not_selectable"
     assert manager.environment.state().get("enabled") is not True
     operations["review_agent_feedback"]["permission_modes"].append("trusted_local")
-    assert "workbuddy_operation_validation_required" not in manager.snapshot()["blockers"]
+    assert "workbuddy_sdk_integration_required" in manager.snapshot()["blockers"]
 
 
 @pytest.mark.parametrize("failure", [None, "workbuddy_deadline_exceeded", "runtime_cleanup_incomplete"])
@@ -58,11 +95,11 @@ def test_locked_workspace_cannot_mask_probe_result_or_process_cleanup_failure(tm
     async def probe(**kwargs):
         calls.append(kwargs)
         assert kwargs["seconds"] == MODEL_CHECK_SECONDS == 90
-        assert kwargs["probe"] is True and "tools" not in kwargs["payload"]
+        assert kwargs["probe"] is True and kwargs["payload"]["tools"][0]["name"] == "compatibility_echo"
         if failure:
             raise WorkBuddyError(failure)
-        return {"text": '{"status":"ok"}', "actual_model": "concrete-model",
-                "model_identity_source": "assistant_message"}
+        from tests.workbuddy_integration_fakes import probe_result
+        return await probe_result(manager, kwargs)
     monkeypatch.setattr(manager.supervisor, "run", probe)
     record = asyncio.run(manager.check_model("concrete-model"))["check"]
     assert len(calls) == 1  # Cleanup never retries or falls back to another model.
@@ -87,8 +124,9 @@ def test_usable_route_does_not_prove_concrete_identity(tmp_path, monkeypatch, ac
     manager, _ = manager_fixture(tmp_path, monkeypatch)
     async def probe(**kwargs):
         assert kwargs["operation"] == "model_check" and kwargs["probe"] is True
-        assert "tools" not in kwargs["payload"]
-        return {"text": '{"status":"ok"}', "actual_model": actual, "model_identity_source": source}
+        assert kwargs["payload"]["tools"][0]["name"] == "compatibility_echo"
+        from tests.workbuddy_integration_fakes import probe_result
+        return await probe_result(manager, kwargs, actual, source)
     monkeypatch.setattr(manager.supervisor, "run", probe)
     result = asyncio.run(manager.check_model("route"))
     assert result["check"]["compatible"] is True
@@ -114,7 +152,7 @@ def test_historical_true_flags_do_not_bypass_formal_gate_or_rewrite_history(tmp_
     manager, value = manager_fixture(tmp_path, monkeypatch)
     check = {"compatible": True, "environment_digest": value["environment_digest"],
              "identity_known": True, "actual_model": actual, "model_identity_source": source,
-             "check_digest": "saved-original-check"}
+             "check_digest": "saved-original-check", **make_configuration("china", 1)}
     manager.environment.mutate(lambda state: state.update(models={"concrete-model": check}))
     saved = manager.environment.state_path.read_bytes()
     binding = manager.runtime_snapshot("concrete-model", require_enabled=False)
@@ -132,7 +170,7 @@ def test_verified_concrete_model_passes_formal_binding(tmp_path, monkeypatch):
     manager.environment.mutate(lambda state: state.update(models={"concrete-model": {
         "compatible": True, "environment_digest": value["environment_digest"],
         "identity_known": True, "actual_model": "concrete-model",
-        "model_identity_source": "assistant_message", "check_digest": "verified-check"}}))
+        "model_identity_source": "assistant_message", "check_digest": "verified-check", **make_configuration("china", 1)}}))
     binding = manager.runtime_snapshot("concrete-model", require_enabled=False, formal=True)
     assert manager.bound_snapshot(binding, formal=True) == binding
     from sap_business_agents_platform.models import RuntimeSnapshot
@@ -198,7 +236,8 @@ def test_worker_uses_assistant_identity_not_requested_route_or_system_metadata(m
         PermissionResultAllow=SimpleNamespace, PermissionResultDeny=SimpleNamespace,
         ToolUseBlock=type("ToolUse", (), {}), ToolResultBlock=type("ToolResult", (), {})))
     result = asyncio.run(workbuddy_worker.execute({"operation": "model_check", "mode": "bounded",
-        "cli_path": "fixture-cli", "snapshot": {"model": "default-model"},
+        "cli_path": "fixture-cli", "snapshot": {"model": "default-model", **make_configuration("china", 1)},
+        "service_site_config": routing(make_configuration("china", 1)),
         "payload": {"cwd": "fixture", "prompt": "probe"}}, lambda *_args, **_kwargs: None))
     assert result["actual_model"] == actual
     assert result["model_identity_source"] == ("assistant_message" if actual else None)

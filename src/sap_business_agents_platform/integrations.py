@@ -2242,7 +2242,17 @@ def build_integration_adapters(
     repository_root: Path, sdk_manager: Any
 ) -> list[RuntimeIntegrationAdapter]:
     adapters: list[RuntimeIntegrationAdapter] = []
-    for runtime in sdk_manager.list():
+    # Adapter construction consumes static IDs/contracts only. A status list
+    # also checks every installed Provider's qualification and must not delay
+    # application startup or unrelated Codex integrations. Execution readiness
+    # and authorization remain in their existing per-call services.
+    definitions = getattr(sdk_manager, 'definitions', None)
+    if definitions is None:
+        runtimes = sdk_manager.list()
+    else:
+        runtimes = ({'provider_id': definition.provider_id,
+            'integration_runtime': definition.integration_runtime} for definition in definitions)
+    for runtime in runtimes:
         provider_id = str(runtime.get("provider_id") or "")
         integration = deepcopy(runtime.get("integration_runtime") or {})
         backend_id = integration.get("adapter_id")

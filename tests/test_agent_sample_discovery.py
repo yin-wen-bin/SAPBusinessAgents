@@ -520,8 +520,9 @@ def test_model_override_is_rejected_before_runtime(tmp_path):
 
 
 def test_discovery_mcp_does_not_launch_external_tool_server(tmp_path):
-    settings, *_ = setup_broker(tmp_path)
-    overrides = _mcp_overrides(settings, "run_sample", "capability", "python", allow_discovery=False)
+    settings, _, broker, _ = setup_broker(tmp_path)
+    capability = broker.open_session("run_sample")
+    overrides = _mcp_overrides(settings, "run_sample", capability, "python", allow_discovery=False)
     assert not any("sap_tool_discovery.enabled=true" in item for item in overrides)
     assert any("sap_business_agents.enabled=true" in item for item in overrides)
 

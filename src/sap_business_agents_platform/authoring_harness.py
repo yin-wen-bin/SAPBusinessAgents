@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from .authoring_checks import candidate_input_issues
+from .authoring_checks import candidate_input_issues, candidate_business_output_issues
 from .managed_rules import ManagedRuleError, validate_managed_rule
 from .manifests import ManifestError, derive_input_display, validate_execution
 
@@ -47,7 +47,7 @@ def check_candidate(package: dict[str, Any], original: dict[str, Any]) -> CheckO
                 return CheckOutcome("blocked", ({"code": "agent_authoring_identity_or_acceptance_changed"},))
         manifest["inputs"] = derive_input_display(manifest["execution"]["inputSchema"])
         validate_execution(manifest)
-        issues = candidate_input_issues(manifest)
+        issues = candidate_input_issues(manifest) + candidate_business_output_issues(manifest)
         if issues:
             return CheckOutcome("repairable", tuple(issues))
         if package.get("rules"):

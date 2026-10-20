@@ -700,7 +700,7 @@ def test_http_mcp_setup_api_lifecycle_and_external_edit_guard(tmp_path: Path) ->
         IntegrationStateStore(tmp_path / "platform.sqlite3"),
         [adapter],
     )
-    app = create_app(_settings(tmp_path), integration_gateway=gateway)
+    app = create_app(_settings(tmp_path), integration_gateway=gateway, sdk_manager=_SDKManager())
 
     with TestClient(app) as client:
         options = client.get("/api/plugins/setup-options?capability=mail.v1")
@@ -832,7 +832,7 @@ def test_unified_catalog_and_adapter_routes_are_not_shadowed(
     tmp_path: Path,
 ) -> None:
     gateway, _adapter = _gateway(tmp_path)
-    app = create_app(_settings(tmp_path), integration_gateway=gateway)
+    app = create_app(_settings(tmp_path), integration_gateway=gateway, sdk_manager=_SDKManager())
 
     with TestClient(app) as client:
         catalog = client.get("/api/plugins/catalog?offset=1&limit=1")

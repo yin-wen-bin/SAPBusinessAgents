@@ -74,7 +74,7 @@ def install(arguments):
                          if file.is_file()}
             manifest = {"schema_version": "1.0", **information, "cli_version": cli_version,
                         "python": "Scripts/python.exe", "cli": cli.relative_to(building).as_posix(),
-                        "worker": "worker.py", "files": inventory,
+                        "worker": "worker.py", "files": inventory, "service_site_contract": "1",
                         "dependency_lock_digest": sha(dependency_lock), "sdk_wheel_digest": arguments.wheel_sha256,
                         "python_bootstrap_digest": sha(python)}
             key = stable(manifest)
@@ -88,6 +88,9 @@ def install(arguments):
             building.rename(destination)
             state_path = runtime_root / "state.json"
             state = json.loads(state_path.read_text()) if state_path.exists() else {"enabled": False, "models": {}, "capabilities": {}}
+            # An existing account/runtime may be in use. Site migration belongs
+            # to the platform's guarded configuration flow, never this installer.
+            # Fresh installs still project China until that flow persists it.
             state.update(environment_digest=key, revision=int(state.get("revision", 0)) + 1,
                          authenticated=False, model_catalog_complete=False,
                          installation={"python": str(python), "python_sha256": sha(python),

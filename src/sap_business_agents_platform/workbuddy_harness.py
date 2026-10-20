@@ -5,6 +5,34 @@ import time
 from .harness import AcceptanceReportValidationError
 
 
+def budgeted_tool_response(result, *, broker, run_id, deadline, tool_name):
+    """Encode the platform's existing deadline for a non-steerable SDK turn.
+
+    No new budget, permission or business fact is issued. Recompute after the
+    tool returns so a slow read cannot leave a stale querying-phase notice.
+    """
+    budget = broker.review_deadline(run_id)
+    remaining = max(0, int(deadline - time.monotonic()))
+    phase = str(budget["deadline_phase"])
+    if not remaining:
+        phase = "deadline_exceeded"
+    notice = {"deadline_phase": phase, "remaining_seconds": remaining,
+        "hard_limit_seconds": int(budget["hard_limit_seconds"]),
+        "elapsed_seconds": int(budget["elapsed_seconds"]), "extends_deadline": False}
+    if phase == "finalizing":
+        notice["instruction"] = (
+            "The query phase is closed. No new external reads. Use already validated evidence; "
+            "validate the best honest report now, then submit the full StructuredOutput terminal. "
+            "If evidence is insufficient, report that honestly."
+        )
+        if tool_name == "sap_final_report_validate" and result.get("ok") is True:
+            notice["instruction"] = (
+                "Report validation passed. Submit the full StructuredOutput terminal now using "
+                "that unchanged validated report. A validated candidate is not a native terminal."
+            )
+    return {**result, "platform_time_budget": notice}
+
+
 def native_terminal_instructions(schema):
     """Explain native envelope encoding; never alter the authoritative Schema.
 

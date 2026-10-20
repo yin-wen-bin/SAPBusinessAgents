@@ -1,0 +1,49 @@
+.assistant-input-tools { display: flex; gap: 8px; align-items: center; }
+.assistant-annotation-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 4px; width: auto; min-width: 40px; min-height: 40px; padding: 8px; border: 1px solid #b8c9e3; border-radius: 8px; color: #174e9b; background: #fff; }
+.assistant-annotation-trigger[aria-pressed=true] { background: #eaf2ff; border-color: #0964df; }
+.assistant-annotation-pending { max-width: 100%; text-align: left; overflow-wrap: anywhere; }
+.assistant-annotation-surface { cursor: crosshair; }
+.workflow-assistant-v2.is-annotating { display: none; }
+.workflow-builder-shell.assistant-annotation-surface { padding-right: 0; }
+.assistant-annotation-layer { position: fixed; inset: 0; z-index: 400; pointer-events: none; font-family: inherit; color: #14243d; }
+.assistant-annotation-layer button, .assistant-annotation-layer textarea { font: inherit; box-sizing: border-box; }
+.assistant-annotation-layer button { min-height: 40px; cursor: pointer; border: 1px solid #b8c9e3; border-radius: 7px; padding: 7px 12px; background: #fff; color: #14365f; }
+.assistant-annotation-layer button:disabled { opacity: .5; cursor: not-allowed; }
+.assistant-annotation-layer :is(button,textarea):focus-visible { outline: 3px solid #337de2; outline-offset: 3px; }
+.assistant-annotation-outline { position: fixed; box-sizing: border-box; border: 2px solid #0964df; border-radius: 5px; background: rgb(9 100 223 / 4%); pointer-events: none; }
+.assistant-annotation-outline.is-hover { border-style: dashed; background: rgb(9 100 223 / 8%); }
+.assistant-annotation-outline button { position: absolute; top: -14px; left: -10px; display: grid; place-items: center; padding: 0; min-height: 28px; min-width: 28px; width: 28px; height: 28px; border-radius: 50%; color: #fff; background: #0964df; border: 2px solid white; pointer-events: auto; font-size: 13px; }
+.assistant-annotation-toolbar { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; flex-wrap: wrap; gap: 8px; width: max-content; max-width: calc(100vw - 24px); box-sizing: border-box; padding: 10px 12px; border-radius: 12px; color: #fff; background: #14243d; box-shadow: 0 6px 28px rgb(0 0 0 / 25%); pointer-events: auto; }
+.assistant-annotation-toolbar strong { font-size: .9rem; white-space: nowrap; }
+.assistant-annotation-toolbar button { color: #fff; background: transparent; border-color: #536680; }
+.assistant-annotation-toolbar .annotation-send { background: #1263df; border-color: #76a9ff; }
+.assistant-annotation-toolbar p { flex: 1 0 100%; margin: 0; font-size: .85rem; max-width: 500px; }
+.assistant-annotation-editor, .assistant-annotation-review { position: fixed; pointer-events: auto; width: 360px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 110px); overflow: auto; box-sizing: border-box; padding: 16px; border: 1px solid #a6bddb; border-radius: 12px; background: white; box-shadow: 0 8px 32px rgb(10 25 45 / 25%); }
+.assistant-annotation-editor label { display: grid; gap: 6px; margin: 10px 0; }
+.assistant-annotation-editor textarea { width: 100%; resize: vertical; min-height: 100px; border: 1px solid #a6bddb; border-radius: 6px; padding: 8px; color: #14243d; background: white; }
+.assistant-annotation-editor > div, .assistant-annotation-review li > div { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.assistant-annotation-review { right: 12px; bottom: 90px; }
+.assistant-annotation-review header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.assistant-annotation-review ol { padding-left: 24px; }
+.assistant-annotation-review li { padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid #dae3ee; }
+.assistant-annotation-review :is(p,strong,span) { overflow-wrap: anywhere; white-space: pre-wrap; }
+.assistant-round { min-width: 0; border-bottom: 1px solid #dbe4ef; padding-bottom: 10px; }
+.assistant-round > summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 40px; }
+.assistant-round > summary::before { content: '▸'; color: #4b6281; }
+.assistant-round[open] > summary::before { content: '▾'; }
+.assistant-round > summary small { flex: 1 0 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
+.assistant-round[open] > summary small { display: none; }
+.assistant-round-body { padding-top: 10px; }
+.workflow-annotation-definition { display: grid; gap: 10px; margin-block: 16px; }
+.workflow-annotation-definition :is(h2,p) { margin-block: 0; }
+.workflow-annotation-definition :is([data-workflow-ref], [data-workflow-connection], [data-workflow-node]):focus-visible { outline: 2px solid #1263df; outline-offset: 4px; }
+.workflow-annotation-ports { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.workflow-annotation-nodes { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; list-style: none; }
+.workflow-annotation-nodes li { display: grid; gap: 4px; padding: 10px 14px; border: 1px solid #dae3ee; border-radius: 8px; }
+@media (max-width: 720px) {
+  .workflow-annotation-ports { grid-template-columns: 1fr; }
+  .assistant-annotation-editor { left: 12px; right: 12px; bottom: 110px; width: auto; max-height: calc(100dvh - 135px); }
+  .assistant-annotation-toolbar { bottom: max(8px, env(safe-area-inset-bottom)); gap: 6px; padding: 8px; }
+  .assistant-annotation-toolbar button { min-height: 44px; padding: 6px 8px; }
+  .assistant-annotation-review { bottom: 110px; max-height: calc(100dvh - 140px); }
+}

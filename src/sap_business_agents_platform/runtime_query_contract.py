@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from datetime import date
 from itertools import product
 
 from jsonschema import Draft202012Validator
@@ -63,9 +64,9 @@ PLAN_HELP = (
 )
 
 
-def reject(code, path="/", constraint="scope"):
+def reject(code, path="/", constraint="scope", *, issues=None):
     error = RuntimeContractError(code)
-    error.detail = {"validation_issues": [{"code": code, "path": path, "constraint": constraint}]}
+    error.detail = {"validation_issues": issues or [{"code": code, "path": path, "constraint": constraint}]}
     raise error
 
 
@@ -89,6 +90,11 @@ def plans(value):
     for error in Draft202012Validator(PLAN_SCHEMA).iter_errors(value):
         # Schema-owned names only; never expose model-supplied unknown keys/values.
         path = "/" + "/".join(str(p) for p in error.absolute_path if isinstance(p, int) or p in PROPERTIES or p == "steps")
+        if error.validator == "required":
+            missing = [name for name in error.validator_value if name not in error.instance]
+            reject("runtime_plan_contract_invalid", issues=[{
+                "code": "runtime_plan_contract_invalid", "path": path.rstrip("/") + "/" + name,
+                "constraint": "required"} for name in missing])
         reject("runtime_plan_contract_invalid", path, str(error.validator))
     nested = value.get("steps")
     if nested is not None and value.get("plan_kind") not in {"lookup", "multi_step"}:
@@ -96,10 +102,14 @@ def plans(value):
     if value.get("plan_kind") in {"lookup", "multi_step"} and not nested:
         reject("runtime_plan_contract_invalid", "/steps", "required")
     result = []
-    for step in nested or [value]:
+    for index, step in enumerate(nested or [value]):
         step = {**{k: value[k] for k in ("service_name", "odata_version") if k in value}, **step}
-        if not all(step.get(k) for k in ("service_name", "odata_version", "entity_set")):
-            reject("runtime_plan_contract_invalid", constraint="required")
+        missing = [name for name in ("service_name", "odata_version", "entity_set") if not step.get(name)]
+        if missing:
+            prefix = f"/steps/{index}" if nested else ""
+            reject("runtime_plan_contract_invalid", issues=[{
+                "code": "runtime_plan_contract_invalid", "path": prefix + "/" + name,
+                "constraint": "required"} for name in missing])
         result.append(step)
     return result
 
@@ -203,6 +213,7 @@ class ReadScope:
                 self.constraints.append((fields, [str(v) for v in value] if isinstance(value, list) else [str(value)]))
         self.derived_rows = []
         self.schemas = {}
+        self.date_fields = set()
         self.normalizer = None
 
     def allowed_values(self, names, values, step):
@@ -212,17 +223,40 @@ class ReadScope:
             for name in names:
                 rule = normalizer.field_rule(*(step.get(k, "") for k in ("service_name", "odata_version", "entity_set")), name)
                 allowed.update(str(normalizer.normalize_structured_value(value, rule=rule)) for value in values)
+        # OData V2 date-only properties use a zone-free midnight DateTime literal.
+        # This is an authorization comparison, not a rewrite of the plan or input.
+        # Never infer date semantics from the field name or model value_type.
+        key = tuple(step.get(k) for k in ("service_name", "odata_version", "entity_set"))
+        if any((*key, name) in self.date_fields for name in names):
+            for value in values:
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                    continue
+                try:
+                    date.fromisoformat(value)
+                except ValueError:
+                    continue
+                allowed.add(value + "T00:00:00")
         return allowed
 
     def record_schema(self, response):
         if response.get("ok") is not True:
             return
         data = response.get("data") or {}
+        # An incomplete projection cannot prove that a scope field is absent.
+        if data.get("schema_authority") is not True or data.get("fields_truncated") is not False:
+            return
         service = data.get("service") or {}
         for field in data.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
             key = (field.get("service_name") or service.get("service_name"),
                    field.get("odata_version") or service.get("odata_version"), field.get("entity_set"))
             self.schemas.setdefault(key, set()).add(field.get("field_name"))
+            field_key = (*key, field.get("field_name"))
+            self.date_fields.discard(field_key)
+            if (key[1] == "2.0" and field.get("data_type") == "Edm.DateTime"
+                    and field.get("display_format") == "Date"):
+                self.date_fields.add(field_key)
 
     def check(self, plan):
         candidates = plans(plan)
@@ -238,27 +272,69 @@ class ReadScope:
                      for f in filters if f.get("operator", "eq") in {"eq", "in"}}
             applicable = [(names, self.allowed_values(names, values, step)) for names, values in self.constraints
                           if fields is None or set(names).intersection(fields)]
-            if applicable and all(any(name in exact and set(exact[name]).issubset(values) and exact[name]
-                                      for name in names) for names, values in applicable):
+            # Carry only fields actually proven to equal a frozen input, never
+            # all incidental filters. Aliases in the same platform-declared
+            # input group may propagate that exact value, not arbitrary joins.
+            authorized = {name: set.intersection(*[values for names, values in applicable if name in names])
+                for name in {name for names, _ in applicable for name in names}}
+            proven = {name: set(values) for name, values in exact.items()
+                if values and name in authorized and set(values).issubset(authorized[name])}
+            if applicable and all(any(name in proven for name in names) for names, _ in applicable):
                 if step.get("step_id"):
-                    scoped_steps[step["step_id"]] = set(exact)
+                    scoped_steps[step["step_id"]] = proven
                 continue
             bindings = step.get("filter_from_previous") or []
-            inherited = {b["field"] for b in bindings if b.get("source_step_id") in scoped_steps
-                and b.get("source_field") in scoped_steps[b["source_step_id"]]
-                and b["field"] == b["source_field"]}
-            literal_constraints_ok = all(any(name in inherited or name in exact and exact[name]
-                and set(exact[name]).issubset(values) for name in names) for names, values in applicable)
+            inherited = {}
+            for binding in bindings:
+                target, source = binding["field"], binding["source_field"]
+                values = scoped_steps.get(binding.get("source_step_id"), {}).get(source)
+                equivalent = any(target in names and source in names for names, _ in self.constraints)
+                if (values and equivalent and target in authorized and values.issubset(authorized[target])
+                        and (target not in exact or target in proven)):
+                    inherited[target] = values
+            literal_constraints_ok = all(any(name in inherited or name in proven for name in names)
+                for names, _ in applicable)
             if applicable and inherited and literal_constraints_ok:
                 if step.get("step_id"):
-                    scoped_steps[step["step_id"]] = inherited | set(exact)
+                    scoped_steps[step["step_id"]] = {**proven, **inherited}
                 continue
             # Do not allow independent field sets to cross-product unrelated rows.
             if not applicable and exact and self.derived_rows and all(
                 any(all(str(row.get(k)) == v for k, v in zip(exact, values)) for row in self.derived_rows)
                 for values in product(*exact.values())):
                 continue
-            reject("runtime_query_scope_rejected", "/filters")
+            # Without complete authoritative metadata we cannot assert that a
+            # missing input field even exists on this entity. Keep the rejection
+            # but request metadata, not invented filters. A plan already proving
+            # every frozen constraint above retains its original behavior.
+            if fields is None:
+                reject("runtime_query_scope_rejected", "/entity_set", issues=[{
+                    "code": "runtime_query_scope_rejected", "path": "/entity_set",
+                    "constraint": "scope", "scope_issue": "authoritative_schema_required",
+                    "message": "Read complete authoritative entity metadata with sap_schema_get before resolving applicable scope filters. Do not add unverified fields or drop confirmed conditions.",
+                    "schema_request": {"service_name": step["service_name"],
+                        "odata_version": step["odata_version"],
+                        "entity_sets": [step["entity_set"]], "max_fields": 5000},
+                }])
+            issues = []
+            for names, values in applicable:
+                if any(name in inherited or name in exact and exact[name]
+                       and set(exact[name]).issubset(values) for name in names):
+                    continue
+                # Only platform-owned constraint names and schema paths, no values.
+                positions = [index for index, item in enumerate(filters) if item["field"] in names]
+                if not positions:
+                    issues.append({"code": "runtime_query_scope_rejected", "path": "/filters",
+                        "constraint": "scope", "scope_issue": "required_filter_missing",
+                        "required_fields": list(names), "allowed_operators": ["eq", "in"]})
+                for index in positions:
+                    item = filters[index]
+                    issue = "exact_operator_required" if item.get("operator", "eq") not in {"eq", "in"} else "value_outside_scope"
+                    issues.append({"code": "runtime_query_scope_rejected", "path": f"/filters/{index}/" +
+                        ("operator" if issue == "exact_operator_required" else "value"),
+                        "constraint": "scope", "scope_issue": issue, "required_fields": list(names),
+                        "allowed_operators": ["eq", "in"]})
+            reject("runtime_query_scope_rejected", "/filters", issues=issues[:20])
 
     def remember(self, rows):
         # Only stable linking keys, never descriptive fields such as Currency.
@@ -283,6 +359,11 @@ class ReadScope:
             if isinstance(item, dict) and item.get("operator", item.get("option", "eq")) in {"eq", "in"} and item.get("sign", "I") == "I":
                 raw = item.get("value", item.get("low", item.get("values")))
                 supplied[item.get("field")] = [str(v) for v in raw] if isinstance(raw, list) else [str(raw)]
-        if not all(any(name in supplied and supplied[name] and set(supplied[name]).issubset(values)
-                       for name in names) for names, values in self.constraints):
-            reject("runtime_skill_scope_rejected", "/input")
+        missing = [names for names, values in self.constraints if not any(
+            name in supplied and supplied[name] and set(supplied[name]).issubset(values) for name in names)]
+        if missing:
+            # No inferred DDIC aliases or cross-source Skill joins. Keep the
+            # rejection, but tell the model which confirmed constraints lack proof.
+            reject("runtime_skill_scope_rejected", "/input", issues=[{
+                "code": "runtime_skill_scope_rejected", "path": "/input", "constraint": "scope",
+                "scope_issue": "required_scope_not_proven", "required_fields": list(names)} for names in missing][:20])

@@ -207,6 +207,7 @@ class RuntimeRouter:
             "sapba_runtime_binding", default=None
         )
         self._workbuddy_snapshot: ContextVar[dict | None] = ContextVar("workbuddy_frozen_snapshot", default=None)
+        self._authentication_snapshot: ContextVar[dict | None] = ContextVar("runtime_authentication_snapshot", default=None)
 
     @property
     def current_provider_id(self) -> str:
@@ -230,14 +231,8 @@ class RuntimeRouter:
 
     def snapshot(self, provider_id: str | None = None) -> dict[str, Any]:
         selected = provider_id or self.current_provider_id
-        item = next(
-            (
-                runtime
-                for runtime in self.manager.list()
-                if runtime.get("provider_id") == selected
-            ),
-            None,
-        )
+        from .runtime_admission import selected_status
+        item = selected_status(self.manager, selected)
         if not isinstance(item, dict) or item.get("selectable") is not True:
             blockers = item.get("blockers") if isinstance(item, dict) else []
             raise RuntimeUnavailableError(
@@ -265,16 +260,89 @@ class RuntimeRouter:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
-        return snapshot
+        auth = getattr(self.manager, "authentication_service", None)
+        return auth.bind(selected, snapshot) if auth else snapshot
+
+    def prepare_admission(self, request):
+        from .runtime_admission import PreparedRuntime
+        request.check_deadline()
+        selected = request.provider_id or (request.snapshot or {}).get('provider_id') or self.current_provider_id
+        if request.snapshot is not None and selected != request.snapshot.get('provider_id'):
+            raise RuntimeUnavailableError('Inconsistent Runtime binding.', code='runtime_binding_invalid')
+        if selected != 'workbuddy' or request.operation is None:
+            # Codex and legacy callers retain the exact strict path.
+            result = self.snapshot_for_binding(request.snapshot) if request.snapshot else self.snapshot(selected)
+            request.check_deadline()
+            return PreparedRuntime(result, request.operation, request.permission_mode)
+        from .workbuddy_inspection import inspect
+        with inspect(self.manager.workbuddy.environment):
+            auth = getattr(self.manager, 'authentication_service', None)
+            if request.snapshot is not None and auth:
+                auth.assert_binding(selected, request.snapshot)
+            result = self.manager.workbuddy.prepare_admission(request).snapshot
+            token = self._workbuddy_snapshot.set(result)
+            try:
+                self._provider(selected, result['model'], result.get('reasoning_effort'))
+            finally:
+                self._workbuddy_snapshot.reset(token)
+            if request.snapshot is None:
+                result['configuration_digest'] = hashlib.sha256(json.dumps({
+                    'sdk_configuration_digest': result['configuration_digest'], 'model': result['model'],
+                    'reasoning_effort': result.get('reasoning_effort'),
+                    'model_catalog_digest': result.get('model_catalog_digest'),
+                    'model_check_digest': result.get('model_check_digest'),
+                    'runtime_configuration_revision': result.get('runtime_configuration_revision')},
+                    ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+            result = auth.bind(selected, result) if auth else result
+            request.check_deadline()
+            return PreparedRuntime(result, request.operation, request.permission_mode)
 
     def snapshot_for_model(self, provider_id: str, model_id: str) -> dict[str, Any]:
         """Read the latest checked settings for a bound model, not the default model."""
-        return dict(self.manager.runtime_snapshot_for_model(provider_id, model_id))
+        snapshot = dict(self.manager.runtime_snapshot_for_model(provider_id, model_id))
+        auth = getattr(self.manager, "authentication_service", None)
+        return auth.bind(provider_id, snapshot) if auth else snapshot
 
     def snapshot_for_binding(self, snapshot: dict) -> dict:
+        auth = getattr(self.manager, "authentication_service", None)
+        if auth:
+            auth.assert_binding(snapshot["provider_id"], snapshot)
         if snapshot.get("provider_id") == "workbuddy":
             return self.manager.workbuddy.bound_snapshot(snapshot)
         return self.snapshot_for_model(snapshot["provider_id"], snapshot["model"])
+
+    def authoring_snapshot_for_binding(self, snapshot: dict) -> dict:
+        """Resolve only a new authoring turn, never migrate an in-flight task."""
+        if snapshot.get('provider_id') != 'workbuddy':
+            return self.snapshot_for_binding(snapshot)
+        auth = getattr(self.manager, 'authentication_service', None)
+        if auth is None:
+            return self.snapshot_for_binding(snapshot)
+        try:
+            return self.snapshot_for_binding(snapshot)
+        except Exception as exc:
+            if getattr(exc,'code',None) != 'runtime_authentication_binding_changed':
+                raise
+        from .workbuddy_auth_recovery import applicable_receipt
+        environment=self.manager.workbuddy.environment
+        state=environment.state()
+        current=auth.bind('workbuddy',{})
+        auth.assert_binding('workbuddy',current)
+        if (snapshot.get('authentication_revision') != snapshot.get('authentication_binding_revision')
+                or current.get('authentication_binding_revision') != state.get('authentication_revision')):
+            raise RuntimeUnavailableError('The original account binding cannot be restored.',code='runtime_authentication_binding_changed')
+        receipt=applicable_receipt(environment,state,model=snapshot.get('model'),
+            source_revision=snapshot.get('authentication_revision'),check_digest=snapshot.get('model_check_digest'))
+        if receipt is None:
+            raise RuntimeUnavailableError('Same-account recovery evidence is required.',code='runtime_authentication_binding_changed')
+        target=self.manager.workbuddy.runtime_snapshot(snapshot['model'])
+        for key in ('provider_id','model','actual_model','environment_digest','version','cli_version',
+                    'sdk_fingerprint','service_site','service_site_revision','service_site_digest','model_check_digest'):
+            if snapshot.get(key) != target.get(key):
+                raise RuntimeUnavailableError('Recovery cannot change the Runtime.',code='runtime_authentication_binding_changed')
+        target=auth.bind('workbuddy',target)
+        target['authentication_recovery_id']=receipt['id']
+        return target
 
     def workbuddy_reservation(self):
         return self.manager.workbuddy.supervisor.reserve()
@@ -284,6 +352,18 @@ class RuntimeRouter:
 
     @contextmanager
     def pin_snapshot(self, snapshot: dict) -> Iterator[None]:
+        auth = getattr(self.manager, "authentication_service", None)
+        if auth:
+            auth.assert_binding(snapshot["provider_id"], snapshot)
+        token = self._authentication_snapshot.set(snapshot)
+        try:
+            with self._pin_snapshot(snapshot):
+                yield
+        finally:
+            self._authentication_snapshot.reset(token)
+
+    @contextmanager
+    def _pin_snapshot(self, snapshot: dict) -> Iterator[None]:
         if snapshot.get("provider_id") != "workbuddy":
             with self.pin(snapshot.get("provider_id"), snapshot.get("model"), snapshot.get("reasoning_effort")):
                 yield
@@ -359,6 +439,9 @@ class RuntimeRouter:
 
     def resolve_legacy_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         """Bind future turns once; callers persist separately from immutable run history."""
+        auth = getattr(self.manager, "authentication_service", None)
+        if auth:
+            auth.assert_binding(str(snapshot.get("provider_id") or "codex"), snapshot)
         if snapshot.get("provider_id") == "workbuddy":
             return self.manager.workbuddy.bound_snapshot(snapshot)
         if snapshot.get("reasoning_effort") is not None:
@@ -419,6 +502,17 @@ class RuntimeRouter:
         return await self._invoke(operation, *args, **kwargs)
 
     async def _invoke(self, operation: str, *args: Any, **kwargs: Any) -> Any:
+        auth = getattr(self.manager, "authentication_service", None)
+        if auth:
+            provider_id = self.current_provider_id
+            snapshot = self._authentication_snapshot.get() or auth.bind(provider_id, {})
+            async with auth.use(provider_id, snapshot):
+                result = await self._invoke_unlocked(operation, *args, **kwargs)
+                auth.assert_binding(provider_id, snapshot)
+                return result
+        return await self._invoke_unlocked(operation, *args, **kwargs)
+
+    async def _invoke_unlocked(self, operation: str, *args: Any, **kwargs: Any) -> Any:
         from .runtime_policy import RETIRED_OPERATIONS
         if operation in RETIRED_OPERATIONS:
             raise RuntimeUnavailableError("This query operation has been retired; start a Harness query.",
@@ -503,8 +597,9 @@ class StaticRuntimeRouter:
 
     @contextmanager
     def bind_events(self, sink: Any) -> Iterator[None]:
-        del sink
-        yield
+        method = getattr(self.planner, "bind_events", None)
+        with method(sink) if callable(method) else nullcontext():
+            yield
 
     def __getattr__(self, name: str) -> Any:
         from .runtime_policy import RETIRED_OPERATIONS, require_operation

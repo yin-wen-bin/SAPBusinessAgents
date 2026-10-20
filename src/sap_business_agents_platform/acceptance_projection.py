@@ -21,6 +21,7 @@ class AcceptanceProjectionSpec(BaseModel):
     metric_fields: list[str] = Field(default_factory=list, max_length=100)
     decimal_fields: list[str] = Field(default_factory=list, max_length=100)
     decimal_metrics: list[str] = Field(default_factory=list, max_length=100)
+    required_metric_values: list[str] = Field(default_factory=list, max_length=100)
     boolean_fields: list[str] = Field(default_factory=list, max_length=100)
     integer_fields: list[str] = Field(default_factory=list, max_length=100)
     enum_values: dict[str, list[str]] = Field(default_factory=dict)
@@ -34,7 +35,8 @@ class AcceptanceProjectionSpec(BaseModel):
     @model_validator(mode="after")
     def check_fields(self) -> "AcceptanceProjectionSpec":
         for names in (self.record_fields, self.metric_fields, self.decimal_fields,
-                       self.decimal_metrics, self.boolean_fields, self.integer_fields):
+                       self.decimal_metrics, self.boolean_fields, self.integer_fields,
+                       self.required_metric_values):
             if len(names) != len(set(names)) or any(
                 not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,99}", name)
                 or name == "evidence_refs" for name in names
@@ -44,6 +46,8 @@ class AcceptanceProjectionSpec(BaseModel):
             raise ValueError("typed acceptance fields must be declared record fields")
         if not set(self.decimal_metrics) <= set(self.metric_fields):
             raise ValueError("decimal metrics must be declared metrics")
+        if not set(self.required_metric_values) <= set(self.metric_fields):
+            raise ValueError("required metric values must be declared metrics")
         if set(self.decimal_fields) & set(self.boolean_fields):
             raise ValueError("acceptance field types conflict")
         if set(self.integer_fields) & set(self.boolean_fields + self.decimal_fields):
@@ -190,6 +194,16 @@ def validate_projection(raw_spec: Any, value: Any, known: dict[str, Any]) -> lis
     projected_codes = set(value["evidence_gap_codes"])
     if not required_limitations <= projected_codes:
         return [{"code": "acceptance_projection_required_limitation_missing"}]
+    # Nullable transport values permit an honest incomplete report, never a
+    # claimed complete result contrary to the declared non-null metric types.
+    # Do not repair null to zero or guess the business classification.
+    if value["business_complete"]:
+        unknown = [name for name in spec.required_metric_values if value["metrics"][name] is None]
+        if unknown:
+            return [{"code": "acceptance_projection_complete_metric_unknown",
+                "path": "/metrics/" + name, "constraint": "completeness",
+                "message": "A complete business result requires this declared non-null metric. Establish it from verified evidence or report the result incomplete; never replace unknown with zero."}
+                for name in unknown]
     if spec.semantic_profile == "checklist_readiness":
         metrics = value["metrics"]
         metric_names = (

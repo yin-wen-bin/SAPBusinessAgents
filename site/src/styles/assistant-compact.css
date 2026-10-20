@@ -1,0 +1,30 @@
+.assistant-history { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.assistant-history-toggle, .assistant-history-attention { order: 0; }
+.assistant-history-older { order: 1; }
+.assistant-history-latest { order: 2; }
+.assistant-history [hidden] { display: none; }
+.draft-assistant .assistant-history-toggle, .workflow-assistant-v2 .assistant-history-toggle { text-align: start; border: 1px solid #dbe4ef; border-radius: 6px; background: #f6f8fc; padding: 10px; color: inherit; }
+.assistant-history-attention button { margin: 4px; }
+.assistant-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; touch-action: none; z-index: 2; border-radius: 8px; }
+.assistant-resize:hover, .assistant-resize:focus-visible { background: #b7d2ff; outline: 2px solid #1765c1; outline-offset: -2px; }
+.assistant-resize[hidden] { display: none; }
+.agent-draft-workspace .draft-assistant header, .workflow-builder-shell .workflow-assistant-v2 header { align-items: center; flex-wrap: wrap; }
+.assistant-heading-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.assistant-heading-tools h2 { margin: 0; }
+.assistant-heading-tools .assistant-annotation-trigger { width: auto; display: inline-flex; gap: 5px; align-items: center; font-size: .875rem; padding: 6px 8px; }
+.assistant-save-result { font-weight: 600; }
+.agent-management.agent-draft-workspace.assistant-open .draft-wizard-layout { grid-template-columns: 220px minmax(320px, 1fr) var(--assistant-width, 360px); }
+.workflow-builder-shell .workflow-assistant-v2 { width: var(--assistant-width, 350px); box-sizing: border-box; }
+@media (min-width: 1200px) {
+  .workflow-builder-shell:not(.assistant-annotation-surface):has(.workflow-assistant-v2) { padding-right: calc(var(--assistant-width, 350px) + 40px); }
+  .workflow-assistant-v2 header .assistant-annotation-trigger { display: inline-flex; }
+}
+@media (max-width: 820px) {
+  .agent-management.agent-draft-workspace.assistant-open .draft-wizard-layout { grid-template-columns: minmax(0, 1fr); }
+  .agent-draft-workspace .draft-assistant { left: auto; right: 12px; width: var(--assistant-width, calc(100vw - 24px)); box-sizing: border-box; }
+}
+@media (max-width: 550px) {
+  .assistant-resize { display: none; }
+  .agent-draft-workspace .draft-assistant { width: calc(100vw - 24px); }
+  .workflow-builder-shell .workflow-assistant-v2 { width: calc(100vw - 32px); }
+}

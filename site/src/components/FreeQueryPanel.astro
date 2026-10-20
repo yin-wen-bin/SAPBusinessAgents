@@ -70,7 +70,8 @@ const copy = locale === "zh" ? {
     </details>
     <div class="runtime-form-actions">
       <span class="runtime-form-error" role="alert" hidden>{copy.error}</span>
-      <button type="submit">{copy.submit}<ArrowRight size={17} aria-hidden="true" /></button>
+      <p class="free-query-submit-status" data-submit-status role="status" aria-live="polite" hidden></p>
+      <button type="submit"><span data-submit-label>{copy.submit}</span><ArrowRight size={17} aria-hidden="true" /></button>
     </div>
   </form>
 </section>
@@ -81,6 +82,10 @@ const copy = locale === "zh" ? {
     const error = panel.querySelector<HTMLElement>(".runtime-form-error");
     const textarea = form?.querySelector<HTMLTextAreaElement>("textarea[name=query]");
     const context = panel.querySelector<HTMLElement>("[data-gap-context]");
+    const status = panel.querySelector<HTMLElement>("[data-submit-status]");
+    const submitLabel = panel.querySelector<HTMLElement>("[data-submit-label]");
+    const zh = panel.dataset.locale === "zh";
+    let submitting = false;
     const params = new URLSearchParams(window.location.search);
     const workflowDraft = params.get("workflowDraft");
     const gap = params.get("gap");
@@ -112,11 +117,29 @@ const copy = locale === "zh" ? {
     }
     form?.addEventListener("submit", async (event) => {
       event.preventDefault();
+      // A slow admission check is still one request, never a reason to resubmit.
+      if (submitting) return;
+      const query = String(new FormData(form).get("query") || "").trim();
+      if (!query) { textarea?.focus(); return; }
+      submitting = true;
       const submit = form.querySelector<HTMLButtonElement>("button[type=submit]");
       if (submit) submit.disabled = true;
+      form.setAttribute("aria-busy", "true");
+      if (submitLabel) submitLabel.textContent = zh ? "正在提交…" : "Submitting…";
       if (error) error.hidden = true;
-      const query = String(new FormData(form).get("query") || "").trim();
+      const started = Date.now();
+      const showPending = () => {
+        if (!status) return;
+        const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
+        status.hidden = false;
+        status.textContent = zh
+          ? `正在提交并核对 Runtime 准入，已等待 ${elapsed} 秒。${elapsed >= 10 ? "核对耗时较长，请勿重复提交。" : "取得运行编号后会自动进入进度页。"}`
+          : `Submitting and checking Runtime admission · ${elapsed}s. ${elapsed >= 10 ? "Checks are taking longer; do not submit again." : "The progress page will open when a run ID is available."}`;
+      };
+      showPending();
+      const timer = window.setInterval(showPending, 1000);
       const receiptReference = String(new FormData(form).get("receipt_reference") || "").trim();
+      let rejected = false;
       try {
         const response = await fetch(`${panel.dataset.apiBase}/api/runs`, {
           method: "POST",
@@ -127,8 +150,20 @@ const copy = locale === "zh" ? {
             ...(receiptReference ? { sensitiveInputs: { receipt_reference: receiptReference } } : {}),
           }),
         });
-        if (!response.ok) throw new Error(await response.text());
+        if (!response.ok) {
+          // Only a definite client rejection makes another submission safe.
+          rejected = response.status >= 400 && response.status < 500;
+          let code = "";
+          try {
+            const body = await response.json();
+            const candidate = body.detail?.code;
+            if (typeof candidate === "string" && /^[a-z0-9_]{1,120}$/.test(candidate)) code = candidate;
+          } catch { /* Do not display raw response bodies or sensitive inputs. */ }
+          if (error && rejected) error.textContent = (zh ? "查询未被受理，请核对 Runtime 配置后再提交。" : "The query was not accepted. Check the Runtime configuration before submitting again.") + (code ? ` (${code})` : "");
+          throw new Error("run_not_accepted");
+        }
         const payload = await response.json();
+        if (typeof payload.run_id !== "string" || !payload.run_id) throw new Error("run_id_missing");
         const destinationParams = new URLSearchParams({ run: String(payload.run_id) });
         if (payload.session_id) destinationParams.set("session", String(payload.session_id));
         if (workflowDraft && gap) {
@@ -137,8 +172,17 @@ const copy = locale === "zh" ? {
         }
         window.location.href = `${panel.dataset.runPath}?${destinationParams.toString()}`;
       } catch {
+        if (!rejected && error) error.textContent = zh
+          ? "未能确认提交结果，后台可能已受理。请通过“历史查询记录”核对，勿重复提交；这不会取消已启动的查询。"
+          : "The submission result is unknown; the server may have accepted it. Check Query history instead of submitting again. Any accepted query continues running.";
         if (error) error.hidden = false;
-        if (submit) submit.disabled = false;
+        submitting = !rejected;
+        if (submit) submit.disabled = !rejected;
+        if (submitLabel) submitLabel.textContent = rejected ? (zh ? "开始只读查询" : "Start read-only query") : (zh ? "提交结果待核对" : "Submission unconfirmed");
+      } finally {
+        window.clearInterval(timer);
+        form.setAttribute("aria-busy", "false");
+        if (status) status.hidden = true;
       }
     });
   });
@@ -147,4 +191,7 @@ const copy = locale === "zh" ? {
   .free-query-panel .query-history-link { display:inline-flex; align-items:center; min-height:44px; margin-top:.75rem; padding:.55rem .85rem; border:1px solid var(--color-border-strong); border-radius:5px; background:white; color:var(--color-text); font-weight:600; text-decoration:none; }
   .free-query-panel .query-history-link:hover { border-color:var(--color-primary); color:var(--color-primary); }
   .free-query-panel .query-history-link:focus-visible { outline:2px solid var(--color-primary); outline-offset:3px; }
+  .free-query-panel .runtime-form-actions { display:grid; grid-template-columns:minmax(0, 1fr); min-width:0; }
+  .free-query-panel .runtime-form-actions button { justify-self:end; max-width:100%; }
+  .free-query-submit-status { flex-basis:100%; margin:0; color:var(--color-text); overflow-wrap:anywhere; }
 </style>

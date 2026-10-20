@@ -1,5 +1,7 @@
 # Workflow authoring v2 / 工作流全流程助手
 
+工作流创建／编辑与 Agent 草稿共用 AI 助手页面标注交互，引用仍由工作流服务校验。详见[通用标注说明 / Shared annotations](ai-assistant-annotations.md)。
+
 ## Implemented / 已实现
 
 The independent `workflow_authoring.v2` operation uses an isolated, secret-free
@@ -44,6 +46,15 @@ its process ownership can be reconciled; it is not assumed safely terminated.
 清理窗口仍最多 10 秒。此项按用户要求同时适用于 Codex 和 WorkBuddy 工作流编写，
 不修改 SDK、模型、推理或权限配置。
 
+## 候选定义与可选修改范围 / Candidate definition and optional scope
+
+工作流定义、历史对话和控件引用分别传入共用编排；引用不是工作流根字段，也不构成修改授权。候选先通过版本化根字段及现有固定绑定、编译检查，才能应用为修订。AI 新增会话字段或修改平台维护字段会被拒绝，不静默删除后应用；来源已有的未知扩展只能原样保留。历史正式工作流的读取与执行不改变。
+
+存在当前修订的字段引用时，输入框附近提供默认不勾选的“仅修改已选字段”。勾选后的修改请求携带 `allowedChangePaths`（最多 20 个有效 JSON Pointer），服务端按结构及数组位置比较全部差异；范围外变更返回具体路径，原定义、修订及资格保持不变。该约束仅控制候选应用，不移除 SDK 调查、文件编辑和本地测试能力。需要关联修改时取消限制，以新请求提交。未保存内容须先显式保存并重新核对引用；修订或字段变化取消勾选。响应不确定时重传原请求及原范围，不改用另一意图。解释请求不携带修改范围，也不得产生修订。
+
+Definition, conversation history and control references are distinct shared inputs. References are neither definition fields nor authorization. New conversation metadata or altered platform-owned fields fails candidate validation; source-only unknown extensions must remain unchanged. Existing published-workflow reading and execution remain compatible.
+
+An optional, initially unchecked selected-field scope sends at most twenty verified JSON Pointers in `allowedChangePaths`. Structural comparison, including array positions, rejects any out-of-scope change without modifying the definition, revision or validation eligibility. This is an application gate, not removal of SDK investigation, local editing or tests. Related changes require a new unscoped request. Dirty content must first be explicitly saved and references reconfirmed; field/revision changes clear the opt-in. Uncertain delivery retries the identical intent/body/scope. Explanation never applies revisions. Omitting scope preserves legacy request fingerprints.
 仅凭配置不能证明 Windows 隔离成立。离线检查实际命令边界（不调用模型或 SAP）：
 
 ```powershell

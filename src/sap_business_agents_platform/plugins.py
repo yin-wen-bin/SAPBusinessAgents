@@ -440,14 +440,14 @@ class CodexRuntimePluginProvider:
         manager = getattr(self.planner, "manager", None)
         runtime = None
         if manager is not None:
-            runtime = next(
-                (
-                    item
-                    for item in manager.list()
-                    if item.get("provider_id") == provider_id
-                ),
-                None,
-            )
+            installation = getattr(manager, 'installation_status', None)
+            if callable(installation):
+                runtime = installation(provider_id)
+            else:
+                runtime = next(
+                    (item for item in manager.list() if item.get("provider_id") == provider_id),
+                    None,
+                )
         installed = (
             bool(runtime.get("installed"))
             if isinstance(runtime, dict)
@@ -793,6 +793,14 @@ class AgentRuntimeCapability:
     def __init__(self, manager: PluginManager) -> None:
         self.manager = manager
 
+    def prepare_admission(self, request):
+        from .runtime_admission import PreparedRuntime
+        method = getattr(self._planner(), 'prepare_admission', None)
+        if callable(method):
+            return method(request)
+        value = self.snapshot() if request.provider_id is None else self.snapshot(request.provider_id)
+        return PreparedRuntime(value, request.operation, request.permission_mode)
+
     def feedback_capabilities(self, provider_id: str, model_id: str | None = None) -> dict[str, bool]:
         method = getattr(self._planner(), "feedback_capabilities", None)
         value = method(provider_id, model_id) if callable(method) else {}
@@ -874,6 +882,12 @@ class AgentRuntimeCapability:
     def snapshot_for_binding(self, snapshot: dict) -> dict:
         method = getattr(self._planner(), "snapshot_for_binding", None)
         return method(snapshot) if callable(method) else snapshot
+
+    def authoring_snapshot_for_binding(self, snapshot: dict) -> dict:
+        # Only a new authoring request may use the router's audited recovery.
+        # Existing/in-flight pin_snapshot and snapshot_for_binding stay strict.
+        method = getattr(self._planner(), "authoring_snapshot_for_binding", None)
+        return method(snapshot) if callable(method) else self.snapshot_for_binding(snapshot)
 
     def resolve_legacy_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         method = getattr(self._planner(), "resolve_legacy_snapshot", None)

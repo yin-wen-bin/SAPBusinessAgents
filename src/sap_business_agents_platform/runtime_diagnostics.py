@@ -44,6 +44,7 @@ def schema_issues(raw, schema):
 
 
 _STAGE_CODES = frozenset({
+    "workbuddy_authentication_required", "workbuddy_authentication_refresh_failed",
     "runtime_deadline_exceeded", "workbuddy_deadline_exceeded", "runtime_cleanup_incomplete",
     "runtime_report_validation_failed", "runtime_report_json_invalid", "runtime_context_too_large",
     "runtime_result_not_complete", "runtime_cancelled", "workbuddy_structured_output_invalid",
@@ -51,12 +52,26 @@ _STAGE_CODES = frozenset({
     "workbuddy_protocol_invalid", "workbuddy_message_limit", "workbuddy_output_limit",
     "workbuddy_cancelled", "role_matching_consolidation_failed",
     "workbuddy_upstream_empty_stream", "workbuddy_upstream_error", "workbuddy_result_missing",
+    "workbuddy_event_delivery_failed", "workbuddy_worker_transport_failed",
+    "workbuddy_host_io_failed", "workbuddy_host_execution_failed",
     "runtime_native_schema_rejected",
     "runtime_budget_binding_missing", "runtime_operation_retired", "runtime_platform_context_missing",
     "runtime_session_binding_changed", "runtime_native_schema_required",
+    "runtime_native_rpc_error", "runtime_native_transport_closed", "runtime_native_turn_failed",
+    "runtime_native_execution_failed",
+    "role_matching_evidence_ref_invalid",
 })
+NATIVE_ERROR_CODES = frozenset({"contextWindowExceeded", "sessionBudgetExceeded", "usageLimitExceeded",
+    "rateLimitExceeded", "flexUnavailable", "serverOverloaded", "cyberPolicy", "misalignmentPolicyViolation",
+    "tooManyDenials", "internalServerError", "unauthorized", "badRequest", "threadRollbackFailed",
+    "sandboxError", "other", "httpConnectionFailed", "responseStreamConnectionFailed",
+    "responseStreamDisconnected", "responseTooManyFailedAttempts", "activeTurnNotSteerable"})
+NATIVE_ERROR_CLASSES = frozenset({"CodexError", "JsonRpcError", "CodexRpcError", "ParseError",
+    "InvalidRequestError", "MethodNotFoundError", "InvalidParamsError", "InternalRpcError",
+    "ServerBusyError", "RetryLimitExceededError", "TransportClosedError", "RuntimeError", "TimeoutError", "unknown"})
 _CONSTRAINTS = frozenset({"json", "required", "type", "enum", "additionalProperties", "minItems",
-    "maxItems", "minLength", "maxLength", "minimum", "maximum", "pattern", "anyOf", "oneOf", "uniqueItems"})
+    "maxItems", "minLength", "maxLength", "minimum", "maximum", "pattern", "anyOf", "oneOf", "uniqueItems",
+    "known_document_reference"})
 
 
 def _declared_path(path, schema):
@@ -94,39 +109,87 @@ def safe_stage_diagnostic(value, *, schema, operation=None, phase=None, contract
         result["contract_id"] = final_version
         if phase is None:
             result["phase"] = "role_consolidation"
+    # The legacy SDK envelope encodes analysis_json as a string. Inner field
+    # errors belong to its existing business schema, not that wire envelope.
+    # Keep the explicit known contract through subsequent service projections;
+    # never accept a caller-supplied schema or arbitrary paths.
+    issue_schema = schema
+    from .runtime_role_contract import DIAGNOSTIC_CONTRACT, SCHEMA as role_schema
+    if (phase in {"role_understanding", "role_catalog_page"}
+            and raw.get("output_contract_id") == DIAGNOSTIC_CONTRACT):
+        issue_schema = role_schema
+        result["output_contract_id"] = DIAGNOSTIC_CONTRACT
     for name in ("primary_failure_code", "cleanup_failure_code"):
         value = raw.get(name)
         if isinstance(value, str) and value in _STAGE_CODES:
             result[name] = value
-    if isinstance(raw.get("failure_source"), str) and raw["failure_source"] in {"error_message", "error_result", "message_stream_end", "sdk_exception", "unknown"}:
+    if isinstance(raw.get("failure_source"), str) and raw["failure_source"] in {"error_message", "error_result", "message_stream_end", "sdk_exception", "turn_completed", "unknown", "owned_cli_trace", "owned_worker_stderr"}:
         result["failure_source"] = raw["failure_source"]
+    if code == 'workbuddy_authentication_required' and raw.get('http_status') == 401:
+        result['http_status'] = 401
+    if code == 'workbuddy_authentication_required' and raw.get('authentication_reason') == 'login_required':
+        result['authentication_reason'] = 'login_required'
+    if code == 'workbuddy_authentication_required' and raw.get('authentication_sync_failed') is True:
+        result['authentication_sync_failed'] = True
+    for name, allowed in (("native_error_code", NATIVE_ERROR_CODES), ("native_error_class", NATIVE_ERROR_CLASSES),
+                          ("native_terminal_status", {"completed", "failed", "interrupted"}),
+                          ("native_phase", {"sdk_initialize", "thread_start", "thread_resume", "turn_start", "message_stream"}),
+                          ("error_class", NATIVE_ERROR_CLASSES | {"TypeError", "ValueError", "KeyError", "AttributeError", "JSONDecodeError", "RuntimeContractError", "WorkBuddyError"})):
+        if isinstance(raw.get(name), str) and raw[name] in allowed:
+            result[name] = raw[name]
+    # Additive WorkBuddy host diagnostics only. Do not reinterpret Codex/native
+    # errors or expose arbitrary exception names, paths or callback content.
+    if isinstance(code, str) and code.startswith("workbuddy_"):
+        from .workbuddy_diagnostics import HOST_PHASES, HOST_ERROR_CLASSES
+        if raw.get("failure_source") == "supervisor_host":
+            result["failure_source"] = "supervisor_host"
+        for name, allowed in (("protocol_phase", HOST_PHASES),
+                ("last_frame_kind", {"tool_call", "schema_check", "event", "result", "error"}),
+                ("schema_reply_state", {"prepared", "written", "drained"}),
+                ("schema_check_phase", {"native_candidate", "native_terminal"}),
+                ("host_error_class", HOST_ERROR_CLASSES), ("delivery_error_class", HOST_ERROR_CLASSES)):
+            if isinstance(raw.get(name), str) and raw[name] in allowed:
+                result[name] = raw[name]
+        if type(raw.get("schema_check_count")) is int and 0 <= raw["schema_check_count"] <= 2**53:
+            result["schema_check_count"] = raw["schema_check_count"]
+        if type(raw.get("windows_error_code")) is int and raw["windows_error_code"] in {2, 3, 5, 32, 33, 112}:
+            result["windows_error_code"] = raw["windows_error_code"]
+        for name in ("last_schema_valid", "failure_event_delivery_failed", "record_persistence_failed"):
+            if type(raw.get(name)) is bool:
+                result[name] = raw[name]
+    if type(raw.get("native_rpc_code")) is int and -(2**31) <= raw["native_rpc_code"] < 2**31:
+        result["native_rpc_code"] = raw["native_rpc_code"]
     for name in ("message_count", "assistant_message_count", "stream_event_count"):
         value = raw.get(name)
         if type(value) is int and 0 <= value <= 2**53:
             result[name] = value
     if type(raw.get("terminal_result_received")) is bool:
         result["terminal_result_received"] = raw["terminal_result_received"]
+    for name in ("sdk_connected", "query_submitted", "sdk_closing", "sdk_closed"):
+        if type(raw.get(name)) is bool:
+            result[name] = raw[name]
     result["failure_category"] = (
-        "timeout" if code in {"runtime_deadline_exceeded", "workbuddy_deadline_exceeded"}
+        "authentication" if code in {"workbuddy_authentication_required", "workbuddy_authentication_refresh_failed"}
+        else "timeout" if code in {"runtime_deadline_exceeded", "workbuddy_deadline_exceeded"}
         else "cleanup" if code == "runtime_cleanup_incomplete"
         else "contract" if code in {"runtime_report_validation_failed", "runtime_report_json_invalid",
-            "workbuddy_structured_output_invalid", "workbuddy_structured_output_missing", "runtime_result_not_complete", "runtime_native_schema_rejected"}
+            "workbuddy_structured_output_invalid", "workbuddy_structured_output_missing", "runtime_result_not_complete", "runtime_native_schema_rejected", "role_matching_evidence_ref_invalid"}
         else "runtime"
     )
-    for name in ("input_length", "output_length", "budget_seconds", "elapsed_ms"):
+    for name in ("input_length", "output_length", "budget_seconds", "elapsed_ms", "first_response_ms", "first_assistant_ms", "page_index"):
         item = raw.get(name)
         if type(item) is int and 0 <= item <= 2**53:
             result[name] = item
-    for name in ("input_sha256", "output_sha256"):
+    for name in ("input_sha256", "output_sha256", "schema_sha256"):
         item = raw.get(name)
         if isinstance(item, str) and re.fullmatch("[a-f0-9]{64}", item):
             result[name] = item
     issues = []
     for item in raw.get("validation_issues", []) if isinstance(raw.get("validation_issues"), list) else []:
         if (isinstance(item, dict) and isinstance(item.get("code"), str)
-                and item["code"] in {"runtime_report_schema_invalid", "runtime_report_json_invalid"}
+                and item["code"] in {"runtime_report_schema_invalid", "runtime_report_json_invalid", "role_matching_evidence_ref_invalid"}
                 and isinstance(item.get("constraint"), str) and item["constraint"] in _CONSTRAINTS
-                and _declared_path(item.get("path"), schema)):
+                and _declared_path(item.get("path"), issue_schema)):
             issue = {key: item[key] for key in ("code", "path", "constraint")}
             if issue not in issues:
                 issues.append(issue)
@@ -145,7 +208,12 @@ def stage_failure(error, *, schema, prompt=None, budget_seconds=None, elapsed_ms
         code = "runtime_report_json_invalid"
     detail = getattr(error, "detail", {})
     detail = detail if isinstance(detail, dict) else {}
+    if not isinstance(code, str) or code not in _STAGE_CODES:
+        code = detail.get("failure_code", code)
     raw = {**detail, "failure_code": code, "budget_seconds": budget_seconds, "elapsed_ms": elapsed_ms}
+    raw["error_class"] = type(error).__name__
+    raw["schema_sha256"] = hashlib.sha256(json.dumps(schema, sort_keys=True, ensure_ascii=False,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
     if isinstance(prompt, str):
         encoded = prompt.encode("utf-8")
         raw.update(input_length=len(encoded), input_sha256=hashlib.sha256(encoded).hexdigest())

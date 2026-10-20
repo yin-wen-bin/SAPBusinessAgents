@@ -73,6 +73,18 @@ import copy
 from typing import Any
 
 async def run(self, driver, run_id, query, thread_id=None, model=None, reasoning_effort=None):
+    auth = getattr(self, "authentication_service", None)
+    if auth:
+        record = self.store.get_run(run_id)
+        snapshot = record.runtime.model_dump(mode="json") if record.runtime else {}
+        async with auth.use(driver.provider_id, snapshot):
+            result = await _reserved_run(self, driver, run_id, query, thread_id, model, reasoning_effort)
+            auth.assert_binding(driver.provider_id, snapshot)
+            return result
+    return await _reserved_run(self, driver, run_id, query, thread_id, model, reasoning_effort)
+
+
+async def _reserved_run(self, driver, run_id, query, thread_id=None, model=None, reasoning_effort=None):
     from contextlib import nullcontext
     from .runtime_contract import cleanup_binding
     supervisor = getattr(getattr(self, "manager", None), "supervisor", None)
@@ -138,7 +150,8 @@ async def _run(
         self.settings.data_root / "harness" / run_id / ("engineering-" + secrets.token_hex(8)),
     )
     try:
-        snapshot = copy.deepcopy(driver.binding(run_id, state, model, reasoning_effort))
+        from .runtime_admission import driver_binding
+        snapshot = copy.deepcopy(await driver_binding(driver, run_id, state, model, reasoning_effort))
         if engineering is not None:
             engineering.prepare(None, current_source=True)
             workspace = engineering.source
@@ -169,10 +182,13 @@ async def _run(
         context=conversation_context(self.store, run_id, baseline=bool(state.get("acceptance_spec"))))
     context = {"run_id": run_id, "state": state, "workspace": workspace, "capability": capability,
         "thread_id": thread_id, "turn_count": turn_count, "cleanup_state": cleanup_state, "final_response": "", "read_scope": scope}
+    context["report_contract"] = self.broker.report_contract(run_id)
     final_response = ""
     try:
         from .runtime_contract import await_business
         result = await await_business(driver.harness_turn(request, context), deadline=request.deadline)
+        from .runtime_report_convergence import raise_if_stopped
+        raise_if_stopped(self.store.get_harness_state(run_id))
         request.remaining()
         thread_id = context["thread_id"]
         if not result.cleanup_complete:
@@ -300,6 +316,22 @@ async def _run(
             deadline_phase="completed",
         )
     except Exception as exc:
+        from .runtime_report_convergence import ReportCorrectionStopped
+        if isinstance(exc, ReportCorrectionStopped):
+            calls, evidence = self.broker.snapshot(run_id)
+            budget = self.broker.budget_snapshot(run_id)
+            self.store.append_event(run_id, "report_correction_stalled", exc.detail)
+            return HarnessOutcome(thread_id=context["thread_id"], turn_count=turn_count,
+                status="inconclusive", stop_reason="capability_unavailable",
+                summary={"zh": "报告结构多次纠错仍未收敛；已保留证据，未生成未经验证的业务结论。",
+                    "en": "Report correction made no further progress; evidence was preserved without publishing unvalidated conclusions."},
+                source_complete=_evidence_sources_complete(evidence), business_complete=False,
+                missing_evidence=[exc.code], tool_calls=calls, evidence=evidence,
+                elapsed_seconds=int(time.monotonic() - run_started),
+                hard_limit_seconds=budget["hard_limit_seconds"],
+                query_seconds_granted=budget["query_seconds_granted"],
+                finalization_seconds_reserved=budget["finalization_seconds_reserved"],
+                deadline_phase="completed")
         if getattr(exc, "code", "") == "runtime_cleanup_incomplete":
             self.store.update_harness_state(run_id, {"cleanup_incomplete": True})
             raise
@@ -527,17 +559,18 @@ async def tool_call(controller, context, name, arguments):
 async def report_tool_completed(controller, run_id, turn):
     """A report can finish early only after the platform saved its validated pair."""
     from .harness import (_validated_payload_from_store, _best_effort_interrupt, AcceptanceReportValidationError)
+    from .runtime_report_convergence import stop_state, raise_if_stopped
+    failure = stop_state(controller.store.get_harness_state(run_id))
+    if failure:
+        interrupt_error = await _best_effort_interrupt(turn)
+        controller.store.append_event(run_id, "report_validation_stopped", {
+            "code": failure.get("stop_code") or "acceptance_report_validation_failed",
+            "validation_issues": failure.get("validation_issues") or [], "interrupt_error": interrupt_error})
+        raise_if_stopped(controller.store.get_harness_state(run_id))
     payload = _validated_payload_from_store(controller.store, run_id, controller.broker.snapshot(run_id)[1])
     if payload is not None:
         interrupt_error = await _best_effort_interrupt(turn)
         controller.store.append_event(run_id, "validated_report_completed_early", {"interrupt_error": interrupt_error})
         return payload
-    failure = controller.store.get_harness_state(run_id).get("acceptance_validation_failure") or {}
-    if failure.get("terminal") is True:
-        interrupt_error = await _best_effort_interrupt(turn)
-        controller.store.append_event(run_id, "acceptance_report_validation_stopped", {
-            "code": "acceptance_report_validation_failed", "validation_issues": failure.get("validation_issues") or [],
-            "interrupt_error": interrupt_error})
-        raise AcceptanceReportValidationError(list(failure.get("validation_issues") or []))
     return None
 

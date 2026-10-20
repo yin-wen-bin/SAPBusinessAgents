@@ -6,6 +6,7 @@ import io
 import json
 import shutil
 import uuid
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -198,6 +199,8 @@ class RoleMatchingService:
                 session["scheduler_status"] = None
                 session["queue_position"] = None
         session["turns"] = self.store.list_role_matching_turns(session_id)
+        latest = self.store.latest_role_runtime_event(session_id)
+        session["runtime_progress"] = latest["data"] if latest else None
         return session
 
     def documents(self, session_id: str) -> list[dict[str, Any]]:
@@ -563,14 +566,36 @@ class RoleMatchingService:
             if self.get(session_id)["status"] == "cancelled":
                 return
             runtime_snapshot = session.get("runtime") or {}
+            auth = getattr(getattr(self.runtime, "manager", None), "authentication_service", None)
+            if auth:
+                auth.assert_binding(str(runtime_snapshot.get("provider_id") or "codex"), runtime_snapshot)
             resolve = getattr(self.runtime, "resolve_legacy_snapshot", None)
             if runtime_snapshot.get("reasoning_effort") is None and callable(resolve):
                 runtime_snapshot = resolve(runtime_snapshot)
                 self.store.update_role_matching_session(session_id, runtime=runtime_snapshot)
             provider_id = str(runtime_snapshot.get("provider_id") or "codex")
-            context = (self.runtime.pin_snapshot(runtime_snapshot) if provider_id == "workbuddy"
+            context = (self.runtime.pin_snapshot(runtime_snapshot) if provider_id == "workbuddy" or getattr(getattr(self.runtime, "manager", None), "authentication_service", None)
                        else self.runtime.pin(provider_id, runtime_snapshot.get("model"), runtime_snapshot.get("reasoning_effort")))
-            with context:
+            from .runtime_stage import bind_stage_events, stage_metadata
+            from .workbuddy_diagnostics import safe_progress
+            confirmed_progress = {}
+            def runtime_event(kind, data):
+                current = self.store.get_role_matching_session(session_id)
+                if current["status"] in {"cancelled", "completed", "failed", "cleanup_pending"} or str(current.get("active_job_id") or "") != active_job_id:
+                    return
+                if kind in {"role_stage_started", "role_stage_finished", "role_stage_failed"}:
+                    if kind == "role_stage_started":
+                        confirmed_progress.clear()
+                    safe = {**confirmed_progress, **data}
+                else:
+                    safe = safe_progress(kind, data)
+                    if not safe:
+                        return
+                    confirmed_progress.update(safe)
+                    safe = {**confirmed_progress, **stage_metadata()}
+                self._event(session_id, kind, safe)
+            binder = getattr(self.runtime, "bind_events", None)
+            with context, bind_stage_events(runtime_event), (binder(runtime_event) if callable(binder) else nullcontext()):
                 method = self.runtime.review_role_matching_feedback if previous else self.runtime.analyze_role_matching
                 raw = await method(
                     documents=runtime_documents,
@@ -687,12 +712,17 @@ class RoleMatchingService:
                     turn=int(turn["turn"]), mode=mode, status="completed",
                 )
         except Exception as exc:
-            error = {"code": str(getattr(exc, "code", "role_matching_failed")), "message": str(exc), "detail": getattr(exc, "detail", None)}
+            diagnostic = getattr(exc, "runtime_diagnostic", None)
+            code = diagnostic["failure_code"] if diagnostic else str(getattr(exc, "code", "role_matching_failed"))
+            error = {"code": code, "message": code, "detail": diagnostic if diagnostic else getattr(exc, "detail", None)}
+            cleanup_pending = bool((error["detail"] or {}).get("cleanup_failure_code") == "runtime_cleanup_incomplete"
+                or code == "runtime_cleanup_incomplete") if isinstance(error["detail"], dict) else code == "runtime_cleanup_incomplete"
             turn.update({"status": "failed", "decision": {"error": error}, "completed_at": utc_now()})
             self.store.save_role_matching_turn(turn)
-            self._event(session_id, "analysis_failed", {"code": error["code"]})
+            self._event(session_id, "analysis_failed", {"code": error["code"], "diagnostics": diagnostic})
             self.store.update_role_matching_session(
-                session_id, status="failed", phase="failed", active_job_id=None,
+                session_id, status="cleanup_pending" if cleanup_pending else "failed", phase="failed",
+                active_job_id=active_job_id if cleanup_pending else None,
                 error=error, completed_at=utc_now(),
             )
             if active_job_id:
@@ -771,8 +801,17 @@ class RoleMatchingService:
             from .runtime_role_contract import native_output_schema
             from .runtime_role_consolidation import SCHEMA as final_schema, VERSION as final_version
             diagnostics = result["runtime_diagnostics"]
+            if isinstance(diagnostics, list):
+                failed_pages = (result.get("catalog_evaluation") or {}).get("failed_pages") or []
+                # Keep unresolved page/final failures ahead of recovered attempts
+                # within the existing five-diagnostic storage bound.
+                blocking = [item for item in diagnostics if isinstance(item, dict) and (
+                    item.get("phase") == "role_consolidation" or (
+                        item.get("phase") == "role_catalog_page" and item.get("page_index") in failed_pages))]
+                diagnostics = blocking + [item for item in diagnostics if item not in blocking]
             result["runtime_diagnostics"] = [safe_stage_diagnostic(item,
-                schema=final_schema if result.get("consolidation_contract") == final_version else native_output_schema(ROLE_MATCHING_OUTPUT_SCHEMA))
+                phase=item.get("phase") if item.get("phase") in {"role_understanding", "role_catalog_page", "role_consolidation"} else None,
+                schema=final_schema if item.get("phase") == "role_consolidation" or item.get("phase") is None and result.get("consolidation_contract") == final_version else native_output_schema(ROLE_MATCHING_OUTPUT_SCHEMA))
                 for item in (diagnostics[:5] if isinstance(diagnostics, list) else [])]
         for key in ("roles", "processes", "operations", "agent_matches", "rejected_candidates", "workflow_suggestions", "agent_gaps", "document_issues"):
             if not isinstance(result.get(key), list):

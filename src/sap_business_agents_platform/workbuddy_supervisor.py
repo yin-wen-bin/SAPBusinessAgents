@@ -16,6 +16,8 @@ from contextvars import ContextVar
 from contextlib import contextmanager, asynccontextmanager, nullcontext
 
 from .workbuddy_environment import PROTOCOL, WorkBuddyEnvironment, WorkBuddyError, atomic_json, digest
+from .workbuddy_record_io import read_record
+from .workbuddy_inspection import current as inspection
 from .workbuddy_job import WindowsJob, process_identity
 from .runtime_policy import OPERATIONS, ORCHESTRATION_VERSION, orchestration_digest
 
@@ -35,6 +37,7 @@ class WorkBuddySupervisor:
         self.cancelled: set[str] = set()
         self.closed: set[str] = set()
         self.cleanup_deadlines: dict[str, float] = {}
+        self.authentication_failed = None
         self._verification = ContextVar("workbuddy_internal_verification", default=None)
         self._reserved = ContextVar("workbuddy_execution_reservation", default=False)
 
@@ -96,25 +99,56 @@ class WorkBuddySupervisor:
             self.queued.discard(task_id)
 
     def pending(self) -> list[dict]:
+        scope = inspection(self.environment)
+        if scope is not None:
+            return scope.memo(('pending_jobs',), lambda: self._pending(scope))
+        return self._pending()
+
+    def _pending(self, scope=None) -> list[dict]:
         result = []
-        for path in (self.environment.root / "jobs").glob("*.json"):
+        directory = self.environment.root / 'jobs'
+        from .workbuddy_job_index import enabled, pending
+        if enabled(self.environment.root):
+            return pending(self.environment.root, scope=scope)
+        paths = list(directory.glob('*.json'))
+        if scope:
+            scope.guard(('job_names',), lambda: frozenset(p.name for p in directory.glob('*.json')),
+                        frozenset(p.name for p in paths))
+        for path in paths:
             try:
-                item = json.loads(path.read_text(encoding="utf-8"))
+                if scope:
+                    scope.watch(path)
+                item = read_record(path)
             except (OSError, ValueError):
                 raise WorkBuddyError("workbuddy_job_record_invalid") from None
-            if item.get("status") == "cleanup_pending":
+            if item.get("status") in {"cleanup_pending", "dispatching"}:
                 result.append(item)
         return result
 
     def reconcile(self) -> list[dict]:
         """Kill-on-close closes orphan jobs on API death; uncertainty stays blocked."""
         pending = []
-        for path in (self.environment.root / "jobs").glob("*.json"):
+        from .workbuddy_job_index import enabled, paths as unfinished
+        indexed = enabled(self.environment.root)
+        records = unfinished(self.environment.root) if indexed else [(p, None) for p in (self.environment.root / 'jobs').glob('*.json')]
+        for path, item in records:
             try:
-                item = json.loads(path.read_text(encoding="utf-8"))
+                item = item if item is not None else read_record(path)
             except (ValueError, OSError):
                 raise WorkBuddyError("workbuddy_job_record_invalid") from None
-            if item.get("status") not in {"running", "cleanup_pending"}:
+            if item.get("status") not in {"dispatching", "running", "cleanup_pending"}:
+                continue
+            if item.get('status') == 'dispatching':
+                pid = item.get('pid') or item.get('dispatch_owner_pid')
+                birth = item.get('process_identity') if item.get('pid') else item.get('dispatch_owner_identity')
+                identity = process_identity(int(pid or 0))
+                if not item.get('pid') and item.get('dispatch_phase') != 'claimed':
+                    pending.append(item)  # Unknown spawn window needs explicit reconciliation.
+                elif birth and (identity is None or identity != 'unknown' and identity != birth):
+                    item.update(status='interrupted', cleanup_complete=True)
+                    atomic_json(path, item)
+                else:
+                    pending.append(item)
                 continue
             if item.get("task_id") in self.active:
                 if item.get("status") == "cleanup_pending":
@@ -179,9 +213,18 @@ class WorkBuddySupervisor:
 
     async def run(self, *, task_id: str | None, snapshot: dict, operation: str,
                   payload: dict, seconds: float, mode: str = "bounded", probe: bool = False,
-                  tool_handler: Any = None, emit: Any = None, deadline: float | None = None) -> dict:
+                  tool_handler: Any = None, emit: Any = None, deadline: float | None = None,
+                  process_cwd: str | None = None) -> dict:
+        from .runtime_validation import check_native_call, current_scope
+        check_native_call(snapshot, operation, mode, tools=bool(tool_handler or payload.get("tools")))
+        validation_scope = current_scope()
         task_id = task_id or uuid.uuid4().hex
-        if probe and (operation not in {"authentication", "model_check", "models"} or mode != "bounded" or payload.get("tools")):
+        from .workbuddy_model_protocol import probe_scope
+        memory_probe = probe_scope(operation, payload, tool_handler)
+        if probe and (operation not in {"authentication", "model_check", "models"} or mode != "bounded"
+                      or (payload.get("tools") or tool_handler) and not memory_probe):
+            raise WorkBuddyError("workbuddy_probe_scope_invalid")
+        if process_cwd is not None and (not probe or operation != "authentication"):
             raise WorkBuddyError("workbuddy_probe_scope_invalid")
         if not probe:
             from .runtime_policy import require_operation
@@ -194,9 +237,13 @@ class WorkBuddySupervisor:
         validating = bool(verification and verification[0] == digest(snapshot) and operation in verification[1])
         if mode not in {"bounded", "trusted_local"}:
             raise WorkBuddyError("workbuddy_windows_restricted_unverified")
-        if self.reconcile():
-            raise WorkBuddyError("workbuddy_cleanup_pending")
+        from .workbuddy_site import assert_binding, routing
+        assert_binding(self.environment.state(), snapshot)
         async with self._capacity(probe, task_id):  # Queue time is outside the execution budget.
+            # Publish queue ownership before yielding to disk work so cancel()
+            # can revoke a waiting task. Cleanup still precedes every dispatch.
+            if await asyncio.to_thread(self.reconcile):
+                raise WorkBuddyError("workbuddy_cleanup_pending")
             from .runtime_contract import current_deadline
             inherited = current_deadline()
             deadline = min(deadline, inherited) if deadline is not None and inherited is not None else deadline if deadline is not None else inherited
@@ -205,13 +252,14 @@ class WorkBuddySupervisor:
             async with self.dispatch_lock:
                 # Cleanup can become uncertain while this request waits for
                 # capacity. Recheck at dispatch, not just before entering queue.
-                if self.reconcile():
+                if await asyncio.to_thread(self.reconcile):
                     raise WorkBuddyError("workbuddy_cleanup_pending")
                 if task_id in self.cancelled:
                     raise WorkBuddyError("workbuddy_cancelled")
-                with self.environment.maintenance():
-                    release = (self.environment.release(snapshot.get("environment_digest")) if probe
-                               else self.check_operation(snapshot, operation, mode))
+                from .workbuddy_dispatch_admission import prepare
+                service_site, release, qualification_binding, host_digest = await prepare(self,
+                    snapshot=snapshot, operation=operation, mode=mode, probe=probe,
+                    validating=validating, validation_scope=validation_scope, task_id=task_id, deadline=deadline)
                 if task_id in self.active:
                     raise WorkBuddyError("workbuddy_task_busy")
                 self.closed.discard(task_id)
@@ -224,7 +272,7 @@ class WorkBuddySupervisor:
                            "operation": operation, "environment_digest": release["environment_digest"],
                            "runtime_digest": digest(snapshot), "deadline": time.time() + seconds}
                 request = {**binding, "snapshot": snapshot, "payload": payload, "mode": mode,
-                           "cli_path": release["cli_path"]}
+                           "cli_path": release["cli_path"], "service_site_config": routing(service_site)}
                 if payload.get("output_schema") is not None:
                     from .workbuddy_diagnostics import NATIVE_DIAGNOSTICS
                     # Additive negotiation: older locked workers ignore this;
@@ -236,29 +284,52 @@ class WorkBuddySupervisor:
                            "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PATH"}
                 env = {k: v for k, v in os.environ.items() if k.upper() in allowed}
                 env.update(PYTHONUTF8="1", CODEBUDDY_CODE_PATH=release["cli_path"])
+                from .workbuddy_job_index import claim, spawning, owned
                 job = WindowsJob()
                 try:
+                    claim(self.environment.root, binding, deadline=deadline)
+                    spawning(self.environment.root, binding, deadline=deadline)
                     worker = Path(release["directory"]) / release["worker"]
                     if release["worker"] not in release["files"]:
                         raise WorkBuddyError("workbuddy_environment_invalid")
                     async with asyncio.timeout(max(0, deadline - time.monotonic())):
                         process = await asyncio.create_subprocess_exec(release["python_path"], "-I", "-B", str(worker),
                             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                            env=env, limit=FRAME_LIMIT + 1, start_new_session=os.name != "nt",
+                            env=env, cwd=process_cwd, limit=FRAME_LIMIT + 1, start_new_session=os.name != "nt",
                             creationflags=0x08000000 if os.name == "nt" else 0)
                     job.attach(process.pid)  # Worker waits for request; SDK cannot spawn before attach.
+                    owned(self.environment.root, binding, process.pid, process_identity(process.pid), deadline=deadline)
                 except TimeoutError:
                     job.close()
+                    from .workbuddy_job_index import enabled
+                    if enabled(self.environment.root) and 'process' not in locals():
+                        atomic_json(self.environment.root / 'jobs' / (digest(task_id) + '.json'),
+                                    {**binding, 'status': 'interrupted', 'cleanup_complete': True})
                     raise WorkBuddyError("workbuddy_deadline_exceeded") from None
                 except BaseException:
                     job.close()
                     if "process" in locals() and process.returncode is None:
                         process.kill()
                         await process.wait()
+                    from .workbuddy_job_index import enabled
+                    if enabled(self.environment.root) and ('process' not in locals() or process.returncode is not None):
+                        atomic_json(self.environment.root / 'jobs' / (digest(task_id) + '.json'),
+                                    {**binding, 'status': 'interrupted', 'cleanup_complete': True})
                     raise
-                record = {**binding, "pid": process.pid, "process_identity": process_identity(process.pid),
+                record = {**binding, **service_site, "pid": process.pid, "process_identity": process_identity(process.pid),
                           "status": "running", "cleanup_complete": False, "permission_mode": mode,
-                          "validation_job": validating}
+                          "validation_job": validating, "authentication_revision": snapshot.get("authentication_revision", 0),
+                          "runtime_model": snapshot.get("model"), "management_digest": host_digest}
+                if process_cwd is not None:
+                    record['process_cwd_policy'] = 'isolated_authentication'
+                if qualification_binding:
+                    record["qualification_binding"] = qualification_binding
+                if validation_scope:
+                    from .workbuddy_validation import case_bindings
+                    record["validation_case_binding"] = case_bindings(snapshot, release)[validation_scope["case"].id]
+                    record["validation_parent_job"] = validation_scope["job_id"]
+                from .runtime_stage import stage_metadata
+                record["stage"] = stage_metadata()
                 prompt = payload.get("prompt")
                 if isinstance(prompt, str):
                     prompt_bytes = prompt.encode("utf-8")
@@ -274,11 +345,18 @@ class WorkBuddySupervisor:
                 if record_path.parent.resolve() != (self.environment.root / "jobs").resolve():
                     job.close()
                     raise WorkBuddyError("workbuddy_task_id_invalid")
-                atomic_json(record_path, record)
                 item = {"process": process, "job": job, "cancelled": False,
                         "record": record, "record_path": record_path}
                 self.active[task_id] = item
             total = 0
+            launched_at = time.time()
+            from .workbuddy_auth_signals import StderrAuthenticationSignal
+            from .workbuddy_failure_watch import OwnedFailureWatch
+            auth_signal = asyncio.get_running_loop().create_future()
+            stderr_signals = StderrAuthenticationSignal()
+            failure_watch = OwnedFailureWatch(job, release['cli_path'], record.get('request_metadata', {}), launched_at,
+                workspace=payload.get('cwd'))
+            trace_signal = asyncio.create_task(failure_watch.wait()) if release.get('cli_version') == '2.141.0' else None
             async def drain_stderr():
                 nonlocal total
                 while chunk := await process.stderr.read(8192):
@@ -288,18 +366,59 @@ class WorkBuddySupervisor:
                         await self.cancel(task_id)
                         raise WorkBuddyError("workbuddy_output_limit")
                     # SDK logs may contain secrets; never persist raw stderr.
+                    signal = stderr_signals.feed(chunk)
+                    if signal and not auth_signal.done():
+                        auth_signal.set_result(signal)
             stderr = asyncio.create_task(drain_stderr())
             status = "failed"
             primary = None
+            protocol_progress = {"protocol_phase": "job_record_write"}
+
+            def failure_context():
+                detail = {**record.get("last_progress", {}), **record.get("stage", {}), **protocol_progress}
+                if record.get("last_output_check"):
+                    detail["last_output_check"] = record["last_output_check"]
+                    detail["last_schema_valid"] = record["last_output_check"]["schema_valid"]
+                return detail
+
+            async def read_owned():
+                reader = asyncio.create_task(self._read(process.stdout))
+                try:
+                    pending = {reader, auth_signal}
+                    if trace_signal is not None:
+                        pending.add(trace_signal)
+                    done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    signal = auth_signal.result() if auth_signal in done else trace_signal.result() if trace_signal in done else None
+                    if signal:
+                        detail = {**failure_context(), **signal}
+                        record.update(failure_diagnostic=detail, failure_observed_at=time.time())
+                        if emit:
+                            emit('workbuddy_native_failure', {'provider_id': 'workbuddy', **detail})
+                        error = WorkBuddyError(signal['failure_code'])
+                        error.detail = detail
+                        raise error
+                    return reader.result()
+                finally:
+                    if not reader.done():
+                        reader.cancel()
+                    await asyncio.gather(reader, return_exceptions=True)
+
             try:
                 async with asyncio.timeout(max(0, deadline - time.monotonic())):
+                    # The process is already owned. Initial record I/O must be
+                    # inside the same failure/cleanup boundary as protocol I/O.
+                    atomic_json(record_path, record, deadline=deadline)
+                    protocol_progress["protocol_phase"] = "request_write"
                     process.stdin.write(encoded)
+                    protocol_progress["protocol_phase"] = "request_drain"
                     await process.stdin.drain()
-                    handshake = await self._read(process.stdout)
+                    protocol_progress["protocol_phase"] = "handshake_read"
+                    handshake = await read_owned()
                     if handshake != {"kind": "hello", **binding}:
                         raise WorkBuddyError("workbuddy_handshake_mismatch")
                     while True:
-                        message = await self._read(process.stdout)
+                        protocol_progress["protocol_phase"] = "message_read"
+                        message = await read_owned()
                         total += len(self._encode(message))
                         if total > OUTPUT_LIMIT:
                             raise WorkBuddyError("workbuddy_output_limit")
@@ -308,17 +427,23 @@ class WorkBuddySupervisor:
                         if item["cancelled"]:
                             raise WorkBuddyError("workbuddy_cancelled")
                         kind = message.get("kind")
+                        if kind in {"tool_call", "schema_check", "event", "result", "error"}:
+                            protocol_progress["last_frame_kind"] = kind
                         if kind == "tool_call":
+                            protocol_progress["protocol_phase"] = "tool_handler"
                             if tool_handler is None:
                                 value = {"ok": False, "code": "tool_not_enabled_for_task"}
                             else:
                                 value = await tool_handler(str(message.get("tool") or ""), message.get("arguments") or {})
                             response = {"kind": "tool_result", "call_id": message["call_id"], "result": value}
+                            protocol_progress["protocol_phase"] = "tool_reply_write"
                             process.stdin.write(self._encode(response))
+                            protocol_progress["protocol_phase"] = "tool_reply_drain"
                             await process.stdin.drain()
                             if value.get("_workbuddy_stop_after_response"):
-                                raise WorkBuddyError("acceptance_report_validation_failed")
+                                raise WorkBuddyError(value.get("_runtime_report_stop_code") or "acceptance_report_validation_failed")
                         elif kind == "schema_check":
+                            protocol_progress["protocol_phase"] = "schema_validation"
                             from .workbuddy_diagnostics import native_output_diagnostic, NATIVE_DIAGNOSTICS
                             from jsonschema.exceptions import SchemaError
                             schema = payload.get("output_schema")
@@ -335,21 +460,61 @@ class WorkBuddySupervisor:
                             except SchemaError:
                                 raise WorkBuddyError("workbuddy_output_schema_invalid") from None
                             diagnosis["schema_sha256"] = digest(schema)
+                            # Keep the authoritative last check even if the SDK
+                            # never produces a terminal and must be terminated.
+                            record["last_output_check"] = diagnosis
+                            protocol_progress.update(schema_check_phase=phase,
+                                schema_check_count=protocol_progress.get("schema_check_count", 0) + 1,
+                                schema_reply_state="prepared")
+                            record["protocol_progress"] = dict(protocol_progress)
+                            atomic_json(record_path, record, deadline=deadline)
                             if emit:
+                                protocol_progress["protocol_phase"] = "schema_check_event"
                                 emit("workbuddy_native_output_checked", diagnosis)
+                            protocol_progress["protocol_phase"] = "schema_reply_write"
                             process.stdin.write(self._encode({"kind": "schema_check_result",
                                 "call_id": message["call_id"], "task_id": task_id,
                                 "attempt_id": binding["attempt_id"], "schema_sha256": digest(schema),
-                                "schema_valid": diagnosis["schema_valid"]}))
+                                "schema_valid": diagnosis["schema_valid"],
+                                "validation_issues": diagnosis["validation_issues"]}))
+                            protocol_progress.update(protocol_phase="schema_reply_drain", schema_reply_state="written")
                             await process.stdin.drain()
+                            # Drained means the host transport accepted the frame,
+                            # NOT that the SDK received it or produced a terminal.
+                            protocol_progress["schema_reply_state"] = "drained"
+                            record["protocol_progress"] = dict(protocol_progress)
+                            atomic_json(record_path, record, deadline=deadline)
                         elif kind == "event":
+                            protocol_progress["protocol_phase"] = "event_record_write"
+                            from .workbuddy_diagnostics import safe_progress
+                            event_kind = str(message.get("event") or "workbuddy_progress")
+                            safe = safe_progress(event_kind, message.get("data") or {})
+                            if safe:
+                                record["last_progress"] = {**record.get("last_progress", {}), **safe}
+                                record["last_progress_at"] = time.time()
+                            atomic_json(record_path, record, deadline=deadline)
                             if emit:
-                                emit(str(message.get("event") or "workbuddy_progress"), message.get("data") or {})
+                                protocol_progress["protocol_phase"] = "event_dispatch"
+                                # Preserve internal native event delivery. Persistence
+                                # and public projections above/below are allowlisted.
+                                emit(event_kind, message.get("data") or {})
                         elif kind == "result":
+                            protocol_progress["protocol_phase"] = "result_validation"
                             if not isinstance(message.get("result"), dict):
                                 raise WorkBuddyError("workbuddy_result_invalid")
                             if time.monotonic() >= deadline:
                                 raise TimeoutError
+                            answer = message["result"]
+                            reported_model = answer.get("actual_model")
+                            if not isinstance(reported_model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", reported_model):
+                                reported_model = None
+                            record["result_metadata"] = {
+                                "structured_terminal": answer.get("output_format") == "native_json_schema",
+                                "actual_model": reported_model,
+                                "identity_source": answer.get("model_identity_source") if answer.get("model_identity_source") in {"assistant_message", "system_metadata"} else None,
+                                "output_format": "native_json_schema" if answer.get("output_format") == "native_json_schema" else None,
+                                "output_sha256": digest(answer.get("text")),
+                                "authenticated": answer.get("authenticated") is True}
                             if operation in {"acceptance_baseline", "acceptance_free_query"}:
                                 actual = message["result"].get("actual_model")
                                 from .workbuddy_identity import checked_identity, is_concrete_model
@@ -359,6 +524,7 @@ class WorkBuddySupervisor:
                                     raise WorkBuddyError("workbuddy_model_identity_unknown")
                                 if actual != snapshot.get("actual_model"):
                                     raise WorkBuddyError("workbuddy_model_identity_changed")
+                            assert_binding(self.environment.state(), snapshot)
                             status = "completed"
                             return message["result"]
                         elif kind == "error":
@@ -367,11 +533,14 @@ class WorkBuddySupervisor:
                             if not code.replace("_", "").isalnum() or len(code) > 120:
                                 code = "workbuddy_execution_failed"
                             from .workbuddy_diagnostics import safe_native_failure
-                            detail = safe_native_failure(message.get("diagnostic"))
+                            detail = {**record.get("last_progress", {}), **safe_native_failure(message.get("diagnostic"))}
+                            if record.get("last_output_check"):
+                                detail["last_output_check"] = record["last_output_check"]
                             detail["failure_code"] = code
                             record["failure_diagnostic"] = detail
                             record["failure_observed_at"] = time.time()
                             if emit:
+                                protocol_progress["protocol_phase"] = "failure_event"
                                 emit("workbuddy_native_failure", {"provider_id": "workbuddy", **detail})
                             error = WorkBuddyError(code)
                             error.detail = detail
@@ -382,19 +551,51 @@ class WorkBuddySupervisor:
                 status = "timed_out"
                 record["failure_code"] = "workbuddy_deadline_exceeded"
                 primary = WorkBuddyError("workbuddy_deadline_exceeded")
+                primary.detail = {**failure_context(),
+                    "failure_code": primary.code, "primary_failure_code": primary.code}
+                record["failure_diagnostic"] = primary.detail
                 raise primary from None
             except WorkBuddyError as error:
                 record["failure_code"] = item.get("failure") or error.code
+                error.detail = {**failure_context(), **(getattr(error, "detail", None) or {}),
+                                "failure_code": record["failure_code"]}
+                record["failure_diagnostic"] = error.detail
+                record.setdefault("failure_observed_at", time.time())
                 primary = error
+                if record['failure_code'] == 'workbuddy_authentication_required' and callable(self.authentication_failed):
+                    try:
+                        await asyncio.to_thread(self.authentication_failed, snapshot, error.detail, started_at=launched_at)
+                    except Exception:
+                        error.detail['authentication_sync_failed'] = True
                 if item.get("failure"):
                     primary = WorkBuddyError(item["failure"])
+                    primary.detail = error.detail
                     raise primary from None
                 raise
             except asyncio.CancelledError as error:
                 status = "cancelled"
+                error.detail = failure_context()
+                record["failure_diagnostic"] = error.detail
                 primary = error
                 raise
+            except Exception as error:
+                from .workbuddy_diagnostics import host_failure
+                # Protocol I/O and event callbacks can raise ordinary exceptions.
+                # Never lose their stage or export OS/SDK text via an untyped error.
+                detail = {**failure_context(), **host_failure(error, protocol_progress["protocol_phase"])}
+                # If reporting a native error failed, retain that primary error;
+                # event delivery is a separate failure, not a new upstream cause.
+                if record.get("failure_diagnostic", {}).get("failure_code"):
+                    detail = {**failure_context(), **record["failure_diagnostic"],
+                              "failure_event_delivery_failed": True,
+                              "delivery_error_class": detail["error_class"]}
+                record.update(failure_code=detail["failure_code"], failure_diagnostic=detail,
+                              failure_observed_at=record.get("failure_observed_at", time.time()))
+                primary = WorkBuddyError(detail["failure_code"])
+                primary.detail = detail
+                raise primary from None
             except BaseException as error:
+                # Do not convert process-level exit/interrupt signals into success.
                 primary = error
                 raise
             finally:
@@ -413,15 +614,58 @@ class WorkBuddySupervisor:
                         complete = False
                     finally:
                         stderr.cancel()
-                        await asyncio.gather(stderr, return_exceptions=True)
+                        if trace_signal is not None:
+                            trace_signal.cancel()
+                        auth_signal.cancel()
+                        await asyncio.gather(stderr, *([trace_signal] if trace_signal is not None else []), return_exceptions=True)
                         self.active.pop(task_id, None)
                         if complete:
                             self.closed.add(task_id)
                         record.update(status=status if complete else "cleanup_pending", cleanup_complete=complete)
+                        record["protocol_progress"] = dict(protocol_progress)
                         record["cleanup_completed_at"] = time.time()
                         if not complete:
                             record["cleanup_failure_code"] = "runtime_cleanup_incomplete"
-                        atomic_json(record_path, record)
+                        record_persisted = True
+                        try:
+                            atomic_json(record_path, record, deadline=deadline)
+                        except (OSError, WorkBuddyError) as storage_error:
+                            from .workbuddy_diagnostics import host_failure
+                            failure = host_failure(storage_error, 'cleanup_record_write') if isinstance(storage_error, OSError) else {
+                                'failure_code':storage_error.code, 'error_class':'WorkBuddyError',
+                                'failure_source':'host_journal', 'protocol_phase':'cleanup_record_write'}
+                            detail = {**failure_context(), **failure,
+                                      "record_persistence_failed": True}
+                            if primary is not None:
+                                # The original failure remains authoritative even
+                                # when its durable cleanup update cannot be saved.
+                                primary.detail = {**detail, **(getattr(primary, "detail", {}) or {}),
+                                                  'cleanup_storage_failure_code':failure['failure_code'],
+                                                  "record_persistence_failed": True}
+                                record_persisted = False
+                            else:
+                                # A received terminal without a durable job record
+                                # cannot return successfully or obtain qualification.
+                                error = WorkBuddyError(detail["failure_code"])
+                                error.detail = detail
+                                raise error from None
+                        if record_persisted and validating and qualification_binding and record["status"] != "completed" and validation_scope is None and not self.environment.state().get("qualification_protocol"):
+                            from .workbuddy_qualification import add_record
+                            try:
+                                self.environment.mutate(lambda s: add_record(s, {"kind": "failure",
+                                    "binding": qualification_binding, "environment_digest": release["environment_digest"],
+                                    "job_id": task_id, "job_digest": digest(record),
+                                    "failure_code": "workbuddy_qualification_execution_failed"}))
+                            except (WorkBuddyError, OSError):
+                                # Preserve primary failure. The owned job remains
+                                # the blocking evidence until explicitly reconciled.
+                                record["qualification_recording_error"] = "workbuddy_qualification_busy"
+                                try:
+                                    atomic_json(record_path, record, deadline=deadline)
+                                except OSError:
+                                    if primary is not None:
+                                        primary.detail = {**(getattr(primary, "detail", {}) or {}),
+                                                          "record_persistence_failed": True}
                     return complete
                 cleanup = asyncio.create_task(finish_owned_job())
                 try:

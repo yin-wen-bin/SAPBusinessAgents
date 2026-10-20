@@ -12,6 +12,8 @@ from .models import utc_now
 from .workflow_factory import WorkflowDraftError, _json_diff
 from .workflow_composer import compact_agent_catalog
 from .workflows import validate_workflow, workflow_digest
+from .workflow_candidate import checked_scope, check_candidate
+from .runtime_contract import RuntimeContractError
 
 TERMINAL = {"completed", "failed", "cancelled", "interrupted", "withdrawn"}
 
@@ -27,7 +29,39 @@ def event(draft: Any, request: str, phase: str, data: dict | None = None) -> Non
 
 
 def fingerprint(payload: dict) -> str:
+    # Preserve fingerprints of pre-scope requests, including model_dump defaults.
+    payload = {k: v for k, v in payload.items() if k != "allowedChangePaths" or v is not None}
+    # New optional reference metadata must not change old request fingerprints.
+    if "references" in payload:
+        payload["references"] = [{k: v for k, v in ref.items()
+            if k not in {"comment", "objectId", "objectKind"} or v is not None}
+            for ref in payload["references"]]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def checked_reference_identity(workflow: dict, reference: dict) -> None:
+    """A revision-bound array path must agree with its stable business object."""
+    object_id, kind = reference.get("objectId"), reference.get("objectKind")
+    if object_id is None and kind is None:
+        return  # Historical references remain revision-bound as before.
+    section = {"node": "nodes", "connection": "connections"}.get(kind)
+    match = re.fullmatch(r"/(nodes|connections)/(0|[1-9][0-9]*)(?:/.*)?", reference["path"])
+    if not section or not match or match[1] != section:
+        raise WorkflowDraftError("Object identity does not match its path.", code="workflow_reference_invalid")
+    rows = workflow.get(section, [])
+    index = int(match[2])
+    def identity(row):
+        if kind == "node":
+            return row.get("id")
+        source, target = row.get("from", {}), row.get("to", {})
+        scope = source.get("scope")
+        pointer = "/" if source.get("pointer") is None else source["pointer"]
+        port = "value" if source.get("port") is None else source["port"]
+        start = (f'{source.get("nodeId")}:{source.get("port")}' if scope == "node_output" else
+            f'iteration:{pointer}' if scope == "iteration_item" else f'{scope}:{port}')
+        return f'{start}->{target.get("nodeId")}:{target.get("port")}'
+    if index >= len(rows) or identity(rows[index]) != object_id or sum(identity(row) == object_id for row in rows) != 1:
+        raise WorkflowDraftError("Referenced object changed or is ambiguous.", code="workflow_reference_stale")
 
 
 def fixed_bindings(workflow: dict) -> dict:
@@ -139,12 +173,23 @@ class WorkflowAssistant:
             if len(pending) >= 3:
                 raise WorkflowDraftError("There are already three waiting messages.", code="workflow_assistant_queue_full")
             refs = []
+            seen_refs = set()
             for ref in payload.get("references", []):
                 if ref["draftId"] != draft_id or ref["revision"] != draft.revision:
                     raise WorkflowDraftError("Reference belongs to another snapshot.", code="workflow_reference_stale")
                 if ref["kind"] != "workflow_field":
                     raise WorkflowDraftError("Diagnostic reference is not supported yet.", code="workflow_reference_unsupported")
-                refs.append({**ref, "value": safe_context(reference_value(draft.workflow, ref["path"]))})
+                key = (ref["kind"], ref["path"])
+                if key in seen_refs:
+                    raise WorkflowDraftError("Duplicate annotation target.", code="workflow_reference_invalid")
+                seen_refs.add(key)
+                checked_reference_identity(draft.workflow, ref)
+                clean = {k: v for k, v in ref.items() if v is not None}
+                refs.append({**safe_context(clean), "value": safe_context(reference_value(draft.workflow, ref["path"]))})
+            try:
+                allowed_paths = checked_scope(payload.get("allowedChangePaths"), refs, intent=payload["intent"])
+            except RuntimeContractError as error:
+                raise WorkflowDraftError("Change scope does not match verified field references.", code=error.code) from None
             reply_id = payload.get("replyToClarificationId")
             if reply_id:
                 original = next((r for r in value["rounds"] if r.get("clarification_id") == reply_id), None)
@@ -157,7 +202,8 @@ class WorkflowAssistant:
                 "execution_mode": payload["executionMode"], "budget_seconds": payload["budgetSeconds"],
                 "runtime_snapshot": value["runtime_snapshot"],
                 "base_revision": draft.revision, "base_hash": workflow_digest(draft.workflow),
-                "references": refs, "reply_to": reply_id, "created_at": utc_now()})
+                "references": refs, "allowed_change_paths": allowed_paths,
+                "reply_to": reply_id, "created_at": utc_now()})
             event(draft, request, "queued")
         result = self.store.mutate_workflow_assistant(draft_id, add)
         self.dispatch(draft_id)
@@ -226,6 +272,11 @@ class WorkflowAssistant:
         try:
             draft = self.store.get_workflow_draft(draft_id)
             snapshot = item["runtime_snapshot"]
+            # Keep original account even for a historical round with no new field.
+            # Resolving a binding checks ownership without choosing another SDK.
+            resolve_binding = getattr(self.service.author, "snapshot_for_binding", None)
+            if callable(resolve_binding):
+                resolve_binding(snapshot)
             if snapshot.get("provider_id") == "workbuddy":
                 def acquired(current: Any):
                     round_ = next(r for r in state(current)["rounds"] if r["request_id"] == request)
@@ -257,13 +308,14 @@ class WorkflowAssistant:
                 raise WorkflowDraftError("The provider does not implement workflow_authoring.v2.", code="workflow_provider_unavailable")
             pin = getattr(self.service.author, "pin", None)
             bound = getattr(self.service.author, "pin_snapshot", None)
-            context = bound(snapshot) if provider == "workbuddy" and callable(bound) else pin(provider, model, effort) if callable(pin) else nullcontext()
+            context = bound(snapshot) if (provider == "workbuddy" or "authentication_binding_revision" in snapshot) and callable(bound) else pin(provider, model, effort) if callable(pin) else nullcontext()
             with context:
                 from .runtime_contract import business_scope, await_business
                 async with business_scope(self.service.author, "workflow_authoring.v2", seconds=item["budget_seconds"]) as deadline:
                     result = await await_business(method(workflow=safe_context(draft.workflow), message=item["message"], intent=item["intent"],
                         execution_mode=item["execution_mode"], history=safe_context(history),
                         catalog=compact_agent_catalog(self.service.agents), references=item["references"],
+                        allowed_paths=item.get("allowed_change_paths"),
                         emit=emit, cleanup_state=cleanup,
                         request_id=request, deadline=deadline))
             def commit(current: Any):
@@ -281,6 +333,8 @@ class WorkflowAssistant:
                     raise WorkflowDraftError("An explanation cannot modify the workflow.", code="workflow_explain_cannot_modify")
                 round_.update(answer=str(result.get("answer") or ""), runtime=snapshot,
                               capabilities=result.get("capabilities", {}), completed_at=utc_now())
+                if result.get("presentation_version"):
+                    round_["presentation_version"] = result["presentation_version"]
                 if action == "clarify":
                     question = str(result.get("question") or "").strip()
                     if not question:
@@ -297,7 +351,8 @@ class WorkflowAssistant:
                         raise WorkflowDraftError("Candidate identity changed.", code="workflow_candidate_identity_changed")
                     # No normalization: missing pins may not silently resolve to
                     # today's active Agent/version/connection schema.
-                    validate_workflow(candidate, self.service.agents, require_pins=True)
+                    check_candidate(current.workflow, candidate,
+                        allowed_paths=item.get("allowed_change_paths"), agents=self.service.agents)
                     diff = _json_diff(current.workflow, candidate)
                     round_["diff"] = diff
                     round_["binding_changes"] = fixed_bindings(current.workflow) != fixed_bindings(candidate)
@@ -327,11 +382,14 @@ class WorkflowAssistant:
                 status = "cleanup_pending" if not cleanup.get("complete") else "cancelled" if cancelled else "failed"
                 code = getattr(exc, "code", "workflow_assistant_timeout" if isinstance(exc, TimeoutError) else "workflow_assistant_failed")
                 round_.update(status=status, failure_code=code, completed_at=utc_now())
+                if code in {"workflow_candidate_contract_invalid", "workflow_change_scope_violation"}:
+                    # These paths are generated by the platform, never SDK error text.
+                    round_["validation_issues"] = getattr(exc, "detail", {}).get("validation_issues", [])
                 if "result" in locals_for_failure:
                     candidate = locals_for_failure["result"].get("workflow")
                     if isinstance(candidate, dict):
                         round_["candidate"] = safe_context(candidate)
-                event(current, request, status, {"code": code})
+                event(current, request, status, {"code": code, "validation_issues": round_.get("validation_issues", [])})
                 for other in state(current)["rounds"]:
                     if other["status"] == "queued":
                         other["status"] = "needs_review"

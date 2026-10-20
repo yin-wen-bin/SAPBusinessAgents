@@ -1,0 +1,93 @@
+/* Settings-only presentation: does not style execution or authoring surfaces. */
+.settings-shell { grid-template-columns: 210px minmax(0,1fr); }
+.settings-shell [hidden] { display:none !important; }
+.settings-navigation { background:var(--color-surface,#f7f9fc); border-right:1px solid var(--color-border); padding:28px 16px; }
+.settings-navigation h2 { display:flex; align-items:center; gap:10px; font-size:15px; color:var(--color-text-muted,#52627a); padding:8px 12px; margin:0 0 20px; }
+.settings-navigation a { display:flex; align-items:center; gap:12px; min-height:48px; padding:10px 14px; margin-bottom:6px; color:var(--color-text); text-decoration:none; border-left:3px solid transparent; border-radius:4px; font-weight:600; }
+.settings-navigation a[aria-current] { color:var(--color-primary); background:#edf4ff; border-left-color:var(--color-primary); }
+.settings-shell .runtime-main { min-width:0; max-width:1340px; padding:32px 36px; width:100%; }
+.settings-shell .sdk-manager { container-type:inline-size; }
+.settings-shell .plugin-manager-header { margin-bottom:20px; }
+.settings-shell .plugin-manager-header h1 { font-size:28px; }
+.settings-shell .plugin-manager-header p { max-width:68ch; }
+.settings-default-strip { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 20px; border:1px solid #dbe7f5; background:#f5f9ff; border-radius:5px; margin-bottom:16px; }
+.settings-default-strip strong { overflow-wrap:anywhere; font-size:15px; }
+.settings-default-strip button { flex-shrink:0; }
+.settings-runtime-navigation { display:flex; gap:10px; border-bottom:1px solid var(--color-border); margin-bottom:20px; }
+.settings-runtime-navigation [role=tablist] { display:flex; flex:1; min-width:0; gap:4px; }
+.settings-runtime-navigation [role=tab] { background:transparent; border:0; border-bottom:3px solid transparent; border-radius:0; padding:14px 12px; font:inherit; font-size:14px; font-weight:600; color:var(--color-text-muted,#52627a); cursor:pointer; min-height:48px; overflow-wrap:anywhere; }
+.settings-runtime-navigation [role=tab][aria-selected=true] { border-bottom-color:var(--color-primary); color:var(--color-primary); }
+.settings-runtime-picker { display:none; }
+.settings-more { display:flex; align-items:center; gap:8px; font-size:14px; max-width:40%; }
+.settings-shell select { max-width:100%; min-width:0; min-height:42px; border:1px solid var(--color-border-strong,#b9c5d4); border-radius:5px; background:white; padding:8px 10px; font:inherit; }
+.settings-shell .sdk-grid { display:block; }
+.settings-shell .sdk-card { display:block; min-width:0; border:0; box-shadow:none; border-radius:0; overflow:visible; }
+.settings-shell .sdk-card-heading { padding:16px 18px; margin:0; border:0; background:#f5f8fc; }
+.settings-shell .sdk-card-heading h2 { font-size:20px; }
+.settings-shell .settings-overview { display:grid; grid-template-columns:minmax(0,1fr); gap:0; }
+.settings-shell .settings-overview > section { padding:24px 18px; min-width:0; border:0; }
+.settings-shell .settings-overview > section + section { border-top:1px solid var(--color-border); }
+@container (min-width:760px) {
+  .settings-shell .settings-overview { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+  .settings-shell .settings-overview > section + section { border-top:0; border-left:1px solid var(--color-border); }
+}
+.settings-shell .sdk-facts { grid-template-columns:100px minmax(0,1fr); font-size:14px; gap:8px 12px; }
+.settings-shell .sdk-facts dd { overflow-wrap:anywhere; }
+.settings-shell .sdk-model-heading { display:flex; flex-wrap:wrap; align-items:start; gap:12px; }
+.settings-shell .sdk-model-heading h3, .settings-shell .sdk-authentication-section h3 { font-size:17px; }
+.settings-shell .sdk-model-row { display:block; padding:14px 0 0; border:0; border-top:1px solid var(--color-border); border-radius:0; background:transparent; }
+.settings-shell .sdk-model-identity, .settings-shell .sdk-model-name { min-width:0; overflow-wrap:anywhere; }
+.settings-shell .settings-model-details { font-size:13px; }
+.settings-shell .sdk-workbuddy-model .sdk-model-identity > strong, .settings-shell .sdk-model-badge.is-selected { display:none; }
+.settings-shell .settings-visible-blockers { flex-basis:100%; margin:0; }
+.settings-shell .sdk-reasoning-field { min-width:0; max-width:100%; }
+.settings-shell .sdk-model-picker select, .settings-shell .sdk-reasoning-field select { width:100%; }
+.settings-shell .sdk-model-actions { margin-top:14px; justify-content:flex-start; }
+.settings-shell .sdk-authentication-actions { border:0; padding:0; margin:14px 0; }
+.settings-shell .sdk-update-note { line-height:1.6; overflow-wrap:anywhere; }
+.settings-shell .settings-site-editor { margin:12px 0; font-size:14px; }
+.settings-shell summary { cursor:pointer; min-height:44px; padding:10px 0; }
+.settings-shell .settings-site-editor summary { color:var(--color-primary); }
+.settings-shell .sdk-service-site { display:flex; flex-wrap:wrap; }
+.settings-shell .sdk-service-site label { flex:1 1 170px; }
+.settings-shell .settings-auth-details { font-size:14px; margin-top:12px; }
+.settings-shell .settings-auth-details summary { color:var(--color-primary); }
+.settings-shell .settings-maintenance, .settings-other, .settings-global-maintenance { border-top:1px solid var(--color-border); padding:8px 18px; }
+.settings-shell .settings-maintenance > summary, .settings-other > summary, .settings-global-maintenance > summary { font-weight:600; }
+.settings-shell .settings-main-actions:empty { display:none; }
+.settings-shell .settings-main-actions { display:flex; flex-wrap:wrap; gap:10px; padding:12px 18px 0; }
+.settings-shell .settings-maintenance-actions { margin:12px 0; }
+.settings-shell .settings-maintenance .sdk-settings-section { padding:12px 0; }
+.settings-other button { display:block; width:100%; text-align:left; background:transparent; border:0; border-top:1px solid var(--color-border); padding:14px 0; font:inherit; color:var(--color-text); cursor:pointer; }
+.settings-shell .query-history-settings { margin:0; border:0; padding:0; max-width:760px; }
+.settings-shell .query-history-settings h2 { font-size:28px; }
+.settings-shell .settings-binding-warning { padding:12px; border:1px solid currentColor; }
+.settings-shell :is(button,a,select,summary,input):focus-visible { outline:3px solid #0b60e8; outline-offset:3px; }
+@media (max-width:820px) {
+  .settings-shell { display:block; }
+  .settings-navigation { display:flex; gap:10px; padding:12px 20px; border-right:0; border-bottom:1px solid var(--color-border); }
+  .settings-navigation h2 { display:none; }
+  .settings-navigation a { margin:0; border-left:0; border-bottom:3px solid transparent; }
+  .settings-navigation a[aria-current] { border-bottom-color:var(--color-primary); }
+  .settings-shell .runtime-main { padding:24px 20px; }
+  .settings-runtime-navigation [role=tablist], .settings-runtime-navigation .settings-more { display:none; }
+  .settings-runtime-picker { display:flex; flex-direction:column; gap:6px; width:100%; padding-bottom:16px; font-size:14px; }
+}
+@media (max-width:550px) {
+  .settings-shell .runtime-main { padding:20px 16px; }
+  .settings-shell .plugin-manager-header h1 { font-size:24px; }
+  .settings-shell .plugin-manager-header p { font-size:14px; line-height:1.55; margin:8px 0 0; }
+  .settings-shell .plugin-manager-header { margin-bottom:16px; }
+  .settings-default-strip { flex-direction:column; align-items:flex-start; gap:8px; padding:12px; }
+  .settings-shell .sdk-card-heading { padding:12px; flex-direction:row; align-items:center; gap:12px; }
+  .settings-shell .sdk-card-heading h2 { font-size:18px; overflow-wrap:anywhere; }
+  .settings-shell .settings-overview > section { padding:20px 4px; }
+  .settings-shell .settings-maintenance, .settings-other, .settings-global-maintenance { padding:8px 4px; }
+  .settings-shell .sdk-facts { grid-template-columns:86px minmax(0,1fr); }
+  .settings-shell .sdk-authentication-actions { display:flex; flex-direction:row; flex-wrap:wrap; gap:8px; }
+  .settings-shell .sdk-authentication-actions button { width:auto; flex:0 1 auto; }
+  .settings-shell .settings-overview > section { padding:16px 4px; }
+  .settings-shell .sdk-model-actions button { width:auto; }
+  .settings-shell .sdk-model-picker, .settings-shell .sdk-reasoning-field { width:100%; }
+  .settings-shell .secondary-button, .settings-shell .sdk-update-button { min-height:44px; }
+}

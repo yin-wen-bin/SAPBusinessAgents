@@ -138,6 +138,18 @@ async def await_business(awaitable, *, deadline=None):
                 try:
                     task.result()
                 except BaseException as exc:
+                    # Preserve only confirmed counters/milestones from owned
+                    # cancellation; do not export exception text or SDK logs.
+                    detail = getattr(exc, "detail", {})
+                    if isinstance(detail, dict):
+                        safe = {}
+                        for key in ("message_count", "assistant_message_count", "stream_event_count", "first_response_ms", "first_assistant_ms", "elapsed_ms"):
+                            if type(detail.get(key)) is int and 0 <= detail[key] <= 2**53:
+                                safe[key] = detail[key]
+                        for key in ("terminal_result_received", "sdk_connected", "query_submitted", "sdk_closing", "sdk_closed"):
+                            if type(detail.get(key)) is bool:
+                                safe[key] = detail[key]
+                        primary.detail = dict(getattr(primary, "detail", {}) or {}, **safe)
                     if (getattr(exc, "code", None) == "runtime_cleanup_incomplete"
                             or getattr(exc, "detail", {}).get("cleanup_failure_code")):
                         primary.detail = dict(getattr(primary, "detail", {}) or {},

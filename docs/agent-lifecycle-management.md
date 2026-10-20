@@ -1,5 +1,7 @@
 # 固定 Agent 全生命周期管理 / Fixed-Agent lifecycle management
 
+AI 助手输入工具栏现提供共享页面标注；支持多处意见一次提交。详见[通用标注说明 / Shared annotations](ai-assistant-annotations.md)。
+
 “Agent 管理中心”只管理具有确定性 `execution` 定义的固定 Agent。`platform_assistant`（例如“岗位匹配助理”）继续由平台代码维护，不进入此管理链。
 
 管理流程分为三步：
@@ -126,4 +128,18 @@ Optional sample discovery uses a compatible configured model, scoped to the draf
 
 Draft deletion requires exact Agent ID confirmation and revision checks; published versions use the separate stricter permanent-deletion gate. Validation runs and their evidence survive draft deletion.
 
+### 共享关联选样 / Shared relationship-scoped discovery
+
+保存的 OData 定义若明确声明无环字段等值关系，平台可沿必要子图选样。复合键只从同一条上游证据记录成对传递；不猜测关系，不运行 Agent 规则或整个 Agent，也不开放任意 Join。每个来源保留适用输入与常量筛选，最终证据链须覆盖全部已填条件。关联端点须通过实时 Schema 核对；未知关系、未确认条件分支、冲突稳定键、受限证据或技术性读取不完整都会阻断建议。
+
+全范围核对前，平台工具仅返回关联所需的键，不通过预览或证据读取返回候选参数。核对后，`field_sources.scope_proof` 保存平台生成的来源引用、行键/哈希、字段关联及条件覆盖摘要，模型不能提供证明结论。Codex、WorkBuddy 共用该机制；跨来源建议限于标量，既有同源数组与共同输入字段关联保留。分页 GET 也计入最多 10 次读取，540 秒取证和 600 秒总预算不变。找到一组样本不代表来源完整或正式验收通过。
+
+Explicit acyclic OData equality relationships enable discovery through the necessary declared subgraph, including paired composite keys. Each read preserves applicable inputs/constants; the full evidence chain must cover all supplied scope. Live endpoint Schema, stored evidence hashes and row keys are checked by the platform. Unknown/conditional relationships, key conflicts, restricted evidence and incomplete technical reads fail closed. Candidate cells remain hidden from platform previews/evidence tools until the full scope is proven. Server-generated `field_sources.scope_proof` records provenance and coverage; models cannot assert proof. Both Providers share this logic. Cross-source suggestions are scalar-only; existing same-source arrays remain supported. Actual paged business GETs count toward the ten-read limit. A bounded sample is not exhaustive evidence or formal acceptance.
+
 An active Agent and an accepted Agent are distinct states. Local publication creates a branch and commit but never pushes. Running tasks retain snapshots, and published workflows retain pinned historical versions. Deactivation blocks new work; it does not cancel running tasks. See the Chinese technical sections above for interface IDs and regression entry points.
+
+### 目录加载 / Catalog loading
+
+管理列表使用带新鲜度信息的轻量展示快照；打开单个 Agent 时再核对完整管理状态。缓存不授予启用、删除或执行资格。接口兼容及失效规则见 [目录性能说明](agent-catalog-performance.md)。
+
+The list uses a lightweight display snapshot; management actions retain their live gates. See [catalog performance](agent-catalog-performance.md).

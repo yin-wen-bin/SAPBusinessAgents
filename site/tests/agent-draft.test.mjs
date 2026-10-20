@@ -194,6 +194,33 @@ test("sample modal exposes bilingual progress, background and cancellation separ
   }
 });
 
+test("sample cross-source preflight and early scope denial are explained without claiming a successful sample", async () => {
+  const Progress = (await component("AgentSampleProgress")).SampleProgressSummary;
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Progress, { locale, value: {
+      status: "needs_input", elapsed_seconds: 0, query_count: 0, candidate_count: 0,
+      codes: ["sample_cross_source_scope_unproven"], validation_issues: [{ code: "sample_scope_not_preserved" }],
+    } }));
+    assert.ok(html.includes(locale === "zh" ? "未启动模型或读取" : "no model or read was started"));
+    assert.ok(html.includes(locale === "zh" ? "已在读取前拒绝" : "rejected before reading"));
+    assert.ok(html.includes(locale === "zh" ? "请手工补充参数" : "Enter inputs manually"));
+    assert.match(html, /sample_cross_source_scope_unproven/);
+    assert.doesNotMatch(html, /A sample was verified|已从本次只读SAP证据核对样本/);
+  }
+});
+
+test("sample start is disabled when a formerly selected field fails the current preflight", async () => {
+  const Modal = await component("AgentSampleProgress");
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Modal, {
+      open: true, locale, canRetry: true, selectedFields: ["plant"],
+      fields: [{ key: "plant", label: "Plant", requirement: "Optional", disabled: true,
+        reason: "cross_source_scope_unproven" }], onClose() {},
+    }));
+    assert.match(html, /disabled="">(?:开始查找|Start discovery)/);
+  }
+});
+
 test("trial modal exposes immediate bilingual progress and a full-result handoff", async () => {
   const Modal = await component("AgentTrialProgress");
   for (const locale of ["zh", "en"]) {
@@ -277,12 +304,12 @@ test("full access feedback separates execution permission from live acceptance a
         error_code: "runtime_command_preflight_timeout",
         harness: { live_testing: "not_performed", change_set_id: "rcs_example" } },
     }] }));
-    assert.match(html, /full access/);
-    assert.match(html, /rcs_example/);
-    assert.ok(html.includes(locale === "zh" ? "不是安全沙盒" : "not a security sandbox"));
-    assert.ok(html.includes(locale === "zh" ? "尚未应用" : "not applied"));
+    assert.doesNotMatch(html, /full access|rcs_example|Technical details|技术详情/);
+    assert.doesNotMatch(html, /修改已保存|Changes saved/);
+    assert.ok(html.includes(locale === "zh" ? "尚未执行模型修改" : "before model editing"));
+
     assert.ok(html.includes(locale === "zh" ? "命令启动预检超时" : "command startup preflight timed out"));
-    assert.ok(html.includes(locale === "zh" ? "不等于 SAP 真机验收" : "not SAP live acceptance"));
+    assert.doesNotMatch(html, /验收通过|acceptance passed/);
   }
 });
 
@@ -331,9 +358,9 @@ test("tool policy is conditional on preflight and is not SAP acceptance", async 
         harness: {live_testing: "not_performed"},
       },
     }]}));
-    assert.ok(html.includes(locale === "zh" ? "预检通过后" : "require successful preflight"));
+    assert.doesNotMatch(html, /draft-feedback-tool-policy/);
     assert.ok(html.includes(locale === "zh" ? "启动预检超时" : "startup preflight timed out"));
-    assert.ok(html.includes(locale === "zh" ? "不等于 SAP 真机验收" : "not SAP live acceptance"));
+    assert.doesNotMatch(html, /验收通过|acceptance passed/);
   }
 });
 import { publicValues, validateDraftInput, changedDefinition, clearDiscoveredInput, discoveryFingerprint, diffBusinessLabel, draftStepNames, draftTerminal, localText, presentationCell, publicInput, publicBranchRequirements, restoreDiscoveredInput, retainCompatibleInput, technicalIdentity, technicalIdError, feedbackTiming, feedbackDuration, feedbackFailureText, canRetryFeedback, prepareFeedbackRequest } from "../src/lib/agentDraft.ts";
@@ -341,6 +368,15 @@ import { publicValues, validateDraftInput, changedDefinition, clearDiscoveredInp
 // Render the actual TSX without building the catalog or starting a browser/API.
 const require = createRequire(import.meta.url);
 async function component(name, dependencies = {}) {
+  dependencies["../lib/assistantPresentation"] = await import("../src/lib/assistantPresentation.ts");
+  if (["AgentDraftConversation", "WorkflowAssistant"].includes(name)) dependencies["./AssistantHistory"] = await component("AssistantHistory");
+  if (["AgentDraftWorkspace", "WorkflowAssistant"].includes(name)) dependencies["./AssistantResize"] = await component("AssistantResize");
+  if (name === "AgentDraftConversation") dependencies["./AssistantRound"] = await component("AssistantRound");
+  if (name === "AgentDraftWorkspace") {
+    dependencies["./AssistantAnnotations"] = await component("AssistantAnnotations");
+    dependencies["../lib/assistantAnnotations"] = await import("../src/lib/assistantAnnotations.ts");
+  }
+  if (name === "AssistantAnnotations") dependencies["../lib/assistantAnnotations"] = await import("../src/lib/assistantAnnotations.ts");
   if (name === "AgentDraftConversation") dependencies["./SafeMarkdown"] = await component("SafeMarkdown");
   if (["AgentDraftWorkspace", "AgentAcceptance"].includes(name)) {
     dependencies["./AcceptanceReadiness"] = await component("AcceptanceReadiness");
@@ -408,7 +444,7 @@ test("assistant renders queued state, clarification, bound diff and collapsed di
   assert.match(html, /修订 2 → 3/);
   assert.match(html, /撤回排队消息/);
   assert.match(html, /消息排队中/);
-  assert.match(html, /<summary>技术详情<\/summary>/);
+  assert.doesNotMatch(html, /技术详情|draft-feedback-technical/);
 });
 
 test("draft presentation exposes typed references without changing published details", async () => {
@@ -437,10 +473,10 @@ test("assistant semantic objects are keyboard links and safe tool summaries stay
       decision: { summary: { zh: "说明", en: "Summary" }, context: { step: "purpose", field_path: "/manifest/title/zh" },
         tool_events: [{ tool: "tool_catalog_search", status: "completed" }] },
     }] }));
-    assert.match(html, /<button type="button" class="draft-object-link"/);
-    assert.match(html, /\/manifest\/title\/zh/);
-    assert.match(html, /<details class="draft-feedback-technical"><summary>/);
-    assert.match(html, /tool_catalog_search/);
+    assert.doesNotMatch(html, /draft-object-link/);
+    assert.doesNotMatch(html, /\/manifest\/title\/zh/);
+    assert.doesNotMatch(html, /draft-feedback-technical/);
+    assert.doesNotMatch(html, /tool_catalog_search/);
   }
 });
 
@@ -759,7 +795,7 @@ test("conversation explains definition failures without leaking raw validation v
     const html = renderToStaticMarkup(createElement(Conversation, { turns: [turn], locale, onRetry: () => {} }));
     assert.match(html, locale === "zh" ? /定义校验未通过/ : /Definition validation failed/);
     assert.match(html, locale === "zh" ? /缺少中文或英文名称/ : /missing a Chinese or English name/);
-    assert.match(html, /\/manifest\/execution\/inputSchema\/properties\/plant\/title/);
+    assert.doesNotMatch(html, /\/manifest\/execution\/inputSchema\/properties\/plant\/title/);
     assert.match(html, locale === "zh" ? /重试这条意见/ : /Retry this feedback/);
     assert.doesNotMatch(html, /PRIVATE|unknown-private-error|AttributeError/);
   }
@@ -776,16 +812,16 @@ test("actual conversation renders recorded historical timing, safe failures and 
   ];
   const html = renderToStaticMarkup(createElement(Conversation, { turns, locale: "en", onRetry: () => {}, retryDisabled: true }));
   assert.match(html, /Conversation 1/);
-  assert.match(html, /Turn time limit.*3m 0s/);
-  assert.match(html, /Reasoning effort.*xhigh/);
-  assert.match(html, /Turn time limit.*Not recorded/);
+  assert.doesNotMatch(html, /Turn time limit/);
+  assert.doesNotMatch(html, /Reasoning effort|xhigh/);
+  assert.match(html, /Conversation history/);
   assert.match(html, /disabled=""[^>]*>Retry this feedback/);
   assert.doesNotMatch(html, /3600|1h 0m 0s|Conversation 3/);
   const chinese = renderToStaticMarkup(createElement(Conversation, { turns, locale: "zh", onRetry: () => {} }));
-  assert.match(chinese, /本轮时限.*3分0秒/);
-  assert.match(chinese, /超高 \(xhigh\)/);
+  assert.doesNotMatch(chinese, /本轮时限/);
+  assert.doesNotMatch(chinese, /xhigh/);
   assert.match(chinese, /未应用修改/);
-  assert.match(chinese, /未记录/);
+  assert.match(chinese, /历史对话/);
 });
 
 test("actual workbench gates validation and publication but keeps unconfirmed definition editing available", async () => {

@@ -112,6 +112,7 @@ def test_workbuddy_feedback_is_tool_free_new_session_and_bound_model(tmp_path, m
 
 
 def test_existing_login_probe_uses_locked_cli_and_never_returns_credentials(monkeypatch):
+    from sap_business_agents_platform.workbuddy_site import make_configuration, routing
     from sap_business_agents_platform.workbuddy_worker import execute
     sdk_fixture(monkeypatch, [])
     captured = []
@@ -130,7 +131,8 @@ def test_existing_login_probe_uses_locked_cli_and_never_returns_credentials(monk
             self.closed = True
     monkeypatch.setitem(sys.modules, "codebuddy_agent_sdk.transport", SimpleNamespace(SubprocessTransport=Transport))
     events = []
-    result = asyncio.run(execute({"operation": "authentication", "payload": {}, "cli_path": "locked-cli"},
+    result = asyncio.run(execute({"operation": "authentication", "payload": {}, "cli_path": "locked-cli",
+        "snapshot": make_configuration("china", 1), "service_site_config": routing(make_configuration("china", 1))},
         lambda kind, **data: events.append(data)))
     assert result == {"authenticated": True, "status": "existing_login"}
     assert captured[0].options.codebuddy_code_path == "locked-cli" and captured[0].closed
@@ -363,7 +365,7 @@ def test_workbuddy_cancel_is_owned_not_global(tmp_path, monkeypatch):
 def test_workbuddy_workflow_v2_preserves_canonical_bindings_and_history(tmp_path, monkeypatch, intent, action):
     from sap_business_agents_platform.authoring_workspace import AuthoringWorkspace
     monkeypatch.setattr(AuthoringWorkspace, "prepare", lambda self, *_, **__: self.source.mkdir(parents=True))
-    workflow = {"id": "test", "version": "1.0.0", "steps": [{"agentId": "fixed", "agentVersion": "0.1.0", "agentDigest": "frozen"}]}
+    workflow = {"schemaVersion": 1, "id": "test", "version": "1.0.0", "steps": [{"agentId": "fixed", "agentVersion": "0.1.0", "agentDigest": "frozen"}]}
     result = {"action": action, "answer": "Done", "question": "", "workflow_json": json.dumps(workflow) if action == "revise" else "null"}
     clients = sdk_fixture(monkeypatch, [result])
     planner = WorkBuddyPlanner(tmp_path, "bound-model", runtime_snapshot={"provider_id": "workbuddy", "model": "bound-model"})

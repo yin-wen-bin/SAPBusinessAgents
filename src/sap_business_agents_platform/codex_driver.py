@@ -11,6 +11,105 @@ from typing import Any
 from .runtime_contract import ApprovalMode, RuntimeRequest, RuntimeResult, RuntimeTurn, RuntimeSession, Sandbox, session_id, execute_frozen, require_deadline
 
 
+def native_failure_detail(error, observed):
+    """Keep only pinned SDK error identities, never message/data/turn contents."""
+    from openai_codex.errors import JsonRpcError, TransportClosedError
+    detail = {**observed, "failure_source": "sdk_exception"}
+    names = {"CodexError", "JsonRpcError", "CodexRpcError", "ParseError", "InvalidRequestError",
+             "MethodNotFoundError", "InvalidParamsError", "InternalRpcError", "ServerBusyError",
+             "RetryLimitExceededError", "TransportClosedError", "RuntimeError", "TimeoutError"}
+    name = type(error).__name__
+    detail["native_error_class"] = name if name in names else "unknown"
+    if isinstance(error, JsonRpcError):
+        detail["failure_code"] = "runtime_native_rpc_error"
+        if type(error.code) is int and -(2**31) <= error.code < 2**31:
+            detail["native_rpc_code"] = error.code
+    elif isinstance(error, TransportClosedError):
+        detail["failure_code"] = "runtime_native_transport_closed"
+    elif observed.get("native_terminal_status") == "failed":
+        detail.update(failure_code="runtime_native_turn_failed", failure_source="turn_completed")
+    elif observed.get("native_terminal_status") == "interrupted":
+        detail.update(failure_code="runtime_cancelled", failure_source="turn_completed")
+    elif observed.get("native_stream_ended") and not observed.get("terminal_result_received"):
+        detail.update(failure_code="runtime_result_not_complete", failure_source="message_stream_end")
+    elif not isinstance(error, TimeoutError):
+        detail["failure_code"] = "runtime_native_execution_failed"
+    return detail
+
+
+def annotate_role_error(error, phase, operation=None):
+    from .runtime_stage import stage_metadata
+    current = stage_metadata()
+    if current or operation in {"analyze_role_matching", "review_role_matching_feedback"}:
+        previous = getattr(error, "detail", {})
+        error.detail = {**(previous if isinstance(previous, dict) else {}),
+                        **native_failure_detail(error, {"native_phase": phase})}
+        if not current:
+            from .runtime_diagnostics import stage_failure
+            from .runtime_prompts import ROLE_MATCHING_OUTPUT_SCHEMA
+            error.runtime_diagnostic = stage_failure(error, schema=ROLE_MATCHING_OUTPUT_SCHEMA,
+                operation=operation, phase="role_initialization")
+
+
+async def observed_role_run(native, prompt, **options):
+    """Observe the role stream using the pinned SDK's unchanged result collector.
+
+    AsyncThread.run delegates to turn(...).run(). Use exactly its turn arguments
+    and collector, adding only a safe observer; do not reimplement SDK results.
+    Other operations continue to call native.run unchanged.
+    """
+    from openai_codex._run import _collect_async_turn_result
+    from .runtime_stage import record_stage_progress
+    observed = {"message_count": 0, "assistant_message_count": 0, "terminal_result_received": False}
+    stream = None
+    try:
+        record_stage_progress({"native_phase": "turn_start"})
+        handle = await native.turn(prompt, **options)
+        record_stage_progress({"native_phase": "message_stream"})
+        stream = handle.stream()
+        async def events():
+            async for event in stream:
+                observed["message_count"] += 1
+                payload = event.payload
+                if event.method == "item/completed":
+                    item = getattr(payload, "item", None)
+                    item = getattr(item, "root", item)
+                    if getattr(item, "type", None) == "agentMessage":
+                        observed["assistant_message_count"] += 1
+                if event.method == "turn/completed" and getattr(getattr(payload, "turn", None), "id", None) == handle.id:
+                    observed["terminal_result_received"] = True
+                    status = getattr(payload.turn.status, "value", payload.turn.status)
+                    if status in {"completed", "failed", "interrupted"}:
+                        observed["native_terminal_status"] = status
+                    error = payload.turn.error
+                    info = getattr(getattr(error, "codex_error_info", None), "root", None)
+                    # Union keys/enum only; discard message/additionalDetails.
+                    if info is not None:
+                        value = getattr(info, "value", None)
+                        if value is None and hasattr(info, "model_dump"):
+                            encoded = info.model_dump(by_alias=True)
+                            value = next(iter(encoded), None) if len(encoded) == 1 else None
+                        from .runtime_diagnostics import NATIVE_ERROR_CODES
+                        if isinstance(value, str) and value in NATIVE_ERROR_CODES:
+                            observed["native_error_code"] = value
+                record_stage_progress(observed)
+                yield event
+            observed["native_stream_ended"] = True
+        result = await _collect_async_turn_result(events(), turn_id=handle.id)
+        if observed.get("native_terminal_status") == "interrupted":
+            from .runtime_contract import RuntimeContractError
+            error = RuntimeContractError("runtime_cancelled")
+            error.detail = observed
+            raise error
+        return result
+    except Exception as error:
+        error.detail = {**dict(getattr(error, "detail", {}) or {}), **native_failure_detail(error, observed)}
+        raise
+    finally:
+        if stream is not None:
+            await stream.aclose()
+
+
 def native_output_schema(schema):
     """Encode only the new role contract; business uniqueness stays authoritative.
 
@@ -28,7 +127,8 @@ def native_output_schema(schema):
 
 def role_schema_error(error, schema):
     from .runtime_role_consolidation import SCHEMA
-    if schema != SCHEMA or "Invalid schema" not in str(error):
+    from .runtime_stage import stage_metadata
+    if (schema != SCHEMA and not stage_metadata()) or "Invalid schema" not in str(error):
         return None
     # Native messages are inspected only for known signatures, never persisted.
     from .runtime_contract import RuntimeContractError
@@ -186,14 +286,22 @@ class CodexClient:
     async def __aenter__(self):
         from .runtime_execution import owned_client
         self._owned = owned_client(self.native, cleanup_timeout=10, cleanup_state=self.cleanup_state)
-        self.active = await self._owned.__aenter__()
+        try:
+            self.active = await self._owned.__aenter__()
+        except Exception as error:
+            annotate_role_error(error, "sdk_initialize", getattr(getattr(self.driver, "owner", None), "current_operation", None))
+            raise
         return self
 
     async def __aexit__(self, *args):
         return await self._owned.__aexit__(*args)
 
     async def thread_start(self, **options):
-        thread = await self.active.thread_start(**native_options(options))
+        try:
+            thread = await self.active.thread_start(**native_options(options))
+        except Exception as error:
+            annotate_role_error(error, "thread_start")
+            raise
         return CodexThread(self.driver, thread, options)
 
     async def thread_resume(self, handle, **options):
@@ -201,7 +309,11 @@ class CodexClient:
         if isinstance(handle, str) and handle.startswith("workbuddy"):
             from .runtime_contract import RuntimeContractError
             raise RuntimeContractError("runtime_session_provider_mismatch")
-        thread = await self.active.thread_resume(handle, **native_options(options))
+        try:
+            thread = await self.active.thread_resume(handle, **native_options(options))
+        except Exception as error:
+            annotate_role_error(error, "thread_resume")
+            raise
         return CodexThread(self.driver, thread, options)
 
 
@@ -223,10 +335,16 @@ class CodexThread:
         require_deadline()
         request.remaining()
         try:
-            result = await self.native.run(prompt, output_schema=native_output_schema(output_schema), effort=effort, **native_options(options))
+            from .runtime_stage import stage_metadata
+            run = observed_role_run if stage_metadata() and callable(getattr(self.native, "turn", None)) else None
+            arguments = {"output_schema": native_output_schema(output_schema), "effort": effort, **native_options(options)}
+            result = await run(self.native, prompt, **arguments) if run else await self.native.run(prompt, **arguments)
         except Exception as exc:
             failure = role_schema_error(exc, output_schema)
             if failure is not None:
+                detail = getattr(exc, "detail", {})
+                if isinstance(detail, dict):
+                    failure.detail = {**detail, **failure.detail}
                 raise failure from None
             raise
         # Preserve the SDK's final output rather than repairing or inventing fields.

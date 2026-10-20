@@ -8,12 +8,100 @@ import pytest
 from sap_business_agents_platform.codex_planner import CodexPlanner
 from sap_business_agents_platform.workbuddy_planner import WorkBuddyPlanner
 from sap_business_agents_platform.runtime_contract import RuntimeContractError
-from sap_business_agents_platform.runtime_diagnostics import checked_output, safe_stage_diagnostic
+from sap_business_agents_platform.runtime_diagnostics import checked_output, safe_stage_diagnostic, stage_failure
 from sap_business_agents_platform.runtime_prompts import ROLE_MATCHING_OUTPUT_SCHEMA, _await_with_hard_timeout
 from sap_business_agents_platform.runtime_role_contract import native_output_schema
 from sap_business_agents_platform.runtime_role_consolidation import SCHEMA as FINAL_SCHEMA
 from tests.runtime_trace_fixture import TraceClient, cases
 from tests.test_workbuddy_isolation import supervisor
+
+
+@pytest.mark.parametrize("phase", ["role_understanding", "role_catalog_page"])
+def test_inner_role_schema_issues_survive_both_safe_projections(phase):
+    from sap_business_agents_platform.runtime_role_contract import decode, DIAGNOSTIC_CONTRACT
+    with pytest.raises(RuntimeContractError) as caught:
+        decode("{}", {"documents": []}, "analyze_role_matching")
+    original = caught.value.detail["validation_issues"]
+    assert len(original) == 8
+    stage = stage_failure(caught.value, schema=ROLE_MATCHING_OUTPUT_SCHEMA,
+        operation="analyze_role_matching", phase=phase)
+    saved = safe_stage_diagnostic(stage, schema=native_output_schema(ROLE_MATCHING_OUTPUT_SCHEMA), phase=phase)
+    assert stage["output_contract_id"] == saved["output_contract_id"] == DIAGNOSTIC_CONTRACT
+    assert stage["validation_issues"] == saved["validation_issues"] == original
+
+
+def test_inner_role_reference_issue_is_safe_and_known_contract_only():
+    from sap_business_agents_platform.runtime_role_contract import decode, DIAGNOSTIC_CONTRACT, COLLECTIONS
+    value = {**{name: [] for name in COLLECTIONS}, "document_issues": []}
+    value["agent_matches"] = [{"evidence_refs": [{"document_id": "private-unknown", "chunk_id": "secret"}]}]
+    with pytest.raises(RuntimeContractError) as caught:
+        decode(json.dumps(value), {"documents": []}, "analyze_role_matching")
+    stage = stage_failure(caught.value, schema=ROLE_MATCHING_OUTPUT_SCHEMA, phase="role_catalog_page")
+    assert stage["validation_issues"] == [{"code": "role_matching_evidence_ref_invalid",
+        "path": "/agent_matches/0/evidence_refs", "constraint": "known_document_reference"}]
+    assert "private-unknown" not in json.dumps(stage) and "secret" not in json.dumps(stage)
+    forged = {"failure_code": "runtime_report_validation_failed", "output_contract_id": DIAGNOSTIC_CONTRACT,
+        "schema": {"properties": {"private-token": {}}}, "validation_issues": [{
+            "code": "runtime_report_schema_invalid", "path": "/private-token", "constraint": "required", "value": "secret"}]}
+    assert "validation_issues" not in safe_stage_diagnostic(forged, schema=ROLE_MATCHING_OUTPUT_SCHEMA, phase="role_catalog_page")
+    forged["output_contract_id"] = "unknown-private-contract"
+    projected = safe_stage_diagnostic(forged, schema=ROLE_MATCHING_OUTPUT_SCHEMA, phase="role_catalog_page")
+    assert "output_contract_id" not in projected and "validation_issues" not in projected
+
+
+def test_persisted_role_diagnostics_prioritize_unresolved_pages(tmp_path):
+    from dataclasses import replace
+    from pathlib import Path
+    from sap_business_agents_platform.config import Settings
+    from sap_business_agents_platform.database import RunStore
+    from sap_business_agents_platform.manifests import AgentRepository
+    from sap_business_agents_platform.role_matching import RoleMatchingService
+    from sap_business_agents_platform.runtime_role_contract import DIAGNOSTIC_CONTRACT
+    from tests.test_role_matching import _FakeRuntime, _Drafts
+
+    class Runtime(_FakeRuntime):
+        async def analyze_role_matching(self, **kwargs):
+            result = await super().analyze_role_matching(**kwargs)
+            result["analysis"]["catalog_evaluation"]["failed_pages"] = [1, 2]
+            base = {"failure_code": "runtime_report_validation_failed", "phase": "role_catalog_page",
+                "output_contract_id": DIAGNOSTIC_CONTRACT, "validation_issues": [{
+                    "code": "runtime_report_schema_invalid", "path": "/agent_matches", "constraint": "required",
+                    "raw_value": "must-not-be-saved"}]}
+            result["analysis"]["runtime_diagnostics"] = [
+                *[{**base, "page_index": 3, "output_length": index} for index in range(6)],
+                {**base, "page_index": 1}, {**base, "page_index": 2}]
+            return result
+
+    root = Path(__file__).resolve().parents[1]
+    settings = replace(Settings(), repository_root=root, data_root=tmp_path / "data", draft_root=tmp_path / "drafts")
+    store = RunStore(settings.database_path)
+    service = RoleMatchingService(settings, store, AgentRepository(root / "agents"), Runtime(), _Drafts())
+
+    async def scenario():
+        await service.start()
+        try:
+            session = await service.create(paths=[], role_description="测试只读采购岗位", locale="zh", consent=True)
+            for _ in range(100):
+                current = service.get(session["session_id"])
+                if current["status"] in {"completed", "failed"}:
+                    break
+                await asyncio.sleep(.01)
+            assert current["status"] == "completed", current.get("error")
+            saved = service.revision(session["session_id"], 1)["result"]
+            diagnostics = saved["runtime_diagnostics"]
+            assert len(diagnostics) == 5
+            assert [item["page_index"] for item in diagnostics[:2]] == [1, 2]
+            assert all(item["validation_issues"] == [{"code": "runtime_report_schema_invalid",
+                "path": "/agent_matches", "constraint": "required"}] for item in diagnostics)
+            assert "must-not-be-saved" not in json.dumps(saved)
+            events = store.role_matching_events_after(session["session_id"])
+            failed = next(item for item in events if item["type"] == "role_matching_consolidation_failed")
+            assert failed["data"]["diagnostics"] == diagnostics
+            assert not saved["catalog_evaluation"]["consolidation_complete"]
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("failure,code", [
@@ -40,7 +128,7 @@ def test_consolidation_failure_has_safe_stage_cause(monkeypatch, tmp_path, failu
     diagnostic = result["runtime_diagnostics"][0]
     assert diagnostic["failure_code"] == code
     assert diagnostic["phase"] == "role_consolidation"
-    assert diagnostic["budget_seconds"] == 300
+    assert diagnostic["budget_seconds"] == 3600
     assert diagnostic["input_length"] > 0 and len(diagnostic["input_sha256"]) == 64
     assert "password" not in json.dumps(diagnostic) and "unsafe-native" not in json.dumps(diagnostic)
 

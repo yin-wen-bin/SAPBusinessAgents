@@ -14,7 +14,7 @@ import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -181,6 +181,7 @@ class RuntimeModelUpdate(BaseModel):
 
 class RuntimeModelCheck(RuntimeModelUpdate):
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=40)
+    request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=128)
 
 
 class RuntimeReasoningUpdate(BaseModel):
@@ -191,6 +192,21 @@ class RuntimeReasoningUpdate(BaseModel):
 class RuntimeDisableUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirm_provider_id: str
+
+
+class RuntimeAuthenticationOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(pattern="^(login|logout|switch_account)$")
+    requestId: str = Field(pattern="^[a-zA-Z0-9_-]{1,128}$")
+    confirm_provider_id: str | None = None
+    service_site_digest: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+
+
+class WorkBuddyServiceSiteUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    service_site: Literal["china", "international"]
+    expected_revision: int = Field(ge=0, strict=True)
+    requestId: str = Field(pattern="^[a-zA-Z0-9_-]{1,128}$")
 
 
 class IntegrationBindingUpdate(BaseModel):
@@ -272,6 +288,7 @@ def create_app(
     sdk_manager: SDKManager | None = None,
     integration_gateway: IntegrationGateway | None = None,
     harness: Any | None = None,
+    authentication_adapters: dict[str, Any] | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     store = RunStore(settings.database_path)
@@ -358,11 +375,8 @@ def create_app(
     workflows = WorkflowRepository(
         settings.repository_root / "workflows", business_agents, store
     )
-    health_catalog_counts = {
-        "executable_agents": 0,
-        "published_workflows": 0,
-        "approved_skills": 0,
-    }
+    from .status_projection import CatalogHealthProjection, sdk_display_projection
+    health_catalog = CatalogHealthProjection(agents, workflows, skill_registry)
     harness_broker = HarnessToolBroker(settings, store, sap_read, skills)
     harness = harness or (
         CodexHarnessController(settings, store, harness_broker)
@@ -414,6 +428,9 @@ def create_app(
         skills=skills,
     )
     agent_lifecycle.authoring_tool_broker = harness_broker
+    from .agent_catalog import AgentCatalogProjection, CatalogSourceChanged, management_catalog
+    agent_catalog = AgentCatalogProjection(agent_lifecycle)
+    agent_lifecycle.catalog_projection = agent_catalog
     sample_discovery = AgentDiscoveryJobs(
         settings, store, agent_lifecycle, sdk_registry,
         SampleDiscoveryService(settings, store, harness_broker),
@@ -432,11 +449,39 @@ def create_app(
         retention_days=settings.restricted_artifact_retention_days,
     )
     artifact_csrf_token = secrets.token_urlsafe(32)
+    from .runtime_authentication import RuntimeAuthenticationService
+    from .runtime_authentication_adapters import OfficialAuthenticationAdapter
+    provider_ids = ([item.provider_id for item in sdk_registry.definitions] if hasattr(sdk_registry, "definitions")
+                    else [item["provider_id"] for item in sdk_registry.list()])
+    adapters = authentication_adapters if authentication_adapters is not None else {
+        provider_id: OfficialAuthenticationAdapter(settings.repository_root, provider_id, getattr(sdk_registry, "workbuddy", None))
+        for provider_id in provider_ids
+    }
+    def authentication_busy(provider_id):
+        result = store.runtime_authentication_blockers(provider_id)
+        supervisor = getattr(getattr(sdk_registry, "workbuddy", None), "supervisor", None)
+        if provider_id == "workbuddy" and supervisor and (supervisor.active or supervisor.pending()):
+            result.append({"code": "runtime_authentication_business_active"})
+        return result
+    authentication = RuntimeAuthenticationService(settings.data_root / "sdk-runtimes", adapters,
+        busy=authentication_busy, changed=getattr(sdk_registry, "apply_authentication_state", None))
+    owned_supervisor = getattr(getattr(sdk_registry, 'workbuddy', None), 'supervisor', None)
+    if owned_supervisor is not None:
+        owned_supervisor.authentication_failed = authentication.report_workbuddy_failure
+    # Injected test managers retain their legacy mock probes unless explicitly opted in.
+    if sdk_manager is None or authentication_adapters is not None:
+        sdk_registry.authentication_service = authentication
+        for controller in (getattr(coordinator, "harness", None), getattr(coordinator, "workbuddy_harness", None)):
+            if controller:
+                controller.authentication_service = authentication
+    sdk_display = sdk_display_projection(sdk_registry) if hasattr(sdk_registry, "definitions") else None
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if hasattr(sdk_registry, "workbuddy"):
             try:
                 sdk_registry.workbuddy.supervisor.reconcile()
+                if callable(getattr(sdk_registry, "migrate_workbuddy_site", None)):
+                    sdk_registry.migrate_workbuddy_site(only_existing=True)
             except (SDKManagerError, OSError, ValueError, TypeError):
                 # Leave WorkBuddy blocked for an explicit recheck, not the API
                 # or the independent Codex lifecycle. Never reset owned jobs.
@@ -445,11 +490,11 @@ def create_app(
         store.recover_agent_operations()
         agent_lifecycle.reconcile_publications()
         await plugin_manager.start()
-        health_catalog_counts.update(
-            executable_agents=len(agents.executable()),
-            published_workflows=len(workflows.list()),
-            approved_skills=len(skill_registry.list()),
-        )
+        health_catalog.view()  # background metadata only; never delay liveness
+        agent_catalog.get()  # display-only catalog prewarm; never authorize execution
+        if sdk_display:
+            for provider_id in provider_ids:
+                sdk_display.get(provider_id)
         await coordinator.start()
         await query_history.start()
         await role_matching.start()
@@ -458,6 +503,11 @@ def create_app(
         try:
             yield
         finally:
+            health_catalog.close()
+            agent_catalog.close()
+            if sdk_display:
+                sdk_display.close()
+            await authentication.close()
             await query_history.stop()
             await workflow_drafts.assistant.stop()
             await acceptance_campaigns.stop()
@@ -504,13 +554,25 @@ def create_app(
     app.state.role_matching = role_matching
     app.state.restricted_artifacts = restricted_artifacts
     app.state.sdk_manager = sdk_registry
+    app.state.runtime_authentication = authentication
     app.state.integrations = integrations
+
+    @app.middleware("http")
+    async def invalidate_sdk_display(request: Request, call_next):
+        response = await call_next(request)
+        if sdk_display and request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path.startswith(
+                ("/api/system/sdk-runtimes", "/api/system/sdks")):
+            sdk_display.invalidate()
+            control_result = getattr(request.state, "sdk_control_result", None)
+            if control_result:
+                sdk_display.publish_control(*control_result)
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def safe_role_matching_validation_error(
         request: Request, exc: RequestValidationError
     ) -> Response:
-        if not request.url.path.startswith(("/api/role-matching/", "/api/authoring/agents")):
+        if not request.url.path.startswith(("/api/role-matching/", "/api/authoring/agents")) and "/authentication" not in request.url.path:
             return await request_validation_exception_handler(request, exc)
         return JSONResponse(
             status_code=422,
@@ -528,6 +590,7 @@ def create_app(
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
+        catalog = health_catalog.view()
         default_runtime_id = str(
             getattr(sdk_registry, "default_provider_id", "codex")
         )
@@ -563,9 +626,11 @@ def create_app(
                 "native_web_search": harness is not None and default_runtime_id == "codex",
                 "automatic_fallback": False,
             },
-            "executable_agents": len(agents.executable()),
-            "published_workflows": len(workflows.list()),
-            "approved_skills": len(skill_registry.list()),
+            "executable_agents": catalog["executable_agents"],
+            "published_workflows": catalog["published_workflows"],
+            "approved_skills": catalog["approved_skills"],
+            "catalog_status": catalog["status_refresh"],
+            "catalog_timings_ms": catalog.get("timings_ms"),
             "plugins": {
                 "total": len(plugin_manager.list()),
                 "ready": sum(
@@ -961,9 +1026,17 @@ def create_app(
             raise HTTPException(503, {"code": exc.code, "message": str(exc)}) from exc
 
     @app.get("/api/agents/catalog")
-    def managed_agent_catalog(state: str = Query("all", pattern="^(active|inactive|all)$")) -> list[dict[str, Any]]:
+    def managed_agent_catalog(
+        state: str = Query("all", pattern="^(active|inactive|all)$"),
+        view: str = Query("full", pattern="^(full|summary)$"),
+        refresh: bool = False,
+    ) -> Any:
         try:
+            if view == "summary":
+                return agent_catalog.get(state, refresh=refresh)
             return agent_lifecycle.catalog(state)
+        except CatalogSourceChanged as exc:
+            raise HTTPException(409, {"code": "agent_catalog_source_changed"}) from exc
         except AgentLifecycleError as exc:
             raise HTTPException(409, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
 
@@ -1031,9 +1104,18 @@ def create_app(
             raise _agent_lifecycle_http_error(exc) from exc
 
     @app.get("/api/agents/{agent_id}")
-    def get_agent(agent_id: str) -> dict[str, Any]:
+    def get_agent(agent_id: str, view: str = Query("manifest", pattern="^(manifest|management)$")) -> dict[str, Any]:
         try:
+            if view == "management":
+                values = management_catalog(agent_lifecycle, agent_id=agent_id)
+                if not values:
+                    raise KeyError(agent_id)
+                return values[0]
             return business_agents.get(agent_id)
+        except CatalogSourceChanged as exc:
+            raise HTTPException(409, {"code": "agent_catalog_source_changed"}) from exc
+        except AgentLifecycleError as exc:
+            raise _agent_lifecycle_http_error(exc) from exc
         except KeyError as exc:
             raise HTTPException(404, "Agent not found") from exc
         except PluginError as exc:
@@ -2868,11 +2950,86 @@ def create_app(
         }
 
     @app.get("/api/system/sdk-runtimes")
-    def list_sdk_runtimes() -> dict[str, Any]:
+    def list_sdk_runtimes(response: Response) -> dict[str, Any]:
+        response.headers["Cache-Control"] = "no-store"
         return {
             "default_provider_id": getattr(sdk_registry, "default_provider_id", None),
-            "items": sdk_registry.list(),
+            "items": ([sdk_display.get(provider_id) for provider_id in provider_ids] if sdk_display else sdk_registry.list()),
         }
+
+    def authentication_error(exc):
+        return HTTPException(404 if exc.code in {"runtime_not_found", "runtime_authentication_operation_not_found"} else 409,
+                             {"code": exc.code, "message": str(exc), "detail": exc.detail})
+
+    def authentication_request(request: Request):
+        origin = request.headers.get("origin")
+        if (request.headers.get("x-sapba-action") != "runtime-authentication"
+                or origin is not None and origin not in settings.local_ui_origins
+                or request.headers.get("sec-fetch-site") == "cross-site"):
+            raise HTTPException(403, {"code": "runtime_authentication_request_forbidden"})
+
+    @app.get("/api/system/sdk-runtimes/{provider_id}/authentication")
+    def get_authentication(provider_id: str, response: Response):
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return {"authentication": authentication.view(provider_id)}
+        except SDKManagerError as exc:
+            raise authentication_error(exc) from None
+
+    @app.put("/api/system/sdk-runtimes/workbuddy/service-site")
+    def save_workbuddy_service_site(payload: WorkBuddyServiceSiteUpdate, request: Request, response: Response):
+        authentication_request(request)
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            site = sdk_registry.save_workbuddy_site(payload.service_site, payload.expected_revision, payload.requestId)
+            return {"service_site_configuration": site}
+        except SDKManagerError as exc:
+            raise authentication_error(exc) from None
+
+    @app.post("/api/system/sdk-runtimes/{provider_id}/authentication/check")
+    async def check_authentication(provider_id: str, request: Request, response: Response):
+        authentication_request(request)
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            expected_site = request.headers.get("x-sapba-service-site-digest")
+            if provider_id == "workbuddy" and expected_site is not None and authentication._context(provider_id).get("service_site_digest") != expected_site:
+                raise SDKManagerError("Service site changed.", code="workbuddy_service_site_changed")
+            return {"authentication": await authentication.check(provider_id)}
+        except SDKManagerError as exc:
+            raise authentication_error(exc) from None
+
+    @app.post("/api/system/sdk-runtimes/{provider_id}/authentication/operations", status_code=202)
+    async def start_authentication(provider_id: str, payload: RuntimeAuthenticationOperation, request: Request):
+        authentication_request(request)
+        if payload.confirm_provider_id is not None and payload.confirm_provider_id != provider_id:
+            raise HTTPException(403, {"code": "runtime_authentication_confirmation_mismatch"})
+        if payload.action in {"logout", "switch_account"} and payload.confirm_provider_id != provider_id:
+            raise HTTPException(403, {"code": "runtime_authentication_confirmation_mismatch"})
+        try:
+            operation = await authentication.start(provider_id, payload.action, payload.requestId,
+                                                  confirmed=payload.confirm_provider_id == provider_id,
+                                                  service_site_digest=payload.service_site_digest)
+            return JSONResponse(status_code=202, headers={"Cache-Control": "no-store"},
+                                content={"operation_id": operation["operation_id"], "operation": operation})
+        except SDKManagerError as exc:
+            raise authentication_error(exc) from None
+
+    @app.get("/api/system/sdk-runtimes/{provider_id}/authentication/operations/{operation_id}")
+    def get_authentication_operation(provider_id: str, operation_id: str, response: Response):
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return {"operation": authentication.operation(provider_id, operation_id)}
+        except SDKManagerError as exc:
+            raise authentication_error(exc) from None
+
+    @app.post("/api/system/sdk-runtimes/{provider_id}/authentication/operations/{operation_id}/cancel")
+    async def cancel_authentication(provider_id: str, operation_id: str, request: Request, response: Response):
+        authentication_request(request)
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return {"operation": await authentication.cancel(provider_id, operation_id)}
+        except SDKManagerError as exc:
+            raise authentication_error(exc) from None
 
     @app.post("/api/system/sdk-runtimes/check")
     async def check_all_sdk_runtimes() -> dict[str, Any]:
@@ -2921,7 +3078,7 @@ def create_app(
             ) from exc
 
     @app.post("/api/system/sdk-runtimes/{provider_id}/enable")
-    def enable_sdk_runtime(provider_id: str) -> dict[str, Any]:
+    def enable_sdk_runtime(provider_id: str, request: Request) -> dict[str, Any]:
         try:
             set_enabled = getattr(sdk_registry, "set_enabled", None)
             if not callable(set_enabled):
@@ -2929,7 +3086,9 @@ def create_app(
                     "Runtime enablement is unavailable.",
                     code="runtime_enablement_unavailable",
                 )
-            return {"item": set_enabled(provider_id, True)}
+            item = set_enabled(provider_id, True)
+            request.state.sdk_control_result = (provider_id, item)
+            return {"item": item}
         except SDKManagerError as exc:
             status_code = 404 if exc.code == "runtime_not_found" else 409
             raise HTTPException(
@@ -2941,6 +3100,7 @@ def create_app(
     def disable_sdk_runtime(
         provider_id: str,
         payload: RuntimeDisableUpdate,
+        request: Request,
         x_sapba_action: str | None = Header(default=None),
     ) -> dict[str, Any]:
         if x_sapba_action != "runtime-disable":
@@ -2966,7 +3126,9 @@ def create_app(
                     "Runtime enablement is unavailable.",
                     code="runtime_enablement_unavailable",
                 )
-            return {"item": set_enabled(provider_id, False)}
+            item = set_enabled(provider_id, False)
+            request.state.sdk_control_result = (provider_id, item)
+            return {"item": item}
         except SDKManagerError as exc:
             status_code = 404 if exc.code == "runtime_not_found" else 409
             raise HTTPException(
@@ -3019,6 +3181,8 @@ def create_app(
                     "Runtime model checks are unavailable.",
                     code="runtime_model_check_unavailable",
                 )
+            if provider_id == "workbuddy" and payload.request_id is not None:
+                return await method(provider_id, payload.model_id, reasoning_effort=payload.reasoning_effort, request_id=payload.request_id)
             if payload.reasoning_effort is not None:
                 return await method(provider_id, payload.model_id, reasoning_effort=payload.reasoning_effort)
             return await method(provider_id, payload.model_id)

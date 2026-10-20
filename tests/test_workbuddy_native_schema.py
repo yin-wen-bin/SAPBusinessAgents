@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from sap_business_agents_platform import workbuddy_worker
+from sap_business_agents_platform.workbuddy_site import make_configuration, routing
 
 
 @pytest.mark.parametrize("scenario", ["structured", "missing", "legacy", "invalid_schema"])
@@ -40,8 +41,10 @@ def test_native_schema_options_and_terminal_output(monkeypatch, scenario):
     if scenario != "legacy":
         payload["output_schema"] = [] if scenario == "invalid_schema" else schema
     events = []
+    site = make_configuration("china", 1)
     run = workbuddy_worker.execute({"operation": "workflow_authoring.v2", "mode": "bounded",
-        "cli_path": "locked-cli", "snapshot": {"model": "hy4-preview"}, "payload": payload},
+        "cli_path": "locked-cli", "snapshot": {"model": "hy4-preview", **site},
+        "service_site_config": routing(site), "payload": payload},
         lambda kind, **data: events.append((kind, data)))
     if scenario in {"missing", "invalid_schema"}:
         with pytest.raises(ValueError, match="workbuddy_structured_output_missing" if scenario == "missing"
@@ -56,6 +59,7 @@ def test_native_schema_options_and_terminal_output(monkeypatch, scenario):
         assert not observed  # Reject before starting the SDK.
         return
     options = observed[0]
+    assert options.env["CODEBUDDY_INTERNET_ENVIRONMENT"] == "internal"
     expected = [] if scenario == "legacy" else ["StructuredOutput"]
     assert options.tools == options.allowed_tools == expected and options.setting_sources == []
     assert options.resume is None and options.persist_session is False
@@ -66,7 +70,10 @@ def test_native_schema_options_and_terminal_output(monkeypatch, scenario):
     else:
         assert json.loads(options.extra_args["json-schema"]) == schema
         assert options.system_prompt.startswith(payload["system_prompt"])
-        assert "then call StructuredOutput exactly once" in options.system_prompt
+        assert "exactly one successful StructuredOutput capture" in options.system_prompt
+        assert "A rejected or unsuccessful attempt is not a capture" in options.system_prompt
+        assert "existing SDK retry limits and signed deadline" in options.system_prompt
+        assert "A valid candidate alone is not a final native terminal" in options.system_prompt
     denied = asyncio.run(options.can_use_tool("unverified-native-tool", {}, None))
     assert denied.message == "tool_not_enabled_for_task"  # Schema grants no tool permission.
     bash = asyncio.run(options.can_use_tool("Bash", {}, None))

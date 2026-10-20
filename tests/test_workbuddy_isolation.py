@@ -12,19 +12,23 @@ from sap_business_agents_platform.workbuddy_environment import WorkBuddyEnvironm
 from sap_business_agents_platform.workbuddy_supervisor import WorkBuddySupervisor
 from sap_business_agents_platform.workbuddy_manager import WorkBuddyManager
 from sap_business_agents_platform.workbuddy_job import process_identity
+from sap_business_agents_platform.workbuddy_site import make_configuration
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def release(environment):
+    current = make_configuration("china", 1)
+    environment.mutate(lambda state: state.update(**current, authentication_site=current))
     key = "a" * 64
     directory = environment.root / "releases" / key
     directory.mkdir(parents=True)
     worker = directory / "worker.py"
     worker.write_bytes((ROOT / "tests/fixtures/workbuddy_protocol_worker.py").read_bytes())
     return {"environment_digest": key, "directory": str(directory), "worker": "worker.py",
+        "python": "worker.py", "cli": "worker.py",  # Toy inventory; not an installed SDK.
         "python_path": str(getattr(sys, "_base_executable", sys.executable)), "cli_path": "fixture-cli",
-        "files": {"worker.py": file_hash(worker)}, "sdk_version": "fixture", "cli_version": "fixture"}
+        "files": {"worker.py": file_hash(worker)}, "sdk_version": "fixture", "cli_version": "fixture", "service_site_contract": "1"}
 
 
 def supervisor(tmp_path, monkeypatch):
@@ -32,7 +36,7 @@ def supervisor(tmp_path, monkeypatch):
     value = release(environment)
     monkeypatch.setattr(environment, "release", lambda *_: value)
     monkeypatch.setattr(environment, "assert_operation", lambda *_args, **_kwargs: value)
-    return WorkBuddySupervisor(environment), {"provider_id": "workbuddy", "environment_digest": value["environment_digest"], "reasoning_effort": None}
+    return WorkBuddySupervisor(environment), {"provider_id": "workbuddy", "environment_digest": value["environment_digest"], "reasoning_effort": None, **make_configuration("china", 1)}
 
 
 def test_platform_dependency_and_import_boundaries():
@@ -158,8 +162,8 @@ def test_operations_modes_model_identity_and_old_environment_binding(tmp_path, m
     manager = WorkBuddyManager(tmp_path)
     value = release(manager.environment)
     monkeypatch.setattr(manager.environment, "release", lambda key=None: {**value, "environment_digest": key or value["environment_digest"]})
-    binding = {"provider_id": "workbuddy", "environment_digest": "a" * 64, "reasoning_effort": None, "model": "route", "operation_capabilities": {}}
-    with pytest.raises(WorkBuddyError, match="not validated"):
+    binding = {"provider_id": "workbuddy", "environment_digest": "a" * 64, "reasoning_effort": None, "model": "route", "operation_capabilities": {}, **make_configuration("china", 1)}
+    with pytest.raises(WorkBuddyError, match="admission_migration_required"):
         manager.environment.assert_operation(binding, "review_workflow")
     with pytest.raises(WorkBuddyError, match="restricted_unverified"):
         manager.environment.assert_operation(binding, "review_workflow", mode="restricted")
@@ -176,8 +180,8 @@ def test_unverified_operations_cannot_enable_even_with_checked_model(tmp_path, m
     monkeypatch.setattr(manager.environment, "release", lambda *_: value)
     manager.environment.mutate(lambda state: state.update(environment_digest="a" * 64, authenticated=True,
         authentication_environment="a" * 64, default_model_id="model", models={"model": {"compatible": True, "environment_digest": "a" * 64}}))
-    assert "workbuddy_operation_validation_required" in manager.snapshot()["blockers"]
-    with pytest.raises(Exception, match="operation validation"):
+    assert "workbuddy_admission_migration_required" in manager.snapshot()["blockers"]
+    with pytest.raises(Exception, match="SDK integration"):
         manager.set_enabled(True)
 
 
@@ -222,13 +226,18 @@ def test_queue_capacity_is_acquired_before_execution_clock(tmp_path, monkeypatch
 
 def test_capability_validation_requires_owned_live_job(tmp_path, monkeypatch):
     from sap_business_agents_platform.runtime_policy import ORCHESTRATION_VERSION, orchestration_digest
-    manager = WorkBuddyManager(tmp_path)
-    binding = {"provider_id": "workbuddy", "environment_digest": "a" * 64}
+    from tests.test_workbuddy_qualification import manager_fixture
+    from sap_business_agents_platform.workbuddy_qualification import binding as qualification_binding
+    manager, installed = manager_fixture(tmp_path)
+    binding = manager.runtime_snapshot(require_enabled=False)
     path = manager.environment.root / "jobs" / (digest("case") + ".json")
     job = {"status": "completed", "cleanup_complete": True, "operation": "review_workflow",
-           "environment_digest": "a" * 64, "runtime_digest": digest(binding),
+           "environment_digest": installed["environment_digest"], "runtime_digest": digest(binding),
            "permission_mode": "bounded", "validation_job": True,
-           "orchestration_version": ORCHESTRATION_VERSION, "orchestration_digest": orchestration_digest("review_workflow")}
+           "orchestration_version": ORCHESTRATION_VERSION, "orchestration_digest": orchestration_digest("review_workflow"),
+           "qualification_binding": qualification_binding(binding, installed, "review_workflow", "bounded"),
+           "result_metadata": {"structured_terminal": True, "actual_model": binding["actual_model"],
+                               "identity_source": binding["model_identity_source"]}}
     evidence = {"platform_contract_passed": True, "kind": "live_validation"}
     atomic_json(path, {**job, "validation_job": False})
     with pytest.raises(Exception, match="complete contract"):
@@ -237,9 +246,9 @@ def test_capability_validation_requires_owned_live_job(tmp_path, monkeypatch):
     with pytest.raises(Exception, match="complete contract"):
         manager.record_operation_validation(binding, "review_workflow", job_id="case", permission_modes=["trusted_local"], evidence=evidence)
     manager.record_operation_validation(binding, "review_workflow", job_id="case", permission_modes=["bounded"], evidence=evidence)
-    assert manager.capabilities("a" * 64)["review_workflow"]["status"] == "validated"
-    assert "plan" not in manager.capabilities("a" * 64)
-    assert manager.capabilities("a" * 64)["author_draft"]["status"] == "unverified"
+    assert manager.capabilities(installed["environment_digest"])["review_workflow"]["status"] == "validated"
+    assert "plan" not in manager.capabilities(installed["environment_digest"])
+    assert manager.capabilities(installed["environment_digest"])["author_draft"]["status"] == "unverified"
 
 
 def test_model_refresh_and_probes_do_not_write_codex_configuration(tmp_path, monkeypatch):
@@ -259,8 +268,10 @@ def test_model_refresh_and_probes_do_not_write_codex_configuration(tmp_path, mon
     manager.workbuddy.environment.mutate(lambda state: state.update(environment_digest=value["environment_digest"],
         authenticated=True, authentication_environment=value["environment_digest"]))
     monkeypatch.setattr(manager.workbuddy.environment, "release", lambda *_: value)
+    from tests.workbuddy_integration_fakes import install_certificate, probe_result
+    install_certificate(manager.workbuddy, value)
     async def fake_probe(**kwargs):
-        return {"text": '{"status":"ok"}', "actual_model": "concrete-model"}
+        return await probe_result(manager.workbuddy, kwargs)
     monkeypatch.setattr(manager.workbuddy.supervisor, "run", fake_probe)
     asyncio.run(manager.refresh_models("workbuddy"))
     asyncio.run(manager.check_model("workbuddy", "route"))
@@ -332,7 +343,7 @@ def test_validation_scope_is_exact_and_does_not_escape_to_other_operations(tmp_p
 def verified_binding(owner, binding):
     value = owner.environment.release(binding["environment_digest"])
     check = {"compatible": True, "environment_digest": binding["environment_digest"], "check_digest": "checked-model",
-        "actual_model": "fixture-model", "identity_known": True, "model_identity_source": "assistant_message"}
+        "actual_model": "fixture-model", "identity_known": True, "model_identity_source": "assistant_message", **make_configuration("china", 1)}
     owner.environment.mutate(lambda state: state.update(authenticated=True,
         authentication_environment=binding["environment_digest"], models={"fixture-model": check}))
     return {**binding, "model": "fixture-model", "version": value["sdk_version"], "cli_version": value["cli_version"],

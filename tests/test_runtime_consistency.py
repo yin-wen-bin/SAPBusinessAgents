@@ -104,6 +104,55 @@ def test_shared_role_decoder_rejects_unknown_document_references(native):
         "constraint": "known_document_reference"}]
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("known_reference", [False, True])
+def test_shared_role_decoder_checks_actual_planner_document_list(native, wrapped, known_reference):
+    import json
+    from sap_business_agents_platform.runtime_prompts import ROLE_MATCHING_OUTPUT_SCHEMA, _decode_role_matching_output
+    from sap_business_agents_platform.runtime_role_contract import COLLECTIONS, canonical_output
+    documents = [{"document_id": "known", "chunks": [{"chunk_id": "registered"}]}]
+    analysis = {name: [] for name in COLLECTIONS}
+    analysis["document_issues"] = []
+    analysis["operations"] = [{"operation_id": "one", "evidence_refs": [{
+        "document_id": "known", "chunk_id": "registered" if known_reference else "unregistered"}]}]
+    envelope = {"analysis_json": analysis if native else json.dumps(analysis),
+                "summary_zh": "材料", "summary_en": "Material"}
+    if native:
+        envelope = canonical_output(envelope, ROLE_MATCHING_OUTPUT_SCHEMA, operation="analyze_role_matching")
+    output = SimpleNamespace(final_response=json.dumps(envelope))
+    context = {"documents": documents} if wrapped else documents
+    if known_reference:
+        decoded = _decode_role_matching_output(output, context)
+        assert decoded["operations"] == analysis["operations"]
+        assert decoded["summary"] == {"zh": "材料", "en": "Material"}
+    else:
+        with pytest.raises(RuntimeContractError, match="role_matching_evidence_ref_invalid") as rejected:
+            _decode_role_matching_output(output, context)
+        assert rejected.value.detail["validation_issues"] == [{
+            "code": "role_matching_evidence_ref_invalid", "path": "/operations/0/evidence_refs",
+            "constraint": "known_document_reference"}]
+
+
+@pytest.mark.parametrize("provider", ["codex", "workbuddy"])
+def test_shared_role_orchestration_accepts_nonempty_material_list(provider, monkeypatch, tmp_path):
+    from sap_business_agents_platform.codex_planner import CodexPlanner
+    from sap_business_agents_platform.workbuddy_planner import WorkBuddyPlanner
+    from tests.runtime_trace_fixture import TraceClient, cases
+    planner_type = CodexPlanner if provider == "codex" else WorkBuddyPlanner
+    planner = planner_type(tmp_path, model="offline")
+    trace = []
+    planner._driver = SimpleNamespace(client=lambda **kwargs: TraceClient(trace, "analyze_role_matching", **kwargs))
+    arguments = cases()["analyze_role_matching"]
+    arguments["documents"] = [{"document_id": "known", "chunks": [{"chunk_id": "registered", "text": "Non-SAP work"}]}]
+    result = asyncio.run(planner.analyze_role_matching(**arguments))["analysis"]
+    assert result["operations"] == []
+    assert result["catalog_evaluation"]["agent_catalog_complete"]
+    assert result["catalog_evaluation"]["matching_complete"]
+    assert result["catalog_evaluation"]["consolidation_complete"]
+    assert len([item for item in trace if item["call"] == "run"]) == 3
+
+
 def test_worker_startup_uses_original_deadline_and_safe_timeout(tmp_path, monkeypatch):
     from tests.test_workbuddy_isolation import supervisor
     from sap_business_agents_platform.workbuddy_environment import WorkBuddyError

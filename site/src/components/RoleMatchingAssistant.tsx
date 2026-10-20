@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { Locale } from "../lib/types";
 import RoleConsolidationStatus from "./RoleConsolidationStatus";
+import RoleRuntimeDiagnostic from "./RoleRuntimeDiagnostic";
 
 type Props = { apiBase: string; locale: Locale; workflowsPath: string };
 type Session = {
@@ -8,7 +9,8 @@ type Session = {
   status: string;
   phase: string;
   current_revision: number;
-  error?: { code?: string; message?: string } | null;
+  runtime_progress?: Record<string, unknown> | null;
+  error?: { code?: string; message?: string; detail?: Record<string, unknown> } | null;
   queue_position?: number | null;
   turns?: Array<{ turn: number; kind: string; status: string; message?: string | null; result_revision?: number | null; rematch_mode?: string | null; decision?: Record<string, any> }>;
 };
@@ -110,7 +112,9 @@ export default function RoleMatchingAssistant({ apiBase, locale, workflowsPath }
     const source = new EventSource(`${apiBase}/api/role-matching/sessions/${session.session_id}/events`);
     const refresh = () => load(session.session_id).catch((reason) => setError(String(reason)));
     source.onmessage = refresh;
-    ["session_queued", "scan_started", "extraction_completed", "understanding_started", "matching_started", "workflow_compilation_started", "analysis_completed", "analysis_failed", "session_cancelled"].forEach((name) => source.addEventListener(name, refresh));
+    ["session_queued", "scan_started", "extraction_completed", "understanding_started", "matching_started", "workflow_compilation_started", "analysis_completed", "analysis_failed", "session_cancelled",
+      "role_stage_started", "role_stage_finished", "role_stage_failed", "agent_runtime_activity",
+      "agent_runtime_connected", "agent_runtime_query_submitted", "agent_runtime_sdk_closing", "agent_runtime_sdk_closed"].forEach((name) => source.addEventListener(name, refresh));
     source.onerror = () => { source.close(); refresh(); };
     return () => source.close();
   }, [apiBase, load, session?.session_id, session?.status]);
@@ -205,7 +209,11 @@ export default function RoleMatchingAssistant({ apiBase, locale, workflowsPath }
     </div>}
     {session && <>
       <div className="role-progress role-card"><div><strong>{copy.progress}</strong><code>{session.session_id}</code></div><div className="role-progress-track"><span className={active ? "active" : ""}></span></div><p>{(copy.phases as any)[session.phase] || session.phase}{session.queue_position ? ` · #${session.queue_position}` : ""}</p>{active && <button type="button" className="secondary" onClick={() => fetch(`${apiBase}/api/role-matching/sessions/${session.session_id}/cancel`, { method: "POST" }).then(() => load(session.session_id))}>{copy.cancel}</button>}</div>
-      {session.error && <div className="role-error"><strong>{copy.error}</strong><p>{session.error.message || session.error.code}</p></div>}
+      {session.error && <RoleRuntimeDiagnostic locale={locale} code={session.error.code} detail={session.error.detail} />}
+      {session.runtime_progress && <details className="role-runtime-progress"><summary>{locale === "zh" ? "当前模型阶段与安全进展" : "Current model stage and safe progress"}</summary>
+        <p>{String(session.runtime_progress.phase ?? "—")} · {locale === "zh" ? "预算" : "Budget"}: {String(session.runtime_progress.budget_seconds ?? "—")} s</p>
+        <p>{locale === "zh" ? "已确认耗时" : "Confirmed elapsed"}: {typeof session.runtime_progress.elapsed_ms === "number" ? Math.round(session.runtime_progress.elapsed_ms / 1000) : "—"} s</p>
+        <pre>{JSON.stringify(session.runtime_progress, null, 2)}</pre></details>}
       {revision && <>
         <section className="role-result"><h3>{copy.timeline}</h3><ol className="role-timeline">{(session.turns || []).map((turn) => <li key={turn.turn}><strong>{copy.turn} {turn.turn} · {turn.rematch_mode || turn.kind}</strong><span>{turn.status}{turn.result_revision ? ` · ${copy.revision} ${turn.result_revision}` : ""}</span>{turn.message && <p>{turn.message}</p>}{turn.decision?.change_summary && <small>{copy.changes}: {Object.entries(turn.decision.change_summary).map(([key, value]: any) => `${key} +${value.added}/-${value.removed}/~${value.changed}`).join(" · ")}</small>}</li>)}</ol></section>
         <div className="role-metrics"><div><strong>{metrics.roles}</strong><span>{copy.roles}</span></div><div><strong>{metrics.processes}</strong><span>{copy.processes}</span></div><div><strong>{metrics.operations}</strong><span>{copy.operations}</span></div><div><strong>{metrics.matches}</strong><span>{copy.matches}</span></div></div>

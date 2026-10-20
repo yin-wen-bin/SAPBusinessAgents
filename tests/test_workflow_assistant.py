@@ -188,6 +188,49 @@ def test_reference_and_trusted_mode_guards(tmp_path):
         service.assistant.submit(draft.draft_id, payload(references=[{"kind": "workflow_field", "draftId": draft.draft_id, "revision": 1, "path": "/bad"}]))
 
 
+@pytest.mark.parametrize("mutation,code,path", [
+    (lambda w: w.update(references=[]), "workflow_candidate_contract_invalid", "/references"),
+    (lambda w: w["description"].update(zh="关联修改"), "workflow_change_scope_violation", "/description/zh"),
+])
+def test_candidate_rejection_preserves_revision_qualification_and_bound_scope(tmp_path, mutation, code, path):
+    service, author, draft = setup(tmp_path)
+    draft.validation = {"valid": True, "verdict": "pass"}
+    service.store.save_workflow_draft(draft)
+    author.action, author.mutate = "revise", mutation
+    refs = [{"kind": "workflow_field", "draftId": draft.draft_id, "revision": 1, "path": "/title"}]
+    body = payload(intent="revise", references=refs, allowedChangePaths=["/title"])
+    async def check():
+        service.assistant.submit(draft.draft_id, body)
+        service.assistant.submit(draft.draft_id, body)
+        await finished(service.assistant)
+    asyncio.run(check())
+    current = service.get(draft.draft_id)
+    assert current.workflow == draft.workflow and current.revision == 1 and current.validation == draft.validation
+    assert len(service.revisions(draft.draft_id)) == 1 and len(author.calls) == 1
+    round_ = state(current)["rounds"][0]
+    assert round_["failure_code"] == code and round_["allowed_change_paths"] == ["/title"]
+    assert round_["validation_issues"][0]["path"] == path
+    assert author.calls[0]["allowed_paths"] == ["/title"]
+    with pytest.raises(WorkflowDraftError, match="different content"):
+        service.assistant.submit(draft.draft_id, {**body, "allowedChangePaths": None})
+
+
+def test_scoped_queue_stale_reference_does_not_migrate_authorization(tmp_path):
+    service, author, draft = setup(tmp_path)
+    author.action = "revise"
+    author.mutate = lambda w: w["title"].update(zh="改名")
+    refs = [{"kind": "workflow_field", "draftId": draft.draft_id, "revision": 1, "path": "/title"}]
+    async def check():
+        author.block = asyncio.Event()
+        service.assistant.submit(draft.draft_id, payload(intent="revise", references=refs, allowedChangePaths=["/title"]))
+        service.assistant.submit(draft.draft_id, payload("r2", "revise", references=refs, allowedChangePaths=["/title"]))
+        author.block.set()
+        await finished(service.assistant)
+    asyncio.run(check())
+    assert [r["status"] for r in state(service.get(draft.draft_id))["rounds"]] == ["completed", "needs_review"]
+    assert len(author.calls) == 1
+
+
 def test_timeout_cleanup_failure_retains_blocker(tmp_path):
     service, author, draft = setup(tmp_path)
     async def unsafe(**kwargs):
