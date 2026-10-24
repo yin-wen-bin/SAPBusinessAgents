@@ -12,14 +12,14 @@ import AgentSampleProgress, { SampleProgressSummary } from "./AgentSampleProgres
 import AgentTrialProgress, { TrialProgressSummary } from "./AgentTrialProgress";
 import AgentFeedbackProgress, { FeedbackProgressSummary } from "./AgentFeedbackProgress";
 import AgentPublicationProgress, { PublicationProgressSummary } from "./AgentPublicationProgress";
-import { AcceptanceSummary, AgentAcceptanceProgress, AgentAcceptanceSetup } from "./AgentAcceptance";
+import { AgentAcceptanceProgress, AgentAcceptanceSetup } from "./AgentAcceptance";
+import { useAcceptanceRuntimePreview } from "./useAcceptanceRuntimePreview";
+import AcceptanceOverview from "./AcceptanceOverview";
 import AgentDefinitionDetails from "./AgentDefinitionDetails";
-import AcceptanceReadiness from "./AcceptanceReadiness";
 import type { AcceptanceCaseDraft } from "./AgentAcceptance";
 import { sampleFieldOptions } from "../lib/agentDraft";
 import "../styles/agent-draft.css";
 import "../styles/assistant-compact.css";
-
 type Props = { initialDraft: any; apiBase: string; locale: Locale; runPath: string; initialStep?: string; onBack: () => void; onPublished: (result: any) => void; onActivatePublished?: (result: any) => void };
 type Step = typeof draftStepNames[number];
 type DraftAnnotation = NonNullable<FeedbackRequest["annotations"]>[number];
@@ -31,7 +31,7 @@ async function call(url: string, data?: any, method = "POST", signal?: AbortSign
   const value = await response.json().catch(() => { throw Object.assign(new Error("response_invalid"), { uncertain: true }); });
   if (!response.ok) {
     const detail = value.detail;
-    throw Object.assign(new Error(typeof detail === "object" ? detail?.code || detail?.message || `HTTP ${response.status}` : detail || `HTTP ${response.status}`), { detail, status: response.status, uncertain: response.status >= 500 });
+    throw Object.assign(new Error(typeof detail === "object" ? detail?.code || detail?.message || `HTTP ${response.status}` : detail || `HTTP ${response.status}`), { detail, status: response.status, uncertain: response.status >= 500 && detail?.accepted !== false });
   }
   return value;
 }
@@ -74,8 +74,11 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const pendingFeedbackRequest = useRef<FeedbackRequest | null>(null);
   // User-selected product default for NEW Agent-draft revisions, not a server-side bypass.
   const workbuddyTrusted = true;
-  const [acceptanceRuntimeModels, setAcceptanceRuntimeModels] = useState<any[]>([]);
-  const [acceptanceRuntimeModel, setAcceptanceRuntimeModel] = useState("");
+  const acceptanceRuntimeInfo = useAcceptanceRuntimePreview(`${apiBase}/api/authoring/agents/${encodeURIComponent(draft.draft_id)}`, draft.draft_id, draft.revision, step === "acceptance");
+  const [acceptanceCaseErrors, setAcceptanceCaseErrors] = useState<Record<number, Record<string, string>>>({});
+  const [acceptanceSetupError, setAcceptanceSetupError] = useState("");
+  const acceptanceSubmission = useRef<{ body: any; uncertain: boolean } | null>(null);
+  const acceptanceCasesBinding = useRef("");
   const feedbackAfterClose = useRef<null | (() => void)>(null);
   const [identityInput, setIdentityInput] = useState(initialDraft.agent_id || "");
   const [identityCheck, setIdentityCheck] = useState<{ agent_id: string; revision: number; available: boolean } | null>(null);
@@ -92,6 +95,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
   const sampleSubmitting = useRef(false);
   const pendingSampleRequest = useRef<any>(null);
   const sampleInputsRef = useRef<HTMLDivElement>(null);
+  const sampleManualField = useRef<string | null>(null);
   const sampleReviewFocus = useRef(false);
   const [confirmedSample, setConfirmedSample] = useState("");
   const [discoveryInputHash, setDiscoveryInputHash] = useState("");
@@ -150,6 +154,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       input_branch_ambiguous: ["请先确定输入分支", "Select the input branch first"],
       skill_requires_input: ["Skill 需要此参数，不能用它反向查找", "A Skill requires this input and cannot discover it"],
       mapping_missing: ["定义中缺少可核对的读取字段映射", "No verifiable read-field mapping is declared"],
+      range_boundary: ["查询范围边界需手工指定，不能从样本记录反推", "Enter the query boundary manually; a sample record cannot determine it"],
       cross_source_scope_unproven: ["已填条件分布在不同来源，当前选样无法证明关联范围；请手工填写", "Supplied scope spans different sources; discovery cannot prove the relationship. Enter manually"],
       declared_odata_relationship: ["沿已声明的关系核对全部条件后选样", "Discover after verifying all conditions through declared relationships"],
       private_or_unknown_input: ["敏感或未声明参数需手工填写", "Enter sensitive or undeclared input manually"],
@@ -562,7 +567,7 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     setSamplePreflightBusy(true); setSamplePreflightError(false);
     try {
       const result = await call(`${base}/sample-discovery/preflight`, {
-        expectedRevision: draft.revision, input: publicValues(schema, input),
+        expectedRevision: draft.revision, input: publicValues(schema, input), prepareRuntime: true, runtimePolicy: "system_default",
       });
       setSampleReadiness(result);
       const allowed = sampleFieldOptions(schema, locale, input).filter((field) => !field.disabled && field.required
@@ -583,14 +588,14 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     setDiscovery({ status: "starting", phase: "starting", timeout_seconds: 600 });
     return action(async () => {
     setConfirmedSample(""); setDiscoveryInputHash("");
-    const fingerprint = discoveryFingerprint(draft.revision, { input: publicValues(schema, input), selectedFields: selected.sort() });
+    const fingerprint = discoveryFingerprint(draft.revision, { input: publicValues(schema, input), selectedFields: selected.sort(), runtimePolicy: "system_default" });
     const pending = pendingSampleRequest.current;
     if (pending && pending.fingerprint !== fingerprint) {
       setDiscovery({ status: "start_uncertain", codes: ["sample_request_scope_changed"] });
       sampleSubmitting.current = false;
       return;
     }
-    const payload = pending?.payload || { expectedRevision: draft.revision, input: publicValues(schema, input), selectedFields: selected, requestId: crypto.randomUUID() };
+    const payload = pending?.payload || { expectedRevision: draft.revision, input: publicValues(schema, input), selectedFields: selected, runtimePolicy: "system_default", requestId: crypto.randomUUID() };
     pendingSampleRequest.current = { fingerprint, payload };
     try {
       if (pending) {
@@ -606,7 +611,10 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     } catch (failure: any) {
       const uncertain = failure.uncertain || !failure.status;
       if (!uncertain) pendingSampleRequest.current = null;
-      setDiscovery({ status: uncertain ? "start_uncertain" : "start_failed", codes: [uncertain ? "sample_start_unconfirmed" : "sample_discovery_start_failed"] });
+      setDiscovery(uncertain ? { status: "start_uncertain", codes: ["sample_start_unconfirmed"] }
+        : failure.detail?.detail?.sample_discovery || { status: "start_failed", execution_started: false,
+            runtime_binding_source: "system_default",
+            codes: [typeof failure.detail?.code === "string" ? failure.detail.code : "sample_discovery_start_failed"] });
     } finally { sampleSubmitting.current = false; }
     });
   };
@@ -856,17 +864,20 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
       setError(tr("取消请求尚未确认，正在继续恢复任务状态。", "Cancellation was not confirmed. Continuing to recover the task status."));
     }
   };
+  const readAcceptanceRuntime = async () => {
+    await acceptanceRuntimeInfo.read();
+  };
   const openAcceptance = () => {
-    const first: AcceptanceCaseDraft = {
-      caseId: "case-1", source: "current",
-      input: acceptanceDefaultInput, sensitiveInputs: { ...secrets },
-    };
-    setAcceptanceCases([first]); setAcceptanceSetupOpen(true); setError("");
-    setAcceptanceRuntimeModel("");
-    if (draft.formal_acceptance_runtime?.provider_id === "workbuddy") {
-      call(`${apiBase}/api/system/sdk-runtimes/workbuddy/models`).then((result) => setAcceptanceRuntimeModels(result.items || []))
-        .catch(() => { setAcceptanceRuntimeModels([]); setError(tr("无法读取已验证模型，请检查系统配置。", "Cannot load verified models; check system settings.")); });
+    if (acceptanceSubmission.current?.uncertain) { setAcceptanceSetupOpen(true); return; }
+    const binding = `${draft.draft_id}:${draft.revision}`;
+    if (acceptanceCasesBinding.current !== binding || !acceptanceCases.length) {
+      setAcceptanceCases([{ uiKey: crypto.randomUUID(), caseId: "case-1", source: "current",
+        input: acceptanceDefaultInput, sensitiveInputs: { ...secrets } }]);
+      acceptanceCasesBinding.current = binding;
+      setAcceptanceCaseErrors({});
     }
+    setAcceptanceSetupOpen(true); setError(""); setAcceptanceSetupError("");
+    void acceptanceRuntimeInfo.read(false);
   };
   const findAcceptanceSample = (index: number) => {
     const selected = acceptanceCases[index];
@@ -894,35 +905,54 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     setAcceptanceSetupOpen(true);
   };
   const startAcceptance = () => {
-    if (!validationActionable || !acceptanceCases.length) return;
-    if (draft.formal_acceptance_runtime?.provider_id === "workbuddy" && !acceptanceRuntimeModel) {
-      setError(tr("请选择身份已确认的验收模型。", "Choose an identity-verified acceptance model.")); return;
+    if (acceptanceSubmission.current?.uncertain) {
+      return action(async () => {
+        const items = await call(`${base}/acceptance-campaigns`);
+        const recovered = (Array.isArray(items) ? items : items.items || []).find((item: any) => item.request_id === acceptanceSubmission.current?.body.requestId);
+        if (!recovered) { setAcceptanceSetupError(tr("提交结果仍未知，请核对验收历史；不会自动重复提交。", "Submission remains unknown. Check acceptance history; no request is resubmitted.")); return; }
+        acceptanceSubmission.current = null; setAcceptanceCampaign(recovered); setAcceptanceSetupOpen(false); setAcceptanceProgressOpen(true);
+      });
     }
-    for (const item of acceptanceCases) {
-      const errors = validateDraftInput(schema, item.input, item.sensitiveInputs, locale);
-      if (Object.keys(errors).length) {
-        setError(tr(`验收案例“${item.caseId}”的参数不完整或格式错误。`, `Acceptance case “${item.caseId}” has incomplete or invalid inputs.`));
-        return;
-      }
+    if (!validationActionable || !acceptanceCases.length) return;
+    if (!acceptanceRuntimeInfo.ready || acceptanceRuntimeInfo.runtime?.available === false) {
+      setAcceptanceSetupError(tr("请先在系统配置核对默认模型的认证、兼容检查及具体身份。", "Verify the default model authentication, compatibility and concrete identity in system settings.")); return;
+    }
+    const errors = Object.fromEntries(acceptanceCases.map((item, index) => [index, validateDraftInput(schema, item.input, item.sensitiveInputs, locale)]));
+    setAcceptanceCaseErrors(errors);
+    if (Object.values(errors).some(value => Object.keys(value).length)) {
+      setAcceptanceSetupError(tr("请核对已展开案例中的参数错误。", "Review the highlighted input errors.")); return;
     }
     const ids = acceptanceCases.map((item) => item.caseId);
     if (new Set(ids).size !== ids.length || ids.some((value) => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(value))) {
-      setError(tr("案例名称必须唯一，并使用字母、数字、下划线或连字符。", "Case names must be unique and use letters, numbers, underscores or hyphens."));
+      const nameErrors: Record<number, Record<string, string>> = {};
+      ids.forEach((value, index) => { if (ids.filter(id => id === value).length > 1 || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(value)) nameErrors[index] = { _caseId: tr("案例名称必须唯一，且仅含字母、数字、下划线或连字符。", "Use a unique case name with letters, digits, underscores or hyphens.") }; });
+      setAcceptanceCaseErrors(nameErrors);
+      setAcceptanceSetupError(tr("案例名称必须唯一，并使用字母、数字、下划线或连字符。", "Case names must be unique and use letters, numbers, underscores or hyphens."));
       return;
     }
-    setAcceptanceSetupOpen(false); setAcceptanceProgressOpen(true);
+    if (acceptanceSubmission.current) return;
+    acceptanceSubmission.current = { uncertain: false, body: { expectedRevision: draft.revision, requestId: crypto.randomUUID(), expectedRuntimeDigest: acceptanceRuntimeInfo.digest,
+      cases: acceptanceCases.map(item => ({ caseId: item.caseId, input: item.input, sensitiveInputs: item.sensitiveInputs })) } };
+    setAcceptanceSetupError(""); setAcceptanceSetupOpen(false); setAcceptanceProgressOpen(true);
     setAcceptanceConnectionError(false);
-    setAcceptanceCampaign({ status: "starting", phase: "preparing", cases: acceptanceCases.map((item) => ({ case_id: item.caseId, status: "queued", phase: "preparing" })), estimated_max_seconds: acceptanceCases.length * ((manifest.validation?.acceptanceMode === "three_stage" ? 1800 : 0) + 600 + 600 + 120), started_at: new Date().toISOString() });
+    setAcceptanceCampaign({ status: "starting", phase: "preparing", cases: acceptanceCases.map((item) => ({ case_id: item.caseId, status: "queued", phase: "preparing" })), created_at: new Date().toISOString() });
     return action(async () => {
       try {
-        const value = await call(`${base}/acceptance-campaigns`, {
-          expectedRevision: draft.revision, requestId: crypto.randomUUID(),
-          ...(draft.formal_acceptance_runtime?.provider_id === "workbuddy" ? { runtimeModelId: acceptanceRuntimeModel } : {}),
-          cases: acceptanceCases.map((item) => ({ caseId: item.caseId, input: item.input, sensitiveInputs: item.sensitiveInputs })),
-        });
+        const value = await call(`${base}/acceptance-campaigns`, acceptanceSubmission.current!.body);
+        acceptanceSubmission.current = null;
         setSecrets({}); setAcceptanceCampaign(value); setOperation({ status: value.status || "queued", kind: "formal_acceptance", detail: { campaign_id: value.campaign_id } });
       } catch (failure) {
         const code = String((failure as any)?.detail?.code || (failure as any)?.message || "agent_acceptance_internal_error");
+        setAcceptanceProgressOpen(false); setAcceptanceSetupOpen(true);
+        if ((failure as any)?.uncertain || !(failure as any)?.status) {
+          if (acceptanceSubmission.current) acceptanceSubmission.current.uncertain = true;
+          setAcceptanceSetupError(tr("提交结果未知，请核对验收历史；再次点击仅查询原请求，不会重复提交。", "Submission is unknown. Another click only checks the original request; it does not resubmit.")); return;
+        }
+        acceptanceSubmission.current = null;
+        setAcceptanceSetupError(code === "agent_acceptance_runtime_changed" ? tr("系统默认配置已变化，请核对更新后的使用信息，再重新提交。", "The system default changed. Review the updated selection and submit again.") : code === "startup_maintenance_pending" ? tr("系统正在更新，验收尚未受理。参数已保留，请在更新完成后提交。", "The system is updating; acceptance was not accepted. Inputs are retained. Submit after the update finishes.") : tr(`验收尚未受理，请核对系统配置或案例参数。原因：${code}`, `Acceptance was not accepted. Check settings or case inputs. Reason: ${code}`));
+        if (code === "agent_acceptance_runtime_changed") {
+          await readAcceptanceRuntime();
+        }
         setAcceptanceCampaign((current: any) => ({ ...current, status: "interrupted", phase: "completed", report: { verdict: "NOT_TESTED", error: { code } } }));
         throw failure;
       }
@@ -1105,16 +1135,21 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
         {step === "trial" && <section className="agent-run-panel"><h2>{stepLabels.trial}</h2><p>{tr("填写业务参数，使用已保存草稿执行只读查询。试运行不会修改默认值，也不代表正式验收通过。", "Enter business parameters to run the saved draft read-only. A trial does not change defaults or establish formal acceptance.")}</p><form onSubmit={(event) => { event.preventDefault(); void runTrial(); }} noValidate><AgentDraftInputs schema={schema} values={input} onChange={(next) => { setInput(next); setFieldErrors({}); setConfirmedSample(""); if (hasVerifiedSample && Object.entries(discovery.input || {}).every(([key, value]) => discoveryFingerprint(0, { value }) === discoveryFingerprint(0, { value: next[key] }))) setDiscoveryInputHash(discoveryFingerprint(draft.revision, next)); }} secrets={secrets} onSecrets={setSecrets} locale={locale} errors={fieldErrors} disabled={locked || dirty} /><div className="draft-discovery" ref={sampleInputsRef} tabIndex={-1}><label className="draft-checkbox"><input type="checkbox" checked={autoDiscover} disabled={!validationActionable} onChange={(event) => { const enabled = event.target.checked; setAutoDiscover(enabled); setConfirmedSample(""); if (enabled) chooseSampleFields(); else { setInput((current) => clearDiscoveredInput(current, autoFilledRef.current)); setAutoFilled({}); setDiscoveryInputHash(""); setFieldErrors({}); } }} />{tr("自动查找验证数据", "Find validation data automatically")}</label>{autoDiscover && <><p>{tr("保留已填范围，有界读取真实 SAP 样本；回填后请确认。敏感参考号请手工填写。", "Keep the entered scope and read bounded live SAP samples. Confirm proposed values; enter sensitive references manually.")}</p><button type="button" className="agent-secondary-action" disabled={!validationActionable} onClick={chooseSampleFields}>{tr(discovery ? "重新查找样本" : "查找样本", discovery ? "Find another sample" : "Find sample")}</button>{discovery && <div><SampleProgressSummary value={discovery} locale={locale} />{hasVerifiedSample && <label className="draft-checkbox"><input type="checkbox" disabled={!validationActionable || discoveryInputHash !== sampleFingerprint} checked={sampleConfirmed} onChange={(event) => confirmSample(event.target.checked)} />{tr("已核对回填参数，确认用于本次操作", "I reviewed the proposed parameters and confirm this use")}</label>}</div>}</>}</div><div className="agent-actions"><button type="submit" disabled={!validationActionable || (requiresSampleConfirmation && !sampleConfirmed)}>{tr("执行只读试运行", "Run read-only trial")}</button></div></form>{trialRunId ? <div className="draft-trial-history"><p>{tr("最近一次试运行", "Latest trial")}: {draftStatus(run?.status || trial?.status, locale)}{(trial?.revision ?? trial?.draft_revision) !== undefined && (trial?.revision ?? trial?.draft_revision) !== draft.revision && <strong> · {tr("历史修订结果", "Historical revision result")}</strong>}</p>{run && !draftTerminal.has(run.status) && <><TrialProgressSummary run={run} trial={trial} locale={locale} connectionError={trialConnectionError} /><button className="agent-secondary-action" onClick={() => setTrialDialogOpen(true)}>{tr("查看进度", "View progress")}</button></>}{run && draftTerminal.has(run.status) && <div ref={trialResultRef} tabIndex={-1}><AgentDraftResult run={run} trial={trial} locale={locale} runPath={runPath} apiBase={apiBase} feedbackSource={draft.feedback_sources?.trial} revision={draft.revision} /></div>}<button className="agent-secondary-action" onClick={() => openAssistant("explain", tr("请分析最近一次试运行的结果或失败原因，不要修改草稿。", "Analyze the latest trial result or failure without modifying the draft."), { runId: trialRunId })}>{tr("分析结果或失败原因", "Analyze result or failure")}</button></div> : <p>{tr("当前没有试运行记录。", "No trial has been run yet.")}</p>}{effectiveTrial?.run_id && <p>{tr("当前验收使用的有效试运行：", "Effective trial for acceptance: ")}<code>{effectiveTrial.run_id}</code>{effectiveTrial.run_id !== trialRunId && <span> · {tr("最近尝试未覆盖此有效结果", "The latest attempt did not replace this result")}</span>}</p>}</section>}
 
         {step === "trial" && discovery?.run_id && <div className="draft-discovery-progress-link"><button type="button" className="agent-secondary-action" onClick={() => { setSelectingSampleFields(false); setSampleDialogOpen(true); }}>{tr("查看查找进度", "View discovery progress")}</button></div>}
-        {step === "acceptance" && <section className="agent-panel" ref={acceptanceResultRef} tabIndex={-1}><h2>{stepLabels.acceptance}</h2><p>{tr("自动检查、试运行和正式验收分别记录。1–5 组必选案例全部通过后才会解锁发布。", "Automatic checks, trials and formal acceptance are recorded separately. All 1–5 required cases must pass before publication is unlocked.")}</p><dl><dt>{tr("自动检查", "Automatic checks")}</dt><dd>{staticLabel}</dd><dt>{tr("正式验收", "Formal acceptance")}</dt><dd>{draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</dd></dl>{(acceptance?.source_version || acceptance?.reused_from_version) && <p>{tr("复用来源版本验收：", "Acceptance reused from source version: ")}{acceptance.source_version || acceptance.reused_from_version}</p>}<AcceptanceSummary campaign={acceptanceCampaign} locale={locale} onOpen={() => setAcceptanceProgressOpen(true)} /><AcceptanceReadiness value={acceptanceReadiness} locale={locale} /><div className="agent-actions"><button type="button" disabled={!formalAcceptanceReady || campaignActive} onClick={openAcceptance}>{tr(acceptanceCampaign ? "更换案例并重新验收" : "开始正式验收", acceptanceCampaign ? "Change cases and run again" : "Start formal acceptance")}</button><button className="agent-secondary-action" disabled={busy} onClick={() => action(async () => { setReport(await call(`${base}/validation-report`)); await refresh(false); })}>{tr("刷新验证状态", "Refresh validation status")}</button>{acceptanceCampaign && <button className="agent-secondary-action" onClick={() => openAssistant("explain", tr("请分析最近一次正式验收结果，不要修改草稿。", "Analyze the latest formal acceptance without modifying the draft."), { acceptanceCampaignId: acceptanceCampaign.campaign_id })}>{tr("分析验收结果", "Analyze acceptance")}</button>}</div>{publishability?.blockers?.length > 0 && <ul className="draft-blockers">{publishability.blockers.map((item: any, index: number) => <li key={index}>{localText(item.message || item.description, locale) || tr("正式验收或发布条件尚未满足。", "Acceptance or publication requirements remain unmet.")}<details><summary>{tr("技术原因", "Technical reason")}</summary><code>{typeof item === "string" ? item : item.code}</code></details></li>)}</ul>}</section>}
-
-        {step === "acceptance" && draft.feedback_sources?.acceptance?.source_id === acceptanceCampaign?.campaign_id && Array.isArray(acceptanceCampaign?.report?.errors) && acceptanceCampaign.report.errors.length > 0 &&
-          <section className="agent-panel" aria-label={tr("可标注的验收诊断", "Annotatable acceptance diagnostics")}>
-            <h3>{tr("可标注的验收诊断", "Annotatable acceptance diagnostics")}</h3>
-            <ul>{acceptanceCampaign.report.errors.map((issue: any, index: number) =>
-              <li key={index} data-draft-ref={`/errors/${index}`} data-draft-annotation-kind="acceptance_issue" data-draft-source-id={draft.feedback_sources.acceptance.source_id} data-draft-source-digest={draft.feedback_sources.acceptance.digest} data-draft-revision={draft.revision}>
-                {localText(issue.message || issue.description, locale) || issue.code || String(issue)}
-              </li>)}</ul>
-          </section>}
+        {step === "acceptance" && <section className="agent-panel acceptance-overview-panel" ref={acceptanceResultRef} tabIndex={-1}>
+          <AcceptanceOverview locale={locale} acceptance={acceptance} campaign={acceptanceCampaign} readiness={acceptanceReadiness} effectiveTrial={effectiveTrial}
+            staticLabel={staticLabel} staticPassed={Boolean(staticChecks.checks?.length && !staticChecks.errors?.length && presentationReady)}
+            staticKnown={Boolean(staticChecks.checks?.length)} canPublish={canPublish} publicationKnown={Boolean(publishability)}
+            blockers={publishability?.blockers || []} canStart={formalAcceptanceReady && !campaignActive} campaignActive={campaignActive} busy={busy} currentRevision={draft.revision}
+            startDisabledReason={tr("当前修订、试运行或操作状态尚未满足验收要求；请核对上方状态及阻碍。", "The revision, trial or operation state is not ready for acceptance. Review the statuses and blockers above.")}
+            onSetup={openAcceptance} onResult={() => setAcceptanceProgressOpen(true)}
+            onRefresh={() => action(async () => { setReport(await call(`${base}/validation-report`)); await refresh(false); })}
+            onAnalyze={() => openAssistant("explain", tr("请分析最近一次正式验收结果，不要修改草稿。", "Analyze the latest formal acceptance without modifying the draft."), { acceptanceCampaignId: acceptanceCampaign?.campaign_id })}
+            diagnostics={draft.feedback_sources?.acceptance?.source_id === acceptanceCampaign?.campaign_id && Array.isArray(acceptanceCampaign?.report?.errors) && acceptanceCampaign.report.errors.length > 0
+              ? <ul aria-label={tr("可标注的验收诊断", "Annotatable acceptance diagnostics")}>{acceptanceCampaign.report.errors.map((issue: any, index: number) =>
+                <li key={index} data-draft-ref={`/errors/${index}`} data-draft-annotation-kind="acceptance_issue" data-draft-source-id={draft.feedback_sources.acceptance.source_id} data-draft-source-digest={draft.feedback_sources.acceptance.digest} data-draft-revision={draft.revision}>
+                  {localText(issue.message || issue.description, locale) || issue.code || String(issue)}
+                </li>)}</ul> : undefined} />
+        </section>}
 
         {step === "publish" && <div className="agent-document-body"><section className="agent-panel draft-publish-details"><details><summary>{tr("详细变更信息", "Detailed change information")}</summary><div className="draft-publish-details-content"><p>{compareBaseline === "source" ? tr("正在与创建草稿时绑定的来源版本比较。", "Comparing with the source version pinned when this draft was created.") : tr("正在比较两个草稿修订。", "Comparing two saved draft revisions.")}</p><div className="draft-basic-grid"><label>{tr("比较基准", "Comparison baseline")}<select value={compareBaseline} onChange={(event) => setCompareBaseline(event.target.value as "revision" | "source")}><option value="source">{draft.source_version ? tr(`来源版本 ${draft.source_version}`, `Source version ${draft.source_version}`) : tr("新 Agent 的完整定义", "Full new Agent definition")}</option><option value="revision">{tr("草稿修订", "Draft revision")}</option></select></label>{compareBaseline === "revision" && <label>{tr("修改前修订", "Before revision")}<select value={compareFrom} onChange={(event) => setCompareFrom(Number(event.target.value))}>{revisions.map((revision) => <option key={revision}>{revision}</option>)}</select></label>}<label>{tr("修改后修订", "After revision")}<select value={compareTo} onChange={(event) => setCompareTo(Number(event.target.value))}>{revisions.map((revision) => <option key={revision}>{revision}</option>)}</select></label></div>{renderDiff()}{compareBaseline === "revision" && <button className="agent-secondary-action" disabled={!actionable || compareFrom === draft.revision} onClick={restore}>{tr("恢复修改前修订（创建新修订）", "Restore before revision (creates a new revision)")}</button>}</div></details></section><section className="agent-panel"><h2>{stepLabels.publish}</h2><p>{tr("正式验收通过后才可发布。系统检查候选包和页面后提交到本地 main，不会推送远端。", "Formal acceptance is required. The package and candidate pages are checked before committing to local main; nothing is pushed.")}</p><p>{tr("技术 ID", "Technical ID")}: <code>{identity.agent_id}</code> · {identityReady ? tr("已确认", "Confirmed") : tr("尚未确认", "Not confirmed")}</p><p>{tr("正式验收", "Formal acceptance")}: {draftStatus(acceptance?.verdict || "NOT_TESTED", locale)}</p>{!canPublish && <p role="status">{tr("发布条件尚未满足，请按左侧状态返回处理。", "Publication requirements are not met. Use the step statuses to resolve them.")}</p>}<label>{tr("目标版本", "Target version")}<input value={targetVersion} disabled={locked} onChange={(event) => setTargetVersion(event.target.value)} /></label><div className="agent-actions"><button disabled={!actionable || !canPublish} onClick={() => publish(false)}>{tr("发布为未启用版本", "Publish inactive")}</button><button disabled={!actionable || !canPublish} onClick={() => publish(true)}>{tr("发布并启用", "Publish and activate")}</button></div>{publication && <div className="draft-publication-summary"><PublicationProgressSummary value={publication} locale={locale} connectionError={publicationConnectionError} /><div className="agent-actions"><button className="agent-secondary-action" onClick={() => setPublicationDialogOpen(true)}>{tr("查看发布进度", "View publication progress")}</button>{publication.publication_status === "published" && publication.site_refresh_status === "failed" && <button onClick={retrySiteRefresh}>{tr("重试刷新页面", "Retry page refresh")}</button>}{publication.publication_status === "published" && (publication.result?.active === false || publication.activate === false) && onActivatePublished && <button onClick={() => onActivatePublished(publication.result || publication)}>{tr("启用此版本", "Activate this version")}</button>}</div></div>}</section></div>}
       </div>
@@ -1150,9 +1185,19 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
 
     <footer className="draft-wizard-footer"><button className="agent-secondary-action" disabled={currentIndex <= 0} onClick={() => move(-1)}>{tr("上一步", "Previous")}</button><span>{currentIndex + 1} / {draftStepNames.length} · {stepLabels[step]}</span>{currentIndex < draftStepNames.length - 1 && <button disabled={busy || remoteConflict} onClick={() => move(1)}>{dirty ? tr("保存并继续", "Save and continue") : tr("继续", "Continue")}</button>}</footer>
 
-    <AgentSampleProgress open={sampleDialogOpen} value={discovery} locale={locale} canRetry={validationActionable} fields={selectingSampleFields ? sampleFields : undefined} selectedFields={selectedSampleFields} onSelection={setSelectedSampleFields} onStart={discover} preflightBusy={samplePreflightBusy} preflightError={samplePreflightError} scopeRequired={sampleScopeMissing} onClose={() => setSampleDialogOpen(false)} onCancel={cancelSample} onRetry={chooseSampleFields} onReview={reviewSample} onAfterClose={() => { if (sampleReviewFocus.current) { sampleReviewFocus.current = false; sampleInputsRef.current?.focus(); } }} />
+    <AgentSampleProgress open={sampleDialogOpen} value={discovery} locale={locale} canRetry={validationActionable} fields={selectingSampleFields ? sampleFields : undefined} selectedFields={selectedSampleFields} onSelection={setSelectedSampleFields} onStart={discover} preflightBusy={samplePreflightBusy} preflightError={samplePreflightError} scopeRequired={sampleScopeMissing} onClose={() => setSampleDialogOpen(false)} onCancel={cancelSample} onRetry={chooseSampleFields} onReview={reviewSample}
+      runtimeUsage={sampleReadiness?.runtime_selection}
+      onEnterManual={(field) => { sampleManualField.current = field; setSampleDialogOpen(false); }}
+      onAfterClose={() => {
+        const field = sampleManualField.current; sampleManualField.current = null;
+        if (field) window.setTimeout(() => {
+          const target = mainEditorRef.current?.querySelector<HTMLElement>(`#${CSS.escape(`draft-input-${field}`)}`);
+          target?.scrollIntoView({ block: "center", behavior: "smooth" }); target?.focus({ preventScroll: true });
+        }, 0);
+        else if (sampleReviewFocus.current) { sampleReviewFocus.current = false; sampleInputsRef.current?.focus(); }
+      }} />
     <AgentTrialProgress open={trialDialogOpen} run={run} trial={trial} locale={locale} connectionError={trialConnectionError} errorMessage={error} onClose={() => setTrialDialogOpen(false)} onCancel={cancelTrial} onReview={() => { trialReviewFocus.current = true; setTrialDialogOpen(false); }} onAfterClose={() => { if (trialReviewFocus.current) { trialReviewFocus.current = false; trialResultRef.current?.focus(); } }} />
-    <AgentAcceptanceSetup open={acceptanceSetupOpen} locale={locale} schema={schema} mode={manifest.validation?.acceptanceMode || "three_stage"} runtime={draft.formal_acceptance_runtime} runtimeModels={acceptanceRuntimeModels} runtimeModelId={acceptanceRuntimeModel} onRuntimeModel={setAcceptanceRuntimeModel} cases={acceptanceCases} currentInput={acceptanceDefaultInput} currentSecrets={secrets} sampleInput={discovery?.input} canUseSample={sampleConfirmed} disabled={!formalAcceptanceReady} onCases={setAcceptanceCases} onFindSample={findAcceptanceSample} onClose={() => setAcceptanceSetupOpen(false)} onStart={startAcceptance} />
+    <AgentAcceptanceSetup open={acceptanceSetupOpen} locale={locale} schema={schema} mode={manifest.validation?.acceptanceMode || "three_stage"} runtime={acceptanceRuntimeInfo.runtime} runtimeChecking={acceptanceRuntimeInfo.checking} runtimeStartedAt={acceptanceRuntimeInfo.startedAt} runtimeError={acceptanceRuntimeInfo.error} onReadRuntime={readAcceptanceRuntime} cases={acceptanceCases} currentInput={acceptanceDefaultInput} currentSecrets={secrets} sampleInput={discovery?.input} canUseSample={sampleConfirmed} caseErrors={acceptanceCaseErrors} error={acceptanceSetupError} submissionUnknown={Boolean(acceptanceSubmission.current?.uncertain)} disabled={!acceptanceSubmission.current?.uncertain && (!formalAcceptanceReady || !acceptanceRuntimeInfo.ready)} onCases={next => { if (!acceptanceSubmission.current) { setAcceptanceCases(next); setAcceptanceCaseErrors({}); } }} onFindSample={findAcceptanceSample} onClose={() => setAcceptanceSetupOpen(false)} onStart={startAcceptance} />
     <AgentAcceptanceProgress open={acceptanceProgressOpen} locale={locale} campaign={acceptanceCampaign} connectionError={acceptanceConnectionError} apiBase={apiBase} draftId={draft.draft_id} onClose={() => { setAcceptanceProgressOpen(false); window.setTimeout(() => acceptanceResultRef.current?.focus(), 0); }} onCancel={cancelAcceptance} onAdjust={() => { setAcceptanceProgressOpen(false); openAssistant("revise", tr("请根据正式验收结果调整草稿。", "Please revise the draft based on the formal acceptance result."), { acceptanceCampaignId: acceptanceCampaign?.campaign_id }); }} onRetry={() => { setAcceptanceProgressOpen(false); window.setTimeout(openAcceptance, 0); }} />
     <AgentFeedbackProgress open={feedbackDialogOpen} turn={feedbackProgressTurn} operation={feedbackOperation} locale={locale} connectionError={feedbackConnectionError} errorMessage={feedbackLaunch?.status === "failed" ? error : ""} onClose={() => setFeedbackDialogOpen(false)} onCancel={cancelFeedback} onRetry={() => { if (!feedbackProgressTurn) return; feedbackAfterClose.current = () => retryFeedback(feedbackProgressTurn); setFeedbackDialogOpen(false); }} onReview={() => { if (!feedbackProgressTurn) return; feedbackAfterClose.current = () => { setCompareFrom(feedbackProgressTurn.base_revision ?? Math.max(1, draft.revision - 1)); setCompareTo(feedbackProgressTurn.result_revision ?? draft.revision); setCompareBaseline("revision"); setStep("publish"); }; setFeedbackDialogOpen(false); }} onAfterClose={() => { const followUp = feedbackAfterClose.current; feedbackAfterClose.current = null; followUp?.(); }} />
     <AgentPublicationProgress open={publicationDialogOpen} value={publication} locale={locale} connectionError={publicationConnectionError} onClose={() => setPublicationDialogOpen(false)} onRetrySite={retrySiteRefresh} onComplete={finishPublication} onActivate={onActivatePublished ? () => { setPublicationDialogOpen(false); onActivatePublished(publication?.result || publication || {}); } : undefined} />

@@ -21,6 +21,7 @@ FRAME_LIMIT = 1024 * 1024
 NATIVE_TOOLS = frozenset({"Bash", "Read", "Write", "Edit", "Glob", "Grep", "MultiEdit", "TodoWrite"})
 SCHEMA_TOOL = "StructuredOutput"  # Verified pinned CLI's local output-capture tool.
 NATIVE_DIAGNOSTICS = "sapba.workbuddy.native-output/1"
+TERMINAL_CONTRACT = "sapba.runtime-terminal/1"  # Transport negotiation, not business rules.
 NATIVE_CAPTURE_INSTRUCTIONS = (
     "\nComplete the requested task and its necessary focused checks, then obtain exactly one "
     "successful StructuredOutput capture of the final object matching the supplied Schema. "
@@ -37,6 +38,7 @@ FAILURE_CODES = frozenset({
     "workbuddy_execution_failed", "workbuddy_upstream_empty_stream", "workbuddy_upstream_error",
     "workbuddy_result_missing", "workbuddy_structured_output_missing", "workbuddy_structured_output_invalid",
     "workbuddy_schema_check_response_invalid", "workbuddy_tool_response_invalid",
+    "workbuddy_terminal_correction_stalled", "workbuddy_terminal_protocol_invalid",
 })
 
 
@@ -299,6 +301,9 @@ async def execute(request, send):
     trusted = mode == "trusted_local"
     schema = payload.get("output_schema")
     diagnostic_schema = request.get("native_output_diagnostics") == NATIVE_DIAGNOSTICS and schema is not None
+    terminal_contract = request.get("terminal_contract")
+    if terminal_contract is not None and (terminal_contract != TERMINAL_CONTRACT or not diagnostic_schema):
+        raise NativeTerminalFailure("workbuddy_terminal_protocol_invalid", "formatter_hook")
     expected_feedback = {}
     hook_sequence = 0
     worker_wait = None
@@ -310,13 +315,14 @@ async def execute(request, send):
         if worker_wait != state:
             worker_wait = state
             progress("workbuddy_native_wait", worker_wait_state=state, wait_state_source="worker_observation")
-    async def inspect_output(value, phase):
+    async def inspect_output(value, phase, *, origin="native_terminal", submission_id=None):
         if not diagnostic_schema:
             return None
         async with relay_lock:
             call = uuid.uuid4().hex
             set_wait("waiting_platform_schema_check")
-            send("schema_check", call_id=call, phase=phase, value=value)
+            metadata = {"origin": origin, "submission_id": submission_id} if terminal_contract else {}
+            send("schema_check", call_id=call, phase=phase, value=value, **metadata)
             response = await asyncio.to_thread(read_frame)
             if (response.get("kind") != "schema_check_result" or response.get("call_id") != call
                     or response.get("task_id") != request.get("task_id")
@@ -326,6 +332,19 @@ async def execute(request, send):
                 raise ValueError("workbuddy_schema_check_response_invalid")
             # The same frozen platform checker supplies diagnostics/feedback.
             # Never repair arguments, substitute capture or grant qualification.
+            if terminal_contract:
+                feedback = response.get("repair_feedback")
+                if (not isinstance(feedback, dict) or feedback.get("version") != terminal_contract
+                        or feedback.get("schema_sha256") != fingerprint(schema)
+                        or feedback.get("terminal_validated") is not response["schema_valid"]
+                        or not isinstance(response.get("stop"), bool)):
+                    raise NativeTerminalFailure("workbuddy_terminal_protocol_invalid", "formatter_hook")
+                if response["stop"]:
+                    # Notify before SDK hook exception suppression or shutdown can hang.
+                    failure = NativeTerminalFailure("workbuddy_terminal_correction_stalled", "formatter_hook")
+                    send("error", code=failure.code, diagnostic={"failure_code": failure.code,
+                        "failure_source": failure.source, "elapsed_ms": max(0, int((time.monotonic()-run_started)*1000)), **counts})
+                    raise failure
             return response
     async def formatter_guard(hook_input, _tool_use_id, _context):
         # SDK hooks run before the formatter, including its needsApproval=false
@@ -337,7 +356,8 @@ async def execute(request, send):
         sequence = hook_sequence
         progress("workbuddy_formatter_progress", formatter_stage="hook_entered", hook_index=sequence)
         try:
-            response = await inspect_output(hook_input.get("tool_input"), "native_candidate")
+            response = await inspect_output(hook_input.get("tool_input"), "native_candidate",
+                origin="formatter_hook", submission_id=fingerprint(_tool_use_id) if isinstance(_tool_use_id, str) and _tool_use_id else None)
             progress("workbuddy_formatter_progress", formatter_stage="check_completed", hook_index=sequence,
                      schema_valid=response["schema_valid"])
             if response["schema_valid"]:
@@ -345,7 +365,8 @@ async def execute(request, send):
                 progress("workbuddy_formatter_progress", formatter_stage="hook_returned", hook_index=sequence,
                          rejection_prepared=False)
                 return {}  # No extra allow; a valid candidate is not a capture.
-            reason = formatter_feedback(response, schema)
+            reason = ("StructuredOutput was not captured. " + json.dumps(response["repair_feedback"], ensure_ascii=True, separators=(",", ":"))
+                if terminal_contract else formatter_feedback(response, schema))
             expected = safe_native_content([{"type": "text", "text": "Error: " + reason}])
             # Bound diagnostic correlation; never retain tool arguments or IDs in events.
             if isinstance(_tool_use_id, str) and 0 < len(_tool_use_id) <= 256:
@@ -463,7 +484,8 @@ async def execute(request, send):
                         "platform_tool": block.name in tool_names})
                     if schema is not None and block.name == SCHEMA_TOOL:
                         structured_call_count += 1
-                        await inspect_output(block.input, "native_candidate")
+                        await inspect_output(block.input, "native_candidate", origin="message_observation",
+                            submission_id=fingerprint(block.id))
                         set_wait("waiting_sdk_message")
                 elif isinstance(block, ToolResultBlock):
                     pending = pending_tools.pop(block.tool_use_id, None)
@@ -555,7 +577,8 @@ def main():
     binding = {key: request[key] for key in ("protocol", "task_id", "attempt_id", "operation", "environment_digest", "runtime_digest", "deadline")}
     if binding["protocol"] != PROTOCOL:
         raise ValueError("workbuddy_protocol_invalid")
-    write_frame({"kind": "hello", **binding})
+    write_frame({"kind": "hello", **binding,
+        **({"terminal_contract": TERMINAL_CONTRACT} if request.get("terminal_contract") == TERMINAL_CONTRACT else {})})
     def send(kind, **kwargs):
         nonlocal failure_sent
         if kind == "error":

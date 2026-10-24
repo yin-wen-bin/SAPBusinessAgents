@@ -5,6 +5,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import re
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -21,7 +22,47 @@ class AgentDiscoveryJobs:
         self.sdk_manager, self.service = sdk_manager, service
         self.tasks: dict[str, asyncio.Task] = {}
 
-    def preflight(self, draft_id: str, payload: Any) -> dict[str, Any]:
+    @staticmethod
+    def _selection(runtime: dict[str, Any]) -> dict[str, Any]:
+        # selected_at is an observation timestamp, not execution identity. All
+        # actual binding fields, including account/site/worker, remain covered.
+        frozen = {key: value for key, value in runtime.items() if key != "selected_at"}
+        binding = {"contract": "sapba.sample-runtime-selection/1", "operation": "sample_discovery",
+                   "permission_mode": "bounded", "snapshot": frozen}
+        return {"status": "ready", "provider_id": runtime["provider_id"], "model_id": runtime["model"],
+                "binding_digest": hashlib.sha256(json.dumps(binding, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":")).encode()).hexdigest(),
+                "service_site": runtime.get("service_site"),
+                "reasoning_effort": runtime.get("reasoning_effort")}
+
+    @staticmethod
+    def _failure_code(exc: Exception) -> str:
+        code = getattr(exc, "code", None)
+        return code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code) else "sample_discovery_start_failed"
+
+    def _assert_runtime(self, runtime: dict[str, Any]) -> None:
+        auth = getattr(self.sdk_manager, "authentication_service", None)
+        if auth:
+            auth.assert_binding(runtime["provider_id"], runtime)
+        if runtime.get("provider_id") == "workbuddy":
+            self.sdk_manager.workbuddy.environment.assert_operation(runtime, "sample_discovery")
+        elif runtime.get("provider_id") != "codex" or runtime.get("model") != SAMPLE_MODEL:
+            raise AgentLifecycleError("The sample Runtime binding is inconsistent.", code="sample_discovery_model_mismatch")
+        RuntimeSnapshot.model_validate(runtime)
+
+    def _current_runtime(self) -> dict[str, Any]:
+        provider = self.sdk_manager.default_provider_id
+        if provider == "workbuddy":
+            runtime = self.sdk_manager.runtime_snapshot("workbuddy")
+        elif provider == "codex":
+            # Keep Codex's existing sample-model policy and backend gates.
+            runtime = self.sdk_manager.runtime_snapshot_for_model("codex", SAMPLE_MODEL)
+        else:
+            raise AgentLifecycleError("Select an available Runtime in settings.", code="runtime_default_not_configured")
+        self._assert_runtime(runtime)
+        return copy.deepcopy(runtime)
+
+    def preflight(self, draft_id: str, payload: Any, *, _runtime: bool = True) -> dict[str, Any]:
         """Inspect the saved revision without reserving a task or contacting SAP."""
         draft = self.store.get_agent_authoring_draft(draft_id)
         revision = int(payload.expected_revision)
@@ -32,13 +73,20 @@ class AgentDiscoveryJobs:
         supplied = copy.deepcopy(payload.input)
         _check_public_input(supplied, manifest.get("execution", {}).get("inputSchema", {}))
         try:
-            return SampleDiscoveryContext(manifest, supplied, revision,
-                                          selected_fields=payload.selected_fields).readiness()
+            result = SampleDiscoveryContext(manifest, supplied, revision,
+                                            selected_fields=payload.selected_fields).readiness()
         except SampleDiscoveryError as exc:
             raise AgentLifecycleError("Invalid or private sample input.", code=exc.code) from exc
         except (TypeError, ValueError, KeyError, AttributeError) as exc:
             raise AgentLifecycleError("The saved discovery definition is invalid.",
                                       code="sample_definition_invalid") from exc
+        if payload.prepare_runtime and _runtime:
+            # Explicit readiness only: no official auth, SDK or model probe.
+            try:
+                result["runtime_selection"] = self._selection(self._current_runtime())
+            except Exception as exc:
+                result["runtime_selection"] = {"status": "unavailable", "code": self._failure_code(exc)}
+        return result
 
     def start(self, draft_id: str, payload: Any) -> dict[str, Any]:
         draft = self.store.get_agent_authoring_draft(draft_id)
@@ -50,11 +98,19 @@ class AgentDiscoveryJobs:
         manifest = copy.deepcopy(package["manifest"])
         supplied = copy.deepcopy(payload.input)
         _check_public_input(supplied, manifest.get("execution", {}).get("inputSchema", {}))
-        readiness = self.preflight(draft_id, payload)
+        # A retransmission must recover its original frozen task before reading
+        # today's defaults, even if an old client also sent prepareRuntime.
+        readiness = self.preflight(draft_id, payload, _runtime=False)
         if not readiness["can_start"]:
             raise AgentLifecycleError("Supply the missing scope or add a provable discovery mapping before searching.",
                                       code="sample_discovery_preflight_failed", detail=readiness)
         fingerprint_input = supplied if payload.selected_fields is None else {"input": supplied, "selected_fields": sorted(payload.selected_fields)}
+        if payload.runtime_selection is not None:
+            fingerprint_input = {"scope": fingerprint_input, "runtime_selection": payload.runtime_selection.model_dump()}
+        elif payload.runtime_policy == "system_default":
+            # Fingerprint the request's intent, not mutable current settings.
+            # The resolved execution snapshot is persisted separately, once.
+            fingerprint_input = {"scope": fingerprint_input, "runtime_policy": "system_default"}
         fingerprint = hashlib.sha256(json.dumps(fingerprint_input, ensure_ascii=False, sort_keys=True,
                                                 separators=(",", ":")).encode()).hexdigest()
         try:
@@ -67,21 +123,45 @@ class AgentDiscoveryJobs:
         if operation.get("reused"):
             return self.get(draft_id, run_id)
         created_run = False
+        verified_runtime = None
+        preparation_started = time.monotonic()
+        requested_runtime = (payload.runtime_selection.model_dump(exclude={"binding_digest"})
+                             if payload.runtime_selection is not None else {})
+        binding_source = ("system_default" if payload.runtime_policy == "system_default" else
+                          "explicit_selection" if payload.runtime_selection is not None else "draft_binding")
+        self.store.update_agent_operation(draft_id, run_id, detail={
+            "run_id": run_id, "revision": revision, "request_id": payload.request_id,
+            "status": "queued", "phase": "runtime_admission", "execution_started": False,
+            "created_at": operation["created_at"], "timeout_seconds": SAMPLE_SECONDS,
+            "requested_runtime": requested_runtime,
+            "runtime_binding_source": binding_source,
+        })
         try:
-            bound = (draft.get("metadata") or {}).get("runtime_snapshot") or {}
             auth = getattr(self.sdk_manager, "authentication_service", None)
-            if auth:
-                auth.assert_binding(str(bound.get("provider_id") or "codex"), bound)
-            if bound.get("provider_id") == "workbuddy":
-                runtime = self.sdk_manager.workbuddy.bound_snapshot(bound)
-                self.sdk_manager.workbuddy.environment.assert_operation(runtime, "sample_discovery")
+            if payload.runtime_policy == "system_default":
+                runtime = self._current_runtime()
+                requested_runtime = {"provider_id": runtime["provider_id"], "model_id": runtime["model"]}
+            elif payload.runtime_selection is not None:
+                runtime = self._current_runtime()
+                expected = payload.runtime_selection
+                actual = self._selection(runtime)
+                if ((expected.provider_id, expected.model_id, expected.binding_digest)
+                        != (actual["provider_id"], actual["model_id"], actual["binding_digest"])):
+                    raise AgentLifecycleError("Runtime selection changed. Review it before starting a new request.",
+                                              code="sample_runtime_selection_changed")
             else:
-                runtime = self.sdk_manager.runtime_snapshot_for_model("codex", SAMPLE_MODEL)
+                # Old clients remain strict; never silently migrate a saved draft.
+                bound = (draft.get("metadata") or {}).get("runtime_snapshot") or {}
+                if auth:
+                    auth.assert_binding(str(bound.get("provider_id") or "codex"), bound)
+                if bound.get("provider_id") == "workbuddy":
+                    runtime = self.sdk_manager.workbuddy.bound_snapshot(bound)
+                else:
+                    runtime = self.sdk_manager.runtime_snapshot_for_model("codex", SAMPLE_MODEL)
             if auth:
                 runtime = auth.bind(runtime["provider_id"], runtime)
-            if runtime.get("provider_id") != "workbuddy" and (runtime.get("provider_id") != "codex" or runtime.get("model") != SAMPLE_MODEL):
-                raise AgentLifecycleError("The sample Runtime binding is inconsistent.", code="sample_discovery_model_mismatch")
-            RuntimeSnapshot.model_validate(runtime)
+            self._assert_runtime(runtime)
+            verified_runtime = copy.deepcopy(runtime)
             request = RunCreate(mode=RunMode.free_query, query="Find validation sample inputs for the isolated Agent draft.", input=supplied)
             self.store.create_run(run_id, request, runtime=runtime, query_origin="system")
             created_run = True
@@ -89,7 +169,9 @@ class AgentDiscoveryJobs:
                                                draft_id=draft_id, revision=revision)
             self.store.update_agent_operation(draft_id, run_id, detail={
                 "run_id": run_id, "revision": revision, "model": runtime.get("model"),
-                **({"runtime_snapshot": runtime} if runtime.get("provider_id") == "workbuddy" else {}),
+                "runtime_snapshot": runtime, "execution_started": False,
+                "runtime_selection": self._selection(runtime) if payload.runtime_selection is not None else None,
+                "runtime_usage": self._selection(runtime), "runtime_binding_source": binding_source,
                 "input": supplied, "status": "queued", "bounded_discovery": True,
                 "timeout_seconds": SAMPLE_SECONDS, "phase": "queued",
                 "reasoning_effort": runtime.get("reasoning_effort"), "created_at": utc_now(),
@@ -100,19 +182,27 @@ class AgentDiscoveryJobs:
             self.tasks[run_id] = asyncio.create_task(self._run(draft_id, run_id, revision, manifest, supplied, payload.selected_fields))
             self.tasks[run_id].add_done_callback(lambda _task: self.tasks.pop(run_id, None))
         except Exception as exc:
+            code = self._failure_code(exc)
+            failure = {"status": "unavailable", "codes": [code], "phase": "runtime_admission",
+                       "execution_started": False, "request_id": payload.request_id,
+                       "created_at": operation["created_at"], "timeout_seconds": SAMPLE_SECONDS,
+                       "startup_elapsed_seconds": round(time.monotonic() - preparation_started, 3),
+                       "requested_runtime": requested_runtime, "completed_at": utc_now()}
+            failure["runtime_binding_source"] = binding_source
+            if verified_runtime is not None:
+                failure.update(model=verified_runtime["model"], runtime_snapshot=verified_runtime,
+                               runtime_usage=self._selection(verified_runtime),
+                               reasoning_effort=verified_runtime.get("reasoning_effort"))
             if created_run:
-                self._finish(draft_id, run_id, revision, supplied, {
-                    "status": "unavailable", "codes": ["sample_discovery_start_failed"],
-                })
+                self._finish(draft_id, run_id, revision, supplied, failure)
             else:
                 self.store.update_agent_operation(draft_id, run_id, detail={
-                    "run_id": run_id, "revision": revision, "status": "unavailable",
-                    "codes": ["sample_discovery_unavailable"], "completed_at": utc_now(),
+                    "run_id": run_id, "revision": revision, **failure,
                 })
                 self.store.finish_agent_operation(draft_id, run_id, "unavailable")
             raise AgentLifecycleError(
-                "Sample discovery requires an enabled, compatible GPT-5.6 Sol Runtime. You can enter parameters manually.",
-                code=str(getattr(exc, "code", "sample_discovery_unavailable")),
+                "Sample discovery did not start. Review its Runtime binding or enter inputs manually.",
+                code=code, detail={"sample_discovery": self.get(draft_id, run_id)},
             ) from exc
         return self.get(draft_id, run_id)
 
@@ -133,7 +223,10 @@ class AgentDiscoveryJobs:
         runtime = self.store.get_run(run_id).runtime
         sample_model = runtime.model if runtime and runtime.provider_id == "workbuddy" else "gpt-5.6-sol"
         try:
+            # Recheck the frozen binding, never current defaults, after queuing.
+            self._assert_runtime(runtime.model_dump(mode="json", exclude_none=True))
             self.store.update_run(run_id, status=RunStatus.running, started_at=started_at)
+            self.store.merge_agent_operation_detail(draft_id, run_id, {"execution_started": True})
             self.store.append_event(run_id, "sample_discovery_started", {"draft_id": draft_id, "revision": revision, "model": sample_model})
             worker = asyncio.create_task(self.service.discover(
                 run_id, manifest, supplied, revision=revision, model=sample_model,
@@ -194,7 +287,7 @@ class AgentDiscoveryJobs:
             return
         execution = self.store.get_harness_state(run_id).get("sample_execution", {})
         outcome = {**current["detail"], **execution, **outcome, "run_id": run_id, "draft_id": draft_id, "revision": revision,
-                   "model": current["detail"].get("model", "gpt-5.6-sol"), "bounded_discovery": True, "completed_at": utc_now()}
+                   "model": current["detail"].get("model") or outcome.get("model"), "bounded_discovery": True, "completed_at": utc_now()}
         status = str(outcome.get("status") or "inconclusive")
         if outcome.get("started_at"):
             outcome["elapsed_seconds"] = round((datetime.fromisoformat(outcome["completed_at"]) - datetime.fromisoformat(outcome["started_at"])).total_seconds(), 1)

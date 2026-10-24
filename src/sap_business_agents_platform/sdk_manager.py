@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+from contextlib import nullcontext
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -144,6 +146,32 @@ class PythonPackageAdapter:
             self.update_timeout_seconds,
         )
 
+    async def prepare_update(self, definition, target_version, *, cache_root, progress):
+        from .sdk_update import CodexPackageUpdate
+        if definition.provider_id != 'codex' or definition.package_name != 'openai-codex':
+            raise SDKManagerError('Unsupported staged update.',code='sdk_update_disabled')
+        pipeline=CodexPackageUpdate(cache_root,install_seconds=self.update_timeout_seconds)
+        bundle=await asyncio.to_thread(pipeline.prepare,target_version,progress)
+        return pipeline,bundle
+
+    async def install_prepared(self, definition, prepared, *, progress):
+        pipeline,bundle=prepared
+        return await asyncio.to_thread(pipeline.install,bundle,progress)
+
+    def installed_runtime_version(self, definition):
+        try: return metadata.version('openai-codex-cli-bin')
+        except metadata.PackageNotFoundError: return None
+
+    def installed_dependencies_consistent(self, definition):
+        try:
+            from packaging.requirements import Requirement
+            for raw in metadata.requires(definition.package_name) or []:
+                requirement=Requirement(raw)
+                if requirement.marker is None or requirement.marker.evaluate():
+                    if Version(metadata.version(requirement.name)) not in requirement.specifier:return False
+            return True
+        except (metadata.PackageNotFoundError,ValueError): return False
+
 
 class NpmPackageAdapter:
     def __init__(
@@ -276,6 +304,7 @@ class SDKManager:
                     "existing_login" if trusted_active_login else "not_checked"
                 ),
                 "authentication_error": None,
+                "version_check": {"status": "not_checked", "checked_at": None, "error": None},
             }
         self._locks = {item.sdk_id: asyncio.Lock() for item in self.definitions}
         self._config_lock = threading.RLock()
@@ -283,6 +312,9 @@ class SDKManager:
         from .workbuddy_manager import WorkBuddyManager
         self.workbuddy = WorkBuddyManager(self.repository_root)
         self.authentication_service = None
+        self._updates = {}
+        self._updates_lock = threading.RLock()
+        self._update_log_times = {}
 
     @property
     def default_provider_id(self) -> str | None:
@@ -390,13 +422,7 @@ class SDKManager:
                 # Preserve the legacy explicit installation/version check too;
                 # the dedicated authentication route never performs this step.
                 async with self._locks[sdk_id]:
-                    try:
-                        latest = await self.adapters[definition.ecosystem].latest_version(definition)
-                    except SDKManagerError as exc:
-                        self._state[sdk_id].update(latest_version=None, checked_at=_timestamp(),
-                                                  error={"code": exc.code, "message": str(exc)})
-                    else:
-                        self._state[sdk_id].update(latest_version=latest, checked_at=_timestamp(), error=None)
+                    await self._check_version_unlocked(definition)
             return next(v for v in self.list() if v["sdk_id"] == sdk_id)
         if definition.provider_id == "workbuddy":
             await self.workbuddy.check()
@@ -408,6 +434,36 @@ class SDKManager:
     async def check_provider(self, provider_id: str) -> dict[str, Any]:
         definition = self._get_provider(provider_id)
         return await self.check(definition.sdk_id)
+
+    async def check_versions(self, sdk_id: str) -> dict[str, Any]:
+        """Explicit package-registry read only; no auth, model, or Runtime snapshot."""
+        definition = self._get_sdk(sdk_id)
+        if definition.provider_id == "workbuddy":
+            raise SDKManagerError("Online SDK upgrades are not supported by the pinned WorkBuddy installer.",
+                                  code="workbuddy_sdk_upgrade_unsupported", detail={"phase": "version_check"})
+        async with self._locks[sdk_id]:
+            await self._check_version_unlocked(definition, legacy=False)
+            state = self._state[sdk_id]
+            installed = self.adapters[definition.ecosystem].installed_version(definition)
+            latest = state["latest_version"]
+            update=self.maintenance_status(definition.provider_id)
+            adapter=self.adapters[definition.ecosystem]
+            if (update and update.get('status')=='needs_review'
+                    and callable(getattr(adapter,'installed_dependencies_consistent',None))
+                    and adapter.installed_dependencies_consistent(definition)):
+                cli=adapter.installed_runtime_version(definition)
+                applied=installed==update.get('target_version') and cli==update.get('expected_cli')
+                self._update_progress(definition,update['operation_id'],status='completed' if applied else 'failed',
+                    phase='restart_pending' if applied and definition.restart_required else 'version_confirmation',
+                    outcome='installed' if applied else 'reviewed',cleanup_complete=True,
+                    previous_error=update.get('error'),error=None if applied else update.get('error'),
+                    observed_versions={'sdk':installed,'cli':cli})
+            return {"provider_id": definition.provider_id, "sdk_id": sdk_id,
+                    "current_version": installed, "latest_version": latest,
+                    "update_enabled": definition.update_enabled,
+                    "update_available": bool(installed and latest and _parse_version(latest) > _parse_version(installed)),
+                    "version_check": dict(state["version_check"]),
+                    "update_status":self.maintenance_status(definition.provider_id)}
 
     def models(self, provider_id: str) -> dict[str, Any]:
         if provider_id == "workbuddy":
@@ -739,17 +795,126 @@ class SDKManager:
         return self._snapshot(definition)
 
     async def update(self, sdk_id: str) -> dict[str, Any]:
-        provider_id = self._get_sdk(sdk_id).provider_id
+        definition=self._get_sdk(sdk_id)
+        provider_id=definition.provider_id
+        if provider_id=='codex' and callable(getattr(self.adapters[definition.ecosystem],'prepare_update',None)):
+            return await self._update_staged(definition)
         if self.authentication_service:
             # Installation may precede authentication: protect mutation, not sign-in eligibility.
-            async with self.authentication_service.use(provider_id, self.authentication_service.bind(provider_id, {}), require_authenticated=False):
+            async with self.authentication_service.sdk_maintenance(provider_id):
                 return await self._update(sdk_id)
         return await self._update(sdk_id)
+
+    def maintenance_status(self, provider_id):
+        definition=self._get_provider(provider_id)
+        with self._updates_lock:
+            return _copy_json(self._updates.get(definition.sdk_id))
+
+    def _update_progress(self, definition, operation_id, **change):
+        from .startup_control import atomic
+        allowed={'status','phase','target_version','before_version','expected_cli','downloaded_bytes','total_bytes',
+                 'filename','cache_reused','cleanup_complete','process_id','process_identity','error','previous_error','outcome','observed_versions'}
+        with self._updates_lock:
+            state=self._updates.get(definition.sdk_id)
+            if not state or state['operation_id']!=operation_id:return
+            previous=(state.get('phase'),state.get('status'))
+            state.update({k:v for k,v in change.items() if k in allowed})
+            state['updated_at']=_timestamp()
+            # Live progress is separate from display/admission fingerprints.
+            # Persist a bounded, sanitized diagnostic receipt, not an installer
+            # job protocol or an authorization/cache for a future execution.
+            now=time.monotonic()
+            if previous!=(state.get('phase'),state.get('status')) or now-self._update_log_times.get(operation_id,0)>=5:
+                directory=self.repository_root/'.local-data/sdk-update-diagnostics'/definition.sdk_id
+                atomic(directory/(operation_id+'.json'),state)
+                self._update_log_times[operation_id]=now
+
+    async def _await_update(self, awaitable):
+        task=asyncio.create_task(awaitable)
+        cancelled=False
+        while True:
+            try:
+                result=await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                cancelled=True
+                if task.done():
+                    result=task.result()
+                    break
+        if cancelled:raise asyncio.CancelledError
+        return result
+
+    async def _update_staged(self, definition):
+        sdk_id=definition.sdk_id;adapter=self.adapters[definition.ecosystem]
+        if not definition.update_enabled:raise SDKManagerError('Update disabled.',code='sdk_update_disabled')
+        with self._updates_lock:
+            prior=self._updates.get(sdk_id,{})
+            if prior.get('status') in {'running','cleanup_pending','needs_review'}:
+                raise SDKManagerError('Review the original maintenance operation.',code='sdk_update_outcome_unconfirmed' if prior.get('status')=='needs_review' else 'sdk_update_busy')
+            operation_id='update_'+uuid.uuid4().hex
+            self._updates[sdk_id]={'operation_id':operation_id,'status':'running','phase':'version_check',
+                                  'started_at':_timestamp(),'cleanup_complete':True}
+        emit=lambda **values:self._update_progress(definition,operation_id,**values)
+        mutated=False
+        try:
+            async with self._locks[sdk_id]:
+                await self._check_version_unlocked(definition,legacy=False)
+                before=adapter.installed_version(definition)
+                target=self._state[sdk_id]['latest_version']
+                if not before:raise SDKManagerError('SDK not installed.',code='sdk_not_installed')
+                if not target:raise SDKManagerError('Available version unknown.',code='sdk_registry_unavailable')
+                if _parse_version(target)<=_parse_version(before):raise SDKManagerError('SDK is current.',code='sdk_already_current')
+            emit(target_version=target,before_version=before,phase='downloading')
+            prepared=await self._await_update(adapter.prepare_update(definition,target,
+                cache_root=self.repository_root/'.local-data/sdk-update-cache/codex',progress=emit))
+            emit(phase='waiting_maintenance')
+            guard=self.authentication_service.sdk_maintenance(definition.provider_id) if self.authentication_service else nullcontext()
+            async with guard:
+                async with self._locks[sdk_id]:
+                    # Keep the original complete preflight, but freeze the
+                    # explicitly selected target instead of silently upgrading
+                    # to a newer publication during the download.
+                    await self._check_unlocked(definition)
+                    if adapter.installed_version(definition)!=before:
+                        raise SDKManagerError('Installation changed.',code='sdk_update_binding_changed')
+                    if self._state[sdk_id]['version_check']['status']=='failed':
+                        raise SDKManagerError('Version recheck failed.',code='sdk_registry_unavailable')
+                    emit(phase='local_resolution')
+                    def installation_progress(**values):
+                        nonlocal mutated
+                        if values.get('phase')=='installation':mutated=True
+                        emit(**values)
+                    receipt=await self._await_update(adapter.install_prepared(definition,prepared,progress=installation_progress))
+                    emit(phase='version_confirmation',expected_cli=receipt['expected_cli'])
+                    after=adapter.installed_version(definition)
+                    cli=adapter.installed_runtime_version(definition)
+                    if (after!=target or cli!=receipt['expected_cli']
+                            or callable(getattr(adapter,'installed_dependencies_consistent',None)) and not adapter.installed_dependencies_consistent(definition)):
+                        raise SDKManagerError('Installed SDK/runtime differs from the selected target.',code='sdk_update_not_applied',detail={'phase':'version_confirmation'})
+                    emit(status='completed',phase='restart_pending' if definition.restart_required else 'completed',
+                         outcome='installed',cleanup_complete=True,observed_versions={'sdk':after,'cli':cli})
+                    result=self._snapshot(definition)
+                    return {**result,'updated_from':before,'updated_to':after,'update_status':self.maintenance_status(definition.provider_id)}
+        except BaseException as exc:
+            current=self.maintenance_status(definition.provider_id) or {}
+            phase=getattr(exc,'detail',{}).get('phase',current.get('phase','version_check'))
+            code=getattr(exc,'code','sdk_update_interrupted' if isinstance(exc,asyncio.CancelledError) else 'sdk_update_failed')
+            emit(status='needs_review' if mutated else 'failed',phase=phase,
+                 outcome='unknown' if mutated else 'not_installed',error={'code':code,'phase':phase})
+            if isinstance(exc,SDKManagerError):
+                raise SDKManagerError(str(exc),code=exc.code,detail={**exc.detail,'phase':phase,'outcome':'unknown' if mutated else 'not_installed'}) from exc
+            raise
 
     async def _update(self, sdk_id: str) -> dict[str, Any]:
         definition = self._get_sdk(sdk_id)
         if definition.provider_id == "workbuddy":
-            return await self.workbuddy.update()
+            # The independent installer predates the shared flat SDK response.
+            # Retain that maintenance entry point, not an online-upgrade claim.
+            result = await self.workbuddy.update()
+            if isinstance(result.get("item"), dict):
+                return {**result["item"], "restart_required": bool(result.get("restart_required")),
+                        "maintenance_kind": "environment_repair"}
+            return result
         if not definition.update_enabled:
             raise SDKManagerError("This SDK cannot be updated here.", code="sdk_update_disabled")
         async with self._locks[sdk_id]:
@@ -758,14 +923,31 @@ class SDKManager:
             latest = self._state[sdk_id]["latest_version"]
             if before is None:
                 raise SDKManagerError("The SDK is not installed.", code="sdk_not_installed")
-            if not latest or _parse_version(latest) <= _parse_version(before):
+            if not latest:
+                code = (self._state[sdk_id].get("version_check", {}).get("error") or {}).get("code", "sdk_registry_unavailable")
+                raise SDKManagerError("Could not confirm the available SDK version.", code=code,
+                                      detail={"phase": "version_check"})
+            if _parse_version(latest) <= _parse_version(before):
                 raise SDKManagerError("The SDK is already up to date.", code="sdk_already_current")
-            await self.adapters[definition.ecosystem].update(definition, latest)
+            try:
+                installation = asyncio.create_task(self.adapters[definition.ecosystem].update(definition, latest))
+                try:
+                    await asyncio.shield(installation)
+                except asyncio.CancelledError:
+                    # Package managers run in a thread. A disconnected caller
+                    # must not release maintenance while that thread mutates.
+                    try:
+                        await asyncio.shield(installation)
+                    finally:
+                        raise
+            except SDKManagerError as exc:
+                raise SDKManagerError(str(exc), code=exc.code, detail={"phase": "installation"}) from exc
             after = self.adapters[definition.ecosystem].installed_version(definition)
             if after is None or _parse_version(after) < _parse_version(latest):
                 raise SDKManagerError(
                     "The package manager finished but the target version is not installed.",
                     code="sdk_update_not_applied",
+                    detail={"phase": "version_confirmation"},
                 )
             self._state[sdk_id].update(
                 latest_version=latest,
@@ -874,18 +1056,26 @@ class SDKManager:
         ).encode("utf-8")).hexdigest()
         return binding
 
-    async def _check_unlocked(self, definition: SDKDefinition) -> None:
+    async def _check_version_unlocked(self, definition: SDKDefinition, *, legacy=True) -> None:
         state = self._state[definition.sdk_id]
         try:
             latest = await self.adapters[definition.ecosystem].latest_version(definition)
         except SDKManagerError as exc:
-            state.update(
-                latest_version=None,
-                checked_at=_timestamp(),
-                error={"code": exc.code, "message": str(exc)},
-            )
+            checked_at = _timestamp()
+            state["latest_version"] = None
+            if legacy:
+                state.update(checked_at=checked_at, error={"code": exc.code, "message": str(exc)})
+            state["version_check"] = {"status": "failed", "checked_at": checked_at,
+                                      "error": {"code": exc.code, "phase": "version_check"}}
         else:
-            state.update(latest_version=latest, checked_at=_timestamp(), error=None)
+            checked_at = _timestamp()
+            state["latest_version"] = latest
+            if legacy:
+                state.update(checked_at=checked_at, error=None)
+            state["version_check"] = {"status": "checked", "checked_at": checked_at, "error": None}
+
+    async def _check_unlocked(self, definition: SDKDefinition) -> None:
+        await self._check_version_unlocked(definition)
 
         if definition.authentication == "not_configured" or not definition.provider_implemented:
             self._update_authentication_state(
@@ -1060,6 +1250,7 @@ class SDKManager:
             "cli_version": self._client_version(definition),
             "version": installed,
             "latest_version": latest,
+            "version_check": dict(state["version_check"]),
             "update_available": update_available,
             "update_enabled": definition.update_enabled,
             "restart_required": definition.restart_required,

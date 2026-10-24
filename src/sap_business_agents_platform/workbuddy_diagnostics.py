@@ -10,6 +10,7 @@ NATIVE_FAILURE_CODES = frozenset({
     "workbuddy_execution_failed", "workbuddy_upstream_empty_stream", "workbuddy_upstream_error",
     "workbuddy_result_missing", "workbuddy_structured_output_missing", "workbuddy_structured_output_invalid",
     "workbuddy_schema_check_response_invalid", "workbuddy_tool_response_invalid",
+    "workbuddy_terminal_correction_stalled", "workbuddy_terminal_protocol_invalid",
 })
 
 # Host-side failures are not SDK/upstream errors. Keep their vocabulary and

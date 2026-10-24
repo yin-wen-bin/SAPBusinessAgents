@@ -60,7 +60,6 @@ from .models import (
     AgentPublishRequest,
     AgentSiteRefreshRequest,
     AgentSampleDiscoveryRequest,
-    AgentAcceptanceCampaignRequest,
     AgentStaticValidationRequest,
     AgentUndoRequest,
     AgentVersionDraftRequest,
@@ -79,6 +78,7 @@ from .models import (
     RoleMatchingSessionCreate,
     RoleMatchingWorkflowDraftRequest,
     RunCreate,
+    RunPageLease,
     RunInput,
     TERMINAL_STATUSES,
     WorkflowCompositionCreate,
@@ -136,6 +136,7 @@ from .workflow_presentation import (
 
 
 LOGGER = logging.getLogger(__name__)
+from .acceptance_runtime import AgentAcceptanceCampaignRequest
 
 
 class HistorySettingsUpdate(BaseModel):
@@ -402,6 +403,7 @@ def create_app(
         from .workbuddy_harness import WorkBuddyHarnessController
         if hasattr(sdk_registry, "workbuddy"):
             coordinator.workbuddy_harness = WorkBuddyHarnessController(settings, store, harness_broker, sdk_registry.workbuddy)
+            sdk_registry.workbuddy.supervisor.query_capacity.limit = settings.local_free_query_workers
     workflow_drafts = WorkflowDraftService(
         settings,
         store,
@@ -477,6 +479,7 @@ def create_app(
     sdk_display = sdk_display_projection(sdk_registry) if hasattr(sdk_registry, "definitions") else None
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        from .startup_control import startup_phase
         if hasattr(sdk_registry, "workbuddy"):
             try:
                 sdk_registry.workbuddy.supervisor.reconcile()
@@ -487,18 +490,25 @@ def create_app(
                 # or the independent Codex lifecycle. Never reset owned jobs.
                 import logging
                 logging.getLogger(__name__).warning("WorkBuddy cleanup requires an explicit recheck.")
-        store.recover_agent_operations()
-        agent_lifecycle.reconcile_publications()
-        await plugin_manager.start()
+        with startup_phase("operation_recovery"):
+            store.recover_agent_operations()
+        with startup_phase("publication_reconciliation"):
+            agent_lifecycle.reconcile_publications()
+        with startup_phase("plugin_start"):
+            await plugin_manager.start()
         health_catalog.view()  # background metadata only; never delay liveness
         agent_catalog.get()  # display-only catalog prewarm; never authorize execution
         if sdk_display:
             for provider_id in provider_ids:
                 sdk_display.get(provider_id)
-        await coordinator.start()
-        await query_history.start()
-        await role_matching.start()
-        workflow_drafts.assistant.recover()
+        with startup_phase("coordinator_start"):
+            await coordinator.start()
+        with startup_phase("history_start"):
+            await query_history.start()
+        with startup_phase("role_matching_start"):
+            await role_matching.start()
+        with startup_phase("workflow_recovery"):
+            workflow_drafts.assistant.recover()
         await agent_lifecycle.start_feedback_image_cleanup()
         try:
             yield
@@ -557,6 +567,9 @@ def create_app(
     app.state.runtime_authentication = authentication
     app.state.integrations = integrations
 
+    from .startup_control import install_barrier
+    install_barrier(app, settings)
+
     @app.middleware("http")
     async def invalidate_sdk_display(request: Request, call_next):
         response = await call_next(request)
@@ -590,6 +603,7 @@ def create_app(
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
+        from .startup_control import startup_projection
         catalog = health_catalog.view()
         default_runtime_id = str(
             getattr(sdk_registry, "default_provider_id", "codex")
@@ -601,6 +615,7 @@ def create_app(
         }
         return {
             "ok": True,
+            "startup_binding": startup_projection(),
             "service": "sap-business-agents-local",
             "loopback_only": True,
             "sap_read": {
@@ -1698,6 +1713,28 @@ def create_app(
         except DraftError as exc:
             raise HTTPException(409, {"code": exc.code, "message": str(exc), "blocker": exc.blocker}) from exc
 
+    def business_display_for(record: Any) -> dict[str, Any] | None:
+        # Saved execution schema only. Never borrow today's Agent definition or
+        # rewrite the persisted result, validation record or historical PASS.
+        if record.mode.value != "agent" or record.result is None:
+            return None
+        try:
+            snapshot = store.get_agent_run_snapshot(record.run_id)
+        except KeyError:
+            return None
+        execution = snapshot["manifest"].get("execution") or {}
+        if execution.get("mode") != "deterministic":
+            return None
+        from .business_result_display import project
+        original = record.result.model_dump(mode="json")
+        try:
+            return project(original, execution.get("outputSchema") or {})
+        except (TypeError, ValueError, AttributeError, KeyError):
+            # An invalid legacy display must not replace a saved result with a
+            # fabricated success or break access to the original run record.
+            original["business_display"] = {"status": "unavailable", "code": "business_display_projection_unavailable"}
+            return {"result": original, "sources": {}}
+
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
         try:
@@ -1705,6 +1742,14 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(404, "Run not found") from exc
         payload = record.model_dump(mode="json")
+        display = business_display_for(record)
+        if display is not None:
+            payload["result"] = display["result"]
+        lifecycle_state = store.get_harness_state(run_id)
+        payload['page_lease'] = {'enabled': False}  # Legacy clients; no page lifetime control.
+        payload['cancellation'] = lifecycle_state.get('cancellation')
+        job = store.latest_execution_job_for_subject(run_id, statuses=('queued', 'running'))
+        payload['queue_position'] = coordinator.scheduler.queue_position(job['job_id']) if job and job['status'] == 'queued' else None
         free_query_session = store.get_free_query_session_by_run(run_id)
         if free_query_session is not None:
             iteration = store.get_free_query_iteration_by_run(run_id)
@@ -1793,6 +1838,7 @@ def create_app(
         block_index: int,
         offset: int = Query(0, ge=0),
         limit: int = Query(200, ge=1, le=200),
+        group: str | None = Query(None, max_length=500),
     ) -> dict[str, Any]:
         try:
             record = store.get_run(run_id)
@@ -1800,6 +1846,17 @@ def create_app(
             raise HTTPException(404, "Run not found") from exc
         if record.result is None:
             raise HTTPException(409, "Run result is not available")
+        display = business_display_for(record)
+        if display is not None:
+            from .business_result_display import table_page
+            try:
+                page = table_page(display, block_index, offset=offset, limit=limit, group=group)
+            except ValueError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            if page is not None:
+                return page
+        elif group is not None:
+            raise HTTPException(404, "This result has no declared grouping.")
         output_schema: dict[str, Any] | None = None
         if record.agent_id:
             try:
@@ -2122,6 +2179,15 @@ def create_app(
             raise HTTPException(409, str(exc)) from exc
         return {"run_id": run_id, "status": "accepted", "mode": mode}
 
+    @app.put('/api/runs/{run_id}/view-lease', deprecated=True)
+    async def update_run_page_lease(run_id: str, payload: 'RunPageLease') -> dict[str, Any]:
+        """Compatibility only: accepting an old heartbeat never changes run state."""
+        try:
+            store.get_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(404, 'Run not found') from exc
+        return {'enabled': False}
+
     @app.post("/api/runs/{run_id}/cancel", status_code=202)
     async def cancel_run(run_id: str) -> dict[str, str]:
         try:
@@ -2290,11 +2356,22 @@ def create_app(
         return agent_lifecycle.list_drafts(state)
 
     @app.get("/api/authoring/agents/{draft_id}")
-    def get_managed_agent_draft(draft_id: str) -> dict[str, Any]:
+    def get_managed_agent_draft(
+        draft_id: str, view: str | None = Query(default=None, pattern="^acceptance_setup$"),
+    ) -> dict[str, Any]:
         try:
-            value = agent_lifecycle.get_draft(draft_id)
+            if view == "acceptance_setup":
+                # Display preparation does not need conversations, revisions,
+                # artifacts or management history. Execution still validates all.
+                draft = store.get_agent_authoring_draft(draft_id)
+                value = {"draft_id": draft["draft_id"], "revision": draft["revision"]}
+            else:
+                value = agent_lifecycle.get_draft(draft_id)
             try:
-                value["formal_acceptance_runtime"] = sdk_registry.runtime_snapshot()
+                from .acceptance_runtime import resolve_acceptance_runtime, acceptance_runtime_digest
+                runtime = resolve_acceptance_runtime(sdk_registry)
+                value["formal_acceptance_runtime"] = runtime
+                value["formal_acceptance_runtime_digest"] = acceptance_runtime_digest(runtime)
             except Exception as exc:
                 value["formal_acceptance_runtime"] = {
                     "available": False,
@@ -2950,11 +3027,18 @@ def create_app(
         }
 
     @app.get("/api/system/sdk-runtimes")
-    def list_sdk_runtimes(response: Response) -> dict[str, Any]:
+    def list_sdk_runtimes(response: Response, view: str | None = None) -> dict[str, Any]:
         response.headers["Cache-Control"] = "no-store"
+        items=([(sdk_display.get_summary(provider_id) if view=='summary' else sdk_display.get(provider_id))
+                for provider_id in provider_ids] if sdk_display else sdk_registry.list())
+        maintenance=getattr(sdk_registry,'maintenance_status',None)
+        if callable(maintenance):
+            # Live installer facts do not invalidate cached auth/model/evidence
+            # projections on every downloaded chunk, nor authorize any action.
+            items=[{**item,'update_status':maintenance(item['provider_id'])} for item in items]
         return {
             "default_provider_id": getattr(sdk_registry, "default_provider_id", None),
-            "items": ([sdk_display.get(provider_id) for provider_id in provider_ids] if sdk_display else sdk_registry.list()),
+            "items":items,
         }
 
     def authentication_error(exc):
@@ -3137,8 +3221,10 @@ def create_app(
             ) from exc
 
     @app.get("/api/system/sdk-runtimes/{provider_id}/models")
-    def list_runtime_models(provider_id: str) -> dict[str, Any]:
+    def list_runtime_models(provider_id: str, view: str | None = None) -> dict[str, Any]:
         try:
+            if view == 'summary' and provider_id == 'workbuddy' and sdk_display:
+                return sdk_display.models_summary()
             method = getattr(sdk_registry, "models", None)
             if not callable(method):
                 raise SDKManagerError(
@@ -3233,12 +3319,12 @@ def create_app(
         return {"items": await sdk_registry.check_all()}
 
     @app.post("/api/system/sdks/{sdk_id}/check")
-    async def check_sdk(sdk_id: str) -> dict[str, Any]:
+    async def check_sdk(sdk_id: str, scope: Literal["full", "versions"] = "full") -> dict[str, Any]:
         try:
-            return {"item": await sdk_registry.check(sdk_id)}
+            return {"item": await (sdk_registry.check_versions(sdk_id) if scope == "versions" else sdk_registry.check(sdk_id))}
         except SDKManagerError as exc:
             status_code = 404 if exc.code == "sdk_not_found" else 409
-            raise HTTPException(status_code, {"code": exc.code, "message": str(exc)}) from exc
+            raise HTTPException(status_code, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
 
     @app.post("/api/system/sdks/{sdk_id}/update")
     async def update_sdk(
@@ -3251,10 +3337,10 @@ def create_app(
             item = await sdk_registry.update(sdk_id)
         except SDKManagerError as exc:
             status_code = 404 if exc.code == "sdk_not_found" else 409
-            raise HTTPException(status_code, {"code": exc.code, "message": str(exc)}) from exc
+            raise HTTPException(status_code, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
         return {
             "item": item,
-            "message": "SDK update completed.",
+            "message": "Environment repair completed." if item.get("maintenance_kind") == "environment_repair" else "Target SDK version installed.",
             "restart_required": bool(item.get("restart_required")),
         }
 

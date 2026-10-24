@@ -12,35 +12,72 @@ def output_diagnostic(text, *, operation, output_format=None):
             "output_sha256": hashlib.sha256(value).hexdigest() if value is not None else None}
 
 
+def schema_definition(schema, path):
+    """Resolve declared paths through refs/unions, never through input keys.
+
+    Ambiguous branch definitions yield no metadata, not a guessed constraint.
+    """
+    def resolve(node, parts, depth=0):
+        if depth > 32 or not isinstance(node, dict): return None
+        ref = node.get('$ref')
+        if isinstance(ref, str) and ref.startswith('#/$defs/'):
+            node = schema.get('$defs', {}).get(ref[8:], {})
+        if not parts: return node
+        part, rest = parts[0], parts[1:]
+        candidates = []
+        if part in node.get('properties', {}):
+            candidates.append(resolve(node['properties'][part], rest, depth + 1))
+        elif str(part).isdecimal() and isinstance(node.get('items'), dict):
+            candidates.append(resolve(node['items'], rest, depth + 1))
+        for keyword in ('anyOf', 'oneOf'):
+            candidates.extend(resolve(branch, parts, depth + 1) for branch in node.get(keyword, []))
+        candidates = [value for value in candidates if value is not None]
+        return candidates[0] if candidates and all(value == candidates[0] for value in candidates) else None
+    if not isinstance(path, str) or not path.startswith('/') or len(path) > 256: return None
+    parts = [] if path == '/' else [p.replace('~1', '/').replace('~0', '~') for p in path[1:].split('/')]
+    return resolve(schema, parts)
+
+
 def schema_issues(raw, schema):
     from jsonschema import Draft202012Validator
-    issues = []
-    for error in Draft202012Validator(schema).iter_errors(raw):
-        parts, node = [], schema
+    issues = {}
+    def diagnostics(error):
+        yield error  # Retain the original union error and its historical signature.
+        if error.validator not in {'anyOf', 'oneOf'} or not error.context: return
+        branches = error.schema.get(error.validator, [])
+        matching = []
+        for index, branch in enumerate(branches):
+            types = branch.get('type')
+            types = [types] if isinstance(types, str) else types
+            if types and any(Draft202012Validator.TYPE_CHECKER.is_type(error.instance, kind) for kind in types):
+                matching.append(index)
+        if len(matching) == 1:
+            for child in error.context:
+                if child.schema_path and child.schema_path[0] == matching[0]:
+                    yield from diagnostics(child)
+    errors = (nested for error in Draft202012Validator(schema).iter_errors(raw) for nested in diagnostics(error))
+    for error in errors:
+        parts = []
         for part in error.absolute_path:
-            if "$ref" in node and node["$ref"].startswith("#/$defs/"):
-                node = schema.get("$defs", {}).get(node["$ref"].split("/")[-1], {})
-            if isinstance(part, int):
-                node = node.get("items", {})
-            elif part in node.get("properties", {}):
-                node = node["properties"][part]
-            else:
-                break
-            parts.append(str(part).replace("~", "~0").replace("/", "~1"))
+            candidate = parts + [str(part).replace('~', '~0').replace('/', '~1')]
+            if schema_definition(schema, '/' + '/'.join(candidate)) is None: break
+            parts = candidate
         path = "/" + "/".join(parts)
         missing = [name for name in error.schema.get("required", []) if name in error.schema.get("properties", {})
                    and isinstance(error.instance, dict) and name not in error.instance]
         if error.validator == "required" and missing:
-            issues.extend({"code": "runtime_report_schema_invalid", "path": path.rstrip("/") + "/" + name,
-                           "constraint": "required"} for name in missing)
+            entries = [{"code": "runtime_report_schema_invalid", "path": path.rstrip("/") + "/" + name,
+                           "constraint": "required"} for name in missing]
         else:
-            issues.append({"code": "runtime_report_schema_invalid", "path": path, "constraint": str(error.validator)})
+            entries = [{"code": "runtime_report_schema_invalid", "path": path, "constraint": str(error.validator)}]
+        for item in entries:
+            if len(issues) >= 50: break
+            issues[tuple(item.values())] = item
         if len(issues) >= 50:
             break
     # A validator emits one `required` error per absent property. The safe
     # expansion above must not repeat the same field for every such error.
-    unique = {tuple(item.values()): item for item in issues}
-    return list(unique.values())[:50]
+    return list(issues.values())
 
 
 _STAGE_CODES = frozenset({
@@ -49,6 +86,7 @@ _STAGE_CODES = frozenset({
     "runtime_report_validation_failed", "runtime_report_json_invalid", "runtime_context_too_large",
     "runtime_result_not_complete", "runtime_cancelled", "workbuddy_structured_output_invalid",
     "workbuddy_structured_output_missing", "workbuddy_worker_exited", "workbuddy_execution_failed",
+    "workbuddy_terminal_correction_stalled", "workbuddy_terminal_protocol_invalid",
     "workbuddy_protocol_invalid", "workbuddy_message_limit", "workbuddy_output_limit",
     "workbuddy_cancelled", "role_matching_consolidation_failed",
     "workbuddy_upstream_empty_stream", "workbuddy_upstream_error", "workbuddy_result_missing",
@@ -79,18 +117,7 @@ def _declared_path(path, schema):
         return False
     if path == "/":
         return True
-    node = schema
-    for part in path[1:].split("/"):
-        part = part.replace("~1", "/").replace("~0", "~")
-        if "$ref" in node:
-            node = schema.get("$defs", {}).get(node["$ref"].split("/")[-1], {})
-        if part in node.get("properties", {}):
-            node = node["properties"][part]
-        elif part.isdigit() and "items" in node:
-            node = node["items"]
-        else:
-            return False
-    return True
+    return schema_definition(schema, path) is not None
 
 
 def safe_stage_diagnostic(value, *, schema, operation=None, phase=None, contract_id=None):

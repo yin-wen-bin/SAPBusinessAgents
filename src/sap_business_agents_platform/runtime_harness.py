@@ -72,6 +72,44 @@ import secrets
 import copy
 from typing import Any
 
+
+def _terminal_handoff_outcome(self, driver, run_id, context, turn_count, run_started, error):
+    """Preserve a typed terminal failure, never promote a validated candidate."""
+    from .runtime_terminal_contract import VERSION
+    from .harness import (HarnessOutcome, _persistent_harness_counts, _budgeted_tool_call_count,
+        _evidence_sources_complete)
+    detail = getattr(error, "detail", {}) or {}
+    code = getattr(error, "code", "")
+    if not isinstance(detail, dict) or not isinstance(code, str):
+        return None
+    if isinstance(code, str) and code.startswith(driver.provider_id + "_"):
+        code = "runtime_" + code[len(driver.provider_id) + 1:]
+    if detail.get("terminal_contract") != VERSION or code not in {
+            "runtime_terminal_correction_stalled", "runtime_structured_output_missing", "runtime_structured_output_invalid"}:
+        return None
+    candidate = detail.get("last_rejected_candidate") or {}
+    issues = candidate.get("validation_issues", []) if isinstance(candidate, dict) else []
+    failure = {"code": code, "validation_issues": issues,
+        "attempts_without_progress": (detail.get("terminal_convergence") or {}).get("without_progress", 0)}
+    self.store.update_harness_state(run_id, {"terminal_handoff_failure": failure})
+    self.store.append_event(run_id, "runtime_terminal_handoff_failed", failure)
+    if detail.get("cleanup_failure_code"):
+        self.store.update_harness_state(run_id, {"cleanup_incomplete": True})
+    calls, evidence = self.broker.snapshot(run_id)
+    budget = self.broker.budget_snapshot(run_id)
+    web_count, discovered, activated = _persistent_harness_counts(self.store, run_id)
+    return HarnessOutcome(thread_id=context["thread_id"], turn_count=turn_count,
+        status="inconclusive", stop_reason="capability_unavailable",
+        summary={"zh": "最终结构化结果未通过格式校验或未完成交接；已保留证据，未将报告候选冒充成功结果。",
+            "en": "The final structured result failed validation or handoff; evidence was preserved and a report candidate was not promoted to success."},
+        source_complete=_evidence_sources_complete(evidence), business_complete=False,
+        missing_evidence=[code], tool_calls=calls, evidence=evidence,
+        budgeted_tool_call_count=_budgeted_tool_call_count(calls), web_search_count=web_count,
+        discovered_tool_count=discovered, activated_tool_count=activated,
+        elapsed_seconds=int(time.monotonic()-run_started), hard_limit_seconds=budget["hard_limit_seconds"],
+        query_seconds_granted=budget["query_seconds_granted"], finalization_seconds_reserved=budget["finalization_seconds_reserved"],
+        deadline_phase="completed")
+
 async def run(self, driver, run_id, query, thread_id=None, model=None, reasoning_effort=None):
     auth = getattr(self, "authentication_service", None)
     if auth:
@@ -89,7 +127,8 @@ async def _reserved_run(self, driver, run_id, query, thread_id=None, model=None,
     from .runtime_contract import cleanup_binding
     supervisor = getattr(getattr(self, "manager", None), "supervisor", None)
     reserve = getattr(supervisor, "reserve", None)
-    async with reserve() if driver.provider_id == "workbuddy" and callable(reserve) else nullcontext():
+    parallel = not self.store.get_harness_state(run_id).get('acceptance_spec')
+    async with reserve(task_id=run_id, parallel=parallel) if driver.provider_id == "workbuddy" and callable(reserve) else nullcontext():
         if driver.provider_id == "workbuddy":
             from .models import utc_now
             record = self.store.get_run(run_id)
@@ -127,12 +166,9 @@ async def _run(
         raise RuntimeContractError("runtime_session_provider_mismatch")
     from .runtime_query_contract import ReadScope
     scope = ReadScope(query, self.store.get_run(run_id).input)
-    if scope.unresolved:
-        return HarnessOutcome(thread_id=thread_id, turn_count=turn_count - 1,
-            status="waiting_input", stop_reason="waiting_input",
-            summary={"zh": "查询范围需要确认。", "en": "Query scope requires clarification."},
-            clarification_question="请明确这些查询参数对应的业务字段。 / Please clarify the business fields for these query parameters.",
-            missing_evidence=["runtime_scope_clarification_required"])
+    # Unsupported mappings are platform scope-contract failures, not a vague
+    # model question. Engine error persistence preserves these value-free issues.
+    scope.require_resolved()
     capability = self.broker.open_session(run_id)
     if callable(getattr(self.broker, "bind_read_scope", None)):
         self.broker.bind_read_scope(run_id, scope)
@@ -167,14 +203,13 @@ async def _run(
         self.broker.close_session(run_id)
         raise
     from .runtime_contract import RuntimeRequest, RuntimeSession
-    from .runtime_harness_contract import _developer_instructions, _HARNESS_OUTPUT_SCHEMA, turn_prompt
-    from .acceptance_projection import output_schema
+    from .runtime_harness_contract import _developer_instructions, terminal_schema, turn_prompt
     operation = "acceptance_baseline" if direct_baseline else "acceptance_free_query" if state.get("acceptance_spec") else "free_query"
     budget = self.broker.budget_snapshot(run_id)
     remaining = max(0, budget["hard_limit_seconds"] - self.broker._elapsed_seconds(run_id))
     request = RuntimeRequest(driver.provider_id, operation, "harness", {"provider_id": driver.provider_id, **snapshot},
         turn_prompt(query, continuing=resuming_thread or turn_count > 1, acceptance_spec=state.get("acceptance_spec")),
-        output_schema(_HARNESS_OUTPUT_SCHEMA, state.get("acceptance_spec")), cwd=str(workspace),
+        terminal_schema(state.get("acceptance_spec")), cwd=str(workspace),
         instructions=_developer_instructions(full_access=full_access, budget=budget),
         permissions={"full_access": full_access, "acceptance_direct_baseline": direct_baseline},
         session=RuntimeSession(driver.provider_id, thread_id) if thread_id else None,
@@ -201,6 +236,9 @@ async def _run(
         self.store.update_harness_state(run_id, {"turn_count": turn_count, "thread_id": thread_id})
     except (TimeoutError, RuntimeContractError) as exc:
         if isinstance(exc, RuntimeContractError) and exc.code != "runtime_deadline_exceeded":
+            terminal_outcome = _terminal_handoff_outcome(self, driver, run_id, context, turn_count, run_started, exc)
+            if terminal_outcome is not None:
+                return terminal_outcome
             raise
         if getattr(exc, "detail", {}).get("cleanup_failure_code"):
             self.store.update_harness_state(run_id, {"cleanup_incomplete": True})
@@ -317,6 +355,9 @@ async def _run(
         )
     except Exception as exc:
         from .runtime_report_convergence import ReportCorrectionStopped
+        terminal_outcome = _terminal_handoff_outcome(self, driver, run_id, context, turn_count, run_started, exc)
+        if terminal_outcome is not None:
+            return terminal_outcome
         if isinstance(exc, ReportCorrectionStopped):
             calls, evidence = self.broker.snapshot(run_id)
             budget = self.broker.budget_snapshot(run_id)

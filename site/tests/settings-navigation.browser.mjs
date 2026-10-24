@@ -19,13 +19,27 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
   window.fixture={reads:[],writes:[],count:2,revision:1,default:'workbuddy',delayModels:false,pending:null,operation:null,failLists:false};
   window.fetch=async(url,options={})=>{
    const f=window.fixture, method=options.method||'GET';
-   if (method!=='GET') { f.writes.push({url,method,body:options.body,headers:options.headers}); return {ok:false,status:409,json:async()=>({detail:{message:'Synthetic rejection'}})}; }
+   if (method!=='GET') {
+    f.writes.push({url,method,body:options.body,headers:options.headers});
+    if(f.maintenance && String(url).includes('/codex/check')) {
+     f.latest='1.1.0';return {ok:true,json:async()=>({item:{current_version:f.installed||'1.0.0',latest_version:f.latest,update_enabled:true,update_available:true,version_check:{status:'checked',checked_at:'2026-10-23T00:00:00Z'}}})};
+    }
+    if(f.maintenance && String(url).endsWith('/codex/update')) {
+     if(f.updateUnknown)throw new Error('Synthetic response loss');
+     if(f.deferUpdate) {
+      f.remoteUpdate={operation_id:'synthetic_update',status:'running',phase:'downloading',target_version:'1.1.0',started_at:new Date().toISOString(),updated_at:new Date().toISOString(),filename:'openai_codex_cli_bin-1.1.0-py3-none-win_amd64.whl',downloaded_bytes:80000000,total_bytes:154000000,cleanup_complete:false};
+      await new Promise(resolve=>{f.releaseUpdate=resolve;});
+     }
+     f.installed='1.1.0';return {ok:true,json:async()=>({item:{current_version:f.installed,latest_version:f.latest,update_enabled:true,update_available:false,version_check:{status:'checked',checked_at:'2026-10-23T00:00:00Z'}},restart_required:true})};
+    }
+    return {ok:false,status:409,json:async()=>({detail:{message:'Synthetic rejection'}})};
+   }
    f.reads.push(String(url)); let data;
    if (String(url).endsWith('/free-query-history')) data={retention_days:30};
    else if (String(url).endsWith('/models')) { data={catalog_status:'ready',model_catalog_complete:true,items:[model('deepseek-v4.1-flash'),model('another-model',false)]}; if (f.delayModels) await new Promise(resolve=>{f.pending=resolve;}); }
    else {
     if(f.failLists) throw new Error('Synthetic offline');
-    const codex={...base,provider_id:'codex',sdk_id:'codex',name:{zh:'Codex',en:'Codex'},default_model_id:'gpt-6.1-sol',selected:f.default==='codex'};
+    const codex={...base,provider_id:'codex',sdk_id:'codex',update_enabled:true,name:{zh:'Codex',en:'Codex'},default_model_id:'gpt-6.1-sol',selected:f.default==='codex',...(f.maintenance?{current_version:f.installed||'1.0.0',latest_version:f.latest,update_enabled:true,update_available:!!f.latest&&!f.installed,version_check:{status:f.latest?'checked':'not_checked',checked_at:f.latest?'2026-10-23T00:00:00Z':null},update_status:f.remoteUpdate}:{})};
     const wb={...base,provider_id:'workbuddy',sdk_id:'workbuddy',name:{zh:'WorkBuddy',en:'WorkBuddy'},default_model_id:'deepseek-v4.1-flash',selected:f.default==='workbuddy',runtime_configuration_revision:f.revision,authentication:{...auth,operation:f.operation},service_site:'china',service_site_revision:1,service_site_digest:'a'.repeat(64),service_site_switch_allowed:false};
     const items=[codex,wb];
     for(let n=2;n<f.count;n++)items.push({...base,provider_id:'provider-'+n,sdk_id:'provider-'+n,name:{zh:'Provider '+n,en:'Provider '+n},enabled:n!==2,default_model_id:'model-'+n,runtime_configuration_revision:f.revision});
@@ -132,7 +146,61 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
   const body=JSON.parse(writes[0].body); assert.equal(body.model_id,'deepseek-v4.1-flash'); assert.ok(body.requestId);
  }
  assert.deepEqual(errors,[]);
- results.push({locale,width,single_panel:true,lazy_models:true,input_preserved:true,history_and_language:true,six_providers:true,binding_change_guarded:true,no_writes:true,no_overflow:true});
+ // Maintenance is the actual rendered component; writes below are synthetic only.
+ await page.reload();await choose('workbuddy');await card.locator('.sdk-model-section .sdk-model-picker select').waitFor();
+ const maintenance=card.locator('.settings-maintenance');
+ if(await maintenance.getAttribute('open')===null)await maintenance.locator(':scope > summary').click();
+ assert.equal(await maintenance.locator(':scope > section').count(),3);
+ assert.equal(await card.getByRole('button',{name:locale==='zh'?'同版本环境修复':'Repair same-version environment',exact:true}).isDisabled(),true);
+ assert.equal(await card.getByRole('button',{name:locale==='zh'?'更新到最新版本':'Update to latest',exact:true}).count(),0);
+ await page.screenshot({path:path.join(out,`${locale}-${width}-maintenance-workbuddy.png`),fullPage:true});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+ await page.evaluate(()=>{window.fixture.maintenance=true;window.fixture.writes=[];});await page.locator('[data-reread]').click();await choose('codex');
+ const codex=page.locator('[data-provider-panel="codex"]'),cm=codex.locator('.settings-maintenance');
+ if(await cm.getAttribute('open')===null){await cm.locator(':scope > summary').focus();await page.keyboard.press('Enter');}
+ const versions=cm.getByRole('button',{name:locale==='zh'?'检查可用版本':'Check available versions',exact:true});
+ const checkInstall=cm.getByRole('button',{name:locale==='zh'?'检查安装与登录':'Check installation and login',exact:true});
+ const update=cm.getByRole('button',{name:locale==='zh'?'更新到最新版本':'Update to latest',exact:true});
+ await versions.click();await page.waitForFunction(()=>window.fixture.latest==='1.1.0');
+ await page.waitForFunction(()=>[...document.querySelectorAll('[data-provider-panel="codex"] .settings-version-actions button')].every(button=>!button.disabled));
+ await checkInstall.click();await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes('检查完成')||document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes('Check completed'));
+ assert.equal(await checkInstall.isEnabled(),true);
+ assert.equal(await versions.isEnabled(),true);
+ const writes=await page.evaluate(()=>window.fixture.writes);
+ assert.equal(writes.length,2);assert.ok(writes[0].url.endsWith('/codex/check?scope=versions'));assert.ok(writes[1].url.endsWith('/codex/check'));
+ await page.screenshot({path:path.join(out,`${locale}-${width}-maintenance-codex.png`),fullPage:true});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+ if(width===390) {
+  await page.evaluate(()=>{window.fixture.deferUpdate=true;});
+  page.once('dialog',dialog=>dialog.accept());await update.click();
+  await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes('80.0 / 154.0 MB'));
+  assert.equal(await cm.locator('.sdk-update-button').isDisabled(),true);assert.equal(await versions.isDisabled(),true);
+  await page.screenshot({path:path.join(out,`${locale}-${width}-download-progress.png`),fullPage:true});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.evaluate(()=>{Object.assign(window.fixture.remoteUpdate,{phase:'cleanup',status:'cleanup_pending',cleanup_complete:false,updated_at:new Date().toISOString()});});
+  await page.locator('[data-reread]').click();
+  await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes(document.documentElement.lang.startsWith('zh')?'清理':'cleanup'));
+  assert.equal(await cm.locator('.sdk-update-button').isDisabled(),true);assert.equal(await versions.isDisabled(),true);
+  await page.evaluate(()=>{Object.assign(window.fixture.remoteUpdate,{phase:'restart_pending',status:'completed',outcome:'installed',cleanup_complete:true,updated_at:new Date().toISOString()});window.fixture.releaseUpdate();});
+  await page.locator('[data-reread]').click();
+  await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes(document.documentElement.lang.startsWith('zh')?'重启':'restart'));
+  const count=await page.evaluate(()=>window.fixture.writes.filter(w=>w.url.endsWith('/codex/update')).length);
+  assert.equal(count,1);assert.equal(await versions.isEnabled(),true);
+ }
+ if(width===1440) {
+  if(locale==='zh')await page.evaluate(()=>{window.fixture.updateUnknown=true;});
+  page.once('dialog',dialog=>dialog.accept());await update.click();
+  if(locale==='zh') {
+   await cm.getByRole('button',{name:'重新读取状态',exact:true}).waitFor();
+   await page.reload();await choose('codex');await cm.locator(':scope > summary').click();
+   assert.equal(await update.isDisabled(),true);assert.match(await cm.innerText(),/结果待核对/);
+   assert.equal(await page.evaluate(()=>window.fixture.writes.length),0);
+  } else {
+   await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes('restart required'));
+  }
+ }
+ assert.deepEqual(errors,[]);
+ results.push({locale,width,single_panel:true,lazy_models:true,input_preserved:true,history_and_language:true,six_providers:true,binding_change_guarded:true,navigation_writes:0,maintenance_synthetic_writes:true,no_overflow:true});
  await context.close();
 }
 } finally {await browser.close();}

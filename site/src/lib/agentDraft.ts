@@ -65,7 +65,9 @@ export function feedbackFailureText(code: unknown, locale: Locale): string {
     agent_feedback_timeout: ["本轮超过记录的处理时限，未应用修改。请核对当前修订后重试。", "This turn exceeded its recorded processing limit; no changes were applied. Review the current revision before retrying."],
     runtime_authentication_check_required: ["Runtime 认证尚未通过，未进入草稿修改。请先重新核对认证；仅凭本提示不能认定账号已退出。", "Runtime authentication is not confirmed; draft editing has not started. Recheck authentication first; this message alone does not mean you signed out."],
     workbuddy_authentication_confirmation_required: ["WorkBuddy 官方初始化未提供完整账号信息，尚不能确认登录；未修改草稿。请重新核对认证，不要反复提交修改。", "Official WorkBuddy initialization did not provide a complete account, so sign-in is unconfirmed. The draft was not changed. Recheck authentication instead of repeatedly submitting edits."],
-    runtime_authentication_binding_changed: ["草稿绑定的账号修订与当前认证不同。仅在原账号、站点、模型和 worker 均有有效恢复依据时才能继续；不会自动换账号或模型。", "The draft account revision differs from current authentication. Continuing requires verified recovery of the same account, site, model and worker; no account or model is switched automatically."],
+    runtime_authentication_binding_changed: ["草稿保存的运行绑定与当前认证或worker不一致，不代表账号已退出。需审核原绑定恢复，或明确确认仅为后续编辑绑定当前默认Runtime；不会自动切换账号或模型，也不会自动重发。", "The saved draft binding differs from current authentication or worker; this does not mean sign-out. Audit recovery or explicitly bind the current default for future editing only. Without explicit confirmation, no account or model is switched; requests are not resubmitted automatically."],
+    agent_authoring_runtime_changed: ["当前默认运行绑定已变化，本次未保存。请重新核对，草稿内容不会被自动覆盖。", "The default runtime binding changed; nothing was saved. Review it again; draft content is not overwritten automatically."],
+    agent_runtime_binding_request_conflict: ["此请求编号对应另一份修改，已阻止重复保存。请核对原请求状态。", "This request ID belongs to different content. Duplicate saving was blocked; inspect the original request."],
     runtime_authentication_operation_active: ["账号认证操作仍在进行，请等待完成；尚未执行草稿修改。", "An account authentication operation is still active. Wait for it to finish; draft editing has not started."],
     runtime_authentication_context_changed: ["认证运行环境发生变化，未应用修改。请在系统配置重新核对原站点认证。", "The authentication context changed; no edits were applied. Recheck the original site's authentication in system settings."],
     runtime_authentication_context_unavailable: ["无法核对认证运行环境，未应用修改。请检查本机运行账户与系统配置。", "The authentication context could not be verified; no edits were applied. Check the local process account and system settings."],
@@ -228,7 +230,7 @@ export function sampleFieldOptions(schema: ExecutionInputSchema, locale: Locale,
     const complex = inputType(property) === "object" || (inputType(property) === "array" && inputType(property.items!) === "object");
     const manual = complex || property["x-sapba-sensitive"] || property["x-sapba-secret-kind"] || privateName.test(item.key);
     const filled = supplied(values[item.key]);
-    return { ...item, disabled: Boolean(manual || filled), required: required.includes(item.key),
+    return { ...item, disabled: Boolean(manual || filled), required: required.includes(item.key), filled,
       reason: manual ? (locale === "zh" ? "请手工填写" : "Enter manually") : filled ? (locale === "zh" ? "已填写，保留为查询条件" : "Already entered; kept as query scope") : "" };
   });
 }

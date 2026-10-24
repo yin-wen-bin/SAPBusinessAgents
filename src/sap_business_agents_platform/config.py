@@ -50,11 +50,11 @@ class Settings:
     free_query_extension_seconds: int | None = None
     free_query_finalization_seconds: int | None = None
     local_deterministic_workers: int = 1
-    local_free_query_workers: int = 1
+    local_free_query_workers: int = 10
     local_feedback_workers: int = 1
     agent_feedback_timeout_seconds: float = 3600
     agent_feedback_cleanup_seconds: float = 10
-    max_concurrent_sap_gets: int = 2
+    max_concurrent_sap_gets: int = 10
     scheduler_lease_seconds: int = 60
     restricted_artifact_retention_days: int = 30
     local_ui_origins: tuple[str, ...] = (
@@ -216,7 +216,7 @@ class Settings:
                 1, int(os.getenv("SAPBA_LOCAL_DETERMINISTIC_WORKERS", "1"))
             ),
             local_free_query_workers=max(
-                1, int(os.getenv("SAPBA_LOCAL_FREE_QUERY_WORKERS", "1"))
+                1, int(os.getenv("SAPBA_LOCAL_FREE_QUERY_WORKERS", "10"))
             ),
             local_feedback_workers=max(
                 1, int(os.getenv("SAPBA_LOCAL_FEEDBACK_WORKERS", "1"))
@@ -225,7 +225,7 @@ class Settings:
                 1, int(os.getenv("SAPBA_LOCAL_ROLE_MATCHING_WORKERS", "1"))
             ),
             max_concurrent_sap_gets=max(
-                1, int(os.getenv("SAPBA_MAX_CONCURRENT_SAP_GETS", "2"))
+                1, int(os.getenv("SAPBA_MAX_CONCURRENT_SAP_GETS", "10"))
             ),
             scheduler_lease_seconds=max(
                 15, int(os.getenv("SAPBA_SCHEDULER_LEASE_SECONDS", "60"))

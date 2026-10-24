@@ -1,6 +1,8 @@
 import type { Locale } from "../lib/types";
+import { acceptanceErrorLabels } from "../lib/acceptancePresentation";
 
 const labels: Record<string, [string, string]> = {
+  runtime_report_schema_invalid: ["模型最终结构化结果未符合约定格式；业务比较尚未完成。", "The model's final structured result violates the required format; business comparison is incomplete."],
   contract_version_required: ["请补齐新版业务验收定义。", "Complete the versioned business acceptance definition."],
   contract_definition_missing: ["请说明结果粒度、纳入范围和业务状态的判断依据。", "Define record grain, scope and business-status criteria."],
   contract_records_missing: ["尚未声明结构化业务明细。", "Typed canonical business records are missing."],
@@ -33,15 +35,29 @@ const labels: Record<string, [string, string]> = {
   acceptance_projection_enum_invalid: ["验收报告字段值不在契约允许范围内。", "An acceptance report field value is outside the contract enum."],
   acceptance_report_schema_invalid: ["验收报告结构不符合当前契约。", "The acceptance report structure does not match the current contract."],
   inventory_fifo_assessment_required: ["本次验收明确要求有效的库存FIFO评估，但尚未取得。", "This acceptance explicitly requires a valid inventory FIFO assessment, but none is available."],
+  runtime_scope_mapping_unsupported: ["平台尚未支持此参数的读取字段映射，不能丢弃该条件；需要修复范围契约。", "The platform does not support this parameter's read-field mapping. Keep the condition and repair the scope contract."],
+  runtime_scope_date_invalid: ["请填写有效的日历日期（YYYY-MM-DD），不能使用时间、列表或无效日期。", "Enter a valid calendar date (YYYY-MM-DD), not a timestamp, list or invalid date."],
+  runtime_scope_bounds_conflict: ["过账起始日不能晚于过账截止日。", "The posting start date cannot be after the posting cutoff date."],
+  runtime_scope_input_type_invalid: ["此范围参数的类型不受支持，请核对输入。", "The scope parameter has an unsupported input type."],
 };
 
 export function ContractIssues({ issues, locale }: { issues: any[]; locale: Locale }) {
-  return <ul>{issues.map((issue, i) => <li key={i}>{(labels[issue.code] || ["验收定义或输出需要完善。", "The acceptance definition or output needs attention."])[locale === "zh" ? 0 : 1]} {issue.path && <code style={{ overflowWrap: "anywhere" }}>{issue.path}</code>}</li>)}</ul>;
+  return <ul>{issues.map((issue, i) => {
+    const field = ({ posting_date_to: ["过账截止日", "Posting cutoff"], posting_date_from: ["过账起始日", "Posting start"] } as Record<string, string[]>)[issue.input_field]?.[locale === "zh" ? 0 : 1];
+    const scopeReason = ({
+      authoritative_date_schema_required: ["尚无完整权威元数据证明日期字段及日历语义，已阻止读取；不能推测或丢弃日期条件。", "Full authoritative metadata has not proven the date field and calendar semantics. Reading is blocked; do not infer or discard the date condition."],
+      date_bound_not_proven: ["查询未能证明保留已确认的日期边界，已阻止扩大范围的读取。", "The query did not prove the confirmed date boundary; a wider read was blocked."],
+      range_scope_not_proven: ["当前工具没有已认证的日期范围映射，不能据此读取。", "This tool has no certified date-range mapping; reading is blocked."],
+    } as Record<string, [string, string]>)[issue.scope_issue];
+    return <li key={i}>{field && <strong>{field}: </strong>}{(scopeReason || labels[issue.code] || acceptanceErrorLabels[issue.code] || ["验收定义或输出需要完善。", "The acceptance definition or output needs attention."])[locale === "zh" ? 0 : 1]} {!field && !String(issue.code || '').startsWith('source_') && issue.path && <code style={{ overflowWrap: "anywhere" }}>{issue.path}</code>}</li>;
+  })}</ul>;
 }
 
-export default function AcceptanceReadiness({ value, locale }: { value: any; locale: Locale }) {
+export default function AcceptanceReadiness({ value, locale, compact = false }: { value: any; locale: Locale; compact?: boolean }) {
   if (!value || value.status === "reused") return null;
   const tr = (zh: string, en: string) => locale === "zh" ? zh : en;
+  if (compact && value.status === "ready") return <p className="acceptance-overview-caption">{tr("验收准备就绪仅代表离线检查通过，不代表业务验收通过。", "Readiness reflects offline checks only, not a business acceptance PASS.")}</p>;
+  if (compact) return <div className="acceptance-overview-readiness" role="status"><strong>{tr("验收准备需要处理", "Readiness needs attention")}</strong><p>{value.status === "trial_required" ? tr("请完成当前修订的只读试运行。", "Complete the read-only trial for this revision.") : tr("请先完善验收定义或输出；仍可保存草稿和试运行。", "Resolve the acceptance definition or output issues; saving and trials remain available.")}</p><ContractIssues issues={value.issues || []} locale={locale} /></div>;
   return <div className="acceptance-inline-summary" aria-live="polite">
     <strong>{tr("验收准备检查", "Acceptance readiness")}</strong>
     <p>{value.status === "ready" ? tr("业务定义与本修订试运行输出已通过离线检查，可开始正式验收。此检查不代表业务验收通过。", "The definition and current trial passed offline checks. Formal acceptance is ready; business correctness is not certified.") : value.status === "trial_required" ? tr("业务定义检查通过，请完成当前修订的只读试运行。", "The definition passed. Complete a trial for this revision.") : tr("请先完善以下问题，再开始正式验收。您仍可保存草稿和试运行。", "Resolve these issues before formal acceptance. Saving and trials remain available.")}</p>

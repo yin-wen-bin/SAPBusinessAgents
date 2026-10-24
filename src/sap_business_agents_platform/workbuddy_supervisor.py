@@ -32,7 +32,10 @@ class WorkBuddySupervisor:
         self.worker_lock = asyncio.Lock()
         self.probe_lock = asyncio.Lock()
         self.dispatch_lock = asyncio.Lock()
+        from .runtime_capacity import RuntimeCapacity
+        self.query_capacity = RuntimeCapacity()
         self.active: dict[str, dict] = {}
+        self._dispatching: dict[str, dict] = {}
         self.queued: set[str] = set()
         self.cancelled: set[str] = set()
         self.closed: set[str] = set()
@@ -43,19 +46,25 @@ class WorkBuddySupervisor:
 
     @property
     def reserved(self):
-        return self._reserved.get()
+        value = self._reserved.get()
+        return value if value and value.get('active') else False
 
     @asynccontextmanager
-    async def reserve(self):
+    async def reserve(self, *, task_id=None, parallel=False):
         """Business entry points acquire capacity before starting their clocks."""
-        if self.reserved:
+        if self.reserved and (not parallel or self.reserved.get('task_id') == task_id):
+            if task_id is not None and self.reserved.get('parallel') and self.reserved['task_id'] != task_id:
+                raise WorkBuddyError('workbuddy_reservation_owner_mismatch')
             yield
             return
-        async with self.execution_lock:
-            token = self._reserved.set(True)
+        async with self.query_capacity.acquire(shared=parallel):
+            reservation = {'task_id': task_id, 'parallel': parallel, 'active': True,
+                           'worker_lock': asyncio.Lock() if parallel else self.worker_lock}
+            token = self._reserved.set(reservation)
             try:
                 yield
             finally:
+                reservation['active'] = False
                 self._reserved.reset(token)
 
     @contextmanager
@@ -81,7 +90,7 @@ class WorkBuddySupervisor:
         return self.environment.assert_operation(snapshot, operation, mode=mode)
 
     @asynccontextmanager
-    async def _capacity(self, probe: bool, task_id: str):
+    async def _capacity(self, probe: bool, task_id: str, operation: str = ''):
         if task_id in self.queued:
             raise WorkBuddyError("workbuddy_task_busy")
         self.queued.add(task_id)
@@ -90,13 +99,18 @@ class WorkBuddySupervisor:
                 async with self.probe_lock:
                     yield
             else:
-                async with nullcontext() if self.reserved else self.execution_lock:
+                async with (nullcontext() if self.reserved else self.reserve(
+                        task_id=task_id, parallel=operation == 'free_query')):
+                    reservation = self.reserved
+                    if reservation['parallel'] and reservation['task_id'] != task_id:
+                        raise WorkBuddyError('workbuddy_reservation_owner_mismatch')
                     # Reservations propagate to business child tasks. They may not
                     # create a second concurrent worker even if contexts are shared.
-                    async with self.worker_lock:
+                    async with reservation['worker_lock']:
                         yield
         finally:
             self.queued.discard(task_id)
+            self._dispatching.pop(task_id, None)
 
     def pending(self) -> list[dict]:
         scope = inspection(self.environment)
@@ -109,7 +123,7 @@ class WorkBuddySupervisor:
         directory = self.environment.root / 'jobs'
         from .workbuddy_job_index import enabled, pending
         if enabled(self.environment.root):
-            return pending(self.environment.root, scope=scope)
+            return pending(self.environment.root, scope=scope, owned_dispatch=self._owned_dispatch)
         paths = list(directory.glob('*.json'))
         if scope:
             scope.guard(('job_names',), lambda: frozenset(p.name for p in directory.glob('*.json')),
@@ -122,8 +136,26 @@ class WorkBuddySupervisor:
             except (OSError, ValueError):
                 raise WorkBuddyError("workbuddy_job_record_invalid") from None
             if item.get("status") in {"cleanup_pending", "dispatching"}:
-                result.append(item)
+                if not self._owned_dispatch(item):
+                    result.append(item)
         return result
+
+    def _owned_dispatch(self, record):
+        if record.get('status') != 'dispatching':
+            return False
+        owner = self._dispatching.get(record.get('task_id'))
+        if owner is None:
+            active = self.active.get(record.get('task_id'))
+            owner = active['record'] if active else None
+        return bool(owner and record.get('attempt_id') == owner.get('attempt_id')
+                    and record.get('runtime_digest') == owner.get('runtime_digest')
+                    and record.get('environment_digest') == owner.get('environment_digest')
+                    and record.get('protocol') == PROTOCOL
+                    and record.get('deadline') == owner.get('deadline')
+                    and record.get('dispatch_phase') in {'claimed', 'spawning', 'owned'}
+                    and record.get('dispatch_owner_pid') == os.getpid()
+                    and record.get('dispatch_owner_identity') not in {None, 'unknown'}
+                    and record.get('dispatch_owner_identity') == process_identity(os.getpid()))
 
     def reconcile(self) -> list[dict]:
         """Kill-on-close closes orphan jobs on API death; uncertainty stays blocked."""
@@ -137,6 +169,8 @@ class WorkBuddySupervisor:
             except (ValueError, OSError):
                 raise WorkBuddyError("workbuddy_job_record_invalid") from None
             if item.get("status") not in {"dispatching", "running", "cleanup_pending"}:
+                continue
+            if self._owned_dispatch(item):
                 continue
             if item.get('status') == 'dispatching':
                 pid = item.get('pid') or item.get('dispatch_owner_pid')
@@ -239,7 +273,7 @@ class WorkBuddySupervisor:
             raise WorkBuddyError("workbuddy_windows_restricted_unverified")
         from .workbuddy_site import assert_binding, routing
         assert_binding(self.environment.state(), snapshot)
-        async with self._capacity(probe, task_id):  # Queue time is outside the execution budget.
+        async with self._capacity(probe, task_id, operation):  # Queue time is outside the execution budget.
             # Publish queue ownership before yielding to disk work so cancel()
             # can revoke a waiting task. Cleanup still precedes every dispatch.
             if await asyncio.to_thread(self.reconcile):
@@ -249,6 +283,12 @@ class WorkBuddySupervisor:
             deadline = min(deadline, inherited) if deadline is not None and inherited is not None else deadline if deadline is not None else inherited
             deadline = deadline if deadline is not None else time.monotonic() + seconds
             payload = copy.deepcopy(payload)
+            terminal_checks = None
+            if payload.get("terminal_contract") is not None:
+                from .runtime_terminal_contract import VERSION as terminal_version, TerminalChecks
+                if payload["terminal_contract"] != terminal_version or operation not in {"free_query", "acceptance_baseline", "acceptance_free_query"}:
+                    raise WorkBuddyError("workbuddy_terminal_protocol_invalid")
+                terminal_checks = TerminalChecks(payload["output_schema"])
             async with self.dispatch_lock:
                 # Cleanup can become uncertain while this request waits for
                 # capacity. Recheck at dispatch, not just before entering queue.
@@ -273,12 +313,15 @@ class WorkBuddySupervisor:
                            "runtime_digest": digest(snapshot), "deadline": time.time() + seconds}
                 request = {**binding, "snapshot": snapshot, "payload": payload, "mode": mode,
                            "cli_path": release["cli_path"], "service_site_config": routing(service_site)}
+                if terminal_checks is not None:
+                    request["terminal_contract"] = terminal_version
                 if payload.get("output_schema") is not None:
                     from .workbuddy_diagnostics import NATIVE_DIAGNOSTICS
                     # Additive negotiation: older locked workers ignore this;
                     # newer workers never send checks to an older supervisor.
                     request["native_output_diagnostics"] = NATIVE_DIAGNOSTICS
                 encoded = self._encode(request)
+                self._dispatching[task_id] = binding
                 # Credential-free allowlist, rather than inheriting SAP/.env/secrets.
                 allowed = {"SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "USERPROFILE", "APPDATA",
                            "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PATH"}
@@ -300,6 +343,7 @@ class WorkBuddySupervisor:
                     job.attach(process.pid)  # Worker waits for request; SDK cannot spawn before attach.
                     owned(self.environment.root, binding, process.pid, process_identity(process.pid), deadline=deadline)
                 except TimeoutError:
+                    self._dispatching.pop(task_id, None)
                     job.close()
                     from .workbuddy_job_index import enabled
                     if enabled(self.environment.root) and 'process' not in locals():
@@ -307,6 +351,7 @@ class WorkBuddySupervisor:
                                     {**binding, 'status': 'interrupted', 'cleanup_complete': True})
                     raise WorkBuddyError("workbuddy_deadline_exceeded") from None
                 except BaseException:
+                    self._dispatching.pop(task_id, None)
                     job.close()
                     if "process" in locals() and process.returncode is None:
                         process.kill()
@@ -348,6 +393,7 @@ class WorkBuddySupervisor:
                 item = {"process": process, "job": job, "cancelled": False,
                         "record": record, "record_path": record_path}
                 self.active[task_id] = item
+                self._dispatching.pop(task_id, None)
             total = 0
             launched_at = time.time()
             from .workbuddy_auth_signals import StderrAuthenticationSignal
@@ -379,6 +425,9 @@ class WorkBuddySupervisor:
                 if record.get("last_output_check"):
                     detail["last_output_check"] = record["last_output_check"]
                     detail["last_schema_valid"] = record["last_output_check"]["schema_valid"]
+                for key in ("terminal_contract", "terminal_convergence", "last_rejected_candidate"):
+                    if key in record:
+                        detail[key] = record[key]
                 return detail
 
             async def read_owned():
@@ -414,7 +463,11 @@ class WorkBuddySupervisor:
                     await process.stdin.drain()
                     protocol_progress["protocol_phase"] = "handshake_read"
                     handshake = await read_owned()
-                    if handshake != {"kind": "hello", **binding}:
+                    expected_hello = {"kind": "hello", **binding}
+                    if terminal_checks is not None:
+                        expected_hello["terminal_contract"] = terminal_version
+                        record["terminal_contract"] = terminal_version
+                    if handshake != expected_hello:
                         raise WorkBuddyError("workbuddy_handshake_mismatch")
                     while True:
                         protocol_progress["protocol_phase"] = "message_read"
@@ -460,6 +513,17 @@ class WorkBuddySupervisor:
                             except SchemaError:
                                 raise WorkBuddyError("workbuddy_output_schema_invalid") from None
                             diagnosis["schema_sha256"] = digest(schema)
+                            terminal_reply = {}
+                            if terminal_checks is not None:
+                                try:
+                                    terminal_reply = terminal_checks.check(message.get("value"),
+                                        submission_id=message.get("submission_id"),
+                                        origin=message.get("origin"), phase=phase)
+                                except ValueError:
+                                    raise WorkBuddyError("workbuddy_terminal_protocol_invalid") from None
+                                record["terminal_convergence"] = terminal_reply["convergence"]
+                                if phase == "native_candidate" and not diagnosis["schema_valid"]:
+                                    record["last_rejected_candidate"] = diagnosis
                             # Keep the authoritative last check even if the SDK
                             # never produces a terminal and must be terminated.
                             record["last_output_check"] = diagnosis
@@ -476,7 +540,7 @@ class WorkBuddySupervisor:
                                 "call_id": message["call_id"], "task_id": task_id,
                                 "attempt_id": binding["attempt_id"], "schema_sha256": digest(schema),
                                 "schema_valid": diagnosis["schema_valid"],
-                                "validation_issues": diagnosis["validation_issues"]}))
+                                  "validation_issues": diagnosis["validation_issues"], **terminal_reply}))
                             protocol_progress.update(protocol_phase="schema_reply_drain", schema_reply_state="written")
                             await process.stdin.drain()
                             # Drained means the host transport accepted the frame,
@@ -484,6 +548,8 @@ class WorkBuddySupervisor:
                             protocol_progress["schema_reply_state"] = "drained"
                             record["protocol_progress"] = dict(protocol_progress)
                             atomic_json(record_path, record, deadline=deadline)
+                            if terminal_reply.get("stop"):
+                                raise WorkBuddyError("workbuddy_terminal_correction_stalled")
                         elif kind == "event":
                             protocol_progress["protocol_phase"] = "event_record_write"
                             from .workbuddy_diagnostics import safe_progress
@@ -505,6 +571,9 @@ class WorkBuddySupervisor:
                             if time.monotonic() >= deadline:
                                 raise TimeoutError
                             answer = message["result"]
+                            if terminal_checks is not None and (answer.get("output_format") != "native_json_schema"
+                                    or not terminal_checks.accepts_native_result(answer.get("text"))):
+                                raise WorkBuddyError("workbuddy_structured_output_missing")
                             reported_model = answer.get("actual_model")
                             if not isinstance(reported_model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", reported_model):
                                 reported_model = None

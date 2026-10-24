@@ -80,6 +80,18 @@ def _localized(value: Any) -> str:
 
 
 def _normalize_run(
+    run: JsonObject, case: CanonicalTestCase, contract: JsonObject,
+    *, fixed_contract_output: bool = True,
+) -> JsonObject:
+    from sap_business_agents_platform.source_semantics import contexts_from_run
+    result = _normalize_run_value(run, case, contract, fixed_contract_output=fixed_contract_output)
+    contexts = contexts_from_run(run)
+    if contexts:
+        result["source_semantics"] = contexts
+    return result
+
+
+def _normalize_run_value(
     run: JsonObject,
     case: CanonicalTestCase,
     contract: JsonObject,
@@ -972,6 +984,11 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
             "- Always include these required limitation codes in the result; they describe "
             f"scope boundaries even when the source queries are complete: [{limitations}]."
         )
+    if contract.get("source_semantics"):
+        instructions.append("- Frozen source-scope definition (requirements, never candidate answers): "
+            + json.dumps(contract["source_semantics"], ensure_ascii=False)
+            + ". Retain all source rows and their proved economic kinds. Keep carryforward, posted balances and noted requests separate; "
+              "never add ledgers together, remove date conditions, drop rows or switch sources merely to obtain MATCH.")
     return f"{case.question['en']}\n\n" + "\n".join(instructions)
 
 
@@ -995,6 +1012,7 @@ def _projection_spec(contract: JsonObject) -> JsonObject:
         else "none"
     )
     return AcceptanceProjectionSpec(
+        source_semantics=contract.get("source_semantics"),
         integer_fields=list(contract.get("integer_fields") or []),
         enum_values=contract.get("enum_values") or {},
         nullable_fields=contract.get("nullable_fields") if contract.get("contract_version") else None,

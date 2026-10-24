@@ -62,7 +62,11 @@ class RuntimeAuthenticationService:
         self.tasks: dict[str, asyncio.Task] = {}
         self.checking: set[str] = set()
         self._shared_checks = {}
+        self._post_use_checks: dict[str, asyncio.Task] = {}
+        self._post_use_status: dict[str, dict[str, str]] = {}
+        self._closing = False
         self.leases: dict[str, int] = {}
+        self.sdk_maintenance_active: set[str] = set()
         self.transient: dict[str, dict] = {}
         self.path = root / "authentication.json"
         self.state = {"version": 1, "accounts": {}, "operations": {}}
@@ -223,6 +227,10 @@ class RuntimeAuthenticationService:
                 value.update(status="check_failed", failure_code="runtime_authentication_state_invalid")
                 value["capabilities"].update(check=False, login=False, logout=False, switch_account=False,
                                             reason="runtime_authentication_state_invalid")
+            if provider == 'workbuddy':
+                sync = self._post_use_status.get(provider)
+                if sync and (provider in self._post_use_checks or value.get('authenticated') is not True):
+                    value['authentication_sync'] = copy.deepcopy(sync)
             return value
 
     def operation(self, provider, operation_id):
@@ -242,6 +250,8 @@ class RuntimeAuthenticationService:
 
     def _blockers(self, provider):
         result = list(self.busy(provider))
+        if provider in self.sdk_maintenance_active:
+            result.append({"code": "sdk_maintenance_active"})
         if self.leases.get(provider):
             result.append({"code": "runtime_authentication_business_active"})
         if provider in self.checking:
@@ -250,6 +260,8 @@ class RuntimeAuthenticationService:
 
     def assert_binding(self, provider, snapshot=None, *, require_authenticated=True):
         with self.lock:
+            if provider in self.sdk_maintenance_active:
+                raise error("sdk_maintenance_active")
             if self.invalid_state:
                 raise error("runtime_authentication_state_invalid")
             if self._active(provider):
@@ -273,11 +285,27 @@ class RuntimeAuthenticationService:
 
     def bind(self, provider, snapshot):
         with self.lock:
+            if provider in self.sdk_maintenance_active:
+                raise error("sdk_maintenance_active")
             if self.invalid_state:
                 raise error("runtime_authentication_state_invalid")
             if self._active(provider):
                 raise error("runtime_authentication_operation_active")
             return {**snapshot, **self._context(provider), "authentication_binding_revision": self._account(provider)["revision"]}
+
+    @asynccontextmanager
+    async def sdk_maintenance(self, provider):
+        """Exclusive mutation reservation; never hold a thread lock across await."""
+        with self.lock:
+            self.assert_binding(provider, self.bind(provider, {}), require_authenticated=False)
+            if self._blockers(provider):
+                raise error("runtime_authentication_busy", blockers=self._blockers(provider))
+            self.sdk_maintenance_active.add(provider)
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.sdk_maintenance_active.discard(provider)
 
     @asynccontextmanager
     async def use(self, provider, snapshot=None, *, require_authenticated=True):
@@ -293,11 +321,100 @@ class RuntimeAuthenticationService:
                 raise unconfirmed_error(provider, self._account(provider))
             self.assert_binding(provider, snapshot, require_authenticated=require_authenticated)
             self.leases[provider] = self.leases.get(provider, 0) + 1
+        completed = False
         try:
             yield
+            completed = True
         finally:
             with self.lock:
                 self.leases[provider] -= 1
+                # A managed SDK return has already drained its owned process.
+                # Reconcile changed cache metadata separately from the model's
+                # result/budget. Never bless it just because that call worked.
+                if provider == 'workbuddy' and require_authenticated and completed and not self.leases[provider]:
+                    self._schedule_post_use_check(provider)
+
+    def _cache_only_change(self, provider):
+        """Metadata is only a trigger. Identity still comes from official check."""
+        account = self._account(provider)
+        if (account.get('status') != 'authenticated' or account.get('authenticated') is not True
+                or account.get('invalidation_pending')):
+            return False
+        prior, current = account.get('authentication_observation'), self._observation(provider)
+        return (isinstance(prior, dict) and isinstance(current, dict)
+                and all(prior.get(key) and prior.get(key) == current.get(key)
+                        for key in ('context_digest', 'source_digest'))
+                and prior.get('cache_digest') is not None and current.get('cache_digest') is not None
+                and prior != current)
+
+    def _schedule_post_use_check(self, provider):
+        # Called under the auth lock; no await or SDK execution while holding it.
+        # Failure to schedule must not replace the completed business result.
+        if self._closing or self.invalid_state or self._active(provider):
+            return
+        existing = self._post_use_checks.get(provider)
+        if existing is not None and not existing.done():
+            return
+        try:
+            if not self._cache_only_change(provider):
+                return
+            context = self._context(provider)
+            revision = self._account(provider)['revision']
+            task = asyncio.get_running_loop().create_task(self._check_after_use(provider, context, revision))
+        except (SDKManagerError, OSError, ValueError, RuntimeError):
+            self._post_use_status[provider] = {'status': 'blocked', 'failure_code': 'runtime_authentication_context_unavailable'}
+            return
+        self._post_use_checks[provider] = task
+        self._post_use_status[provider] = {'status': 'queued'}
+        def finished(done):
+            with self.lock:
+                if self._post_use_checks.get(provider) is done:
+                    self._post_use_checks.pop(provider, None)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+
+    async def _check_after_use(self, provider, context, revision):
+        # Some model-check APIs return a failed-check record rather than raise
+        # a cleanup error. A normal lease return alone therefore cannot prove
+        # that every owned SDK process has been drained. Reuse the existing
+        # supervisor's active/pending proof, not broad business/history scans.
+        supervisor = getattr(getattr(self._adapter(provider), 'workbuddy', None), 'supervisor', None)
+        if supervisor is not None:
+            try:
+                if await asyncio.to_thread(lambda: bool(supervisor.active or supervisor.pending())):
+                    self._post_use_status[provider] = {'status': 'deferred', 'failure_code': 'runtime_authentication_business_active'}
+                    return
+            except Exception:
+                self._post_use_status[provider] = {'status': 'blocked', 'failure_code': 'runtime_authentication_check_required'}
+                return
+        with self.lock:
+            # Do not resume an old completion into a new site/account, an
+            # interactive auth operation, or another still-owned SDK lease.
+            if (self._closing or self._active(provider) or self.leases.get(provider)
+                    or not self._context_current(provider, context)
+                    or self._account(provider)['revision'] != revision):
+                self._post_use_status[provider] = {'status': 'deferred'}
+                return
+            try:
+                if not self._cache_only_change(provider):
+                    self._post_use_status[provider] = {'status': 'not_required'}
+                    return
+            except (SDKManagerError, OSError, ValueError):
+                self._post_use_status[provider] = {'status': 'blocked', 'failure_code': 'runtime_authentication_context_unavailable'}
+                return
+            self._post_use_status[provider] = {'status': 'checking'}
+        try:
+            # Reuse the same bounded official check and single-flight path as
+            # explicit/pre-dispatch checks. No login, retry or model call.
+            result = await self.check(provider)
+            self._post_use_status[provider] = {'status': 'confirmed' if result.get('authenticated') is True
+                and result.get('authentication_context_status') == 'current' else 'failed'}
+        except asyncio.CancelledError:
+            self._post_use_status[provider] = {'status': 'cancelled'}
+            raise
+        except Exception:
+            self._post_use_status[provider] = {'status': 'failed', 'failure_code': 'runtime_authentication_check_required'}
 
     def _accept(self, provider, result, *, change=False, context=None, observation=None):
         context = context or {}
@@ -379,7 +496,7 @@ class RuntimeAuthenticationService:
             context = self._context(provider)
             if expected_context is not None and expected_context != context:
                 raise error('runtime_authentication_context_changed')
-            if self._active(provider) or provider in self.checking:
+            if self._active(provider) or provider in self.checking or provider in self.sdk_maintenance_active:
                 raise error("runtime_authentication_operation_active")
             self.checking.add(provider)
         try:
@@ -583,7 +700,9 @@ class RuntimeAuthenticationService:
         return self.operation(provider, operation_id)
 
     async def close(self):
-        tasks = set(self.tasks.values()) | {item[1] for item in self._shared_checks.values()}
+        self._closing = True
+        tasks = (set(self.tasks.values()) | {item[1] for item in self._shared_checks.values()}
+                 | set(self._post_use_checks.values()))
         for task in tasks:
             task.cancel()
         if tasks:

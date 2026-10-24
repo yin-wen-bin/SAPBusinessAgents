@@ -105,6 +105,8 @@ class EmbeddedODataProvider:
         self._run_metadata: dict[tuple[str, str, str, str], tuple[Any, str]] = {}
         self._run_metadata_locks: dict[tuple[str, str, str, str], asyncio.Lock] = {}
         self._metadata_scope: ContextVar[str | None] = ContextVar("sap_schema_scope", default=None)
+        from ..source_semantics import catalog
+        self._source_semantics = catalog()
         self._service_registry = ODataServiceRegistry.load(service_registry_path)
         self._catalog_seed = self._load_catalog_seed(catalog_seed_path)
         self._merge_curated_catalog(curated_catalog_path)
@@ -734,6 +736,8 @@ class EmbeddedODataProvider:
                             "source_step_id": source_id,
                         }
                     )
+        from ..source_semantics import plan_issues
+        issues.extend(plan_issues(normalized_plan, self._source_semantics))
         return {
             "ok": not issues,
             "status": "validated" if not issues else "rejected",
@@ -830,6 +834,17 @@ class EmbeddedODataProvider:
             },
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
         }
+        from ..source_semantics import assess, public_assessment
+        semantics = []
+        for index, step in enumerate(steps, start=1):
+            actual = step_results[str(step.get("step_id") or f"step_{index}")]
+            effective = {**{"service_name": plan.get("service_name"), "odata_version": plan.get("odata_version")}, **step}
+            value = assess(effective, actual.get("results") or [], self._source_semantics,
+                           source_complete=actual.get("source_complete") is True)
+            if value is not None:
+                semantics.append(public_assessment(value))
+        if semantics:
+            response["source_semantics"] = semantics
         self._cases[case_id] = response
         return response
 

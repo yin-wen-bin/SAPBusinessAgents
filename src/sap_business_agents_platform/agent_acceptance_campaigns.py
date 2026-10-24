@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import time
 import uuid
 from contextlib import nullcontext
@@ -28,6 +29,16 @@ FINALIZE_SECONDS = 120
 TERMINAL_CAMPAIGN_STATUSES = {
     "passed", "failed", "blocked", "cancelled", "interrupted", "superseded",
 }
+
+
+def _scope_failure_category(code: str, issues: list[dict[str, Any]]) -> str:
+    if code.startswith("source_") or any(str(i.get("code", "")).startswith("source_") for i in issues):
+        return "evidence"
+    if code == "runtime_scope_clarification_required":
+        return "scope" if not issues or any(i.get("code") == "runtime_scope_mapping_unsupported" for i in issues) else "input"
+    if code in {"runtime_scope_input_invalid", "runtime_query_scope_rejected", "runtime_skill_scope_rejected"}:
+        return "scope"
+    return "contract" if code == "acceptance_report_validation_failed" else "environment"
 
 
 def _acceptance_mode(manifest: dict[str, Any]) -> str:
@@ -125,9 +136,11 @@ class AgentAcceptanceJobs:
                 "case_id": item.case_id, "input": public_input,
                 "sensitive_inputs": sensitive, "sensitive_fingerprints": fingerprints,
             })
+        expected_runtime_digest = getattr(payload, 'expected_runtime_digest', None)
         request_hash = canonical_hash({
             "revision": revision,
             **({"runtime_model_id": payload.runtime_model_id} if payload.runtime_model_id else {}),
+            **({"expected_runtime_digest": expected_runtime_digest} if expected_runtime_digest else {}),
             "cases": [{"case_id": item["case_id"], "input": item["input"],
                        "sensitive_fingerprints": item["sensitive_fingerprints"]} for item in cases],
         })
@@ -190,13 +203,14 @@ class AgentAcceptanceJobs:
                 code="runtime_changeset_integration_verification_required",
             )
         try:
-            runtime = self.sdk_manager.runtime_snapshot()
+            from .acceptance_runtime import resolve_acceptance_runtime, acceptance_runtime_digest
+            runtime = resolve_acceptance_runtime(self.sdk_manager, payload.runtime_model_id)
             if runtime.get("provider_id") == "workbuddy":
-                runtime = self.sdk_manager.workbuddy.runtime_snapshot(payload.runtime_model_id, formal=True)
                 for operation in ("acceptance_baseline", "acceptance_free_query"):
                     self.sdk_manager.workbuddy.environment.assert_operation(runtime, operation)
-            elif payload.runtime_model_id:
-                raise AgentLifecycleError("runtimeModelId is only supported for WorkBuddy acceptance.", code="agent_acceptance_runtime_model_invalid")
+            if expected_runtime_digest and expected_runtime_digest != acceptance_runtime_digest(runtime):
+                raise AgentLifecycleError("The system default binding changed. Review it before submitting again.",
+                                          code="agent_acceptance_runtime_changed")
         except Exception as exc:
             raise AgentLifecycleError(str(exc), code=str(getattr(exc, "code", "runtime_not_selectable"))) from exc
 
@@ -296,7 +310,8 @@ class AgentAcceptanceJobs:
             await self._finish_not_tested(draft_id, campaign_id, operation_id, "cancelled", "agent_acceptance_cancelled")
         except BusinessContractError as exc:
             await self._finish_not_tested(draft_id, campaign_id, operation_id, "failed", exc.code,
-                                         failure_category="contract", failure_stage=exc.stage, issues=exc.issues)
+                                         failure_category=("evidence" if any(str(i.get("code", "")).startswith("source_") for i in exc.issues) else "contract"),
+                                         failure_stage=exc.stage, issues=exc.issues)
         except AcceptanceCampaignOperationalError as exc:
             status = "failed" if exc.failure_category == "contract" else "interrupted"
             await self._finish_not_tested(
@@ -310,11 +325,22 @@ class AgentAcceptanceJobs:
                 issues=exc.issues,
                 diagnostics=exc.diagnostics,
             )
+        except ImportError as exc:
+            module = str(getattr(exc, 'name', '') or '')
+            diagnostics = {'exception_type': type(exc).__name__,
+                           'last_error_code': 'agent_acceptance_dependency_unavailable'}
+            if re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*', module) and len(module) <= 200:
+                diagnostics['dependency_module'] = module
+            await self._finish_not_tested(
+                draft_id, campaign_id, operation_id, 'interrupted',
+                'agent_acceptance_dependency_unavailable', diagnostics=diagnostics,
+            )
         except Exception as exc:
             code = str(getattr(exc, "code", "") or "agent_acceptance_internal_error")
             if not code.replace("_", "").isalnum():
                 code = "agent_acceptance_internal_error"
-            await self._finish_not_tested(draft_id, campaign_id, operation_id, "interrupted", code)
+            await self._finish_not_tested(draft_id, campaign_id, operation_id, "interrupted", code,
+                                         diagnostics={'exception_type': type(exc).__name__, 'last_error_code': code})
 
     async def _run_case(
         self, campaign_id: str, draft_id: str, revision: int, index: int,
@@ -374,10 +400,19 @@ class AgentAcceptanceJobs:
         if baseline_run.get("status") == RunStatus.waiting_input.value:
             if self._proven_evidence_gap(baseline_id):
                 return self._complete_blocked_case(campaign_id, case_id, baseline_id, code="independent_baseline_evidence_incomplete")
-            raise AcceptanceCampaignOperationalError("agent_acceptance_business_input_required", failure_stage="baseline")
+            clarification = baseline_run.get("error") or {}
+            diagnostics = self._run_diagnostics(baseline_id)
+            if clarification.get("code") == "clarification_required" and isinstance(clarification.get("message"), str):
+                diagnostics["clarification_question"] = clarification["message"][:2000]
+            raise AcceptanceCampaignOperationalError("agent_acceptance_business_input_required", failure_category="input",
+                failure_stage="baseline", diagnostics=diagnostics)
         baseline_projection = _required_projection(baseline_run, "baseline", contract=contract)
         try:
             baseline_normalized = _normalize_acceptance_projection(baseline_projection, case, contract)
+            from .source_semantics import contexts_from_run
+            baseline_sources = contexts_from_run(baseline_run)
+            if baseline_sources:
+                baseline_normalized["source_semantics"] = baseline_sources
         except BusinessContractError as exc:
             exc.stage = "baseline"
             raise
@@ -696,6 +731,13 @@ class AgentAcceptanceJobs:
             if record.status in TERMINAL_STATUSES:
                 value = record.model_dump(mode="json")
                 result = value.get("result") or {}
+                terminal_failure = self.store.get_harness_state(run_id).get("terminal_handoff_failure") or {}
+                if terminal_failure.get("code") in {"runtime_terminal_correction_stalled", "runtime_structured_output_missing", "runtime_structured_output_invalid"}:
+                    raise AcceptanceCampaignOperationalError(terminal_failure["code"], failure_category="contract",
+                        failure_stage=self.get(draft_id, campaign_id).get("phase"),
+                        issues=list(terminal_failure.get("validation_issues") or []),
+                        diagnostics={**self._run_diagnostics(run_id), "terminal_handoff_failure": terminal_failure,
+                            "last_error_code": terminal_failure["code"]})
                 stop_reason = (result.get("harness") or {}).get("stop_reason")
                 if stop_reason in {"limit_reached", "interrupted", "capability_unavailable"}:
                     raise AcceptanceCampaignOperationalError(
@@ -707,7 +749,8 @@ class AgentAcceptanceJobs:
                         code = "agent_acceptance_stage_timeout"
                     detail = (record.error or {}).get("detail") or {}
                     issues = detail.get("validation_issues") if isinstance(detail, dict) else []
-                    category = "contract" if code == "acceptance_report_validation_failed" else "environment"
+                    issues = [i for i in issues if isinstance(i, dict)] if isinstance(issues, list) else []
+                    category = _scope_failure_category(code, issues)
                     raise AcceptanceCampaignOperationalError(
                         code,
                         failure_category=category,

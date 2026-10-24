@@ -6,7 +6,7 @@ import ts from "typescript";
 
 const formSource = await readFile(new URL("../src/components/FreeQueryPanel.astro", import.meta.url), "utf8");
 const runSource = await readFile(new URL("../src/components/RunConsole.astro", import.meta.url), "utf8");
-const formScript = ts.transpileModule(formSource.match(/<script>([\s\S]*?)<\/script>/)[1], {
+const formScript = ts.transpileModule(formSource.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .*free-query-lifecycle.mjs';/m, ''), {
   compilerOptions: {target: ts.ScriptTarget.ES2022},
 }).outputText;
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -33,6 +33,7 @@ function formHarness(locale) {
   const window = {location: {search: "", href: ""},
     setInterval(fn, ms) {timers.set(++timerId, {fn, ms}); return timerId;}, clearInterval(id) {timers.delete(id);}};
   const context = createContext({window, document: {querySelectorAll: () => [panel]}, URLSearchParams,
+    rememberQueryOwner: (run, session) => { window.savedOwner = {run, session}; },
     Date: class extends Date {static now() {return now;}},
     FormData: class {get(key) {return fields[key];}},
     fetch: (url, options) => {calls.push({url, ...options}); return pending.promise;},
@@ -62,6 +63,7 @@ for (const locale of ["zh", "en"]) {
     ui.pending.resolve({ok: true, json: async () => ({run_id: "existing-run", session_id: "existing-session"})});
     await first;
     assert.equal(ui.window.location.href, "/run/?run=existing-run&session=existing-session");
+    assert.deepEqual(ui.window.savedOwner, {run: 'existing-run', session: 'existing-session'});
     assert.equal(ui.timers.size, 0);
   });
   test(`${locale}: definite admission rejection is visible and can be corrected`, async () => {

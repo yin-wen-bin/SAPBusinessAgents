@@ -1,0 +1,13 @@
+{
+  "run_id": "run_1768d6b67a8845d4",
+  "schema_sha256": "1d8bb5d831106e64236294a1be8f52aaf77bf4898c7e5383c0b3f6cf3eb9daeb",
+  "replay_kind": "safe_shape_reconstruction_not_original_values",
+  "attempts": [
+    {"sequence": 38553, "enum_errors": ["/input_kind", "/input_field"], "presentation_error": true, "feedback_match": "matched"},
+    {"sequence": 38567, "enum_errors": ["/input_kind", "/input_field"], "presentation_error": true, "feedback_match": "matched"},
+    {"sequence": 38582, "enum_errors": ["/input_kind", "/input_field"], "presentation_error": false, "feedback_match": "matched"},
+    {"sequence": 38597, "enum_errors": ["/input_kind", "/input_field"], "presentation_error": false, "feedback_match": "matched"}
+  ],
+  "terminal": {"sequence": 38611, "result_subtype": "success", "is_error": false, "structured_output_present": false},
+  "cleanup_complete": true
+}

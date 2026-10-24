@@ -80,6 +80,9 @@ def instructions(*, acceptance: bool = False) -> str:
         "Report handoff contract: sap_final_report_validate takes {\"report\": <presentation>}, "
         "not the complete final envelope. report.title is a bilingual {zh,en} object and "
         "report.blocks is an array of typed blocks, never an object. Follow its declared Schema. "
+        "Use only declared properties; an optional report property need not be emitted when it "
+        "does not apply. Do not invent additional attributes for a block type. The successful "
+        "validated_report supplies the existing defaults required by the strict final envelope. "
         "A synthetic shape example, not business evidence, is "
         '{"report":{"title":{"zh":"结构示例","en":"Shape example"},"blocks":[]}}. '
         "Do not use this empty example as a business answer. On failure, use validation_issues "
@@ -199,7 +202,9 @@ def schema_feedback(report, errors):
     result = []
     for error in errors[:50]:
         current, raw, path = presentation_schema(), report, ["report"]
+        parent, parent_path = current, list(path)
         for part in error.get("loc") or []:
+            parent, parent_path = current, list(path)
             current, safe = _field(current, part)
             path.append(safe)
             if isinstance(raw, dict):
@@ -210,10 +215,33 @@ def schema_feedback(report, errors):
                 raw = None
         expected = current.get("type") or [s.get("type", "declared_schema") for s in current.get("anyOf", [])] or "declared_schema"
         actual = "missing" if error.get("type") == "missing" else json_type(raw)
-        result.append({"code": "acceptance_report_schema_invalid", "path": "/" + "/".join(path),
+        issue = {"code": "acceptance_report_schema_invalid", "path": "/" + "/".join(path),
             "constraint": str(error.get("type") or "schema"), "expected": expected, "actual_type": actual,
             "message": "The report field does not satisfy the declared presentation schema.",
-            "repair_action": "Correct this field to its declared type and constraints, then validate the report again. Do not submit the full final envelope as report."})
+            "repair_action": "Correct this field to its declared type and constraints, then validate the report again. Do not submit the full final envelope as report."}
+        if error.get("type") == "extra_forbidden":
+            if parent.get("anyOf"):
+                parent = next((s for s in parent["anyOf"] if s.get("type") == "object"), {})
+            issue.update(expected="absent", object_location="/" + "/".join(parent_path),
+                allowed_properties=list(parent.get("properties", {})),
+                repair_action="Remove undeclared properties from the object at object_location; "
+                    "allowed_properties lists its complete trusted field names. Keep declared content "
+                    "and evidence unchanged, then validate again. Do not infer a replacement property "
+                    "or change business conclusions. No input key or value is reproduced in this feedback.")
+        elif current.get("enum") is not None:
+            issue["allowed_values"] = copy.deepcopy(current["enum"])
+        elif error.get("type") == "value_error":
+            # Only fixed checker-owned shape messages are safe. Never echo an
+            # arbitrary exception message, context, candidate key or value.
+            messages = {"Value error, presentation table rows must match the declared column count",
+                "Value error, presentation table total_rows cannot be smaller than displayed rows"}
+            messages.update("Value error, presentation block " + kind + " has no display content"
+                for kind in presentation_schema()["properties"]["blocks"]["items"]["properties"]["type"]["enum"])
+            if error.get("msg") in messages:
+                issue["message"] = error["msg"].removeprefix("Value error, ")
+                issue["repair_action"] = "Correct the stated block-content or table-shape constraint using verified evidence only. " \
+                    "Do not invent facts, change conclusions, omit required records or repeat external reads. Then validate again."
+        result.append(issue)
     return result
 
 

@@ -62,12 +62,15 @@ async function harness(locale = "zh") {
     fetch: async (url, options = {}) => { calls.push({ url, ...options }); return { ok: true, json: () => response(url, options) }; },
     window: { confirm: () => confirmed, prompt: () => null, addEventListener: (name, fn) => {windowEvents[name] = fn;} },
   });
-  runInContext(`${copyDefinition}\n${script}\nglobalThis.settingsUI = { renderModels, renderAuthentication, loadModels, render, load, applyRuntimeResult };`, context);
+  runInContext(`${copyDefinition}\n${script}\nglobalThis.settingsUI = { renderModels, renderAuthentication, loadModels, render, load, applyRuntimeResult, maybeLoadAuthentication, refreshViewForms, runtimeViews };`, context);
   await settle(); calls.length = 0;
   return { root, calls, stored, timeouts: () => [...timers.values()].map((item) => item.ms), confirm: (value) => { confirmed = value; }, respond: (fn) => { response = fn; },
     renderRuntimes: (items) => context.settingsUI.render(items, "codex"),
+    maintenance: provider => context.settingsUI.runtimeViews.get(provider).versionSection.controls,
     loadRuntimes: (options = {incremental: true}) => context.settingsUI.load(false, options),
     applyRuntimeResult: (payload) => context.settingsUI.applyRuntimeResult(payload),
+    updateAuthentication: (sdk, view) => context.settingsUI.maybeLoadAuthentication(sdk, view),
+    refreshForms: provider => context.settingsUI.refreshViewForms(context.settingsUI.runtimeViews.get(provider)),
     visible: async (visible) => {document.hidden = !visible; documentEvents.visibilitychange?.(); await settle();},
     hidePage: () => windowEvents.pagehide?.(),
     loadModels: (sdk, section) => context.settingsUI.loadModels(sdk, section),
@@ -81,6 +84,151 @@ const sdk = { provider_id: "codex", name: { zh: "Codex", en: "Codex" }, default_
 const model = (id, selected = false) => ({ model_id: id, display_name: id, selected, check_status: "compatible", selectable: true,
   supported_reasoning_efforts: ["low", "high"], reasoning_effort: "high", saved_reasoning_effort: "high", default_reasoning_effort: "low" });
 const catalog = { catalog_status: "ready", model_catalog_complete: true, items: [model("model-a", true), model("model-b")] };
+
+test('maintenance checks finish, keep controls stable, and read versions without authentication requests', async () => {
+  const h = await harness();
+  const value = {...sdk, sdk_id:'codex-python-sdk', enabled:true, update_enabled:true, current_version:'1.0.0', latest_version:null};
+  h.renderRuntimes([value]);
+  const controls=h.maintenance('codex');
+  h.respond(async(url) => url.endsWith('/check?scope=versions') ? {item:{current_version:'1.0.0',latest_version:'1.1.0',update_enabled:true,update_available:true,version_check:{status:'checked',checked_at:'2026-10-23'}}} : {items:[value],default_provider_id:'codex'});
+  await controls.versions.fire('click');
+  assert.equal(controls.versions.disabled,false);
+  assert.equal(controls.update.disabled,false);
+  assert.equal(h.maintenance('codex'),controls);
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
+  assert.ok(h.calls[0].url.endsWith('/check?scope=versions'));
+  h.respond(async(url) => url.endsWith('/codex/check') ? {item:value} : {items:[value],default_provider_id:'codex'});
+  await controls.check.fire('click');
+  assert.equal(controls.check.textContent,'检查安装与登录');
+  assert.equal(controls.check.disabled,false);
+});
+
+test('WorkBuddy never offers its pinned environment rebuild as an SDK upgrade', async () => {
+  const h=await harness();
+  h.renderRuntimes([{...sdk,provider_id:'workbuddy',sdk_id:'codebuddy-agent-sdk',can_update:true,update_enabled:true}]);
+  const controls=h.maintenance('workbuddy');
+  assert.equal(controls.versions.disabled,true);
+  assert.equal(controls.update.hidden,true);
+  assert.match(controls.note.textContent,/锁定安装器.*不提供在线升级/);
+  assert.match(h.root.textContent,/固定版本.*环境及认证绑定/);
+  await controls.versions.fire('click');await controls.update.fire('click');
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,0);
+});
+
+test('unknown update freezes installation across rerender and subsequent actions only read status', async () => {
+  const h=await harness();h.confirm(true);
+  const value={...sdk,sdk_id:'codex-python-sdk',enabled:true,update_enabled:true,update_available:true,latest_version:'1.1.0',current_version:'1.0.0'};
+  h.renderRuntimes([value]);
+  h.respond(async(url,options)=>{if(options.method==='POST')throw new Error('response lost');return {items:[value],default_provider_id:'codex'};});
+  await h.maintenance('codex').update.fire('click');
+  h.renderRuntimes([value]);
+  const controls=h.maintenance('codex');
+  assert.equal(controls.update.disabled,true);assert.equal(controls.reread.hidden,false);
+  assert.match(controls.status.textContent,/结果待核对/);
+  assert.match([...h.stored.values()].join(''),/unknown/);
+  await controls.update.fire('click');await controls.reread.fire('click');await settle();
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
+});
+
+test('confirmed update shows restart pending rather than claiming the running SDK switched', async () => {
+  const h=await harness();h.confirm(true);
+  const value={...sdk,sdk_id:'codex-python-sdk',enabled:true,update_enabled:true,update_available:true,latest_version:'1.1.0',current_version:'1.0.0'};
+  h.renderRuntimes([value]);
+  h.respond(async(url,options)=>options.method==='POST'?{item:{...value,current_version:'1.1.0',update_available:false},restart_required:true}:{items:[value],default_provider_id:'codex'});
+  await h.maintenance('codex').update.fire('click');
+  assert.match(h.maintenance('codex').status.textContent,/待重启生效/);
+  assert.equal(h.maintenance('codex').check.disabled,false);
+});
+
+for (const locale of ['zh','en']) test(`${locale}: staged installer progress uses GET, survives late responses and reports cleanup`,async()=>{
+  const h=await harness(locale), now=Date.now();
+  const base={...sdk,sdk_id:'codex-python-sdk',enabled:true,update_enabled:true,update_available:true,current_version:'1.0.0',latest_version:'1.1.0'};
+  const status={operation_id:'update_synthetic',target_version:'1.1.0',started_at:new Date(now).toISOString(),updated_at:new Date(now+100).toISOString(),status:'running',phase:'downloading',filename:'openai_codex_cli_bin-1.1.0-py3-none-win_amd64.whl',downloaded_bytes:80000000,total_bytes:154000000};
+  h.respond(async()=>({items:[{...base,update_status:status}],default_provider_id:'codex'}));
+  await h.loadRuntimes();
+  let controls=h.maintenance('codex');
+  assert.match(controls.status.textContent,/80.0 \/ 154.0 MB/);
+  assert.ok(controls.update.disabled && controls.versions.disabled);
+  assert.ok(h.timeouts().includes(2000));
+  h.respond(async()=>({items:[{...base,update_status:{...status,updated_at:new Date(now+50).toISOString(),downloaded_bytes:1000}}],default_provider_id:'codex'}));
+  await h.loadRuntimes();assert.match(h.maintenance('codex').status.textContent,/80.0 \/ 154.0 MB/);
+  h.respond(async()=>({items:[{...base,update_status:{...status,updated_at:new Date(now+200).toISOString(),status:'cleanup_pending',phase:'cleanup'}}],default_provider_id:'codex'}));
+  await h.loadRuntimes();controls=h.maintenance('codex');
+  assert.match(controls.status.textContent,locale==='zh'?/清理尚未确认/:/cleanup is unconfirmed/);
+  assert.ok(controls.update.disabled && controls.check.disabled);
+  assert.equal(h.calls.some(c=>c.method==='POST'),false);
+});
+
+test('a previous completed operation cannot finish a newly submitted update',async()=>{
+  const h=await harness();h.confirm(true);
+  const base={...sdk,sdk_id:'codex-python-sdk',enabled:true,update_enabled:true,update_available:true,current_version:'1.0.0',latest_version:'1.1.0'};
+  const old={operation_id:'old',status:'completed',target_version:'1.1.0',phase:'restart_pending',started_at:'2020-01-01T00:00:00Z',updated_at:'2020-01-01T00:00:00Z'};
+  let finish;
+  h.renderRuntimes([base]);
+  h.respond(async(url,options)=>options.method==='POST'?await new Promise(resolve=>{finish=resolve;}):{items:[{...base,update_status:old}],default_provider_id:'codex'});
+  const submitted=h.maintenance('codex').update.fire('click');await settle();await settle();
+  assert.ok(h.maintenance('codex').update.disabled);
+  assert.doesNotMatch(h.maintenance('codex').status.textContent,/待重启生效/);
+  finish({item:{...base,current_version:'1.1.0'},restart_required:true});await submitted;
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
+});
+
+test('summary loads saved WorkBuddy models before full eligibility and only issues GET', async () => {
+  const ui = await harness();
+  const runtime = {...sdk, provider_id:'workbuddy', enabled:true, selectable:false, authenticated:null,
+    environment_digest:'env', service_site_digest:'site', runtime_configuration_revision:1,
+    display_status:{snapshot_id:1, instance_id:'boot', binding:'metadata', stale:false},
+    status_refresh:{status:'refreshing', running:true, stale:true},
+    authentication:{status:'not_checked', authenticated:null, display_only:true, revision:1, capabilities:{}}};
+  ui.respond(async url => url.includes('/models?view=summary')
+    ? {items:[{...model('saved'),selectable:false,display_pending:true}], display_status:runtime.display_status, status_refresh:runtime.status_refresh}
+    : url.endsWith('/authentication') ? {authentication:runtime.authentication} : {items:[runtime],default_provider_id:'workbuddy'});
+  ui.renderRuntimes([runtime]); await settle(); await settle();
+  assert.ok(ui.calls.some(call=>call.url.endsWith('/models?view=summary')));
+  assert.equal(ui.calls.some(call=>call.url.endsWith('/authentication')),false);
+  assert.equal(ui.calls.filter(call=>call.method).length,0);
+  assert.match(ui.root.textContent,/完整状态核对中/);
+  const picker=ui.root.querySelector('.sdk-model-section').querySelector('.sdk-model-picker').querySelector('select'); assert.equal(picker.value,'saved');
+  assert.equal(button(ui.root,'检查兼容性').disabled,true);
+});
+
+test('summary completion preserves picker identity, selection and disables stale saves', async () => {
+  const ui = await harness();
+  const section = new Node('section');
+  const runtime={...sdk,provider_id:'workbuddy',authenticated:true,installed:true,model_check_supported:true};
+  const payload={...catalog,display_status:{snapshot_id:1},status_refresh:{stale:true},
+    items:[{...model('model-a'),display_pending:true,selectable:false},{...model('model-b'),display_pending:true,selectable:false}]};
+  // Render into the same real UI component without reconstructing its picker.
+  const first=ui.render(runtime,payload), picker=first.querySelector('select');
+  picker.value='model-b'; await picker.fire('change');
+  first.updateModelSummary(runtime,{...payload,status_refresh:{stale:false},items:[model('model-a'),model('model-b')]});
+  assert.equal(first.querySelector('select'),picker); assert.equal(picker.value,'model-b');
+  assert.equal(ui.calls.length,0);
+  first.updateModelSummary(runtime,payload);
+  assert.equal(button(first,'检查兼容性').disabled,true);
+  assert.equal(first.querySelectorAll('button').some(node=>node.textContent==='设为默认模型'),false);
+});
+
+test('a pending models response arriving after full status is ready follows with one new GET', async () => {
+  const ui=await harness(); let release, modelReads=0;
+  let runtime={...sdk,provider_id:'workbuddy',enabled:true,display_status:{instance_id:'boot',snapshot_id:1,binding:'same',stale:false},
+    status_refresh:{status:'refreshing',running:true,stale:true},
+    authentication:{status:'not_checked',authenticated:null,revision:1,capabilities:{},display_only:true}};
+  ui.respond(async url=>{
+    if(url.endsWith('/models?view=summary')){
+      modelReads++;
+      if(modelReads===1) await new Promise(resolve=>{release=resolve;});
+      return {items:[model('saved')],display_status:runtime.display_status,status_refresh:runtime.status_refresh};
+    }
+    if(url.endsWith('/authentication'))return {authentication:runtime.authentication};
+    return {items:[runtime],default_provider_id:'workbuddy'};
+  });
+  ui.renderRuntimes([runtime]); await settle();assert.equal(modelReads,1);
+  runtime={...runtime,status_refresh:{status:'ready',running:false,stale:false,checked_at:'new'}};
+  await ui.loadRuntimes(); release(); await settle(); await settle();
+  assert.equal(modelReads,2);
+  assert.equal(ui.calls.filter(call=>call.method).length,0);
+});
 
 for (const provider of ["codex", "workbuddy"]) for (const locale of ["zh", "en"]) {
   test(`${provider}/${locale}: valid check is reused after GET preflight; zero model checks`, async () => {
@@ -241,7 +389,7 @@ test("status polls survive the old eight-poll limit and preserve account/model n
   ui.respond(async (url) => url.endsWith("/models") ? catalog : {items: [slow], default_provider_id: "codex"});
   await ui.loadRuntimes();
   for (let i = 0; i < 35; i++) await ui.poll();
-  assert.ok(ui.calls.filter(call => call.url.endsWith("/sdk-runtimes")).length > 8);
+  assert.ok(ui.calls.filter(call => call.url.endsWith("/sdk-runtimes?view=summary")).length > 8);
   assert.ok(ui.timeouts().includes(15000));
   assert.equal(ui.root.querySelector(".sdk-card"), card);
   assert.equal(card.querySelector(".sdk-authentication-section"), account);
@@ -265,6 +413,102 @@ test("hidden pages pause status polls, visible pages resume and list reads are s
   assert.equal(ui.calls.length, count + 2);
   release(); await Promise.all([first, second]);
   ui.hidePage(); assert.deepEqual(ui.timeouts(), []);
+});
+
+for (const status of ['unknown','ready']) test(`full ${status}/stale idle result continues polling until ready`, async () => {
+  const ui = await harness();
+  const pending = runtimeItem({status_refresh:{status,stale:true,running:false},
+    display_status:{stale:false,running:false,instance_id:'boot',snapshot_id:1,binding:'same'}});
+  const ready = {...pending,status_refresh:{status:'ready',stale:false,running:false}};
+  ui.respond(async url => url.includes('/models') ? catalog : {items:[pending],default_provider_id:'workbuddy'});
+  await ui.loadRuntimes(); await settle();
+  assert.ok(ui.timeouts().includes(2000));
+  ui.respond(async url => url.includes('/models') ? catalog : {items:[ready],default_provider_id:'workbuddy'});
+  await ui.poll(); await settle();
+  assert.deepEqual(ui.timeouts(),[]);
+  assert.equal(ui.calls.some(call=>call.url.endsWith('/authentication')),false);
+  assert.equal(ui.calls.some(call=>call.method),false);
+});
+
+test('last confirmed compatibility and identity survive refresh without enabling stale actions', async () => {
+  const ui=await harness();
+  const sdk={...runtimeItem(),display_status:{instance_id:'boot',snapshot_id:1,binding:'same',stale:false}};
+  const account={...authentication,status:'authenticated',authenticated:true,identity:'masked-account',display_only:true,capabilities:{check:true}};
+  const section=ui.renderAuthentication(sdk,account);
+  assert.match(section.textContent,/masked-account/);
+  assert.equal(button(section,'刷新认证').disabled,true);
+  const models=ui.render(sdk,{...catalog,display_status:sdk.display_status,status_refresh:{stale:true},
+    items:[{...model('model-a'),last_confirmed:true,display_pending:true,selectable:false,actual_model:'model-a'}]});
+  assert.match(models.textContent,/上次兼容通过/);
+  assert.match(models.textContent,/model-a/);
+  assert.equal(button(models,'检查兼容性').disabled,true);
+  assert.equal(ui.calls.length,0);
+});
+
+test('authentication summary reuses complete checks and updates capability controls in place',async()=>{
+  const ui=await harness();
+  const auth={...authentication,status:'authenticated',authenticated:true,identity:'masked-account',revision:1};
+  let runtime={...runtimeItem(),environment_digest:'env',service_site_digest:'site',
+    display_status:{instance_id:'boot',snapshot_id:1,binding:'same',stale:false},authentication:auth};
+  ui.respond(async url=>url.includes('/models')?catalog:{items:[runtime],default_provider_id:'workbuddy'});
+  await ui.loadRuntimes();await settle();
+  const account=ui.root.querySelector('.sdk-authentication-section'),check=button(account,'刷新认证');
+  assert.equal(check.disabled,false);
+  runtime={...runtime,authentication:{...auth,display_only:true,capabilities:{}},status_refresh:{stale:true,status:'unknown',running:false}};
+  await ui.loadRuntimes();await settle();
+  assert.equal(ui.root.querySelector('.sdk-authentication-section'),account);
+  assert.equal(button(account,'刷新认证'),check);assert.equal(check.disabled,true);
+  runtime={...runtime,authentication:auth,status_refresh:{stale:false,status:'ready',running:false}};
+  await ui.loadRuntimes();await settle();assert.equal(check.disabled,false);
+  assert.equal(ui.calls.some(call=>call.url.endsWith('/authentication')),false);
+});
+
+test('failed status GET stops automatic retry and visibility recovery only reads GET',async()=>{
+  const ui=await harness();
+  ui.respond(async()=>({items:[runtimeItem()],default_provider_id:'workbuddy'}));
+  await ui.loadRuntimes();assert.ok(ui.timeouts().includes(2000));
+  ui.respond(async()=>{throw new Error('synthetic network failure');});
+  await ui.poll();assert.deepEqual(ui.timeouts(),[]);
+  ui.respond(async()=>({items:[runtimeItem({status_refresh:{status:'ready',stale:false,running:false}})],default_provider_id:'workbuddy'}));
+  await ui.visible(false);await ui.visible(true);assert.deepEqual(ui.timeouts(),[]);
+  assert.equal(ui.calls.some(call=>call.method),false);
+});
+
+test('saved authentication progress cannot synchronously reenter the summary renderer',async()=>{
+  const ui=await harness();let renders=0;
+  const auth={...authentication,status:'authenticated',authenticated:true,revision:9,
+    operation:{operation_id:'historical-completed',status:'completed'}};
+  const sdk={provider_id:'workbuddy',display_status:{instance_id:'boot'},authentication:auth};
+  const view={sdk,card:new Node('article'),cachedAuthentication:auth,accountSection:{updateAuthenticationSummary(){
+    assert.equal(++renders,1);ui.updateAuthentication(sdk,view);
+  }}};
+  ui.updateAuthentication(sdk,view);
+  assert.equal(renders,1);assert.equal(ui.calls.length,0);
+});
+
+test('explicit form reset clears the detached model renderer and reloads the same summary key',async()=>{
+  const ui=await harness();let reads=0;
+  const sdk={...runtimeItem(),display_status:{instance_id:'boot',binding:'same',stale:false}};
+  ui.respond(async url=>url.includes('/models')?(reads++,{...catalog,display_status:sdk.display_status}):{items:[sdk],default_provider_id:'workbuddy'});
+  ui.renderRuntimes([sdk]);await settle();await settle();
+  assert.ok(ui.root.querySelector('.sdk-model-section').querySelector('select'));
+  assert.equal(reads,1);ui.refreshForms('workbuddy');await settle();await settle();
+  assert.ok(ui.root.querySelector('.sdk-model-section').querySelector('select'));
+  assert.equal(reads,2);
+});
+
+test('an authentication binding change also invalidates an in-flight model summary key',async()=>{
+  const ui=await harness();let reads=0,release;
+  let sdk={...runtimeItem(),authentication:{...authentication,revision:1},display_status:{instance_id:'boot',binding:'same',stale:false}};
+  ui.respond(async url=>{
+    if(url.includes('/models')){if(++reads===1)await new Promise(resolve=>release=resolve);return {...catalog,display_status:sdk.display_status};}
+    return {items:[sdk],default_provider_id:'workbuddy'};
+  });
+  ui.renderRuntimes([sdk]);await settle();
+  sdk={...sdk,authentication:{...sdk.authentication,revision:2}};
+  await ui.loadRuntimes();release();await settle();await settle();
+  assert.equal(reads,2);assert.ok(ui.root.querySelector('.sdk-model-section').querySelector('select'));
+  assert.equal(ui.calls.some(call=>call.url.endsWith('/authentication')),false);
 });
 
 test("a successful enable response is applied before list refresh and stale GET cannot undo it", async () => {
@@ -302,7 +546,7 @@ test("a genuine status failure offers a read-only retry without authentication o
   ui.respond(async () => ({items: [failed], default_provider_id: "codex"}));
   await button(ui.root, "重新读取状态").fire("click");
   assert.equal(ui.calls.length, 1); assert.equal(ui.calls[0].method, undefined);
-  assert.match(ui.calls[0].url, /\/sdk-runtimes$/);
+  assert.match(ui.calls[0].url, /\/sdk-runtimes\?view=summary$/);
   assert.deepEqual(ui.timeouts(), []);
 });
 for (const locale of ["zh", "en"]) test(`${locale}: shared authentication renders without automatic probes and sign-in does not enable runtime`, async () => {

@@ -12,11 +12,13 @@ LAUNCHER = ROOT / "scripts" / "Start-SAPBusinessAgents.ps1"
 CMD_LAUNCHER = ROOT / "start-sap-business-agents.cmd"
 
 
-def test_cmd_launcher_always_restarts_and_preserves_extra_arguments() -> None:
+def test_cmd_launcher_preserves_arguments_and_requires_explicit_restart() -> None:
     source = CMD_LAUNCHER.read_text(encoding="utf-8")
 
     invocation = next(line for line in source.splitlines() if line.startswith("powershell.exe "))
-    assert 'Start-SAPBusinessAgents.ps1" -Restart %*' in invocation
+    assert 'Start-SAPBusinessAgents.ps1" %*' in invocation
+    assert '-Restart' not in invocation
+    assert ' -Restart %*' in (ROOT / 'restart-sap-business-agents.cmd').read_text()
 
 
 def test_launcher_contract_includes_cached_preview_and_explicit_dev_mode() -> None:
@@ -25,31 +27,25 @@ def test_launcher_contract_includes_cached_preview_and_explicit_dev_mode() -> No
     assert "[switch]$Dev" in source
     assert "[switch]$RebuildSite" in source
     assert '".local-data\\site-builds"' in source
-    assert '"preview", "--host", "127.0.0.1"' in source
-    assert '"dev", "--host", "127.0.0.1"' in source
+    runtime = (ROOT / 'scripts/service-startup.py').read_text()
+    assert "'dev' if" in runtime and '"preview"' in runtime
     # Astro can auto-background in an agent-owned process. The launcher must
     # retain a foreground PID for health checks and owned-process cleanup.
-    assert source.count('"--ignore-lock"') == 2
+    assert runtime.count('"--ignore-lock"') == 2
     assert '"last-attempt.json"' in source
     assert "GetActiveTcpListeners" in source
     assert source.count("Get-NetTCPConnection") == 1
 
 
 def test_restart_preserves_the_prevalidated_site_build_path_until_preview_start() -> None:
-    source = LAUNCHER.read_text(encoding="utf-8")
-
-    initial_dist = source.index("$SiteDist = $null")
-    restart_build = source.index(
-        '$SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) "dist"'
-    )
-    preview_start = source.index(
-        '-Arguments @($AstroCli, "preview", "--host", "127.0.0.1"'
-    )
-
-    assert initial_dist < source.index("try {")
-    assert source.count("$SiteDist = $null") == 1
-    assert initial_dist < restart_build < preview_start
-    assert "The validated Web UI build path is unavailable before preview startup." in source
+    # The single orchestrator passes one content fingerprint through prepare,
+    # private-port validation and final switch; it never resets a validated path.
+    source = (ROOT / 'scripts/service-startup.py').read_text()
+    body = source[source.index('def _ensure('):source.index('def ensure(')]
+    assert body.index('"prepare_site"') < body.index('"site_candidate_ready"') < body.index('stop_owned(')
+    assert 'switch_site(root, fingerprint' in body
+    assert 'dist = root / ".local-data/site-builds" / fingerprint / "dist"' in source
+    assert 'startup_site_build_missing' in source
 
 
 def _platform_health_probe_source() -> str:

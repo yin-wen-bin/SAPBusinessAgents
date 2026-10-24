@@ -1222,7 +1222,7 @@ class RunStore:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT * FROM free_query_feedback_requests
-                WHERE session_id = ? AND status IN ('queued', 'reviewing', 'waiting_input')
+                WHERE session_id = ? AND status IN ('queued', 'reviewing', 'waiting_input', 'cancelling', 'cleanup_pending')
                 ORDER BY created_at DESC LIMIT 1""",
                 (session_id,),
             ).fetchone()
@@ -1398,6 +1398,9 @@ class RunStore:
     def claim_execution_job(
         self, job_id: str, *, lease_owner: str, lease_expires_at: str
     ) -> dict[str, Any] | None:
+        from .startup_control import maintenance_pending
+        if maintenance_pending(self.path.parent):
+            return None
         now = utc_now()
         with self._lock, self._connect() as connection:
             cursor = connection.execute(

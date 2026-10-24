@@ -5,17 +5,17 @@ type Props = {
   schema: ExecutionInputSchema | ExecutionInputProperty;
   values: Record<string, any>; onChange: (value: Record<string, any>) => void;
   secrets: Record<string, string>; onSecrets: (value: Record<string, string>) => void;
-  locale: Locale; errors?: Record<string, string>; disabled?: boolean; prefix?: string;
+  locale: Locale; errors?: Record<string, string>; disabled?: boolean; prefix?: string; idPrefix?: string;
 };
 
 /** React adapter for the same declared inputs and runtime-field-grid presentation as AgentRunPanel. */
-export default function AgentDraftInputs({ schema, values, onChange, secrets, onSecrets, locale, errors = {}, disabled = false, prefix = "" }: Props) {
+export default function AgentDraftInputs({ schema, values, onChange, secrets, onSecrets, locale, errors = {}, disabled = false, prefix = "", idPrefix = "draft-input" }: Props) {
   const update = (key: string, value: any) => onChange({ ...values, [key]: value });
   const branch = publicBranchRequirements(schema as ExecutionInputSchema, values);
   const schemaError = errors[prefix ? `${prefix}._schema` : "_schema"];
   return <div className="runtime-field-grid">{schemaError && <p className="runtime-field-error" role="alert">{schemaError}</p>}{Object.entries(schema.properties || {}).filter(([, property]) => publicInput(property)).map(([key, property]) => {
     const path = prefix ? `${prefix}.${key}` : key;
-    const id = `draft-input-${path}`;
+    const id = `${idPrefix}-${path}`;
     const label = localText(property.title, locale) || key;
     const sensitive = property["x-sapba-sensitive"] === true;
     const value = sensitive ? secrets[path] || "" : values[key];
@@ -23,7 +23,7 @@ export default function AgentDraftInputs({ schema, values, onChange, secrets, on
     const requirement = <span className="draft-field-requirement">{inputRequirement(schema, key, values, locale)}</span>;
     const help = localText(property.description, locale);
     const type = inputType(property);
-    const childProps = { secrets, onSecrets, locale, errors, disabled };
+    const childProps = { secrets, onSecrets, locale, errors, disabled, idPrefix };
     if (type === "object" || (type === "array" && property.items?.type === "object")) {
       const list = Array.isArray(value) ? value : [];
       return <fieldset className="draft-object-fields" key={path}><legend>{label}{requirement}</legend>{help && <p>{help}</p>}

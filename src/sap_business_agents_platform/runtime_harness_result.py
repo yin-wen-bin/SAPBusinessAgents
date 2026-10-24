@@ -28,6 +28,14 @@ def finalize(settings, store, broker, run_id, payload, *, thread_id, turn_count,
     missing_evidence = _effective_missing_evidence(
         payload.get("missing_evidence"), raw_calls
     )
+    # A complete transport read does not prove a complete financial conclusion.
+    # Both SDKs consume the same host-owned evidence envelope; model claims
+    # cannot turn an unproved source classification/grain into business success.
+    from .source_semantics import contexts_from_run
+    source_contexts = contexts_from_run({"result": {"tool_calls": calls}})
+    if any(context.get("business_complete") is False or context.get("issues") for context in source_contexts):
+        business_complete = False
+        missing_evidence.append("source_business_completeness_unproven")
     known_evidence = {
         str(item.get("evidence_ref")) for item in evidence if item.get("evidence_ref")
     }

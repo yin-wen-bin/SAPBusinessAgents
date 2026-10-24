@@ -188,6 +188,9 @@ class SDKDisplayProjection:
             {'workbuddy': lambda: manager.default_provider_id},
             {'workbuddy': lambda: {'enabled': None, 'revision': None}},
             ttl=5, clock=clock, accept_late={'workbuddy'}, refresh_every=2.0)
+        from .runtime_display_summary import WorkBuddyDisplaySummary
+        self.summary = WorkBuddyDisplaySummary(manager, qualification,
+            lambda: qualification.templates['workbuddy'](), clock=clock) if 'workbuddy' in qualification.templates else None
 
     def _adopt_revision(self, revision):
         with self._lock:
@@ -250,7 +253,15 @@ class SDKDisplayProjection:
         if value['enabled'] is not True:
             value['selectable'] = False
         value['blockers'] = list(dict.fromkeys(blockers))
+        value.pop('_settings_catalog', None)
+        value.pop('_settings_binding', None)
         return value
+
+    def get_summary(self, key):
+        return self.summary.get() if key == 'workbuddy' and self.summary else self.get(key)
+
+    def models_summary(self):
+        return self.summary.models()
 
     def publish_control(self, provider, item):
         if provider != 'workbuddy':
@@ -269,8 +280,12 @@ class SDKDisplayProjection:
         self.qualification.invalidate(keys)
         if keys is None or 'workbuddy' in keys:
             self.controls.invalidate(['workbuddy'])
+            if self.summary:
+                self.summary.invalidate()
 
     def close(self):
+        if self.summary:
+            self.summary.close()
         self.controls.close()
         self.qualification.close()
 
@@ -322,7 +337,14 @@ def sdk_display_projection(manager):
     def load(definition):
         if definition.provider_id == "workbuddy":
             with manager.workbuddy.environment.display_inspection():
-                return manager._snapshot(definition)
+                value = manager._snapshot(definition)
+                # Keep the complete gate, but reuse this same synchronous
+                # installation/evidence inspection for the settings catalog.
+                if value.get('installed') and callable(getattr(manager.workbuddy, 'models', None)):
+                    from .runtime_display_summary import binding
+                    value['_settings_catalog'] = manager.workbuddy.models()
+                    value['_settings_binding'] = binding(manager.workbuddy.environment.state())
+                return value
         return manager._snapshot(definition)
     qualification = StatusProjection(
         {d.provider_id: lambda d=d: load(d) for d in definitions},

@@ -363,9 +363,12 @@ class SampleDiscoveryContext:
                 fields.append({"field": name, "status": "supplied", "reason": "already_supplied", "sources": []})
                 continue
             sources = []
+            range_bindings = []
             single_source_scope = False
             for plan in self.plans:
                 for source_field, binding, operator in self._bindings(plan):
+                    if binding == name and operator in {"lt", "le", "gt", "ge"}:
+                        range_bindings.append(operator)
                     if (binding == name and operator == "eq"
                             and source_field in (plan.get("select_fields") or [])):
                         source = {"service_name": plan["service_name"], "odata_version": plan["odata_version"],
@@ -395,6 +398,10 @@ class SampleDiscoveryContext:
                                   else ("manual", "cross_source_scope_unproven"))
             elif skill_consumers:
                 status, reason = "manual", "skill_requires_input"
+            elif range_bindings:
+                # An observed cell cannot establish the user's intended cutoff.
+                # The mapping exists, but it is not an equality sample source.
+                status, reason = "manual", "range_boundary"
             else:
                 status, reason = "manual", "mapping_missing"
             fields.append({"field": name, "status": status, "reason": reason,
@@ -412,6 +419,8 @@ class SampleDiscoveryContext:
             blocking.extend(name for name in self.required_fields if name in {"company_code", "plant"}
                             and not _present(self.supplied_inputs.get(name)))
         blocking.extend(self.conditional_gaps)
+        blocking.extend(item["field"] for item in fields if item["field"] in self.required_fields
+                        and item["reason"] == "range_boundary" and item["status"] == "manual")
         return {"revision": self.revision, "requested_fields": self.missing_fields(),
                 "blocking_fields": list(dict.fromkeys(blocking)),
                 "fields": fields, "can_start": bool(requested) and not blocking,

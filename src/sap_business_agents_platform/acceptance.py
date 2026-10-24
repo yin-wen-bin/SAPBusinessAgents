@@ -583,6 +583,15 @@ def compare_semantic_results(
     """
 
     differences: list[JsonObject] = []
+    from .source_semantics import comparison_issues, issue
+    semantic_issues = comparison_issues(expected.get("source_semantics") or [],
+        actual.get("source_semantics") or [], contract.get("source_semantics"))
+    if contract.get("decimal_metrics") and any(len(c.get("observed_ledgers") or []) > 1
+            for v in (expected, actual) for c in v.get("source_semantics") or []):
+        semantic_issues.append(issue("source_non_additive_metric_rejected", "/metrics"))
+    if semantic_issues:
+        return SemanticComparison(verdict="BLOCKED", expected_hash=canonical_hash(expected),
+            actual_hash=canonical_hash(actual), differences=tuple(semantic_issues))
     if expected.get("blocked") is True or actual.get("blocked") is True:
         return SemanticComparison(
             verdict="BLOCKED",

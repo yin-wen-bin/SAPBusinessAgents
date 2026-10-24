@@ -1030,7 +1030,23 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
         }
 
     def update(self, draft_id: str, payload: Any) -> dict[str, Any]:
-        operation = self._reserve_operation(draft_id, int(payload.expected_revision), "edit")
+        explicit=getattr(payload,'runtime_binding_mode','preserve')=='current_default'
+        binding_change=None; snapshot=None
+        if explicit:
+            from .acceptance import canonical_hash
+            fingerprint=canonical_hash(payload.model_dump(mode='json'))
+            history=(self.store.get_agent_authoring_draft(draft_id).get('metadata') or {}).get('runtime_binding_history') or []
+            for event in history:
+                if event.get('request_id')==payload.request_id:
+                    if event.get('input_hash')!=fingerprint:
+                        raise AgentLifecycleError('Conflicting binding request.',code='agent_runtime_binding_request_conflict')
+                    return self.get_draft(draft_id)  # Recover before reading a new default.
+            from .authoring_binding import explicit_selection
+            snapshot=explicit_selection(self.runtime,payload.expected_runtime_digest)
+            binding_change={'request_id':payload.request_id,'input_hash':fingerprint,'mode':'current_default',
+                'expected_digest':payload.expected_runtime_digest,'from_revision':payload.expected_revision,'confirmed_at':utc_now()}
+        operation = self._reserve_operation(draft_id, int(payload.expected_revision), "edit",
+            request_id=payload.request_id if explicit else None,input_hash=binding_change['input_hash'] if explicit else None)
         try:
             package = copy.deepcopy(self.store.get_agent_authoring_revision(draft_id, int(payload.expected_revision))["package"])
             if payload.manifest is not None:
@@ -1040,7 +1056,13 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             supplied = getattr(payload, "model_fields_set", set())
             if payload.rules is not None or "rules" in supplied:
                 package["rules"] = str(payload.rules) if payload.rules else None
-            return self._apply_package(draft_id, int(payload.expected_revision), package, kind="manual_edit", operation_id=operation["operation_id"])
+            def verify_binding():
+                if explicit:
+                    explicit_selection(self.runtime,payload.expected_runtime_digest)
+            return self._apply_package(draft_id, int(payload.expected_revision), package, kind="manual_edit", operation_id=operation["operation_id"],
+                runtime_snapshot=snapshot,runtime_binding_change=binding_change,safe_runtime=explicit,
+                deadline_check=verify_binding if explicit else None,
+                decision={'explicit_runtime_binding':binding_change} if explicit else None)
         finally:
             self._finish_operation(draft_id, operation["operation_id"])
 

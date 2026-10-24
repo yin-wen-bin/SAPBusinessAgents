@@ -44,6 +44,13 @@ def native_terminal_instructions(schema):
     fields = ("input_kind", "input_field")
     properties = schema.get("properties", {})
     required = schema.get("required", [])
+    if all(name in required and properties.get(name, {}).get("type") == "null"
+           and properties[name].get("enum") == [None] for name in fields):
+        return instructions + ('\nThis is a non-interactive formal task. Its full StructuredOutput must include '
+            '"input_kind": null and "input_field": null as literal JSON null. No string is allowed in either '
+            'field, including an empty string, a query parameter name or the string "null". '
+            'If case inputs are insufficient, use waiting_input and a clarification_question with both '
+            'fields null; do not open a secure-reference exchange. Keep the validated report unchanged.')
     if not all(name in required and isinstance(properties.get(name), dict)
                and isinstance(properties[name].get("type"), list)
                and "null" in properties[name]["type"]

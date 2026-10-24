@@ -43,6 +43,8 @@ INFRASTRUCTURE_FILES += ('workbuddy_auth_context.py', 'runtime_authentication.py
                         '../../scripts/runtime-authentication-helper.py', '../../scripts/login-workbuddy-runtime.py')
 INFRASTRUCTURE_FILES += ('workbuddy_auth_recovery.py', 'runtime.py', 'plugins.py')
 INFRASTRUCTURE_FILES += ('workbuddy_job_index.py',)
+INFRASTRUCTURE_FILES += ('runtime_capacity.py',)
+INFRASTRUCTURE_FILES += ('runtime_terminal_contract.py', 'runtime_report_convergence.py', 'runtime_report_contract.py')
 
 
 def manifest(names, root=None):

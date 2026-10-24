@@ -178,6 +178,12 @@ ALIASES = {
     "schedule_line_delivery_date": ("ScheduleLineDeliveryDate",), "cost_center": ("CostCenter",),
     "controlling_area": ("ControllingArea",), "fiscal_year": ("FiscalYear",),
 }
+# Explicit business semantics, not arbitrary *_to/_from name guessing. These
+# are calendar-day bounds, never equality aliases or candidate-Agent plans.
+DATE_BOUNDS = {
+    "posting_date_from": (("PostingDate",), "ge"),
+    "posting_date_to": (("PostingDate",), "le"),
+}
 LABELS = {"purchase_order": r"采购订单(?:号)?|purchase\s+order|\bPO\b",
           "sales_order": r"销售订单(?:号)?|sales\s+order",
           "material": r"物料(?:号)?|material", "plant": r"工厂|plant",
@@ -203,18 +209,44 @@ class ReadScope:
             if match:
                 inputs.setdefault(name, match[1])
         self.constraints, self.unresolved = [], False
+        self.bounds, self.input_issues = [], []
+        def input_issue(name, code):
+            safe = name if isinstance(name, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name) else None
+            self.unresolved = True
+            self.input_issues.append({"code": code, "path": "/input" + ("/" + safe if safe else ""),
+                                      "constraint": "scope_input", **({"input_field": safe} if safe else {})})
         for name, value in inputs.items():
             if value is None or value == "" or value == []:
                 continue
+            if name in DATE_BOUNDS:
+                try:
+                    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                        raise ValueError()
+                    day = date.fromisoformat(value)
+                except ValueError:
+                    input_issue(name, "runtime_scope_date_invalid")
+                    continue
+                fields, operator = DATE_BOUNDS[name]
+                self.bounds.append({"input_field": name, "fields": fields, "operator": operator, "day": day})
+                continue
             fields = ALIASES.get(name) or ((name,) if re.fullmatch(r"[A-Z][A-Za-z0-9]*", name) else ())
             if not fields or not isinstance(value, (str, int, float, list)) or isinstance(value, bool):
-                self.unresolved = True
+                input_issue(name, "runtime_scope_mapping_unsupported" if not fields else "runtime_scope_input_type_invalid")
             else:
                 self.constraints.append((fields, [str(v) for v in value] if isinstance(value, list) else [str(value)]))
+        lower = next((b["day"] for b in self.bounds if b["operator"] == "ge"), None)
+        upper = next((b["day"] for b in self.bounds if b["operator"] == "le"), None)
+        if lower is not None and upper is not None and lower > upper:
+            input_issue("posting_date_from", "runtime_scope_bounds_conflict")
         self.derived_rows = []
         self.schemas = {}
         self.date_fields = set()
+        self.bound_date_fields = {}
         self.normalizer = None
+
+    def require_resolved(self):
+        if self.unresolved:
+            reject("runtime_scope_clarification_required", issues=self.input_issues[:20])
 
     def allowed_values(self, names, values, step):
         allowed = set(values)
@@ -246,6 +278,15 @@ class ReadScope:
         if data.get("schema_authority") is not True or data.get("fields_truncated") is not False:
             return
         service = data.get("service") or {}
+        observed_keys = {(f.get("service_name") or service.get("service_name"),
+                          f.get("odata_version") or service.get("odata_version"), f.get("entity_set"))
+                         for f in data.get("fields") or [] if isinstance(f, dict)}
+        # A new full projection can revoke calendar semantics. Do not retain an
+        # old type for a field omitted from the replacement entity projection.
+        for field_key in list(self.bound_date_fields):
+            if field_key[:3] in observed_keys or (not observed_keys and field_key[:2] ==
+                    (service.get("service_name"), service.get("odata_version"))):
+                del self.bound_date_fields[field_key]
         for field in data.get("fields") or []:
             if not isinstance(field, dict):
                 continue
@@ -257,16 +298,74 @@ class ReadScope:
             if (key[1] == "2.0" and field.get("data_type") == "Edm.DateTime"
                     and field.get("display_format") == "Date"):
                 self.date_fields.add(field_key)
+                self.bound_date_fields[field_key] = "v2_midnight"
+            elif key[1] == "4.0" and field.get("data_type") == "Edm.Date":
+                self.bound_date_fields[field_key] = "iso_date"
+
+    def _check_bounds(self, step, fields):
+        for bound in self.bounds:
+            names = bound["fields"]
+            if fields is not None and not set(names).intersection(fields):
+                continue
+            key = tuple(step.get(k) for k in ("service_name", "odata_version", "entity_set"))
+            if fields is None or not any((*key, name) in self.bound_date_fields for name in names):
+                reject("runtime_query_scope_rejected", "/entity_set", issues=[{
+                    "code": "runtime_query_scope_rejected", "path": "/entity_set", "constraint": "scope",
+                    "scope_issue": "authoritative_date_schema_required", "input_field": bound["input_field"],
+                    "required_fields": list(names), "schema_request": {"service_name": key[0],
+                        "odata_version": key[1], "entity_sets": [key[2]], "max_fields": 5000}}])
+            candidates = [(index, f) for index, f in enumerate(step.get("filters") or []) if f["field"] in names]
+            proven = False
+            for _, item in candidates:
+                mode = self.bound_date_fields.get((*key, item["field"]))
+                raw = item["value"]
+                values = raw if isinstance(raw, list) else [raw]
+                days = []
+                try:
+                    for value in values:
+                        if not isinstance(value, str):
+                            raise ValueError()
+                        if mode == "v2_midnight" and re.fullmatch(r"\d{4}-\d{2}-\d{2}T00:00:00", value):
+                            value = value[:10]
+                        if mode not in {"v2_midnight", "iso_date"} or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                            raise ValueError()
+                        days.append(date.fromisoformat(value))
+                except ValueError:
+                    continue
+                operator = item.get("operator", "eq")
+                if not days or (operator == "in") != isinstance(raw, list):
+                    continue
+                if operator in {"eq", "in"}:
+                    proven = all(d <= bound["day"] if bound["operator"] == "le" else d >= bound["day"] for d in days)
+                elif len(days) == 1:
+                    # Strict comparisons are equivalent at the next/previous
+                    # calendar-day boundary only with authoritative date proof.
+                    value = days[0]
+                    if bound["operator"] == "le":
+                        proven = ((operator == "le" and value <= bound["day"]) or
+                                  (operator == "lt" and (value <= bound["day"] or (value - bound["day"]).days == 1)))
+                    else:
+                        proven = ((operator == "ge" and value >= bound["day"]) or
+                                  (operator == "gt" and (value >= bound["day"] or (bound["day"] - value).days == 1)))
+                if proven:
+                    break
+            if not proven:
+                reject("runtime_query_scope_rejected", "/filters", issues=[{
+                    "code": "runtime_query_scope_rejected", "path": "/filters", "constraint": "scope",
+                    "scope_issue": "date_bound_not_proven", "input_field": bound["input_field"],
+                    "required_fields": list(names), "allowed_operators": [bound["operator"], "lt" if bound["operator"] == "le" else "gt", "eq", "in"]}])
 
     def check(self, plan):
         candidates = plans(plan)
-        if self.unresolved:
-            reject("runtime_scope_clarification_required")
-        if not self.constraints:
+        self.require_resolved()
+        if not self.constraints and not self.bounds:
             return  # Unconstrained questions still use Provider/budget bounds.
         scoped_steps = {}
         for step in candidates:
             fields = self.schemas.get(tuple(step.get(k) for k in ("service_name", "odata_version", "entity_set")))
+            self._check_bounds(step, fields)
+            if not self.constraints and self.bounds and fields is not None and any(set(b["fields"]).intersection(fields) for b in self.bounds):
+                continue
             filters = step.get("filters") or []
             exact = {f["field"]: ([str(v) for v in f["value"]] if isinstance(f["value"], list) else [str(f["value"])])
                      for f in filters if f.get("operator", "eq") in {"eq", "in"}}
@@ -346,6 +445,13 @@ class ReadScope:
         self.derived_rows = self.derived_rows[-500:]
 
     def check_skill(self, arguments):
+        self.require_resolved()
+        if self.bounds:
+            # No inferred DDIC date aliases or unreviewed Skill input semantics.
+            reject("runtime_skill_scope_rejected", "/input", issues=[{
+                "code": "runtime_skill_scope_rejected", "path": "/input", "constraint": "scope",
+                "scope_issue": "range_scope_not_proven", "input_field": b["input_field"],
+                "required_fields": list(b["fields"])} for b in self.bounds])
         if not self.constraints:
             return
         value = arguments.get("input") or {}

@@ -181,6 +181,9 @@ class RunCoordinator:
         )
         self._acceptance_runs: set[str] = set()
         self._active_execution_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._cancellation_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._active_feedback_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._feedback_cancel_tasks: dict[str, asyncio.Task[Any]] = {}
         self._free_query_session_locks: dict[str, asyncio.Lock] = {}
         self.scheduler = LocalRunScheduler(
             store,
@@ -1143,27 +1146,32 @@ class RunCoordinator:
         session_id = str(request["session_id"])
         lock = self._free_query_session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
+            task = asyncio.create_task(self._execute_feedback_request_locked(feedback_request_id))
+            self._active_feedback_tasks[feedback_request_id] = task
             try:
-                await self._execute_feedback_request_locked(feedback_request_id)
+                await task
+            except asyncio.CancelledError:
+                if not self.store.get_free_query_feedback_request(feedback_request_id)['cancel_requested']:
+                    raise
             except Exception as exc:
-                code = str(
-                    getattr(exc, "code", "free_query_feedback_review_unavailable")
-                )
-                self.store.update_free_query_feedback_request(
-                    feedback_request_id,
-                    status="failed",
-                    phase="completed",
-                    error={"code": code, "message": str(exc)},
-                    completed=True,
-                    event_type="feedback_review_failed",
-                    event_data={"code": code},
-                )
-                self.store.update_free_query_session(
-                    session_id, status="reviewing", pending_feedback_json=None
-                )
+                if not self.store.get_free_query_feedback_request(feedback_request_id)['cancel_requested']:
+                    code = str(getattr(exc, 'code', 'free_query_feedback_review_unavailable'))
+                    self.store.update_free_query_feedback_request(feedback_request_id, status='failed', phase='completed',
+                        error={'code': code, 'message': str(exc)}, completed=True,
+                        event_type='feedback_review_failed', event_data={'code': code})
+                    self.store.update_free_query_session(session_id, status='reviewing', pending_feedback_json=None)
+            finally:
+                self._active_feedback_tasks.pop(feedback_request_id, None)
+        cancellation = self._feedback_cancel_tasks.get(feedback_request_id)
+        if cancellation and not cancellation.done():
+            await asyncio.shield(cancellation)
+        while self.store.get_free_query_feedback_request(feedback_request_id)['status'] == 'cleanup_pending':
+            await asyncio.sleep(5)
 
     async def _execute_feedback_request_locked(self, feedback_request_id: str) -> None:
         feedback_request = self.store.get_free_query_feedback_request(feedback_request_id)
+        if feedback_request['status'] == 'cleanup_pending':
+            return  # Never turn uncertain cleanup into a resumed model call.
         if feedback_request["cancel_requested"] or feedback_request["status"] == "cancelled":
             self.store.update_free_query_feedback_request(
                 feedback_request_id,
@@ -1220,6 +1228,8 @@ class RunCoordinator:
                 "Agent Runtime could not review the correction; no SAP query was started.",
                 code="free_query_feedback_review_unavailable",
             ) from exc
+        if self.store.get_free_query_feedback_request(feedback_request_id)['cancel_requested']:
+            return
         decision = _normalize_feedback_decision(
             decision,
             feedback_request["feedback_type_hint"],
@@ -1403,6 +1413,9 @@ class RunCoordinator:
         self, session_id: str, feedback_request_id: str
     ) -> dict[str, Any]:
         request = self.free_query_feedback_request(session_id, feedback_request_id)
+        if request['status'] == 'iteration_created' and request.get('run_id'):
+            await self.cancel(request['run_id'])
+            return request
         if request["status"] in {
             "iteration_created",
             "new_session_required",
@@ -1411,31 +1424,42 @@ class RunCoordinator:
             "cancelled",
         }:
             return request
-        updated = self.store.update_free_query_feedback_request(
+        task = self._feedback_cancel_tasks.get(feedback_request_id)
+        if task is None:
+            task = asyncio.create_task(self._cancel_feedback_owned(session_id, feedback_request_id))
+            self._feedback_cancel_tasks[feedback_request_id] = task
+        return await asyncio.shield(task)
+
+    async def _cancel_feedback_owned(self, session_id, feedback_request_id):
+        before = self.store.get_free_query_feedback_request(feedback_request_id)
+        if before['status'] == 'cleanup_pending':
+            return before
+        self.store.update_free_query_feedback_request(
             feedback_request_id,
-            status="cancelled",
-            phase="completed",
+            status="cancelling",
+            phase="cleanup",
             cancel_requested=True,
-            completed=True,
-            event_type="feedback_cancelled",
+            event_type="feedback_cancellation_requested",
         )
+        execution = self._active_feedback_tasks.get(feedback_request_id)
+        complete = before['status'] != 'reviewing' or execution is not None
+        if execution and not execution.done():
+            execution.cancel()
+            done, pending = await asyncio.wait({execution}, timeout=10)
+            complete = not pending
+            if done and not execution.cancelled():
+                try:
+                    execution.result()
+                except BaseException:
+                    complete = False
+        updated = self.store.update_free_query_feedback_request(feedback_request_id,
+            status='cancelled' if complete else 'cleanup_pending', phase='completed' if complete else 'cleanup',
+            completed=complete, event_type='feedback_cancelled' if complete else 'feedback_cleanup_pending')
         job = self.store.latest_execution_job_for_subject(
             feedback_request_id, statuses=("queued", "running")
         )
-        if job is not None:
+        if job is not None and complete:
             await self.scheduler.cancel(str(job["job_id"]))
-        session = self.store.get_free_query_session(session_id)
-        runtime_snapshot = self._future_session_binding(session)
-        provider_id = str(runtime_snapshot.get("provider_id") or "codex")
-        model_id = runtime_snapshot.get("model")
-        pin = getattr(self.planner, "pin", None)
-        context = pin(provider_id, model_id, runtime_snapshot.get("reasoning_effort")) if callable(pin) else nullcontext()
-        if provider_id == "workbuddy" or "authentication_binding_revision" in runtime_snapshot:
-            context = self.planner.pin_snapshot(runtime_snapshot)
-        with context:
-            cancel = getattr(self.planner, "cancel", None)
-            if callable(cancel):
-                await cancel(session.get("thread_id"))
         self.store.update_free_query_session(
             session_id, status="reviewing", pending_feedback_json=None
         )
@@ -1486,46 +1510,112 @@ class RunCoordinator:
         )
         return self.free_query_session(session_id)
 
-    async def cancel(self, run_id: str) -> None:
+    def _request_cancellation(self, run_id: str, *, reason='user_cancelled'):
         record = self.store.get_run(run_id)
-        if record.status in {RunStatus.completed, RunStatus.inconclusive, RunStatus.failed, RunStatus.cancelled}:
-            return
-        self.store.update_run(run_id, cancel_requested=True)
-        self.store.append_event(run_id, "cancellation_requested", {})
-        if record.mode == RunMode.free_query:
-            provider_id = record.runtime.provider_id if record.runtime else "codex"
-            if provider_id == "codex" and self.harness is not None:
-                await self.harness.interrupt(run_id)
-            elif provider_id == "workbuddy" and getattr(self, "workbuddy_harness", None):
-                await self.workbuddy_harness.interrupt(run_id)
+        if record.status in TERMINAL_STATUSES:
+            return None
+        if not record.cancel_requested:
+            self.store.update_run(run_id, cancel_requested=True)
+            self.store.append_event(run_id, 'cancellation_requested', {'reason': reason})
+        queued = self.store.latest_execution_job_for_subject(run_id, statuses=('queued',))
+        if queued:
+            self.store.finish_execution_job(queued['job_id'], status='cancelled')
+        if record.mode != RunMode.free_query:
+            return None  # Preserve deterministic execution's existing checkpoints.
+        provider = record.runtime.provider_id if record.runtime else 'codex'
+        controller = getattr(self, 'workbuddy_harness', None) if provider == 'workbuddy' else self.harness
+        broker = getattr(controller, 'broker', None)
+        if broker:
+            broker.close_session(run_id)  # Revoke reads/writes before the first await.
+        current = self._cancellation_tasks.get(run_id)
+        if current:
+            return current
+        self.store.update_harness_state(run_id, {'cancellation': {'status': 'stopping', 'reason': reason}})
+        task = asyncio.create_task(self._cancel_owned_query(run_id, controller, broker), name='query-cancel-' + run_id)
+        self._cancellation_tasks[run_id] = task
+        return task
+
+    async def cancel(self, run_id: str, *, reason='user_cancelled') -> None:
+        task = self._request_cancellation(run_id, reason=reason)
+        if task:
+            # HTTP disconnection does not abandon the platform's owned cleanup.
+            await asyncio.shield(task)
+
+    async def _cancel_owned_query(self, run_id, controller, broker):
+        from .runtime_contract import cleanup_scope
+        with cleanup_scope():
+            checks = set()
+            tool_cleanup = None
+            if broker:
+                tool_cleanup = asyncio.create_task(broker.cancel_tools(run_id, timeout=10))
+                checks.add(tool_cleanup)
+            execution = self._active_execution_tasks.get(run_id)
+            if execution and not execution.done():
+                execution.cancel()
+                checks.add(execution)
+            # Task cancellation drives native cleanup. Interrupt also covers a
+            # native process registered just before the execution task unwinds.
+            if controller and callable(getattr(controller, 'interrupt', None)):
+                checks.add(asyncio.create_task(controller.interrupt(run_id)))
+            if checks:
+                done, pending = await asyncio.wait(checks, timeout=10)
             else:
-                pin = getattr(self.planner, "pin", None)
-                model_id = record.runtime.model if record.runtime else None
-                context = pin(provider_id, model_id, self._future_runtime_binding(record).get("reasoning_effort")) if callable(pin) else nullcontext()
-                with context:
-                    cancel = getattr(self.planner, "cancel", None)
-                    if callable(cancel):
-                        await cancel(record.thread_id)
+                done, pending = set(), set()
+            complete = not pending
+            for task in done:
+                if task.cancelled():
+                    continue
+                try:
+                    # False from interrupt means no active native turn; process
+                    # cleanup is established by the execution/driver, not that flag.
+                    if task.result() is False and task is tool_cleanup:
+                        complete = False
+                except BaseException:
+                    complete = False
+            state = self.store.get_harness_state(run_id)
+            complete = complete and not state.get('cleanup_incomplete')
+            supervisor = getattr(getattr(controller, 'manager', None), 'supervisor', None)
+            if supervisor and run_id in supervisor.active:
+                complete = False
+            self.store.update_harness_state(run_id, {'cancellation': {
+                **(state.get('cancellation') or {}), 'status': 'complete' if complete else 'cleanup_pending'},
+                'cleanup_incomplete': not complete})
+            if complete:
+                job = self.store.latest_execution_job_for_subject(run_id, statuses=('queued', 'running'))
+                if job:
+                    await self.scheduler.cancel(job['job_id'])
+                self._finish_cancelled(run_id)
+                self.store.delete_run_secrets(run_id)
+            else:
+                self.store.append_event(run_id, 'query_cleanup_pending', {})
 
     async def _execute_scheduled_run(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
-        if (record.mode == RunMode.free_query and record.runtime and record.runtime.provider_id == "workbuddy"
-                and getattr(self, "workbuddy_harness", None)
-                and not self.workbuddy_harness.manager.supervisor.reserved):
-            async with self.workbuddy_harness.manager.supervisor.reserve():
-                return await self._execute_scheduled_run(run_id)
         timeout = (
             self.settings.free_query_run_seconds
             + (15 if self.settings.max_free_query_seconds is not None else 0)
             if record.mode == RunMode.free_query
             else self.settings.deterministic_run_seconds
         )
-        execution_task = asyncio.create_task(self._execute(run_id))
+        async def execute_owned():
+            session = self.store.get_free_query_session_by_run(run_id) if record.mode == RunMode.free_query else None
+            lock = self._free_query_session_locks.setdefault(session['session_id'], asyncio.Lock()) if session else nullcontext()
+            async with lock:
+                ordinary = record.mode == RunMode.free_query and not self.store.get_harness_state(run_id).get('acceptance_spec')
+                reserve = (self.workbuddy_harness.manager.supervisor.reserve(task_id=run_id, parallel=ordinary)
+                    if record.runtime and record.runtime.provider_id == 'workbuddy' and getattr(self, 'workbuddy_harness', None)
+                    else nullcontext())
+                async with reserve:
+                    if self.store.get_run(run_id).cancel_requested:
+                        return
+                    # Capacity/session waiting does not consume the execution budget.
+                    await asyncio.wait_for(self._execute(run_id), timeout=timeout)
+        execution_task = asyncio.create_task(execute_owned())
         self._active_execution_tasks[run_id] = execution_task
         try:
-            await asyncio.wait_for(execution_task, timeout=timeout)
+            await execution_task
         except asyncio.CancelledError:
-            if self.store.get_run(run_id).status != RunStatus.cancelled:
+            if not self.store.get_run(run_id).cancel_requested:
                 raise
         except TimeoutError:
             latest = self.store.get_run(run_id)
@@ -1546,6 +1636,13 @@ class RunCoordinator:
             self._acceptance_runs.discard(run_id)
             if self.store.get_run(run_id).status in TERMINAL_STATUSES:
                 self.store.delete_run_secrets(run_id)
+        cancellation = self._cancellation_tasks.get(run_id)
+        if cancellation and not cancellation.done():
+            await asyncio.shield(cancellation)
+        # Unconfirmed cleanup retains this scheduling slot. It is not a new
+        # ten-second retry loop and does not restart or redispatch the query.
+        while self.store.get_harness_state(run_id).get('cleanup_incomplete'):
+            await asyncio.sleep(5)
 
     async def cancel_acceptance_run(self, run_id: str, *, timeout: float = 10) -> bool:
         """Revoke writes immediately and bound cleanup of this campaign's tasks."""
@@ -1581,7 +1678,7 @@ class RunCoordinator:
     async def _execute(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
         if record.cancel_requested:
-            self._finish_cancelled(run_id)
+            await self.cancel(run_id)
             return
         started = record.started_at or utc_now()
         self.store.update_run(run_id, started_at=started)
@@ -1682,6 +1779,8 @@ class RunCoordinator:
             ) from exc
 
         execution = agent["execution"]
+        self.store.update_harness_state(run_id, {"source_semantics_definition":
+            copy.deepcopy((execution.get("acceptance") or {}).get("sourceSemantics"))})
         fixed_relationship_policy = relationship_policy(agent)
         total_steps = len(execution["steps"])
         self._set_progress(
@@ -2175,14 +2274,18 @@ class RunCoordinator:
                         ),
                         detail={"failures": relationship_failures},
                     )
-                validation = await self.sap_read.validate_plan(plan, query)
-                if validation.get("ok") is not True:
-                    raise SapReadError(
-                        "The selected SAP Provider rejected the deterministic Agent plan.",
-                        code="sap_read_plan_rejected",
-                        detail=validation,
-                    )
-                return await self.sap_read.execute_plan(plan, query)
+                from .source_semantics import bind_scope
+                state_reader = getattr(self.store, "get_harness_state", None)
+                definition = (state_reader(run_id) if state_reader else {}).get("source_semantics_definition")
+                with bind_scope(definition):
+                    validation = await self.sap_read.validate_plan(plan, query)
+                    if validation.get("ok") is not True:
+                        raise SapReadError(
+                            "The selected SAP Provider rejected the deterministic Agent plan.",
+                            code="sap_read_plan_rejected",
+                            detail=validation,
+                        )
+                    return await self.sap_read.execute_plan(plan, query)
             if operation == "execute_get":
                 return await self.sap_read.execute_get(rendered)
         if executor == "skill":
@@ -3401,6 +3504,8 @@ class RunCoordinator:
             record.runtime.model if record.runtime else None,
             reasoning_effort=self._future_runtime_binding(record).get("reasoning_effort"),
         )
+        if self.store.get_run(run_id).cancel_requested:
+            return
         self.store.update_run(run_id, thread_id=outcome.thread_id)
         if outcome.status == "waiting_input":
             question = outcome.clarification_question or "请补充完成查询所必需的信息。"
@@ -3579,6 +3684,8 @@ class RunCoordinator:
             record.runtime.model if record.runtime else None,
             reasoning_effort=self._future_runtime_binding(record).get("reasoning_effort"),
         )
+        if self.store.get_run(run_id).cancel_requested:
+            return
         self.store.update_run(run_id, thread_id=outcome.thread_id)
         if outcome.status == "waiting_input":
             question = outcome.clarification_question or "请补充完成查询所必需的信息。"
@@ -3739,6 +3846,8 @@ class RunCoordinator:
         *,
         output_schema: dict[str, Any] | None = None,
     ) -> None:
+        if self.store.get_run(run_id).cancel_requested:
+            return
         if result.runtime is None:
             result.runtime = self.store.get_run(run_id).runtime
         completeness_evidence, evidence_scope = _completeness_evidence_scope(result)
@@ -4070,6 +4179,11 @@ class RunCoordinator:
         )
 
     def _finish_cancelled(self, run_id: str) -> None:
+        state = self.store.get_harness_state(run_id)
+        if (state.get('cancellation') or {}).get('status') in {'stopping', 'cleanup_pending'}:
+            return
+        if self.store.get_run(run_id).status in TERMINAL_STATUSES:
+            return
         completed = utc_now()
         progress = self.store.get_run(run_id).progress
         self._set_progress(
@@ -4088,6 +4202,8 @@ class RunCoordinator:
         self._sync_free_query_iteration(run_id, status=RunStatus.cancelled)
 
     def _finish_error(self, run_id: str, exc: Exception, status: RunStatus) -> None:
+        if self.store.get_run(run_id).cancel_requested:
+            return
         if isinstance(exc, asyncio.CancelledError):
             return
         error = _error_payload(exc)
@@ -6293,7 +6409,7 @@ def _step_execution_envelope(
     if isinstance(restricted_ref, dict):
         artifact_refs.append(restricted_ref)
     issues = payload.get("validation_issues")
-    return {
+    envelope = {
         "execution_status": execution_status,
         "evidence_status": evidence_status,
         "required": step.get("required", True) is not False,
@@ -6311,6 +6427,10 @@ def _step_execution_envelope(
             *nested_issues,
         ],
     }
+    if step.get("executor") == "rule":
+        from .business_result_display import rule_record_summary
+        envelope.update(rule_record_summary(output, execution_status=execution_status))
+    return envelope
 
 
 def _is_recoverable_evidence_error(exc: Exception) -> bool:

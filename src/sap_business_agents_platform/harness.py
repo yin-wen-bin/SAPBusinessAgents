@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 from .runtime_harness_contract import _developer_instructions, _turn_prompt, _HARNESS_OUTPUT_SCHEMA, _PRESENTATION_SCHEMA, _LOCALIZED_TEXT_SCHEMA
 
 import asyncio
@@ -241,6 +242,12 @@ class HarnessToolBroker:
         token = secrets.token_urlsafe(32)
         self._tokens[run_id] = token
         state = self.store.get_harness_state(run_id)
+        from .source_semantics import catalog
+        semantics = catalog()
+        old_semantics = state.get("source_semantics_catalog")
+        if old_semantics and old_semantics != semantics:
+            raise ToolAdmissionError("Frozen source semantics changed.", code="source_semantics_binding_changed")
+        self.store.update_harness_state(run_id, {"source_semantics_catalog": semantics})
         if not isinstance(state.get("time_budget"), dict):
             self.store.update_harness_state(
                 run_id,
@@ -582,6 +589,10 @@ class HarnessToolBroker:
             return await self._handle_authoring(run_id, token, tool_name, arguments)
         if not self.authenticate(run_id, token):
             return {"ok": False, "code": "harness_capability_denied", "message": "Invalid capability."}
+        from .source_semantics import catalog
+        if self.store.get_harness_state(run_id).get("source_semantics_catalog") != catalog():
+            return {"ok": False, "code": "source_semantics_binding_changed",
+                    "message": "Frozen source semantics changed; no new read or late report is authorized."}
         run = self.store.get_run(run_id)
         context = self._run_assistant_context(run_id)
         allowed, reason = assistant_permitted(context, tool_name)
@@ -787,7 +798,11 @@ class HarnessToolBroker:
                 remaining = max(0, budget["hard_limit_seconds"] - self._elapsed_seconds(run_id))
                 async with asyncio.timeout(remaining):
                     scope = getattr(self.sap_read, "metadata_scope", None)
-                    with scope(run_id) if callable(scope) else nullcontext():
+                    from .source_semantics import bind_scope
+                    defined = ((self.store.get_harness_state(run_id).get("acceptance_spec") or {}).get("source_semantics"))
+                    constraints = getattr(self._read_scopes.get(run_id), "constraints", ())
+                    confirmed = {name: values for names, values in constraints for name in names if name in {"Ledger", "SourceLedger"}}
+                    with (scope(run_id) if callable(scope) else nullcontext()), bind_scope(defined, confirmed):
                         output = await self._dispatch(run_id, tool_name, arguments)
                 self._ensure_writable(run_id)
                 self.report_contract(run_id)
@@ -1055,6 +1070,8 @@ class HarnessToolBroker:
                     else _bounded_preview(raw)),
                 "odata_version": plan.get("odata_version"),
             }
+            if sample_context is None and raw.get("source_semantics"):
+                response["source_semantics"] = raw["source_semantics"]
             if business_advisories:
                 response["advisories"] = business_advisories
             return response
@@ -1188,6 +1205,8 @@ class HarnessToolBroker:
                 "evidence_ref": call["evidence_ref"],
                 "created_at": call["created_at"],
                 "completed_at": call["completed_at"],
+                **({"source_semantics": copy.deepcopy(call["output"]["source_semantics"])}
+                   if isinstance(call.get("output"), dict) and call["output"].get("source_semantics") else {}),
             }
             for call in calls
         ]
@@ -1891,6 +1910,11 @@ class HarnessToolBroker:
             issues.extend(validate_projection(spec, projection, known))
             if not issues:
                 issues.extend(visible_projection_issues(spec, projection, report))
+            from .source_semantics import contexts_from_run, comparison_issues, projection_issues
+            calls, _ = self.snapshot(run_id)
+            contexts = contexts_from_run({"result": {"tool_calls": calls}})
+            issues.extend(comparison_issues(contexts, contexts, spec.get("source_semantics")))
+            issues.extend(projection_issues(projection, contexts, spec.get("source_semantics")))
         elif "acceptance_projection" in arguments:
             issues.append({"code": "acceptance_projection_not_requested", "path": "/acceptance_projection",
                 "expected": "absent", "actual_type": "object" if isinstance(projection, dict) else "null",

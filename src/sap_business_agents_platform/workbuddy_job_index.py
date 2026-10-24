@@ -89,7 +89,7 @@ def paths(root, *, scope=None):
         return result
 
 
-def pending(root, *, scope=None):
+def pending(root, *, scope=None, owned_dispatch=None):
     """Gate on cleanup/dispatch controls, not another job's progress bytes.
 
     Dispatch still reconciles all unfinished process identities. A running job
@@ -100,7 +100,9 @@ def pending(root, *, scope=None):
         with record_lock(_path(root)):
             value = _load(root)
             return {name: entry for name, entry in value['entries'].items()
-                    if entry['status'] in {'cleanup_pending', 'dispatching'}}
+                    if entry['status'] in {'cleanup_pending', 'dispatching'}
+                    and not (entry['status'] == 'dispatching' and owned_dispatch
+                             and owned_dispatch(read_record(Path(root) / 'jobs' / name)))}
     observed = controls()
     if scope:
         scope.watch(marker(root))

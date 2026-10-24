@@ -509,7 +509,6 @@ export function loadAgentCatalog(root = agentsRoot, { includeInactive = true } =
         if (!["active", "inactive"].includes(lifecycleState)) {
           throw new Error(`agents/${moduleName}/${directory.name}/publication.json: lifecycle state must be active or inactive`);
         }
-        if (!includeInactive && lifecycleState === "inactive") continue;
       }
       const catalogModule = publication.catalog_module ?? moduleName;
       if (!MODULES.includes(catalogModule)) throw new Error(`agents/${moduleName}/${directory.name}/publication.json: catalog_module is invalid`);
@@ -521,6 +520,8 @@ export function loadAgentCatalog(root = agentsRoot, { includeInactive = true } =
       // caught during catalog generation.  Diagnostics remain non-blocking for
       // immutable published packages and are derived again by their detail page.
       deriveAgentPresentation(agent);
+      // Validate inactive records too, without putting them in the active view.
+      if (!includeInactive && (publication.lifecycle_state ?? publication.state) === "inactive") continue;
       records.push({
         ...agent,
         module: catalogModule,

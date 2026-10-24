@@ -515,6 +515,29 @@ def test_contract_failure_keeps_campaign_not_tested_with_stage_and_no_certificat
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('module_name',['scripts.run_three_stage_acceptance','unsafe credential=secret'])
+def test_import_failure_preserves_safe_diagnostics_and_never_grants_pass(tmp_path,module_name):
+    async def scenario():
+        store=RunStore(tmp_path/'missing-module.sqlite3')
+        created,operation=_campaign(store,tmp_path)
+        class Jobs(AgentAcceptanceJobs):
+            async def _run_case(self,*args):
+                raise ModuleNotFoundError('must-not-expose-raw-secret',name=module_name)
+        jobs=Jobs(SimpleNamespace(data_root=tmp_path),store,_Lifecycle(),_Coordinator(),_Runtime())
+        await jobs._run(created['campaign_id'],created['draft_id'],4,operation['operation_id'],{},{},{},[{'case_id':'case-1'}])
+        report=jobs.get(created['draft_id'],created['campaign_id'])['report']
+        assert report['verdict']=='NOT_TESTED' and not report['executable']
+        assert report['failure_stage']=='preparing' and report['failure_category']=='environment'
+        assert report['error']['code']=='agent_acceptance_dependency_unavailable'
+        assert report['diagnostics']['exception_type']=='ModuleNotFoundError'
+        assert report['diagnostics']['cleanup_complete']
+        assert ('dependency_module' in report['diagnostics'])==module_name.startswith('scripts.')
+        assert 'must-not-expose-raw-secret' not in json.dumps(report)
+        assert store.get_agent_operation(created['draft_id']) is None
+        assert all(not case.get('baseline_run_id') for case in jobs.get(created['draft_id'],created['campaign_id'])['cases'])
+    asyncio.run(scenario())
+
+
 def test_source_anchor_replays_get_plan_and_ignores_only_volatile_response_fields(tmp_path) -> None:
     async def scenario():
         store = RunStore(tmp_path / "anchors.sqlite3")

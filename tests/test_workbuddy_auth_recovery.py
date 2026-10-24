@@ -182,6 +182,10 @@ def test_model_picker_uses_audited_check_instead_of_showing_it_as_incompatible(t
     env,state,release,check,_=make_receipt(tmp_path)
     env.state=lambda:copy.deepcopy(state);env.release=lambda *args:release
     state['default_model_id']=check['model_id']
+    # The SDK directory deliberately excludes arbitrary historical model IDs.
+    # This test exercises an audited check for a genuinely discovered model.
+    state['model_discovery']={'models':[check['model_id']], 'source':'locked_cli_help',
+        'environment_digest':state['environment_digest'], **make_configuration('china',1)}
     manager=WorkBuddyManager.__new__(WorkBuddyManager);manager.environment=env
     manager.integration=lambda *args:{'status':'certified'}
     items=manager.models(state=state)['items']

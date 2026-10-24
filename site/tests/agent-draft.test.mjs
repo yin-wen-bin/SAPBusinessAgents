@@ -7,11 +7,86 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as draftHelpers from "../src/lib/agentDraft.ts";
 
-test("WorkBuddy acceptance lists only identity-verified concrete models and SDK reasoning", async () => {
+test("missing native terminal preserves the real format cause instead of a generic environment failure", async () => {
+  const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
+  for (const locale of ["zh", "en"]) {
+    const campaign = { status: "failed", phase: "completed", report: { verdict: "NOT_TESTED", failure_category: "contract", failure_stage: "baseline",
+      error: { code: "runtime_structured_output_missing" }, validation_issues: [{ code: "runtime_report_schema_invalid", path: "/input_kind", constraint: "enum" }],
+      diagnostics: { cleanup_complete: true, last_completed_tool: "sap_final_report_validate", last_error_code: "runtime_structured_output_missing" } }, cases: [] };
+    const html = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceProgress, { open: true, locale, campaign, apiBase: "", draftId: "fixture", onClose() {}, onCancel() {}, onAdjust() {}, onRetry() {} }));
+    assert.match(html, locale === "zh" ? /SDK未交接最终结构化结果/ : /SDK did not hand off a final structured result/);
+    assert.match(html, locale === "zh" ? /业务比较尚未完成/ : /business comparison is incomplete/);
+    assert.match(html, /input_kind/);
+    assert.doesNotMatch(html, locale === "zh" ? /问题类别: 执行环境故障/ : /Issue category: Execution environment failure/);
+  }
+});
+
+test("scope mapping failures retain safe field reasons and are not environment or login failures", async () => {
+  const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
+  for (const locale of ["zh", "en"]) for (const [code, category, issue, expected] of [
+    ["runtime_scope_clarification_required", "scope", { code: "runtime_scope_mapping_unsupported", input_field: "posting_date_to", path: "/input/posting_date_to" }, locale === "zh" ? /平台尚未支持/ : /does not support/],
+    ["runtime_scope_clarification_required", "input", { code: "runtime_scope_date_invalid", input_field: "posting_date_to", path: "/input/posting_date_to" }, /YYYY-MM-DD/],
+    ["runtime_query_scope_rejected", "scope", { code: "runtime_query_scope_rejected", input_field: "posting_date_to", path: "/filters", scope_issue: "date_bound_not_proven" }, locale === "zh" ? /日期边界/ : /date boundary/],
+  ]) {
+    const campaign = { status: "interrupted", phase: "completed", report: { verdict: "NOT_TESTED", failure_stage: "baseline", failure_category: "environment", error: { code }, validation_issues: [issue], diagnostics: { cleanup_complete: true } }, cases: [] };
+    const original = JSON.stringify(campaign);
+    const html = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceProgress, { open: true, locale, campaign, apiBase: "", draftId: "fixture", onClose() {}, onCancel() {}, onAdjust() {}, onRetry() {} }));
+    assert.match(html, expected);
+    assert.match(html, locale === "zh" ? /过账截止日/ : /Posting cutoff/);
+    assert.match(html, category === "input" ? locale === "zh" ? /业务输入需要核对/ : /Business inputs need verification/ : locale === "zh" ? /平台查询范围契约受阻/ : /Platform query-scope contract blocked/);
+    assert.doesNotMatch(html, locale === "zh" ? /问题类别: 执行环境故障/ : /Issue category: Execution environment/);
+    assert.equal(JSON.stringify(campaign), original, "presentation must not rewrite history");
+  }
+});
+
+test("genuine business clarification remains visible without expanding technical details", async () => {
+  const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
+  const campaign = { status: "interrupted", phase: "completed", report: { verdict: "NOT_TESTED", failure_category: "environment", failure_stage: "baseline", error: { code: "agent_acceptance_business_input_required" }, diagnostics: { cleanup_complete: true, clarification_question: "请确认业务范围 / Confirm business scope" } }, cases: [] };
+  const html = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceProgress, { open: true, locale: "zh", campaign, apiBase: "", draftId: "fixture", onClose() {}, onCancel() {}, onAdjust() {}, onRetry() {} }));
+  assert.match(html, /role="alert">请确认业务范围 \/ Confirm business scope/);
+  assert.match(html, /业务输入需要核对/);
+});
+
+test("preparation failure is explicit and never marks unstarted acceptance stages complete", async () => {
+  const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
+  const campaign = { status: "interrupted", phase: "completed", acceptance_mode: "three_stage",
+    report: { verdict: "NOT_TESTED", failure_category: "environment", failure_stage: "preparing",
+      error: { code: "agent_acceptance_dependency_unavailable" }, diagnostics: { cleanup_complete: true, dependency_module: "scripts.run_three_stage_acceptance" } },
+    cases: [{ case_id: "case-1", phase: "completed", status: "interrupted", result: { verdict: "NOT_TESTED" } }] };
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceProgress, { open: true, locale, campaign, apiBase: "", draftId: "fixture", onClose() {}, onCancel() {}, onAdjust() {}, onRetry() {} }));
+    assert.match(html, locale === "zh" ? /验收准备失败，尚未开始SAP取证/ : /Acceptance preparation failed; SAP evidence collection has not started/);
+    assert.equal((html.match(locale === "zh" ? /<dd>未执行<\/dd>/g : /<dd>Not run<\/dd>/g) || []).length, 4);
+    assert.doesNotMatch(html, /<dd>(?:已完成|Completed)<\/dd>/);
+    assert.match(html, /scripts.run_three_stage_acceptance/);
+    assert.match(html, locale === "zh" ? /无需更换业务案例/ : /changing business cases is not required/);
+  }
+});
+
+test("sample selection separates manual conditions and retained inputs from discoverable checkboxes", async () => {
+  const Modal = await component("AgentSampleProgress");
+  for (const locale of ["zh", "en"]) {
+    const fields = [
+      { key: "company_code", label: "Company", requirement: "Required", disabled: true, required: true, filled: false, reason: "Manual scope" },
+      { key: "cutoff", label: "Cutoff", requirement: "Required", disabled: true, required: true, filled: false, reason: "Manual boundary" },
+      { key: "supplier", label: "Supplier", requirement: "Required", disabled: false, required: true, filled: false, reason: "" },
+    ];
+    const html = renderToStaticMarkup(createElement(Modal, { fields, selectedFields: ["supplier"], open: true, locale, canRetry: true, onEnterManual() {} }));
+    assert.equal((html.match(/type="checkbox"/g) || []).length, 1);
+    assert.match(html, /sample-manual-conditions/);
+    assert.match(html, /disabled="">(?:开始查找|Start discovery)/);
+    const ready = renderToStaticMarkup(createElement(Modal, { fields: fields.map(f => f.disabled ? { ...f, filled: true } : f), selectedFields: ["supplier"], open: true, locale, canRetry: true }));
+    assert.match(ready, /sample-kept-conditions/);
+    assert.doesNotMatch(ready, /disabled="">(?:开始查找|Start discovery)/);
+    assert.equal((ready.match(/type="checkbox"/g) || []).length, 1);
+  }
+});
+
+test("WorkBuddy acceptance displays the saved default, without a second model selector", async () => {
   const Acceptance = await component("AgentAcceptance", { "./AgentDraftInputs": () => null });
   for (const locale of ["zh", "en"]) {
     const html = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceSetup, {
-      open: true, locale, schema: {}, mode: "three_stage", runtime: { provider_id: "workbuddy", model: "route", reasoning_effort: null },
+      open: true, locale, schema: {}, mode: "three_stage", runtime: { provider_id: "workbuddy", model: "verified-model", reasoning_effort: null },
       runtimeModels: [
         { model_id: "verified-model", actual_model: "verified-model", selectable: true, identity_known: true },
         { model_id: "UNKNOWN-IDENTITY", actual_model: null, selectable: true, identity_known: false },
@@ -21,6 +96,7 @@ test("WorkBuddy acceptance lists only identity-verified concrete models and SDK 
     }));
     assert.match(html, /verified-model/);
     assert.doesNotMatch(html, /UNKNOWN-IDENTITY|ROUTE-ALIAS/);
+    assert.doesNotMatch(html, /WorkBuddy 验收模型|Choose a verified concrete model/);
     assert.match(html, locale === "zh" ? /由 SDK 决定/ : /SDK controlled/);
   }
 });
@@ -120,8 +196,8 @@ test("formal acceptance setup and progress expose the multi-case read-only workf
   }));
   assert.match(progress, /Formal acceptance in progress/);
   assert.match(progress, /Independent SAP baseline/);
-  assert.match(progress, /Continue in background/);
-  assert.match(progress, /Cancel acceptance/);
+  assert.match(progress, /Close; continue in background/);
+  assert.match(progress, /Stop acceptance/);
   const invalidMode = renderToStaticMarkup(createElement(Acceptance.AgentAcceptanceProgress, {
     open: true, locale: "zh", apiBase: "http://127.0.0.1:8765", draftId: "draft-1",
     campaign: { status: "interrupted", phase: "completed",
@@ -368,11 +444,16 @@ import { publicValues, validateDraftInput, changedDefinition, clearDiscoveredInp
 // Render the actual TSX without building the catalog or starting a browser/API.
 const require = createRequire(import.meta.url);
 async function component(name, dependencies = {}) {
+  dependencies["../lib/acceptancePresentation"] = await import("../src/lib/acceptancePresentation.ts");
+  dependencies["../lib/acceptanceIcons"] = await import("../src/lib/acceptanceIcons.ts");
+  if (name === "AcceptanceOverview") dependencies["./AcceptanceReadiness"] = await component("AcceptanceReadiness");
+  if (name === "AgentDraftWorkspace") dependencies["./AcceptanceOverview"] = await component("AcceptanceOverview");
   dependencies["../lib/assistantPresentation"] = await import("../src/lib/assistantPresentation.ts");
   if (["AgentDraftConversation", "WorkflowAssistant"].includes(name)) dependencies["./AssistantHistory"] = await component("AssistantHistory");
   if (["AgentDraftWorkspace", "WorkflowAssistant"].includes(name)) dependencies["./AssistantResize"] = await component("AssistantResize");
   if (name === "AgentDraftConversation") dependencies["./AssistantRound"] = await component("AssistantRound");
   if (name === "AgentDraftWorkspace") {
+    dependencies["./useAcceptanceRuntimePreview"] = await component("useAcceptanceRuntimePreview");
     dependencies["./AssistantAnnotations"] = await component("AssistantAnnotations");
     dependencies["../lib/assistantAnnotations"] = await import("../src/lib/assistantAnnotations.ts");
   }
@@ -401,6 +482,67 @@ async function component(name, dependencies = {}) {
 }
 
 const title = (zh, en) => ({ zh, en });
+
+test("acceptance overview separates effective qualification, latest preparation failure and publication authority", async () => {
+  const Overview = await component("AcceptanceOverview");
+  const campaign = { campaign_id: "fixture", revision: 4, status: "interrupted", acceptance_mode: "three_stage",
+    runtime: { provider_id: "workbuddy", model: "frozen-not-system-default" },
+    report: { verdict: "NOT_TESTED", failure_stage: "preparing", error: { code: "agent_acceptance_dependency_unavailable" } }, cases: [{case_id: "one"}] };
+  for (const locale of ["zh", "en"]) {
+    const props = { locale, currentRevision: 5, acceptance: {verdict: "PASS", source_version: "0.1.0"}, campaign,
+      readiness: {status: "ready"}, effectiveTrial: {verdict: "INCONCLUSIVE"}, staticLabel: "static", staticKnown: true, staticPassed: true,
+      canPublish: false, publicationKnown: true, blockers: [], canStart: false, campaignActive: false, busy: false,
+      startDisabledReason: "bound gate", onSetup(){}, onResult(){}, onRefresh(){}, onAnalyze(){} };
+    const html = renderToStaticMarkup(createElement(Overview, props));
+    assert.match(html, locale === "zh" ? /准备失败，业务验收未开始/ : /Preparation failed; business acceptance not started/);
+    assert.match(html, locale === "zh" ? /验收通过/ : /Acceptance passed/);
+    assert.match(html, locale === "zh" ? /其他发布条件尚未满足/ : /other publication requirements remain unmet/);
+    assert.match(html, locale === "zh" ? /证据不足/ : /Inconclusive/);
+    assert.match(html, /frozen-not-system-default/);
+    assert.match(html, /disabled="">(?:重新验收|Set up acceptance again)/);
+    assert.doesNotMatch(html, /<details[^>]* open/);
+    const unknown = renderToStaticMarkup(createElement(Overview, {...props, acceptance: {}, campaign: null, publicationKnown: false}));
+    assert.match(unknown, locale === "zh" ? /发布状态待核对/ : /Publication status needs verification/);
+    assert.doesNotMatch(unknown, /glm-5|WorkBuddy/);
+    const publishable = renderToStaticMarkup(createElement(Overview, {...props, canPublish: true}));
+    assert.match(publishable, locale === "zh" ? /发布仍需单独确认/ : /publication still needs separate confirmation/);
+  }
+});
+
+test("latest acceptance presentation never invents preparation failure or changes raw verdicts", async () => {
+  const {acceptanceAttempt} = await import("../src/lib/acceptancePresentation.ts");
+  const fixture = {status: "interrupted", report: {verdict: "NOT_TESTED", failure_stage: "preparing"}, cases: []};
+  const before = JSON.stringify(fixture);
+  assert.equal(acceptanceAttempt(fixture, "zh").preparingFailed, true);
+  assert.equal(JSON.stringify(fixture), before);
+  for (const changed of [{status: "cancelled"}, {status: "superseded"}, {status: "passed"}, {cases: [{baseline_run_id: "started"}]}, {report: {...fixture.report, cases: [{baseline: {run_id: "started"}}]}}]) {
+    assert.equal(acceptanceAttempt({...fixture, ...changed}, "zh").preparingFailed, false);
+  }
+  assert.match(acceptanceAttempt({status: "unrecognized"}, "en").title, /needs verification/);
+});
+
+test("source scope failures remain bilingual business diagnostics, not SDK failures", async () => {
+  const {acceptanceErrorLabels, acceptanceFailureCategory} = await import("../src/lib/acceptancePresentation.ts");
+  for (const code of ["source_detail_grain_incomplete", "source_category_coverage_gap", "source_configuration_applicability_missing", "source_non_additive_metric_rejected"]) {
+    assert.equal(acceptanceErrorLabels[code].length, 2);
+    assert.ok(acceptanceErrorLabels[code].every(text => text.length > 10));
+    const report = {failure_category:"evidence", error:{code}};
+    const before = JSON.stringify(report);
+    assert.equal(acceptanceFailureCategory(report), "evidence");
+    assert.equal(JSON.stringify(report), before);
+  }
+});
+
+test("readiness explains source semantics without a raw internal path", async () => {
+  const Readiness = await component("AcceptanceReadiness");
+  for (const locale of ["zh", "en"]) {
+    const html = renderToStaticMarkup(createElement(Readiness, {locale, compact:true,
+      value:{status:"needs_input",issues:[{code:"source_scope_definition_required",path:"/execution/acceptance/sourceSemantics"}]}}));
+    assert.match(html, locale==="zh" ? /来源范围、记录粒度和类别口径/ : /source scope, record grain and category/);
+    assert.doesNotMatch(html, /\/execution\/acceptance\/sourceSemantics/);
+    assert.doesNotMatch(html, /<strong>(?:验收通过|Acceptance passed)/);
+  }
+});
 
 test("assistant Markdown escapes HTML, blocks unsafe links and never loads images", async () => {
   const Markdown = await component("SafeMarkdown");
@@ -639,7 +781,9 @@ test("workbench uses confirmed live discovery, protected inputs and formal publi
   assert.match(source, /baseline=source/);
   assert.match(source, /restoreDiscoveredInput/);
   assert.match(source, /requiresSampleConfirmation && !sampleConfirmed/);
-  assert.match(source, /acceptance\.source_version \|\| acceptance\.reused_from_version/);
+  const overview = await readFile(new URL("../src/components/AcceptanceOverview.tsx", import.meta.url), "utf8");
+  assert.match(overview, /acceptance\?\.source_version \|\| acceptance\?\.reused_from_version/);
+  assert.match(source, /<AcceptanceOverview[\s\S]*?acceptance=\{acceptance\}/);
   assert.match(source, /change\[`\$\{side\}_exists`\] === false/);
   assert.doesNotMatch(source, /gpt-6-astra|localStorage|sessionStorage|dangerouslySetInnerHTML/);
   assert.doesNotMatch(source, /trial\?\.verdict === "PASS"/);

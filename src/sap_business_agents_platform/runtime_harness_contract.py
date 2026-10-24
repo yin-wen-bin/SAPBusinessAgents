@@ -22,8 +22,33 @@ def turn_prompt(query, *, continuing, acceptance_spec=None):
             "Labels and explanatory prose should remain bilingual and business-friendly. "
             "Do not return a final result until report validation passes. Projection contract: "
             + json.dumps(acceptance_spec, ensure_ascii=False)
+            + '\nFormal acceptance is non-interactive and uses only the frozen case inputs. '
+              'Do not open a new secure-reference input exchange during this job. '
+              'The complete final object must include "input_kind": null and "input_field": null '
+              'as literal JSON null values. These are not SAP parameter names. '
+              'If frozen inputs are insufficient, use status=waiting_input with a clear '
+              'clarification_question and both fields null; the campaign stops for case review. '
+              'Never invent missing input, drop scope or claim a successful comparison.'
         )
     return prompt
+
+
+def terminal_schema(acceptance_spec=None):
+    """One shared task contract, not an SDK-specific null decoder.
+
+    Campaigns cannot resume a new secure-input exchange: they stop for case
+    review. Encode that existing interaction policy instead of offering native
+    formatters a string branch they may confuse with business input names.
+    """
+    from .acceptance_projection import output_schema
+    result = output_schema(_HARNESS_OUTPUT_SCHEMA, acceptance_spec)
+    if acceptance_spec is not None:
+        for name in ("input_kind", "input_field"):
+            result["properties"][name] = {**result["properties"][name], "type": "null", "enum": [None],
+                "description": "Non-interactive formal acceptance: use literal JSON null. "
+                    "For missing frozen inputs return waiting_input and a clarification_question; "
+                    "do not request a new secure-reference exchange or use a query parameter name."}
+    return result
 
 from .runtime_report_contract import presentation_schema, instructions as report_instructions
 
@@ -51,10 +76,12 @@ _HARNESS_OUTPUT_SCHEMA: dict[str, Any] = {
         "input_kind": {
             "type": ["string", "null"],
             "enum": ["secure_business_reference", None],
+            "description": "Secure-reference clarification kind, not a SAP query parameter. Use secure_business_reference only when requesting a secure business reference; otherwise use literal JSON null, never a string.",
         },
         "input_field": {
             "type": ["string", "null"],
             "enum": ["receipt_reference", None],
+            "description": "Secure-reference clarification field, not a SAP column. Use receipt_reference only for that clarification; otherwise use literal JSON null, never a string.",
         },
         "summary": {
             "type": "object",

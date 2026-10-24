@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { Locale } from "../lib/types";
-import { draftStatus } from "../lib/agentDraft";
+import { draftStatus, validateDraftInput } from "../lib/agentDraft";
 import AgentDraftInputs from "./AgentDraftInputs";
 import { ContractIssues } from "./AcceptanceReadiness";
+import { acceptanceAttempt, acceptanceErrorLabels, acceptanceFailureCategory } from "../lib/acceptancePresentation";
 
 export type AcceptanceCaseDraft = {
+  uiKey?: string;
   caseId: string;
   source: "current" | "sample" | "manual" | "auto";
   input: Record<string, any>;
@@ -17,6 +19,10 @@ type SetupProps = {
   schema: any;
   mode: string;
   runtime: any;
+  runtimeChecking?: boolean;
+  runtimeStartedAt?: number;
+  runtimeError?: string;
+  onReadRuntime?: () => void;
   cases: AcceptanceCaseDraft[];
   currentInput: Record<string, any>;
   currentSecrets: Record<string, string>;
@@ -27,15 +33,37 @@ type SetupProps = {
   onFindSample: (index: number) => void;
   onClose: () => void;
   onStart: () => void;
-  runtimeModels?: any[];
-  runtimeModelId?: string;
-  onRuntimeModel?: (model: string) => void;
+  caseErrors?: Record<number, Record<string, string>>;
+  error?: string;
+  submitting?: boolean;
+  submissionUnknown?: boolean;
 };
 
 export function AgentAcceptanceSetup(props: SetupProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const tr = (zh: string, en: string) => props.locale === "zh" ? zh : en;
+  const [expanded, setExpanded] = useState<string>(() => props.cases[0]?.uiKey || "case-position-0");
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!props.open || !props.runtimeChecking) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [props.open, props.runtimeChecking]);
+  const caseKey = (item: AcceptanceCaseDraft, index: number) => item.uiKey || `case-position-${index}`;
+  useEffect(() => {
+    if (props.open && !props.cases.some((item, index) => caseKey(item, index) === expanded)) {
+      setExpanded(props.cases[0] ? caseKey(props.cases[0], 0) : "");
+    }
+  }, [props.open, props.cases]);
+  useEffect(() => {
+    const failed = Object.entries(props.caseErrors || {}).find(([, errors]) => Object.keys(errors).length);
+    if (failed && props.cases[Number(failed[0])]) {
+      const index = Number(failed[0]); setExpanded(caseKey(props.cases[index], index));
+      requestAnimationFrame(() => dialog.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus());
+    }
+  }, [props.caseErrors]);
   useEffect(() => {
     if (props.open && !dialog.current?.open) {
       previousFocus.current = document.activeElement as HTMLElement | null;
@@ -57,39 +85,52 @@ export function AgentAcceptanceSetup(props: SetupProps) {
   };
   const add = () => {
     if (props.cases.length >= 5) return;
+    const uiKey = crypto.randomUUID();
+    let number = props.cases.length + 1;
+    while (props.cases.some(item => item.caseId === `case-${number}`)) number++;
+    setExpanded(uiKey);
     props.onCases([...props.cases, {
-      caseId: `case-${props.cases.length + 1}`, source: "manual", input: {}, sensitiveInputs: {},
+      uiKey, caseId: `case-${number}`, source: "manual", input: {}, sensitiveInputs: {},
     }]);
   };
   return <dialog ref={dialog} className="sample-progress-dialog acceptance-setup-dialog" aria-labelledby="acceptance-setup-title" onCancel={(event) => { event.preventDefault(); props.onClose(); }}>
-    <div className="acceptance-dialog-body">
+    <header className="acceptance-setup-header">
       <h2 id="acceptance-setup-title">{tr("设置正式验收", "Set up formal acceptance")}</h2>
-      <p>{tr("可设置1–5组必选案例。正式验收会自动读取SAP只读数据，生成独立基线，并与自由查询及当前草稿快照比较。不会自动发布或启用Agent。", "Set 1–5 required cases. Formal acceptance reads SAP data read-only, creates an independent baseline, and compares it with free query and the current draft snapshot. It never publishes or activates the Agent automatically.")}</p>
+      <button type="button" className="agent-secondary-action acceptance-setup-close" aria-label={tr("关闭验收设置", "Close acceptance setup")} onClick={props.onClose}>×</button>
+      <p>{tr("1–5组必选案例 · SAP只读 · 全部通过才获PASS · 不自动发布或启用", "1–5 required cases · Read-only SAP · All must pass · No automatic publication or activation")}</p>
+    </header>
+    <div className="acceptance-dialog-body">
+      <p className="acceptance-runtime-caption">{tr("本次使用系统默认 Runtime", "Using the system default Runtime")}: {props.runtime?.provider_id || tr("待核对", "Pending verification")}</p>
+      {(props.runtimeChecking || !props.runtime && !props.runtimeError) && <p role="status" className="acceptance-runtime-wait">{tr("正在核对运行环境…", "Verifying the runtime…")} {Math.max(0, Math.floor((now - (props.runtimeStartedAt || now)) / 1000))}{tr("秒", "s")} · {tr("可继续填写案例", "You can keep editing cases")}</p>}
+      {props.runtimeError && <div role="alert" className="agent-alert acceptance-runtime-error"><p>{props.runtimeError === "agent_draft_revision_conflict" ? tr("草稿修订已变化，请先刷新草稿；本次案例仍保留。", "The draft revision changed. Refresh the draft; case inputs are retained.") : tr("运行环境核对失败，尚不能提交。已保留上次信息和案例，请重新读取或在系统配置核对。", "Runtime verification failed; submission is blocked. Previous information and cases are retained. Read again or review system settings.")}</p><button type="button" className="agent-secondary-action" disabled={props.runtimeChecking} onClick={props.onReadRuntime}>{tr("重新读取", "Read again")}</button><a href={`/${props.locale}/settings/`}>{tr("系统配置", "System settings")}</a><details><summary>{tr("原因", "Reason")}</summary><code>{props.runtimeError}</code></details></div>}
       <dl className="acceptance-summary-grid">
         <div><dt>{tr("验收模式", "Acceptance mode")}</dt><dd>{props.mode === "three_stage" ? tr("三级比较", "Three-stage comparison") : tr("确定性Runtime比较", "Deterministic Runtime comparison")}</dd></div>
         <div><dt>{tr("模型", "Model")}</dt><dd>{props.runtime?.model || tr("由系统配置决定", "System configured")}</dd></div>
         <div><dt>{tr("推理强度", "Reasoning effort")}</dt><dd>{props.runtime?.provider_id === "workbuddy" ? tr("由 SDK 决定", "SDK controlled") : props.runtime?.reasoning_effort || tr("由系统配置决定", "System configured")}</dd></div>
       </dl>
-      {props.runtime?.provider_id === "workbuddy" && <label>{tr("WorkBuddy 验收模型（须确认具体身份）", "WorkBuddy acceptance model (concrete identity required)")}<select value={props.runtimeModelId || ""} onChange={(event) => props.onRuntimeModel?.(event.target.value)}><option value="">{tr("选择已验证的具体模型", "Choose a verified concrete model")}</option>{(props.runtimeModels || []).filter((model) => model.selectable && model.identity_known && model.model_id === model.actual_model).map((model) => <option key={model.model_id} value={model.model_id}>{model.model_id} · {model.actual_model}</option>)}</select><small>{tr("不会使用路由别名，也不会静默切换模型。", "Routing aliases are not accepted; models are never switched silently.")}</small></label>}
+      {props.runtime?.available === false && <p role="alert" className="agent-alert">{tr("默认模型尚不满足正式验收要求，请在系统配置核对认证、兼容检查和具体模型身份。", "The default model is not ready for formal acceptance. Check authentication, compatibility and concrete identity in system settings.")} <a href={`/${props.locale}/settings/`}>{tr("系统配置", "System settings")}</a> <small>{props.runtime?.error?.code}</small></p>}
+      {props.error && <p role="alert" className="agent-alert">{props.error}</p>}
       {props.mode === "deterministic_runtime" && <p className="agent-alert">{tr("此Agent使用确定性Runtime模式，自由查询比较不适用。", "This Agent uses deterministic Runtime acceptance; free-query comparison is not applicable.")}</p>}
       <div className="acceptance-case-list">
-        {props.cases.map((item, index) => <fieldset key={`${index}-${item.caseId}`} className="acceptance-case-editor">
-          <legend>{tr(`案例 ${index + 1}`, `Case ${index + 1}`)}</legend>
-          <label>{tr("案例名称", "Case name")}<input value={item.caseId} maxLength={80} pattern="[A-Za-z0-9][A-Za-z0-9_-]*" onChange={(event) => change(index, { caseId: event.target.value })} /></label>
+        {props.cases.map((item, index) => <details key={caseKey(item, index)} className="acceptance-case-group" open={expanded === caseKey(item, index)} onToggle={(event) => { if (event.currentTarget.open) setExpanded(caseKey(item, index)); else setExpanded(current => current === caseKey(item, index) ? "" : current); }}>
+          <summary>{tr(`案例 ${index + 1}`, `Case ${index + 1}`)} · {item.caseId || tr("未命名", "Unnamed")}<small>{({current: tr("最近试运行", "Latest trial"), sample: tr("已确认样本", "Confirmed sample"), manual: tr("手工参数", "Manual inputs"), auto: tr("待查样", "Sample required")})[item.source]} · {item.source === "auto" || Object.keys(validateDraftInput(props.schema, item.input, item.sensitiveInputs, props.locale)).length ? tr("参数需补充", "Inputs incomplete") : tr("参数完整", "Inputs complete")}</small></summary>
+          <fieldset className="acceptance-case-editor" disabled={props.submitting || props.submissionUnknown}><legend className="sr-only">{tr(`案例 ${index + 1}`, `Case ${index + 1}`)}</legend>
+          <div className="acceptance-case-meta">
+          <label>{tr("案例名称", "Case name")}<input value={item.caseId} aria-invalid={Boolean(props.caseErrors?.[index]?._caseId)} maxLength={80} pattern="[A-Za-z0-9][A-Za-z0-9_-]*" onChange={(event) => change(index, { caseId: event.target.value })} />{props.caseErrors?.[index]?._caseId && <small role="alert">{props.caseErrors[index]._caseId}</small>}</label>
           <label>{tr("参数来源", "Input source")}<select value={item.source} onChange={(event) => source(index, event.target.value as AcceptanceCaseDraft["source"])}>
             <option value="current">{tr("使用最近试运行参数", "Use latest trial inputs")}</option>
             <option value="sample" disabled={!props.canUseSample}>{tr("复用已确认的自动选样", "Reuse confirmed sample")}</option>
             <option value="manual">{tr("手工填写参数", "Enter inputs manually")}</option>
             <option value="auto">{tr("单独自动查找样本", "Find a sample for this case")}</option>
           </select></label>
-          {item.source === "auto" ? <div className="agent-alert"><p>{tr("将暂存本案例参数并打开自动选样。找到并确认样本后，系统会自动回到本案例并填入已核对参数。", "This case is staged while automatic discovery opens. After you confirm a sample, the setup returns to this case with the verified inputs filled in.")}</p><button type="button" className="agent-secondary-action" onClick={() => props.onFindSample(index)}>{tr("开始查找样本", "Find sample")}</button></div> : <AgentDraftInputs schema={props.schema} values={item.input} onChange={(input) => change(index, { input })} secrets={item.sensitiveInputs} onSecrets={(sensitiveInputs) => change(index, { sensitiveInputs })} locale={props.locale} errors={{}} disabled={false} />}
+          </div>
+          {item.source === "auto" ? <div className="agent-alert"><p>{tr("确认样本后会返回本案例，不会自动开始验收。", "After confirming a sample you return here; acceptance does not start automatically.")}</p><button type="button" className="agent-secondary-action" onClick={() => props.onFindSample(index)}>{tr("开始查找样本", "Find sample")}</button></div> : <AgentDraftInputs schema={props.schema} values={item.input} onChange={(input) => change(index, { input })} secrets={item.sensitiveInputs} onSecrets={(sensitiveInputs) => change(index, { sensitiveInputs })} locale={props.locale} errors={props.caseErrors?.[index] || {}} idPrefix={`acceptance-${caseKey(item, index)}`} disabled={Boolean(props.submitting)} />}
           {props.cases.length > 1 && <button type="button" className="agent-danger-action" onClick={() => props.onCases(props.cases.filter((_, position) => position !== index))}>{tr("删除案例", "Remove case")}</button>}
-        </fieldset>)}
+        </fieldset></details>)}
       </div>
-      <button type="button" className="agent-secondary-action" disabled={props.cases.length >= 5} onClick={add}>{tr("增加验收案例", "Add acceptance case")}</button>
-      <p>{tr(`共${props.cases.length}组必选案例，全部通过才会获得PASS。`, `${props.cases.length} required case(s); every case must pass.`)}</p>
-      <div className="agent-actions"><button type="button" className="agent-secondary-action" onClick={props.onClose}>{tr("取消", "Cancel")}</button><button type="button" disabled={props.disabled || props.cases.some((item) => item.source === "auto" || !item.caseId.trim())} onClick={props.onStart}>{tr("开始正式验收", "Start formal acceptance")}</button></div>
+      <button type="button" className="agent-secondary-action" disabled={props.cases.length >= 5 || props.submitting || props.submissionUnknown} onClick={add}>{tr("增加验收案例", "Add acceptance case")}</button>
     </div>
+    <footer className="acceptance-setup-footer"><span>{tr(`共${props.cases.length}组必选案例`, `${props.cases.length} required case(s)`)}</span><div className="agent-actions"><button type="button" className="agent-secondary-action" onClick={props.onClose}>{tr("取消", "Cancel")}</button><button type="button" disabled={props.disabled || props.submitting || !props.submissionUnknown && (props.runtimeChecking || Boolean(props.runtimeError) || props.runtime?.available === false || props.cases.some((item) => item.source === "auto" || !item.caseId.trim()))} onClick={props.onStart}>{props.submissionUnknown ? tr("核对提交状态", "Check submission status") : props.submitting ? tr("正在提交", "Submitting") : props.runtimeChecking ? tr("正在核对运行环境…", "Verifying runtime…") : tr("开始正式验收", "Start formal acceptance")}</button></div></footer>
   </dialog>;
 }
 
@@ -117,13 +158,17 @@ const stageLabel = (stage: string, locale: Locale) => {
   return (labels[stage] || [stage, stage])[locale === "zh" ? 0 : 1];
 };
 
-const stageState = (phase: string, target: string, terminal: boolean, locale: Locale) => {
-  const order = ["preparing", "baseline", "free_query", "fixed_agent", "comparing", "completed"];
-  const current = order.indexOf(phase);
-  const expected = order.indexOf(target);
-  if (terminal || current > expected) return locale === "zh" ? "已完成" : "Completed";
-  if (current === expected) return locale === "zh" ? "执行中" : "Running";
-  return locale === "zh" ? "等待执行" : "Queued";
+const stageState = (item: any, target: string, terminal: boolean, locale: Locale) => {
+    const result = item.result || {};
+    const stage = target === "comparing" ? null : result[target === "free_query" ? "free_query" : target === "fixed_agent" ? "fixed_agent" : "baseline"];
+    const verified = target === "comparing" ? Boolean(result.fixed_agent?.comparison)
+      : target === "baseline" ? Boolean(stage?.result_hash) : stage?.status === "completed";
+    if (verified) return locale === "zh" ? "已完成" : "Completed";
+    if (!terminal && item.phase === target) return locale === "zh" ? "执行中" : "Running";
+    const runKey = ({ baseline: "baseline_run_id", free_query: "free_query_run_id", fixed_agent: "fixed_agent_run_id" } as Record<string, string>)[target];
+    return runKey && (item[runKey] || stage?.run_id)
+      ? (locale === "zh" ? "已启动，结果未核验" : "Started; result not verified")
+      : terminal ? (locale === "zh" ? "未执行" : "Not run") : (locale === "zh" ? "等待执行" : "Queued");
 };
 
 const differenceLabel = (value: any, locale: Locale) => {
@@ -151,21 +196,8 @@ const differenceLabel = (value: any, locale: Locale) => {
 };
 
 const campaignErrorLabel = (codeValue: unknown, locale: Locale) => {
-  const labels: Record<string, [string, string]> = {
-    agent_acceptance_cancelled: ["验收已由用户取消，未生成发布证书。", "Acceptance was cancelled; no publication certificate was created."],
-    agent_acceptance_interrupted: ["服务在验收期间重启或中断，请重新验收。", "The service restarted or stopped during acceptance. Run acceptance again."],
-    agent_acceptance_queue_timeout: ["任务排队时间过长，尚未完成验收。", "The campaign remained queued too long and was not tested."],
-    agent_acceptance_stage_timeout: ["当前验收阶段超时，未生成发布证书。", "The current acceptance stage timed out; no publication certificate was created."],
-    agent_acceptance_stage_interrupted: ["当前验收阶段中断，尚未完成业务比较。", "The acceptance stage was interrupted before business comparison completed."],
-    agent_acceptance_business_input_required: ["独立基线仍需确认业务信息，验收未完成。", "The independent baseline still needs business input; acceptance is incomplete."],
-    independent_baseline_gap_unverified: ["基线未完成取证，所声明的缺口尚未得到可靠证据确认。", "Baseline investigation is incomplete; the stated gap has not been verified by reliable evidence."],
-    agent_acceptance_internal_error: ["验收服务发生内部错误，请核对服务状态后重试。", "The acceptance service failed internally. Check service health and retry."],
-    agent_acceptance_mode_invalid: ["当前Agent的验收模式无效，请选择三级验收或确定性运行验收。", "The Agent acceptance mode is invalid. Select three-stage or deterministic-runtime acceptance."],
-    runtime_model_authentication_failed: ["Runtime认证失败，请在系统配置中重新登录。", "Runtime authentication failed. Sign in again in system settings."],
-    runtime_model_check_required: ["模型与推理强度尚未通过兼容检查。", "The model and reasoning effort have not passed compatibility checking."],
-  };
   const code = String(codeValue || "agent_acceptance_internal_error");
-  return labels[code]?.[locale === "zh" ? 0 : 1]
+  return acceptanceErrorLabels[code]?.[locale === "zh" ? 0 : 1]
     || (locale === "zh" ? `验收未完成（${code}）。` : `Acceptance did not complete (${code}).`);
 };
 
@@ -194,6 +226,7 @@ export function AgentAcceptanceProgress(props: ProgressProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [expandedCases, setExpandedCases] = useState<Record<string, boolean>>({});
   const tr = (zh: string, en: string) => props.locale === "zh" ? zh : en;
   useEffect(() => {
     if (props.open && !dialog.current?.open) {
@@ -217,34 +250,50 @@ export function AgentAcceptanceProgress(props: ProgressProps) {
   const queued = campaign.created_at ? Math.max(0, Math.round(((campaign.started_at ? Date.parse(campaign.started_at) : now) - Date.parse(campaign.created_at)) / 1000)) : 0;
   const format = (value: number) => `${Math.floor(value / 60).toString().padStart(2, "0")}:${Math.floor(value % 60).toString().padStart(2, "0")}`;
   const verdict = campaign.report?.verdict || (campaign.status === "passed" ? "PASS" : campaign.status === "blocked" ? "BLOCKED" : campaign.status === "failed" ? "FAIL" : "NOT_TESTED");
+  const preparationFailed = terminal && campaign.status !== "cancelled" && verdict === "NOT_TESTED"
+    && campaign.report?.failure_stage === "preparing"
+    && (campaign.cases || []).every((item: any) => !item.baseline_run_id && !item.free_query_run_id && !item.fixed_agent_run_id);
+  const currentCase = (campaign.cases || []).find((item: any) => item.case_id === campaign.current_case_id)
+    || (campaign.cases || []).find((item: any) => item.status === "running");
+  const currentPhase = currentCase?.phase || campaign.phase || "preparing";
+  const phaseRecorded = ["baseline", "free_query", "fixed_agent", "comparing", "source_anchor_before"].includes(currentPhase);
+  const cleanupPending = campaign.phase === "cleanup" || campaign.report?.diagnostics?.cleanup_complete === false;
+  const attempt = acceptanceAttempt(campaign, props.locale);
   return <dialog ref={dialog} className="sample-progress-dialog acceptance-progress-dialog" aria-labelledby="acceptance-progress-title" onCancel={(event) => { event.preventDefault(); props.onClose(); }}>
+    <header className="acceptance-progress-header">
+      <div><h2 id="acceptance-progress-title">{terminal ? tr("正式验收结果", "Formal acceptance result") : tr("正在进行正式验收", "Formal acceptance in progress")}</h2><p role="status">{preparationFailed ? tr("验收准备失败，尚未开始SAP取证", "Acceptance preparation failed; SAP evidence collection has not started") : campaign.status === "starting" ? tr("正在提交验收请求", "Submitting acceptance request") : attempt.title}</p></div>
+      <button type="button" className="agent-secondary-action" aria-label={tr("收起验收窗口，后台继续", "Close acceptance window; continue in background")} onClick={props.onClose}>×</button>
+      <p className="acceptance-progress-runtime">{campaign.runtime?.provider_id || tr("等待运行快照", "Waiting for runtime snapshot")} · {campaign.runtime?.model || tr("模型待确认", "Model unconfirmed")} · {tr("案例", "Case")} {campaign.current_case_index || (currentCase ? (campaign.cases.indexOf(currentCase) + 1) : "—")}/{campaign.cases?.length || "—"}</p>
+    </header>
     <div className="acceptance-dialog-body">
-      <h2 id="acceptance-progress-title">{terminal ? tr("正式验收结果", "Formal acceptance result") : tr("正在进行正式验收", "Formal acceptance in progress")}</h2>
-      {!terminal && <div className="agent-progress-spinner" aria-hidden="true" />}
-      <p role="status">{terminal ? draftStatus(verdict, props.locale) : stageLabel(campaign.phase || "preparing", props.locale)}</p>
-      {terminal && campaign.report?.failure_category && <p>{tr("问题类别", "Issue category")}: {({ contract: tr("验收定义或输出不符合契约，尚未完成业务比较", "Contract/output invalid; business comparison not completed"), evidence: tr("证据不足或来源变化", "Evidence gap or source drift"), business: tr("同一口径下的业务差异", "Business difference under the same definition"), environment: tr("执行环境故障", "Execution environment failure") } as Record<string, string>)[campaign.report.failure_category]} · {stageLabel(campaign.report.failure_stage || "comparing", props.locale)}</p>}
-      <ContractIssues issues={campaign.report?.validation_issues || []} locale={props.locale} />
+      {!terminal && <section className="acceptance-current-progress" aria-label={tr("当前进度", "Current progress")}><strong>{campaign.status === "cancelling" ? tr("正在停止并清理", "Stopping and cleaning up") : stageLabel(currentPhase, props.locale)}</strong><p>{phaseRecorded ? tr(`平台已记录进入「${stageLabel(currentPhase, props.locale)}」阶段。`, `The platform recorded entry into ${stageLabel(currentPhase, props.locale)}.`) : tr("等待进展更新", "Waiting for a progress update")}</p></section>}
+      {terminal && <p className="acceptance-business-verdict"><strong>{tr("业务结论", "Business verdict")}: {draftStatus(verdict, props.locale)}</strong></p>}
+      <p className="acceptance-progress-timing">{tr("排队", "Queued")}: {format(queued)} · {tr("执行", "Execution")}: {format(elapsed)} · {tr("预算上限（非预计完成时间）", "Budget limit (not an ETA)")}: {campaign.estimated_max_seconds ? format(campaign.estimated_max_seconds) : tr("待确认", "Unconfirmed")}</p>
+      {props.connectionError && <p className="agent-alert" role="status">{tr("进度连接异常，正在通过轮询恢复。任务不会重复创建。", "The progress stream is reconnecting with polling. The campaign is not duplicated.")}</p>}
+      {cleanupPending && <p className="agent-alert" role="alert">{tr("未能确认后台清理完成，草稿操作锁仍然保留。请检查服务状态。", "Background cleanup is unconfirmed. The draft remains locked; check service health.")}</p>}
+      {terminal && acceptanceFailureCategory(campaign.report) && <p>{tr("问题类别", "Issue category")}: {({ input: tr("业务输入需要核对", "Business inputs need verification"), scope: tr("平台查询范围契约受阻", "Platform query-scope contract blocked"), contract: tr("验收定义或输出不符合契约，尚未完成业务比较", "Contract/output invalid; business comparison not completed"), evidence: tr("证据不足或来源变化", "Evidence gap or source drift"), business: tr("同一口径下的业务差异", "Business difference under the same definition"), environment: tr("执行环境故障", "Execution environment failure") } as Record<string, string>)[acceptanceFailureCategory(campaign.report)] || tr("验收条件受阻", "Acceptance requirement blocked")} · {stageLabel(campaign.report.failure_stage || "comparing", props.locale)}</p>}
+      {campaign.report?.diagnostics?.clarification_question && <p className="agent-alert" role="alert">{campaign.report.diagnostics.clarification_question}</p>}
+      {Boolean(campaign.report?.validation_issues?.length) && <ContractIssues issues={campaign.report.validation_issues} locale={props.locale} />}
       {campaign.report?.diagnostics && <details className="acceptance-diagnostics"><summary>{tr("查看执行诊断", "Execution diagnostics")}</summary>
         <dl><dt>{tr("最后失败工具", "Last failed tool")}</dt><dd>{campaign.report.diagnostics.last_failed_tool || tr("未记录", "Not recorded")}</dd>
           <dt>{tr("安全错误代码", "Safe error code")}</dt><dd>{campaign.report.diagnostics.last_error_code || tr("未记录", "Not recorded")}</dd>
           <dt>{tr("最后完成工具", "Last completed tool")}</dt><dd>{campaign.report.diagnostics.last_completed_tool || tr("未记录", "Not recorded")}</dd></dl>
+        {campaign.report.diagnostics.dependency_module && <p>{tr("未能加载的组件", "Component that failed to load")}: <code>{campaign.report.diagnostics.dependency_module}</code></p>}
         <ContractIssues issues={campaign.report.diagnostics.unresolved_issues || []} locale={props.locale} />
-        {campaign.report.diagnostics.cleanup_complete === false && <p role="alert">{tr("未能确认后台清理完成，草稿操作锁仍然保留。请检查服务状态后再重试。", "Background cleanup could not be confirmed. The draft remains locked; check service health before retrying.")}</p>}
+        {campaign.report?.error?.code && <p><code>{campaign.report.error.code}</code></p>}
       </details>}
-      {!terminal && campaign.current_case_id && <p>{tr("当前案例", "Current case")}: {campaign.current_case_index || "—"}/{campaign.cases?.length || "—"} · <code>{campaign.current_case_id}</code></p>}
-      <p>{tr("SAP只读验收，不会发布或启用Agent。", "Read-only SAP acceptance; the Agent will not be published or activated.")}</p>
-      <p>{tr("排队耗时", "Queue time")}: {format(queued)} · {tr("实际执行耗时", "Execution time")}: {format(elapsed)} · {tr("动态最长", "Maximum")}: {format(campaign.estimated_max_seconds || 0)}</p>
-      {props.connectionError && <p className="agent-alert" role="status">{tr("进度连接异常，正在通过轮询恢复。任务不会重复创建。", "The progress stream is reconnecting with polling. The campaign is not duplicated.")}</p>}
       {terminal && campaign.report?.verdict === "NOT_TESTED" && <p className="agent-alert">{campaignErrorLabel(campaign.report?.error?.code, props.locale)}</p>}
       <ol className="acceptance-progress-cases">{(campaign.cases || []).map((item: any) => {
         const caseTerminal = ["pass", "fail", "failed", "blocked", "cancelled", "interrupted"].includes(item.status);
         const freeApplicable = campaign.acceptance_mode === "three_stage";
-        return <li key={item.case_id}><strong>{item.case_id}</strong><span>{stageLabel(item.phase, props.locale)} · {draftStatus(item.result?.verdict || item.status, props.locale)}</span><dl className="acceptance-stage-grid"><div><dt>{tr("独立基线", "Independent baseline")}</dt><dd>{stageState(item.phase, "baseline", caseTerminal, props.locale)}</dd></div><div><dt>{tr("自由查询", "Free query")}</dt><dd>{freeApplicable ? stageState(item.phase, "free_query", caseTerminal, props.locale) : tr("不适用", "Not applicable")}</dd></div><div><dt>{tr("固定Agent", "Fixed Agent")}</dt><dd>{stageState(item.phase, "fixed_agent", caseTerminal, props.locale)}</dd></div><div><dt>{tr("逐字段比较", "Field comparison")}</dt><dd>{stageState(item.phase, "comparing", caseTerminal, props.locale)}</dd></div></dl></li>;
+        const key = `${campaign.campaign_id || "pending"}:${item.case_id}`;
+        const open = expandedCases[key] ?? (item === currentCase || terminal && item === campaign.cases[0]);
+        return <li key={item.case_id}><details open={open}><summary aria-expanded={open} onClick={(event) => { event.preventDefault(); setExpandedCases(old => ({ ...old, [key]: !open })); }}><strong>{item.case_id}</strong><span>{preparationFailed ? tr("准备失败", "Preparation failed") : caseTerminal ? draftStatus(item.result?.verdict || item.status, props.locale) : stageLabel(item.phase || "preparing", props.locale)}</span></summary><dl className="acceptance-stage-grid"><div><dt>{tr("独立基线", "Independent baseline")}</dt><dd>{stageState(item, "baseline", caseTerminal || terminal, props.locale)}</dd></div><div><dt>{tr("自由查询", "Free query")}</dt><dd>{freeApplicable ? stageState(item, "free_query", caseTerminal || terminal, props.locale) : tr("不适用", "Not applicable")}</dd></div><div><dt>{tr("固定Agent", "Fixed Agent")}</dt><dd>{stageState(item, "fixed_agent", caseTerminal || terminal, props.locale)}</dd></div><div><dt>{tr("逐字段比较", "Field comparison")}</dt><dd>{stageState(item, "comparing", caseTerminal || terminal, props.locale)}</dd></div></dl></details></li>;
       })}</ol>
       {terminal && campaign.report?.cases?.map((item: any) => <details key={item.case_id} className="acceptance-case-result"><summary>{item.case_id} · {draftStatus(item.verdict, props.locale)}</summary><dl><dt>{tr("独立基线", "Independent baseline")}</dt><dd>{item.baseline?.result_hash || draftStatus(item.baseline?.status, props.locale)}</dd><dt>{tr("自由查询", "Free query")}</dt><dd>{item.free_query?.comparison === "NOT_APPLICABLE" ? tr("不适用", "Not applicable") : draftStatus(item.free_query?.comparison?.verdict, props.locale)}</dd><dt>{tr("固定Agent", "Fixed Agent")}</dt><dd>{draftStatus(item.fixed_agent?.comparison?.verdict, props.locale)}</dd><dt>{tr("SAP来源稳定性", "SAP source stability")}</dt><dd>{draftStatus(item.source_anchors?.verdict, props.locale)}</dd></dl>{(item.validation_issues || []).map((issue: any, index: number) => <p key={`issue-${index}`} className="agent-alert">{acceptanceIssueLabel(issue.code, props.locale)}</p>)}{[...(item.free_query?.comparison?.differences || []), ...(item.fixed_agent?.comparison?.differences || [])].map((difference: any, index: number) => <details key={index} className="acceptance-difference"><summary>{differenceLabel(difference, props.locale)}</summary><pre>{JSON.stringify(difference, null, 2)}</pre></details>)}</details>)}
-      {terminal && campaign.artifacts_available && <div className="acceptance-downloads"><a href={`${props.apiBase}/api/authoring/agents/${encodeURIComponent(props.draftId)}/acceptance-campaigns/${encodeURIComponent(campaign.campaign_id)}/artifacts/report.md`} target="_blank">{tr("下载Markdown报告", "Download Markdown report")}</a><a href={`${props.apiBase}/api/authoring/agents/${encodeURIComponent(props.draftId)}/acceptance-campaigns/${encodeURIComponent(campaign.campaign_id)}/artifacts/report.json`} target="_blank">{tr("下载JSON报告", "Download JSON report")}</a></div>}
-      <div className="agent-actions">{!terminal ? <><button type="button" className="agent-secondary-action" onClick={props.onClose}>{tr("后台继续", "Continue in background")}</button><button type="button" className="agent-danger-action" disabled={campaign.status === "cancelling" || !campaign.campaign_id} onClick={props.onCancel}>{campaign.status === "cancelling" ? tr("正在取消", "Cancelling") : tr("取消验收", "Cancel acceptance")}</button></> : <><button type="button" className="agent-secondary-action" onClick={props.onClose}>{tr("关闭", "Close")}</button>{verdict !== "PASS" && <button type="button" className="agent-secondary-action" onClick={props.onAdjust}>{tr("调整草稿", "Adjust draft")}</button>}{verdict !== "PASS" && <button type="button" onClick={props.onRetry}>{tr("更换案例并重新验收", "Change cases and retry")}</button>}</>}</div>
+      {terminal && campaign.artifacts_available && <details><summary>{tr("下载验收报告", "Download acceptance reports")}</summary><div className="acceptance-downloads"><a href={`${props.apiBase}/api/authoring/agents/${encodeURIComponent(props.draftId)}/acceptance-campaigns/${encodeURIComponent(campaign.campaign_id)}/artifacts/report.md`} target="_blank">{tr("下载Markdown报告", "Download Markdown report")}</a><a href={`${props.apiBase}/api/authoring/agents/${encodeURIComponent(props.draftId)}/acceptance-campaigns/${encodeURIComponent(campaign.campaign_id)}/artifacts/report.json`} target="_blank">{tr("下载JSON报告", "Download JSON report")}</a></div></details>}
     </div>
+    <footer className="acceptance-progress-footer"><small>{tr("SAP只读 · 不发布或启用", "Read-only SAP · No publication or activation")}</small><div className="agent-actions">{!terminal ? <><button type="button" className="agent-secondary-action" onClick={props.onClose}>{tr("收起，后台继续", "Close; continue in background")}</button><button type="button" className="agent-danger-action" disabled={campaign.status === "cancelling" || !campaign.campaign_id} onClick={props.onCancel}>{campaign.status === "cancelling" ? tr("正在停止", "Stopping") : tr("停止验收", "Stop acceptance")}</button></> : <><button type="button" className="agent-secondary-action" onClick={props.onClose}>{tr("关闭", "Close")}</button>{verdict !== "PASS" && <button type="button" className="agent-secondary-action" onClick={props.onAdjust}>{tr("调整草稿", "Adjust draft")}</button>}{verdict !== "PASS" && <button type="button" onClick={props.onRetry}>{tr("重新设置验收", "Set up acceptance again")}</button>}</>}</div></footer>
   </dialog>;
 }
 

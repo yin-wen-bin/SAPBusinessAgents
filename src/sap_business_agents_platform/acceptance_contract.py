@@ -45,6 +45,7 @@ def compile_contract(manifest: dict[str, Any]) -> dict[str, Any]:
     return {
         **contract_details(manifest),
         "schema_version": value.get("schemaVersion", "1.0"),
+        "source_semantics": copy.deepcopy(value.get("sourceSemantics")),
         "business_keys": list(value.get("businessKeys") or []),
         "facts": list(value.get("facts") or []),
         "metrics": list(value.get("metrics") or []),
@@ -158,6 +159,10 @@ def _contract_issues(manifest: dict[str, Any]) -> list[dict[str, str]]:
     value = execution.get("acceptance") or {}
     base = "/execution/acceptance"
     issues: list[dict[str, str]] = []
+    from .source_semantics import definition_issues, issue
+    issues.extend(definition_issues(value.get("sourceSemantics")))
+    if value.get("sourceSemantics") is not None and "record_kind" not in (value.get("facts") or []):
+        issues.append(issue("source_classification_fact_required", "/execution/acceptance/facts"))
     def add(code: str, path: str, text: str) -> None:
         issues.append(_issue(code, path, text))
     if value.get("contractVersion") != VERSION:
@@ -366,6 +371,12 @@ def result_payload(result: Any) -> dict[str, Any] | None:
 def readiness(manifest: dict[str, Any], revision: int, *, result: dict[str, Any] | None = None) -> dict[str, Any]:
     issues = contract_issues(manifest)
     contract = manifest.get("execution", {}).get("acceptance") or {}
+    # Historical contract parsing remains compatible. New formal acceptance,
+    # unlike reading an old package, needs an explicit comparable source scope.
+    from .source_semantics import manifest_profiles, issue
+    if manifest_profiles(manifest) and contract.get("sourceSemantics") is None:
+        issues.append(issue("source_scope_definition_required", "/execution/acceptance/sourceSemantics"))
+    definition_ready = not issues
     if not issues and result is not None:
         try:
             normalize_fixed(result, compile_contract(manifest))
@@ -375,5 +386,5 @@ def readiness(manifest: dict[str, Any], revision: int, *, result: dict[str, Any]
             "execution_digest": agent_execution_digest(manifest),
             "contract_digest": canonical_hash(contract), "output_schema_digest": canonical_hash(manifest.get("execution", {}).get("outputSchema")),
             "status": "needs_input" if issues else "ready" if result is not None else "trial_required",
-            "definition_ready": not contract_issues(manifest), "output_checked": result is not None,
+            "definition_ready": definition_ready, "output_checked": result is not None,
             "issues": issues}

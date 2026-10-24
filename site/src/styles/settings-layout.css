@@ -58,6 +58,31 @@
 .settings-shell .settings-main-actions { display:flex; flex-wrap:wrap; gap:10px; padding:12px 18px 0; }
 .settings-shell .settings-maintenance-actions { margin:12px 0; }
 .settings-shell .settings-maintenance .sdk-settings-section { padding:12px 0; }
+.settings-maintenance > section { padding:16px 0; min-width:0; }
+.settings-maintenance > section + section { border-top:1px solid var(--color-border); }
+.settings-maintenance h3 { font-size:16px; margin:0 0 12px; }
+.settings-maintenance p { margin:8px 0; }
+.settings-maintenance p:empty { display:none; }
+.settings-maintenance .sdk-version-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); margin:0 0 8px; border:0; gap:16px; }
+.settings-maintenance .sdk-version-block { border:0; padding:0; min-width:0; }
+.settings-maintenance .sdk-version-block span { display:block; font-size:13px; color:var(--color-text-muted,#52627a); margin-bottom:4px; }
+.settings-maintenance .sdk-version-block strong { display:block; font-size:14px; overflow-wrap:anywhere; }
+.settings-version-actions, .settings-maintenance-risks .sdk-card-actions, .settings-maintenance-actions { display:flex; flex-wrap:wrap; justify-content:flex-start; gap:8px; margin:12px 0; padding:0; border:0; }
+.settings-maintenance-risks { border-left:2px solid #c8d3e1; padding-left:14px !important; }
+.settings-risk-controls { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+.settings-risk-controls > .sdk-card-actions, .settings-risk-controls > .settings-maintenance-actions { display:contents; }
+.settings-maintenance-diagnostics .sdk-settings-section { padding:0 !important; }
+.settings-maintenance-diagnostics .sdk-technical-details { margin:8px 0 0; }
+.settings-maintenance small { display:block; }
+.settings-maintenance-versions .sdk-update-note { overflow-wrap:anywhere; }
+@media (max-width:690px) {
+  .settings-maintenance .sdk-version-grid { grid-template-columns:minmax(0,1fr); gap:10px; }
+  .settings-maintenance .sdk-version-block { display:grid; grid-template-columns:100px minmax(0,1fr); gap:12px; }
+}
+@media (max-width:550px) {
+  .settings-version-actions > button { max-width:100%; white-space:normal; overflow-wrap:anywhere; }
+  .settings-maintenance > section { padding-top:12px; padding-bottom:12px; }
+}
 .settings-other button { display:block; width:100%; text-align:left; background:transparent; border:0; border-top:1px solid var(--color-border); padding:14px 0; font:inherit; color:var(--color-text); cursor:pointer; }
 .settings-shell .query-history-settings { margin:0; border:0; padding:0; max-width:760px; }
 .settings-shell .query-history-settings h2 { font-size:28px; }

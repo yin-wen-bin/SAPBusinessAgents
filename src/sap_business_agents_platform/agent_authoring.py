@@ -469,7 +469,7 @@ class AgentAuthoringMixin:
         return {"draft_id": draft_id, "baseline": "revision", "from_revision": source,
                 "to_revision": target, "changes": package_changes(before, after)}
 
-    def _apply_package(self, draft_id: str, expected_revision: int, package: dict[str, Any], *, kind: str, operation_id: str, record_turn: bool = True, decision: dict[str, Any] | None = None, safe_runtime: bool = False, deadline_check: Any = None, runtime_thread_id: str | None = None, runtime_snapshot: dict | None = None, allow_catalog_module_change: bool = False, preserve_validation: bool = False) -> dict[str, Any]:
+    def _apply_package(self, draft_id: str, expected_revision: int, package: dict[str, Any], *, kind: str, operation_id: str, record_turn: bool = True, decision: dict[str, Any] | None = None, safe_runtime: bool = False, deadline_check: Any = None, runtime_thread_id: str | None = None, runtime_snapshot: dict | None = None, runtime_binding_change: dict | None = None, allow_catalog_module_change: bool = False, preserve_validation: bool = False) -> dict[str, Any]:
         self._assert_operation(draft_id, operation_id, expected_revision)
         draft = self.store.get_agent_authoring_draft(draft_id)
         self._assert_editable(draft)
@@ -525,6 +525,10 @@ class AgentAuthoringMixin:
             elif manifest.get("managedRule"):
                 raise self._authoring_error("The declared managed rule source is missing.", "agent_managed_rule_missing")
         diff = package_changes(previous, package)
+        if runtime_binding_change is not None:
+            diff.append({'path':'/metadata/runtime_snapshot','kind':'runtime_binding','group':'basic',
+                'before':copy.deepcopy((draft.get('metadata') or {}).get('runtime_snapshot')),
+                'after':copy.deepcopy(runtime_snapshot)})
         if not diff:
             return self.get_draft(draft_id)
         risk = self._risk_class(draft, package)
@@ -544,6 +548,14 @@ class AgentAuthoringMixin:
             draft["thread_id"] = runtime_thread_id
         if runtime_snapshot and runtime_snapshot.get('authentication_recovery_id'):
             draft['metadata'] = {**draft.get('metadata',{}), 'runtime_snapshot': copy.deepcopy(runtime_snapshot)}
+        if runtime_binding_change is not None:
+            prior=copy.deepcopy((preserved_metadata or {}).get('runtime_snapshot'))
+            event={**copy.deepcopy(runtime_binding_change),'previous_snapshot':prior,'snapshot':copy.deepcopy(runtime_snapshot)}
+            draft['metadata']={**draft.get('metadata',{}),'runtime_snapshot':copy.deepcopy(runtime_snapshot),
+                'runtime_binding_history':[*copy.deepcopy(preserved_metadata.get('runtime_binding_history') or []),event]}
+            # Old conversation thread belongs to the old account/worker. A new
+            # editing turn must not resume it after an explicit selection.
+            draft['thread_id']=None
         if preserve_validation:
             static_checks = copy.deepcopy(preserved_metadata.get("static_checks"))
             if isinstance(static_checks, dict):

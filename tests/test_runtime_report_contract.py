@@ -149,6 +149,44 @@ def test_precise_feedback_is_value_free(tmp_path):
     assert raw_secret not in json.dumps(result) and "repair_action" in issue
 
 
+def test_extra_field_feedback_identifies_parent_and_trusted_fields_without_repair(tmp_path):
+    broker, store, run, token = make_broker(tmp_path)
+    source = report()
+    secret_key, secret_value = "private-business-key", "private-business-value"
+    source["blocks"][0][secret_key] = secret_value
+    original = copy.deepcopy(source)
+    result = asyncio.run(broker.handle(run, token, "sap_final_report_validate", {"report": source}))
+    issue = next(i for i in result["validation_issues"] if i["constraint"] == "extra_forbidden")
+    assert issue["path"] == "/report/blocks/0/<unknown>"
+    assert issue["object_location"] == "/report/blocks/0" and issue["expected"] == "absent"
+    assert issue["allowed_properties"] == list(presentation_schema()["properties"]["blocks"]["items"]["properties"])
+    assert "Remove undeclared properties" in issue["repair_action"]
+    assert secret_key not in json.dumps(result) and secret_value not in json.dumps(result)
+    assert source == original and result["validation_ref"] is None and not result["ok"]
+    # A model must submit its own new candidate; the platform never strips keys.
+    assert not RunPresentation.model_validate(report()).model_dump().get(secret_key)
+
+
+def test_enum_feedback_returns_only_authoritative_schema_values(tmp_path):
+    broker, store, run, token = make_broker(tmp_path)
+    source = report()
+    source["blocks"][0]["tone"] = "private-invalid-value"
+    result = asyncio.run(broker.handle(run, token, "sap_final_report_validate", {"report": source}))
+    issue = next(i for i in result["validation_issues"] if i["path"] == "/report/blocks/0/tone")
+    assert issue["allowed_values"] == ["neutral", "success", "warning", "error", "info"]
+    assert "private-invalid-value" not in json.dumps(result) and result["validation_ref"] is None
+
+
+def test_known_shape_failure_keeps_actionable_checker_reason_without_content(tmp_path):
+    broker, store, run, token = make_broker(tmp_path)
+    source = report(blocks=[{"type": "notice", "text": None, "title": {"zh": "private", "en": "private"}}])
+    result = asyncio.run(broker.handle(run, token, "sap_final_report_validate", {"report": source}))
+    issue = result["validation_issues"][0]
+    assert issue["message"] == "presentation block notice has no display content"
+    assert "verified evidence" in issue["repair_action"] and "private" not in json.dumps(result)
+    assert result["validation_ref"] is None and source["blocks"][0]["text"] is None
+
+
 def test_invalid_scalar_types_are_not_silently_coerced(tmp_path):
     broker, store, run, token = make_broker(tmp_path)
     invalid = report()

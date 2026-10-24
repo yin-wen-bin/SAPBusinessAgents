@@ -16,6 +16,8 @@
 
 修改端口时使用启动器的`-ApiPort`和`-SitePort`；不要误停另一个工作树的服务。前端应连接同一个实例的API。开发者也可在一个终端运行`.\.venv\Scripts\sap-business-agents.exe --port 8765`，在另一终端进入site后运行`npm run dev`。
 
+普通双击会核对实际运行版本，内容一致时复用服务，变化时等待空闲再受控更新。显式重启请使用`restart-sap-business-agents.cmd`或`-Restart`；它仍不能绕过活动任务及清理门禁。详见[按版本启动与回退](startup-versioning.md)。
+
 固定Agent无须启用Runtime，但仍需可用的SAP连接、所引用的Skill及通过验收的活动版本。`/api/tools/skills`列出5个批准Skill只能证明本机包可用，不能证明目标SAP的ADT权限、固定来源Profile或业务证据有效；`sap-control-object-commitment-evidence`目前未验证，不在批准目录中。需要自由查询、岗位匹配或自然语言编写时，依次完成[Runtime设置](runtime-settings.md)。[在线目录](https://yin-wen-bin.github.io/SAPBusinessAgents/zh/)没有你的本地数据库、登录或SAP连接。
 
 ### 常见问题

@@ -22,6 +22,7 @@ const copy = locale === "zh" ? {
   submit: "开始只读查询",
   history: "历史查询记录",
   safety: "仅允许 SAP Provider GET 和已批准的只读 Skill",
+  lifecycle: "后退或跳转离开进度页会停止所属查询；刷新、切换标签页不取消。关闭页面或失联时由任务超时兜底，可从历史记录恢复查看；可另开标签页并行查询。",
   error: "无法连接本地运行服务，请先启动 127.0.0.1:8765。",
   gapContext: "正在为工作流补齐缺口 Agent。完成查询后，请点击“保存为 Agent 草稿”。",
   secureSummary: "安全参数（可选）",
@@ -37,6 +38,7 @@ const copy = locale === "zh" ? {
   submit: "Start read-only query",
   history: "Query history",
   safety: "Only SAP Provider GET and approved read-only Skills are allowed",
+  lifecycle: "Back or navigation away stops this page's query. Reloading or switching tabs does not cancel. Closed or disconnected pages rely on the task timeout; reopen Query history to view progress and results. Open another tab for a concurrent query.",
   error: "Cannot reach the local runtime. Start 127.0.0.1:8765 first.",
   gapContext: "This query is closing a workflow Agent gap. When it finishes, select Save as Agent draft.",
   secureSummary: "Secure parameters (optional)",
@@ -51,6 +53,7 @@ const copy = locale === "zh" ? {
     <h2>{copy.title}</h2>
     <p>{copy.body}</p>
     <p class="runtime-safety"><ShieldCheck size={16} aria-hidden="true" />{copy.safety}</p>
+    <p class="free-query-lifecycle-help">{copy.lifecycle}</p>
     <a class="query-history-link" href={queryHistoryPath(base, locale)} data-query-history-link>{copy.history}</a>
   </header>
   <form class="free-query-form">
@@ -77,6 +80,7 @@ const copy = locale === "zh" ? {
 </section>
 
 <script>
+  import {rememberQueryOwner} from '../lib/free-query-lifecycle.mjs';
   document.querySelectorAll<HTMLElement>("[data-free-query]").forEach((panel) => {
     const form = panel.querySelector<HTMLFormElement>("form");
     const error = panel.querySelector<HTMLElement>(".runtime-form-error");
@@ -164,6 +168,7 @@ const copy = locale === "zh" ? {
         }
         const payload = await response.json();
         if (typeof payload.run_id !== "string" || !payload.run_id) throw new Error("run_id_missing");
+        rememberQueryOwner(payload.run_id, payload.session_id);
         const destinationParams = new URLSearchParams({ run: String(payload.run_id) });
         if (payload.session_id) destinationParams.set("session", String(payload.session_id));
         if (workflowDraft && gap) {
@@ -173,8 +178,8 @@ const copy = locale === "zh" ? {
         window.location.href = `${panel.dataset.runPath}?${destinationParams.toString()}`;
       } catch {
         if (!rejected && error) error.textContent = zh
-          ? "未能确认提交结果，后台可能已受理。请通过“历史查询记录”核对，勿重复提交；这不会取消已启动的查询。"
-          : "The submission result is unknown; the server may have accepted it. Check Query history instead of submitting again. Any accepted query continues running.";
+          ? "未能确认提交结果，后台可能已受理。请通过“历史查询记录”恢复查看进度和结果，勿重复提交。"
+          : "The submission result is unknown; the task may already be accepted. Open Query history to view its progress and results instead of submitting again.";
         if (error) error.hidden = false;
         submitting = !rejected;
         if (submit) submit.disabled = !rejected;

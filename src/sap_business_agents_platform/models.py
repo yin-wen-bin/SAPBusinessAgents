@@ -74,9 +74,12 @@ class RunCreate(BaseModel):
         default_factory=dict, alias="sensitiveInputs"
     )
     acceptance_spec: AcceptanceProjectionSpec | None = Field(default=None, alias="acceptanceSpec")
+    page_lease_id: str | None = Field(default=None, alias="pageLeaseId", pattern=r"^[A-Za-z0-9_-]{32,128}$", description="Legacy compatibility only; ignored by execution.")
 
     @model_validator(mode="after")
     def validate_mode_payload(self) -> "RunCreate":
+        if self.page_lease_id and (self.mode != RunMode.free_query or self.acceptance_spec is not None):
+            raise ValueError('page leases are only supported for ordinary free queries')
         if self.acceptance_spec is not None and self.mode != RunMode.free_query:
             raise ValueError("acceptanceSpec is only available in free-query acceptance mode")
         if self.query is not None:
@@ -97,6 +100,13 @@ class RunCreate(BaseModel):
             normalized_sensitive[str(name)] = trimmed
         self.sensitive_inputs = normalized_sensitive
         return self
+
+
+class RunPageLease(BaseModel):
+    """Legacy request shape for the disabled, read-only compatibility endpoint."""
+    model_config = ConfigDict(extra='forbid')
+    pageLeaseId: str = Field(pattern=r'^[A-Za-z0-9_-]{32,128}$')
+    action: Literal['renew', 'depart'] = 'renew'
 
 
 class RunInput(BaseModel):
@@ -126,6 +136,7 @@ class FreeQueryFeedback(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     base_iteration: int = Field(alias="baseIteration", ge=1)
+    page_lease_id: str | None = Field(default=None, alias='pageLeaseId', pattern=r'^[A-Za-z0-9_-]{32,128}$', deprecated=True, description="Legacy compatibility only; ignored by execution.")
     feedback: str = Field(min_length=1, max_length=12_000)
     locale: Literal["zh", "en"] = "zh"
     feedback_type_hint: Literal[
@@ -499,6 +510,17 @@ class AgentDraftUpdate(BaseModel):
     manifest: dict[str, Any] | None = None
     readme: str | None = Field(default=None, max_length=200_000)
     rules: str | None = Field(default=None, max_length=500_000)
+    runtime_binding_mode: Literal['preserve','current_default'] = Field(default='preserve',alias='runtimeBindingMode')
+    expected_runtime_digest: str | None = Field(default=None,alias='expectedRuntimeDigest',pattern=r'^[0-9a-f]{64}$')
+    request_id: str | None = Field(default=None,alias='requestId',pattern=r'^[A-Za-z0-9_-]{8,128}$')
+
+    @model_validator(mode='after')
+    def explicit_binding_request(self):
+        if self.runtime_binding_mode=='current_default' and (not self.expected_runtime_digest or not self.request_id):
+            raise ValueError('Explicit binding requires the reviewed digest and requestId.')
+        if self.runtime_binding_mode=='preserve' and self.expected_runtime_digest is not None:
+            raise ValueError('A binding digest requires explicit current_default selection.')
+        return self
 
 
 class AgentDraftCatalogModuleUpdate(BaseModel):
@@ -618,6 +640,14 @@ class AgentLiveValidationRequest(BaseModel):
     request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
 
 
+class AgentSampleRuntimeSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    provider_id: Literal["codex", "workbuddy"] = Field(alias="providerId")
+    model_id: str = Field(alias="modelId", min_length=1, max_length=128)
+    binding_digest: str = Field(alias="bindingDigest", pattern=r"^[0-9a-f]{64}$")
+
+
 class AgentSampleDiscoveryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -625,6 +655,15 @@ class AgentSampleDiscoveryRequest(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
     selected_fields: list[str] | None = Field(default=None, alias="selectedFields", min_length=1, max_length=50)
     request_id: str | None = Field(default=None, alias="requestId", min_length=1, max_length=100)
+    prepare_runtime: bool = Field(default=False, alias="prepareRuntime")
+    runtime_selection: AgentSampleRuntimeSelection | None = Field(default=None, alias="runtimeSelection")
+    runtime_policy: Literal["system_default"] | None = Field(default=None, alias="runtimePolicy")
+
+    @model_validator(mode="after")
+    def validate_sample_runtime_intent(self):
+        if self.runtime_policy is not None and self.runtime_selection is not None:
+            raise ValueError("sample_runtime_intent_conflict")
+        return self
 
 
 class AgentAcceptanceCase(BaseModel):

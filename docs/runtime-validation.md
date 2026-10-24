@@ -1,6 +1,8 @@
 # AI Runtime 分层验证与增量资格
 
 本文件是验证方法论的权威入口。适用于 SDK 接入、模型切换、环境更新和执行链路修复。
+自由查询明确离页停止、恢复查看及本机并发的使用与验证说明见[自由查询生命周期](free-query-lifecycle.md)；离线基础设施通过不等于新的业务PASS。
+报告工具与完整终态分别核对；安全历史形状回放、共享枚举反馈和终态收敛说明见[结构化终态纠错与交接](runtime-terminal-repair.md)。
 实现版本：`sapba.runtime-validation/1`；WorkBuddy 案例资格协议：`sapba.validation.qualification/2`。
 
 ## 状态与边界
@@ -156,6 +158,50 @@ Harness 案例还须在授权指纹生成前冻结调度器使用的 `execution_
 
 ### 单次核对与状态展示成本
 
+系统配置页可通过 `GET /api/system/sdk-runtimes?view=summary` 和
+`GET /api/system/sdk-runtimes/workbuddy/models?view=summary` 读取 WorkBuddy 展示摘要。
+未携带参数的接口及 Codex 路径保持原语义。`display_status` 表示五秒有效的后台元数据投影，
+包括快照编号、进程实例、时间、过期／刷新状态及安全错误码；原 `status_refresh` 仍表示完整核对，不能混同。
+摘要只读取白名单管理字段、已记录版本、SDK 已发现目录和上次认证事实，不校验整套历史台账、
+遍历安装或发起官方认证／模型探针。未知不是未登录，已记录版本也不是安装完整性通过。
+
+完整后台核对保持原六十秒展示策略，模型详情复用同一次同步检查取得的目录结果。
+账号操作能力通过原认证 GET 独立读取，不等待无关模型／业务评测；原认证检查及确认规则不变。
+展示指纹仅控制界面更新，不是新的执行摘要，不作为启用、模型保存、队列绑定或任务派发依据。
+实际操作仍从当前真实状态执行原完整安装、认证、模型、范围与权限门禁；页面缓存不得授予执行权。
+源文件或锁异常时保留上次显示并标过期，迟到结果不能覆盖新绑定，也不隐式修复或应用资格。
+
+WorkBuddy settings summaries are display-only. Saved authentication and version facts do not certify current
+credentials or installation integrity. Authentication actions, model saves and business dispatch retain their
+existing complete server-side gates. Summary reads never sign in, probe a model or read SAP.
+
+### SDK 调用后的认证上下文同步（离线候选）
+
+WorkBuddy 官方 SDK 可能在调用中续期或重写共享认证缓存。缓存文件元数据变化仅表示
+“需要官方复核”，不证明退出、身份改变或仍然认证有效。既有调用前复核保持不变。
+
+候选修复在最后一个认证使用租约正常返回后，若已确认账号、站点、用户环境和认证来源未变，
+且仅缓存观察值变化，后台合并一次现有官方只读复核；缓存未变不增加调用。
+模型检查、目录刷新、模型保存和业务调用复用同一租约入口，不分别实现同步。
+原 SDK 结果不等待该后台复核，也不因此延长模型预算。复核仍使用原 30 秒认证检查上限及
+所属助手的原清理窗口；关闭服务时取消并纳入既有最多 10 秒清理等待。
+
+官方结果与缓存观察一致且确认同账号后，才记录新的认证观察值；认证修订、模型兼容及
+历史业务 PASS 保持原样。新请求在此之前必须等待同一复核并通过自身完整绑定检查，
+不能因前一次 SDK 调用成功获得认证权限。真正换账号、换站点、换来源、401／登录失效、
+结果不确定或清理未确认仍按原规则阻断，不自动登录、退出、重试或重发业务。
+GET 只展示当前事实及可选 `authentication_sync` 状态，不发起认证操作。
+
+此候选只证明离线认证生命周期修复；上线前须单独核对 SDK 基础设施绑定及目标测试证据，
+不能直接沿用不匹配的接入认证。未改变模型协议或 worker 的事实，也不能代替完整准入检查。
+Codex 的认证、调用与历史规则不采用此 WorkBuddy 专用后台同步。
+
+The offline candidate reconciles cache-only drift after a completed managed WorkBuddy use through one
+bounded, shared official read-only authentication check. A successful SDK result is never authentication
+proof. Unchanged caches do not trigger checks; GETs never initiate one. Failed, cancelled or uncleared
+operations remain fail-closed. Same-account confirmation preserves revisions and model/business history;
+Codex behavior is unchanged. Deployment and target infrastructure certification are separate actions.
+
 WorkBuddy 启动检查的单轮复用、安全围栏和活动索引边界见[本地启动检查](workbuddy-startup-checks.md)。该候选不跨请求缓存执行权，也不把未激活的活动索引作为“无待清理作业”的证明。
 
 检查失败解除记录时先按实际案例、组件、环境及序号筛选受影响失败，再完整验证这些失败对应的证据；不反复打开无关 Campaign。相同目录输入的文件清单和摘要只在一次绑定计算中共享，离开调用即丢弃，并发调用互不复用；下一次准入仍重新读取。案例与输入摘要算法不变。
@@ -209,6 +255,16 @@ Frontend presentation changes do not invalidate model/business qualification. Th
 本轮报告专属回归允许补充明确的预期Schema／提示变化对照，但不得重写旧行为快照或删断言消除失败。无关的旧快照差异先在修改前源码核对并单独记录，不扩展为全量模型或SAP验证。
 
 ## English summary
+
+### Shared acceptance date scope and failure reasons
+
+Codex and WorkBuddy use the same frozen read-scope resolver. Explicit public inputs `posting_date_to` and `posting_date_from` mean inclusive calendar-day upper/lower bounds on `PostingDate`, not equality aliases. Full authoritative metadata must prove the field and date semantics (OData V2 `Edm.DateTime` with `display_format=Date`, or V4 `Edm.Date`). A proven subset is allowed; missing/wider predicates, unknown types, timezone/timestamp guesses and unreviewed DDIC mappings remain blocked. Neither the input nor the query plan is repaired, rewritten or stripped. Independent baselines do not borrow the candidate Agent plan.
+
+Unsupported public-input mappings are platform scope-contract failures with value-free field paths and reasons, not generic model clarification or authentication failures. Invalid calendar inputs and genuine business questions are classified separately from execution-environment failures. Campaign reports preserve these reasons and cleanup status; historical reports are not rewritten. Offline coverage must enter through Campaign admission, the real scheduler, shared Harness and actual scope parser for both providers, mocking only vendor/SAP boundaries. Successful offline startup does not grant a business PASS or authorize retrying a live Campaign.
+
+### Settings refresh is display-only
+
+Runtime display polling follows stale/unknown intermediate states until completion, pauses while hidden, and stops automatic retries after a genuine read failure. For an unchanged binding, account identity and model compatibility retain their last confirmed information with an explicit pending label; stale projections never grant authentication actions, model saving, enablement or execution rights. The settings page reuses authentication information from the complete background projection instead of repeating installation/activity/context checks through an additional authentication GET. Authentication mutations and actual admission retain their original complete validation; Codex admission, model protocols and historical PASS records are unchanged.
 
 Inventory historical evidence, freeze code/cases/authorization, run only eligible authorized cases, collect independent failures, then repair and incrementally revalidate. Preserve original PASS records. Historical success, current qualification and this batch's results are separate.
 Each installation needs an explicitly approved, exclusive-writer protocol migration; inspect its saved state rather than inferring activation from this document. Codex admission and history are unchanged. Read-only planning does not call a model or SAP. Reuse requires original live evidence, exact identity, allowed changes and bound checks; it never crosses models/SDKs or replaces fresh Campaign evidence. Historical source recovery cannot invent missing original case/checker evidence.

@@ -8,7 +8,9 @@ param(
     [switch]$RestartSiteOnly,
     [switch]$Dev,
     [switch]$RebuildSite,
-    [switch]$PreserveSiteBuilds
+    [switch]$PreserveSiteBuilds,
+    [switch]$PrepareSiteOnly,
+    [switch]$VerifyReuseOnly
 )
 
 Set-StrictMode -Version Latest
@@ -149,8 +151,20 @@ function Assert-PathWithinRoot {
 function Test-ProcessBelongsToProject {
     param([int]$ProcessId, [string]$ExpectedRoot)
     $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId"
-    return ($null -ne $process -and -not [string]::IsNullOrWhiteSpace($process.CommandLine) -and
-        $process.CommandLine.IndexOf($ExpectedRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+    if ($null -eq $process -or [string]::IsNullOrWhiteSpace($process.CommandLine)) { return $false }
+    $prefix = $ExpectedRoot.Replace('\', '/').TrimEnd('/') + '/'
+    $parts = @([regex]::Matches($process.CommandLine, '"([^"]*)"|(\S+)') | ForEach-Object {
+        $(if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value }).Replace('\', '/')
+    })
+    foreach ($part in $parts) {
+        if ($part.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -and
+            ($part -match '/astro/bin/astro\.mjs$|/service-startup\.py$|/start-api[^/]*\.py$')) { return $true }
+    }
+    for ($index = 0; $index -lt $parts.Count - 1; $index++) {
+        if ($parts[0].StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -and
+            $parts[$index] -eq '-m' -and $parts[$index + 1] -eq 'sap_business_agents_platform.cli') { return $true }
+    }
+    return $false
 }
 
 function Get-ExistingSiteMode {
@@ -171,10 +185,14 @@ function Stop-ExpectedListener {
     )
     $listenerProcessId = Get-ListenerProcessId -Port $Port
     if ($null -eq $listenerProcessId) { return }
+    $processIdentity = Get-CimInstance Win32_Process -Filter "ProcessId=$listenerProcessId"
+    if ($null -eq $processIdentity -or $null -eq $processIdentity.CreationDate) { throw 'Cannot verify process creation identity.' }
     if (-not (Test-ProcessBelongsToProject -ProcessId $listenerProcessId -ExpectedRoot $ExpectedRoot)) {
         throw "$Name port $Port is owned by an unexpected process (PID $listenerProcessId). Refusing to stop it."
     }
     Write-LauncherMessage "Stopping $Name process $listenerProcessId because $Reason."
+    $freshIdentity = Get-CimInstance Win32_Process -Filter "ProcessId=$listenerProcessId"
+    if ($null -eq $freshIdentity -or $freshIdentity.CreationDate -ne $processIdentity.CreationDate -or $freshIdentity.CommandLine -ne $processIdentity.CommandLine) { throw 'Process identity changed before stop.' }
     Stop-Process -Id $listenerProcessId
     $deadline = (Get-Date).AddSeconds(15)
     do {
@@ -216,51 +234,9 @@ function Write-ProcessLogTail {
 
 function Get-SiteFingerprint {
     param([string]$SiteRoot, [string]$AgentsRoot, [string]$NodeVersion)
-    $files = New-Object System.Collections.Generic.List[System.IO.FileInfo]
-    foreach ($directory in @((Join-Path $SiteRoot "src"), (Join-Path $SiteRoot "scripts"))) {
-        Get-ChildItem -LiteralPath $directory -Recurse -File |
-            Where-Object { $_.FullName -notlike (Join-Path $SiteRoot "src\generated\*") } |
-            ForEach-Object { $files.Add($_) }
-    }
-    Get-ChildItem -LiteralPath $AgentsRoot -Recurse -File |
-        Where-Object {
-            $_.FullName -notmatch '[\\/]versions[\\/]' -and
-            $_.Name -in @("agent.json", "publication.json", "README.md")
-        } | ForEach-Object { $files.Add($_) }
-    $workflowsRoot = Join-Path $ProjectRoot "workflows"
-    if (Test-Path -LiteralPath $workflowsRoot) {
-        Get-ChildItem -LiteralPath $workflowsRoot -Recurse -File |
-            Where-Object {
-                $_.FullName -notmatch '[\\/]versions[\\/]' -and
-                $_.Name -in @("workflow.json", "publication.json", "README.md")
-            } | ForEach-Object { $files.Add($_) }
-    }
-    foreach ($name in @("astro.config.mjs", "package.json", "package-lock.json")) {
-        $files.Add((Get-Item -LiteralPath (Join-Path $SiteRoot $name)))
-    }
-    foreach ($relative in @("config\agent-authoring-standard.json", "config\agent-presentation-contract.json")) {
-        $path = Join-Path $ProjectRoot $relative
-        if (Test-Path -LiteralPath $path -PathType Leaf) { $files.Add((Get-Item -LiteralPath $path)) }
-    }
-
-    $material = New-Object System.Text.StringBuilder
-    foreach ($file in ($files | Sort-Object FullName -Unique)) {
-        $stream = [System.IO.File]::OpenRead($file.FullName)
-        $hasher = [System.Security.Cryptography.SHA256]::Create()
-        try { $hash = [System.BitConverter]::ToString($hasher.ComputeHash($stream)).Replace("-", "").ToLowerInvariant() }
-        finally { $hasher.Dispose(); $stream.Dispose() }
-        $relative = $file.FullName.Substring($ProjectRoot.Length).TrimStart('\').Replace('\', '/')
-        [void]$material.AppendLine("$relative|$hash")
-    }
-    [void]$material.AppendLine("node|$NodeVersion")
-    [void]$material.AppendLine("site_base|/")
-    [void]$material.AppendLine("api_url|$ApiUrl")
-    $finalHasher = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($material.ToString())
-        return [System.BitConverter]::ToString($finalHasher.ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
-    }
-    finally { $finalHasher.Dispose() }
+    $value = & $PlatformPython -I -B (Join-Path $ProjectRoot 'scripts\service-startup.py') fingerprint --root $ProjectRoot --port $ApiPort --site-port $SitePort
+    if ($LASTEXITCODE -ne 0) { throw 'Content fingerprint calculation failed.' }
+    return ([string]$value).Trim()
 }
 
 function Test-SiteBuild {
@@ -300,9 +276,14 @@ function Build-SiteCache {
         $env:PUBLIC_SAPBA_API_URL = $ApiUrl
         Push-Location $SiteRoot
         try {
-            Invoke-SiteCommand -Command $NpmPath -Arguments @("run", "validate")
-            Invoke-SiteCommand -Command $NpmPath -Arguments @("run", "catalog")
-            Invoke-SiteCommand -Command $NodePath -Arguments @($AstroPath, "build", "--outDir", $temporaryDist)
+            # This generator validates ALL packages, including inactive ones,
+            # before writing the active projection. No duplicate catalog load.
+            Invoke-StartupPhase -Name 'catalog_validate_generate' -Action {
+                Invoke-SiteCommand -Command $NodePath -Arguments @('scripts/generate-agent-catalog.mjs')
+            }
+            Invoke-StartupPhase -Name 'astro_build' -Action {
+                Invoke-SiteCommand -Command $NodePath -Arguments @($AstroPath, "build", "--outDir", $temporaryDist)
+            }
         }
         finally { Pop-Location }
         if (-not (Test-SiteBuild -DistPath $temporaryDist)) { throw "The local Web UI build is incomplete." }
@@ -474,9 +455,12 @@ function Switch-SiteOnly {
     $script:SiteFingerprint = Get-SiteFingerprint -SiteRoot $SiteRoot -AgentsRoot $AgentsRoot -NodeVersion $NodeVersion
     $script:SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) 'dist'
     if (-not (Test-SiteReleaseBuild -DistPath $SiteDist) -or $RebuildSite) {
+        $buildClock = Get-Date
         $script:SiteDist = Build-SiteCache -Fingerprint $SiteFingerprint -SiteRoot $SiteRoot `
             -NodePath $NodeCommand.Source -NpmPath $NpmCommand.Source -AstroPath $AstroCli
+        $script:SiteBuildDurationMs = [int]((Get-Date) - $buildClock).TotalMilliseconds
     }
+    else { $script:SiteBuildReused = $true }
     # Serve the actual build on a private temporary port before touching 4321.
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
     $listener.Start(); $probePort = $listener.LocalEndpoint.Port; $listener.Stop()
@@ -565,6 +549,20 @@ $NpmCommand = $null
 $NodeVersion = $null
 
 try {
+    $env:PUBLIC_SAPBA_API_URL = $ApiUrl
+    $env:SAPBA_INTERNAL_API_URL = $ApiUrl
+    if (-not $RestartSiteOnly -and -not $PrepareSiteOnly) {
+        if ($Dev -and $RebuildSite) { throw '-RebuildSite cannot be combined with -Dev.' }
+        $launcherArguments = @('-I', '-B', (Join-Path $ProjectRoot 'scripts\service-startup.py'), 'ensure', '--root', $ProjectRoot, '--port', [string]$ApiPort, '--site-port', [string]$SitePort, '--timeout', [string]$StartupTimeoutSeconds)
+        if ($Restart) { $launcherArguments += '--restart' }
+        if ($RebuildSite) { $launcherArguments += '--rebuild' }
+        if ($NoBrowser) { $launcherArguments += '--no-browser' }
+        if ($Dev) { $launcherArguments += '--dev' }
+        if ($VerifyReuseOnly) { $launcherArguments += '--reuse-only' }
+        & $PlatformPython @launcherArguments
+        if ($LASTEXITCODE -ne 0) { throw 'Version-aware startup failed; existing tasks were not cancelled. Review the startup log.' }
+        return
+    }
     Invoke-StartupPhase -Name "preflight" -Action {
         if ($RestartSiteOnly -and ($Restart -or $Dev)) { throw '-RestartSiteOnly cannot be combined with -Restart or -Dev.' }
         if ($Dev -and $RebuildSite) { throw "-RebuildSite cannot be combined with -Dev because development mode does not use the build cache." }
@@ -578,7 +576,7 @@ try {
         do {
             try {
                 $script:DeploymentLock = [System.IO.File]::Open(
-                    $DeploymentLockPath, [System.IO.FileMode]::OpenOrCreate,
+                    $(if ($PrepareSiteOnly) { Join-Path $SiteBuildRoot 'build.lock' } else { $DeploymentLockPath }), [System.IO.FileMode]::OpenOrCreate,
                     [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None
                 )
                 break
@@ -596,178 +594,24 @@ try {
     $env:SAPBA_INTERNAL_API_URL = $ApiUrl
     Write-LauncherMessage "Using the Embedded GET-only SAP Provider."
 
-    if ($RestartSiteOnly) {
-        Invoke-StartupPhase -Name 'site_only_switch' -Action { Switch-SiteOnly }
+    if ($PrepareSiteOnly) {
+        $SiteFingerprint = Get-SiteFingerprint -SiteRoot $SiteRoot -AgentsRoot $AgentsRoot -NodeVersion $NodeVersion
+        $SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) 'dist'
+        if (-not (Test-SiteReleaseBuild -DistPath $SiteDist) -or $RebuildSite) {
+            $SiteDist = Build-SiteCache -Fingerprint $SiteFingerprint -SiteRoot $SiteRoot -NodePath $NodeCommand.Source -NpmPath $NpmCommand.Source -AstroPath $AstroCli
+        }
         $DeploymentLock.Dispose(); $DeploymentLock = $null
         return
     }
 
-    if ($Restart -and -not $Dev) {
-        $SiteFingerprint = Invoke-StartupPhase -Name "site_fingerprint_before_restart" -Action {
-            Get-SiteFingerprint -SiteRoot $SiteRoot -AgentsRoot $AgentsRoot -NodeVersion $NodeVersion
-        }
-        $SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) "dist"
-        $cacheValid = Test-SiteReleaseBuild -DistPath $SiteDist
-        if ($cacheValid -and -not $RebuildSite) {
-            $SiteBuildReused = $true
-            Invoke-StartupPhase -Name "site_build_before_restart" -Action {
-                Write-LauncherMessage "Validated Web UI cache $SiteFingerprint before stopping services."
-            }
-        }
-        else {
-            $buildStarted = Get-Date
-            Invoke-StartupPhase -Name "site_build_before_restart" -Action {
-                $script:SiteDist = Build-SiteCache -Fingerprint $SiteFingerprint -SiteRoot $SiteRoot `
-                    -NodePath $NodeCommand.Source -NpmPath $NpmCommand.Source -AstroPath $AstroCli
-            }
-            $SiteBuildDurationMs = [int][Math]::Round(((Get-Date) - $buildStarted).TotalMilliseconds)
-        }
-        $SitePreparedBeforeRestart = $true
+    if ($RestartSiteOnly) {
+        Invoke-StartupPhase -Name 'site_only_switch' -Action { Switch-SiteOnly }
+        Save-AttemptState -State (New-AttemptState -Status 'completed') -Successful
+        $DeploymentLock.Dispose(); $DeploymentLock = $null
+        return
     }
 
-    Invoke-StartupPhase -Name "port_detection" -Action {
-        if ($Restart) {
-            Stop-ExpectedListener -Name "Web UI" -Port $SitePort -ExpectedRoot $ProjectRoot
-            Stop-ExpectedListener -Name "SAPBusinessAgents API" -Port $ApiPort -ExpectedRoot $ProjectRoot
-        }
-        if (Test-PortListening -Port $ApiPort) {
-            $script:PlatformProcessId = Get-ListenerProcessId -Port $ApiPort
-            if (Test-PlatformHealth) {
-                $script:PlatformHealthy = $true
-                Write-LauncherMessage "SAPBusinessAgents API is already healthy on port $ApiPort (PID $PlatformProcessId)."
-            }
-            else {
-                Stop-ExpectedListener -Name "SAPBusinessAgents API" -Port $ApiPort -ExpectedRoot $ProjectRoot -Reason "the existing project process is unhealthy"
-                $script:PlatformProcessId = $null
-            }
-        }
-        if (Test-PortListening -Port $SitePort) {
-            $script:SiteProcessId = Get-ListenerProcessId -Port $SitePort
-            if (Test-SiteHealth) {
-                $script:SiteHealthy = $true
-                $script:SiteMode = Get-ExistingSiteMode -ProcessId $SiteProcessId
-                Write-LauncherMessage "Web UI is already healthy on port $SitePort (PID $SiteProcessId)."
-            }
-            else {
-                Stop-ExpectedListener -Name "Web UI" -Port $SitePort -ExpectedRoot $ProjectRoot -Reason "the existing project process is unhealthy"
-                $script:SiteProcessId = $null
-            }
-        }
-    }
-
-    $ApiProcess = $null
-    if (-not $PlatformHealthy) {
-        $ApiProcess = Invoke-StartupPhase -Name "api_process_start" -Action {
-            Start-LocalProcess -Name "SAPBusinessAgents API" -Port $ApiPort -FilePath $PlatformPython `
-                -Arguments @("-m", "sap_business_agents_platform.cli", "--host", "127.0.0.1", "--port", [string]$ApiPort) `
-                -WorkingDirectory $ProjectRoot -StdoutPath $PlatformStdout -StderrPath $PlatformStderr
-        }
-        $PlatformProcessId = $ApiProcess.Id
-    }
-    else { Invoke-StartupPhase -Name "api_process_start" -Action { Write-LauncherMessage "Reusing the healthy API process." } }
-
-    $SiteProcess = $null
-    if (-not $SiteHealthy) {
-        if ($Dev) {
-            Invoke-StartupPhase -Name "site_fingerprint" -Action { Write-LauncherMessage "Development mode bypasses the Web UI build cache." }
-            Invoke-StartupPhase -Name "site_build" -Action {
-                Push-Location $SiteRoot
-                try { Invoke-SiteCommand -Command $NpmCommand.Source -Arguments @("run", "catalog") }
-                finally { Pop-Location }
-            }
-            $SiteProcess = Invoke-StartupPhase -Name "site_process_start" -Action {
-                Start-LocalProcess -Name "Web UI" -Port $SitePort -FilePath $NodeCommand.Source `
-                    -Arguments @($AstroCli, "dev", "--host", "127.0.0.1", "--port", [string]$SitePort, "--ignore-lock") `
-                    -WorkingDirectory $SiteRoot -StdoutPath $SiteStdout -StderrPath $SiteStderr
-            }
-        }
-        else {
-            if ($SitePreparedBeforeRestart) {
-                Invoke-StartupPhase -Name "site_fingerprint" -Action {
-                    Write-LauncherMessage "Using the Web UI fingerprint calculated before restart."
-                }
-                Invoke-StartupPhase -Name "site_build" -Action {
-                    Write-LauncherMessage "Using the Web UI build validated before services were stopped."
-                }
-            }
-            else {
-                $SiteFingerprint = Invoke-StartupPhase -Name "site_fingerprint" -Action {
-                    Get-SiteFingerprint -SiteRoot $SiteRoot -AgentsRoot $AgentsRoot -NodeVersion $NodeVersion
-                }
-                $SiteDist = Join-Path (Join-Path $SiteBuildRoot $SiteFingerprint) "dist"
-                $cacheValid = Test-SiteReleaseBuild -DistPath $SiteDist
-                if ($cacheValid -and -not $RebuildSite) {
-                    $SiteBuildReused = $true
-                    Invoke-StartupPhase -Name "site_build" -Action { Write-LauncherMessage "Reusing Web UI build cache $SiteFingerprint." }
-                }
-                else {
-                    $buildStarted = Get-Date
-                    Invoke-StartupPhase -Name "site_build" -Action {
-                        if ($RebuildSite -and $cacheValid) { Write-LauncherMessage "Rebuilding Web UI cache $SiteFingerprint because -RebuildSite was requested." }
-                        else { Write-LauncherMessage "Building Web UI cache $SiteFingerprint." }
-                        $script:SiteDist = Build-SiteCache -Fingerprint $SiteFingerprint -SiteRoot $SiteRoot `
-                            -NodePath $NodeCommand.Source -NpmPath $NpmCommand.Source -AstroPath $AstroCli
-                    }
-                    $SiteBuildDurationMs = [int][Math]::Round(((Get-Date) - $buildStarted).TotalMilliseconds)
-                }
-            }
-            if ([string]::IsNullOrWhiteSpace([string]$SiteDist) -or
-                -not (Test-SiteReleaseBuild -DistPath $SiteDist)) {
-                throw "The validated Web UI build path is unavailable before preview startup."
-            }
-            if (-not $PreserveSiteBuilds) { Remove-OldSiteBuilds -CurrentFingerprint $SiteFingerprint }
-            $SiteProcess = Invoke-StartupPhase -Name "site_process_start" -Action {
-                $env:PUBLIC_SITE_BASE = "/"
-                Start-LocalProcess -Name "Web UI" -Port $SitePort -FilePath $NodeCommand.Source `
-                    -Arguments @($AstroCli, "preview", "--host", "127.0.0.1", "--port", [string]$SitePort, "--outDir", $SiteDist, "--ignore-lock") `
-                    -WorkingDirectory $SiteRoot -StdoutPath $SiteStdout -StderrPath $SiteStderr
-            }
-        }
-        $SiteProcessId = $SiteProcess.Id
-    }
-    else {
-        Invoke-StartupPhase -Name "site_fingerprint" -Action { Write-LauncherMessage "Reusing the healthy Web UI; fingerprint calculation was skipped." }
-        Invoke-StartupPhase -Name "site_build" -Action { Write-LauncherMessage "Reusing the healthy Web UI; build was skipped." }
-        Invoke-StartupPhase -Name "site_process_start" -Action { Write-LauncherMessage "Reusing the healthy Web UI process." }
-    }
-
-    Wait-ForServices -ApiProcess $ApiProcess -WebProcess $SiteProcess -ApiStdout $PlatformStdout `
-        -ApiStderr $PlatformStderr -SiteStdout $SiteStdout -SiteStderr $SiteStderr
-
-    Invoke-StartupPhase -Name "browser_open" -Action {
-        if (-not $NoBrowser) { Write-LauncherMessage "Opening the Web UI in the default browser."; Start-Process $SiteUrl }
-        else { Write-LauncherMessage "Browser launch was disabled." }
-    }
-
-    $totalDuration = [int][Math]::Round(((Get-Date) - $LaunchStartedAt).TotalMilliseconds)
-    $PhaseDurations["total"] = $totalDuration
-    Write-LauncherMessage "END total (${totalDuration} ms)"
-    $state = New-AttemptState -Status "completed"
-    Save-AttemptState -State $state -Successful
-    if ($null -ne $SiteDist -and $SiteFingerprint) {
-        $currentPointerPath = Join-Path $SiteBuildRoot "current.json"
-        if (Test-Path -LiteralPath $currentPointerPath -PathType Leaf) {
-            try {
-                $oldPointer = Get-Content -LiteralPath $currentPointerPath -Raw | ConvertFrom-Json
-                if ($oldPointer.fingerprint -and $oldPointer.fingerprint -ne $SiteFingerprint) {
-                    Write-JsonAtomic -Path (Join-Path $SiteBuildRoot "previous.json") -Value $oldPointer
-                }
-            }
-            catch { Write-LauncherMessage "The previous Web UI pointer could not be preserved." "Yellow" }
-        }
-        Write-JsonAtomic -Path $currentPointerPath -Value ([ordered]@{
-            fingerprint = $SiteFingerprint; dist_path = $SiteDist; pid = $SiteProcessId;
-            recorded_at = (Get-Date).ToString("o")
-        })
-    }
-    if ($null -ne $DeploymentLock) { $DeploymentLock.Dispose(); $DeploymentLock = $null }
-    Write-Host ""
-    Write-Host "SAPBusinessAgents is ready." -ForegroundColor Green
-    Write-Host "Web UI:    $SiteUrl"
-    Write-Host "Local API: $ApiUrl"
-    Write-Host "SAP Read:  embedded"
-    Write-Host "Site mode: $SiteMode"
-    Write-Host "Logs:      $LogRoot"
+    throw 'Unsupported launcher mode.'
 }
 catch {
     $errorMessage = $_.Exception.Message

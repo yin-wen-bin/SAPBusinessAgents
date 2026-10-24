@@ -1,7 +1,8 @@
 ---
 import { Ban, ChevronDown, Download, FilePlus, RefreshCw, Send } from "@lucide/astro";
 import type { Locale } from "../lib/types";
-import { agentManagementPath, workflowsPath } from "../lib/urls";
+import { agentManagementPath, workflowsPath, askPath } from "../lib/urls";
+import lifecycleUrl from '../lib/free-query-lifecycle.mjs?url';
 
 interface Props { locale: Locale }
 const { locale } = Astro.props;
@@ -17,6 +18,15 @@ const labels = locale === "zh" ? {
   elapsedRunning: "已运行 {seconds} 秒",
   runtimeWaiting: "等待模型回复（尚不代表 SAP 读取进展）",
   runtimeChecking: "正在核对 Runtime 与执行环境",
+  runtimeConnecting: "正在连接 SDK",
+  queueWaiting: "排队中，等待执行容量",
+  queuePosition: "队列位置 {position}",
+  queueElapsed: "已排队 {seconds} 秒（不计执行预算）",
+  queryStopping: "正在停止查询并清理进程",
+  cleanupPending: "查询已禁止继续读取，进程清理尚未确认",
+  stopBack: "停止并返回",
+  back: "返回自由查询",
+  lifecycleHelp: "后退或跳转离开本页将停止所属查询；刷新、切换标签页不取消。关闭页面或失联时由任务超时兜底，重开只恢复查看原任务。",
   runtimeActivity: {
     agent_runtime_turn_started: "已启动模型分析轮次",
     agent_runtime_connected: "已连接 SDK",
@@ -211,6 +221,15 @@ const labels = locale === "zh" ? {
   elapsedRunning: "Running for {seconds}s",
   runtimeWaiting: "Waiting for the model (not SAP read progress)",
   runtimeChecking: "Checking Runtime admission and execution environment",
+  runtimeConnecting: "Connecting to the SDK",
+  queueWaiting: "Queued, waiting for execution capacity",
+  queuePosition: "Queue position {position}",
+  queueElapsed: "Queued for {seconds}s (outside the execution budget)",
+  queryStopping: "Stopping the query and cleaning up its process",
+  cleanupPending: "Further reads are blocked; process cleanup is not confirmed",
+  stopBack: "Stop and return",
+  back: "Back to free query",
+  lifecycleHelp: "Back or navigation away stops this page's query. Reloading or switching tabs does not cancel. Closed or disconnected pages rely on the task timeout; reopening only views the original task.",
   runtimeActivity: {
     agent_runtime_turn_started: "Model analysis turn started",
     agent_runtime_connected: "SDK connected",
@@ -399,7 +418,7 @@ const labels = locale === "zh" ? {
 };
 ---
 
-<section class="run-console" data-run-console data-api-base={apiBase} data-workflows-path={workflowDestination} data-management-path={agentManagementPath(base, locale)}>
+<section class="run-console" data-run-console data-api-base={apiBase} data-ask-path={askPath(base, locale)} data-workflows-path={workflowDestination} data-management-path={agentManagementPath(base, locale)}>
   <header class="run-console-header">
     <div>
       <p class="runtime-eyebrow">SAPBusinessAgents</p>
@@ -422,6 +441,8 @@ const labels = locale === "zh" ? {
   <div class="run-alert" data-run-alert hidden>{labels.noRun}</div>
 
   <div class="run-actions">
+    <button type="button" class="secondary-button" data-stop-back hidden disabled>{labels.stopBack}</button>
+    <a class="secondary-button" data-new-query hidden href={askPath(base, locale)} target="_blank" rel="noopener noreferrer">{locale === 'zh' ? '另开查询' : 'New query in another tab'}</a>
     <button type="button" class="secondary-button" data-cancel hidden><Ban size={16} aria-hidden="true" />{labels.cancel}</button>
     <button type="button" class="secondary-button" data-reconnect hidden><RefreshCw size={16} aria-hidden="true" />{labels.reconnect}</button>
     <button type="button" class="secondary-button" data-start-session hidden>{labels.continueCorrection}</button>
@@ -619,7 +640,7 @@ const labels = locale === "zh" ? {
   </dialog>
 </section>
 
-<script is:inline define:vars={{ labels, locale }}>
+<script is:inline define:vars={{ labels, locale, lifecycleUrl }}>
   const root = document.querySelector("[data-run-console]");
   const queryParams = new URLSearchParams(window.location.search);
   let runId = queryParams.get("run");
@@ -642,6 +663,7 @@ const labels = locale === "zh" ? {
   let selectedFeedbackType = "";
   let inputDisplayMode = "";
   let pendingDraftCreation = null;
+  let queryLifecycle;
 
   const showAlert = (message) => {
     const alert = root?.querySelector("[data-run-alert]");
@@ -1587,7 +1609,7 @@ const labels = locale === "zh" ? {
     if (name === "agent_runtime_activity" && !(Number(data.assistant_message_count) > 0)) text = labels.runtimeWaiting;
     if (name === "workbuddy_native_wait") {
       const states = {
-        sdk_connecting: labels.runtimeChecking,
+        sdk_connecting: labels.runtimeConnecting,
         query_submitting: labels.runtimeActivity.agent_runtime_connected,
         waiting_sdk_message: labels.runtimeWaiting,
         sdk_closing: labels.runtimeActivity.agent_runtime_sdk_closing,
@@ -1619,7 +1641,9 @@ const labels = locale === "zh" ? {
     const since = Date.parse(anchor || "");
     const delta = active && Number.isFinite(since) ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
     const elapsed = Math.max(0, Number(progress.hard_limit_seconds) > 0 ? Number(progress.elapsed_seconds || 0) + delta : delta);
-    const elapsedText = run.mode === "free_query" && (active || Number(progress.hard_limit_seconds) > 0)
+    const elapsedText = run.status === 'queued'
+      ? labels.queueElapsed.replace('{seconds}', String(Math.max(0, Math.floor((Date.now() - Date.parse(run.created_at || '')) / 1000)) || 0))
+      : run.mode === "free_query" && (active || Number(progress.hard_limit_seconds) > 0)
       ? (Number(progress.hard_limit_seconds) > 0
         ? labels.freeQuerySession.elapsed.replace("{elapsed}", String(elapsed)).replace("{hard}", String(progress.hard_limit_seconds))
         : labels.elapsedRunning.replace("{seconds}", String(elapsed))) : "";
@@ -1631,7 +1655,10 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-progress-message]").textContent = [interruption?.headline || labels.progressState[state] || phaseText, activity, unitText, elapsedText, deadlineText].filter(Boolean).join(" · ");
     const runtimeStatus = root.querySelector("[data-runtime-activity]");
     runtimeStatus.hidden = run.mode !== "free_query" || !active;
-    runtimeStatus.textContent = runtimeActivity?.runId === run.run_id ? runtimeActivity.text : labels.runtimeChecking;
+    runtimeStatus.textContent = run.cancellation?.status === 'cleanup_pending' ? labels.cleanupPending
+      : run.cancel_requested ? labels.queryStopping
+      : run.status === 'queued' ? [labels.queueWaiting, run.queue_position ? labels.queuePosition.replace('{position}', String(run.queue_position)) : ''].filter(Boolean).join(' · ')
+      : runtimeActivity?.runId === run.run_id ? runtimeActivity.text : labels.runtimeChecking;
     const indicator = root.querySelector("[data-progress-indicator]");
     indicator.className = `run-progress-indicator ${finished ? "is-complete" : failed ? "is-stopped" : waiting ? "is-paused" : "is-active"}`;
     let percent;
@@ -1885,6 +1912,10 @@ const labels = locale === "zh" ? {
     const currentSequence = Number(currentRun?.progress?.event_sequence || 0);
     if (currentRun && incomingSequence < currentSequence) run.progress = currentRun.progress;
     currentRun = run;
+    const back = root.querySelector('[data-stop-back]');
+    back.hidden = run.mode !== 'free_query';
+    root.querySelector('[data-new-query]').hidden = run.mode !== 'free_query';
+    back.textContent = terminal.has(run.status) ? labels.back : labels.stopBack;
     root.dataset.runMode = String(run.mode || "");
     if (run.mode === "free_query" && !currentSession) {
       const querySummary = root.querySelector("[data-run-query-summary]");
@@ -2106,7 +2137,11 @@ const labels = locale === "zh" ? {
     } catch (_) { status.textContent = labels.restricted.error; button.disabled = false; }
   });
   root?.querySelector("[data-cancel]")?.addEventListener("click", async () => {
-    await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }); await loadRun();
+    try {
+      if (currentRun?.mode === 'free_query' && queryLifecycle) await queryLifecycle.cancel();
+      else await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' });
+      await loadRun();
+    } catch { showAlert(labels.unavailable); }
   });
   root?.querySelector("[data-input-form]")?.addEventListener("submit", async (event) => {
     event.preventDefault(); const form = event.currentTarget; const formData = new FormData(form); const input = String(formData.get("input") || "").trim(); const receiptReference = String(formData.get("receipt_reference") || "").trim();
@@ -2183,6 +2218,7 @@ const labels = locale === "zh" ? {
       const payload = await response.json();
       if (!response.ok) throw new Error(String(payload.detail?.message || payload.detail || "Session creation failed"));
       sessionId = String(payload.session_id);
+      queryLifecycle?.claim();
       const params = new URLSearchParams(window.location.search);
       params.set("session", sessionId); params.set("run", runId);
       history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
@@ -2212,6 +2248,7 @@ const labels = locale === "zh" ? {
     try {
       const clarification = form.dataset.mode === "clarification";
       const endpoint = clarification ? "feedback-input" : "feedback";
+      queryLifecycle?.claim();
       const body = clarification
         ? { baseIteration: currentSession.current_iteration, input: feedback }
         : { baseIteration: currentSession.current_iteration, feedback, locale, feedbackTypeHint: selectedFeedbackType || null };
@@ -2305,6 +2342,15 @@ const labels = locale === "zh" ? {
       pendingDraftCreation = null;
     }
   });
+  void import(lifecycleUrl).then(({installQueryLifecycle}) => {
+    queryLifecycle = installQueryLifecycle({apiBase, getRunId: () => runId, getSessionId: () => sessionId,
+      getRun: () => currentRun, reloadRun: loadRun, feedbackId: () => currentSession?.active_feedback_request?.feedback_request_id,
+      backUrl: root.dataset.askPath, locale, error: showAlert});
+    const back = root.querySelector('[data-stop-back]');
+    back.disabled = false;
+    back.title = labels.lifecycleHelp;
+    back.addEventListener('click', () => void queryLifecycle.back());
+  }).catch(() => showAlert(labels.unavailable));
   if (runId || sessionId) {
     startProgressUpdates();
     Promise.all([loadRun(), sessionId ? loadSession() : Promise.resolve()]).then(connect).catch((error) => {

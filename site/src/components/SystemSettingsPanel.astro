@@ -15,7 +15,7 @@ const copy = locale === "zh" ? {
   current: "SDK 版本", cliVersion: "绑定 CLI 版本", latest: "最新版本", package: "安装包", ecosystem: "运行环境",
   checkedAt: "检查时间", notChecked: "尚未检查", notInstalled: "未安装", check: "检查安装与登录", checking: "正在检查…",
   update: "更新到最新版本", updating: "正在更新…", currentState: "已是最新版本", updateState: "发现新版本", failedState: "检查失败", pendingState: "等待检查",
-  updateDisabled: "此 SDK 只能查看版本，不能由平台更新。", restart: "更新完成。请重启 SAPBusinessAgents，使新 SDK 与 CLI 版本生效。", updated: "SDK 更新完成。",
+  updateDisabled: "此 SDK 不能由平台更新。", restart: "目标版本已安装，待重启生效；当前服务不会自动切换。", updated: "目标版本已确认安装。",
   confirmUpdate: "将更新本机 SDK 依赖，运行中的任务不会自动切换版本。确定继续吗？",
   provider: "Runtime Provider", enabled: "已启用", disabled: "已停用", enable: "启用 Runtime", enabling: "正在启用…", disable: "停用 Runtime", disabling: "正在停用…",
   confirmDisable: "请输入 Runtime Provider ID 以确认停用：", disabledDone: "Runtime 已停用。新 Runtime 任务将被阻止。", enabledDone: "Runtime 已启用。是否作为默认 Runtime 仍需单独设置。",
@@ -55,7 +55,7 @@ const copy = locale === "zh" ? {
   current: "SDK version", cliVersion: "Bundled CLI version", latest: "Latest version", package: "Package", ecosystem: "Runtime",
   checkedAt: "Last checked", notChecked: "Not checked", notInstalled: "Not installed", check: "Check installation and login", checking: "Checking…",
   update: "Update to latest", updating: "Updating…", currentState: "Up to date", updateState: "Update available", failedState: "Check failed", pendingState: "Not checked",
-  updateDisabled: "This SDK is version-visible but cannot be updated by the platform.", restart: "Update completed. Restart SAPBusinessAgents so the new SDK and CLI versions take effect.", updated: "SDK update completed.",
+  updateDisabled: "This SDK cannot be updated by the platform.", restart: "Target version installed; restart required to take effect. The running service has not switched automatically.", updated: "The target version is confirmed installed.",
   confirmUpdate: "This will update a local SDK dependency. Running tasks will not switch versions automatically. Continue?",
   provider: "Runtime provider", enabled: "Enabled", disabled: "Disabled", enable: "Enable Runtime", enabling: "Enabling…", disable: "Disable Runtime", disabling: "Disabling…",
   confirmDisable: "Enter the Runtime provider ID to confirm disabling:", disabledDone: "The Runtime was disabled. New Runtime tasks will be blocked.", enabledDone: "The Runtime was enabled. Setting it as the default is a separate action.",
@@ -127,8 +127,11 @@ const copy = locale === "zh" ? {
   const checkedTime = (value) => value ? new Date(value).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") : copy.notChecked;
   const blockerText = (value) => copy.blockerLabels?.[value] || value;
   const showMessage = (message, tone = "") => { alert.hidden = false; alert.dataset.tone = tone; alert.textContent = message; };
-  const responseError = async (response) => { try { const payload = await response.json(); return authenticationErrors[payload?.detail?.code] || copy.blockerLabels?.[payload?.detail?.code] || payload?.detail?.message || payload?.detail?.detail?.message || payload?.detail || response.statusText; } catch { return response.statusText; } };
-  const request = async (url, options = {}) => { const response = await fetch(url, options); if (!response.ok) { const error = new Error(await responseError(response)); error.confirmed = response.status >= 400 && response.status < 500; throw error; } const payload = await response.json(); if (options.method && !["GET", "HEAD"].includes(options.method)) { stateGeneration++; const match = url.match(/\/sdk-runtimes\/([^/]+)\/(default-model|models\/check|models\/[^/]+\/reasoning-effort)$/); if (navigationEnabled && match) { const view = runtimeViews.get(decodeURIComponent(match[1])); if (view) view.acceptedFormChange = true; } } return payload; };
+  const responseFailure = async (response) => { try { const payload = await response.json(); return {
+    message: authenticationErrors[payload?.detail?.code] || copy.blockerLabels?.[payload?.detail?.code] || payload?.detail?.message || payload?.detail?.detail?.message || (typeof payload?.detail === "string" ? payload.detail : response.statusText),
+    code: payload?.detail?.code, phase: payload?.detail?.detail?.phase, outcome: payload?.detail?.detail?.outcome}; } catch { return {message: response.statusText}; } };
+  const responseError = async (response) => (await responseFailure(response)).message;
+  const request = async (url, options = {}) => { const response = await fetch(url, options); if (!response.ok) { const failure = await responseFailure(response); const error = new Error(failure.message); error.code = failure.code; error.phase = failure.phase; error.outcome = failure.outcome; error.confirmed = response.status >= 400 && response.status < 500; throw error; } const payload = await response.json(); if (options.method && !["GET", "HEAD"].includes(options.method)) { stateGeneration++; const match = url.match(/\/sdk-runtimes\/([^/]+)\/(default-model|models\/check|models\/[^/]+\/reasoning-effort)$/); if (navigationEnabled && match) { const view = runtimeViews.get(decodeURIComponent(match[1])); if (view) view.acceptedFormChange = true; } } return payload; };
   const workbuddyModelCheck = async (body) => {
     const response = await fetch(`${apiBase}/api/system/sdk-runtimes/workbuddy/models/check`, {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
@@ -141,6 +144,10 @@ const copy = locale === "zh" ? {
   };
 
   const stateFor = (sdk) => {
+    if (sdk.provider_id === "workbuddy" && sdk.enabled == null && typeof sdk.display_status?.last_confirmed_enabled === "boolean") return {
+      key: "pending", text: locale === "zh"
+        ? `上次确认${sdk.display_status.last_confirmed_enabled ? "已启用" : "已停用"} · 正在刷新`
+        : `Last confirmed ${sdk.display_status.last_confirmed_enabled ? "enabled" : "disabled"} · refreshing`};
     if (sdk.enabled == null) return { key: "pending", text: locale === "zh" ? "状态待核对" : "State not confirmed" };
     if (sdk.control_status && sdk.enabled === true && sdk.status_refresh?.stale) return { key: "ready", text: locale === "zh" ? "已启用 · 资格核对中" : "Enabled · qualification pending" };
     if (sdk.status_refresh?.stale) return { key: "pending", text: copy.notChecked };
@@ -154,6 +161,9 @@ const copy = locale === "zh" ? {
     return { key: "ready", text: copy.enabled };
   };
   const modelState = (model) => {
+    if (model.display_pending) return { key: "pending", text: model.last_confirmed && model.check_status === "compatible"
+      ? (locale === "zh" ? "上次兼容通过 · 正在刷新" : "Last confirmed compatible · refreshing")
+      : (locale === "zh" ? "已有记录，适用性核对中" : "Saved record; applicability pending") };
     if (model.retired) return { key: "failed", text: copy.modelRetired };
     const status = model.compatibility_applicability?.status;
     const labels = {
@@ -176,7 +186,7 @@ const copy = locale === "zh" ? {
   const customModelIds = new Map();
   const modelCheckPending = new Map();
   const codexCheckPending = new Set();
-  const checkBlocked = (model) => ["authentication_required", "recovery_pending", "blocked"].includes(model?.compatibility_applicability?.status);
+  const checkBlocked = (model) => model?.display_pending || ["authentication_required", "recovery_pending", "blocked"].includes(model?.compatibility_applicability?.status);
   const compatibleView = (model) => !model?.compatibility_applicability || model.compatibility_applicability.status === "reusable";
   const modelBinding = (payload, model) => JSON.stringify([
     payload.catalog_digest, payload.environment_digest, payload.service_site_digest,
@@ -212,6 +222,10 @@ const copy = locale === "zh" ? {
   };
 
   const renderModels = (sdk, section, payload) => {
+    if (sdk.provider_id === "workbuddy" && payload.display_status && section.updateModelSummary) {
+      section.updateModelSummary(sdk, payload); return;
+    }
+    section.updateModelSummary = null;
     section.replaceChildren();
     section.dataset.operationError = "";
     const modelMessage = (message, tone = "") => {
@@ -237,12 +251,22 @@ const copy = locale === "zh" ? {
           : "The saved model is absent from the current SDK catalog. Configuration is unchanged; refresh the catalog to review."));
       }
       const list = element("div", "sdk-model-list"); section.append(list);
+      const displayNote = element("p", "sdk-update-note"); section.append(displayNote);
+      let authenticationNote;
+      const updateNote = () => {
+        displayNote.hidden = !payload.display_status;
+        displayNote.textContent = payload.display_status?.error_code
+          ? (locale === "zh" ? "展示读取失败，保留上次内容；未重新检查模型。" : "Display read failed; previous content retained. No model recheck.")
+          : payload.status_refresh?.stale
+            ? (locale === "zh" ? "保留上次确认的信息；完整状态核对中，操作资格尚未确认。" : "Last confirmed information retained; full status and operation eligibility are pending.")
+            : (locale === "zh" ? "显示已保存目录；没有调用模型。" : "Showing the saved catalog; no model call.");
+      };
       const showSelected = () => {
         const model = (payload.items || []).find((item) => item.model_id === picker.value);
         if (!model) {
           list.replaceChildren(element("p", "sdk-update-note", locale === "zh"
-            ? "尚未取得 SDK 模型目录，请点击“刷新模型目录”。"
-            : "No SDK model catalog is available. Select Refresh model catalog."));
+            ? (payload.display_status?.stale ? "正在读取已保存的 SDK 目录；不会自动刷新目录。" : "尚未取得 SDK 模型目录，请点击“刷新模型目录”。")
+            : (payload.display_status?.stale ? "Reading the saved SDK catalog; no catalog refresh is started." : "No SDK model catalog is available. Select Refresh model catalog.")));
           return;
         }
         const row = element("article", "sdk-model-row sdk-workbuddy-model");
@@ -315,11 +339,27 @@ const copy = locale === "zh" ? {
         }
         row.append(actions); list.replaceChildren(row);
       };
-      picker.addEventListener("change", showSelected); showSelected();
+      picker.addEventListener("change", showSelected); showSelected(); updateNote();
+      section.updateModelSummary = (nextSDK, nextPayload) => {
+        if (section.closest?.(".sdk-card")?.dataset.busy === "true") return;
+        const selected = picker.value;
+        const focused = [...list.querySelectorAll("button")].find(button => button === document.activeElement)?.textContent;
+        sdk = nextSDK; payload = nextPayload;
+        const ids = (payload.items || []).map(item => item.model_id);
+        if (JSON.stringify([...picker.children].map(option => option.value)) !== JSON.stringify(ids)) {
+          picker.replaceChildren(...ids.map(id => { const option = element("option", "", id); option.value = id; return option; }));
+        }
+        picker.value = ids.includes(selected) ? selected : ids.find(id => id === sdk.default_model_id) || ids[0] || "";
+        picker.disabled = !ids.length; refresh.disabled = !sdk.installed;
+        if (authenticationNote) authenticationNote.hidden = sdk.authenticated === true;
+        showSelected(); updateNote();
+        if (focused) [...list.querySelectorAll("button")].find(button => button.textContent === focused)?.focus();
+      };
       if (sdk.authenticated !== true) {
-        section.append(element("p", "sdk-update-note", locale === "zh"
+        authenticationNote = element("p", "sdk-update-note", locale === "zh"
           ? "请先在账号区核对认证状态。尚未确认不等于未登录，不会自动登录或检查模型。"
-          : "Review authentication in the account section first. Unconfirmed does not mean signed out; no automatic sign-in or model check."));
+          : "Review authentication in the account section first. Unconfirmed does not mean signed out; no automatic sign-in or model check.");
+        section.append(authenticationNote);
         if (sdk.installed) {
           if (sdk.authenticated === false) {
             const manual = element("details", "sdk-technical-details");
@@ -496,9 +536,11 @@ const copy = locale === "zh" ? {
   const loadModels = async (sdk, section) => {
     const view = runtimeViews.get(sdk.provider_id);
     const issuedBinding = bindingSignature(sdk);
-    const applicable = () => !navigationEnabled || !view || (!view.stale && bindingSignature(view.sdk) === issuedBinding);
+    const issuedInstance = sdk.display_status?.instance_id;
+    const applicable = () => !navigationEnabled || !view || (!view.stale && bindingSignature(view.sdk) === issuedBinding
+      && view.sdk.display_status?.instance_id === issuedInstance);
     if (sdk.provider_id === "workbuddy") {
-      try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/models`); if (applicable()) renderModels(sdk, section, payload); }
+      try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/models${sdk.display_status ? "?view=summary" : ""}`); if (applicable()) renderModels(sdk, section, payload); }
       catch (error) { section.append(element("p", "sdk-error", String(error.message || error))); }
       return;
     }
@@ -531,6 +573,21 @@ const copy = locale === "zh" ? {
   const authenticationPending = new Map();
   const sitePending = new Map();
   const authenticationErrors = Object.fromEntries([
+    ["sdk_maintenance_active", "正在维护此 SDK，请等待维护结束后再操作。", "This SDK is under maintenance. Wait for it to finish before continuing."],
+    ["sdk_registry_unavailable", "无法读取软件源，尚不能确认可用版本。", "The package registry could not be read; the available version is unknown."],
+    ["sdk_package_manager_failed", "安装器执行失败，请核对失败阶段和诊断。", "The installer failed. Review the failure phase and diagnostics."],
+    ["sdk_update_timeout", "安装超过原时限，更新结果需要核对。", "Installation exceeded its existing time limit; verify the update outcome."],
+    ["sdk_download_timeout", "下载超过独立时限，尚未进入安装；请核对网络。", "Download exceeded its separate time limit; installation did not start. Check the network."],
+    ["sdk_download_stalled", "下载长时间没有进展，尚未进入安装。", "Download stalled; installation did not start."],
+    ["sdk_download_integrity_failed", "下载包完整性校验失败，未允许安装。", "Package integrity verification failed; installation was blocked."],
+    ["sdk_download_verification_failed", "未能核对官方软件包摘要，未允许安装。", "Official package hashes could not be verified; installation was blocked."],
+    ["sdk_update_busy", "原更新仍在进行或清理中，请勿重复提交。", "The original update or cleanup is still running. Do not resubmit."],
+    ["sdk_update_outcome_unconfirmed", "安装结果尚未确认，请先检查可用版本并核对安装状态。", "Installation is unconfirmed. Check versions and the installed state first."],
+    ["sdk_update_binding_changed", "下载期间安装版本发生变化；本次没有继续安装。", "The installed version changed during download; this installation was stopped."],
+    ["sdk_update_plan_invalid", "本地安装事务核对失败，未允许安装。", "The local install transaction could not be verified; installation was blocked."],
+    ["sdk_runtime_dependency_unpinned", "SDK未声明可核对的固定CLI依赖，未允许安装。", "A verifiable pinned CLI dependency is missing; installation was blocked."],
+    ["sdk_update_not_applied", "安装后未确认目标版本，不能视为更新完成。", "The target version was not confirmed after installation; the update is not complete."],
+    ["sdk_already_current", "未发现比当前安装版本更新的版本。", "No version newer than the installed SDK was found."],
     ["runtime_authentication_busy", "请先结束活动任务，再调整账号。", "Finish active tasks before changing accounts."],
     ["runtime_authentication_operation_active", "认证操作正在进行，请稍后重试。", "An authentication operation is active."],
     ["runtime_authentication_check_required", "请先刷新认证，确认当前登录有效。", "Refresh authentication before using this Runtime."],
@@ -645,10 +702,20 @@ const copy = locale === "zh" ? {
       element("dt", "", text.source), element("dd", "", authentication.source === "official_cli" ? (locale === "zh" ? "官方 CLI 共享缓存" : "Official CLI shared cache") : authentication.source === "external_configuration" ? (locale === "zh" ? "外部 SDK 认证配置" : "External SDK authentication configuration") : text.unknown),
       element("dt", "", text.checked), element("dd", "", checkedTime(authentication.checked_at)));
     section.append(facts);
+    const savedAuthenticationNote = element("p", "sdk-update-note", locale === "zh"
+      ? "上次确认的认证记录；完整状态核对中，尚未确认不等于未登录。"
+      : "Last confirmed authentication record; full status check pending. Unconfirmed does not mean signed out.");
+    savedAuthenticationNote.hidden = !authentication.display_only; section.append(savedAuthenticationNote);
     const authDetails = element("details", "settings-auth-details"); authDetails.append(element("summary", "", locale === "zh" ? "认证详情" : "Authentication details"), extraFacts, element("small", "sdk-update-note", text.quota), element("p", "sdk-update-note", text.note), element("p", "sdk-update-note", text.shared));
-    if (authentication.failure_code) section.append(element("p", "sdk-error", authenticationErrors[authentication.failure_code] || blockerText(authentication.failure_code)));
-    if (authentication.capabilities?.reason) section.append(element("p", "sdk-update-note", authentication.capabilities.reason === "runtime_authentication_external_configuration" ? text.external : authenticationErrors[authentication.capabilities.reason] || blockerText(authentication.capabilities.reason)));
-    if (authentication.blockers?.length) section.append(element("p", "sdk-update-note", text.blocked));
+    const failureNote = element("p", "sdk-error"), capabilityNote = element("p", "sdk-update-note"), blockerNote = element("p", "sdk-update-note", text.blocked);
+    const updateAuthenticationNotes = () => {
+      failureNote.hidden = !authentication.failure_code;
+      failureNote.textContent = authentication.failure_code ? authenticationErrors[authentication.failure_code] || blockerText(authentication.failure_code) : "";
+      capabilityNote.hidden = !authentication.capabilities?.reason;
+      capabilityNote.textContent = authentication.capabilities?.reason === "runtime_authentication_external_configuration" ? text.external : authenticationErrors[authentication.capabilities?.reason] || blockerText(authentication.capabilities?.reason || "");
+      blockerNote.hidden = !authentication.blockers?.length;
+    };
+    updateAuthenticationNotes(); section.append(failureNote, capabilityNote, blockerNote);
     const actions = element("div", "plugin-card-actions sdk-authentication-actions"); section.append(actions);
     const progress = element("div", "sdk-authentication-progress"); progress.setAttribute("role", "status"); section.append(progress);
     const links = element("div", "sdk-authentication-links");
@@ -702,9 +769,9 @@ const copy = locale === "zh" ? {
     const pending = authenticationPending.has(provider) || sitePending.has(provider);
     for (const action of authentication.authenticated === true ? ["switch_account", "check", "logout"] : ["login", "check"]) {
       const button = element("button", action === "logout" ? "danger-outline-button" : "secondary-button", text[action]); button.type = "button";
-      button.disabled = pending || active || !authentication.capabilities?.[action] || action !== "check" && Boolean(authentication.blockers?.length);
+      button.disabled = Boolean(authentication.display_only) || pending || active || !authentication.capabilities?.[action] || action !== "check" && Boolean(authentication.blockers?.length);
       // Cleanup reconciliation is read-only and remains available after an interrupted operation.
-      if (action === "check" && authentication.operation?.status === "cleanup_pending") button.disabled = false;
+      if (!authentication.display_only && action === "check" && authentication.operation?.status === "cleanup_pending") button.disabled = false;
       button.addEventListener("click", async () => {
         // The explicit check has a 30-second backend budget plus owned cleanup.
         if (action === "check") { button.disabled = true; try { await authRequest(`${base}/check`, {method: "POST", headers}, 45000); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); button.disabled = false; } return; }
@@ -717,15 +784,36 @@ const copy = locale === "zh" ? {
     if (authenticationPending.has(provider)) { progress.append(element("p", "sdk-error", text.uncertain)); addRetry(); }
     else if (authentication.operation) showOperation(authentication.operation);
     if (navigationEnabled) section.updateOperation = showOperation;
+    section.updateAuthenticationSummary = (nextSDK, nextAuthentication) => {
+      // Same-binding refresh: update facts/actions only, preserving site inputs,
+      // focus and expansion state. Changed bindings use the existing form guard.
+      authentication = nextAuthentication; sdk = nextSDK;
+      const values = facts.querySelectorAll("dd");
+      values[0].textContent = text[authentication.status] || text.not_checked;
+      values[1].textContent = authentication.identity || text.unknown;
+      savedAuthenticationNote.hidden = !authentication.display_only;
+      updateAuthenticationNotes();
+      const nowActive = authenticationActive(authentication.operation);
+      const logoutControls = section.closest?.(".sdk-card")?.querySelectorAll('[data-auth-action="logout"]') || [];
+      for (const button of [...actions.querySelectorAll("button"), ...logoutControls]) {
+        const action = button.dataset.authAction; if (!action) continue;
+        button.disabled = Boolean(authentication.display_only) || authenticationPending.has(provider) || sitePending.has(provider)
+          || nowActive || !authentication.capabilities?.[action] || action !== "check" && Boolean(authentication.blockers?.length);
+        if (!authentication.display_only && action === "check" && authentication.operation?.status === "cleanup_pending") button.disabled = false;
+      }
+    };
   };
 
   const runtimeViews = new Map();
   let listedProviders = new Set();
   let latestDefault = null;
   const bindingSignature = sdk => JSON.stringify([sdk.runtime_configuration_revision, sdk.default_model_id, sdk.service_site_digest, sdk.authentication?.authentication_revision, sdk.authentication?.revision, sdk.authentication?.identity, sdk.environment_digest]);
-  const formSignature = sdk => JSON.stringify([bindingSignature(sdk), sdk.authenticated, sdk.authentication?.status, sdk.authentication?.capabilities, sdk.authentication?.blockers, sdk.authentication?.failure_code, sdk.service_site_switch_allowed, sdk.service_site_external_configuration]);
+  const formSignature = sdk => sdk.display_status ? bindingSignature(sdk)
+    : JSON.stringify([bindingSignature(sdk), sdk.authenticated, sdk.authentication?.status, sdk.authentication?.capabilities, sdk.authentication?.blockers, sdk.authentication?.failure_code, sdk.service_site_switch_allowed, sdk.service_site_external_configuration]);
   const organizeView = (view) => {
-    if (!navigationEnabled || !view) return;
+    if (!view) return;
+    updateMaintenanceView(view);
+    if (!navigationEnabled) return;
     const {card, maintenance, mainActions, maintenanceActions, modelSection, accountSection} = view;
     const unavailable = view.sdk.provider_implemented === false || view.sdk.platform_supported === false;
     card.querySelector('.settings-overview').hidden = unavailable;
@@ -748,7 +836,7 @@ const copy = locale === "zh" ? {
       if (button.textContent === copy.select || button.textContent === copy.enable) mainActions.append(button);
     }
     const quality = modelSection.querySelector(".sdk-technical-details");
-    if (quality) { view.quality?.remove(); view.quality = quality; maintenance.append(quality); }
+    if (quality) { view.quality?.remove(); view.quality = quality; (view.diagnostics || maintenance).append(quality); }
     card.hidden = sdkHidden(view.sdk.provider_id);
   };
   const sdkHidden = provider => navigationEnabled && (provider !== viewedProvider || !listedProviders.has(provider));
@@ -757,14 +845,175 @@ const copy = locale === "zh" ? {
     if (view.sdk.authentication) renderAuthentication(view.sdk, view.accountSection, view.sdk.authentication);
     view.dirty = false; view.stale = false; view.acceptedFormChange = false; view.binding = bindingSignature(view.sdk); view.formSignature = formSignature(view.sdk);
     view.modelsLoaded = false; view.bindingWarning?.remove(); view.bindingWarning = null;
+    view.modelSummaryKey = null; view.modelSection.updateModelSummary = null;
     view.modelSection.replaceChildren(element("p", "sdk-update-note", copy.loading));
     maybeLoadModels(view.sdk, view); organizeView(view);
   };
   const actionSignature = (sdk) => JSON.stringify([sdk.enabled, sdk.can_enable, sdk.selectable, sdk.selected,
     sdk.update_available, sdk.can_update, sdk.update_enabled, sdk.check_status,
     authenticationActive(sdk.authentication?.operation), authenticationPending.has(sdk.provider_id), sitePending.has(sdk.provider_id)]);
+  const maintenanceCopy = locale === "zh" ? {
+    title: "版本与维护", diagnostics: "诊断与验证", risks: "风险操作", versions: "检查可用版本",
+    versionTime: "版本检查时间", environmentTime: "环境核对时间", checkingVersions: "正在读取版本…",
+    pinned: "固定版本，暂不支持平台内升级", repair: "同版本环境修复",
+    repairNote: "当前安装器仅重建固定版本，并可能改变环境及认证绑定。页面暂不开放修复，请按受控维护说明操作。",
+    readOnly: "“检查可用版本”仅读取软件包版本；“检查安装与登录”仍执行完整核对。", unknown: "更新结果待核对。请重新读取状态并核对安装版本；不要重复提交更新。",
+    failed: "操作失败，请查看原因后重试。", complete: "检查完成。", noUpdate: "未发现更新。", available: "发现可用版本。",
+    reread: "重新读取状态", diagnosticDetails: "完整诊断资料", riskNote: "以下操作会影响新任务或本机登录，请确认后执行。",
+  } : {
+    title: "Versions and maintenance", diagnostics: "Diagnostics and validation", risks: "Risk-sensitive actions", versions: "Check available versions",
+    versionTime: "Version checked", environmentTime: "Environment checked", checkingVersions: "Reading versions…",
+    pinned: "Pinned version; in-app upgrades are not supported", repair: "Repair same-version environment",
+    repairNote: "The installer only rebuilds the pinned version and may change environment and authentication bindings. In-app repair is disabled; use controlled maintenance instructions.",
+    readOnly: "Version checks only read package versions; installation and sign-in checks still perform full verification.", unknown: "Update outcome is unknown. Read status and verify the installed version; do not submit another update.",
+    failed: "The operation failed. Review the reason before retrying.", complete: "Check completed.", noUpdate: "No update found.", available: "A newer version is available.",
+    reread: "Read status again", diagnosticDetails: "Full diagnostic information", riskNote: "These actions affect new tasks or local sign-in. Confirm before proceeding.",
+  };
+  const maintenanceStates = new Map(), versionReads = new Map();
+  const maintenanceStorage = provider => `sapba:sdk-maintenance:${provider}`;
+  const maintenanceState = provider => {
+    if (!maintenanceStates.has(provider)) {
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(maintenanceStorage(provider)) || "null");
+        // A lost/closed installation request is not permission to install again.
+        if (saved?.kind === "update" && ["running", "unknown", "needs_review", "cleanup_pending"].includes(saved.status)) maintenanceStates.set(provider, {...saved, requestPending:false, status: "unknown", message: maintenanceCopy.unknown});
+      } catch { /* Storage is optional; never an authority for installation. */ }
+    }
+    return maintenanceStates.get(provider);
+  };
+  const setMaintenance = (provider, state) => {
+    maintenanceStates.set(provider, state);
+    try {
+      if (state.kind === "update" && ["running", "unknown", "needs_review", "cleanup_pending"].includes(state.status)) sessionStorage.setItem(maintenanceStorage(provider), JSON.stringify(state));
+      else sessionStorage.removeItem(maintenanceStorage(provider));
+    } catch { /* The in-page single-request guard remains in force. */ }
+  };
+  const updatePhaseMessage = update => {
+    const labels = locale === "zh" ? {version_check:"正在核对版本",downloading:"正在下载",verification:"正在校验完整软件包",waiting_maintenance:"正在申请安装维护窗口",local_resolution:"正在核对本地安装事务",installation:"正在本地安装",version_confirmation:"正在确认SDK与CLI版本",cleanup:"正在清理安装进程"}
+      : {version_check:"Checking versions",downloading:"Downloading",verification:"Verifying complete packages",waiting_maintenance:"Acquiring installation maintenance",local_resolution:"Checking the local install transaction",installation:"Installing locally",version_confirmation:"Confirming SDK and CLI versions",cleanup:"Cleaning up installer processes"};
+    if (update.status === "cleanup_pending") return locale === "zh" ? "正在停止安装进程；清理尚未确认完成，请勿重复提交。" : "Stopping installer processes; cleanup is unconfirmed. Do not resubmit.";
+    if (update.status === "needs_review") return locale === "zh" ? "安装结果待核对。请先检查可用版本，不要重复安装。" : "Installation needs review. Check available versions before another installation.";
+    if (update.status === "completed") return update.phase === "restart_pending" ? copy.restart : copy.updated;
+    if (update.status === "failed") return authenticationErrors[update.error?.code] || maintenanceCopy.failed;
+    const file = /^[A-Za-z0-9_.+!-]+\.whl$/.test(update.filename || "") ? update.filename : "";
+    const amount = Number.isFinite(update.downloaded_bytes) && update.downloaded_bytes >= 0
+      ? ` · ${(update.downloaded_bytes / 1000000).toFixed(1)}${Number.isFinite(update.total_bytes) && update.total_bytes >= update.downloaded_bytes ? ` / ${(update.total_bytes / 1000000).toFixed(1)}` : ""} MB` : "";
+    return `${labels[update.phase] || copy.updating}${file ? ` · ${file}` : ""}${amount}`;
+  };
+  const adoptUpdate = sdk => {
+    const server=sdk.update_status, local=maintenanceState(sdk.provider_id);
+    if (!server?.operation_id) return;
+    const live=["running","cleanup_pending"].includes(server.status);
+    if (!live && local && local.kind !== "update") return;
+    if (local?.kind === "update") {
+      if (local.target && server.target_version && local.target !== server.target_version) return;
+      if (local.requestPending && !local.operation_id && !live) return;
+      if (local.operation_id && local.operation_id !== server.operation_id && Date.parse(server.started_at) <= (local.submitted_at || 0)) return;
+      if (!local.operation_id && local.submitted_at && Date.parse(server.started_at) < local.submitted_at) return;
+      if (local.operation_id === server.operation_id && Date.parse(local.serverUpdatedAt) > Date.parse(server.updated_at)) return;
+    }
+    setMaintenance(sdk.provider_id,{kind:"update",status:server.status,target:server.target_version,
+      operation_id:server.operation_id,serverUpdatedAt:server.updated_at,submitted_at:Date.parse(server.started_at),
+      requestPending:Boolean(local?.requestPending),code:server.error?.code,phase:server.phase,message:updatePhaseMessage(server)});
+  };
+  const maintenanceSDK = sdk => {
+    const local = versionReads.get(sdk.provider_id);
+    return local && (!sdk.version_check?.checked_at || local.version_check?.checked_at >= sdk.version_check.checked_at) ? {...sdk, ...local} : sdk;
+  };
+  const updateMaintenanceView = view => {
+    if (!view?.versionSection) return;
+    const sdk = maintenanceSDK(view.sdk), section = view.versionSection, controls = section.controls;
+    adoptUpdate(view.sdk);
+    const state = maintenanceState(sdk.provider_id), pinned = sdk.provider_id === "workbuddy";
+    const active = ["running","unknown","needs_review","cleanup_pending"].includes(state?.status);
+    const blocked = active || view.stale || authenticationActive(sdk.authentication?.operation)
+      || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id);
+    const recorded = value => value ? `${value} · ${locale === "zh" ? "已记录，待核对" : "recorded; pending verification"}` : copy.notChecked;
+    const values = [sdk.current_version || recorded(sdk.recorded_sdk_version), sdk.cli_version || recorded(sdk.recorded_cli_version),
+      pinned ? maintenanceCopy.pinned : sdk.version_check?.status === "failed" ? copy.failedState : sdk.latest_version || copy.notChecked];
+    section.querySelectorAll(".sdk-version-block strong").forEach((node, index) => { node.textContent = values[index]; });
+    controls.versions.disabled = pinned || view.stale || ["running","cleanup_pending"].includes(state?.status)
+      || authenticationActive(sdk.authentication?.operation) || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id);
+    controls.check.disabled = blocked;
+    controls.update.disabled = blocked || pinned || !sdk.update_enabled || !sdk.update_available || !sdk.latest_version;
+    controls.update.hidden = pinned || !sdk.update_enabled;
+    controls.check.textContent = state?.status === "running" && state.kind === "check" ? copy.checking : copy.check;
+    controls.versions.textContent = state?.status === "running" && state.kind === "versions" ? maintenanceCopy.checkingVersions : maintenanceCopy.versions;
+    controls.update.textContent = state?.status === "running" && state.kind === "update" ? copy.updating : copy.update;
+    controls.time.textContent = `${maintenanceCopy.versionTime}: ${checkedTime(sdk.version_check?.checked_at)}`;
+    controls.note.textContent = pinned ? (locale === "zh" ? "SDK由锁定安装器管理，不提供在线升级。" : "The SDK uses a pinned installer; online upgrades are not provided.") : !sdk.update_enabled ? copy.updateDisabled : maintenanceCopy.readOnly;
+    if (view.sdk.update_status?.status === "completed" && view.sdk.update_status.phase === "restart_pending") controls.note.textContent += ` · ${copy.restart}`;
+    controls.status.textContent = state?.message || (sdk.version_check?.status === "failed" ? copy.failedState : "");
+    controls.status.className = ["unknown","needs_review","cleanup_pending","failed"].includes(state?.status) || sdk.version_check?.status === "failed" ? "sdk-error" : "sdk-update-note";
+    const failure = state?.code ? state : sdk.version_check?.error;
+    controls.error.hidden = !failure?.code;
+    controls.errorCode.textContent = /^[a-z][a-z0-9_]{1,127}$/.test(failure?.code || "") ? failure.code : "";
+    controls.errorPhase.textContent = ["downloading","verification","local_resolution","cleanup","installation", "version_check", "version_confirmation"].includes(failure?.phase) ? failure.phase : "";
+    controls.reread.hidden = !["unknown","needs_review","cleanup_pending"].includes(state?.status);
+  };
+  const runMaintenance = async (provider, kind) => {
+    const view = runtimeViews.get(provider), sdk = maintenanceSDK(view.sdk);
+    const prior=maintenanceState(provider);
+    if (["running","cleanup_pending"].includes(prior?.status) || ["unknown","needs_review"].includes(prior?.status) && kind !== "versions") return;
+    if (kind === "update" && (!sdk.update_enabled || !sdk.update_available || !sdk.latest_version || sdk.provider_id === "workbuddy" || !window.confirm(copy.confirmUpdate))) return;
+    const target = sdk.latest_version;
+    const submitted_at=Date.now();
+    setMaintenance(provider, {kind, status: "running", target, submitted_at, requestPending:true, message: kind === "versions" ? maintenanceCopy.checkingVersions : kind === "update" ? copy.updating : copy.checking});
+    updateMaintenanceView(view);
+    if (kind === "update") load(false,{incremental:true}).catch(() => {});
+    try {
+      const url = kind === "check" ? `${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(provider)}/check`
+        : `${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/${kind === "versions" ? "check?scope=versions" : "update"}`;
+      const payload = await request(url, {method: "POST", ...(kind === "update" ? {headers: {"X-SAPBA-Action": "sdk-update"}} : {})});
+      if (kind === "versions" && (["unknown","needs_review"].includes(prior?.status) && !payload.item?.update_status || payload.item?.update_status?.status === "needs_review")) {
+        setMaintenance(provider,{...prior,requestPending:false,status:"unknown",message:maintenanceCopy.unknown}); return;
+      }
+      if (kind === "update" && payload.item?.current_version !== target) {
+        setMaintenance(provider, {kind, status: "unknown", target, message: maintenanceCopy.unknown});
+        return;
+      }
+      if (payload.item) {
+        const value = {};
+        for (const key of ["current_version", "cli_version", "latest_version", "update_available", "update_enabled", "version_check"]) if (payload.item[key] !== undefined) value[key] = payload.item[key];
+        versionReads.set(provider, value);
+      }
+      const failed = payload.item?.version_check?.status === "failed";
+      setMaintenance(provider, {kind, status: failed ? "failed" : "completed", ...(failed ? payload.item.version_check.error : {}), message: failed ? authenticationErrors[payload.item.version_check.error?.code] || copy.failedState
+        : kind === "update" ? (payload.restart_required ? copy.restart : copy.updated)
+        : kind === "versions" ? (payload.item?.update_available ? maintenanceCopy.available : maintenanceCopy.noUpdate) : maintenanceCopy.complete});
+      // Refresh failure does not replace a confirmed installation/check result.
+      await load(false, {incremental: true, afterMutation: true}).catch(() => {});
+    } catch (error) {
+      const unknown = kind === "update" && (!error.confirmed || error.outcome === "unknown");
+      setMaintenance(provider, {kind, status: unknown ? "unknown" : "failed", target, submitted_at, requestPending:false,
+        code: error.code, phase: error.phase, message: unknown ? maintenanceCopy.unknown : String(error.message || maintenanceCopy.failed)});
+      if (kind === "update") load(false,{incremental:true}).catch(() => {});
+    } finally { updateMaintenanceView(runtimeViews.get(provider)); }
+  };
+  const renderMaintenanceVersions = sdk => {
+    const section = element("section", "settings-maintenance-versions");
+    section.append(element("h3", "", maintenanceCopy.title));
+    const versions = element("div", "sdk-version-grid");
+    for (const label of [copy.current, copy.cliVersion, copy.latest]) {
+      const block = element("div", "sdk-version-block"); block.append(element("span", "", label), element("strong", "", copy.notChecked)); versions.append(block);
+    }
+    const actions = element("div", "settings-version-actions");
+    const controls = {versions: element("button", "secondary-button", maintenanceCopy.versions), check: element("button", "secondary-button", copy.check),
+      update: element("button", "sdk-update-button", copy.update), reread: element("button", "secondary-button", maintenanceCopy.reread),
+      time: element("small", "sdk-update-note"), note: element("p", "sdk-update-note"), status: element("p", "sdk-update-note"),
+      error: element("details", "settings-maintenance-error"), errorCode: element("code"), errorPhase: element("span")};
+    for (const kind of ["versions", "check", "update"]) {
+      const button = controls[kind]; button.type = "button"; button.addEventListener("click", () => runMaintenance(sdk.provider_id, kind)); actions.append(button);
+    }
+    controls.reread.type = "button"; controls.reread.hidden = true;
+    controls.reread.addEventListener("click", () => load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")));
+    controls.status.setAttribute("role", "status"); controls.status.setAttribute("aria-live", "polite");
+    controls.error.append(element("summary", "", locale === "zh" ? "失败诊断" : "Failure diagnostics"), controls.errorCode, controls.errorPhase);
+    section.append(versions, controls.time, actions, controls.note, controls.status, controls.error, controls.reread); section.controls = controls;
+    return section;
+  };
   const renderRuntime = (sdk) => {
-      const runtimeSection = element("section", "sdk-settings-section"); runtimeSection.append(element("h3", "", copy.runtimeState)); const facts = element("dl", "plugin-facts sdk-facts");
+      const runtimeSection = element("section", "sdk-settings-section settings-runtime-diagnostics");
       if (sdk.status_refresh) {
         const refresh = sdk.status_refresh;
         const running = refresh.running ?? refresh.status === "refreshing";
@@ -775,20 +1024,22 @@ const copy = locale === "zh" ? {
             ? (locale === "zh" ? "资格核对耗时较长，后台仍在继续。" : "Qualification checking is taking longer; it is still running.")
             : (locale === "zh" ? "资格核对中；启停状态单独显示。" : "Qualification pending; enablement is shown separately."))
           : (locale === "zh" ? "展示状态已核对；执行前仍会完整检查。" : "Display status checked; execution still requires full validation.")));
-        runtimeSection.append(element("small", "sdk-update-note", `${copy.checkedAt}: ${checkedTime(refresh.checked_at)}${refresh.error_code ? ` · ${refresh.error_code}` : ""}`));
+        runtimeSection.append(element("small", "sdk-update-note", `${maintenanceCopy.environmentTime}: ${checkedTime(refresh.checked_at)}`));
         if (failed || sdk.control_status?.error_code && !sdk.control_status.running) {
           const reread = element("button", "secondary-button", locale === "zh" ? "重新读取状态" : "Read status again"); reread.type = "button";
           reread.addEventListener("click", () => load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error"))); runtimeSection.append(reread);
         }
       }
-      facts.append(element("dt", "", copy.runtimeState), element("dd", "", sdk.enabled == null ? (locale === "zh" ? "状态待核对" : "State not confirmed") : sdk.enabled ? copy.enabled : copy.disabled), element("dt", "", copy.currentModel), element("dd", "", sdk.default_model_id || "—"), element("dt", "", copy.platform), element("dd", "", sdk.platform_supported == null ? copy.notChecked : sdk.platform_supported ? copy.supported : copy.unsupported));
-      if (sdk.blockers?.length) facts.append(element("dt", "", copy.blockers), element("dd", "sdk-error", sdk.blockers.map(blockerText).join(locale === "zh" ? "；" : "; "))); if (sdk.error?.message) facts.append(element("dt", "", copy.failedState), element("dd", "sdk-error", sdk.error.message)); runtimeSection.append(facts);
-      const technical = element("details", "sdk-technical-details"); technical.append(element("summary", "", copy.technicalDetails));
+      if (sdk.error?.message) runtimeSection.append(element("p", "sdk-error", sdk.error.message));
+      const certification = sdk.sdk_integration?.status;
+      if (certification) runtimeSection.append(element("p", "sdk-update-note", `${locale === "zh" ? "SDK 接入认证" : "SDK integration certification"}: ${certification === "certified" ? (locale === "zh" ? "已认证" : "certified") : (locale === "zh" ? "待核对" : "pending review")}`));
+      const technical = element("details", "sdk-technical-details"); technical.append(element("summary", "", maintenanceCopy.diagnosticDetails));
       const technicalFacts = element("dl", "plugin-facts sdk-facts");
-      technicalFacts.append(element("dt", "", copy.provider), element("dd", "", sdk.provider_id), element("dt", "", copy.package), element("dd", "", sdk.package_name), element("dt", "", copy.ecosystem), element("dd", "", sdk.ecosystem), element("dt", "", copy.capabilities), element("dd", "", (sdk.capabilities || []).join(", ") || "—"), element("dt", "", copy.checkedAt), element("dd", "", checkedTime(sdk.checked_at)));
+      technicalFacts.append(element("dt", "", copy.provider), element("dd", "", sdk.provider_id), element("dt", "", copy.package), element("dd", "", sdk.package_name || copy.notChecked), element("dt", "", copy.ecosystem), element("dd", "", sdk.ecosystem || copy.notChecked));
+      if (sdk.capabilities?.length) technicalFacts.append(element("dt", "", copy.capabilities), element("dd", "", sdk.capabilities.join(", ")));
+      if (sdk.status_refresh?.error_code) technicalFacts.append(element("dt", "", copy.failedState), element("dd", "", sdk.status_refresh.error_code));
       technical.append(technicalFacts); runtimeSection.append(technical);
-      const actions = element("footer", "plugin-card-actions sdk-card-actions"); const check = element("button", "secondary-button", copy.check); check.type = "button";
-      check.addEventListener("click", async () => { check.disabled = true; check.textContent = copy.checking; try { await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/check`, { method: "POST" }); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); check.disabled = false; } });
+      const actions = element("footer", "plugin-card-actions sdk-card-actions");
       if (sdk.enabled === true) {
         const disable = element("button", "danger-outline-button", copy.disable); disable.type = "button";
         disable.addEventListener("click", async () => { const confirmation = window.prompt(`${copy.confirmDisable}\n${sdk.provider_id}`); if (confirmation !== sdk.provider_id) return; disable.disabled = true; disable.textContent = copy.disabling; try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/disable`, { method: "POST", headers: { "Content-Type": "application/json", "X-SAPBA-Action": "runtime-disable" }, body: JSON.stringify({ confirm_provider_id: confirmation }) }); applyRuntimeResult(payload); showMessage(copy.disabledDone, "success"); await load(false, {incremental: true, afterMutation: true}); } catch (error) { showMessage(String(error.message || error), "error"); disable.disabled = false; } }); actions.append(disable);
@@ -797,14 +1048,43 @@ const copy = locale === "zh" ? {
         enable.addEventListener("click", async () => { enable.disabled = true; enable.textContent = copy.enabling; try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/enable`, { method: "POST" }); applyRuntimeResult(payload); showMessage(copy.enabledDone, "success"); await load(false, {incremental: true, afterMutation: true}); } catch (error) { showMessage(String(error.message || error), "error"); enable.disabled = false; } }); actions.append(enable);
       }
       if (sdk.selectable && !sdk.selected) { const select = element("button", "sdk-update-button", copy.select); select.type = "button"; select.addEventListener("click", async () => { if (!window.confirm(copy.switchConfirm)) return; select.disabled = true; select.textContent = copy.selecting; try { await request(`${apiBase}/api/system/sdk-runtimes/default`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider_id: sdk.provider_id }) }); showMessage(copy.switched, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); select.disabled = false; } }); actions.append(select); }
-      if ((sdk.update_available || sdk.provider_id === "workbuddy" && sdk.can_update) && sdk.update_enabled) { const update = element("button", "sdk-update-button", sdk.provider_id === "workbuddy" ? (locale === "zh" ? "重新准备独立环境" : "Prepare a new isolated environment") : copy.update); update.type = "button"; update.addEventListener("click", async () => { if (!window.confirm(copy.confirmUpdate)) return; update.disabled = true; update.textContent = copy.updating; try { const payload = await request(`${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/update`, { method: "POST", headers: { "X-SAPBA-Action": "sdk-update" } }); showMessage(payload.restart_required ? copy.restart : copy.updated, "success"); await load(false); } catch (error) { showMessage(String(error.message || error), "error"); update.disabled = false; } }); actions.append(update); } else if (sdk.check_status === "checked" && !sdk.update_enabled) actions.append(element("small", "sdk-update-note", copy.updateDisabled));
       if (authenticationActive(sdk.authentication?.operation) || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id)) for (const button of actions.querySelectorAll("button")) button.disabled = true;
-      return {runtimeSection, actions, check};
+      return {runtimeSection, actions};
   };
+  const maybeLoadAuthentication = (sdk, view) => {
+    if (sdk.provider_id !== "workbuddy" || !sdk.display_status || !sdk.authentication || view.stale
+        || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id)) return;
+    // The complete background projection already performs authentication.view().
+    // A second GET would repeat installation, activity and context inspection.
+    const key = JSON.stringify(sdk.authentication);
+    if (view.authenticationKey === key || view.card.dataset.busy === "true") return;
+    const old = view.cachedAuthentication;
+    const sameAccount = old && old.authenticated === sdk.authentication.authenticated
+      && old.status === sdk.authentication.status && old.failure_code === sdk.authentication.failure_code
+      && old.capabilities?.reason === sdk.authentication.capabilities?.reason;
+    // Rendering saved operation progress synchronously notifies SDK navigation.
+    // Publish the key first so its selection event cannot re-enter this update.
+    view.authenticationKey = key; view.cachedAuthentication = sdk.authentication;
+    if ((sameAccount || view.dirty) && view.accountSection.updateAuthenticationSummary) view.accountSection.updateAuthenticationSummary(sdk, sdk.authentication);
+    else renderAuthentication(sdk, view.accountSection, sdk.authentication);
+  };
+  const modelSummaryKey = sdk => JSON.stringify([bindingSignature(sdk), sdk.display_status?.instance_id, sdk.display_status?.binding,
+    sdk.status_refresh?.stale, sdk.status_refresh?.checked_at]);
   const maybeLoadModels = (sdk, view) => {
     if (navigationEnabled && (viewedSection !== "runtime" || sdk.provider_id !== viewedProvider || view.stale)) return;
     if (navigationEnabled && (sdk.provider_implemented === false || sdk.platform_supported === false)) {
       view.modelSection.replaceChildren(element("h3", "", copy.modelCatalog), element("p", "sdk-update-note", copy.catalogUnavailable)); return;
+    }
+    if (sdk.provider_id === "workbuddy" && sdk.display_status) {
+      const key = modelSummaryKey(sdk);
+      if (sdkHidden(sdk.provider_id) || view.modelsLoading || view.modelSummaryKey === key || view.stale || view.card.dataset.busy === "true") return;
+      view.modelsLoading = true;
+      loadModels(sdk, view.modelSection).then(() => { if (view.card.dataset.busy !== "true") view.modelSummaryKey = key; })
+        .finally(() => {
+          view.modelsLoading = false;
+          if (modelSummaryKey(view.sdk) !== key) maybeLoadModels(view.sdk, view);
+        });
+      return;
     }
     if (view.modelsLoaded || authenticationActive(sdk.authentication?.operation) || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id)) return;
     if (sdk.status_refresh?.stale || ["refreshing", "unknown", "failed"].includes(sdk.status_refresh?.status)) return;
@@ -816,8 +1096,11 @@ const copy = locale === "zh" ? {
     latestDefault = defaultProviderId; noDefault.hidden = Boolean(defaultProviderId);
     if (navigationEnabled && !sdks.some(sdk => sdk.provider_id === viewedProvider)) viewedProvider = sdks.find(sdk => sdk.provider_id === defaultProviderId)?.provider_id || sdks.find(sdk => sdk.provider_implemented !== false && sdk.platform_supported !== false)?.provider_id || sdks[0]?.provider_id;
     if (!incremental) alert.hidden = true;
-    for (const sdk of sdks) {
+    for (let sdk of sdks) {
       const old = runtimeViews.get(sdk.provider_id);
+      if (old && sdk.display_status?.snapshot_id != null && old.sdk.display_status?.snapshot_id != null
+          && sdk.display_status.instance_id === old.sdk.display_status.instance_id
+          && sdk.display_status.snapshot_id < old.sdk.display_status.snapshot_id) continue;
       const revision = sdk.control_status?.revision;
       if (old && revision != null && old.sdk.control_status?.revision != null && revision < old.sdk.control_status.revision) continue;
       const state = stateFor(sdk);
@@ -861,6 +1144,7 @@ const copy = locale === "zh" ? {
         }
         if (!old.accountSection.children.length && sdk.authentication) renderAuthentication(sdk, old.accountSection, sdk.authentication);
         maybeLoadModels(sdk, old);
+        maybeLoadAuthentication(sdk, old);
         organizeView(old);
         continue;
       }
@@ -868,24 +1152,30 @@ const copy = locale === "zh" ? {
       const badge = element("span", `sdk-status status-${state.key}`, state.text);
       badge.setAttribute("role", "status"); badge.setAttribute("aria-live", "polite");
       titleWrap.append(element("h2", "", localized(sdk.name) || sdk.sdk_id)); heading.append(titleWrap, badge);
-      const sdkSection = element("section", "sdk-settings-section"); sdkSection.append(element("h3", "", copy.sdkClient)); const versions = element("div", "sdk-version-grid");
-      const statusUnknown = sdk.status_refresh && !sdk.status_refresh.checked_at;
-      for (const [label, value] of [[copy.current, sdk.current_version || (statusUnknown ? copy.notChecked : copy.notInstalled)], [copy.cliVersion, sdk.cli_version || (statusUnknown ? copy.notChecked : copy.notInstalled)], [copy.latest, sdk.latest_version || copy.notChecked]]) { const block = element("section", "sdk-version-block"); block.append(element("span", "", label), element("strong", "", value)); versions.append(block); } sdkSection.append(versions);
+      const versionSection = renderMaintenanceVersions(sdk);
       const accountSection = element("section", "sdk-settings-section sdk-authentication-section");
       if (sdk.authentication) renderAuthentication(sdk, accountSection, sdk.authentication);
-      const sdkDetails = element("details", "sdk-technical-details"); sdkDetails.append(element("summary", "", copy.sdkClient), sdkSection);
-      sdkDetails.append(parts.check);
       const modelSection = element("section", "sdk-settings-section sdk-model-section");
       const maintenance = element("details", "settings-maintenance"); maintenance.append(element("summary", "", locale === "zh" ? "高级维护" : "Advanced maintenance"));
       const mainActions = element("div", "settings-main-actions"), maintenanceActions = element("div", "settings-maintenance-actions");
+      const diagnostics = element("section", "settings-maintenance-diagnostics");
+      diagnostics.append(element("h3", "", maintenanceCopy.diagnostics), parts.runtimeSection);
+      const risks = element("section", "settings-maintenance-risks");
+      const riskControls = element("div", "settings-risk-controls"); riskControls.append(parts.actions, maintenanceActions);
+      risks.append(element("h3", "", maintenanceCopy.risks), element("p", "sdk-update-note", maintenanceCopy.riskNote), riskControls);
+      if (sdk.provider_id === "workbuddy") {
+        const repair = element("button", "secondary-button", maintenanceCopy.repair); repair.type = "button"; repair.disabled = true;
+        const repairNote = element("p", "sdk-update-note", maintenanceCopy.repairNote); repairNote.id = `sdk-repair-note-${sdk.provider_id}`;
+        repair.setAttribute("aria-describedby", repairNote.id); riskControls.append(repair); risks.append(repairNote);
+      }
       if (navigationEnabled) {
         card.dataset.providerPanel = sdk.provider_id; card.id = `runtime-panel-${sdk.provider_id}`; card.setAttribute("role", "tabpanel"); card.setAttribute("aria-label", localized(sdk.name) || sdk.provider_id);
         const overview = element("div", "settings-overview"); overview.append(accountSection, modelSection);
-        maintenance.append(parts.actions, maintenanceActions, parts.runtimeSection, sdkDetails);
+        maintenance.append(versionSection, diagnostics, risks);
         card.append(heading, mainActions, overview, maintenance);
-      } else card.append(heading, accountSection, modelSection, parts.runtimeSection, parts.actions, sdkDetails);
+      } else { maintenance.append(versionSection, diagnostics, risks); card.append(heading, accountSection, modelSection, maintenance); }
       grid.append(card);
-      const view = {sdk, card, badge, accountSection, modelSection, maintenance, mainActions, maintenanceActions, runtimeSection: parts.runtimeSection, actions: parts.actions, modelsLoaded: false, actionSignature: actionSignature(sdk), binding: bindingSignature(sdk), formSignature: formSignature(sdk), dirty:false};
+      const view = {sdk, card, badge, accountSection, modelSection, maintenance, mainActions, maintenanceActions, diagnostics, versionSection, runtimeSection: parts.runtimeSection, actions: parts.actions, modelsLoaded: false, actionSignature: actionSignature(sdk), binding: bindingSignature(sdk), formSignature: formSignature(sdk), dirty:false};
       if (navigationEnabled) {
         for (const name of ["input", "change"]) card.addEventListener(name, event => { if (event.target.matches("input,select,textarea")) view.dirty = true; });
         card.addEventListener("click", event => { if (view.stale && !view.bindingWarning?.contains(event.target)) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
@@ -893,6 +1183,7 @@ const copy = locale === "zh" ? {
       runtimeViews.set(sdk.provider_id, view);
       modelSection.append(element("h3", "", copy.modelCatalog), element("p", "sdk-update-note", locale === "zh" ? "正在读取已保存状态…" : "Loading saved status…"));
       maybeLoadModels(sdk, view);
+      maybeLoadAuthentication(sdk, view);
       organizeView(view);
     }
     notifySettings();
@@ -910,11 +1201,15 @@ const copy = locale === "zh" ? {
   let statusTimer;
   let listRequest;
   let latestPayload;
-  const needsRefresh = (sdk) => sdk.status_refresh?.running ?? sdk.status_refresh?.status === "refreshing";
+  let statusReadFailed = false;
+  const needsRefresh = (sdk) => [sdk.status_refresh, sdk.display_status, sdk.control_status].some(status =>
+    status && (status.running || status.status === "refreshing"
+      || !status.error_code && status.status !== "failed" && (status.stale || status.status === "unknown")))
+    || ["running","cleanup_pending"].includes(sdk.update_status?.status) || maintenanceState(sdk.provider_id)?.status === "running";
   const scheduleStatus = () => {
     clearTimeout(statusTimer);
-    if (document.hidden || !(latestPayload?.items || []).some(sdk => needsRefresh(sdk) || sdk.control_status?.running)) { statusPolls = 0; return; }
-    const delay = latestPayload.items.some(sdk => sdk.control_status?.running) ? 2000 : statusPolls < 15 ? 2000 : statusPolls < 30 ? 5000 : 15000;
+    if (document.hidden || statusReadFailed || !(latestPayload?.items || []).some(sdk => needsRefresh(sdk) || sdk.control_status?.running)) { statusPolls = 0; return; }
+    const delay = latestPayload.items.some(sdk => sdk.control_status?.running || sdk.display_status?.running || ["running","cleanup_pending"].includes(sdk.update_status?.status) || maintenanceState(sdk.provider_id)?.status === "running") ? 2000 : statusPolls < 15 ? 2000 : statusPolls < 30 ? 5000 : 15000;
     statusPolls++;
     statusTimer = setTimeout(() => load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")), delay);
   };
@@ -927,8 +1222,11 @@ const copy = locale === "zh" ? {
     const generation = stateGeneration;
     listRequest = (async () => {
       try {
-        const payload = await request(apiBase + "/api/system/sdk-runtimes", {cache: "no-store"});
+        const payload = await request(apiBase + "/api/system/sdk-runtimes?view=summary", {cache: "no-store"});
+        statusReadFailed = false;
         if (generation === stateGeneration) { latestPayload = payload; render(payload.items || [], payload.default_provider_id, incremental); }
+      } catch (error) {
+        statusReadFailed = true; throw error;
       } finally { listRequest = null; scheduleStatus(); }
     })();
     return listRequest;
@@ -936,12 +1234,15 @@ const copy = locale === "zh" ? {
   document.addEventListener("visibilitychange", () => { clearTimeout(statusTimer); if (!document.hidden) load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")); });
   window.addEventListener("pagehide", () => clearTimeout(statusTimer));
   root?.querySelector("[data-check-all]")?.addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; showMessage(copy.checking); try { const payload = await request(apiBase + "/api/system/sdk-runtimes/check", { method: "POST" }); render(payload.items || [], payload.default_provider_id); } catch (error) { showMessage(String(error.message || error), "error"); } finally { button.disabled = false; } });
-  root?.querySelector("[data-reread]")?.addEventListener("click", () => load(false, {incremental:true}).catch(() => showMessage(copy.unavailable, "error")));
+  root?.querySelector("[data-reread]")?.addEventListener("click", () => {
+    for (const view of runtimeViews.values()) { view.authenticationKey = null; view.modelSummaryKey = null; }
+    load(false, {incremental:true}).catch(() => showMessage(copy.unavailable, "error"));
+  });
   if (navigationEnabled) {
     document.addEventListener("sapba:settings-request-state", notifySettings);
     document.addEventListener("sapba:settings-select", event => {
       viewedProvider = event.detail.provider; viewedSection = event.detail.section;
-      for (const view of runtimeViews.values()) { view.card.hidden = sdkHidden(view.sdk.provider_id); maybeLoadModels(view.sdk, view); }
+      for (const view of runtimeViews.values()) { view.card.hidden = sdkHidden(view.sdk.provider_id); maybeLoadModels(view.sdk, view); maybeLoadAuthentication(view.sdk, view); }
     });
   }
   load().catch(() => showMessage(copy.unavailable, "error"));

@@ -31,9 +31,13 @@ class AcceptanceProjectionSpec(BaseModel):
     required_assessments: list[Literal["inventory_fifo"]] | None = Field(
         default=None, max_length=20
     )
+    source_semantics: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def check_fields(self) -> "AcceptanceProjectionSpec":
+        from .source_semantics import definition_issues
+        if definition_issues(self.source_semantics):
+            raise ValueError("source_scope_definition_invalid")
         for names in (self.record_fields, self.metric_fields, self.decimal_fields,
                        self.decimal_metrics, self.boolean_fields, self.integer_fields,
                        self.required_metric_values):

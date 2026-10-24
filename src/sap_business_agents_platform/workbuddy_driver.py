@@ -380,6 +380,7 @@ class WorkBuddyHarnessDriver:
         from .mcp_server import _SAP_TOOLS, _TOOL_TOOLS
         from .runtime_report_contract import tools_for_contract
         from .runtime_report_convergence import stop_state, raise_if_stopped
+        from .runtime_terminal_contract import VERSION as terminal_contract
         owner, run_id = self.owner, context["run_id"]
         contract = context.get("report_contract") or owner.broker.report_contract(run_id)
         tools = tools_for_contract(_SAP_TOOLS if request.permissions["acceptance_direct_baseline"] else _SAP_TOOLS + _TOOL_TOOLS, contract)
@@ -415,6 +416,7 @@ class WorkBuddyHarnessDriver:
                     json.dumps(request.context, ensure_ascii=False) if request.context else ""),
                     "system_prompt": (request.instructions or "") + native_terminal_instructions(request.output_schema),
                     "cwd": request.cwd, "tools": tools, "output_schema": request.output_schema,
+                    "terminal_contract": terminal_contract,
                     "timeout_ms": int(request.remaining() * 1000)}, seconds=request.remaining(),
                 tool_handler=handle, emit=lambda kind, data: owner.store.append_event(run_id, kind, data))
             owner.store.append_event(run_id, "workbuddy_terminal_output", output_diagnostic(response.get("text"),

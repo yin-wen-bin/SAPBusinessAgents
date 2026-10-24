@@ -21,6 +21,10 @@ This is a frontend presentation change, not a Runtime admission change. The sett
 
 SDK configuration, authentication, model compatibility, SDK integration and business evaluation remain separate facts. Quality records do not grant execution rights. The frontend must not infer `enabled=false` or unauthenticated from unknown status.
 
+Advanced maintenance uses compact versions, diagnostics and risk-action groups.
+See [Runtime maintenance](runtime-maintenance.md) for version-only reads, pinned
+WorkBuddy repair limitations and unknown update outcomes.
+
 ## Verification and deployment
 
 Use the existing frontend tests plus `settings-navigation.browser.mjs`, `runtime-status.browser.mjs`, `runtime-authentication.browser.mjs`, `workbuddy-service-site.browser.mjs` and `workbuddy-qualification.browser.mjs`. Browser suites serve the real built UI with synthetic APIs; they must not reach SDKs or SAP. Set `SAPBA_BROWSER_DIST`, `SAPBA_BROWSER_REPORT` and an installed `SAPBA_PLAYWRIGHT_MODULE` as needed.
