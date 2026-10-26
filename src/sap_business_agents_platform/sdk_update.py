@@ -1,8 +1,10 @@
-"""Codex-only download/verify/local-install plumbing; no SDK or model imports.
+"""Codex updates and shared wheel/owned-pip primitives; no SDK/model imports.
 
 pip remains the dependency resolver. Only complete PyPI-hash-verified wheels
 are cached; the install transaction is resolved again offline under maintenance.
-No registry, login, model selection or historical qualification is changed here.
+Codex retains its original package/CLI defaults; WorkBuddy supplies its own
+package contract and candidate-only installer in workbuddy_sdk_update.
+No login, model selection or historical qualification is changed here.
 """
 from __future__ import annotations
 
@@ -47,10 +49,11 @@ class OwnedPip:
     and expose cleanup_pending until the exact Job is observed empty. Never
     release a mutation guard on an unconfirmed process, nor kill by bare PID.
     """
-    def __init__(self, *, clock=time.monotonic, sleep=time.sleep, cleanup_seconds=10):
+    def __init__(self, *, clock=time.monotonic, sleep=time.sleep, cleanup_seconds=10, python=None):
         self.clock, self.sleep, self.cleanup_seconds = clock, sleep, cleanup_seconds
+        self.python = str(python or sys.executable)
 
-    def run(self, arguments, *, phase, seconds, progress, idle_seconds=None):
+    def run(self, arguments, *, phase, seconds, progress, idle_seconds=None, command=None):
         if os.name != 'nt':
             raise failure('sdk_update_platform_unsupported', phase, cleanup_complete=True)
         helper = Path(__file__).parents[2]/'scripts/sdk-package-helper.py'
@@ -97,7 +100,7 @@ class OwnedPip:
             job.attach(process.pid)
             progress(phase=phase,process_id=process.pid,process_identity=owned_identity,cleanup_complete=False)
             reader=threading.Thread(target=output,daemon=True);reader.start()
-            process.stdin.write(json.dumps([sys.executable,'-m','pip',*arguments]).encode()+b'\n')
+            process.stdin.write(json.dumps(command or [self.python,'-m','pip',*arguments]).encode()+b'\n')
             process.stdin.close()
             while process.poll() is None:
                 now=self.clock()
@@ -137,6 +140,7 @@ class OwnedPip:
 
 
 class CodexPackageUpdate:
+    package = 'openai-codex'
     def __init__(self, root, *, run=None, client_factory=None, download_seconds=1800,
                  idle_seconds=60, install_seconds=300, clock=time.monotonic):
         self.root=Path(root).resolve()
@@ -152,7 +156,7 @@ class CodexPackageUpdate:
 
     def _verify_files(self,directory,bundle):
         try:
-            if bundle.get('package')!='openai-codex' or not isinstance(bundle.get('files'),dict) or not 0<len(bundle['files'])<=128:
+            if bundle.get('package')!=self.package or not isinstance(bundle.get('files'),dict) or not 0<len(bundle['files'])<=128:
                 raise ValueError('invalid_inventory')
             if {p.name for p in directory.iterdir()}!={*bundle['files'],'verified.json'}:
                 raise ValueError('changed_inventory')
@@ -164,14 +168,11 @@ class CodexPackageUpdate:
                         or path.is_symlink() or path.resolve().parent!=directory.resolve() or not path.is_file()
                         or path.stat().st_size!=info['size'] or sha(path)!=info['sha256']):
                     raise ValueError('changed_artifact')
-                if package=='openai-codex':sdk.append(path)
+                if package==self.package:sdk.append(path)
             if len(sdk)!=1 or parse_wheel_filename(sdk[0].name)[1]!=Version(bundle['target']):
                 raise ValueError('target_mismatch')
             # A cache receipt never replaces the SDK's own pinned CLI contract.
-            if self._cli_pin(sdk[0])!=bundle['cli_version'] or not any(
-                    f['name']=='openai-codex-cli-bin' and Version(f['version'])==Version(bundle['cli_version'])
-                    for f in bundle['files'].values()):
-                raise ValueError('cli_mismatch')
+            self._verify_cli(sdk[0],bundle)
         except (OSError,KeyError,TypeError,ValueError,zipfile.BadZipFile):
             raise failure('sdk_download_integrity_failed','verification')
 
@@ -187,6 +188,16 @@ class CodexPackageUpdate:
         if len(pins)!=1 or pins[0].operator!='==' or '*' in pins[0].version:
             raise ValueError('cli_not_pinned')
         return pins[0].version
+
+    def _cli_contract(self,sdk,files):
+        version=self._cli_pin(sdk)
+        if not any(f['name']=='openai-codex-cli-bin' and Version(f['version'])==Version(version) for f in files.values()):
+            raise failure('sdk_download_integrity_failed','verification')
+        return {'cli_version':version}
+
+    def _verify_cli(self,sdk,bundle):
+        if self._cli_contract(sdk,bundle['files']) != {'cli_version':bundle['cli_version']}:
+            raise ValueError('cli_mismatch')
 
     def prepare(self,target,progress):
         target=str(Version(target));self.root.mkdir(parents=True,exist_ok=True)
@@ -205,7 +216,7 @@ class CodexPackageUpdate:
         started=self.clock()
         self.run(['download','--disable-pip-version-check','--no-cache-dir','--index-url','https://pypi.org/simple',
                   '--only-binary=:all:','--progress-bar','raw','--timeout','15','--retries','0','--resume-retries','0',
-                  '--dest',str(stage),f'openai-codex=={target}'],phase='downloading',seconds=self.download_seconds,
+                  '--dest',str(stage),f'{self.package}=={target}'],phase='downloading',seconds=self.download_seconds,
                  idle_seconds=self.idle_seconds,progress=progress)
         progress(phase='verification',filename=None,downloaded_bytes=None,total_bytes=None)
         wheels=list(stage.iterdir())
@@ -226,15 +237,13 @@ class CodexPackageUpdate:
                     files[path.name]={'name':name,'version':str(version),'size':match['size'],'sha256':match['digests']['sha256']}
         except (httpx.HTTPError,KeyError,ValueError) as exc:
             raise failure('sdk_download_verification_failed','verification',reason=type(exc).__name__) from None
-        sdk=next((p for p in wheels if files[p.name]['name']=='openai-codex' and files[p.name]['version']==target),None)
+        sdk=next((p for p in wheels if files[p.name]['name']==self.package and files[p.name]['version']==target),None)
         if sdk is None: raise failure('sdk_download_integrity_failed','verification')
-        try:cli_version=self._cli_pin(sdk)
+        try:cli_contract=self._cli_contract(sdk,files)
         except (OSError,ValueError,zipfile.BadZipFile):
             raise failure('sdk_runtime_dependency_unpinned','verification') from None
-        if not any(f['name']=='openai-codex-cli-bin' and Version(f['version'])==Version(cli_version) for f in files.values()):
-            raise failure('sdk_download_integrity_failed','verification')
-        bundle={'package':'openai-codex','target':target,'cli_version':cli_version,'files':files}
-        progress(phase='verification',expected_cli=cli_version)
+        bundle={'package':self.package,'target':target,**cli_contract,'files':files}
+        progress(phase='verification',expected_cli=bundle['cli_version'])
         atomic(stage/'verified.json',bundle)
         self._verify_files(stage,bundle)
         if destination.exists():

@@ -436,8 +436,36 @@ class WorkBuddySupervisor:
                     pending = {reader, auth_signal}
                     if trace_signal is not None:
                         pending.add(trace_signal)
-                    done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                    signal = auth_signal.result() if auth_signal in done else trace_signal.result() if trace_signal in done else None
+                    try:
+                        if terminal_checks is not None and payload.get("terminal_v2"):
+                            async with asyncio.timeout(terminal_checks.remaining(deadline)):
+                                done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                        else:
+                            done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    except TimeoutError:
+                        if terminal_checks is None or not payload.get("terminal_v2"):
+                            raise
+                        code = "workbuddy_terminal_correction_stalled" if terminal_checks.last_rejected else "workbuddy_structured_output_missing"
+                        error = WorkBuddyError(code)
+                        error.detail = {**failure_context(), "terminal_phase": "final_handoff", "handoff_wait_expired": True}
+                        raise error from None
+                    # A ready native frame has the authoritative SDK error/terminal.
+                    # Do not let a generic trace fallback race ahead of it.
+                    signal = auth_signal.result() if auth_signal in done else None
+                    if not signal and reader in done:
+                        return reader.result()
+                    if not signal and trace_signal in done:
+                        # Bounded drain inside the unchanged hard/finalization budget.
+                        drain_budget = min(0.25, max(0, deadline - time.monotonic()))
+                        if terminal_checks is not None and payload.get("terminal_v2"):
+                            drain_budget = min(drain_budget, terminal_checks.remaining(deadline))
+                        await asyncio.wait({reader}, timeout=drain_budget)
+                        if reader.done():
+                            try:
+                                return reader.result()
+                            except WorkBuddyError as read_error:
+                                if read_error.code not in {"workbuddy_worker_exited", "workbuddy_protocol_invalid"}: raise
+                        signal = trace_signal.result()
                     if signal:
                         detail = {**failure_context(), **signal}
                         record.update(failure_diagnostic=detail, failure_observed_at=time.time())
@@ -484,10 +512,25 @@ class WorkBuddySupervisor:
                             protocol_progress["last_frame_kind"] = kind
                         if kind == "tool_call":
                             protocol_progress["protocol_phase"] = "tool_handler"
+                            arguments = message.get("arguments")
+                            protocol_progress.update(tool_callback_phase="received",
+                                tool_arguments_type=("object" if isinstance(arguments, dict) else "array" if isinstance(arguments, list)
+                                    else "null" if arguments is None else "boolean" if type(arguments) is bool else "string" if isinstance(arguments, str) else "number"),
+                                tool_arguments_sha256=digest(arguments))
+                            if not isinstance(arguments, dict):
+                                raise WorkBuddyError("workbuddy_protocol_invalid")
+                            protocol_progress["tool_callback_phase"] = "dispatching"
                             if tool_handler is None:
                                 value = {"ok": False, "code": "tool_not_enabled_for_task"}
                             else:
-                                value = await tool_handler(str(message.get("tool") or ""), message.get("arguments") or {})
+                                value = await tool_handler(str(message.get("tool") or ""), arguments)
+                            protocol_progress["tool_callback_phase"] = "returned"
+                            if terminal_checks is not None and payload.get("terminal_v2") and message.get("tool") == "sap_final_report_validate" and value.get("ok") is True:
+                                try:
+                                    terminal_checks.report_ready(deadline, payload.get("terminal_finalization_seconds", 300),
+                                        validated_report=value.get('validated_report'))
+                                except ValueError:
+                                    raise WorkBuddyError('workbuddy_validated_report_schema_mismatch') from None
                             response = {"kind": "tool_result", "call_id": message["call_id"], "result": value}
                             protocol_progress["protocol_phase"] = "tool_reply_write"
                             process.stdin.write(self._encode(response))
@@ -514,7 +557,9 @@ class WorkBuddySupervisor:
                                 raise WorkBuddyError("workbuddy_output_schema_invalid") from None
                             diagnosis["schema_sha256"] = digest(schema)
                             terminal_reply = {}
+                            new_terminal_submission = False
                             if terminal_checks is not None:
+                                new_terminal_submission = message.get("origin") == "formatter_hook" and message.get("submission_id") not in terminal_checks.calls
                                 try:
                                     terminal_reply = terminal_checks.check(message.get("value"),
                                         submission_id=message.get("submission_id"),
@@ -522,6 +567,11 @@ class WorkBuddySupervisor:
                                 except ValueError:
                                     raise WorkBuddyError("workbuddy_terminal_protocol_invalid") from None
                                 record["terminal_convergence"] = terminal_reply["convergence"]
+                                diagnosis['schema_valid'] = terminal_reply['repair_feedback']['terminal_validated']
+                                diagnosis['validation_issues'] = [{k:i[k] for k in ('code','path','constraint')}
+                                    for i in terminal_reply['repair_feedback']['validation_issues']]
+                                if payload.get("terminal_v2") and new_terminal_submission and not diagnosis["schema_valid"]:
+                                    terminal_checks.rejected(deadline)
                                 if phase == "native_candidate" and not diagnosis["schema_valid"]:
                                     record["last_rejected_candidate"] = diagnosis
                             # Keep the authoritative last check even if the SDK
@@ -625,6 +675,9 @@ class WorkBuddySupervisor:
                 record["failure_diagnostic"] = primary.detail
                 raise primary from None
             except WorkBuddyError as error:
+                if error.code == "runtime_input_requested":
+                    status = "interrupted"
+                    record["control_event"] = "waiting_input"
                 record["failure_code"] = item.get("failure") or error.code
                 error.detail = {**failure_context(), **(getattr(error, "detail", None) or {}),
                                 "failure_code": record["failure_code"]}

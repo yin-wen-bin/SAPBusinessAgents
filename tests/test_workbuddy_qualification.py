@@ -87,6 +87,7 @@ def target_receipt(manager, release, job_id="target-startup"):
 
 def test_models_are_isolated_and_forged_snapshot_cannot_grant_dispatch(tmp_path):
     manager, release = manager_fixture(tmp_path)
+    manager.environment.mutate(lambda s: s.update(enabled=True))
     original, record, _ = live_pass(manager, release)
     assert manager.capabilities(release["environment_digest"], model="deepseek-v4.1-flash")["sample_discovery"]["status"] == "validated"
     assert manager.capabilities(release["environment_digest"], model="hy4-preview")["sample_discovery"]["status"] == "unverified"
@@ -102,6 +103,7 @@ def test_models_are_isolated_and_forged_snapshot_cannot_grant_dispatch(tmp_path)
 
 def test_refresh_of_same_model_check_does_not_destroy_business_pass(tmp_path):
     manager, release = manager_fixture(tmp_path)
+    manager.environment.mutate(lambda s: s.update(enabled=True))
     snapshot, _, _ = live_pass(manager, release)
     def refresh(s):
         s.setdefault("model_check_history", []).append(copy.deepcopy(s["models"]["deepseek-v4.1-flash"]))

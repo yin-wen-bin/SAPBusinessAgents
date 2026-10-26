@@ -112,6 +112,8 @@ class WorkBuddyDisplaySummary:
                     'selectable': False, 'check_status': 'not_checked', 'display_pending': True,
                     'last_check_status': check.get('status'), 'last_check_at': check.get('checked_at')})
         return {'enabled': enabled, 'revision': revision, 'binding': source_binding,
+                'update_preparation_supported': bool(state.get('installation')) and platform.system() == 'Windows',
+                'update_activation_automatic': False,
                 'snapshot_id': self._sequence, 'default_model_id': state.get('default_model_id'),
                 'environment_digest': key, 'runtime_configuration_revision': state.get('configuration_revision', 0),
                 'authentication': self._account(), 'models': models, **site, **versions,
@@ -157,6 +159,7 @@ class WorkBuddyDisplaySummary:
                      platform_supported=platform.system() == 'Windows', model_discovery_supported=True,
                      selected=self.manager.default_provider_id == 'workbuddy')
         for key in ('default_model_id', 'environment_digest', 'runtime_configuration_revision',
+                    'update_preparation_supported', 'update_activation_automatic',
                     'service_site', 'service_site_revision', 'service_site_digest',
                     'service_site_migration_required', 'recorded_sdk_version', 'recorded_cli_version'):
             if key in metadata:

@@ -638,7 +638,8 @@ def _safe_evaluate(expression: str, inputs: dict[str, Any]) -> Any:
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as exc:
-        raise ToolAdmissionError("Safe compute expression is invalid.") from exc
+        raise ToolAdmissionError("Safe compute requires one pure Python expression, not statements, imports or assignments.",
+                                 code="safe_compute_expression_invalid") from exc
     value = _eval_node(tree.body, inputs)
     json.dumps(value, allow_nan=False)
     return value

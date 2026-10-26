@@ -104,8 +104,9 @@ def test_batch_operation_digests_keep_original_algorithm_and_read_files_once(mon
     from pathlib import Path
     from sap_business_agents_platform import runtime_policy as policy
     reads, original = [], Path.read_bytes
+    tracked = {(Path(policy.__file__).parent / name).resolve(): name for name in policy.ORCHESTRATION_FILES}
     def read(path):
-        reads.append(path.name)
+        reads.append(tracked.get(path.resolve(), str(path)))
         return original(path)
     monkeypatch.setattr(Path, "read_bytes", read)
     actual = policy.orchestration_digests()

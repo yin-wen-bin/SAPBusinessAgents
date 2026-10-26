@@ -371,7 +371,6 @@ class WorkBuddyHarnessDriver:
         import copy
         from .runtime_contract import RuntimeContractError
         from .runtime_harness import tool_call
-        from .runtime_query_contract import PLAN_SCHEMA
         from .runtime_diagnostics import output_diagnostic
         from .workbuddy_harness import native_terminal_instructions, parse_output, budgeted_tool_response
         from .workbuddy_environment import WorkBuddyError
@@ -384,9 +383,9 @@ class WorkBuddyHarnessDriver:
         owner, run_id = self.owner, context["run_id"]
         contract = context.get("report_contract") or owner.broker.report_contract(run_id)
         tools = tools_for_contract(_SAP_TOOLS if request.permissions["acceptance_direct_baseline"] else _SAP_TOOLS + _TOOL_TOOLS, contract)
-        for tool in tools:
-            if tool["name"] in {"sap_query_validate", "sap_query_execute"}:
-                tool["inputSchema"]["properties"]["plan"] = PLAN_SCHEMA
+        from .runtime_input_control import tools_for_task
+        tools = tools_for_task(tools, formal=bool(context["state"].get("acceptance_spec")),
+                               version=context["state"].get("terminal_protocol", 1))
         async def handle(name, arguments):
             try:
                 result = await tool_call(owner, context, name, arguments)
@@ -394,6 +393,9 @@ class WorkBuddyHarnessDriver:
                 failure = translate(error)
                 owner.store.append_event(run_id, "workbuddy_tool_rejected", {"tool": name, "code": failure.code, **failure.detail})
                 result = {"ok": False, "code": failure.code, **failure.detail}
+            if result.get("control") == "waiting_input" and result.get("ok") is True:
+                result = {**result, "_workbuddy_stop_after_response": True,
+                          "_runtime_report_stop_code": "runtime_input_requested"}
             stopped = stop_state(owner.store.get_harness_state(run_id))
             if stopped:
                 result = {**result, "_workbuddy_stop_after_response": True,
@@ -417,7 +419,9 @@ class WorkBuddyHarnessDriver:
                     "system_prompt": (request.instructions or "") + native_terminal_instructions(request.output_schema),
                     "cwd": request.cwd, "tools": tools, "output_schema": request.output_schema,
                     "terminal_contract": terminal_contract,
-                    "timeout_ms": int(request.remaining() * 1000)}, seconds=request.remaining(),
+                    "timeout_ms": int(request.remaining() * 1000),
+                    "terminal_v2": context["state"].get("terminal_protocol") == 2,
+                    "terminal_finalization_seconds": getattr(getattr(owner, "settings", None), "free_query_finalization_budget_seconds", 300)}, seconds=request.remaining(),
                 tool_handler=handle, emit=lambda kind, data: owner.store.append_event(run_id, kind, data))
             owner.store.append_event(run_id, "workbuddy_terminal_output", output_diagnostic(response.get("text"),
                 operation=request.operation, output_format=response.get("output_format")))
@@ -425,15 +429,22 @@ class WorkBuddyHarnessDriver:
             if response.get("output_format") != "native_json_schema":
                 raise WorkBuddyError("workbuddy_structured_output_missing")
             raw = parse_output(response.get("text"), request.output_schema, formal=bool(context["state"].get("acceptance_spec")))
+            owner.store.append_event(run_id, 'terminal_handoff_accepted', {'provider_id': 'workbuddy'})
             handle_id = "workbuddy:" + run_id
             context.update(thread_id=handle_id, final_response=json.dumps(raw, ensure_ascii=False))
             owner.store.update_run(run_id, thread_id=handle_id)
             owner.store.update_harness_state(run_id, {"thread_id": handle_id,
                 "turn_count": context["turn_count"], "native_session_id": response.get("session_id")})
             await self.cleanup(run_id, context)
+            owner.store.append_event(run_id, 'terminal_cleanup_confirmed', {'provider_id': 'workbuddy'})
             return RuntimeResult(raw, RuntimeSession("workbuddy", handle_id),
                 actual_model=response.get("actual_model"), cleanup_complete=context["cleanup_state"].get("complete") is True)
         except WorkBuddyError as error:
+            if error.code == "runtime_input_requested":
+                from .runtime_input_control import InputPause, pending
+                if pending(owner.store, run_id):
+                    await self.cleanup(run_id, context)
+                    raise InputPause() from None
             owner.store.append_event(run_id, "workbuddy_execution_failed", {"operation": request.operation,
                 "phase": "terminal_output" if error.code == "workbuddy_structured_output_missing" else "execution",
                 "failure_code": error.code, **getattr(error, "detail", {})})

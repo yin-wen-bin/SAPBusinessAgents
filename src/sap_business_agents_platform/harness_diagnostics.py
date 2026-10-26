@@ -42,7 +42,11 @@ def run_diagnostics(store: Any, run_id: str) -> dict[str, Any]:
     ]
     if not resolved and not unresolved and safe_code(output.get("code")):
         unresolved = [{"code": safe_code(output["code"])}]
+    state = store.get_harness_state(run_id)
     return {
+        "terminal_protocol": state.get("terminal_protocol", 1),
+        "terminal_handoff_failure": state.get("terminal_handoff_failure"),
+        "cleanup_pending": state.get("cleanup_incomplete") is True,
         "last_failed_tool": safe_code(last.get("tool_name")),
         "last_error_code": safe_code(output.get("code") or (issues[0].get("code") if issues and isinstance(issues[0], dict) else None)),
         "last_completed_tool": safe_code(completed[-1].get("tool_name")) if completed else None,

@@ -111,6 +111,7 @@ class RunPageLease(BaseModel):
 
 class RunInput(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    input_request_id: str | None = Field(default=None, alias="inputRequestId")
     input: str | None = Field(default=None, min_length=1)
     sensitive_inputs: dict[str, str] = Field(
         default_factory=dict, alias="sensitiveInputs"
@@ -136,6 +137,10 @@ class FreeQueryFeedback(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     base_iteration: int = Field(alias="baseIteration", ge=1)
+    request_id: str | None = Field(default=None, alias='requestId', pattern=r'^[A-Za-z0-9_-]{16,128}$')
+    recovery_iteration: int | None = Field(default=None, alias='recoveryIteration', ge=1)
+    recovery_kind: Literal['saved_result', 'confirmed_progress'] | None = Field(default=None, alias='recoveryKind')
+    recovery_digest: str | None = Field(default=None, alias='recoveryDigest', pattern=r'^sha256:[0-9a-f]{64}$')
     page_lease_id: str | None = Field(default=None, alias='pageLeaseId', pattern=r'^[A-Za-z0-9_-]{32,128}$', deprecated=True, description="Legacy compatibility only; ignored by execution.")
     feedback: str = Field(min_length=1, max_length=12_000)
     locale: Literal["zh", "en"] = "zh"
@@ -149,6 +154,9 @@ class FreeQueryFeedback(BaseModel):
 
     @model_validator(mode="after")
     def strip_feedback(self) -> "FreeQueryFeedback":
+        recovery = (self.recovery_iteration, self.recovery_kind, self.recovery_digest)
+        if any(v is not None for v in recovery) and (any(v is None for v in recovery) or not self.request_id):
+            raise ValueError('Recovery requires requestId, recoveryIteration, recoveryKind and recoveryDigest')
         self.feedback = self.feedback.strip()
         if not self.feedback:
             raise ValueError("feedback must not be blank")
@@ -248,6 +256,10 @@ class PresentationEntry(BaseModel):
 class PresentationMetric(PresentationEntry):
     id: str = Field(min_length=1, pattern=r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
     tone: Literal["neutral", "success", "warning", "error"] = "neutral"
+    calculation_ref: str | None = Field(default=None, description="Owned sap_money_aggregate calculation reference. Never guess a reference.")
+    calculation_item: str | None = None
+    calculation_field: Literal["amount", "count"] | None = Field(default=None, description="Use the exact canonical string from this calculation field in value.zh and value.en, without grouping, units or currency suffixes. Formatting is presentation-only.")
+    currency: str | None = Field(default=None, description="Exact calculation currency for amount; literal JSON null for count. Counts are not monetary amounts.")
 
 
 class PresentationRow(BaseModel):
@@ -308,6 +320,7 @@ class RunPresentation(BaseModel):
     title: LocalizedText
     blocks: list[PresentationBlock]
     validation_ref: str | None = None
+    financial_verification: Literal["not_requested", "unverified", "verified_metrics_only"] = Field(default="not_requested", description="Platform-derived verification status. Omit on a new report, or use the reported expected status. Non-metric business prose/tables remain unverified even when all numeric metrics bind. Copy the returned validated_report unchanged into the terminal.")
 
 
 class HarnessLimitUsage(BaseModel):

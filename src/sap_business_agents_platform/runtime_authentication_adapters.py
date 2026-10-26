@@ -41,6 +41,7 @@ class OfficialAuthenticationAdapter:
         self.configuration_url = "https://learn.chatgpt.com/docs/auth" if provider == "codex" else "https://www.codebuddy.ai/docs/cli/sdk-python"
         self.external_configuration = False
         self._authentication_sources = None
+        self.check_diagnostic = {}
         if provider == 'workbuddy' and (root / 'scripts/runtime-authentication-helper.py').is_file():
             from .workbuddy_auth_context import source_signature
             self._authentication_sources = source_signature(root)
@@ -80,6 +81,28 @@ class OfficialAuthenticationAdapter:
     async def check(self, *, context=None):
         return await self._execute("check", lambda *_: None, context=context)
 
+    def _prepare_workbuddy(self, action, context):
+        # One synchronous inspection fence. Never keep it across an await or
+        # reuse it for a later check; both end-point integrity checks remain.
+        from .workbuddy_inspection import inspect
+        from .workbuddy_site import assert_binding, routing
+        with inspect(self.workbuddy.environment):
+            capabilities = self.capabilities()
+            if not capabilities.get("check" if action == "check" else action):
+                raise error(capabilities.get("reason"))
+            release = self.workbuddy.environment.release()
+            context = context or self.context()
+            assert_binding(self.workbuddy.environment.state(), context)
+            return release, context, routing(context), self.observation()['context_digest']
+
+    def _verify_workbuddy(self, release, context):
+        from .workbuddy_inspection import inspect
+        from .workbuddy_site import assert_binding
+        with inspect(self.workbuddy.environment):
+            if self.workbuddy.environment.release()["environment_digest"] != release["environment_digest"]:
+                raise error("runtime_authentication_environment_changed")
+            assert_binding(self.workbuddy.environment.state(), context)
+
     def observation(self):
         if self.provider != 'workbuddy':
             return None
@@ -98,15 +121,18 @@ class OfficialAuthenticationAdapter:
         return await self._execute(action, event, context=context)
 
     async def _execute(self, action, event, *, context=None):
-        if not self.capabilities().get("check" if action == "check" else action):
-            raise error(self.capabilities().get("reason"))
-        release = self.workbuddy.environment.release() if self.provider == "workbuddy" else None
+        checking = self.provider == 'workbuddy' and action == 'check'
+        if checking:
+            self.check_diagnostic = {'phase': 'preparing'}
+        release, expected_context = None, None
         route = None
-        if release:
-            from .workbuddy_site import assert_binding, routing
-            context = context or self.context()
-            assert_binding(self.workbuddy.environment.state(), context)
-            route = routing(context)
+        if self.provider == 'workbuddy':
+            # Full installation/source hashing must not block the API loop
+            # which drains the official response and enforces its deadline.
+            release, context, route, expected_context = await asyncio.to_thread(
+                self._prepare_workbuddy, action, context)
+        elif not self.capabilities().get("check" if action == "check" else action):
+            raise error(self.capabilities().get("reason"))
         python = release["python_path"] if release else sys.executable
         # WorkBuddy releases are immutable, including their file inventory.
         # Match the existing worker/console-login launcher: isolated imports
@@ -118,7 +144,7 @@ class OfficialAuthenticationAdapter:
         if release:
             command += ['--auth-context-protocol', 'sapba.workbuddy.authentication/2']
             if (self.root / 'scripts/runtime-authentication-helper.py').is_file():
-                command += ['--expected-auth-context', self.observation()['context_digest'],
+                command += ['--expected-auth-context', expected_context,
                             '--release-digest', release['environment_digest']]
             command += ["--cli-path", release["cli_path"], "--service-site", context["service_site"],
                         "--sdk-environment", route["sdk_environment"]]
@@ -140,6 +166,8 @@ class OfficialAuthenticationAdapter:
         job, process, result, attached = WindowsJob(), None, None, False
         self.cleanup_complete = False
         try:
+            if checking:
+                self.check_diagnostic = {'phase': 'starting_official_process'}
             process = await asyncio.create_subprocess_exec(*command, cwd=self.root, env=env,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 limit=65536, **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}))
@@ -148,6 +176,8 @@ class OfficialAuthenticationAdapter:
             attached = True
             process.stdin.write(b"owned\n")
             await process.stdin.drain()
+            if checking:
+                self.check_diagnostic = {'phase': 'waiting_official_result'}
             total = 0
             while line := await process.stdout.readline():
                 total += len(line)
@@ -197,13 +227,17 @@ class OfficialAuthenticationAdapter:
                     raise error("runtime_authentication_protocol_invalid")
             if await process.wait() or not result or not isinstance(result["authenticated"], bool):
                 raise error("runtime_authentication_result_missing")
-            if release and self.workbuddy.environment.release()["environment_digest"] != release["environment_digest"]:
-                raise error("runtime_authentication_environment_changed")
             if release:
-                assert_binding(self.workbuddy.environment.state(), context)
+                if checking:
+                    self.check_diagnostic = {'phase': 'verifying_installation'}
+                await asyncio.to_thread(self._verify_workbuddy, release, context)
             if external:
                 result.update(method="external_key", source="external_configuration", identity=None)
             self.external_configuration = result.get("method") == "external_key"
+        except BaseException:
+            if checking:
+                self.check_diagnostic = {**self.check_diagnostic, 'failed': True}
+            raise
         finally:
             if process:
                 deadline = time.monotonic() + 9
@@ -230,4 +264,6 @@ class OfficialAuthenticationAdapter:
             raise error("runtime_authentication_cleanup_pending")
         if release and result.get('authentication_observation') is not None and result['authentication_observation'] != self.observation():
             raise error('runtime_authentication_context_changed')
+        if checking:
+            self.check_diagnostic = {'phase': 'completed'}
         return result

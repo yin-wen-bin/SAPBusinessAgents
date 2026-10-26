@@ -56,9 +56,10 @@ def orchestration_digest(operation: str) -> str:
     return orchestration_digests((operation,))[operation]
 
 
-ORCHESTRATION_FILES = ("runtime_contract.py", "runtime_policy.py", "runtime_prompts.py", "shared_planner.py",
-             "runtime_report_contract.py", "runtime_report_convergence.py",
-             "runtime_query_contract.py", "runtime_workflow_contract.py", "runtime_agent_authoring.py",
+ORCHESTRATION_FILES = ("runtime_legacy_protocol.py", "runtime_input_control.py", "runtime_contract.py", "runtime_policy.py", "runtime_prompts.py", "shared_planner.py",
+             "runtime_report_contract.py", "runtime_report_convergence.py", "runtime_money.py",
+             "runtime_query_contract.py", "runtime_evidence_bindings.py", "source_reassessment.py", "../../config/runtime-evidence-bindings.json",
+             "runtime_workflow_contract.py", "runtime_agent_authoring.py",
              "runtime_workflow_authoring.py", "runtime_harness_contract.py", "runtime_harness_result.py",
              "runtime_role_contract.py", "runtime_role_consolidation.py", "role_matching.py", "runtime_diagnostics.py", "runtime_sample.py", "runtime_harness.py",
              "codex_driver.py", "workbuddy_driver.py", "workflow_authoring_runtime.py", "sample_discovery.py", "sample_scope_graph.py", "sample_read_budget.py", "harness.py",

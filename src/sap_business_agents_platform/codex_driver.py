@@ -158,6 +158,16 @@ class CodexSDKDriver:
 
     def client(self, **options: Any) -> Any:
         from openai_codex import AsyncCodex
+        if options.pop('evidence_only',False):
+            import tempfile
+            from pathlib import Path
+            from .codex_planner import _agent_authoring_codex
+            # Reuse the existing tool-free launch policy; never inherit the
+            # cancelled thread's tools or the user's configured MCP servers.
+            directory=Path(tempfile.mkdtemp(prefix='sapba-evidence-only-'))
+            client=CodexClient(self,_agent_authoring_codex(directory))
+            client.evidence_directory=directory
+            return client
         options.pop("format_instructions", None)
         return CodexClient(self, AsyncCodex(**options))
 
@@ -294,9 +304,17 @@ class CodexClient:
         return self
 
     async def __aexit__(self, *args):
-        return await self._owned.__aexit__(*args)
+        try:
+            return await self._owned.__aexit__(*args)
+        finally:
+            if self.cleanup_state.get('complete') and getattr(self,'evidence_directory',None):
+                try: self.evidence_directory.rmdir()  # Empty directory only.
+                except OSError: pass
 
     async def thread_start(self, **options):
+        if getattr(self,'evidence_directory',None):
+            options={**options,'cwd':str(self.evidence_directory),
+                'developer_instructions':'Analyse only supplied persisted evidence. No tools, files, network, SAP or edits. Do not claim new verification.'}
         try:
             thread = await self.active.thread_start(**native_options(options))
         except Exception as error:
@@ -305,6 +323,9 @@ class CodexClient:
         return CodexThread(self.driver, thread, options)
 
     async def thread_resume(self, handle, **options):
+        if getattr(self,'evidence_directory',None):
+            from .runtime_contract import RuntimeContractError
+            raise RuntimeContractError('runtime_recovery_thread_resume_forbidden')
         handle = session_id(handle, "codex")
         if isinstance(handle, str) and handle.startswith("workbuddy"):
             from .runtime_contract import RuntimeContractError
@@ -541,6 +562,10 @@ class CodexHarnessDriver:
                     turn.stream(), max(0, self.broker.budget_snapshot(run_id)["hard_limit_seconds"] - self.broker._elapsed_seconds(run_id))
                 ):
                     item_type, item = _event_item(event)
+                    from .runtime_input_control import pending, InputPause
+                    if pending(self.store, run_id):
+                        await _best_effort_interrupt(turn)
+                        raise InputPause()
                     if event.method == "turn/completed":
                         context["native_complete"] = True
                         turn_error = _completed_turn_error(event)
@@ -627,6 +652,9 @@ class CodexHarnessDriver:
                     }:
                         await _best_effort_interrupt(turn)
                         raise RuntimeError(f"capability_isolation_failed:{item_type}")
+                from .runtime_input_control import pending, InputPause
+                if pending(self.store, run_id):
+                    raise InputPause()
                 self.store.append_event(
                     run_id,
                     (

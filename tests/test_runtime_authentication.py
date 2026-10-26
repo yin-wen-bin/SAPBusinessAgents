@@ -393,6 +393,11 @@ def test_owned_adapter_handshake_environment_redaction_and_official_link(tmp_pat
     if hasattr(module.os, "killpg"):
         monkeypatch.setattr(module.os, "killpg", lambda *args: None)
     adapter = OfficialAuthenticationAdapter(tmp_path, provider, wb)
+    if provider == "workbuddy":
+        # This test mocks the helper/process and uses a synthetic environment;
+        # do not weaken production user/source validation to accommodate it.
+        monkeypatch.setattr(adapter, 'observation', lambda: {
+            'context_digest': 'a'*64, 'source_digest': 'b'*64, 'cache_digest': 'c'*64})
     if external:
         assert adapter.capabilities()["login"] is False
         assert adapter.capabilities()["logout"] is False

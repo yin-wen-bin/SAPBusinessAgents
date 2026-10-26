@@ -10,6 +10,7 @@ import urllib.request
 from typing import Any
 
 from .runtime_report_contract import tool_schema as report_tool_schema
+from .runtime_query_contract import tool_schema as query_tool_schema
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -74,6 +75,10 @@ _ADT_INPUT_SCHEMA: dict[str, Any] = {
 
 
 _SAP_TOOLS = [
+    {"name": "sap_money_aggregate",
+     "description": "Compute exact Decimal amounts/counts from one owned, complete saved SAP evidence set using reviewed source keys, classifications and currency pairs. No new SAP read. Preserve every row; unknown classifications remain unknown. Keep ledger, currency, record kind and historical status groups separate. Bind report metrics to returned calculation_ref and item id; values must be exact canonical strings.",
+     "inputSchema": _schema({"evidence_ref": {"type": "string", "pattern": "^ev_[0-9a-f]{24}$"},
+        "tool_call_id": {"type":"string", "description":"Optional stable invocation ID. Replay the same ID after an unknown response. Use a new ID only for an explicitly requested local recomputation after new configuration proof; never repeat the SAP query."}}, ["evidence_ref"])},
     {
         "name": "list_all_approved_skills",
         "description": "Read the single platform-approved Skill catalog and exact input/public-output schemas. No separate Runtime exposure list. Inspect this before constructing Skill inputs; paths and private schemas are never exposed.",
@@ -111,16 +116,12 @@ _SAP_TOOLS = [
     {
         "name": "sap_query_validate",
         "description": "Validate a strict GET-only SAP query plan against the registered service and live schema. order_by uses bare field names (ascending); descending is unsupported.",
-        "inputSchema": _schema(
-            {"plan": {"type": "object"}, "query": {"type": "string"}}, ["plan"]
-        ),
+        "inputSchema": query_tool_schema(),
     },
     {
         "name": "sap_query_execute",
         "description": "Execute a validated GET-only SAP plan and return a bounded preview plus a platform evidence reference.",
-        "inputSchema": _schema(
-            {"plan": {"type": "object"}, "query": {"type": "string"}}, ["plan"]
-        ),
+        "inputSchema": query_tool_schema(),
     },
     {
         "name": "sap_evidence_read",
@@ -328,6 +329,8 @@ _AUTHORING_TOOLS = [
 ]
 
 _SAP_TOOLS.extend(_CATALOG_TOOLS)
+from .runtime_input_control import TOOLS as _INPUT_CONTROL_TOOLS
+_SAP_TOOLS.extend(_INPUT_CONTROL_TOOLS)
 
 
 def _result(value: dict[str, Any]) -> dict[str, Any]:
@@ -380,7 +383,9 @@ def serve(mode: str) -> None:
             os.environ.get("SAPBA_REPORT_CONTRACT_SHA256", ""),
             run_id=os.environ.get("SAPBA_HARNESS_RUN_ID", ""),
             root=os.environ.get("SAPBA_REPORT_CONTRACT_ROOT", ""))
-        return tools_for_contract(tools, contract)
+        from .runtime_input_control import tools_for_task
+        return tools_for_task(tools_for_contract(tools, contract), formal=contract.get("acceptance_spec") is not None,
+                              version=int(os.environ.get("SAPBA_TERMINAL_PROTOCOL", "1")))
     allowed = {item["name"] for item in tools}
     for line in sys.stdin:
         try:

@@ -36,7 +36,7 @@ PROTOCOL_FILES = ("workbuddy_worker.py", "workbuddy_model_protocol.py", "workbud
 INFRASTRUCTURE_FILES = ("workbuddy_supervisor.py", "workbuddy_environment.py", "workbuddy_job.py",
                         "workbuddy_site.py", "workbuddy_record_io.py", "workbuddy_integration.py",
                         "workbuddy_dispatch_admission.py", "runtime_admission.py", "workbuddy_model_probe.py",
-                        "workbuddy_driver.py", "workbuddy_planner.py", "runtime_contract.py")
+                        "workbuddy_driver.py", "workbuddy_planner.py", "runtime_input_control.py", "runtime_contract.py")
 INFRASTRUCTURE_FILES += ('workbuddy_inspection.py',)
 INFRASTRUCTURE_FILES += ('workbuddy_failure_watch.py', 'workbuddy_auth_signals.py', 'workbuddy_diagnostics.py', 'runtime_diagnostics.py')
 INFRASTRUCTURE_FILES += ('workbuddy_auth_context.py', 'runtime_authentication.py', 'runtime_authentication_adapters.py',
@@ -44,7 +44,7 @@ INFRASTRUCTURE_FILES += ('workbuddy_auth_context.py', 'runtime_authentication.py
 INFRASTRUCTURE_FILES += ('workbuddy_auth_recovery.py', 'runtime.py', 'plugins.py')
 INFRASTRUCTURE_FILES += ('workbuddy_job_index.py',)
 INFRASTRUCTURE_FILES += ('runtime_capacity.py',)
-INFRASTRUCTURE_FILES += ('runtime_terminal_contract.py', 'runtime_report_convergence.py', 'runtime_report_contract.py')
+INFRASTRUCTURE_FILES += ('runtime_legacy_protocol.py', 'runtime_terminal_contract.py', 'runtime_report_convergence.py', 'runtime_report_contract.py')
 
 
 def manifest(names, root=None):

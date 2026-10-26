@@ -22,7 +22,7 @@ HOST_PHASES = frozenset({"job_record_write", "event_record_write", "cleanup_reco
     "schema_reply_write", "schema_reply_drain", "event_dispatch", "result_validation", "failure_event"})
 HOST_ERROR_CLASSES = frozenset({"BrokenPipeError", "ConnectionResetError", "ConnectionAbortedError",
     "PermissionError", "FileNotFoundError", "OSError", "EOFError", "RuntimeError", "TypeError",
-    "ValueError", "KeyError", "AttributeError", "ExceptionGroup", "BaseExceptionGroup", "unknown"})
+    "ValueError", "KeyError", "AttributeError", "ExceptionGroup", "BaseExceptionGroup", "SchemaValidationError", "ModelValidationError", "SQLiteError", "PlatformContractError", "unknown"})
 
 
 def host_failure(error, phase):
@@ -34,6 +34,30 @@ def host_failure(error, phase):
     import builtins
     error_class = next((name for name in HOST_ERROR_CLASSES if name != "unknown"
                         and type(error) is getattr(builtins, name, None)), "unknown")
+    # Only real imported classes can acquire a trusted name; never trust __name__.
+    import sqlite3
+    from jsonschema.exceptions import ValidationError as SchemaValidationError
+    from pydantic import ValidationError as ModelValidationError
+    for cls, label in ((SchemaValidationError, "SchemaValidationError"),
+                       (ModelValidationError, "ModelValidationError"),
+                       (sqlite3.Error, "SQLiteError")):
+        if isinstance(error, cls):
+            error_class = label
+            break
+    from .runtime_contract import RuntimeContractError
+    from .skills import SkillError
+    from .harness import ToolAdmissionError
+    trusted_code = None
+    if isinstance(error, (RuntimeContractError, SkillError, ToolAdmissionError)):
+        error_class = 'PlatformContractError'
+        code = getattr(error, 'code', None)
+        allowed = {'tool_not_enabled_for_task', 'skill_input_invalid', 'skill_input_required',
+            'runtime_plan_contract_invalid', 'runtime_authentication_binding_changed',
+            'runtime_deadline_exceeded', 'skill_schema_drift', 'skill_not_available',
+            'skill_not_approved', 'evidence_gap_required'}
+        if isinstance(code, str) and code in allowed: trusted_code = code
+    import hashlib
+    error_type_sha256 = hashlib.sha256((type(error).__module__ + "." + type(error).__qualname__).encode()).hexdigest()
     if phase in {"schema_check_event", "event_dispatch", "failure_event"}:
         code = "workbuddy_event_delivery_failed"
     elif isinstance(error, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, EOFError)):
@@ -44,7 +68,8 @@ def host_failure(error, phase):
         code = "workbuddy_host_execution_failed"
     windows_error = getattr(error, "winerror", None)
     return {"failure_code": code, "failure_source": "supervisor_host", "error_class": error_class,
-            "host_error_class": error_class,
+            "host_error_class": error_class, "host_error_type_sha256": error_type_sha256,
+            **({'host_error_code': trusted_code} if trusted_code else {}),
             **({"windows_error_code": windows_error} if type(windows_error) is int
                and windows_error in {2, 3, 5, 32, 33, 112} else {}),
             **({"protocol_phase": phase} if phase in HOST_PHASES else {})}
@@ -55,6 +80,8 @@ def safe_native_failure(value):
     code = raw.get("failure_code")
     result = {"failure_code": code if isinstance(code, str) and code in NATIVE_FAILURE_CODES
               else "workbuddy_execution_failed"}
+    from .runtime_diagnostics import project_upstream_diagnostic
+    result.update(project_upstream_diagnostic(raw))
     source = raw.get("failure_source")
     result["failure_source"] = source if isinstance(source, str) and source in {
         "error_message", "error_result", "message_stream_end", "sdk_exception", "formatter_hook", "owned_cli_trace", "owned_worker_stderr"} else "unknown"
@@ -95,7 +122,9 @@ def native_output_diagnostic(value, schema, *, operation, phase):
                 else "array" if isinstance(member, list) else "object" if isinstance(member, dict) else "number",
                 "enum_member": name in value and any(type(member) is type(allowed) and member == allowed
                                                       for allowed in definition["enum"])}
-    return {"provider_id": "workbuddy",
+    from .runtime_terminal_contract import root_shapes
+    return {"provider_id": "workbuddy", 'root_fields': root_shapes(value, schema),
+            'schema_sha256': hashlib_schema(schema),
             **({"clarification_fields": clarification_fields} if clarification_fields else {}),
             **({"contract_id": final_version} if schema == final_schema else {}),
             **output_diagnostic(encoded, operation=operation, output_format="native_json_schema"),
@@ -107,6 +136,11 @@ def native_output_diagnostic(value, schema, *, operation, phase):
 def schema_issues(raw, schema):
     return [{**issue, "code": issue["code"].replace("runtime_", "workbuddy_", 1)}
             for issue in _schema_issues(raw, schema)]
+
+
+def hashlib_schema(schema):
+    import hashlib
+    return hashlib.sha256(json.dumps(schema, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 checked_output = legacy(_checked_output)
 
@@ -158,7 +192,7 @@ def safe_progress(kind: str, data: dict) -> dict:
         "result_subtype": {"success", "error_max_turns", "error_during_execution",
                            "error_max_budget_usd", "error_max_structured_output_retries", "unknown"},
         "stop_reason": {"end_turn", "max_tokens", "stop_sequence", "tool_use", "cancelled", "unknown"},
-        "formatter_stage": {"hook_entered", "check_completed", "rejection_prepared", "hook_returned", "hook_failed",
+        "formatter_stage": {"schema_bound", "hook_entered", "check_completed", "rejection_prepared", "hook_returned", "hook_failed",
                             "tool_result_observed", "terminal_checked"},
         "feedback_match": {"matched", "different", "unavailable"},
         "worker_wait_state": {"sdk_connecting", "query_submitting", "waiting_sdk_message", "waiting_platform_schema_check",

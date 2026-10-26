@@ -562,6 +562,13 @@ const labels = locale === "zh" ? {
       <button type="button" class="secondary-button" data-session-reopen hidden>{labels.freeQuerySession.reopen}</button>
       <button type="button" data-session-draft hidden>{labels.freeQuerySession.createDraft}</button>
     </div>
+    <section data-session-recovery hidden aria-live="polite">
+      <p>{locale === 'zh' ? '本轮已取消。记录保留，继续会创建新轮次，不自动重新读取SAP。' : 'This round was cancelled. Its record is retained. Continuing creates a new round without rereading SAP.'}</p>
+      <label for={`query-recovery-source-${locale}`}>{locale === 'zh' ? '继续依据' : 'Continue from'}</label>
+      <select id={`query-recovery-source-${locale}`} data-session-recovery-source></select>
+      <button type="button" data-session-resume>{locale === 'zh' ? '继续对话' : 'Continue conversation'}</button>
+      <p data-session-recovery-blocker hidden></p>
+    </section>
     <section class="free-query-feedback-progress" data-feedback-progress tabindex="-1" aria-live="polite" hidden>
       <div class="free-query-feedback-progress-heading">
         <strong>{labels.freeQuerySession.feedbackProgress}</strong>
@@ -579,6 +586,7 @@ const labels = locale === "zh" ? {
       </div>
       <textarea id={`free-query-feedback-${locale}`} name="feedback" rows="4" required placeholder={labels.freeQuerySession.feedbackPlaceholder}></textarea>
       <p class="run-input-feedback" data-session-feedback-status aria-live="polite" hidden></p>
+      <button type="button" class="secondary-button" data-recovery-check hidden>{locale === 'zh' ? '核对上次提交' : 'Check previous submission'}</button>
       <div class="runtime-form-actions">
         <button type="submit"><Send size={16} aria-hidden="true" />{labels.freeQuerySession.submitFeedback}</button>
       </div>
@@ -824,6 +832,17 @@ const labels = locale === "zh" ? {
   };
 
   const failureGuidance = (run) => {
+    const diagnostics = run.result?.harness?.diagnostics || {};
+    if (diagnostics.cleanup_pending || run.error?.code === "runtime_cleanup_incomplete") {
+      return locale === "zh"
+        ? { headline: "清理待确认", overview: "查询读取已停止，运行时进程清理尚未确认。", action: "请等待平台确认清理状态后继续。" }
+        : { headline: "Cleanup requires confirmation", overview: "Reads have stopped; runtime cleanup is not confirmed.", action: "Wait for platform cleanup confirmation." };
+    }
+    if (diagnostics.terminal_handoff_failure) {
+      return locale === "zh"
+        ? { headline: "最终结果交接未完成", overview: "报告候选不等于已保存结果；证据和诊断已保留。", action: "清理确认后，可基于可用的结果或进展显式创建新轮次，不会自动重跑查询。" }
+        : { headline: "Final result handoff incomplete", overview: "A report candidate is not a saved result. Evidence and diagnostics are retained.", action: "After cleanup, explicitly start a new round from available results or progress. The query will not rerun automatically." };
+    }
     if (run.status !== "failed") return null;
     const code = String(run.error?.code || "");
     const sapMessage = String(run.error?.detail?.sap_error?.message || "");
@@ -1705,9 +1724,10 @@ const labels = locale === "zh" ? {
     activeFeedbackRequestId = String(request.feedback_request_id || "");
     const current = feedbackStepIndex(request);
     const failed = ["failed", "cancelled"].includes(String(request.status));
+    const waiting = request.status === "waiting_input";
     panel.querySelectorAll("[data-feedback-step]").forEach((step, index) => {
       step.classList.toggle("is-complete", !failed && index < current);
-      step.classList.toggle("is-active", !failed && index === Math.min(current, 3));
+      step.classList.toggle("is-active", !failed && !waiting && index === Math.min(current, 3));
       step.classList.toggle("is-stopped", failed && index === Math.min(current, 3));
     });
     const detail = panel.querySelector("[data-feedback-progress-detail]");
@@ -1802,6 +1822,25 @@ const labels = locale === "zh" ? {
     root.querySelector("[data-session-accept]").hidden = session.status !== "reviewing" || !latestReviewable;
     root.querySelector("[data-session-reopen]").hidden = session.status !== "satisfied";
     root.querySelector("[data-session-draft]").hidden = session.status !== "satisfied" || session.can_create_draft === false;
+    const recovery = root.querySelector('[data-session-recovery]');
+    if (recovery) recovery.hidden = latest?.status !== 'cancelled';
+    if (recovery && !recovery.hidden) {
+      const select = recovery.querySelector('[data-session-recovery-source]');
+      const prior = select.value; select.replaceChildren();
+      (session.recovery_sources || []).forEach((item) => {
+        const option = document.createElement('option'); option.value=JSON.stringify(item);
+        option.textContent = locale === 'zh'
+          ? `第${item.iteration}轮 · ${item.kind === 'saved_result' ? '已保存结果' : '已校验报告进展（非完成结果）'}`
+          : `Round ${item.iteration} · ${item.kind === 'saved_result' ? 'Saved result' : 'Validated progress (not a final result)'}`;
+        select.append(option);
+      });
+      if ([...select.options].some((option) => option.value===prior)) select.value=prior;
+      select.disabled = !select.options.length;
+      recovery.querySelector('[data-session-resume]').disabled = !select.options.length;
+      const blocker=recovery.querySelector('[data-session-recovery-blocker]');
+      blocker.hidden = !session.recovery_blocker;
+      blocker.textContent = recoveryMessage(session.recovery_blocker);
+    }
     if (session.status === "draft_created" && session.draft_id) showDraftManagement({ draft_id: session.draft_id, managed_draft_id: session.managed_draft_id });
     const feedbackForm = root.querySelector("[data-session-feedback]");
     if (session.status === "waiting_input" && session.pending_feedback) {
@@ -1828,19 +1867,24 @@ const labels = locale === "zh" ? {
     return session;
   };
 
+  const openFeedbackIteration = async (request) => {
+    if (!request.run_id || request.status !== 'iteration_created') return false;
+    runId=String(request.run_id);
+    const params=new URLSearchParams(window.location.search);
+    params.set('session',String(sessionId));params.set('run',runId);
+    history.replaceState(null,'',`${window.location.pathname}?${params.toString()}`);
+    await loadSession();await loadRun();connect();
+    return true;
+  };
   const loadFeedbackRequest = async (requestId) => {
     if (!sessionId || !requestId) return null;
     const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/feedback-requests/${encodeURIComponent(requestId)}`);
     if (!response.ok) throw new Error(await response.text());
     const request = await response.json();
     renderFeedbackProgress(request);
-    if (request.run_id && request.status === "iteration_created") {
-      runId = String(request.run_id);
-      const params = new URLSearchParams(window.location.search);
-      params.set("session", String(sessionId)); params.set("run", runId);
-      history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
-      await loadSession(); await loadRun(); connect();
-    } else if (["new_session_required", "failed", "cancelled"].includes(String(request.status))) {
+    if (await openFeedbackIteration(request)) {
+      // Already created synchronously (recovery) or observed through SSE.
+    } else if (["waiting_input", "new_session_required", "failed", "cancelled"].includes(String(request.status))) {
       await loadSession();
     }
     return request;
@@ -2149,6 +2193,7 @@ const labels = locale === "zh" ? {
     const feedback = root.querySelector("[data-input-feedback]"); feedback.hidden = true;
     try {
       const body = receiptReference ? { sensitiveInputs: { receipt_reference: receiptReference } } : { input };
+      if (currentRun?.error?.detail?.input_request_id) body.inputRequestId = currentRun.error.detail.input_request_id;
       const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/input`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!response.ok) throw new Error(await response.text());
       const payload = await response.json();
@@ -2226,6 +2271,55 @@ const labels = locale === "zh" ? {
     } catch (error) { showAlert(String(error?.message || error)); button.disabled = false; }
   });
 
+  const recoveryMessage = (code) => {
+    const messages = locale === 'zh' ? {
+      free_query_recovery_required:'本轮已停止，请选择继续依据后创建新轮次。',
+      free_query_recovery_cleanup_pending:'正在确认上一轮清理状态，暂不能继续。',
+      free_query_recovery_context_unavailable:'没有可安全恢复的结果或进展，请保留记录并发起新的查询。',
+      free_query_recovery_context_changed:'所选进展已变化，请重新核对继续依据。',
+      free_query_iteration_conflict:'会话已有新轮次，请刷新状态；输入内容已保留。',
+      free_query_iteration_limit:'本会话已达到轮次上限，请另建会话。',
+      free_query_request_conflict:'请求编号与原内容不一致，请核对原请求。',
+    } : {
+      free_query_recovery_required:'This round stopped. Choose a context to start a new round.',
+      free_query_recovery_cleanup_pending:'Cleanup of the previous round is awaiting confirmation.',
+      free_query_recovery_context_unavailable:'No safe recovery context is available. Retain this record and start a new query.',
+      free_query_recovery_context_changed:'The selected progress changed. Recheck your continuation source.',
+      free_query_iteration_conflict:'The session has a newer round. Refresh; your input is retained.',
+      free_query_iteration_limit:'This session reached its round limit. Start another session.',
+      free_query_request_conflict:'This request ID belongs to different content. Check the original request.',
+    };
+    return messages[code] || '';
+  };
+  let recoverySubmission = null;
+  const restoreRecoverySubmission = async () => {
+    if (!recoverySubmission) return false;
+    const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${sessionId}:${recoverySubmission.requestId}`));
+    const suffix=[...new Uint8Array(bytes)].map(x=>x.toString(16).padStart(2,'0')).join('').slice(0,20);
+    const response=await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/feedback-requests/fqfeedback_${suffix}`);
+    if (!response.ok) return false;
+    const payload=await response.json();recoverySubmission=null;
+    root.querySelector('[data-session-feedback]').hidden=true;
+    root.querySelector('[data-recovery-check]').hidden=true;
+    renderFeedbackProgress(payload);
+    if (!await openFeedbackIteration(payload)) { connectFeedback(String(payload.feedback_request_id || ''));await loadSession(); }
+    return true;
+  };
+  root?.querySelector('[data-recovery-check]')?.addEventListener('click', async () => {
+    try { if (await restoreRecoverySubmission()) return; } catch (_) {}
+    const status=root.querySelector('[data-session-feedback-status]');status.hidden=false;
+    status.textContent=locale==='zh'?'提交结果仍待核对，已保留原输入；不会自动重新派发。':'Submission is still unconfirmed. Input is retained; nothing will be redispatched automatically.';
+  });
+  root?.querySelector('[data-session-resume]')?.addEventListener('click', () => {
+    const selection=root.querySelector('[data-session-recovery-source]');
+    if (!selection?.value) return;
+    const form=root.querySelector('[data-session-feedback]');
+    form.hidden=false;form.dataset.mode='recovery';form.dataset.recovery=selection.value;
+    root.querySelector('[data-session-feedback-question]').textContent=locale === 'zh'
+      ? '输入基于所选证据的补充问题；仅继续分析，不重新读取SAP。'
+      : 'Ask a follow-up based on the selected evidence. Analysis only; no new SAP reads.';
+    form.querySelector('textarea')?.focus();
+  });
   root?.querySelector("[data-session-correct]")?.addEventListener("click", () => {
     const form = root.querySelector("[data-session-feedback]");
     form.hidden = false; form.dataset.mode = "feedback";
@@ -2252,19 +2346,42 @@ const labels = locale === "zh" ? {
       const body = clarification
         ? { baseIteration: currentSession.current_iteration, input: feedback }
         : { baseIteration: currentSession.current_iteration, feedback, locale, feedbackTypeHint: selectedFeedbackType || null };
+      if (form.dataset.mode === 'recovery') {
+        const selected=JSON.parse(form.dataset.recovery || '{}');
+        Object.assign(body,{recoveryIteration:selected.iteration,recoveryKind:selected.kind,recoveryDigest:selected.context_digest});
+        const content=JSON.stringify(body);
+        if (recoverySubmission && recoverySubmission.content===content) {
+          if (await restoreRecoverySubmission()) return;
+          throw new Error(locale==='zh'?'请核对上次提交，不会重新派发。':'Check the previous submission; it will not be redispatched.');
+        }
+        if (recoverySubmission && recoverySubmission.content!==content) {
+          throw new Error(locale === 'zh' ? '上一恢复请求结果待核对，请保留原内容核对，不能另行派发。' : 'The previous recovery result is unknown. Check that request before changing its content.');
+        }
+        recoverySubmission ||= {content,requestId:crypto.randomUUID()};
+        body.requestId=recoverySubmission.requestId;
+      }
       const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/${endpoint}`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(String(payload.detail?.message || payload.detail || "Feedback failed"));
+      if (!response.ok) {
+        if (response.status >= 400 && response.status < 500) recoverySubmission=null;
+        throw new Error(recoveryMessage(payload.detail?.code) || String(payload.detail?.message || payload.detail || "Feedback failed"));
+      }
+      recoverySubmission=null;
       status.textContent = labels.freeQuerySession.feedbackSteps[0]; status.dataset.state = "success"; status.hidden = false;
       form.reset(); selectedFeedbackType = ""; form.hidden = true;
       root.querySelectorAll("[data-feedback-type]").forEach((item) => item.classList.remove("is-selected"));
       renderFeedbackProgress(payload);
       root.querySelector("[data-feedback-progress]")?.focus();
+      if (await openFeedbackIteration(payload)) return;
       connectFeedback(String(payload.feedback_request_id || ""));
       await loadSession();
     } catch (error) {
+      if (recoverySubmission) {
+        try { if (await restoreRecoverySubmission()) return; } catch (_) {}
+        root.querySelector('[data-recovery-check]').hidden=false;
+      }
       status.textContent = String(error?.message || error); status.dataset.state = "error"; status.hidden = false;
     } finally { if (button) button.disabled = false; }
   });
@@ -2359,3 +2476,12 @@ const labels = locale === "zh" ? {
     });
   } else showAlert(labels.noRun);
 </script>
+
+<style>
+  [data-session-recovery]:not([hidden]) { display: grid; gap: .65rem; margin-block: .75rem; }
+  [data-session-recovery] select { width: 100%; max-width: 100%; min-width: 0; padding: .65rem; border: 1px solid #b8c7df; border-radius: .5rem; background: #fff; color: #17385e; font: inherit; }
+  [data-session-recovery] button { justify-self: start; max-width: 100%; white-space: normal; padding: .65rem .9rem; border: 1px solid #075be8; border-radius: .5rem; background: #075be8; color: #fff; font: inherit; cursor: pointer; }
+  [data-session-recovery] button:disabled { opacity: .5; cursor: not-allowed; }
+  [data-session-recovery] :focus-visible { outline: 3px solid #73a8ff; outline-offset: 2px; }
+  [data-session-recovery] p { margin: 0; overflow-wrap: anywhere; }
+</style>

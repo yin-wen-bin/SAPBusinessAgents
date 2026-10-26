@@ -4,6 +4,82 @@ import hashlib
 import json
 
 
+def safe_upstream_diagnostic(error):
+    """Observed protocol facts, not guesses from free-form exception prose."""
+    result = {'upstream_category': 'unknown'}
+    if isinstance(error, dict):
+        nested = error.get('error')
+        if isinstance(nested, dict) and nested is not error:
+            # Bounded chain only; select protocol fields, never recurse over arbitrary content.
+            for _ in range(4):
+                deeper = nested.get('error')
+                if not isinstance(deeper, dict) or deeper is nested: break
+                nested = deeper
+            error = {**error, **{key: nested[key] for key in ('status_code', 'status', 'code', 'request_id') if key in nested}}
+        request_id = error.get('request_id')
+        if isinstance(request_id, str) and 0 < len(request_id) <= 256:
+            result['upstream_request_id_sha256'] = hashlib.sha256(request_id.encode()).hexdigest()
+        status = error.get('status_code', error.get('status'))
+        code = error.get('code')
+        if type(status) is int and 400 <= status <= 599:
+            result['upstream_http_status'] = status
+        categories = {'rate_limit_exceeded': 'rate_limited', 'rateLimitExceeded': 'rate_limited',
+            'contextWindowExceeded': 'context_limit', 'serverOverloaded': 'service_unavailable',
+            'model_not_found': 'model_unavailable', 'unauthorized': 'authentication',
+            'invalid_api_key': 'authentication', 'insufficient_quota': 'quota_exceeded',
+            'httpConnectionFailed': 'transport', 'responseStreamDisconnected': 'transport'}
+        if isinstance(code, str) and code in categories:
+            result.update(upstream_error_code=code, upstream_category=categories[code])
+    if error == 'Error streaming response':
+        result['upstream_phase'] = 'response_stream'
+    if isinstance(error, (dict, str)):
+        encoded = json.dumps(error, ensure_ascii=False, sort_keys=True, default=str).encode()
+        result['upstream_error_sha256'] = hashlib.sha256(encoded).hexdigest()
+    return result
+
+
+def project_upstream_diagnostic(raw):
+    result = {}
+    allowed = {'unknown', 'rate_limited', 'context_limit', 'service_unavailable',
+        'model_unavailable', 'authentication', 'quota_exceeded', 'transport'}
+    if isinstance(raw.get('upstream_category'), str) and raw['upstream_category'] in allowed:
+        result['upstream_category'] = raw['upstream_category']
+    status = raw.get('upstream_http_status')
+    if type(status) is int and 400 <= status <= 599: result['upstream_http_status'] = status
+    digest = raw.get('upstream_error_sha256')
+    if isinstance(digest, str) and re.fullmatch('[a-f0-9]{64}', digest): result['upstream_error_sha256'] = digest
+    if raw.get('upstream_phase') == 'response_stream': result['upstream_phase'] = 'response_stream'
+    request_hash = raw.get('upstream_request_id_sha256')
+    if isinstance(request_hash, str) and re.fullmatch('[a-f0-9]{64}', request_hash): result['upstream_request_id_sha256'] = request_hash
+    code = raw.get('upstream_error_code')
+    if isinstance(code, str) and safe_upstream_diagnostic({'code': code}).get('upstream_error_code') == code:
+        result['upstream_error_code'] = code
+    return result
+
+
+def input_schema_feedback(value, schema, code="skill_input_invalid"):
+    from .runtime_terminal_contract import repair_feedback
+    issues = schema_issues(value, schema)
+    feedback = repair_feedback(schema, issues)
+    fields = feedback['validation_issues']
+    for issue in fields:
+        issue['code'] = code
+        definition = schema_definition(schema, issue['path']) or {}
+        if 'const' in definition:
+            issue['allowed_values'] = [definition['const']]
+        current = value
+        try:
+            for part in issue['path'].strip('/').split('/') if issue['path'] != '/' else []:
+                part = part.replace('~1', '/').replace('~0', '~')
+                current = current[int(part)] if isinstance(current, list) else current[part]
+            issue['actual_type'] = ('null' if current is None else 'boolean' if type(current) is bool else
+                'object' if isinstance(current, dict) else 'array' if isinstance(current, list) else
+                'string' if isinstance(current, str) else 'integer' if type(current) is int else 'number')
+        except (KeyError, IndexError, TypeError, ValueError):
+            issue['actual_type'] = 'missing'
+    return fields
+
+
 def output_diagnostic(text, *, operation, output_format=None):
     """Keep enough to identify a terminal failure without saving business rows."""
     value = text.encode("utf-8") if isinstance(text, str) else None
@@ -127,7 +203,10 @@ def safe_stage_diagnostic(value, *, schema, operation=None, phase=None, contract
     from .runtime_role_consolidation import SCHEMA as final_schema, VERSION as final_version
     fallback = "role_matching_consolidation_failed" if phase == "role_consolidation" or schema == final_schema else "runtime_execution_failed"
     code = code if isinstance(code, str) and code in _STAGE_CODES else fallback
-    result = {"failure_code": code, "phase": phase or "execution"}
+    result = {"failure_code": code, "phase": phase or "execution", **project_upstream_diagnostic(raw)}
+    if isinstance(raw.get('native_error_code'), str) and raw['native_error_code'] in NATIVE_ERROR_CODES:
+        observed = safe_upstream_diagnostic({'code': raw['native_error_code']})
+        result.update({k: v for k, v in observed.items() if k not in result})
     if operation:
         result["operation"] = operation
     if contract_id:
@@ -177,6 +256,17 @@ def safe_stage_diagnostic(value, *, schema, operation=None, phase=None, contract
                 ("host_error_class", HOST_ERROR_CLASSES), ("delivery_error_class", HOST_ERROR_CLASSES)):
             if isinstance(raw.get(name), str) and raw[name] in allowed:
                 result[name] = raw[name]
+        if raw.get("host_error_code") in {'tool_not_enabled_for_task', 'skill_input_invalid', 'skill_input_required',
+                'runtime_plan_contract_invalid', 'runtime_authentication_binding_changed', 'runtime_deadline_exceeded',
+                'skill_schema_drift', 'skill_not_available', 'skill_not_approved', 'evidence_gap_required'}:
+            result['host_error_code'] = raw['host_error_code']
+        for key in ("host_error_type_sha256", "tool_arguments_sha256"):
+            if isinstance(raw.get(key), str) and re.fullmatch('[a-f0-9]{64}', raw[key]):
+                result[key] = raw[key]
+        if raw.get("tool_callback_phase") in {"received", "dispatching", "returned"}:
+            result["tool_callback_phase"] = raw["tool_callback_phase"]
+        if raw.get("tool_arguments_type") in {"object", "array", "null", "string", "number", "boolean"}:
+            result["tool_arguments_type"] = raw["tool_arguments_type"]
         if type(raw.get("schema_check_count")) is int and 0 <= raw["schema_check_count"] <= 2**53:
             result["schema_check_count"] = raw["schema_check_count"]
         if type(raw.get("windows_error_code")) is int and raw["windows_error_code"] in {2, 3, 5, 32, 33, 112}:

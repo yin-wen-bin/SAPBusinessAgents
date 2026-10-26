@@ -18,7 +18,9 @@ HANDOFF_DEFINITION = (
 )
 MAX_CONTRACT_BYTES = 1_048_576
 CHECKER_FILES = ("models.py", "acceptance_projection.py", "harness.py",
-                "runtime_report_contract.py", "runtime_report_convergence.py")
+                "runtime_report_contract.py", "runtime_report_convergence.py",
+                "runtime_query_contract.py", "runtime_money.py", "source_semantics.py", "source_reassessment.py", "runtime_evidence_bindings.py",
+                "runtime_harness_contract.py", "runtime_harness_result.py", "runtime_terminal_contract.py", "mcp_server.py")
 
 
 def checker_binding():
@@ -88,10 +90,19 @@ def instructions(*, acceptance: bool = False) -> str:
         "Do not use this empty example as a business answer. On failure, use validation_issues "
         "and repair_feedback to correct the report without inventing fields or evidence. "
         "A failed validation_ref is never usable. On success, use the returned validated_report "
+        "with ALL block fields (even empty arrays and null defaults); never regenerate a shorter copy. "
         "as the unchanged presentation in the full final envelope, including its validation_ref. "
         "Existing defaults in that canonical report are authoritative. Report validation is "
         "not proof that native terminal handoff, cleanup or platform persistence has completed. "
         + HANDOFF_DEFINITION + " "
+        + "Financial metrics must use sap_money_aggregate and bind calculation_ref, calculation_item, "
+          "calculation_field and currency to its exact canonical values in both locales. "
+        "A count has currency=null. Put only the exact numeric string in value.zh/value.en, "
+        "without thousands separators, currency suffixes or units. Do not normalize guessed values. "
+        "Omit financial_verification on new candidates (default not_requested); the platform derives it. "
+        "Business prose/tables are not arithmetic proofs even when all metric bindings pass. "
+        "Use financial_verification_details to understand the scope; never claim the full report is verified. "
+          "Do not recompute money in prose or present unverified amounts as verified. "
         + ("Acceptance projection is required only under this run's frozen acceptance contract."
            if acceptance else "Ordinary queries must omit acceptance_projection entirely.")
     )
@@ -99,12 +110,14 @@ def instructions(*, acceptance: bool = False) -> str:
 
 def freeze(run_id, request_digest, runtime, spec=None):
     from .acceptance_projection import AcceptanceProjectionSpec
+    from .runtime_query_contract import frozen_contract
     spec = AcceptanceProjectionSpec.model_validate(spec).model_dump(mode="json") if spec is not None else None
     body = {"version": VERSION, "run_id": run_id, "request_digest": request_digest,
         "checker_binding": checker_binding(),
         "runtime_digest": digest(runtime), "acceptance_spec": spec,
         "input_schema": tool_schema(spec), "presentation_schema": presentation_schema(strict=True),
-        "instructions": instructions(acceptance=spec is not None)}
+        "instructions": instructions(acceptance=spec is not None),
+        "query_contract": frozen_contract()}
     return {**body, "digest": digest(body)}
 
 
@@ -114,11 +127,15 @@ def verify(contract, *, run_id=None):
     body = {k: v for k, v in contract.items() if k != "digest"}
     if contract.get("digest") != digest(body) or run_id is not None and contract.get("run_id") != run_id:
         raise ReportContractError()
+    from .runtime_legacy_protocol import supported
     if (contract.get("input_schema") != tool_schema(contract.get("acceptance_spec"))
-            or contract.get("checker_binding") != checker_binding()
+            or (contract.get("checker_binding") != checker_binding() and not supported(contract.get("checker_binding")))
             or contract.get("presentation_schema") != presentation_schema(strict=True)
             or contract.get("instructions") != instructions(acceptance=contract.get("acceptance_spec") is not None)):
         raise ReportContractError()
+    from .runtime_query_contract import frozen_contract
+    if contract.get("query_contract") != frozen_contract():
+        raise ReportContractError("query_contract_changed")
     return contract
 
 
@@ -126,6 +143,10 @@ def tools_for_contract(tools, contract):
     verify(contract)
     result = copy.deepcopy(tools)
     for item in result:
+        if item.get("name") in {"sap_query_validate", "sap_query_execute"}:
+            from .runtime_query_contract import tool_schema as query_schema
+            item["inputSchema"] = query_schema()
+            item["description"] += " " + contract["query_contract"]["instructions"]
         if item.get("name") == "sap_final_report_validate":
             item["inputSchema"] = copy.deepcopy(contract["input_schema"])
             item["description"] = "Validate the declared report structure and run-scoped business evidence. " + contract["instructions"]

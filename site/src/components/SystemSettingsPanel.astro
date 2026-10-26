@@ -555,7 +555,7 @@ const copy = locale === "zh" ? {
     note: "登录不等于模型可用，也不会自动启用 Runtime。", shared: "官方 CLI 的登录缓存可能与其他本机客户端共享。",
     confirm: "此操作会改变共享的官方登录缓存，使账号相关模型检查失效。既有会话不会自动换账号。确认继续？",
     cancel: "取消", waiting: "等待完成官方认证", link: "打开官方登录页面", retry: "重传原请求", uncertain: "响应未确认，请重传原请求；不要重复创建操作。",
-    account: "官方账号页", config: "认证配置说明", not_checked: "尚未核对", signed_out: "未登录", authenticated: "已认证",
+    account: "官方账号页", config: "认证配置说明", not_checked: "尚未核对", signed_out: "未登录", authenticated: "已认证", verification_pending: "认证待核对（不是已退出）",
     expired: "认证已失效", check_failed: "认证核对失败", waiting_authentication: "等待登录", completed: "操作完成", failed: "操作失败",
     cancelled: "已取消", interrupted: "服务中断，请刷新认证", cleanup_pending: "进程清理尚未确认", queued: "准备中", running: "认证处理中", cancelling: "取消中",
     external: "由外部配置管理，请在官方客户端调整；此处不收集 API Key。", blocked: "有活动任务，结束后再调整账号。"
@@ -565,12 +565,17 @@ const copy = locale === "zh" ? {
     note: "Sign-in does not verify models or enable this Runtime.", shared: "The official CLI cache may be shared with other local clients.",
     confirm: "This changes the shared official login cache and invalidates account-dependent model checks. Existing sessions will not switch accounts. Continue?",
     cancel: "Cancel", waiting: "Complete official authentication", link: "Open official sign-in page", retry: "Resend original request", uncertain: "Response not confirmed. Resend the original request instead of creating another operation.",
-    account: "Official account page", config: "Authentication instructions", not_checked: "Not checked", signed_out: "Signed out", authenticated: "Authenticated",
+    account: "Official account page", config: "Authentication instructions", not_checked: "Not checked", signed_out: "Signed out", authenticated: "Authenticated", verification_pending: "Verification pending (not signed out)",
     expired: "Authentication expired", check_failed: "Authentication check failed", waiting_authentication: "Waiting for sign-in", completed: "Completed", failed: "Failed",
     cancelled: "Cancelled", interrupted: "Interrupted; refresh authentication", cleanup_pending: "Process cleanup unconfirmed", queued: "Preparing", running: "Authenticating", cancelling: "Cancelling",
     external: "Managed externally. Change it in the official client; API keys are not collected here.", blocked: "Finish active tasks before changing accounts."
   };
   const authenticationPending = new Map();
+  const authenticationSyncTimers = new Map();
+  const authenticationDisplayState = (provider, auth) => provider === "workbuddy"
+    && auth?.status === "not_checked" && auth?.last_successful_check
+    && auth?.authentication_context_status === "check_required" ? "verification_pending" : auth?.status;
+  const authenticationSyncPending = auth => ["queued", "checking", "deferred"].includes(auth?.authentication_sync?.status);
   const sitePending = new Map();
   const authenticationErrors = Object.fromEntries([
     ["sdk_maintenance_active", "正在维护此 SDK，请等待维护结束后再操作。", "This SDK is under maintenance. Wait for it to finish before continuing."],
@@ -587,6 +592,8 @@ const copy = locale === "zh" ? {
     ["sdk_update_plan_invalid", "本地安装事务核对失败，未允许安装。", "The local install transaction could not be verified; installation was blocked."],
     ["sdk_runtime_dependency_unpinned", "SDK未声明可核对的固定CLI依赖，未允许安装。", "A verifiable pinned CLI dependency is missing; installation was blocked."],
     ["sdk_update_not_applied", "安装后未确认目标版本，不能视为更新完成。", "The target version was not confirmed after installation; the update is not complete."],
+    ["workbuddy_update_evidence_required", "候选环境已准备，尚未切换；需审核目标接入认证、账号及模型兼容证据。", "Candidate prepared, not activated. Target integration, account and model evidence must be reviewed."],
+    ["workbuddy_update_target_unsupported", "未取得可支持的稳定版本或CLI分发结构；未切换环境。", "No supported stable version or CLI layout was confirmed; the environment was not switched."],
     ["sdk_already_current", "未发现比当前安装版本更新的版本。", "No version newer than the installed SDK was found."],
     ["runtime_authentication_busy", "请先结束活动任务，再调整账号。", "Finish active tasks before changing accounts."],
     ["runtime_authentication_operation_active", "认证操作正在进行，请稍后重试。", "An authentication operation is active."],
@@ -695,7 +702,7 @@ const copy = locale === "zh" ? {
     section.replaceChildren(element("h3", "", text.title));
     renderServiceSite(sdk, section, authentication);
     const facts = element("dl", "plugin-facts sdk-facts");
-    facts.append(element("dt", "", copy.authentication), element("dd", "", text[authentication.status] || text.not_checked),
+    facts.append(element("dt", "", copy.authentication), element("dd", "", text[authenticationDisplayState(provider, authentication)] || text.not_checked),
       element("dt", "", locale === "zh" ? "账号" : "Account"), element("dd", "", authentication.identity || text.unknown));
     const extraFacts = element("dl", "plugin-facts sdk-facts");
     extraFacts.append(element("dt", "", text.method), element("dd", "", authentication.method === "browser" ? (locale === "zh" ? "官方网页登录" : "Official browser login") : authentication.method === "external_key" ? (locale === "zh" ? "外部密钥配置" : "External key configuration") : text.unknown),
@@ -711,9 +718,41 @@ const copy = locale === "zh" ? {
     const updateAuthenticationNotes = () => {
       failureNote.hidden = !authentication.failure_code;
       failureNote.textContent = authentication.failure_code ? authenticationErrors[authentication.failure_code] || blockerText(authentication.failure_code) : "";
+      if (authenticationDisplayState(provider, authentication) === "verification_pending") failureNote.textContent = locale === "zh"
+        ? "共享缓存已变化，当前认证待核对，不代表已经退出；确认前暂不可执行。"
+        : "The shared cache changed. Authentication needs verification, not necessarily sign-in; execution stays blocked until confirmed.";
       capabilityNote.hidden = !authentication.capabilities?.reason;
       capabilityNote.textContent = authentication.capabilities?.reason === "runtime_authentication_external_configuration" ? text.external : authenticationErrors[authentication.capabilities?.reason] || blockerText(authentication.capabilities?.reason || "");
       blockerNote.hidden = !authentication.blockers?.length;
+    };
+    const syncNote = element("p", "sdk-update-note"); syncNote.setAttribute("role", "status"); section.append(syncNote);
+    let syncPolls = 0;
+    const scheduleAuthenticationSync = () => {
+      clearTimeout(authenticationSyncTimers.get(provider));
+      const pending = provider === "workbuddy" && authenticationSyncPending(authentication);
+      syncNote.hidden = !pending;
+      syncNote.textContent = authentication.authentication_sync?.status === "deferred"
+        ? (locale === "zh" ? "等待活动任务或清理结束后自动核对；尚未确认前不会放行。" : "Verification will resume after active work and cleanup; execution remains blocked.")
+        : (locale === "zh" ? "正在自动核对共享登录缓存，无需重新登录；尚未确认前不会放行。" : "Automatically verifying the shared sign-in cache; no new sign-in is needed. Execution remains blocked.");
+      if (!pending || document.hidden || !section.isConnected) return;
+      authenticationSyncTimers.set(provider, setTimeout(async () => {
+        if (document.hidden || !section.isConnected) return;
+        try {
+          const result = await authRequest(base);
+          const next = result.authentication;
+          if (next?.revision !== authentication.revision || next?.service_site_digest !== authentication.service_site_digest) {
+            await load(false, {incremental: true}); return;
+          }
+          section.updateAuthenticationSummary?.(sdk, next);
+          if (!authenticationSyncPending(next)) {
+            const view = runtimeViews.get(provider); if (view) view.authenticationKey = null;
+            await load(false, {incremental: true});
+          }
+        } catch {
+          syncNote.hidden = false;
+          syncNote.textContent = locale === "zh" ? "自动核对状态读取失败；上次信息已保留，可重新读取状态。" : "Verification status could not be read; previous information is retained. Read status again.";
+        }
+      }, ++syncPolls < 6 ? 2000 : syncPolls < 18 ? 5000 : 15000));
     };
     updateAuthenticationNotes(); section.append(failureNote, capabilityNote, blockerNote);
     const actions = element("div", "plugin-card-actions sdk-authentication-actions"); section.append(actions);
@@ -767,7 +806,7 @@ const copy = locale === "zh" ? {
     };
     const active = authenticationActive(authentication.operation);
     const pending = authenticationPending.has(provider) || sitePending.has(provider);
-    for (const action of authentication.authenticated === true ? ["switch_account", "check", "logout"] : ["login", "check"]) {
+    for (const action of authentication.authenticated === true ? ["switch_account", "check", "logout"] : authenticationDisplayState(provider, authentication) === "verification_pending" ? ["check"] : ["login", "check"]) {
       const button = element("button", action === "logout" ? "danger-outline-button" : "secondary-button", text[action]); button.type = "button";
       button.disabled = Boolean(authentication.display_only) || pending || active || !authentication.capabilities?.[action] || action !== "check" && Boolean(authentication.blockers?.length);
       // Cleanup reconciliation is read-only and remains available after an interrupted operation.
@@ -789,10 +828,11 @@ const copy = locale === "zh" ? {
       // focus and expansion state. Changed bindings use the existing form guard.
       authentication = nextAuthentication; sdk = nextSDK;
       const values = facts.querySelectorAll("dd");
-      values[0].textContent = text[authentication.status] || text.not_checked;
+      values[0].textContent = text[authenticationDisplayState(provider, authentication)] || text.not_checked;
       values[1].textContent = authentication.identity || text.unknown;
       savedAuthenticationNote.hidden = !authentication.display_only;
       updateAuthenticationNotes();
+      scheduleAuthenticationSync();
       const nowActive = authenticationActive(authentication.operation);
       const logoutControls = section.closest?.(".sdk-card")?.querySelectorAll('[data-auth-action="logout"]') || [];
       for (const button of [...actions.querySelectorAll("button"), ...logoutControls]) {
@@ -802,6 +842,7 @@ const copy = locale === "zh" ? {
         if (!authentication.display_only && action === "check" && authentication.operation?.status === "cleanup_pending") button.disabled = false;
       }
     };
+    Promise.resolve().then(scheduleAuthenticationSync);
   };
 
   const runtimeViews = new Map();
@@ -855,16 +896,16 @@ const copy = locale === "zh" ? {
   const maintenanceCopy = locale === "zh" ? {
     title: "版本与维护", diagnostics: "诊断与验证", risks: "风险操作", versions: "检查可用版本",
     versionTime: "版本检查时间", environmentTime: "环境核对时间", checkingVersions: "正在读取版本…",
-    pinned: "固定版本，暂不支持平台内升级", repair: "同版本环境修复",
-    repairNote: "当前安装器仅重建固定版本，并可能改变环境及认证绑定。页面暂不开放修复，请按受控维护说明操作。",
+    pinned: "升级准备能力待核对", repair: "同版本环境修复",
+    repairNote: "旧版固定版本重建入口不用于在线升级，可能改变环境及认证绑定。页面暂不开放修复，请按受控维护说明操作。",
     readOnly: "“检查可用版本”仅读取软件包版本；“检查安装与登录”仍执行完整核对。", unknown: "更新结果待核对。请重新读取状态并核对安装版本；不要重复提交更新。",
     failed: "操作失败，请查看原因后重试。", complete: "检查完成。", noUpdate: "未发现更新。", available: "发现可用版本。",
     reread: "重新读取状态", diagnosticDetails: "完整诊断资料", riskNote: "以下操作会影响新任务或本机登录，请确认后执行。",
   } : {
     title: "Versions and maintenance", diagnostics: "Diagnostics and validation", risks: "Risk-sensitive actions", versions: "Check available versions",
     versionTime: "Version checked", environmentTime: "Environment checked", checkingVersions: "Reading versions…",
-    pinned: "Pinned version; in-app upgrades are not supported", repair: "Repair same-version environment",
-    repairNote: "The installer only rebuilds the pinned version and may change environment and authentication bindings. In-app repair is disabled; use controlled maintenance instructions.",
+    pinned: "Upgrade preparation capability unconfirmed", repair: "Repair same-version environment",
+    repairNote: "The legacy pinned-version rebuild is not an online upgrade and may change environment and authentication bindings. In-app repair is disabled; use controlled maintenance instructions.",
     readOnly: "Version checks only read package versions; installation and sign-in checks still perform full verification.", unknown: "Update outcome is unknown. Read status and verify the installed version; do not submit another update.",
     failed: "The operation failed. Review the reason before retrying.", complete: "Check completed.", noUpdate: "No update found.", available: "A newer version is available.",
     reread: "Read status again", diagnosticDetails: "Full diagnostic information", riskNote: "These actions affect new tasks or local sign-in. Confirm before proceeding.",
@@ -892,6 +933,7 @@ const copy = locale === "zh" ? {
     const labels = locale === "zh" ? {version_check:"正在核对版本",downloading:"正在下载",verification:"正在校验完整软件包",waiting_maintenance:"正在申请安装维护窗口",local_resolution:"正在核对本地安装事务",installation:"正在本地安装",version_confirmation:"正在确认SDK与CLI版本",cleanup:"正在清理安装进程"}
       : {version_check:"Checking versions",downloading:"Downloading",verification:"Verifying complete packages",waiting_maintenance:"Acquiring installation maintenance",local_resolution:"Checking the local install transaction",installation:"Installing locally",version_confirmation:"Confirming SDK and CLI versions",cleanup:"Cleaning up installer processes"};
     if (update.status === "cleanup_pending") return locale === "zh" ? "正在停止安装进程；清理尚未确认完成，请勿重复提交。" : "Stopping installer processes; cleanup is unconfirmed. Do not resubmit.";
+    if (update.status === "needs_review" && update.outcome === "candidate_prepared") return authenticationErrors.workbuddy_update_evidence_required;
     if (update.status === "needs_review") return locale === "zh" ? "安装结果待核对。请先检查可用版本，不要重复安装。" : "Installation needs review. Check available versions before another installation.";
     if (update.status === "completed") return update.phase === "restart_pending" ? copy.restart : copy.updated;
     if (update.status === "failed") return authenticationErrors[update.error?.code] || maintenanceCopy.failed;
@@ -918,13 +960,15 @@ const copy = locale === "zh" ? {
   };
   const maintenanceSDK = sdk => {
     const local = versionReads.get(sdk.provider_id);
+    if (sdk.provider_id === "workbuddy" && local?.environment_digest && sdk.environment_digest
+        && local.environment_digest !== sdk.environment_digest) { versionReads.delete(sdk.provider_id); return sdk; }
     return local && (!sdk.version_check?.checked_at || local.version_check?.checked_at >= sdk.version_check.checked_at) ? {...sdk, ...local} : sdk;
   };
   const updateMaintenanceView = view => {
     if (!view?.versionSection) return;
     const sdk = maintenanceSDK(view.sdk), section = view.versionSection, controls = section.controls;
     adoptUpdate(view.sdk);
-    const state = maintenanceState(sdk.provider_id), pinned = sdk.provider_id === "workbuddy";
+    const state = maintenanceState(sdk.provider_id), pinned = sdk.provider_id === "workbuddy" && sdk.update_preparation_supported !== true;
     const active = ["running","unknown","needs_review","cleanup_pending"].includes(state?.status);
     const blocked = active || view.stale || authenticationActive(sdk.authentication?.operation)
       || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id);
@@ -939,9 +983,9 @@ const copy = locale === "zh" ? {
     controls.update.hidden = pinned || !sdk.update_enabled;
     controls.check.textContent = state?.status === "running" && state.kind === "check" ? copy.checking : copy.check;
     controls.versions.textContent = state?.status === "running" && state.kind === "versions" ? maintenanceCopy.checkingVersions : maintenanceCopy.versions;
-    controls.update.textContent = state?.status === "running" && state.kind === "update" ? copy.updating : copy.update;
+    controls.update.textContent = state?.status === "running" && state.kind === "update" ? copy.updating : sdk.provider_id === "workbuddy" ? (locale === "zh" ? "准备SDK升级" : "Prepare SDK upgrade") : copy.update;
     controls.time.textContent = `${maintenanceCopy.versionTime}: ${checkedTime(sdk.version_check?.checked_at)}`;
-    controls.note.textContent = pinned ? (locale === "zh" ? "SDK由锁定安装器管理，不提供在线升级。" : "The SDK uses a pinned installer; online upgrades are not provided.") : !sdk.update_enabled ? copy.updateDisabled : maintenanceCopy.readOnly;
+    controls.note.textContent = pinned ? (locale === "zh" ? "当前后端尚未确认在线升级准备能力；同版本环境修复不是升级。" : "This backend has not confirmed online upgrade preparation; same-version repair is not an upgrade.") : !sdk.update_enabled ? copy.updateDisabled : sdk.provider_id === "workbuddy" ? (locale === "zh" ? "通过pip在新独立环境准备目标版本；认证和兼容证据审核通过后才能受控切换，当前环境保持不变。" : "Prepare the target with pip in a new isolated environment. Controlled activation requires authentication and compatibility evidence; the current environment remains unchanged.") : maintenanceCopy.readOnly;
     if (view.sdk.update_status?.status === "completed" && view.sdk.update_status.phase === "restart_pending") controls.note.textContent += ` · ${copy.restart}`;
     controls.status.textContent = state?.message || (sdk.version_check?.status === "failed" ? copy.failedState : "");
     controls.status.className = ["unknown","needs_review","cleanup_pending","failed"].includes(state?.status) || sdk.version_check?.status === "failed" ? "sdk-error" : "sdk-update-note";
@@ -955,7 +999,7 @@ const copy = locale === "zh" ? {
     const view = runtimeViews.get(provider), sdk = maintenanceSDK(view.sdk);
     const prior=maintenanceState(provider);
     if (["running","cleanup_pending"].includes(prior?.status) || ["unknown","needs_review"].includes(prior?.status) && kind !== "versions") return;
-    if (kind === "update" && (!sdk.update_enabled || !sdk.update_available || !sdk.latest_version || sdk.provider_id === "workbuddy" || !window.confirm(copy.confirmUpdate))) return;
+    if (kind === "update" && (!sdk.update_enabled || !sdk.update_available || !sdk.latest_version || sdk.provider_id === "workbuddy" && sdk.update_preparation_supported !== true || !window.confirm(sdk.provider_id === "workbuddy" ? (locale === "zh" ? "仅在新独立环境准备此目标版本，不切换当前环境；证据审核及正式切换需另行受控执行。继续？" : "Prepare this target in a new isolated environment only; keep the current environment unchanged. Evidence review and activation are separate controlled actions. Continue?") : copy.confirmUpdate))) return;
     const target = sdk.latest_version;
     const submitted_at=Date.now();
     setMaintenance(provider, {kind, status: "running", target, submitted_at, requestPending:true, message: kind === "versions" ? maintenanceCopy.checkingVersions : kind === "update" ? copy.updating : copy.checking});
@@ -963,8 +1007,14 @@ const copy = locale === "zh" ? {
     if (kind === "update") load(false,{incremental:true}).catch(() => {});
     try {
       const url = kind === "check" ? `${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(provider)}/check`
-        : `${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/${kind === "versions" ? "check?scope=versions" : "update"}`;
+        : `${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/${kind === "versions" ? "check?scope=versions" : provider === "workbuddy" ? `update?expectedTargetVersion=${encodeURIComponent(target)}` : "update"}`;
       const payload = await request(url, {method: "POST", ...(kind === "update" ? {headers: {"X-SAPBA-Action": "sdk-update"}} : {})});
+      if (provider === "workbuddy" && payload.item?.update_status?.outcome === "candidate_prepared") {
+        versionReads.set(provider, {...payload.item});
+        setMaintenance(provider, {kind:"update",status:"needs_review",target,requestPending:false,
+          operation_id:payload.item.update_status.operation_id,message:updatePhaseMessage(payload.item.update_status)});
+        await load(false,{incremental:true,afterMutation:true}).catch(()=>{}); return;
+      }
       if (kind === "versions" && (["unknown","needs_review"].includes(prior?.status) && !payload.item?.update_status || payload.item?.update_status?.status === "needs_review")) {
         setMaintenance(provider,{...prior,requestPending:false,status:"unknown",message:maintenanceCopy.unknown}); return;
       }
@@ -974,7 +1024,7 @@ const copy = locale === "zh" ? {
       }
       if (payload.item) {
         const value = {};
-        for (const key of ["current_version", "cli_version", "latest_version", "update_available", "update_enabled", "version_check"]) if (payload.item[key] !== undefined) value[key] = payload.item[key];
+        for (const key of ["current_version", "cli_version", "latest_version", "update_available", "update_enabled", "version_check", "update_preparation_supported", "update_supported", "update_activation_automatic", "environment_digest"]) if (payload.item[key] !== undefined) value[key] = payload.item[key];
         versionReads.set(provider, value);
       }
       const failed = payload.item?.version_check?.status === "failed";
@@ -1231,8 +1281,8 @@ const copy = locale === "zh" ? {
     })();
     return listRequest;
   };
-  document.addEventListener("visibilitychange", () => { clearTimeout(statusTimer); if (!document.hidden) load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")); });
-  window.addEventListener("pagehide", () => clearTimeout(statusTimer));
+  document.addEventListener("visibilitychange", () => { clearTimeout(statusTimer); for (const timer of authenticationSyncTimers.values()) clearTimeout(timer); if (!document.hidden) { for (const view of runtimeViews.values()) if (view.sdk.provider_id === "workbuddy") view.authenticationKey = null; load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")); } });
+  window.addEventListener("pagehide", () => { clearTimeout(statusTimer); for (const timer of authenticationSyncTimers.values()) clearTimeout(timer); });
   root?.querySelector("[data-check-all]")?.addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; showMessage(copy.checking); try { const payload = await request(apiBase + "/api/system/sdk-runtimes/check", { method: "POST" }); render(payload.items || [], payload.default_provider_id); } catch (error) { showMessage(String(error.message || error), "error"); } finally { button.disabled = false; } });
   root?.querySelector("[data-reread]")?.addEventListener("click", () => {
     for (const view of runtimeViews.values()) { view.authenticationKey = null; view.modelSummaryKey = null; }

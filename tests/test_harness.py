@@ -38,6 +38,8 @@ from sap_business_agents_platform.harness import (
     _public_https_citations,
     _row_count,
     _sanitized_codex_env,
+    _safe_schema_result,
+    _safe_public,
     _validated_presentation_snapshot,
     _validated_payload_from_store,
     _validate_internal_api_url,
@@ -51,6 +53,54 @@ from sap_business_agents_platform.models import (
     RunStatus,
 )
 from sap_business_agents_platform.sap_read.embedded_odata import EmbeddedODataProvider
+
+
+@pytest.mark.parametrize("count", [200, 201, 270, 5000, 5001])
+def test_schema_projection_preserves_fields_and_reports_transport_truncation(count):
+    raw = {"ok": True, "data": {"schema_authority": True, "fields_truncated": False,
+        "fields": [{"field_name": f"Field{i}", "token": "secret"} for i in range(count)]}}
+    result = _safe_schema_result(raw)
+    assert len(result["data"]["fields"]) == min(count, 5000)
+    assert result["data"]["fields_truncated"] is (count > 5000)
+    assert result["data"]["fields"][-1]["field_name"] == f"Field{min(count, 5000)-1}"
+    assert result["data"]["fields"][0]["token"] == "[REDACTED]"
+    assert len(raw["data"]["fields"]) == count
+    # Business evidence previews retain their existing independent bound.
+    assert _safe_public(list(range(270)), preserve_rows=True)[-1] == {"_truncated": 70}
+
+
+@pytest.mark.parametrize("fields,flag", [([], True), ([{"_truncated": 70}], False)])
+def test_schema_projection_never_promotes_incomplete_source(fields, flag):
+    result = _safe_schema_result({"ok": True, "data": {
+        "fields": fields, "fields_truncated": flag, "schema_authority": True}})
+    assert result["data"]["fields_truncated"] is True
+
+
+def test_broker_schema_large_field_list_survives_persistence_and_retransmission(tmp_path):
+    class LargeSchema(FakeSapRead):
+        async def schema(self, *args, **kwargs):
+            return {"ok": True, "data": {"schema_authority": True,
+                "fields_truncated": False,
+                "fields": [{"field_name": f"Field{i}"} for i in range(270)]}}
+
+    async def scenario():
+        settings = _settings(tmp_path)
+        store = RunStore(settings.database_path)
+        run_id = "run_large_schema"
+        store.create_run(run_id, RunCreate(mode=RunMode.free_query, query="supplier items"))
+        broker = HarnessToolBroker(settings, store, LargeSchema(), FakeSkills())
+        token = broker.open_session(run_id)
+        args = {"service_name": "API_OPLACCTGDOCITEMCUBE_SRV", "odata_version": "2.0",
+                "entity_sets": ["A_OperationalAcctgDocItemCube"], "tool_call_id": "large_schema"}
+        first = await broker.handle(run_id, token, "sap_schema_get", args)
+        repeated = await broker.handle(run_id, token, "sap_schema_get", args)
+        assert repeated == {**first, "idempotent_replay": True}
+        assert first["ok"] is True
+        assert len(first["data"]["fields"]) == 270
+        assert first["data"]["fields"][-1]["field_name"] == "Field269"
+        assert first["data"]["fields_truncated"] is False
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(

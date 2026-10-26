@@ -19,20 +19,36 @@ ROOT = Path(__file__).resolve().parents[1]
 BEFORE = json.loads((ROOT / 'tests/fixtures/codex-orchestration-before.json').read_text(encoding='utf-8'))
 
 
+class CurrentTraceClient(TraceClient):
+    """Current synthetic SDK response; immutable historical recording stays old.
+
+    Only the explicitly added money contract is projected here. Production
+    drivers must still reject a native response missing strict required fields.
+    """
+    async def run(self, *args, **kwargs):
+        result = await super().run(*args, **kwargs)
+        if self.operation == 'revise_free_query_presentation':
+            from sap_business_agents_platform.models import RunPresentation
+            raw = json.loads(result.final_response)
+            raw['presentation'] = RunPresentation.model_validate(raw['presentation']).model_dump(mode='json')
+            result.final_response = json.dumps(raw, ensure_ascii=False)
+        return result
+
+
 @pytest.mark.parametrize('operation', [op for op in cases() if op in OPERATIONS])
 @pytest.mark.parametrize('provider', ['codex', 'workbuddy'])
 def test_shared_business_trace_matches_original_codex(monkeypatch, tmp_path, provider, operation):
     trace = []
     if provider == 'codex':
         import openai_codex
-        monkeypatch.setattr(openai_codex, 'AsyncCodex', lambda **options: TraceClient(trace, operation, **options))
+        monkeypatch.setattr(openai_codex, 'AsyncCodex', lambda **options: CurrentTraceClient(trace, operation, **options))
         planner = CodexPlanner(tmp_path, model='fixture-model', reasoning_effort='max')
     else:
         planner = WorkBuddyPlanner(tmp_path, model='fixture-model')
         # The neutral seam is simulated. Real worker transport has separate
         # owned-process tests; matching SDK wire encoding is not required.
         planner.reasoning_effort = 'max'
-        planner._driver = SimpleNamespace(provider_id=provider, client=lambda **options: TraceClient(trace, operation, **options))
+        planner._driver = SimpleNamespace(provider_id=provider, client=lambda **options: CurrentTraceClient(trace, operation, **options))
     result = asyncio.run(getattr(planner, operation)(**copy.deepcopy(cases()[operation])))
     if operation in {'analyze_role_matching', 'review_role_matching_feedback'}:
         from sap_business_agents_platform.runtime_role_consolidation import VERSION, SCHEMA
@@ -52,11 +68,33 @@ def test_shared_business_trace_matches_original_codex(monkeypatch, tmp_path, pro
         assert trace[-2]['options'] == BEFORE[operation]['trace'][-2]['options']
         assert trace[-1] == BEFORE[operation]['trace'][-1]
         assert result['analysis'].pop('consolidation_contract') == VERSION
+    elif operation == 'revise_free_query_presentation':
+        from sap_business_agents_platform.runtime_prompts import FREE_QUERY_PRESENTATION_REVISION_SCHEMA
+        from sap_business_agents_platform.codex_driver import native_output_schema
+        from tests.runtime_trace_fixture import sha
+        current = FREE_QUERY_PRESENTATION_REVISION_SCHEMA
+        historical = copy.deepcopy(current)
+        presentation = historical['properties']['presentation']
+        presentation['properties'].pop('financial_verification')
+        presentation['required'].remove('financial_verification')
+        metrics = historical['$defs']['PresentationMetric']
+        for field in ('calculation_ref','calculation_item','calculation_field','currency'):
+            metrics['properties'].pop(field)
+            metrics['required'].remove(field)
+        # Prove precisely the known additive contract change, not a regenerated
+        # baseline or a blanket allowance for arbitrary Schema drift.
+        assert sha(historical) == BEFORE[operation]['trace'][-2]['schema_sha256']
+        expected_schema = native_output_schema(current) if provider == 'codex' else current
+        expected_trace = copy.deepcopy(BEFORE[operation]['trace'])
+        expected_trace[-2]['schema_sha256'] = sha(expected_schema)
+        assert trace == expected_trace
     else:
         assert trace == BEFORE[operation]['trace']
     expected = copy.deepcopy(BEFORE[operation]['result'])
     if operation == 'review_free_query_feedback':
         expected['reason'] = 'Offline'  # old fixture violated the declared string Schema
+    if operation == 'revise_free_query_presentation':
+        expected['presentation']['financial_verification'] = 'not_requested'
     assert normalize(result) == expected
 
 
@@ -119,7 +157,8 @@ def test_sdk_free_authorities_have_no_sdk_imports():
     names = ['shared_planner.py', 'runtime_prompts.py', 'runtime_contract.py', 'runtime_policy.py',
         'runtime_agent_authoring.py', 'runtime_workflow_authoring.py', 'runtime_harness_contract.py',
         'runtime_harness_result.py', 'runtime_query_contract.py', 'runtime_workflow_contract.py', 'runtime_role_contract.py',
-        'runtime_harness.py', 'runtime_sample.py', 'runtime_diagnostics.py', 'runtime_role_consolidation.py']
+        'runtime_harness.py', 'runtime_sample.py', 'runtime_diagnostics.py', 'runtime_role_consolidation.py',
+        'source_reassessment.py', 'runtime_evidence_bindings.py']
     for name in names:
         tree = ast.parse((ROOT / 'src/sap_business_agents_platform' / name).read_text(encoding='utf-8'))
         for node in ast.walk(tree):

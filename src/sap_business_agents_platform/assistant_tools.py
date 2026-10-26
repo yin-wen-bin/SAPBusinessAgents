@@ -22,7 +22,9 @@ _SAP_READ = frozenset({
     "sap_month_end_status_assess", "sap_final_report_validate",
 })
 _CATALOG = frozenset({"tool_catalog_search", "tool_catalog_inspect"})
+from .runtime_input_control import NAMES as _INPUT_CONTROLS
 _PURPOSE: dict[str, tuple[str, str]] = {
+    "sap_money_aggregate": ("核对已保存证据的分币种金额", "Compute evidence-bound monetary metrics"),
     "sap_catalog_search": ("查找 SAP OData 服务", "Find SAP OData services"),
     "sap_schema_get": ("读取实时 OData 元数据", "Read live OData metadata"),
     "sap_query_validate": ("验证只读查询计划", "Validate a read-only query plan"),
@@ -50,10 +52,19 @@ _PURPOSE: dict[str, tuple[str, str]] = {
     "agent.activate": ("准备 Agent 启用", "Prepare Agent activation"),
 }
 _HUMAN_ONLY = frozenset({"mail.v1/send", "agent.publish", "agent.activate"})
+
+
+def _controls(kind):
+    if kind == "free_query":
+        return _INPUT_CONTROLS
+    if kind in {"acceptance_baseline", "acceptance_free_query"}:
+        return frozenset({"request_query_clarification"})
+    return frozenset()
+
 _ASSISTANT_ALLOWED: dict[str, frozenset[str]] = {
-    "free_query": _SAP_READ | _CATALOG | {"safe_compute", "tool_discovery_search", "tool_discovery_inspect", "tool_discovery_activate", "external_tool_execute"},
-    "acceptance_free_query": _SAP_READ | _CATALOG | {"safe_compute", "tool_discovery_search", "tool_discovery_inspect", "tool_discovery_activate", "external_tool_execute"},
-    "acceptance_baseline": _SAP_READ | _CATALOG,
+    "free_query": _SAP_READ | _CATALOG | {"sap_money_aggregate", "safe_compute", "tool_discovery_search", "tool_discovery_inspect", "tool_discovery_activate", "external_tool_execute"},
+    "acceptance_free_query": _SAP_READ | _CATALOG | {"sap_money_aggregate", "safe_compute", "tool_discovery_search", "tool_discovery_inspect", "tool_discovery_activate", "external_tool_execute"},
+    "acceptance_baseline": _SAP_READ | _CATALOG | {"sap_money_aggregate"},
     # The sample-discovery scope is further narrowed by its persisted draft
     # contract. Discovery never overrides that per-plan gate.
     "sample_discovery": _SAP_READ | _CATALOG,
@@ -84,7 +95,7 @@ def permitted(context: AssistantToolContext, tool_id: str, *, now: datetime | No
         return False, "user_confirmation_required"
     if tool_id == "sap_ddic_field_labels_get" and not context.allowed_ddic_fields:
         return False, "ddic_field_scope_required"
-    if tool_id not in _ASSISTANT_ALLOWED.get(context.kind, frozenset()):
+    if tool_id not in (_ASSISTANT_ALLOWED.get(context.kind, frozenset()) | _controls(context.kind)):
         return False, "tool_not_enabled_for_task"
     return True, None
 
@@ -110,7 +121,7 @@ def contract_digest(tool_id: str, report_contract=None) -> str | None:
 
 
 def contract_snapshot(kind: str, report_contract=None) -> dict[str, str]:
-    return {tool_id: digest for tool_id in _ASSISTANT_ALLOWED.get(kind, ())
+    return {tool_id: digest for tool_id in (set(_ASSISTANT_ALLOWED.get(kind, ())) | _controls(kind))
             if (digest := contract_digest(tool_id, report_contract)) is not None}
 
 
@@ -135,7 +146,7 @@ def catalog(
         if tool_id == "sap_final_report_validate" and report_contract is not None:
             from .runtime_report_contract import verify
             schema = verify(report_contract)["input_schema"]
-        effect = ("sap_read" if tool_id.startswith("sap_") else
+        effect = ("session_write" if tool_id in _INPUT_CONTROLS else "local_compute" if tool_id == "sap_money_aggregate" else "sap_read" if tool_id.startswith("sap_") else
                   "external_read" if tool_id == "external_tool_execute" else
                   "session_write" if tool_id == "tool_discovery_activate" else
                   "local_compute" if tool_id == "safe_compute" else "local_read")
@@ -160,6 +171,8 @@ def catalog(
             "effect": "sap_read",
             "contract_digest": str(skill.get("input_schema_hash") or skill.get("schema_hash") or _digest(skill.get("input_schema") or {})),
             "source": "approved_skill_catalog",
+            "skill_id": skill_id,
+            "invocation": "Inspect using tool_id=skill:<skill_id>. Execute only through sap_evidence_assess then sap_skill_execute using the exact returned Skill input schema and gate token.",
         }
     for operation in ("search", "read", "draft", "send"):
         tool_id = f"mail.v1/{operation}"

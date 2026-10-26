@@ -37,3 +37,47 @@ WorkBuddy 通过现有 payload 获得工具定义；Codex MCP 通过作业目录
 本轮仅交付候选及离线证据，不安装新worker、不应用资格承接、不重启服务。真实模型轻量检查、原查询重试及生产上线均不在本轮执行范围内。
 
 Shared authority, repair feedback and bounded convergence apply to both providers. Only native transport, accepted terminal handoff and owned cleanup differ. Offline tests are not live model/SAP qualification, and historical PASS records remain immutable.
+
+## 五模型离线修复：规范值、范围与交接
+
+金额指标的双语 `value` 是计算工具返回的精确规范字符串，不是带千分位、币种后缀或单位的显示字符串；count 的 currency 必须为 JSON null。工具Schema与共享交接提示明确同一规则。错误保留原 `money_metric_binding_invalid`，并兼容增加 `binding_issues`、安全的期望规范值及币种，不自动修改候选、数值、引用或证据。
+
+新报告应省略 `financial_verification`（默认 not_requested），或显式使用平台反馈的期望状态；成功后完整复制 `validated_report`。后台保留原保守验证，不因指标绑定正确就验证所有业务说明或表格。`financial_verification_details` 分别解释非指标业务块、未绑定指标及全文未被证明的事实范围。错误声明仍拒绝，不静默改成通过。
+
+`runtime-evidence-bindings.json` 只允许部署审核后的服务／版本／实体级映射。元数据只证明字段存在，不证明业务等价；缺少映射或可信关联时明确返回无法证明的范围，不全局添加 Supplier/InvoicingParty 别名。生产注册表当前为空：该语义等价关系尚无足够已保存审核证据，不能用合成测试通过替代批准。
+
+配置来源同样必须先审核注册。Harness只消费本作业完整且未受限的成功读取，检查来源、行数、字段、公司代码和日期；同一证据通过请求上下文进入共享来源分类器，并进入金额计算的证明摘要及重新核验。当前配置不外推为历史配置。受限ADT材料需要独立批准的受保护读取适配，不得在本路径解密或将其发给模型。本机已保存K/F材料仅证明当前配置，历史适用性仍是阻碍，不自动登记为生产证明。
+
+终态诊断增加冻结Schema摘要及仅含已声明根字段存在性／类型的轨迹。worker检查传给SDK的JSON Schema与冻结Schema摘要一致并记录 schema_bound；不补字段、不纠正枚举、不用报告工具通过代替WorkBuddy原生终态。Codex提前收尾路径保持。
+
+上游诊断仅保留可确认的结构化状态、允许的错误类别及关联摘要，不依据任意错误文本猜测认证、限流或额度，不保存原文、链接、凭据和业务行。未知错误仍是unknown，不自动重试或改变认证。
+
+## 共享查询与金额链路（离线候选）
+
+查询工具的 `plan` 由同一 `runtime_query_contract.PLAN_SCHEMA` 生成，Codex MCP 与 WorkBuddy 不再分别注入。冻结报告文件同时保存查询契约版本、Schema、说明及完整职责依赖，摘要或绑定不符时拒绝，不回退为宽泛对象。后端旧格式兼容路径不变；非法常量/枚举只返回合法值说明，不改写输入。
+
+计划纠错状态与报告、原生终态分开保存。同一调用编号重传不重复计数，换正文冲突；连续三次无实质进展后禁止新计划和外部读取，仍允许利用现有证据形成诚实的限制报告。减少必需字段缺口属于进展；更换调用编号、交换旧错误或无关检索不构成进展。不新增全局SDK轮次限制或时间预算。
+
+`sap_money_aggregate` 只计算本作业已成功读取、完整、可公开的原证据。它不是新的SAP来源，也不授予原证据资格。受限行、未知来源、缺失/重复/冲突行键、不完整读取拒绝；金额使用Decimal、保留原符号，按公司代码、账本、记录类别、历史状态、金额字段与币种分别计算。来源键、分类及金额币种配对复用已审核来源语义注册表，未知配置不猜测，也不为通过删行。未注册来源明确拒绝计算，可通过正常审核扩展注册表，不在模型参数中声明任意映射。
+
+报告金额指标通过 `calculation_ref`、`calculation_item`、`calculation_field`（amount/count）、currency 与原 evidence_refs 绑定，双语值必须是计算返回的精确规范字符串。平台重新核对计算和原证据摘要，错值、错币种、错引用无有效validation_ref。完整零行只证明count=0，不制造币种或金额。
+
+`financial_verification` 是平台投影：not_requested、unverified或verified_metrics_only。它不宣称任意自然语言算术已验证；明确金额请求及显式货币指标不得用未绑定文字或表格获得完整业务结论。未绑定金额可兼容保留为受限报告，但业务完整性被阻断并附缺口；合法绑定只证明所列指标，不能补足来源分类、发票口径或银行结算证据。不改变safe_compute的AST能力，仅让语法错误明确说明它要求单一纯表达式。
+
+计算结果同时保留分类小计与明确标注 `all_record_kinds` 的源行总计，避免模型手算小计。总计仍按公司、账本、日期状态、金额字段和币种分别计算；未知分类不被删除，也不因参与总计变成已确认分类。它不是“仅发票”或“已过账余额”结论。
+
+完整终态的必填根字段及类型由冻结Schema生成，报告通过、原生交接接受、清理确认分别记录平台事件。仍不拼装终态、不补业务字段、不将候选当作成功。Codex保留已保存验证结果的提前收尾，WorkBuddy保留StructuredOutput终态及三次停滞停止。
+
+## 内部结果协议 v2 与平台输入控制
+
+新 Harness 执行冻结 `terminal_protocol=2`，普通完整终态仅允许 `completed`、`inconclusive`，移除 `input_kind`、`input_field` 和 `clarification_question`。其余报告、证据、完整性及金额限制继续严格验证。已冻结的 v1 执行沿用原完整终态；兼容范围固定到部署基线的完整 checker 摘要，未知摘要仍拒绝，既有契约不被静默升级。
+
+缺少普通查询条件时调用 `request_query_clarification({question})`，缺少银行回单参考时调用 `request_secure_receipt_reference({question})`。参数仅接受问题，平台决定字段类型；正式验收不提供安全输入工具，普通缺参控制也只停止并报告缺参。请求经任务授权后持久化 run 内的请求 ID，关闭新工具读取并停止 Runtime。只有清理确认后，run 才进入 `waiting_input`；worker 日志以 `interrupted` 加 `control_event=waiting_input` 记录，避免伪装成业务成功，并兼容既有日志重建。
+
+外部安全输入仍投影为 `input_kind=secure_business_reference`、`field=receipt_reference`。新页面提交 `inputRequestId`，后台在同一 SQLite 事务中检查和消费请求、保存加密引用并排队恢复；重复、过期、取消后的回答拒绝。旧客户端省略 ID 时仅回答当前待处理请求。原值仍只进入受保护输入通道，不拼入普通查询或诊断。重启恢复已提交暂停，不重放模型或 SAP；无法确认清理时保留清理阻断。
+
+实际终态提交与 hook/观察分开计数。同一提交重复观察不计数，也不重置纠错等待。两次独立提交的内容及错误相同立即停止，其余继续沿用三次无进展限制。首份报告通过即关闭外部读取，收尾截止为原硬截止与当前时间加既有收尾预留的较早者；每次独立纠错等待不超过 120 秒，重提不重置收尾截止，总硬预算仍为 1800 秒。失败保留字段约束、次数、阶段、清理状态及候选验证引用；候选不升级为成功结果。
+
+Codex MCP 子进程显式绑定父进程冻结源码目录，防止工作区未部署代码参与协议校验。SDK、CLI 和 worker wire 协议不变；部署仍需对候选摘要完成离线基础设施验收，并通过原有锁、活动任务、清理、健康与回退门禁。
+
+终态错误的初始事件与最终清理状态分开记录。驱动清理完成后同步 `terminal_handoff_failure.cleanup_complete`，清理失败则保留 `runtime_cleanup_incomplete` 和清理阻断；不重写原始失败事件或已结束运行的历史快照。

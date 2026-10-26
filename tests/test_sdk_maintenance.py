@@ -53,7 +53,7 @@ def test_version_failure_is_unknown_not_already_current(tmp_path):
     assert adapter.updates == []
 
 
-def test_workbuddy_return_is_flat_and_versions_do_not_invoke_installer(tmp_path):
+def test_workbuddy_missing_environment_never_falls_back_to_legacy_repair(tmp_path):
     registry = tmp_path / "sdks.json"
     _write_runtime_registry(registry)
     instance = SDKManager(registry, tmp_path, adapters={"python": FakeAdapter()})
@@ -64,12 +64,12 @@ def test_workbuddy_return_is_flat_and_versions_do_not_invoke_installer(tmp_path)
     instance.workbuddy.update = repair
     with pytest.raises(SDKManagerError) as caught:
         asyncio.run(instance.check_versions("codebuddy-agent-sdk"))
-    assert caught.value.code == "workbuddy_sdk_upgrade_unsupported"
+    assert caught.value.code == "workbuddy_environment_not_installed"
     assert calls == []
-    result = asyncio.run(instance.update("codebuddy-agent-sdk"))
-    assert result["current_version"] == "0.3.247"
-    assert "item" not in result
-    assert result["maintenance_kind"] == "environment_repair"
+    with pytest.raises(SDKManagerError) as update:
+        asyncio.run(instance.update("codebuddy-agent-sdk"))
+    assert update.value.code == "workbuddy_environment_not_installed"
+    assert calls == []
 
 
 @pytest.mark.parametrize("block", ["business", "cleanup", "lease", "authentication", "check"])

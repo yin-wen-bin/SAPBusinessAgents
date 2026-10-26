@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from .workbuddy_job import process_identity
 ACTIVE = {"queued", "running", "waiting_authentication", "cancelling", "cleanup_pending"}
 AUTH_OPERATION_SECONDS = 360
 AUTH_CHECK_SECONDS = 30
+EXTERNAL_CACHE_POLL_SECONDS = 5
 IDENTIFIER = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 
 
@@ -65,6 +67,8 @@ class RuntimeAuthenticationService:
         self._post_use_checks: dict[str, asyncio.Task] = {}
         self._post_use_status: dict[str, dict[str, str]] = {}
         self._closing = False
+        self._external_monitor = None
+        self._automatic_attempt = None
         self.leases: dict[str, int] = {}
         self.sdk_maintenance_active: set[str] = set()
         self.transient: dict[str, dict] = {}
@@ -228,7 +232,19 @@ class RuntimeAuthenticationService:
                 value["capabilities"].update(check=False, login=False, logout=False, switch_account=False,
                                             reason="runtime_authentication_state_invalid")
             if provider == 'workbuddy':
+                if self._account(provider).get('last_check_diagnostic'):
+                    value['last_check_diagnostic'] = copy.deepcopy(self._account(provider)['last_check_diagnostic'])
                 sync = self._post_use_status.get(provider)
+                try:
+                    if (self._external_monitor is not None and not self._external_monitor.done()
+                            and self._cache_only_change(provider, external=True)
+                            and self._automatic_attempt != (self._account(provider)['revision'], self._observation(provider))
+                            and not sync):
+                        sync = {'status': 'queued'}
+                except (SDKManagerError, OSError, ValueError):
+                    sync = {'status': 'blocked', 'failure_code': 'runtime_authentication_context_unavailable'}
+                if sync and sync.get('status') == 'confirmed' and value.get('authentication_context_status') != 'current':
+                    sync = {'status': 'blocked', 'failure_code': 'runtime_authentication_check_required'}
                 if sync and (provider in self._post_use_checks or value.get('authenticated') is not True):
                     value['authentication_sync'] = copy.deepcopy(sync)
             return value
@@ -322,23 +338,36 @@ class RuntimeAuthenticationService:
             self.assert_binding(provider, snapshot, require_authenticated=require_authenticated)
             self.leases[provider] = self.leases.get(provider, 0) + 1
         completed = False
+        failed_owned_return = False
         try:
             yield
             completed = True
+        except SDKManagerError as exc:
+            # Non-auth SDK failures may still renew the shared cache. They are
+            # not proof of either sign-out or cleanup. Only reconcile after an
+            # explicit supervisor proof, retaining the original exception.
+            failed_owned_return = not str(exc.code).startswith(('workbuddy_authentication_', 'runtime_authentication_')) and exc.code not in {
+                'runtime_cleanup_incomplete', 'workbuddy_deadline_exceeded',
+                'runtime_deadline_exceeded', 'workbuddy_cancelled', 'runtime_cancelled'}
+            raise
         finally:
             with self.lock:
                 self.leases[provider] -= 1
                 # A managed SDK return has already drained its owned process.
                 # Reconcile changed cache metadata separately from the model's
                 # result/budget. Never bless it just because that call worked.
-                if provider == 'workbuddy' and require_authenticated and completed and not self.leases[provider]:
-                    self._schedule_post_use_check(provider)
+                if provider == 'workbuddy' and require_authenticated and (completed or failed_owned_return) and not self.leases[provider]:
+                    self._schedule_post_use_check(provider, require_cleanup_proof=failed_owned_return)
 
-    def _cache_only_change(self, provider):
+    def _cache_only_change(self, provider, *, external=False):
         """Metadata is only a trigger. Identity still comes from official check."""
         account = self._account(provider)
-        if (account.get('status') != 'authenticated' or account.get('authenticated') is not True
-                or account.get('invalidation_pending')):
+        confirmed = account.get('status') == 'authenticated' and account.get('authenticated') is True
+        recoverable = (external and account.get('status') == 'check_failed'
+                       and account.get('confirmed_binding', {}).get('authenticated') is True)
+        if (not (confirmed or recoverable) or account.get('invalidation_pending')):
+            return False
+        if external and any(account.get(k) != v for k, v in self._context(provider).items()):
             return False
         prior, current = account.get('authentication_observation'), self._observation(provider)
         return (isinstance(prior, dict) and isinstance(current, dict)
@@ -347,7 +376,30 @@ class RuntimeAuthenticationService:
                 and prior.get('cache_digest') is not None and current.get('cache_digest') is not None
                 and prior != current)
 
-    def _schedule_post_use_check(self, provider):
+    def start_external_sync(self):
+        """Lifespan-owned observer; GET remains strictly read-only."""
+        if 'workbuddy' in self.adapters and not self._closing and self._external_monitor is None:
+            self._monitor_loop = asyncio.get_running_loop()
+            self._external_monitor = asyncio.get_running_loop().create_task(self._watch_external_cache())
+
+    async def _watch_external_cache(self):
+        while not self._closing:
+            await asyncio.sleep(EXTERNAL_CACHE_POLL_SECONDS)
+            # Filesystem/context observation runs off the event loop. No CLI,
+            # credentials or authority is obtained from this metadata.
+            await asyncio.to_thread(self._external_cache_tick)
+
+    def _external_cache_tick(self):
+        with self.lock:
+            try:
+                if self._closing or self.invalid_state or (self.root.parent / 'startup-maintenance.json').exists():
+                    return
+            except OSError:
+                self._post_use_status['workbuddy'] = {'status': 'blocked', 'failure_code': 'runtime_authentication_context_unavailable'}
+                return
+            self._schedule_post_use_check('workbuddy', external=True)
+
+    def _schedule_post_use_check(self, provider, *, require_cleanup_proof=False, external=False):
         # Called under the auth lock; no await or SDK execution while holding it.
         # Failure to schedule must not replace the completed business result.
         if self._closing or self.invalid_state or self._active(provider):
@@ -356,11 +408,22 @@ class RuntimeAuthenticationService:
         if existing is not None and not existing.done():
             return
         try:
-            if not self._cache_only_change(provider):
+            if not self._cache_only_change(provider, external=external):
                 return
             context = self._context(provider)
             revision = self._account(provider)['revision']
-            task = asyncio.get_running_loop().create_task(self._check_after_use(provider, context, revision))
+            observed = self._observation(provider)
+            if self._automatic_attempt == (revision, observed):
+                return
+            # The watcher observes in a thread, but tasks belong to its API loop.
+            loop = getattr(self, '_monitor_loop', None) if external else asyncio.get_running_loop()
+            if loop is None or loop.is_closed():
+                return
+            if external:
+                loop.call_soon_threadsafe(self._queue_external_check, context, revision)
+                return
+            task = loop.create_task(self._check_after_use(
+                provider, context, revision, require_cleanup_proof=require_cleanup_proof))
         except (SDKManagerError, OSError, ValueError, RuntimeError):
             self._post_use_status[provider] = {'status': 'blocked', 'failure_code': 'runtime_authentication_context_unavailable'}
             return
@@ -374,12 +437,37 @@ class RuntimeAuthenticationService:
                 done.exception()
         task.add_done_callback(finished)
 
-    async def _check_after_use(self, provider, context, revision):
+    def _queue_external_check(self, context, revision):
+        with self.lock:
+            if (self._closing or self._active('workbuddy') or self.leases.get('workbuddy')
+                    or 'workbuddy' in self.sdk_maintenance_active
+                    or not self._context_current('workbuddy', context)
+                    or self._account('workbuddy')['revision'] != revision):
+                return
+            existing = self._post_use_checks.get('workbuddy')
+            if existing is not None and not existing.done():
+                return
+            task = asyncio.create_task(self._check_after_use('workbuddy', context, revision,
+                require_cleanup_proof=True, external=True))
+            self._post_use_checks['workbuddy'] = task
+            self._post_use_status['workbuddy'] = {'status': 'queued'}
+            def finished(done):
+                with self.lock:
+                    if self._post_use_checks.get('workbuddy') is done:
+                        self._post_use_checks.pop('workbuddy', None)
+                if not done.cancelled():
+                    done.exception()
+            task.add_done_callback(finished)
+
+    async def _check_after_use(self, provider, context, revision, *, require_cleanup_proof=False, external=False):
         # Some model-check APIs return a failed-check record rather than raise
         # a cleanup error. A normal lease return alone therefore cannot prove
         # that every owned SDK process has been drained. Reuse the existing
         # supervisor's active/pending proof, not broad business/history scans.
         supervisor = getattr(getattr(self._adapter(provider), 'workbuddy', None), 'supervisor', None)
+        if require_cleanup_proof and (supervisor is None or not callable(getattr(supervisor, 'pending', None))):
+            self._post_use_status[provider] = {'status': 'blocked', 'failure_code': 'runtime_authentication_cleanup_unconfirmed'}
+            return
         if supervisor is not None:
             try:
                 if await asyncio.to_thread(lambda: bool(supervisor.active or supervisor.pending())):
@@ -387,6 +475,14 @@ class RuntimeAuthenticationService:
                     return
             except Exception:
                 self._post_use_status[provider] = {'status': 'blocked', 'failure_code': 'runtime_authentication_check_required'}
+                return
+        if external:
+            try:
+                if await asyncio.to_thread(self._blockers, provider):
+                    self._post_use_status[provider] = {'status': 'deferred', 'failure_code': 'runtime_authentication_business_active'}
+                    return
+            except Exception:
+                self._post_use_status[provider] = {'status': 'blocked', 'failure_code': 'runtime_authentication_cleanup_unconfirmed'}
                 return
         with self.lock:
             # Do not resume an old completion into a new site/account, an
@@ -397,19 +493,25 @@ class RuntimeAuthenticationService:
                 self._post_use_status[provider] = {'status': 'deferred'}
                 return
             try:
-                if not self._cache_only_change(provider):
+                if not self._cache_only_change(provider, external=external):
                     self._post_use_status[provider] = {'status': 'not_required'}
+                    return
+                observed = self._observation(provider)
+                if self._automatic_attempt == (revision, observed):
                     return
             except (SDKManagerError, OSError, ValueError):
                 self._post_use_status[provider] = {'status': 'blocked', 'failure_code': 'runtime_authentication_context_unavailable'}
                 return
             self._post_use_status[provider] = {'status': 'checking'}
+            self._automatic_attempt = (revision, observed)
         try:
             # Reuse the same bounded official check and single-flight path as
             # explicit/pre-dispatch checks. No login, retry or model call.
             result = await self.check(provider)
             self._post_use_status[provider] = {'status': 'confirmed' if result.get('authenticated') is True
                 and result.get('authentication_context_status') == 'current' else 'failed'}
+            if result.get('failure_code'):
+                self._post_use_status[provider]['failure_code'] = result['failure_code']
         except asyncio.CancelledError:
             self._post_use_status[provider] = {'status': 'cancelled'}
             raise
@@ -499,6 +601,7 @@ class RuntimeAuthenticationService:
             if self._active(provider) or provider in self.checking or provider in self.sdk_maintenance_active:
                 raise error("runtime_authentication_operation_active")
             self.checking.add(provider)
+        check_started = time.monotonic()
         try:
             before = self._observation(provider)
             result = await asyncio.wait_for(adapter.check(context=context) if context else adapter.check(), AUTH_CHECK_SECONDS)
@@ -525,8 +628,19 @@ class RuntimeAuthenticationService:
             with self.lock:
                 # A late check must not overwrite the account for a newer site.
                 if self._context_current(provider, context):
+                    code = getattr(exc, "code", "runtime_authentication_check_failed")
+                    if provider == 'workbuddy':
+                        if isinstance(exc, TimeoutError):
+                            code = 'runtime_authentication_check_timeout'
+                        phase = (getattr(adapter, 'check_diagnostic', {}) or {}).get('phase')
+                        self._account(provider)['last_check_diagnostic'] = {
+                            'code': code,
+                            'phase': phase if phase in {'preparing', 'starting_official_process',
+                                'waiting_official_result', 'verifying_installation', 'completed'} else 'official_check',
+                            'elapsed_ms': round((time.monotonic()-check_started)*1000, 2),
+                            'cleanup_complete': getattr(adapter, 'cleanup_complete', False) is True}
                     self._account(provider).update(status="expired" if provider == 'workbuddy' and getattr(exc, 'code', None) == 'workbuddy_authentication_required' else "check_failed", authenticated=None,
-                        checked_at=now(), failure_code=getattr(exc, "code", "runtime_authentication_check_failed"), **context)
+                        checked_at=now(), failure_code=code, **context)
                     self._save()
                     self.changed(provider, {**copy.deepcopy(self._account(provider)), "changed": False})
         finally:
@@ -703,6 +817,8 @@ class RuntimeAuthenticationService:
         self._closing = True
         tasks = (set(self.tasks.values()) | {item[1] for item in self._shared_checks.values()}
                  | set(self._post_use_checks.values()))
+        if self._external_monitor is not None:
+            tasks.add(self._external_monitor)
         for task in tasks:
             task.cancel()
         if tasks:

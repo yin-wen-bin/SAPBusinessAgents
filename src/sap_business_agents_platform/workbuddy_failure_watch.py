@@ -79,18 +79,38 @@ def trace_failure(value, *, pid, expected, launched_at):
                     break
     if not matched:
         return None  # No task/prompt binding: never act on another job's trace.
+    # The owned request's failed ancestor may contain only a generic CLI error.
+    # Inspect errors in that ancestor's subtree, not other jobs or unrelated traces.
+    roots = {span['spanId'] for span in matched}
+    related = list(matched)
+    for span in spans:
+        if not span.get('error'): continue
+        current, visited = span, set()
+        for _ in range(16):
+            if current['spanId'] in visited: break
+            visited.add(current['spanId'])
+            if current['spanId'] in roots:
+                if span not in related: related.append(span)
+                break
+            current = indexed.get(current.get('parentId'))
+            if current is None: break
     code = None
-    for span in matched:
+    for span in related:
         candidate = authentication_failure(span.get('error'))
         if candidate:
             code = candidate
             break
+    from .runtime_diagnostics import safe_upstream_diagnostic
+    observed = [safe_upstream_diagnostic(span.get('error')) for span in related]
+    selected = max(observed, key=lambda d: (d.get('upstream_category') != 'unknown',
+        'upstream_http_status' in d, 'upstream_phase' in d, 'upstream_request_id_sha256' in d))
     return {'failure_code': code or 'workbuddy_upstream_error', 'failure_source': 'owned_cli_trace',
+            **selected,
             'trace_terminal_error': True,
             **({'http_status': 401} if code == 'workbuddy_authentication_required'
-               and any(HTTP_401.search(str(span.get('error') or '')) for span in matched) else {}),
+               and any(HTTP_401.search(str(span.get('error') or '')) for span in related) else {}),
             **({'authentication_reason':'login_required'} if code == 'workbuddy_authentication_required'
-               and not any(HTTP_401.search(str(span.get('error') or '')) for span in matched) else {})}
+               and not any(HTTP_401.search(str(span.get('error') or '')) for span in related) else {})}
 
 
 def early_authentication_failure(value, *, pid, workspace, launched_at, log_root, budget=None):

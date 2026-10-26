@@ -27,6 +27,15 @@ def bad(presentation=False):
 def test_historical_schema_binding_and_four_attempt_shape_replay():
     saved=json.loads((Path(__file__).parent/'fixtures/run_1768d6b67a8845d4.terminal.json').read_bytes())
     frozen=schema()
+    # Reconstruct the historical schema exactly: new monetary provenance is an
+    # additive current contract, not a rewrite of this old probe or its digest.
+    presentation = frozen['properties']['presentation']['anyOf'][0]
+    presentation['properties'].pop('financial_verification')
+    presentation['required'].remove('financial_verification')
+    metrics = presentation['properties']['blocks']['items']['properties']['metrics']['items']
+    for name in ('calculation_ref', 'calculation_item', 'calculation_field', 'currency'):
+        metrics['properties'].pop(name)
+        metrics['required'].remove(name)
     for name in ('input_kind','input_field'): frozen['properties'][name].pop('description')
     assert digest(frozen)==saved['schema_sha256']
     checks=TerminalChecks(schema())
@@ -282,3 +291,6 @@ def test_shared_harness_preserves_specific_terminal_cause_not_generic_runtime_un
     assert outcome.status=='inconclusive' and not outcome.business_complete
     assert outcome.missing_evidence==[code.replace('workbuddy_','runtime_',1)]
     assert 'harness_runtime_unavailable' not in outcome.missing_evidence
+    final_failure=store.get_harness_state(run)['terminal_handoff_failure']
+    assert final_failure['cleanup_complete'] is True
+    assert final_failure['cleanup_failure_code'] is None

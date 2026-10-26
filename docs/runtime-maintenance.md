@@ -1,5 +1,27 @@
 # Runtime maintenance
 
+## Launcher recovery and deferred workspace changes
+
+The launcher checks target SDK integration evidence before preparing a frontend
+build. A workspace candidate with missing integration evidence is not certified
+or deployed implicitly. The launcher may restore only the recorded deployed
+API archive and frontend pair: archive content, unchanged interpreter/dependency
+binding, build identity, activity, writer, cleanup and admission checks remain
+mandatory before a cold start. An invalid deployed target still blocks startup.
+
+The console and startup result explicitly distinguish the loaded source digest
+from the requested workspace digest (`update_deferred`, `current_changes_loaded`).
+Pending changes must not be presented as loaded. The persisted deferral is only
+a negative result tied to exact workspace content and SDK management-state
+bytes; it never grants execution eligibility. Healthy exact-version reuse does
+not rebuild or re-audit; cold starts still run the deployed target's full audit.
+
+Full-content hashes are calculated with bounded I/O concurrency at the existing
+consistency boundaries, not replaced by timestamps. Short-lived project writers
+are waited out without holding the switch lock or stopping them. Windows archive
+rename failures 5/32/33 receive bounded rename-only retries; an existing target
+is never overwritten and persistent denial retains the staged archive.
+
 The settings page separates versions and maintenance, diagnostics and validation,
 and risk-sensitive actions. Opening these sections or switching SDK tabs only
 reads display state; it never installs packages, checks authentication or probes
@@ -85,12 +107,62 @@ still reports **restart pending**, never that the running API has already loaded
 the new SDK. Authentication, integration and model compatibility gates remain
 independent and unchanged; successful package installation grants no PASS.
 
-WorkBuddy's current installer rebuilds pinned SDK 0.3.247 from verified local
-inputs. It is not an online upgrade facility, and rebuilding can change the active
-environment and authentication binding. The settings page therefore does not
-offer that path as an upgrade and leaves same-version repair disabled with a
-visible explanation. The existing controlled maintenance entry point retains a
-flat SDK result and is explicitly identified as environment repair.
+### WorkBuddy: pip preparation in a new independent environment
+
+The offline implementation adds `WorkBuddyPackageUpdate`, reusing the owned pip,
+verified wheel cache and existing update routes. Codex retains its default
+package, CLI dependency, request and installation budgets. WorkBuddy downloads
+with its independently verified bootstrap, not the platform interpreter. A
+target is frozen; pre/dev/local versions and unreviewed CLI layouts fail closed.
+Currently the reviewed layout is the SDK-bundled Windows CLI: the exact wheel
+member hash binds it to the SDK; its version is observed, never inferred.
+
+The new helper installs only verified, hash-pinned local wheels with `--no-index`
+into a new environment. It checks installed SDK/dependency versions, pip check,
+bundled CLI bytes/version, and the current worker's imported SDK surface/options.
+It rechecks interpreter metadata and dependencies after moving to the immutable
+final directory. It never reads or changes the active state or credentials.
+Download keeps the existing 1800s/60s idle limits; WorkBuddy preparation retains
+the original 700s owned envelope and individual 60s venv/300s pip limits. Cleanup
+uses the existing 10s active window, retaining reservation if unconfirmed.
+
+An update response is `maintenance_kind=upgrade_candidate`, `activated=false`,
+with current version unchanged and `needs_review/candidate_prepared`. Preparing
+is not activating, and versions GET/check cannot grant authentication or
+qualification. Same-operation recovery verifies the original request, result
+and immutable candidate without installing again. Existing diagnostic receipts
+block repeated preparation after an interrupted API, including corrupt receipts;
+controlled review is required, not an automatic installer retry.
+
+Activation/rollback are private maintenance primitives, not new REST actions.
+They require writer clearance, an exact source binding, the existing integration
+auditor, the real candidate verification-binding checker and a trusted target
+authentication/model auditor. Missing target auditors/evidence block switching.
+No built-in boolean can grant admission. Rollback audits its target too and
+retains appended certificates, model-check history and switch records rather
+than restoring an old ledger wholesale. The maintenance caller must hold the
+deployment/admission barrier, reserve authentication maintenance, synchronize
+the target official authentication observation, and verify health or perform
+the same guarded rollback; no public update request performs those actions.
+`TargetAdmissionAudit` supplies the concrete read-only target auditor: it checks
+the candidate-configured authentication service's current observation, original
+identity/site/revision, exact candidate environment and owned successful model
+check origin. It does not run a check itself. The maintenance operator must first
+obtain those target proofs through the existing controlled verification tools;
+missing evidence cannot be replaced with copied old SDK records or a boolean.
+New WorkBuddy clients send optional `expectedTargetVersion` on the existing
+update route, refusing a changed target before download; Codex requests are
+unchanged. The response explicitly describes a candidate, not an installed
+active version. Version display caches are bound to the WorkBuddy environment
+so a later controlled switch cannot inherit the old installation's versions.
+
+The legacy `install-workbuddy-runtime.py` remains the pinned historical
+bootstrap/repair tool, not the new upgrade implementation. Public update no
+longer falls back to that repair path. Same-version repair stays disabled in the
+page. Capability projections explicitly distinguish preparation from automatic
+activation, and the page labels the action “Prepare SDK upgrade”. No real SDK
+upgrade, source lookup, model/SAP call or target qualification is performed by
+the offline test deliverable.
 
 ## Protection and rollout
 

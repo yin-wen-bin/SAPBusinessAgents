@@ -131,13 +131,14 @@ Return only the required structured object.
     async def revise_free_query_presentation(
         self,
         *,
-        thread_id: str,
+        thread_id: str | None,
         query: str,
         feedback: str,
         previous_presentation: dict[str, Any],
         allowed_evidence_refs: list[str],
         completeness: dict[str, Any],
         rule_results: list[dict[str, Any]],
+        recovery: bool = False,
     ) -> dict[str, Any]:
         AsyncCodex = self._runtime_client
 
@@ -156,14 +157,11 @@ Deterministic rule results (must not change or contradict):
 Do not call tools, add facts, change completeness, or cite any evidence reference outside the
 allowed list. Change only wording, language, ordering, or table layout. Return JSON only.
 """.strip()
-        async with AsyncCodex() as codex:
-            thread = await codex.thread_resume(
-                thread_id,
-                cwd=str(self.repository_root),
-                sandbox=Sandbox.read_only,
-                approval_mode=ApprovalMode.deny_all,
-                model=self.model,
-            )
+        if recovery:
+            prompt += '\nThis is a new round after cancellation, based only on the supplied persisted context. Explain what it supports and what remains unknown. Do not resume a cancelled invocation, call tools, obtain new SAP evidence or claim completed business verification.'
+        async with AsyncCodex(**({'evidence_only':True} if recovery else {})) as codex:
+            options=dict(cwd=str(self.repository_root),sandbox=Sandbox.read_only,approval_mode=ApprovalMode.deny_all,model=self.model)
+            thread = await codex.thread_start(**options) if recovery else await codex.thread_resume(thread_id,**options)
             result = await thread.run(
                 prompt, output_schema=FREE_QUERY_PRESENTATION_REVISION_SCHEMA, effort=self.reasoning_effort
             )
@@ -175,6 +173,7 @@ allowed list. Change only wording, language, ordering, or table layout. Return J
                     "en": str(raw["summary"]["en"]),
                 },
                 "presentation": presentation.model_dump(mode="json"),
+                **({'thread_id':thread.id} if recovery else {}),
             }
 
 

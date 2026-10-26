@@ -226,6 +226,12 @@ class HarnessToolBroker:
         runtime = self.store.get_run(run_id).runtime
         expected = freeze_report(run_id, self._run_request_digest(run_id, state),
             runtime.model_dump(mode="json") if runtime else None, state.get("acceptance_spec"))
+        from .runtime_legacy_protocol import supported
+        saved = state.get("report_contract") or {}
+        if state.get("terminal_protocol", 1) == 1 and supported(saved.get("checker_binding")):
+            from .runtime_report_contract import digest
+            expected["checker_binding"] = saved["checker_binding"]
+            expected["digest"] = digest({k: v for k, v in expected.items() if k != "digest"})
         if state.get("report_contract") != expected:
             raise ReportContractError()
         reference = contract_reference(self.settings.data_root, run_id)
@@ -270,7 +276,7 @@ class HarnessToolBroker:
             runtime.model_dump(mode="json") if runtime else None, state.get("acceptance_spec"))
         previous_contract = state.get("report_contract")
         if previous_contract and previous_contract.get("request_digest") == contract["request_digest"]:
-            self.report_contract(run_id)  # Never silently upgrade a running binding.
+            contract = self.report_contract(run_id)  # Never silently upgrade a running binding.
             reference = state["report_contract_file"]
         else:
             reference = save_contract(self.settings.data_root, contract)
@@ -354,6 +360,10 @@ class HarnessToolBroker:
         )
         phase = budget["deadline_phase"]
         changed = False
+        terminal_deadline = self.store.get_harness_state(run_id).get("terminal_handoff_elapsed_deadline")
+        if terminal_deadline is not None:
+            phase = "deadline_exceeded" if elapsed >= terminal_deadline else "finalizing"
+            changed = phase != budget["deadline_phase"]
         while (
             phase == "querying"
             and elapsed >= budget["query_seconds_granted"]
@@ -576,7 +586,7 @@ class HarnessToolBroker:
     async def handle(
         self, run_id: str, token: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
-        if (tool_name == "sap_final_report_validate" and run_id not in self._authoring_sessions
+        if (tool_name in {"request_query_clarification", "request_secure_receipt_reference", "sap_final_report_validate", "sap_query_validate", "sap_query_execute", "sap_money_aggregate"} and run_id not in self._authoring_sessions
                 and self.authenticate(run_id, token)):
             async with self._report_locks.setdefault(run_id, asyncio.Lock()):
                 return await self._handle_run(run_id, token, tool_name, arguments)
@@ -610,6 +620,24 @@ class HarnessToolBroker:
             code = reason if not allowed else "harness_run_closed"
             self.store.append_event(run_id, "tool_denied", {"tool": tool_name[:80], "code": code})
             return {"ok": False, "code": code}
+        from .runtime_input_control import NAMES, pending, request as request_input, InputControlError
+        if pending(self.store, run_id) and tool_name not in NAMES:
+            return {"ok": False, "code": "input_request_pending"}
+        if tool_name in NAMES:
+            if self.review_deadline(run_id)["deadline_phase"] == "deadline_exceeded":
+                return {"ok": False, "code": "harness_deadline_exceeded"}
+            try:
+                return request_input(self.store, run_id, tool_name, arguments)
+            except InputControlError as exc:
+                return {"ok": False, "code": exc.code}
+        from .runtime_input_control import NAMES, pending, request as request_input, InputControlError
+        if pending(self.store, run_id) and tool_name not in NAMES:
+            return {"ok": False, "code": "input_request_pending"}
+        if tool_name in NAMES:
+            try:
+                return request_input(self.store, run_id, tool_name, arguments)
+            except InputControlError as exc:
+                return {"ok": False, "code": exc.code}
         stopped = report_stop_state(self.store.get_harness_state(run_id))
         if stopped and tool_name != "sap_final_report_validate":
             return {"ok": False, "code": stopped.get("stop_code") or "acceptance_report_validation_failed",
@@ -640,6 +668,7 @@ class HarnessToolBroker:
             "sap_month_end_status_assess",
             "sap_final_report_validate",
             "safe_compute",
+            "sap_money_aggregate",
             "tool_catalog_search",
             "tool_catalog_inspect",
         }:
@@ -683,11 +712,40 @@ class HarnessToolBroker:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
+        if tool_name == 'sap_money_aggregate':
+            # A retransmission belongs to its original invocation even after
+            # new proof arrives. A new explicit local calculation, however,
+            # must not reuse an earlier proof generation's cached result.
+            if set(arguments) != {'evidence_ref'} or not isinstance(arguments.get('evidence_ref'), str):
+                return {'ok':False,'code':'money_arguments_invalid'}
+            prior_id = next((c for c in calls if c.get('call_id') == call_id), None)
+            if prior_id is not None:
+                if prior_id.get('tool_name') != tool_name or prior_id.get('safe_input') != safe_input:
+                    return {'ok':False,'code':'harness_tool_call_conflict'}
+                if isinstance(prior_id.get('output'), dict):
+                    return self._completed_tool_replay(run_id, tool_name, prior_id['output'])
+                return _unknown_recovered_call(prior_id)
+            try:
+                generation = self._configuration_proofs(run_id, contract=report_contract)
+            except Exception as exc:
+                return {'ok':False,'code':getattr(exc,'code','source_configuration_evidence_invalid')}
+            request_hash = hashlib.sha256(json.dumps({'request':request_hash,
+                'binding':report_contract['digest'], 'configuration_generation':generation},
+                sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
         if tool_name == "sap_final_report_validate":
             request_hash = hashlib.sha256(f"{request_hash}:{call_id}".encode()).hexdigest()
             prior_id = next((call for call in calls if call.get("call_id") == call_id), None)
             if prior_id is not None and prior_id.get("request_hash") != request_hash:
                 return {"ok": False, "code": "harness_tool_call_conflict"}
+        if tool_name in {"sap_query_validate", "sap_query_execute"}:
+            prior_id = next((call for call in calls if call.get('call_id') == call_id), None)
+            salted = hashlib.sha256(f'{request_hash}:{call_id}'.encode()).hexdigest()
+            if prior_id is not None:
+                if prior_id.get('tool_name') != tool_name or prior_id.get('request_hash') not in {request_hash, salted}:
+                    return {'ok': False, 'code': 'harness_tool_call_conflict'}
+                if isinstance(prior_id.get('output'), dict):
+                    return self._completed_tool_replay(run_id, tool_name, prior_id['output'])
+                return _unknown_recovered_call(prior_id)
         existing = next(
             (
                 call
@@ -701,6 +759,10 @@ class HarnessToolBroker:
         # evidence/assessment state even when its payload is byte-identical.
         # Network replay with the same tool_call_id remains idempotent below.
         previous_output = (existing or {}).get("output") or {}
+        if (tool_name in {'sap_query_validate', 'sap_query_execute'} and existing is not None
+                and existing.get('status') == 'failed' and existing.get('call_id') != call_id):
+            request_hash = hashlib.sha256(f'{request_hash}:{call_id}'.encode()).hexdigest()
+            existing = None
         previous_issues = previous_output.get("validation_issues") or (previous_output.get("validation") or {}).get("validation_issues") or []
         previous_codes = {previous_output.get("code"), *(item.get("code") for item in previous_issues if isinstance(item, dict))}
         transient_failure = bool(previous_codes.intersection({
@@ -729,6 +791,13 @@ class HarnessToolBroker:
             return {"ok": False, "code": stopped.get("stop_code") or "acceptance_report_validation_failed",
                 "validation_issues": stopped.get("validation_issues") or [], "terminal_validation_failure": True,
                 "report_validated": False, "validation_ref": None}
+        plan_failure = self.store.get_harness_state(run_id).get('plan_convergence') or {}
+        if plan_failure.get('terminal') and tool_name not in {
+                'sap_final_report_validate', 'sap_evidence_read', 'sap_evidence_assess',
+                'sap_money_aggregate', 'safe_compute', 'tool_catalog_search', 'tool_catalog_inspect'}:
+            return {'ok': False, 'code': 'query_plan_correction_stalled', 'retry_scope': 'report_only',
+                'message': 'Plan correction stalled. No new external reads. Report only the preserved evidence and gaps.',
+                'validation_issues': plan_failure.get('validation_issues') or [], 'extends_deadline': False}
         budgeted_calls = [
             call for call in calls if call.get("tool_name") != "sap_final_report_validate"
         ]
@@ -802,13 +871,15 @@ class HarnessToolBroker:
                     defined = ((self.store.get_harness_state(run_id).get("acceptance_spec") or {}).get("source_semantics"))
                     constraints = getattr(self._read_scopes.get(run_id), "constraints", ())
                     confirmed = {name: values for names, values in constraints for name in names if name in {"Ledger", "SourceLedger"}}
-                    with (scope(run_id) if callable(scope) else nullcontext()), bind_scope(defined, confirmed):
+                    with (scope(run_id) if callable(scope) else nullcontext()), bind_scope(defined, confirmed,
+                            configurations=self._configuration_proofs(run_id)):
                         output = await self._dispatch(run_id, tool_name, arguments)
                 self._ensure_writable(run_id)
                 self.report_contract(run_id)
             if normalization_diagnostics:
                 output = {**output, "normalization_diagnostics": normalization_diagnostics}
-            output = _safe_public(output, preserve_rows=True)
+            output = (_safe_schema_result(output) if tool_name == "sap_schema_get"
+                      else _safe_public(output, preserve_rows=True))
             status = "completed" if output.get("ok") is not False else "failed"
         except asyncio.CancelledError:
             self.store.complete_harness_tool_call(call_id, status="failed", output={"ok": False, "code": "harness_run_cancelled"})
@@ -835,6 +906,27 @@ class HarnessToolBroker:
             if sample_read_started:
                 sample_context.calls_in_flight = max(0, sample_context.calls_in_flight - 1)
         evidence_ref = str(output.get("evidence_ref") or "") or None
+        if tool_name in {'sap_query_validate', 'sap_query_execute'}:
+            issues = output.get('validation_issues') or (output.get('validation') or {}).get('validation_issues') or []
+            if not issues and output.get('code') in {'tool_input_invalid', 'runtime_plan_contract_invalid'}:
+                issues = [{'code': output['code'], 'path': '/plan', 'constraint': 'type'}]
+            current_codes = {output.get('code'), (output.get('validation') or {}).get('code')}
+            if issues and not current_codes.intersection({'sap_read_timeout', 'sap_schema_timeout', 'sap_read_connection_error', 'sap_metadata_invalid'}):
+                state = self.store.get_harness_state(run_id)
+                # Removing part of a metadata-owned missing-field set is real
+                # progress, even when its top-level error path is unchanged.
+                progress_issues = [issue for issue in issues
+                    for _ in range(max(1, len(issue.get('required_fields') or [])))]
+                failure = advance_report(state.get('plan_convergence') or {}, issues=progress_issues,
+                    acceptance=False, legacy_progress=None, relevant_generation=self.report_contract(run_id)['digest'])
+                failure['validation_issues'] = issues
+                self.store.update_harness_state(run_id, {'plan_convergence': failure})
+                output['plan_convergence'] = {k: failure[k] for k in ('without_progress', 'terminal')}
+                if failure['terminal']:
+                    output.update(code='query_plan_correction_stalled', retry_scope='report_only',
+                        message='Plan correction stalled. No new external reads; report preserved evidence and gaps.')
+            elif output.get('ok') is True:
+                self.store.update_harness_state(run_id, {'plan_convergence': None})
         self.store.complete_harness_tool_call(
             call_id,
             status=status,
@@ -928,7 +1020,7 @@ class HarnessToolBroker:
         elif tool_name in {
             "sap_evidence_read", "sap_evidence_assess", "sap_inventory_fifo_assess",
             "sap_month_end_status_assess",
-            "sap_final_report_validate", "safe_compute", "external_tool_execute",
+            "sap_final_report_validate", "sap_money_aggregate", "safe_compute", "external_tool_execute",
         }:
             phase = "validating_evidence"
             current_tool = tool_name
@@ -946,6 +1038,19 @@ class HarnessToolBroker:
     async def _dispatch(
         self, run_id: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if tool_name == 'sap_money_aggregate':
+            if set(arguments) != {'evidence_ref'}:
+                from .runtime_money import reject
+                reject('money_arguments_invalid')
+            result = self._calculate_money(run_id, arguments['evidence_ref'])
+            state = self.store.get_harness_state(run_id)
+            calculations = dict(state.get('money_calculations') or {})
+            if result['calculation_ref'] not in calculations and len(calculations) >= 50:
+                from .runtime_money import reject
+                reject('money_calculation_limit_exceeded')
+            calculations[result['calculation_ref']] = result
+            self.store.update_harness_state(run_id, {'money_calculations': calculations})
+            return {'ok': True, **result}
         if tool_name in {"tool_catalog_search", "tool_catalog_inspect"}:
             context = self._run_assistant_context(run_id)
             if tool_name == "tool_catalog_search":
@@ -954,8 +1059,15 @@ class HarnessToolBroker:
                     limit=min(max(int(arguments.get("limit") or 30), 1), 50))}
             item = assistant_inspect(context, str(arguments.get("tool_id") or ""),
                 approved_skills=self.skills.list_all_approved_skills(), report_contract=self.report_contract(run_id))
-            return {"ok": item is not None, "catalog_version": CATALOG_VERSION, "tool": item,
+            result = {"ok": item is not None, "catalog_version": CATALOG_VERSION, "tool": item,
                     "code": None if item is not None else "tool_not_found"}
+            if item is None:
+                skill_item = assistant_inspect(context, "skill:" + str(arguments.get("tool_id") or ""),
+                    approved_skills=self.skills.list_all_approved_skills(), report_contract=self.report_contract(run_id))
+                if skill_item is not None:
+                    result.update(suggested_tool_id=skill_item["tool_id"],
+                        repair_action="This is a Skill ID. Inspect its skill: catalog identifier, then use the Broker evidence gate; this rejection does not authorize execution.")
+            return result
         if tool_name == "list_all_approved_skills":
             catalog = self.skills.list_all_approved_skills()
             selected = str(arguments.get("skill_id") or "")
@@ -1207,13 +1319,17 @@ class HarnessToolBroker:
                 "completed_at": call["completed_at"],
                 **({"source_semantics": copy.deepcopy(call["output"]["source_semantics"])}
                    if isinstance(call.get("output"), dict) and call["output"].get("source_semantics") else {}),
+                **({"source_reassessment": copy.deepcopy(call['output']['_source_reassessment'])}
+                   if call.get('tool_name') == 'sap_final_report_validate' and call.get('status') == 'completed'
+                   and (call.get('output') or {}).get('ok') is True
+                   and (call.get('output') or {}).get('_source_reassessment') else {}),
             }
             for call in calls
         ]
         evidence: list[dict[str, Any]] = []
         for call in calls:
             output = call.get("output") or {}
-            if output.get("evidence_ref") and call.get("tool_name") != "sap_evidence_read":
+            if output.get("evidence_ref") and call.get("tool_name") not in {"sap_evidence_read", "sap_money_aggregate"}:
                 evidence.append(
                     {
                         "evidence_ref": output["evidence_ref"],
@@ -1262,6 +1378,148 @@ class HarnessToolBroker:
             meta_path.read_text(encoding="utf-8")
         )
 
+    def _configuration_proofs(self, run_id, *, contract=None):
+        """Only consume owned, complete, registered configuration reads.
+
+        No model argument can register a source, mark it verified or recover
+        arbitrary files. Restricted configuration artifacts need their own
+        approved platform reader and remain unavailable on this path.
+        """
+        from .runtime_evidence_bindings import configuration_rows
+        from .runtime_contract import RuntimeContractError
+        sources = (contract or self.report_contract(run_id))['query_contract']['evidence_bindings']['configuration_sources']
+        if not sources:
+            return []
+        proofs = []
+        seen = set()
+        for call in self.store.list_harness_tool_calls(run_id):
+            output = call.get('output') or {}
+            ref = call.get('evidence_ref')
+            if (call.get('tool_name') != 'sap_query_execute' or call.get('status') != 'completed'
+                    or output.get('ok') is not True or not ref or ref in seen):
+                continue
+            plan = (call.get('safe_input') or {}).get('plan') or {}
+            records = [r for r in sources if all(r[k] == plan.get(k)
+                for k in ('service_name', 'odata_version', 'entity_set'))]
+            if not records:
+                continue
+            if len(records) != 1:
+                raise RuntimeContractError('source_configuration_mapping_ambiguous')
+            raw, meta = self._read_evidence(run_id, ref)
+            rows = _extract_rows(raw)
+            if (raw.get('rows_redacted') or raw.get('restricted_artifact_ref')
+                    or meta.get('source_type') != 'sap_live' or meta.get('source_complete') is not True
+                    or output.get('source_complete') is not True or output.get('row_count') != len(rows)):
+                raise RuntimeContractError('source_configuration_evidence_incomplete')
+            proofs.extend(configuration_rows(records[0], rows, evidence_ref=ref, source_plan=plan))
+            seen.add(ref)
+        return proofs
+
+    def source_reassessment(self, run_id, *, for_handoff=False):
+        """Pure local re-evaluation; no query, mutation of old reads or new PASS.
+
+        The result is appended to the existing report validation call only when
+        all report checks pass. Each use recomputes from owned immutable rows.
+        """
+        from .source_semantics import assess, public_assessment, profile
+        from .source_reassessment import make_receipt, effective_assessments
+        contract = self.report_contract(run_id)
+        calls, _ = self.snapshot(run_id)
+        configurations = self._configuration_proofs(run_id, contract=contract)
+        receipts = []
+        if configurations:
+            state = self.store.get_harness_state(run_id)
+            frozen = state['source_semantics_catalog']
+            definition = (state.get('acceptance_spec') or {}).get('source_semantics')
+            raw_calls = self.store.list_harness_tool_calls(run_id)
+            for source in raw_calls:
+                plan = (source.get('safe_input') or {}).get('plan') or {}
+                if (source.get('tool_name') != 'sap_query_execute' or source.get('status') != 'completed'
+                        or (source.get('output') or {}).get('ok') is not True
+                        or not source.get('evidence_ref') or not (source.get('output') or {}).get('source_semantics')
+                        or not profile(plan, frozen)):
+                    continue
+                raw, meta = self._read_evidence(run_id, source['evidence_ref'])
+                if (raw.get('rows_redacted') or raw.get('restricted_artifact_ref') or meta.get('source_type') != 'sap_live'):
+                    continue  # A public reassessment cannot decode restricted artifacts.
+                rows = _extract_rows(raw)
+                if len(rows) != source['output'].get('row_count'):
+                    from .runtime_contract import RuntimeContractError
+                    raise RuntimeContractError('source_reassessment_rows_incomplete')
+                result = assess(plan, rows, frozen, source_complete=meta.get('source_complete') is True
+                    and source['output'].get('source_complete') is True,
+                    configurations=configurations, definition=definition)
+                after = _safe_public([public_assessment(result)], preserve_rows=True)
+                after[0]['source_evidence_ref'] = source['evidence_ref']
+                receipts.append(make_receipt(run_id=run_id, binding=contract['digest'], source=source,
+                    after=after, configurations=configurations, definition=definition))
+                if len(receipts) > 200:
+                    from .runtime_contract import RuntimeContractError
+                    raise RuntimeContractError('source_reassessment_limit_exceeded')
+        # Stop/cancel/config changes cannot acquire a late report receipt.
+        if for_handoff:
+            # Native cleanup closes SDK/tool capabilities before finalization.
+            # Read-only handoff verification is not a new tool call or receipt
+            # publication; cancellation/terminal persistence still forbids it.
+            run = self.store.get_run(run_id)
+            if run.cancel_requested or run.status in TERMINAL_STATUSES:
+                raise ToolAdmissionError('This run has ended.', code='harness_run_closed')
+        else:
+            self._ensure_writable(run_id)
+        if self.report_contract(run_id)['digest'] != contract['digest']:
+            raise ReportContractError()
+        envelope = {'run_id':run_id,'binding':contract['digest'],'receipts':receipts}
+        return effective_assessments(calls, receipts, run_id=run_id, binding=contract['digest']), envelope
+
+    def assert_source_reassessment_current(self, run_id, *, validation_ref=None):
+        """A report validated before later evidence cannot silently close a run."""
+        _, expected = self.source_reassessment(run_id, for_handoff=True)
+        accepted = next((c.get('output') or {} for c in reversed(self.store.list_harness_tool_calls(run_id))
+            if c.get('tool_name') == 'sap_final_report_validate' and c.get('status') == 'completed'
+            and (c.get('output') or {}).get('ok') is True
+            and (validation_ref is None or (c.get('output') or {}).get('validation_ref') == validation_ref)), {})
+        saved = accepted.get('_source_reassessment')
+        if (saved or expected['receipts']) and saved != expected:
+            from .runtime_contract import RuntimeContractError
+            raise RuntimeContractError('source_reassessment_required')
+
+    def _calculate_money(self, run_id, evidence_ref):
+        from .runtime_money import calculate, reject
+        from .source_semantics import profile
+        state = self.store.get_harness_state(run_id)
+        calls = self.store.list_harness_tool_calls(run_id)
+        call = next((c for c in calls if c.get('tool_name') == 'sap_query_execute'
+            and c.get('status') == 'completed' and c.get('evidence_ref') == evidence_ref
+            and (c.get('output') or {}).get('ok') is True), None)
+        if call is None: reject('money_evidence_not_owned')
+        plan = (call.get('safe_input') or {}).get('plan') or {}
+        frozen = state['source_semantics_catalog']
+        if not profile(plan, frozen): reject('money_source_not_supported')
+        raw, meta = self._read_evidence(run_id, evidence_ref)
+        if raw.get('rows_redacted') or raw.get('restricted_artifact_ref') or meta.get('source_type') != 'sap_live':
+            reject('money_evidence_restricted')
+        rows = _extract_rows(raw)
+        if len(rows) != call['output'].get('row_count'): reject('money_evidence_rows_incomplete')
+        return calculate(run_id=run_id, binding=self.report_contract(run_id)['digest'],
+            evidence_ref=evidence_ref, rows=rows, plan=plan, frozen=frozen,
+            source_complete=meta.get('source_complete') is True and call['output'].get('source_complete') is True,
+            definition=(state.get('acceptance_spec') or {}).get('source_semantics'),
+            configurations=self._configuration_proofs(run_id))
+
+    def _check_money_report(self, run_id, presentation):
+        from .runtime_money import report_issues, reject, monetary_request
+        state = self.store.get_harness_state(run_id)
+        required = monetary_request(self.store.get_run(run_id).query) or any(
+            column.format == 'currency' for block in presentation.blocks for column in block.columns) or any(
+            metric.currency for block in presentation.blocks for metric in block.metrics)
+        records = state.get('money_calculations') or {}
+        refs = {m.calculation_ref for b in presentation.blocks for m in b.metrics if m.calculation_ref}
+        for ref in refs:
+            record = records.get(ref)
+            if record is not None and self._calculate_money(run_id, record['evidence_ref']) != record:
+                reject('money_calculation_changed')
+        return report_issues(presentation, records, required=required)
+
     def _assess_evidence(self, run_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         references = [str(item) for item in arguments.get("evidence_refs") or []]
         missing = [str(item) for item in arguments.get("missing_evidence") or [] if str(item)]
@@ -1295,8 +1553,10 @@ class HarnessToolBroker:
                 try:
                     self.skills.validate_input(skill_id, skill_input)
                 except Exception as exc:
+                    from .runtime_diagnostics import input_schema_feedback
                     return {"ok": False, "code": "skill_input_invalid",
-                            "message": "Use the exact approved input schema; no Skill was executed.",
+                            "message": "Correct the indicated fields against this Skill schema; no Skill was executed. Query-plan and Skill versions are independent.",
+                            "validation_issues": input_schema_feedback(skill_input, skill_contract.get("input_schema") or {}),
                             "skill_contract": _public_skill_contract(skill_contract)}
                 skill_input_hash = _json_fingerprint(skill_input)
             gap_token = secrets.token_urlsafe(24)
@@ -1905,14 +2165,24 @@ class HarnessToolBroker:
         }
         state = self.store.get_harness_state(run_id)
         spec = state.get("acceptance_spec")
+        source_contexts, reassessment = self.source_reassessment(run_id)
+        if presentation is not None:
+            money_issues, money_status = self._check_money_report(run_id, presentation)
+            issues.extend(money_issues)
+            if presentation.financial_verification not in {'not_requested', money_status}:
+                from .runtime_money import verification_details
+                issues.append({'code': 'money_verification_claim_invalid', 'path': '/financial_verification',
+                    'constraint': 'platform_derived_status', 'expected': money_status,
+                    **verification_details(presentation, money_status)})
+            # A platform-owned projection, never a repair of an invalid amount.
+            presentation.financial_verification = money_status
         projection = arguments.get("acceptance_projection")
         if spec is not None:
             issues.extend(validate_projection(spec, projection, known))
             if not issues:
                 issues.extend(visible_projection_issues(spec, projection, report))
             from .source_semantics import contexts_from_run, comparison_issues, projection_issues
-            calls, _ = self.snapshot(run_id)
-            contexts = contexts_from_run({"result": {"tool_calls": calls}})
+            contexts = source_contexts
             issues.extend(comparison_issues(contexts, contexts, spec.get("source_semantics")))
             issues.extend(projection_issues(projection, contexts, spec.get("source_semantics")))
         elif "acceptance_projection" in arguments:
@@ -1970,6 +2240,7 @@ class HarnessToolBroker:
             "report_validated": not issues,
             "validation_issues": issues,
             "report_hash": report_hash,
+            "presentation_contract": "sapba.presentation-money/1",
             "validation_ref": f"validation_{report_hash.removeprefix('sha256:')[:24]}" if not issues else None,
             "repair_feedback": repair_feedback(issues, acceptance=spec is not None),
             **({"code": "acceptance_report_validation_failed"} if issues else {}),
@@ -1979,8 +2250,22 @@ class HarnessToolBroker:
             "_validated_acceptance_projection": projection if spec is not None and not issues else None,
         }
         if not issues:
+            if state.get("terminal_protocol") == 2 and state.get("terminal_handoff_elapsed_deadline") is None:
+                budget = self.budget_snapshot(run_id)
+                self.store.update_harness_state(run_id, {"terminal_handoff_elapsed_deadline": min(
+                    budget["hard_limit_seconds"], self._elapsed_seconds(run_id) + budget["finalization_seconds_reserved"])})
+            if reassessment['receipts']:
+                output['_source_reassessment'] = reassessment
+                output['source_reassessment_refs'] = [r['receipt_ref'] for r in reassessment['receipts']]
             output["validated_report"] = {**presentation.model_dump(mode="json"),
                 "validation_ref": output["validation_ref"]}
+            output['financial_verification'] = presentation.financial_verification
+            from .runtime_money import verification_details
+            output['financial_verification_details'] = verification_details(presentation, presentation.financial_verification)
+            self.store.append_event(run_id, 'report_handoff_ready', {
+                'validation_ref': output['validation_ref'], 'financial_verification': presentation.financial_verification})
+            if presentation.financial_verification == 'unverified':
+                output['financial_warning'] = 'Amounts in unbound prose/tables/metrics are not verified; do not claim business completeness. Bind exact metrics from sap_money_aggregate.'
         if issues:
             progress = _acceptance_validation_progress(
                 report=report if presentation is not None else {},
@@ -2142,7 +2427,9 @@ def _mcp_overrides(
         "SAPBA_HARNESS_CAPABILITY": capability,
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
     }
+    common_env["SAPBA_TERMINAL_PROTOCOL"] = str(RunStore(settings.database_path).get_harness_state(run_id).get("terminal_protocol", 1))
     reference = contract_reference(settings.data_root, run_id)
     common_env.update(SAPBA_REPORT_CONTRACT_FILE=reference["path"],
         SAPBA_REPORT_CONTRACT_SHA256=reference["sha256"],
@@ -2526,6 +2813,10 @@ def _validated_presentation_snapshot(
         except Exception:
             continue
         report_hash = _presentation_hash(presentation)
+        if output.get('presentation_contract') is None and output.get('report_hash') != report_hash:
+            legacy_hash = _legacy_presentation_hash(report, presentation)
+            if legacy_hash is not None:
+                report_hash = legacy_hash
         if (
             output.get("report_hash") == report_hash
             and output.get("validation_ref")
@@ -2534,6 +2825,24 @@ def _validated_presentation_snapshot(
             presentation.validation_ref = validation_ref
             return presentation
     return None
+
+
+def _legacy_presentation_hash(report, presentation):
+    """Read the pre-money format only; never reissue/upgrade its provenance.
+
+    The SHA/serialization algorithm is unchanged. New optional fields cannot be
+    stripped from a new snapshot to manufacture an old-format match.
+    """
+    added = {'calculation_ref', 'calculation_item', 'calculation_field', 'currency'}
+    if 'financial_verification' in report or any(added.intersection(metric)
+            for block in report.get('blocks', []) for metric in block.get('metrics', [])):
+        return None
+    payload = presentation.model_dump(mode='json', exclude={'validation_ref', 'financial_verification'})
+    for block in payload['blocks']:
+        for metric in block['metrics']:
+            for field in added: metric.pop(field)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return 'sha256:' + hashlib.sha256(encoded).hexdigest()
 
 
 def _latest_validated_presentation(raw_calls: list[dict[str, Any]]) -> RunPresentation | None:
@@ -2683,9 +2992,8 @@ def _validated_payload_from_store(
         "missing_evidence": list(dict.fromkeys(missing + (projection["evidence_gap_codes"] if projection else []))),
         "evidence_refs": _presentation_evidence_refs(presentation),
         "executed_plans": _executed_plans_from_calls(raw_calls),
-        "clarification_question": "",
-        "input_kind": None,
-        "input_field": None,
+        **({"clarification_question": "", "input_kind": None, "input_field": None}
+           if store.get_harness_state(run_id).get("terminal_protocol", 1) == 1 else {}),
         "presentation": presentation.model_dump(mode="json"),
         **({"acceptance_projection": projection} if projection is not None else {}),
     }
@@ -3177,6 +3485,27 @@ def _safe_tool_input(value: Any, *, depth: int = 0) -> Any:
     if isinstance(value, list):
         return [_safe_tool_input(item, depth=depth + 1) for item in value[:50]]
     return _safe_public(value, depth=depth)
+
+
+def _safe_schema_result(value: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize metadata without applying the business-row preview limit to fields.
+
+    The provider already bounds a schema request at 5,000 fields. Never promote
+    an incomplete provider response to an authoritative complete schema.
+    """
+    data = value.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("fields"), list):
+        return _safe_public(value, preserve_rows=True)
+    fields = data["fields"]
+    result = _safe_public({**value, "data": {k: v for k, v in data.items() if k != "fields"}},
+                          preserve_rows=True)
+    result["data"]["fields"] = [_safe_public(field, preserve_rows=True, depth=2)
+                                 for field in fields[:5000]]
+    truncated = (len(fields) > 5000
+                 or any(isinstance(field, dict) and "_truncated" in field for field in fields))
+    if truncated:
+        result["data"]["fields_truncated"] = True
+    return result
 
 
 def _safe_public(value: Any, *, preserve_rows: bool = False, depth: int = 0) -> Any:

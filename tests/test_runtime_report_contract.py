@@ -27,12 +27,12 @@ def report(**changes):
         "blocks": [{"type": "notice", "text": {"zh": "仅合成数据", "en": "Synthetic data only"}}], **changes}
 
 
-def make_broker(tmp_path, *, acceptance=None, runtime=None):
+def make_broker(tmp_path, *, acceptance=None, runtime=None, query="Synthetic offline report"):
     settings = Settings(repository_root=Path(__file__).parents[1], data_root=tmp_path / "data",
         draft_root=tmp_path / "drafts", skillhub_root=tmp_path / "skills", internal_api_url="http://127.0.0.1:8765")
     store = RunStore(settings.database_path)
     run = "run_offline_report"
-    store.create_run(run, RunCreate(mode=RunMode.free_query, query="Synthetic offline report"), runtime=runtime)
+    store.create_run(run, RunCreate(mode=RunMode.free_query, query=query), runtime=runtime)
     if acceptance is not None:
         store.update_harness_state(run, {"acceptance_spec": acceptance})
     class NoSap:

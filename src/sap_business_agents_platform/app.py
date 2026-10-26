@@ -510,6 +510,7 @@ def create_app(
         with startup_phase("workflow_recovery"):
             workflow_drafts.assistant.recover()
         await agent_lifecycle.start_feedback_image_cleanup()
+        authentication.start_external_sync()
         try:
             yield
         finally:
@@ -2171,7 +2172,7 @@ def create_app(
     async def provide_input(run_id: str, payload: RunInput) -> dict[str, str]:
         try:
             mode = await coordinator.provide_input(
-                run_id, payload.input, payload.sensitive_inputs
+                run_id, payload.input, payload.sensitive_inputs, input_request_id=payload.input_request_id
             )
         except KeyError as exc:
             raise HTTPException(404, "Run not found") from exc
@@ -3330,17 +3331,22 @@ def create_app(
     async def update_sdk(
         sdk_id: str,
         x_sapba_action: str | None = Header(default=None),
+        expected_target_version: str | None = Query(default=None, alias='expectedTargetVersion', max_length=64),
     ) -> dict[str, Any]:
         if x_sapba_action != "sdk-update":
             raise HTTPException(403, "SDK update confirmation header is required")
         try:
-            item = await sdk_registry.update(sdk_id)
+            item = (await sdk_registry.update(sdk_id,expected_target_version=expected_target_version)
+                    if sdk_id=='codebuddy-agent-sdk' and expected_target_version is not None
+                    else await sdk_registry.update(sdk_id))
         except SDKManagerError as exc:
             status_code = 404 if exc.code == "sdk_not_found" else 409
             raise HTTPException(status_code, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
         return {
             "item": item,
-            "message": "Environment repair completed." if item.get("maintenance_kind") == "environment_repair" else "Target SDK version installed.",
+            "message": ("Upgrade candidate prepared; active environment unchanged. Target evidence review required."
+                        if item.get('maintenance_kind')=='upgrade_candidate' else
+                        "Environment repair completed." if item.get("maintenance_kind") == "environment_repair" else "Target SDK version installed."),
             "restart_required": bool(item.get("restart_required")),
         }
 

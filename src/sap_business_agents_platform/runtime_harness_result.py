@@ -32,7 +32,7 @@ def finalize(settings, store, broker, run_id, payload, *, thread_id, turn_count,
     # Both SDKs consume the same host-owned evidence envelope; model claims
     # cannot turn an unproved source classification/grain into business success.
     from .source_semantics import contexts_from_run
-    source_contexts = contexts_from_run({"result": {"tool_calls": calls}})
+    source_contexts = contexts_from_run({"run_id":run_id, "result": {"tool_calls": calls}})
     if any(context.get("business_complete") is False or context.get("issues") for context in source_contexts):
         business_complete = False
         missing_evidence.append("source_business_completeness_unproven")
@@ -82,6 +82,28 @@ def finalize(settings, store, broker, run_id, payload, *, thread_id, turn_count,
         if validated_snapshot is not None:
             presentation = validated_snapshot
             final_report_validated = True
+    try:
+        broker.assert_source_reassessment_current(run_id,
+            validation_ref=presentation.validation_ref if presentation else None)
+    except Exception as exc:
+        # Match the report actually handed off, never borrow a newer report's
+        # receipt. An old terminal cannot acquire the latest proof generation.
+        if getattr(exc, 'code', None) != 'source_reassessment_required':
+            raise
+        business_complete = False
+        missing_evidence.append('source_reassessment_required')
+    if presentation is not None and presentation.financial_verification == 'unverified':
+        business_complete = False
+        missing_evidence.append('monetary_claims_unverified')
+    if presentation is not None:
+        calculations = state.get('money_calculations') or {}
+        refs = {m.calculation_ref for b in presentation.blocks for m in b.metrics if m.calculation_ref}
+        if any((calculations.get(ref) or {}).get('business_complete') is not True for ref in refs):
+            business_complete = False
+            missing_evidence.append('money_business_semantics_unproven')
+    if (state.get('plan_convergence') or {}).get('terminal'):
+        business_complete = False
+        missing_evidence.append('query_plan_correction_stalled')
     if len(evidence_refs) != len(payload.get("evidence_refs") or []):
         missing_evidence.append("unknown_evidence_reference_rejected")
     if len(executed_plans) != len(payload.get("executed_plans") or []):

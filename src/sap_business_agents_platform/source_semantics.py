@@ -24,10 +24,11 @@ _SCOPE = ContextVar("source_semantics_scope", default=None)
 
 
 @contextmanager
-def bind_scope(definition=None, confirmed_filters=None):
+def bind_scope(definition=None, confirmed_filters=None, *, configurations=()):
     if definition_issues(definition):
         raise ValueError("source_scope_definition_invalid")
-    token = _SCOPE.set({"definition": copy.deepcopy(definition), "filters": copy.deepcopy(confirmed_filters or {})})
+    token = _SCOPE.set({"definition": copy.deepcopy(definition), "filters": copy.deepcopy(confirmed_filters or {}),
+                       "configurations": copy.deepcopy(configurations)})
     try:
         yield
     finally:
@@ -219,6 +220,7 @@ def classify(row, p, configurations=(), *, configuration_time="posting_date"):
         return "posted_special", []
     applicable = [c for c in configurations if c.get("account_type") == row.get(p["account_type_field"])
                   and c.get("code") == code and c.get("verified") is True and c.get("evidence_ref")
+                  and ("company_code" not in c or c['company_code'] == row.get('CompanyCode'))
                   and (configuration_time == "current" or (day(c.get("valid_from")) is not None
                       and day(c.get("valid_to")) is not None and day(row.get(p["posting_date_field"])) is not None
                       and day(c["valid_from"]) <= day(row[p["posting_date_field"]]) <= day(c["valid_to"])))]
@@ -227,11 +229,13 @@ def classify(row, p, configurations=(), *, configuration_time="posting_date"):
     return ("noted_item" if applicable[0]["noted_item"] else "posted_special"), []
 
 
-def assess(step, rows, frozen, *, source_complete, cutoff=None, configurations=(), definition=None):
+def assess(step, rows, frozen, *, source_complete, cutoff=None, configurations=None, definition=None):
     p = profile(step, frozen)
     if not p or not material_plan(step, p):
         return None
     definition = definition or (_SCOPE.get() or {}).get("definition")
+    if configurations is None:
+        configurations = (_SCOPE.get() or {}).get('configurations', ())
     if cutoff is None:
         upper = [day(f.get("value")) for f in step.get("filters") or []
                  if f.get("field") == p["posting_date_field"] and f.get("operator") == "le"]
@@ -306,7 +310,20 @@ def plan_context(plan, frozen=None):
 def contexts_from_run(run):
     """Read platform tool/evidence envelopes, never model-authored projections."""
     result, contexts = run.get("result") or {}, []
-    for call in result.get("tool_calls") or []:
+    calls = result.get('tool_calls') or []
+    latest_report = next((c for c in reversed(calls) if (c.get('tool') or c.get('tool_name')) == 'sap_final_report_validate'
+        and c.get('status') == 'completed'), {})
+    envelope = latest_report.get('source_reassessment') or (latest_report.get('output') or {}).get('_source_reassessment')
+    if envelope:
+        from .source_reassessment import effective_assessments
+        if not isinstance(envelope, dict) or not isinstance(envelope.get('receipts'), list):
+            contexts = [{'business_complete':False,'issues':[issue('source_reassessment_invalid','/source_semantics')]}]
+        else:
+            # This path reads saved server-owned report output. A digest alone
+            # never grants execution or authorizes a model-provided receipt.
+            run_id = run.get('run_id') or result.get('run_id')
+            contexts = effective_assessments(calls, envelope['receipts'], run_id=run_id, binding=envelope.get('binding'))
+    for call in ([] if envelope else calls):
         if not call.get("evidence_ref"):
             continue
         actual = call.get("source_semantics") or (call.get("output") or {}).get("source_semantics")

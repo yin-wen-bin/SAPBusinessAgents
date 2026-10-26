@@ -26,7 +26,11 @@ async def monitor_deadline(self, run_id: str, turn: Any) -> None:
     from .harness import _best_effort_interrupt
     previous_phase = "querying"
     while True:
-        await asyncio.sleep(5)
+        await asyncio.sleep(0.25)
+        from .runtime_input_control import pending
+        if pending(self.store, run_id):
+            await _best_effort_interrupt(turn)
+            return
         budget = self.broker.review_deadline(run_id)
         phase = str(budget["deadline_phase"])
         if phase == "finalizing" and previous_phase != "finalizing":
@@ -90,7 +94,14 @@ def _terminal_handoff_outcome(self, driver, run_id, context, turn_count, run_sta
     candidate = detail.get("last_rejected_candidate") or {}
     issues = candidate.get("validation_issues", []) if isinstance(candidate, dict) else []
     failure = {"code": code, "validation_issues": issues,
-        "attempts_without_progress": (detail.get("terminal_convergence") or {}).get("without_progress", 0)}
+        "attempts_without_progress": (detail.get("terminal_convergence") or {}).get("without_progress", 0),
+        "phase": detail.get("terminal_phase", "final_handoff"),
+        "cleanup_complete": context.get("cleanup_state", {}).get("complete") is True,
+        "cleanup_failure_code": detail.get("cleanup_failure_code"),
+        "candidate_report_refs": [call.get("output", {}).get("validation_ref")
+            for call in self.store.list_harness_tool_calls(run_id)
+            if call.get("tool_name") == "sap_final_report_validate" and isinstance(call.get("output"), dict)
+            and call["output"].get("validation_ref")]}
     self.store.update_harness_state(run_id, {"terminal_handoff_failure": failure})
     self.store.append_event(run_id, "runtime_terminal_handoff_failed", failure)
     if detail.get("cleanup_failure_code"):
@@ -165,6 +176,9 @@ async def _run(
     elif driver.provider_id == "codex" and str(thread_id or "").startswith("workbuddy:"):
         raise RuntimeContractError("runtime_session_provider_mismatch")
     from .runtime_query_contract import ReadScope
+    if "terminal_protocol" not in state:
+        state = self.store.update_harness_state(run_id, {"terminal_protocol": 1 if state.get("execution_snapshot") else 2})
+    protocol = state["terminal_protocol"]
     scope = ReadScope(query, self.store.get_run(run_id).input)
     # Unsupported mappings are platform scope-contract failures, not a vague
     # model question. Engine error persistence preserves these value-free issues.
@@ -208,8 +222,8 @@ async def _run(
     budget = self.broker.budget_snapshot(run_id)
     remaining = max(0, budget["hard_limit_seconds"] - self.broker._elapsed_seconds(run_id))
     request = RuntimeRequest(driver.provider_id, operation, "harness", {"provider_id": driver.provider_id, **snapshot},
-        turn_prompt(query, continuing=resuming_thread or turn_count > 1, acceptance_spec=state.get("acceptance_spec")),
-        terminal_schema(state.get("acceptance_spec")), cwd=str(workspace),
+        turn_prompt(query, continuing=resuming_thread or turn_count > 1, acceptance_spec=state.get("acceptance_spec"), version=protocol),
+        terminal_schema(state.get("acceptance_spec"), version=protocol), cwd=str(workspace),
         instructions=_developer_instructions(full_access=full_access, budget=budget),
         permissions={"full_access": full_access, "acceptance_direct_baseline": direct_baseline},
         session=RuntimeSession(driver.provider_id, thread_id) if thread_id else None,
@@ -218,6 +232,7 @@ async def _run(
     context = {"run_id": run_id, "state": state, "workspace": workspace, "capability": capability,
         "thread_id": thread_id, "turn_count": turn_count, "cleanup_state": cleanup_state, "final_response": "", "read_scope": scope}
     context["report_contract"] = self.broker.report_contract(run_id)
+    from .runtime_input_control import InputPause, outcome as input_outcome
     final_response = ""
     try:
         from .runtime_contract import await_business
@@ -229,11 +244,17 @@ async def _run(
         if not result.cleanup_complete:
             from .runtime_contract import RuntimeContractError
             raise RuntimeContractError("runtime_cleanup_incomplete")
+        if protocol == 2:
+            from .runtime_input_control import pending, outcome
+            if pending(self.store, run_id):
+                return outcome(self, run_id, context, turn_count, run_started)
         final_response = result.final_response
         result.session.require_provider(driver.provider_id)
         if context.get("native_complete") is False:
             raise RuntimeError("runtime_structured_terminal_missing")
         self.store.update_harness_state(run_id, {"turn_count": turn_count, "thread_id": thread_id})
+    except InputPause:
+        return input_outcome(self, run_id, context, turn_count, run_started)
     except (TimeoutError, RuntimeContractError) as exc:
         if isinstance(exc, RuntimeContractError) and exc.code != "runtime_deadline_exceeded":
             terminal_outcome = _terminal_handoff_outcome(self, driver, run_id, context, turn_count, run_started, exc)
@@ -515,6 +536,13 @@ async def _run(
             primary.detail = dict(getattr(primary, "detail", {}) or {},
                                   cleanup_failure_code="runtime_cleanup_incomplete")
         finally:
+            failure = self.store.get_harness_state(run_id).get("terminal_handoff_failure")
+            if failure:
+                complete = cleanup_state.get("complete") is True and not self.store.get_harness_state(run_id).get("cleanup_incomplete")
+                self.store.update_harness_state(run_id, {"terminal_handoff_failure": {**failure,
+                    "cleanup_complete": complete, "cleanup_failure_code": None if complete else "runtime_cleanup_incomplete"}})
+                self.store.append_event(run_id, "terminal_handoff_cleanup_confirmed" if complete else "terminal_handoff_cleanup_pending",
+                    {"provider_id": driver.provider_id, "cleanup_complete": complete})
             self.broker.close_session(run_id)
         from .runtime_changesets import RuntimeChangeSets
         try:

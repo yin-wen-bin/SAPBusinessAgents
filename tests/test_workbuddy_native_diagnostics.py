@@ -158,7 +158,8 @@ def test_full_harness_schema_uses_the_shared_checker_without_business_qualificat
     from sap_business_agents_platform.runtime_harness_contract import _HARNESS_OUTPUT_SCHEMA
     value = {"status": "inconclusive", "intent": "synthetic", "clarification_question": "", "summary": {"zh": "测试", "en": "Test"},
         "source_complete": False, "business_complete": False, "missing_evidence": [], "evidence_refs": [], "executed_plans": [],
-        "presentation": {"schema_version": "1.0", "title": {"zh": "测试", "en": "Test"}, "validation_ref": None, "blocks": []}}
+        "presentation": {"schema_version": "1.0", "title": {"zh": "测试", "en": "Test"}, "validation_ref": None,
+            "financial_verification": "not_requested", "blocks": []}}
     diagnosis = native_output_diagnostic(value, _HARNESS_OUTPUT_SCHEMA, operation="free_query", phase="native_candidate")
     assert diagnosis["schema_valid"] is True and "qualified" not in diagnosis
     value["status"] = "private-invalid-status"

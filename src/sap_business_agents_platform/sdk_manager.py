@@ -315,6 +315,29 @@ class SDKManager:
         self._updates = {}
         self._updates_lock = threading.RLock()
         self._update_log_times = {}
+        self._recover_workbuddy_update()
+
+    def _recover_workbuddy_update(self):
+        """Existing diagnostic receipts can block a repeat, never authorize it."""
+        from itertools import islice
+        directory=self.repository_root/'.local-data/sdk-update-diagnostics/codebuddy-agent-sdk'
+        if not directory.exists():return
+        try:
+            paths=list(islice(directory.glob('*.json'),129))
+            if len(paths)>128:raise ValueError('review_required')
+            unresolved=[]
+            for path in paths:
+                if path.stat().st_size>65536:raise ValueError('receipt_invalid')
+                value=json.loads(path.read_bytes())
+                if not isinstance(value,dict) or value.get('operation_id')!=path.stem:raise ValueError('receipt_invalid')
+                if value.get('status') in {'running','needs_review','cleanup_pending'}:unresolved.append(value)
+            if not unresolved:return
+            value=max(unresolved,key=lambda v:v.get('started_at',''))
+            self._updates['codebuddy-agent-sdk']={**value,'status':'needs_review',
+                'error':{'code':'sdk_update_outcome_unconfirmed','phase':value.get('phase','version_confirmation')}}
+        except (OSError,ValueError,TypeError):
+            self._updates['codebuddy-agent-sdk']={'operation_id':'review-required','status':'needs_review',
+                'phase':'version_confirmation','error':{'code':'sdk_update_outcome_unconfirmed','phase':'version_confirmation'}}
 
     @property
     def default_provider_id(self) -> str | None:
@@ -439,8 +462,7 @@ class SDKManager:
         """Explicit package-registry read only; no auth, model, or Runtime snapshot."""
         definition = self._get_sdk(sdk_id)
         if definition.provider_id == "workbuddy":
-            raise SDKManagerError("Online SDK upgrades are not supported by the pinned WorkBuddy installer.",
-                                  code="workbuddy_sdk_upgrade_unsupported", detail={"phase": "version_check"})
+            return await self._workbuddy_versions(definition)
         async with self._locks[sdk_id]:
             await self._check_version_unlocked(definition, legacy=False)
             state = self._state[sdk_id]
@@ -794,9 +816,11 @@ class SDKManager:
             self._persist_runtime_config()
         return self._snapshot(definition)
 
-    async def update(self, sdk_id: str) -> dict[str, Any]:
+    async def update(self, sdk_id: str, *, expected_target_version: str | None = None) -> dict[str, Any]:
         definition=self._get_sdk(sdk_id)
         provider_id=definition.provider_id
+        if provider_id=='workbuddy':
+            return await self._update_workbuddy(definition,expected_target_version=expected_target_version)
         if provider_id=='codex' and callable(getattr(self.adapters[definition.ecosystem],'prepare_update',None)):
             return await self._update_staged(definition)
         if self.authentication_service:
@@ -813,7 +837,7 @@ class SDKManager:
     def _update_progress(self, definition, operation_id, **change):
         from .startup_control import atomic
         allowed={'status','phase','target_version','before_version','expected_cli','downloaded_bytes','total_bytes',
-                 'filename','cache_reused','cleanup_complete','process_id','process_identity','error','previous_error','outcome','observed_versions'}
+                 'filename','cache_reused','cleanup_complete','process_id','process_identity','error','previous_error','outcome','observed_versions','candidate_environment_digest'}
         with self._updates_lock:
             state=self._updates.get(definition.sdk_id)
             if not state or state['operation_id']!=operation_id:return
@@ -843,6 +867,91 @@ class SDKManager:
                     break
         if cancelled:raise asyncio.CancelledError
         return result
+
+    def _workbuddy_updater(self):
+        from .workbuddy_sdk_update import WorkBuddyPackageUpdate
+        from .sdk_update import sha
+        inputs=self.workbuddy.environment.state().get('installation') or {}
+        python=Path(inputs.get('python',''))
+        if not python.is_file() or sha(python)!=inputs.get('python_sha256'):
+            raise SDKManagerError('Independent bootstrap is not confirmed.',code='workbuddy_installation_input_changed')
+        release=self.workbuddy.environment.release()
+        return WorkBuddyPackageUpdate(self.repository_root/'.local-data/sdk-update-cache/workbuddy',
+            repository=self.repository_root,python=python,worker=Path(release['directory'])/release['worker'])
+
+    async def _workbuddy_versions(self,definition):
+        from packaging.version import Version
+        async with self._locks[definition.sdk_id]:
+            release=await asyncio.to_thread(self.workbuddy.environment.release)
+            state=self._state[definition.sdk_id]
+            try:
+                latest=await self.adapters[definition.ecosystem].latest_version(definition)
+                version=Version(latest)
+                if version.is_prerelease or version.is_devrelease or version.local:
+                    raise SDKManagerError('No supported stable target.',code='workbuddy_update_target_unsupported')
+                state.update(latest_version=str(version),version_check={'status':'checked','checked_at':_timestamp(),'error':None})
+            except (SDKManagerError,ValueError) as exc:
+                state.update(latest_version=None,version_check={'status':'failed','checked_at':_timestamp(),
+                    'error':{'code':getattr(exc,'code','sdk_registry_unavailable'),'phase':'version_check'}})
+            installed=release['sdk_version'];latest=state['latest_version']
+            supported=bool(self.workbuddy.environment.state().get('installation')) and _platform_key() in definition.platforms
+            return {'provider_id':'workbuddy','sdk_id':definition.sdk_id,'current_version':installed,
+                'environment_digest':release.get('environment_digest') or self.workbuddy.environment.state().get('environment_digest'),
+                'cli_version':release['cli_version'],'latest_version':latest,'version_check':_copy_json(state['version_check']),
+                'update_enabled':definition.update_enabled and supported,'update_preparation_supported':supported,
+                'update_activation_automatic':False,'update_supported':supported,
+                'update_available':bool(latest and Version(latest)>Version(installed)),
+                'update_status':self.maintenance_status('workbuddy')}
+
+    async def _update_workbuddy(self,definition,*,expected_target_version=None):
+        from .workbuddy_sdk_update import source_binding
+        sdk_id=definition.sdk_id
+        if not definition.update_enabled:raise SDKManagerError('Update disabled.',code='sdk_update_disabled')
+        with self._updates_lock:
+            prior=self._updates.get(sdk_id,{})
+            if prior.get('status') in {'running','cleanup_pending','needs_review'}:
+                raise SDKManagerError('Review original candidate first.',code='sdk_update_outcome_unconfirmed')
+            operation_id='update_'+uuid.uuid4().hex
+            self._updates[sdk_id]={'operation_id':operation_id,'status':'running','phase':'version_check',
+                                  'started_at':_timestamp(),'cleanup_complete':True}
+        emit=lambda **v:self._update_progress(definition,operation_id,**v)
+        try:
+            versions=await self._workbuddy_versions(definition)
+            if versions['version_check']['status']=='failed':
+                raise SDKManagerError('Available version unknown.',code=versions['version_check']['error']['code'])
+            if not versions['update_available']:raise SDKManagerError('SDK is current.',code='sdk_already_current')
+            if expected_target_version is not None and _parse_version(expected_target_version)!=_parse_version(versions['latest_version']):
+                raise SDKManagerError('Selected target changed; review versions again.',code='sdk_update_binding_changed',detail={'phase':'version_check'})
+            updater=await asyncio.to_thread(self._workbuddy_updater);binding=source_binding(self.workbuddy.environment.state())
+            if binding['environment_digest']!=versions['environment_digest']:
+                raise SDKManagerError('Environment changed during version review.',code='sdk_update_binding_changed')
+            emit(target_version=versions['latest_version'],before_version=versions['current_version'],phase='downloading')
+            bundle=await self._await_update(asyncio.to_thread(updater.prepare,versions['latest_version'],emit))
+            guard=self.authentication_service.sdk_maintenance('workbuddy') if self.authentication_service else nullcontext()
+            emit(phase='waiting_maintenance')
+            async with guard:
+                if self.workbuddy.supervisor.active or self.workbuddy.supervisor.queued or self.workbuddy.supervisor.pending():
+                    raise SDKManagerError('WorkBuddy is active.',code='runtime_authentication_busy')
+                if source_binding(self.workbuddy.environment.state())!=binding:
+                    raise SDKManagerError('Binding changed during download.',code='sdk_update_binding_changed')
+                receipt=await self._await_update(asyncio.to_thread(updater.prepare_candidate,bundle,binding,emit,operation_id=operation_id))
+                if source_binding(self.workbuddy.environment.state())!=binding:
+                    raise SDKManagerError('Binding changed while preparing candidate.',code='sdk_update_binding_changed')
+                emit(status='needs_review',phase='version_confirmation',outcome='candidate_prepared',cleanup_complete=True,
+                     candidate_environment_digest=receipt['environment_digest'],
+                     observed_versions={'sdk':receipt['sdk_version'],'cli':receipt['cli_version']},
+                     error={'code':'workbuddy_update_evidence_required','phase':'version_confirmation'})
+                return {**versions,'update_status':self.maintenance_status('workbuddy'),
+                        'maintenance_kind':'upgrade_candidate','candidate_environment_digest':receipt['environment_digest'],
+                        'activated':False,'restart_required':False}
+        except BaseException as exc:
+            current=self.maintenance_status('workbuddy') or {}
+            phase=getattr(exc,'detail',{}).get('phase',current.get('phase','version_check'))
+            code=getattr(exc,'code','sdk_update_interrupted' if isinstance(exc,asyncio.CancelledError) else 'sdk_update_failed')
+            uncertain=phase in {'installation','cleanup','version_confirmation'}
+            emit(status='needs_review' if uncertain else 'failed',phase=phase,
+                 outcome='candidate_unconfirmed' if uncertain else 'not_installed',error={'code':code,'phase':phase})
+            raise
 
     async def _update_staged(self, definition):
         sdk_id=definition.sdk_id;adapter=self.adapters[definition.ecosystem]
@@ -1161,7 +1270,18 @@ class SDKManager:
 
     def _snapshot_raw(self, definition: SDKDefinition) -> dict[str, Any]:
         if definition.provider_id == "workbuddy":
-            return self.workbuddy.snapshot(definition, selected=self.default_provider_id == "workbuddy")
+            value=self.workbuddy.snapshot(definition, selected=self.default_provider_id == "workbuddy")
+            version=self._state[definition.sdk_id]
+            supported=bool(value.get('can_update')) and value.get('platform_supported') is True
+            value.update(latest_version=version.get('latest_version'),version_check=version.get('version_check'),
+                         validated_target_version=value.get('current_version') if value.get('sdk_integration',{}).get('status')=='certified' else None,
+                         update_preparation_supported=supported,update_activation_automatic=False,
+                         update_supported=supported,
+                         update_enabled=definition.update_enabled and supported,
+                         update_status=self.maintenance_status('workbuddy'))
+            if value.get('current_version') and value.get('latest_version'):
+                value['update_available']=_parse_version(value['latest_version'])>_parse_version(value['current_version'])
+            return value
         adapter = self.adapters[definition.ecosystem]
         installed = adapter.installed_version(definition)
         state = self._state[definition.sdk_id]

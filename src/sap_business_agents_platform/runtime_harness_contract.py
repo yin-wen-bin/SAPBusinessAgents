@@ -7,10 +7,22 @@ _LOCALIZED_TEXT_SCHEMA = {
     "properties": {"zh": {"type": "string"}, "en": {"type": "string"}},
 }
 
-def turn_prompt(query, *, continuing, acceptance_spec=None):
+def turn_prompt(query, *, continuing, acceptance_spec=None, version=1):
     prompt = _turn_prompt(query, continuing=continuing)
+    if version == 2:
+        start = prompt.index("If one essential business identifier is missing")
+        end = prompt.index("Continue until the evidence", start)
+        prompt = prompt[:start] + ("For a missing business condition call request_query_clarification. "
+            "For a missing bank receipt reference call request_secure_receipt_reference; never put its value in a tool argument or ordinary conversation. "
+            "These tools pause the run through the platform; do not return a waiting_input business terminal. ") + prompt[end:]
     prompt += "\n" + report_instructions(acceptance=acceptance_spec is not None)
-    if acceptance_spec:
+    from .runtime_terminal_contract import handoff_instructions
+    prompt += handoff_instructions(terminal_schema(acceptance_spec, version=version))
+    if acceptance_spec and version == 2:
+        prompt += ("\nFormal tasks are non-interactive. Request missing frozen case inputs with request_query_clarification; do not request a bank receipt. Never claim a successful comparison without evidence. "
+            "Pass acceptance_projection together with report to sap_final_report_validate, following this frozen projection contract: "
+            + json.dumps(acceptance_spec, ensure_ascii=False))
+    if acceptance_spec and version == 1:
         prompt += (
             "\nAcceptance mode: pass acceptance_projection together with report to "
             "sap_final_report_validate. Every record must cite verified SAP evidence. "
@@ -33,7 +45,7 @@ def turn_prompt(query, *, continuing, acceptance_spec=None):
     return prompt
 
 
-def terminal_schema(acceptance_spec=None):
+def terminal_schema(acceptance_spec=None, *, version=1):
     """One shared task contract, not an SDK-specific null decoder.
 
     Campaigns cannot resume a new secure-input exchange: they stop for case
@@ -48,6 +60,13 @@ def terminal_schema(acceptance_spec=None):
                 "description": "Non-interactive formal acceptance: use literal JSON null. "
                     "For missing frozen inputs return waiting_input and a clarification_question; "
                     "do not request a new secure-reference exchange or use a query parameter name."}
+    if version == 2:
+        for name in ("input_kind", "input_field", "clarification_question"):
+            result["properties"].pop(name, None)
+        result["required"] = list(result["properties"])
+        result["properties"]["status"]["enum"] = ["completed", "inconclusive"]
+    elif version != 1:
+        raise ValueError("runtime_terminal_version_unsupported")
     return result
 
 from .runtime_report_contract import presentation_schema, instructions as report_instructions

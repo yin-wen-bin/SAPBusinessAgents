@@ -254,6 +254,8 @@ Frontend presentation changes do not invalidate model/business qualification. Th
 
 本轮报告专属回归允许补充明确的预期Schema／提示变化对照，但不得重写旧行为快照或删断言消除失败。无关的旧快照差异先在修改前源码核对并单独记录，不扩展为全量模型或SAP验证。
 
+查询/金额候选增加 `tests/test_shared_query_money_chain.py`，以隔离Broker、合成证据及网络阻断验证查询契约、幂等、分阶段收敛、Decimal分组、金额凭据和原生交接。原历史终态摘要仍必须匹配原夹具；新增字段只在测试中显式重建旧Schema，不修改历史摘要或原记录。新增计算模块必须列入真实操作职责依赖，不修改摘要算法来维持旧资格。金额未验证及来源语义未证明必须保留业务缺口，结构通过不能取代业务正确性。
+
 ## English summary
 
 ### Shared acceptance date scope and failure reasons

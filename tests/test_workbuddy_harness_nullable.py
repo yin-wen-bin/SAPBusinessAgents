@@ -166,6 +166,8 @@ def test_harness_driver_changes_only_native_format_guidance(tmp_path, output_for
     from sap_business_agents_platform.mcp_server import _SAP_TOOLS, _TOOL_TOOLS
     from sap_business_agents_platform.runtime_query_contract import PLAN_SCHEMA
     expected_tools = tools_for_contract(_SAP_TOOLS + _TOOL_TOOLS, context["report_contract"])
+    from sap_business_agents_platform.runtime_input_control import tools_for_task
+    expected_tools = tools_for_task(expected_tools, version=1)
     for tool in expected_tools:
         if tool["name"] in {"sap_query_validate", "sap_query_execute"}:
             tool["inputSchema"]["properties"]["plan"] = PLAN_SCHEMA

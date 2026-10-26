@@ -27,7 +27,7 @@ BINDING = obj({"field": IDENTIFIER, "source_step_id": {"type": "string"}, "sourc
                "fanout": {"type": "boolean"}, "fetch_all_for_binding": {"type": "boolean"}},
               ("field", "source_step_id", "source_field"))
 PROPERTIES = {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"type": "string", "const": "1.0", "description": 'Query plan version is the JSON string "1.0", never the Skill version integer 1.'},
     "service_name": SERVICE, "odata_version": {"enum": ["2.0", "4.0"]}, "entity_set": IDENTIFIER,
     "http_method": {"const": "GET"}, "httpMethod": {"const": "GET"}, "method": {"const": "GET"}, "step_id": {"type": "string"},
     "plan_kind": {"enum": ["direct", "lookup", "multi_step", "function", "function_import"]},
@@ -52,6 +52,26 @@ PROPERTIES = {
 }
 PLAN_SCHEMA = obj({**PROPERTIES, "steps": {"type": "array", "minItems": 1,
     "items": obj(PROPERTIES, ("entity_set",))}})
+VERSION = "sapba.query-contract/1"
+INSTRUCTIONS = ("Use {plan:<GET plan>,query:<business question>} for query tools. "
+    'schema_version, when supplied, is exactly the JSON string "1.0", not integer 1. '
+    'Skill input schemas are independent: use the returned Skill schema, not the plan version. '
+    'odata_version is the JSON string "2.0" or "4.0". '
+    "Use declared field names and lowercase operators. Preserve confirmed scope and limits. "
+    "After three stagnant plan failures, no new external reads are allowed; report the evidence gap honestly.")
+
+
+def frozen_contract():
+    from .runtime_evidence_bindings import registry
+    return {"version": VERSION, "schema": copy.deepcopy(PLAN_SCHEMA), "instructions": INSTRUCTIONS,
+            "evidence_bindings": registry()}
+
+
+def tool_schema():
+    return obj({"plan": copy.deepcopy(PLAN_SCHEMA), "query": {"type": "string"},
+        "tool_call_id": {"type": "string", "description": "Stable idempotency key for this invocation."}}, ("plan",))
+
+
 PLAN_HELP = (
     "Canonical GET plan members are filters:[{field,operator,value}], select_fields, response_summary_fields, "
     "order_by (bare ascending field names), top and http_method. Never use filter, keys, select, skip or raw URLs. "
@@ -95,7 +115,18 @@ def plans(value):
             reject("runtime_plan_contract_invalid", issues=[{
                 "code": "runtime_plan_contract_invalid", "path": path.rstrip("/") + "/" + name,
                 "constraint": "required"} for name in missing])
-        reject("runtime_plan_contract_invalid", path, str(error.validator))
+        # Feedback comes only from the frozen schema, never the rejected value.
+        # A bare `enum`/`const` leaves the model guessing protocol spellings.
+        issue = {"code": "runtime_plan_contract_invalid", "path": path,
+                 "constraint": str(error.validator),
+                 "repair_action": "Correct the declared plan field; preserve confirmed filters, evidence and limits. "
+                     "Do not repeat external reads to repair a plan-structure error."}
+        if error.validator in {"const", "enum"}:
+            issue["allowed_values"] = copy.deepcopy(
+                [error.validator_value] if error.validator == "const" else error.validator_value)
+        if isinstance(error.schema, dict) and error.schema.get("type"):
+            issue["expected_type"] = error.schema["type"]
+        reject("runtime_plan_contract_invalid", issues=[issue])
     nested = value.get("steps")
     if nested is not None and value.get("plan_kind") not in {"lookup", "multi_step"}:
         reject("runtime_plan_contract_invalid", "/steps", "plan_kind")
@@ -243,6 +274,8 @@ class ReadScope:
         self.date_fields = set()
         self.bound_date_fields = {}
         self.normalizer = None
+        from .runtime_evidence_bindings import registry
+        self.evidence_bindings = registry()
 
     def require_resolved(self):
         if self.unresolved:
@@ -281,6 +314,14 @@ class ReadScope:
         observed_keys = {(f.get("service_name") or service.get("service_name"),
                           f.get("odata_version") or service.get("odata_version"), f.get("entity_set"))
                          for f in data.get("fields") or [] if isinstance(f, dict)}
+        # A replacement authoritative projection revokes disappeared fields;
+        # never retain an old mapping merely because it was once observed.
+        for key in observed_keys:
+            self.schemas[key] = set()
+        if not observed_keys:
+            for key in list(self.schemas):
+                if key[:2] == (service.get('service_name'), service.get('odata_version')):
+                    del self.schemas[key]
         # A new full projection can revoke calendar semantics. Do not retain an
         # old type for a field omitted from the replacement entity projection.
         for field_key in list(self.bound_date_fields):
@@ -369,7 +410,16 @@ class ReadScope:
             filters = step.get("filters") or []
             exact = {f["field"]: ([str(v) for v in f["value"]] if isinstance(f["value"], list) else [str(f["value"])])
                      for f in filters if f.get("operator", "eq") in {"eq", "in"}}
-            applicable = [(names, self.allowed_values(names, values, step)) for names, values in self.constraints
+            from .runtime_evidence_bindings import scope_fields
+            try:
+                constraints = [(scope_fields(self.evidence_bindings['scope_mappings'], step, names, fields), values)
+                    for names, values in self.constraints]
+            except ValueError:
+                reject('runtime_query_scope_rejected', '/entity_set', issues=[{
+                    'code': 'runtime_query_scope_rejected', 'path': '/entity_set', 'constraint': 'scope',
+                    'scope_issue': 'reviewed_mapping_metadata_mismatch',
+                    'repair_action': 'Do not guess fields or drop scope. Recheck the reviewed mapping and complete authoritative metadata.'}])
+            applicable = [(names, self.allowed_values(names, values, step)) for names, values in constraints
                           if fields is None or set(names).intersection(fields)]
             # Carry only fields actually proven to equal a frozen input, never
             # all incidental filters. Aliases in the same platform-declared
@@ -387,7 +437,7 @@ class ReadScope:
             for binding in bindings:
                 target, source = binding["field"], binding["source_field"]
                 values = scoped_steps.get(binding.get("source_step_id"), {}).get(source)
-                equivalent = any(target in names and source in names for names, _ in self.constraints)
+                equivalent = any(target in names and source in names for names, _ in constraints)
                 if (values and equivalent and target in authorized and values.issubset(authorized[target])
                         and (target not in exact or target in proven)):
                     inherited[target] = values
@@ -416,6 +466,11 @@ class ReadScope:
                         "entity_sets": [step["entity_set"]], "max_fields": 5000},
                 }])
             issues = []
+            if not applicable:
+                issues.append({'code': 'runtime_query_scope_rejected', 'path': '/filters', 'constraint': 'scope',
+                    'scope_issue': 'service_scope_mapping_or_verified_relation_required',
+                    'required_fields': [name for names, _ in self.constraints for name in names],
+                    'repair_action': 'This entity cannot prove the frozen business scope. Use a reviewed service-specific mapping or a platform-verified relation; never invent filters or drop confirmed constraints.'})
             for names, values in applicable:
                 if any(name in inherited or name in exact and exact[name]
                        and set(exact[name]).issubset(values) for name in names):

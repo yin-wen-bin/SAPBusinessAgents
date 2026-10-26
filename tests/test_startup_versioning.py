@@ -34,6 +34,21 @@ def test_unknown_runtime_never_claims_current_source():
     assert control.startup_projection()["verified"] is False
 
 
+def test_runtime_evidence_registry_is_an_exact_frozen_resource(tmp_path):
+    name = 'config/runtime-evidence-bindings.json'
+    assert name in launcher.SOURCE_RESOURCES
+    path = tmp_path/name
+    path.parent.mkdir(parents=True)
+    path.write_text('{"version":"sapba.evidence-bindings/1","scope_mappings":[],"configuration_sources":[]}',encoding='utf-8')
+    manifest = launcher.source_manifest(tmp_path)
+    assert manifest['files'][name] == launcher.control.sha(path)
+    archive = launcher.freeze(tmp_path, manifest)
+    assert (archive/'source'/name).read_bytes() == path.read_bytes()
+    path.write_text('{"tampered":true}',encoding='utf-8')
+    assert launcher.source_manifest(tmp_path)['digest'] != manifest['digest']
+    assert (archive/'source'/name).read_bytes() != path.read_bytes()
+
+
 def test_plain_cmd_enters_shared_orchestrator_without_powershell_bootstrap():
     source=(ROOT/'start-sap-business-agents.cmd').read_text()
     assert 'if "%~1"=="" goto native' in source
@@ -292,6 +307,83 @@ def test_warm_reuse_never_audits_jobs_or_sdk(orchestrator,monkeypatch):
     monkeypatch.setattr(launcher,'check_admission',lambda *a:pytest.fail('No SDK audit on warm reuse'))
     assert launcher.ensure(args)['api_reused']
     assert not state.stopped and not state.launches
+
+
+def test_uncertified_workspace_restores_only_deployed_release(orchestrator, monkeypatch):
+    args,state,manifest,data=orchestrator
+    approved_archive=args.root/'approved-source'
+    approved={**manifest,'digest':'approved-source'}
+    audits=[]
+    def audit(root, archive):
+        audits.append(archive)
+        if archive != approved_archive:
+            raise launcher.control.StartupBlocked('workbuddy_sdk_integration_required')
+    monkeypatch.setattr(launcher,'check_admission',audit)
+    monkeypatch.setattr(launcher,'approved_target',lambda *a:{'archive':approved_archive,'manifest':approved,'site_fingerprint':'ui'})
+    result=launcher.ensure(args)
+    assert result['source_digest']=='approved-source'
+    assert result['requested_source_digest']=='target-source'
+    assert result['update_deferred'] and not result['current_changes_loaded']
+    assert state.launches==[str(approved_archive)]
+    assert audits==[args.root/'target-source',approved_archive]
+    assert not state.commands  # no frontend build before/after rejected proof
+    assert (data/'startup/deferred-update.json').exists()
+
+
+def test_negative_cache_cannot_skip_cold_start_target_audit(orchestrator,monkeypatch):
+    args,state,manifest,data=orchestrator
+    selected={'archive':args.root/'approved-source','manifest':{**manifest,'digest':'approved-source'},'site_fingerprint':'ui'}
+    control.atomic(data/'startup/deferred-update.json',{'key':launcher.deferral_key(args.root,manifest,'ui'),'approved_source_digest':'approved-source'})
+    monkeypatch.setattr(launcher,'approved_target',lambda *a:selected)
+    monkeypatch.setattr(launcher,'freeze',lambda *a:pytest.fail('No repeated candidate freezing'))
+    def denied(*a): raise launcher.control.StartupBlocked('approved_proof_invalid')
+    monkeypatch.setattr(launcher,'check_admission',denied)
+    with pytest.raises(launcher.control.StartupBlocked,match='approved_proof_invalid'):
+        launcher.ensure(args)
+    assert not state.stopped and not state.launches
+
+
+def test_negative_cache_can_reuse_already_verified_healthy_release(orchestrator,monkeypatch):
+    args,state,manifest,data=orchestrator
+    selected={'archive':args.root/'approved-source','manifest':{**manifest,'digest':'approved-source'},'site_fingerprint':'ui'}
+    control.atomic(data/'startup/deferred-update.json',{'key':launcher.deferral_key(args.root,manifest,'ui'),'approved_source_digest':'approved-source'})
+    monkeypatch.setattr(launcher,'approved_target',lambda *a:selected)
+    monkeypatch.setattr(launcher,'request',lambda url,*a,**k:{'fingerprint':'ui'} if 'sapba-build' in url else {
+        'ok':True,'loopback_only':True,'sap_read':{'selected_provider':'embedded','data':{'read_only':True}},
+        'startup_binding':{'verified':True,'source_digest':'approved-source','pid':100,'boot_id':'boot'}})
+    monkeypatch.setattr(launcher,'freeze',lambda *a:pytest.fail('No repeated candidate freezing'))
+    monkeypatch.setattr(launcher,'check_admission',lambda *a:pytest.fail('No audit on healthy exact reuse'))
+    monkeypatch.setattr(launcher,'jobs_pending',lambda *a:pytest.fail('No historical job traversal on reuse'))
+    assert launcher.ensure(args)['api_reused']
+    assert not state.stopped and not state.launches
+
+
+def test_content_hash_batch_reads_every_file_and_detects_changes(tmp_path):
+    paths=[]
+    for i in range(20):
+        path=tmp_path/str(i);path.write_text(str(i));paths.append(path)
+    expected={path:control.sha(path) for path in paths}
+    assert launcher.hash_files(paths)==expected
+    paths[5].write_text('changed')
+    actual=launcher.hash_files(paths)
+    assert actual[paths[5]]!=expected[paths[5]]
+    assert {p:v for p,v in actual.items() if p!=paths[5]}=={p:v for p,v in expected.items() if p!=paths[5]}
+
+
+def test_short_lived_project_writer_is_waited_out_before_switch(orchestrator, monkeypatch):
+    args,state,_,data=orchestrator; calls=[]
+    def writers(*a):
+        calls.append(True)
+        if len(calls)==1:
+            raise launcher.control.StartupBlocked('startup_other_writers_active:123')
+    def wait(seconds):
+        assert seconds==5 and not state.stopped and not state.launches
+        assert not (data/'startup-maintenance.json').exists()
+        with launcher.control.file_lock(data/'deployment.lock'): pass
+    monkeypatch.setattr(launcher,'assert_writers',writers)
+    monkeypatch.setattr(launcher.time,'sleep',wait)
+    assert launcher.ensure(args)['status']=='completed'
+    assert len(calls)==2 and len(state.launches)==1
 
 
 def test_warm_reuse_enumerates_listeners_only_once(orchestrator,monkeypatch):

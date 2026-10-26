@@ -26,6 +26,7 @@ LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # their explicit existing locations; only these reviewed code resources freeze.
 SOURCE_RESOURCES = (
     'config/sap-source-semantics.json',
+    'config/runtime-evidence-bindings.json',
     'config/agent-presentation-contract.json',
     'config/month-end-closing-profiles.schema.json',
     'agents/FI/month-end-closing/config/month_end_checklist.toml',
@@ -67,13 +68,15 @@ def source_manifest(root):
             if path.is_file() and path.suffix in {".py", ".json"} and "__pycache__" not in path.parts:
                 if path.is_symlink():
                     raise control.StartupBlocked("startup_source_link_rejected")
-                files[path.relative_to(root).as_posix()] = control.sha(path)
+                files[path.relative_to(root).as_posix()] = path
     for name in ("tests/test_workbuddy_isolation.py", "tests/test_workbuddy_three_layers.py"):
-        if (root / name).exists(): files[name] = control.sha(root / name)
+        if (root / name).exists(): files[name] = root / name
     for name in SOURCE_RESOURCES:
-        if (root / name).exists(): files[name] = control.sha(root / name)
+        if (root / name).exists(): files[name] = root / name
     if 'src/sap_business_agents_platform/app.py' in files and not set(SOURCE_RESOURCES) <= files.keys():
         raise control.StartupBlocked('startup_runtime_resource_missing')
+    hashes = hash_files(files.values())
+    files = {name: hashes[path] for name, path in files.items()}
     dependencies = {}
     for name in ("pyproject.toml", "requirements.lock", "uv.lock", ".venv/pyvenv.cfg"):
         if (root / name).exists(): dependencies[name] = control.sha(root / name)
@@ -98,6 +101,45 @@ def manifest_changes(expected, actual):
     return {section: sorted(name for name in set(expected.get(section, {})) | set(actual.get(section, {}))
                             if expected.get(section, {}).get(name) != actual.get(section, {}).get(name))
             for section in ('files', 'dependencies')}
+
+
+def hash_files(paths):
+    # Hash every byte at each consistency boundary. Bounded I/O concurrency,
+    # not timestamps or a persistent content/authorization cache.
+    paths = list(dict.fromkeys(paths))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(paths)))) as pool:
+        return dict(zip(paths, pool.map(control.sha, paths)))
+
+
+def approved_target(root, requested):
+    """Restore only the recorded deployed pair, not an arbitrary old build."""
+    data = root/'.local-data'
+    try:
+        record = json.loads((data/'startup-api-current.json').read_text(encoding='utf-8-sig'))
+        site = json.loads((data/'site-builds/current.json').read_text(encoding='utf-8-sig'))
+        key = record['source_digest']; fingerprint = site['fingerprint']
+        if not re.fullmatch('[0-9a-f]{64}', key) or not re.fullmatch('[0-9a-f]{64}', fingerprint):
+            raise ValueError('invalid pointer')
+        archive = data/'startup-releases'/key
+        dist = data/'site-builds'/fingerprint/'dist'
+        if Path(record['archive']).resolve() != archive.resolve() or Path(site['dist_path']).resolve() != dist.resolve() or site.get('mode', 'preview') != 'preview':
+            raise ValueError('invalid pointer')
+        manifest = json.loads((archive/'manifest.json').read_text(encoding='utf-8-sig'))
+        verify_archive(archive, manifest)
+        if manifest['digest'] != key or manifest.get('dependencies') != requested.get('dependencies'):
+            raise ValueError('runtime dependencies changed')
+        metadata = json.loads((dist/'sapba-build.json').read_text(encoding='utf-8-sig'))
+        if metadata.get('fingerprint') != fingerprint or not (dist/'zh/index.html').is_file() or not (dist/'index.html').is_file():
+            raise ValueError('invalid site build')
+        return {'archive': archive, 'manifest': manifest, 'site_fingerprint': fingerprint}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise control.StartupBlocked('startup_approved_release_unavailable') from exc
+
+
+def deferral_key(root, manifest, site_fingerprint):
+    path = root/'.local-data/runtimes/workbuddy/state.json'
+    return {'requested_source_digest': manifest['digest'], 'requested_site_fingerprint': site_fingerprint,
+            'sdk_state_sha256': control.sha(path) if path.exists() else None}
 
 
 def freeze(root, manifest):
@@ -130,9 +172,28 @@ def _freeze_owned(root, manifest):
             destination = temporary / "source" / name
             destination.parent.mkdir(parents=True, exist_ok=True); destination.write_bytes(data)
         control.atomic(temporary / "manifest.json", manifest)
-        temporary.rename(target)
+        verify_archive(temporary, manifest)
+        publish_archive(temporary, target)
     verify_archive(target, manifest)
     return target
+
+
+def publish_archive(temporary, target):
+    """Publish once; tolerate brief Windows handles, never overwrite."""
+    delays = iter((.1, .2, .4, .8))
+    while True:
+        if target.exists() or target.is_symlink():
+            raise control.StartupBlocked('startup_archive_target_conflict')
+        try:
+            temporary.rename(target)
+            return
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) not in {5, 32, 33}:
+                raise
+            delay = next(delays, None)
+            if delay is None:
+                raise control.StartupBlocked('startup_archive_publish_busy') from exc
+            time.sleep(delay)
 
 
 def verify_archive(target, manifest):
@@ -326,6 +387,7 @@ def _ensure(args):
             phases[name] = round((time.monotonic() - start) * 1000, 2)
             print(f"[SAPBusinessAgents] {name}: {phases[name]} ms", flush=True)
     manifest = phase("source_and_dependency_fingerprint", lambda: source_manifest(root))
+    requested_manifest = manifest
     url = f"http://127.0.0.1:{args.port}"
     existing = None
     try: existing = request(url + "/api/health")
@@ -336,6 +398,35 @@ def _ensure(args):
     fingerprint = phase("site_fingerprint", lambda: site_fingerprint(root, args.site_port, args.port))
     pointer_path = data / "site-builds/current.json"
     pointer = json.loads(pointer_path.read_text(encoding="utf-8-sig")) if pointer_path.exists() else {}
+    requested_fingerprint = fingerprint
+    deferred = None; archive = None
+    deferred_path = data/'startup/deferred-update.json'
+    key = deferral_key(root, manifest, fingerprint)
+    # A negative cache only defers an unapproved candidate. It cannot certify
+    # any release; cold starts still audit the deployed target under the barrier.
+    if not args.dev and deferred_path.exists():
+        try:
+            saved = json.loads(deferred_path.read_text(encoding='utf-8-sig'))
+            if saved.get('key') == key:
+                candidate = approved_target(root, requested_manifest)
+                if saved.get('approved_source_digest') == candidate['manifest']['digest']:
+                    deferred = candidate
+        except (OSError, ValueError): pass
+    if changed and deferred is None and not args.reuse_only:
+        archive = phase('freeze_source', lambda: freeze(root, manifest))
+        try:
+            phase('admission_preflight', lambda: check_admission(root, archive))
+        except control.StartupBlocked as exc:
+            if str(exc) != 'workbuddy_sdk_integration_required' or args.dev:
+                raise
+            deferred = approved_target(root, requested_manifest)
+            control.atomic(deferred_path, {'key': key, 'approved_source_digest': deferred['manifest']['digest'],
+                'reason': str(exc)})
+    if deferred is not None:
+        archive = deferred['archive']; manifest = deferred['manifest']; fingerprint = deferred['site_fingerprint']
+        same = bool(existing and valid_health(existing) and valid_binding(existing, manifest['digest']))
+        changed = args.restart or not same
+        print('[SAPBusinessAgents] Workspace update deferred: SDK integration evidence is missing. Using the verified deployed release; pending workspace changes are NOT loaded.', flush=True)
     ports = listeners()
     try: actual_site = request(f"http://127.0.0.1:{args.site_port}/sapba-build.json", timeout=1)
     except (OSError, ValueError): actual_site = {}
@@ -345,10 +436,10 @@ def _ensure(args):
     if not changed and not site_changed:
         phase("ready", lambda: None)
     else:
-        archive = phase("freeze_source", lambda: freeze(root, manifest)) if changed else None
         if site_changed:
             prepare = ["node.exe", "scripts/generate-agent-catalog.mjs"] if args.dev else ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(root / "scripts/Start-SAPBusinessAgents.ps1"), "-PrepareSiteOnly", "-ApiPort", str(args.port), *(["-RebuildSite"] if args.rebuild else [])]
-            phase("prepare_site", lambda: subprocess.run(prepare, cwd=root / 'site' if args.dev else root, check=True))
+            if deferred is None:
+                phase("prepare_site", lambda: subprocess.run(prepare, cwd=root / 'site' if args.dev else root, check=True))
             phase("site_candidate_ready", lambda: probe_site(root, fingerprint, args, log))
         # Never hold the deployment lock while waiting for business tasks.
         while True:
@@ -359,12 +450,12 @@ def _ensure(args):
                 with control.file_lock(activity_root / "deployment.lock", wait=60), control.file_lock(activity_root / "startup-admission.lock"):
                     if control.activity(activity_root) or jobs_pending(root): continue
                     current_manifest = phase('source_consistency', lambda: source_manifest(root))
-                    if current_manifest != manifest:
+                    if current_manifest != requested_manifest:
                         failure = control.StartupBlocked("startup_target_changed_prepare_again")
-                        failure.changes = manifest_changes(manifest, current_manifest)
+                        failure.changes = manifest_changes(requested_manifest, current_manifest)
                         raise failure
                     args.current_phase = 'site_consistency'
-                    if site_fingerprint(root, args.site_port, args.port) != fingerprint:
+                    if site_fingerprint(root, args.site_port, args.port) != requested_fingerprint:
                         raise control.StartupBlocked("startup_site_source_changed_prepare_again")
                     current = listeners()
                     if any(current.get(port) != ports.get(port) for port in (args.port, args.site_port)):
@@ -446,7 +537,9 @@ def _ensure(args):
                         if remove_marker: marker.unlink(missing_ok=True)
                 break
             except control.StartupBlocked as exc:
-                if str(exc) not in {"startup_coordination_busy", 'startup_became_busy_retry'}: raise
+                if str(exc).startswith('startup_other_writers_active:'):
+                    print('[SAPBusinessAgents] Waiting for other project processes to exit; no process was stopped. Ctrl+C cancels only this launch.', flush=True)
+                elif str(exc) not in {"startup_coordination_busy", 'startup_became_busy_retry'}: raise
                 time.sleep(5)
     # The warm path already verified health/build bindings and enumerated the
     # actual listeners. Reuse that one inventory; updates require a fresh one.
@@ -454,12 +547,16 @@ def _ensure(args):
     state = {"status": "completed", "total_duration_ms": round((time.monotonic()-began)*1000, 2), "phases": phases, "source_digest": manifest["digest"], "site_fingerprint": fingerprint, "api_reused": not changed,
              "services": {"api": {"pid": current_ports.get(args.port), "healthy": True, "url": url}, "site": {"pid": current_ports.get(args.site_port), "healthy": True}},
              "site_cache": {"fingerprint": fingerprint, "reused": not site_changed, "build_duration_ms": phases.get("prepare_site", 0)}}
-    if source_manifest(root) != manifest or site_fingerprint(root, args.site_port, args.port) != fingerprint:
+    state.update(update_deferred=deferred is not None, current_changes_loaded=deferred is None,
+                 requested_source_digest=requested_manifest['digest'], requested_site_fingerprint=requested_fingerprint)
+    if source_manifest(root) != requested_manifest or site_fingerprint(root, args.site_port, args.port) != requested_fingerprint:
         raise control.StartupBlocked("startup_changed_during_launch_not_current")
     control.atomic(log / "result.json", state)
     control.atomic(data / "startup/last-attempt.json", state)
     control.atomic(data / "startup/latest.json", state)
-    print("[SAPBusinessAgents] Ready; current changes are verified as loaded.", flush=True)
+    if deferred is None:
+        deferred_path.unlink(missing_ok=True)
+    print('[SAPBusinessAgents] Ready; verified deployed release is available. Workspace update remains pending.' if deferred else '[SAPBusinessAgents] Ready; current changes are verified as loaded.', flush=True)
     if not args.no_browser:
         import webbrowser
         webbrowser.open(f"http://127.0.0.1:{args.site_port}/zh/")
@@ -528,7 +625,9 @@ def site_fingerprint(root, site_port, api_port):
         if (root / name).exists(): files.append(root / name)
     node = subprocess.check_output(["node.exe", "--version"], text=True).strip()
     # Match the existing Windows launcher material, including CRLF separators.
-    material = "".join(f"{p.relative_to(root).as_posix()}|{control.sha(p)}\r\n" for p in sorted(set(files), key=lambda p: str(p).casefold()))
+    ordered = sorted(set(files), key=lambda p: str(p).casefold())
+    hashes = hash_files(ordered)
+    material = "".join(f"{p.relative_to(root).as_posix()}|{hashes[p]}\r\n" for p in ordered)
     material += f"node|{node}\r\nsite_base|/\r\napi_url|http://127.0.0.1:{api_port}\r\n"
     return __import__('hashlib').sha256(material.encode()).hexdigest()
 
@@ -545,8 +644,16 @@ def check_admission(root, archive):
                "from sap_business_agents_platform.workbuddy_manager import WorkBuddyManager;"
                "m=WorkBuddyManager(Path(sys.argv[2]));s=m.environment.state();"
                "c=m.integration(s,m.environment.release()) if s.get('enabled') else {'status':'disabled'};"
-               "assert not s.get('enabled') or c.get('status')=='certified',c.get('reason')")
-    subprocess.run([sys.executable, "-I", "-B", "-c", command, str(archive), str(root)], check=True, timeout=90)
+               "print(json.dumps({'status':c.get('status'),'reason':c.get('reason')}));"
+               "sys.exit(3 if s.get('enabled') and c.get('status')!='certified' else 0)")
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", command, str(archive), str(root)],
+                            capture_output=True, text=True, timeout=90)
+    if result.returncode:
+        try: reason = json.loads(result.stdout.strip().splitlines()[-1]).get('reason')
+        except (ValueError, IndexError): reason = None
+        if result.returncode == 3 and reason == 'workbuddy_sdk_integration_required':
+            raise control.StartupBlocked(reason)
+        raise control.StartupBlocked('startup_admission_check_failed')
 
 
 def wait_api(url, fingerprint, process, timeout):
@@ -645,6 +752,10 @@ def main(argv=None):
         print(f'[SAPBusinessAgents] Startup blocked: {exc}',file=sys.stderr)
         if str(exc) in {'startup_target_changed_prepare_again','startup_site_source_changed_prepare_again'}:
             print('[SAPBusinessAgents] Files are still changing. No service was switched. Finish saving in other windows, then run the launcher again.',file=sys.stderr)
+        if str(exc) == 'startup_archive_publish_busy':
+            print('[SAPBusinessAgents] Windows denied publishing frozen source after bounded retries. The staged archive was retained; no service was switched. Close tools holding startup-releases files and retry. Do not disable security software or delete running releases.',file=sys.stderr)
+        if str(exc) == 'startup_archive_target_conflict':
+            print('[SAPBusinessAgents] A conflicting source archive exists. It was not overwritten; no service was switched.',file=sys.stderr)
         if getattr(arguments,'attempt',None):
             print(f'[SAPBusinessAgents] Details: {arguments.attempt / "result.json"}',file=sys.stderr)
         return 1
