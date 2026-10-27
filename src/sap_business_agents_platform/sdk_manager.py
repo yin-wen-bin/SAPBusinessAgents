@@ -316,6 +316,8 @@ class SDKManager:
         self._updates_lock = threading.RLock()
         self._update_log_times = {}
         self._recover_workbuddy_update()
+        from .workbuddy_online_update import OnlineUpdate
+        self.online_update = OnlineUpdate(self)
 
     def _recover_workbuddy_update(self):
         """Existing diagnostic receipts can block a repeat, never authorize it."""
@@ -820,7 +822,7 @@ class SDKManager:
         definition=self._get_sdk(sdk_id)
         provider_id=definition.provider_id
         if provider_id=='workbuddy':
-            return await self._update_workbuddy(definition,expected_target_version=expected_target_version)
+            return await self.online_update.submit(definition, expected_target_version or self._state[sdk_id].get('latest_version'))
         if provider_id=='codex' and callable(getattr(self.adapters[definition.ecosystem],'prepare_update',None)):
             return await self._update_staged(definition)
         if self.authentication_service:
@@ -882,7 +884,10 @@ class SDKManager:
     async def _workbuddy_versions(self,definition):
         from packaging.version import Version
         async with self._locks[definition.sdk_id]:
-            release=await asyncio.to_thread(self.workbuddy.environment.release)
+            try:
+                release=await asyncio.to_thread(self.workbuddy.environment.release)
+            except (SDKManagerError,OSError,ValueError):
+                release={}
             state=self._state[definition.sdk_id]
             try:
                 latest=await self.adapters[definition.ecosystem].latest_version(definition)
@@ -893,14 +898,14 @@ class SDKManager:
             except (SDKManagerError,ValueError) as exc:
                 state.update(latest_version=None,version_check={'status':'failed','checked_at':_timestamp(),
                     'error':{'code':getattr(exc,'code','sdk_registry_unavailable'),'phase':'version_check'}})
-            installed=release['sdk_version'];latest=state['latest_version']
+            installed=release.get('sdk_version');latest=state['latest_version']
             supported=bool(self.workbuddy.environment.state().get('installation')) and _platform_key() in definition.platforms
             return {'provider_id':'workbuddy','sdk_id':definition.sdk_id,'current_version':installed,
                 'environment_digest':release.get('environment_digest') or self.workbuddy.environment.state().get('environment_digest'),
-                'cli_version':release['cli_version'],'latest_version':latest,'version_check':_copy_json(state['version_check']),
+                'cli_version':release.get('cli_version'),'latest_version':latest,'version_check':_copy_json(state['version_check']),
                 'update_enabled':definition.update_enabled and supported,'update_preparation_supported':supported,
-                'update_activation_automatic':False,'update_supported':supported,
-                'update_available':bool(latest and Version(latest)>Version(installed)),
+                'update_activation_automatic':True,'update_supported':supported,'version_check_supported':True,
+                'update_available':bool(installed and latest and Version(latest)>Version(installed)),
                 'update_status':self.maintenance_status('workbuddy')}
 
     async def _update_workbuddy(self,definition,*,expected_target_version=None):
@@ -1275,7 +1280,7 @@ class SDKManager:
             supported=bool(value.get('can_update')) and value.get('platform_supported') is True
             value.update(latest_version=version.get('latest_version'),version_check=version.get('version_check'),
                          validated_target_version=value.get('current_version') if value.get('sdk_integration',{}).get('status')=='certified' else None,
-                         update_preparation_supported=supported,update_activation_automatic=False,
+                         update_preparation_supported=supported,update_activation_automatic=True,version_check_supported=True,
                          update_supported=supported,
                          update_enabled=definition.update_enabled and supported,
                          update_status=self.maintenance_status('workbuddy'))

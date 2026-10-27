@@ -13,10 +13,13 @@ def budgeted_tool_response(result, *, broker, run_id, deadline, tool_name):
     """
     budget = broker.review_deadline(run_id)
     remaining = max(0, int(deadline - time.monotonic()))
+    if 'remaining_seconds' in budget:
+        remaining = min(remaining, max(0, int(budget['remaining_seconds'])))
     phase = str(budget["deadline_phase"])
     if not remaining:
         phase = "deadline_exceeded"
     notice = {"deadline_phase": phase, "remaining_seconds": remaining,
+        "deadline_scope": budget.get("deadline_scope", "run"),
         "hard_limit_seconds": int(budget["hard_limit_seconds"]),
         "elapsed_seconds": int(budget["elapsed_seconds"]), "extends_deadline": False}
     if phase == "finalizing":

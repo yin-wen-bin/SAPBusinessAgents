@@ -15,7 +15,10 @@ def main():
                  and Path(command[3]).resolve()==Path(__file__).with_name('prepare-workbuddy-package.py').resolve()
                  and command[4]=='--request' and Path(command[5]).is_absolute()
                  and command[6]=='--request-sha256' and len(command[7])==64)
-    if not (pip or candidate):return 2
+    checker = (len(command)==6 and command[1:3]==['-I','-B']
+               and Path(command[3]).resolve()==Path(__file__).with_name('verify-workbuddy-update-infrastructure.py').resolve()
+               and command[4]=='--output' and Path(command[5]).is_absolute())
+    if not (pip or candidate or checker):return 2
     return subprocess.run(command, stdin=subprocess.DEVNULL, check=False).returncode
 
 

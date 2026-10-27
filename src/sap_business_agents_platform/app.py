@@ -473,6 +473,8 @@ def create_app(
     # Injected test managers retain their legacy mock probes unless explicitly opted in.
     if sdk_manager is None or authentication_adapters is not None:
         sdk_registry.authentication_service = authentication
+        if getattr(sdk_registry, 'online_update', None):
+            sdk_registry.online_update.bind_authentication_service()
         for controller in (getattr(coordinator, "harness", None), getattr(coordinator, "workbuddy_harness", None)):
             if controller:
                 controller.authentication_service = authentication
@@ -518,6 +520,8 @@ def create_app(
             agent_catalog.close()
             if sdk_display:
                 sdk_display.close()
+            if getattr(sdk_registry, 'online_update', None):
+                await sdk_registry.online_update.close()
             await authentication.close()
             await query_history.stop()
             await workflow_drafts.assistant.stop()
@@ -1754,6 +1758,10 @@ def create_app(
         free_query_session = store.get_free_query_session_by_run(run_id)
         if free_query_session is not None:
             iteration = store.get_free_query_iteration_by_run(run_id)
+            from .free_query_display import project as free_query_progress
+            payload['progress_display'] = free_query_progress(store,record,iteration)
+            if iteration:
+                payload['execution_facts'] = coordinator._free_query_execution_facts(record,iteration)
             payload["free_query_session"] = {
                 "session_id": free_query_session["session_id"],
                 "status": free_query_session["status"],
@@ -3330,6 +3338,7 @@ def create_app(
     @app.post("/api/system/sdks/{sdk_id}/update")
     async def update_sdk(
         sdk_id: str,
+        response: Response,
         x_sapba_action: str | None = Header(default=None),
         expected_target_version: str | None = Query(default=None, alias='expectedTargetVersion', max_length=64),
     ) -> dict[str, Any]:
@@ -3342,6 +3351,9 @@ def create_app(
         except SDKManagerError as exc:
             status_code = 404 if exc.code == "sdk_not_found" else 409
             raise HTTPException(status_code, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
+        if sdk_id == "codebuddy-agent-sdk" and item.get("maintenance_kind") == "online_upgrade":
+            response.status_code = 202
+            return {"item": item, "operation_id": item["operation_id"], "message": "SDK update accepted.", "restart_required": False}
         return {
             "item": item,
             "message": ("Upgrade candidate prepared; active environment unchanged. Target evidence review required."

@@ -69,7 +69,8 @@ def source_manifest(root):
                 if path.is_symlink():
                     raise control.StartupBlocked("startup_source_link_rejected")
                 files[path.relative_to(root).as_posix()] = path
-    for name in ("tests/test_workbuddy_isolation.py", "tests/test_workbuddy_three_layers.py"):
+    for name in ("tests/test_workbuddy_isolation.py", "tests/test_workbuddy_three_layers.py",
+                 "tests/workbuddy_integration_fakes.py", "tests/fixtures/workbuddy_protocol_worker.py", "pyproject.toml"):
         if (root / name).exists(): files[name] = root / name
     for name in SOURCE_RESOURCES:
         if (root / name).exists(): files[name] = root / name

@@ -273,5 +273,14 @@ def json_type(value):
 
 
 def repair_feedback(issues, *, acceptance=False):
+    if not issues:
+        return {"report_validated": True, "issues": [],
+            "instruction": "Report validation passed. Hand off the full final object now using the exact "
+                "validated_report as presentation, including its validation_ref and ALL existing defaults. "
+                "Do not reword or revalidate a passed report merely to remove a financial warning. "
+                "An unverified financial status is a retained limitation, not a report-structure rejection; "
+                "do not claim business completeness. Report validation alone is not a complete terminal. "
+                "Do not repeat external reads. Revalidation does not restart the handoff window.",
+            "retry_scope": "terminal_only", "extends_deadline": False}
     return {"report_validated": not issues, "issues": copy.deepcopy(issues),
         "instruction": instructions(acceptance=acceptance), "retry_scope": "report_only", "extends_deadline": False}

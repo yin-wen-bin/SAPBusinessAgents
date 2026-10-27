@@ -62,9 +62,9 @@ def test_workbuddy_missing_environment_never_falls_back_to_legacy_repair(tmp_pat
         calls.append("repair")
         return {"item": {"provider_id": "workbuddy", "current_version": "0.3.247"}, "restart_required": False}
     instance.workbuddy.update = repair
-    with pytest.raises(SDKManagerError) as caught:
-        asyncio.run(instance.check_versions("codebuddy-agent-sdk"))
-    assert caught.value.code == "workbuddy_environment_not_installed"
+    result = asyncio.run(instance.check_versions("codebuddy-agent-sdk"))
+    assert result["current_version"] is None and result["latest_version"]
+    assert result["version_check_supported"] is True
     assert calls == []
     with pytest.raises(SDKManagerError) as update:
         asyncio.run(instance.update("codebuddy-agent-sdk"))

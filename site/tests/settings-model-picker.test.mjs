@@ -104,35 +104,47 @@ test('maintenance checks finish, keep controls stable, and read versions without
   assert.equal(controls.check.disabled,false);
 });
 
-test('WorkBuddy never offers its pinned environment rebuild as an SDK upgrade', async () => {
+test('WorkBuddy version checks remain independent when online activation is unavailable', async () => {
   const h=await harness();
-  h.renderRuntimes([{...sdk,provider_id:'workbuddy',sdk_id:'codebuddy-agent-sdk',can_update:true,update_enabled:true}]);
-  const controls=h.maintenance('workbuddy');
-  assert.equal(controls.versions.disabled,true);
-  assert.equal(controls.update.hidden,true);
-  assert.match(controls.note.textContent,/尚未确认.*升级准备能力.*修复不是升级/);
-  assert.match(h.root.textContent,/固定版本.*环境及认证绑定/);
+  const value={...sdk,provider_id:'workbuddy',sdk_id:'codebuddy-agent-sdk',can_update:true,update_enabled:false,
+    update_supported:false,version_check_supported:true,current_version:'1.0.0'};
+  h.renderRuntimes([value]);const controls=h.maintenance('workbuddy');
+  assert.equal(controls.versions.disabled,false);assert.equal(controls.update.hidden,true);
+  assert.match(controls.note.textContent,/独立检查可用版本/);
+  assert.match(h.root.textContent,/旧版固定版本.*环境及认证绑定/);
+  h.respond(async(url,options)=>options.method==='POST'?{item:{...value,latest_version:'1.1.0',version_check:{status:'checked',checked_at:'2026-10-27'}}}
+    :{items:[value],default_provider_id:'workbuddy'});
   await controls.versions.fire('click');await controls.update.fire('click');
-  assert.equal(h.calls.filter(c=>c.method==='POST').length,0);
+  const posts=h.calls.filter(c=>c.method==='POST');assert.equal(posts.length,1);
+  assert.ok(posts[0].url.endsWith('/check?scope=versions'));
+  assert.equal(h.calls.some(c=>/authentication|models\/check|\/update\?/.test(c.url)),false);
 });
 
-for (const locale of ['zh','en']) test(`${locale}: WorkBuddy prepares a candidate without claiming activation`, async () => {
+for (const locale of ['zh','en']) test(`${locale}: WorkBuddy accepted update stays running until activation is confirmed`, async () => {
   const h=await harness(locale);h.confirm(true);
   const value={...sdk,provider_id:'workbuddy',sdk_id:'codebuddy-agent-sdk',can_update:true,update_enabled:true,
-    update_preparation_supported:true,update_available:true,current_version:'1.0.0',latest_version:'1.1.0'};
+    update_supported:true,version_check_supported:true,update_preparation_supported:true,update_available:true,
+    environment_digest:'old',current_version:'1.0.0',latest_version:'1.1.0'};
   h.renderRuntimes([value]);const controls=h.maintenance('workbuddy');
   assert.equal(controls.versions.disabled,false);assert.equal(controls.update.hidden,false);
-  assert.match(controls.update.textContent,locale==='zh'?/准备SDK升级/:/Prepare SDK upgrade/);
-  const status={operation_id:'candidate-test',status:'needs_review',outcome:'candidate_prepared',phase:'version_confirmation',
-    target_version:'1.1.0',started_at:new Date().toISOString(),error:{code:'workbuddy_update_evidence_required'}};
-  h.respond(async(url,options)=>options.method==='POST'?{item:{...value,maintenance_kind:'upgrade_candidate',activated:false,update_status:status}}
+  assert.equal(controls.update.textContent,locale==='zh'?'更新 SDK':'Update SDK');
+  const stamp=new Date().toISOString();
+  const status={operation_id:'online-update-test',status:'running',phase:'downloading',target_version:'1.1.0',started_at:stamp,updated_at:stamp};
+  h.respond(async(url,options)=>options.method==='POST'?{operation_id:status.operation_id,item:{...value,maintenance_kind:'online_upgrade',activated:false,update_status:status}}
     :{items:[{...value,update_status:status}],default_provider_id:'workbuddy'});
   await controls.update.fire('click');
-  assert.match(h.maintenance('workbuddy').status.textContent,locale==='zh'?/候选环境已准备，尚未切换/:/Candidate prepared, not activated/);
+  assert.match(h.maintenance('workbuddy').status.textContent,locale==='zh'?/正在下载/:/Downloading/);
+  assert.equal(h.maintenanceValue(value).current_version,'1.0.0');
   assert.equal(h.maintenance('workbuddy').update.disabled,true);
   await h.maintenance('workbuddy').update.fire('click');
   assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
   assert.equal(h.calls.filter(c=>c.method==='POST')[0].url,'http://test/api/system/sdks/codebuddy-agent-sdk/update?expectedTargetVersion=1.1.0');
+  const current={...value,environment_digest:'new',current_version:'1.1.0',cli_version:'2.1.0',update_available:false,
+    update_status:{...status,status:'completed',phase:'completed',outcome:'activated',updated_at:new Date(Date.now()+1000).toISOString()}};
+  h.renderRuntimes([current]);
+  assert.equal(h.maintenanceValue(current).current_version,'1.1.0');
+  assert.doesNotMatch(h.maintenance('workbuddy').status.textContent,/正在下载|Downloading/);
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
   assert.equal(h.calls.some(c=>/authentication|models\/check/.test(c.url)),false);
 });
 

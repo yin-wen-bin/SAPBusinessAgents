@@ -138,6 +138,7 @@ class FreeQueryFeedback(BaseModel):
 
     base_iteration: int = Field(alias="baseIteration", ge=1)
     request_id: str | None = Field(default=None, alias='requestId', pattern=r'^[A-Za-z0-9_-]{16,128}$')
+    continuation_mode: Literal['review', 'evidence_only'] | None = Field(default=None, alias='continuationMode')
     recovery_iteration: int | None = Field(default=None, alias='recoveryIteration', ge=1)
     recovery_kind: Literal['saved_result', 'confirmed_progress'] | None = Field(default=None, alias='recoveryKind')
     recovery_digest: str | None = Field(default=None, alias='recoveryDigest', pattern=r'^sha256:[0-9a-f]{64}$')
@@ -157,6 +158,8 @@ class FreeQueryFeedback(BaseModel):
         recovery = (self.recovery_iteration, self.recovery_kind, self.recovery_digest)
         if any(v is not None for v in recovery) and (any(v is None for v in recovery) or not self.request_id):
             raise ValueError('Recovery requires requestId, recoveryIteration, recoveryKind and recoveryDigest')
+        if self.continuation_mode is not None and not self.request_id:
+            raise ValueError('Continuation mode requires requestId')
         self.feedback = self.feedback.strip()
         if not self.feedback:
             raise ValueError("feedback must not be blank")
@@ -379,6 +382,7 @@ class HarnessResult(BaseModel):
         "interrupted",
         "limit_reached",
         "capability_unavailable",
+        "terminal_handoff_failed",
     ] = "capability_unavailable"
 
 

@@ -94,6 +94,7 @@ def _terminal_handoff_outcome(self, driver, run_id, context, turn_count, run_sta
     candidate = detail.get("last_rejected_candidate") or {}
     issues = candidate.get("validation_issues", []) if isinstance(candidate, dict) else []
     failure = {"code": code, "validation_issues": issues,
+        "handoff_wait_expired": detail.get("handoff_wait_expired") is True,
         "attempts_without_progress": (detail.get("terminal_convergence") or {}).get("without_progress", 0),
         "phase": detail.get("terminal_phase", "final_handoff"),
         "cleanup_complete": context.get("cleanup_state", {}).get("complete") is True,
@@ -110,7 +111,7 @@ def _terminal_handoff_outcome(self, driver, run_id, context, turn_count, run_sta
     budget = self.broker.budget_snapshot(run_id)
     web_count, discovered, activated = _persistent_harness_counts(self.store, run_id)
     return HarnessOutcome(thread_id=context["thread_id"], turn_count=turn_count,
-        status="inconclusive", stop_reason="capability_unavailable",
+        status="inconclusive", stop_reason="terminal_handoff_failed",
         summary={"zh": "最终结构化结果未通过格式校验或未完成交接；已保留证据，未将报告候选冒充成功结果。",
             "en": "The final structured result failed validation or handoff; evidence was preserved and a report candidate was not promoted to success."},
         source_complete=_evidence_sources_complete(evidence), business_complete=False,
@@ -119,6 +120,7 @@ def _terminal_handoff_outcome(self, driver, run_id, context, turn_count, run_sta
         discovered_tool_count=discovered, activated_tool_count=activated,
         elapsed_seconds=int(time.monotonic()-run_started), hard_limit_seconds=budget["hard_limit_seconds"],
         query_seconds_granted=budget["query_seconds_granted"], finalization_seconds_reserved=budget["finalization_seconds_reserved"],
+        extension_count=budget["extension_count"], extension_reasons=budget["extension_reasons"],
         deadline_phase="completed")
 
 async def run(self, driver, run_id, query, thread_id=None, model=None, reasoning_effort=None):

@@ -33,7 +33,7 @@ function harness() {
     addEventListener(name, listener) {this.listeners.set(name, listener);}
     close() {this.readyState = EventSource.CLOSED;}
   }
-  const context = createContext({root, EventSource, window: {EventSource},
+  const context = createContext({root, EventSource, window: {EventSource}, locale:'zh', recoverySubmission:null, recoveryMessage:()=> '',
     labels: {status: {reviewing_feedback: '正在分析反馈', waiting_input: '等待补充信息'},
       freeQuerySession: {feedbackSteps: ['已提交', '理解反馈', '判断查询', '准备结果'], waiting: '等待补充信息'}},
     terminal: new Set(['completed', 'inconclusive', 'failed', 'cancelled']),
@@ -57,13 +57,15 @@ function harness() {
 
 test('feedback waiting-input event reveals the clarification form without reloading the page', async () => {
   const h = harness();
-  assert.equal(h.nodes.get('[data-session-feedback]').hidden, true);
+  assert.equal(h.nodes.get('[data-session-feedback]').hidden, false);
+  assert.equal(h.nodes.get('[data-session-feedback] button[type=submit]').disabled, true);
   h.waiting();
   await h.emit('feedback_waiting_input');
   assert.equal(h.ui.getSession().status, 'waiting_input');
   assert.equal(h.nodes.get('[data-session-status]').textContent, '等待补充信息');
   assert.equal(h.nodes.get('[data-session-feedback]').hidden, false);
   assert.equal(h.nodes.get('[data-session-feedback]').dataset.mode, 'clarification');
+  assert.equal(h.nodes.get('[data-session-feedback] button[type=submit]').disabled, false);
   assert.equal(h.nodes.get('[data-session-feedback-question]').textContent, h.question);
   assert.equal(h.nodes.get('[data-feedback-progress-detail]').textContent, h.question);
   assert.equal(h.steps.some(step => step.classes.has('is-active')), false);
@@ -78,7 +80,8 @@ test('ongoing feedback review keeps its progress state and does not expose a cla
   const h = harness();
   await h.emit('feedback_review_started');
   assert.equal(h.ui.getSession().status, 'reviewing_feedback');
-  assert.equal(h.nodes.get('[data-session-feedback]').hidden, true);
+  assert.equal(h.nodes.get('[data-session-feedback]').hidden, false);
+  assert.equal(h.nodes.get('[data-session-feedback] button[type=submit]').disabled, true);
   assert.equal(h.steps[1].classes.has('is-active'), true);
   assert.equal(h.calls.length, 1);
   assert.deepEqual(h.alerts, []);

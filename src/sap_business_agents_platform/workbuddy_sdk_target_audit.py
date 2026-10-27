@@ -4,6 +4,22 @@ from .sdk_update import failure
 from .workbuddy_qualification import model_check_origin
 
 
+def target_model_origin(environment,check,model):
+    from .workbuddy_model_protocol import CONTRACT,applicable
+    if check.get('probe_contract')!=CONTRACT:
+        return model_check_origin(environment,check,model)
+    from .workbuddy_record_io import read_record
+    from .workbuddy_environment import digest
+    from .workbuddy_site import matches,configuration
+    try:
+        job=read_record(environment.root/'jobs'/(digest(check['source_job_id'])+'.json'))
+        return (applicable(environment,check) and job.get('environment_digest')==check.get('environment_digest')
+            and job.get('runtime_model')==model and matches(job,configuration(check))
+            and job.get('authentication_revision',0)==check.get('authentication_revision',0))
+    except (OSError,ValueError,KeyError):
+        return False
+
+
 class TargetAdmissionAudit:
     """Consume already-produced platform evidence; never perform a probe/login.
 
@@ -35,7 +51,7 @@ class TargetAdmissionAudit:
         check=self.model_check
         if (check.get('environment_digest')!=key or check.get('authentication_revision')!=account['revision']
                 or self.snapshot.get('model')!=model or self.snapshot.get('environment_digest')!=key
-                or not model_check_origin(adapter_environment,check,model)):
+                or not target_model_origin(adapter_environment,check,model)):
             raise failure('workbuddy_update_evidence_required','version_confirmation')
         return {'certificate':copy.deepcopy(self.certificate),'model_check':copy.deepcopy(check),
                 'snapshot':copy.deepcopy(self.snapshot),'authentication_environment':key,'admitted':True}

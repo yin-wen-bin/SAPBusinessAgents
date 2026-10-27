@@ -45,6 +45,25 @@ from .runtime_prompts import (
     _safe_json,
 )
 
+class _RecoveryClient:
+    """Observe the existing owned-client cleanup contract without changing it."""
+    def __init__(self, client):
+        self.client = client
+
+    async def __aenter__(self):
+        return await self.client.__aenter__()
+
+    async def __aexit__(self, kind, error, traceback):
+        result = await self.client.__aexit__(kind, error, traceback)
+        if error is not None and not result:
+            detail = getattr(error, 'detail', None)
+            detail = dict(detail) if isinstance(detail, dict) else {}
+            if not detail.get('cleanup_failure_code'):
+                detail['cleanup_complete'] = True
+                error.detail = detail
+        return result
+
+
 class SharedPlanner:
     async def review_agent_feedback(self, **kwargs):
         from .runtime_agent_authoring import run_feedback
@@ -74,7 +93,7 @@ class SharedPlanner:
     async def review_free_query_feedback(
         self,
         *,
-        thread_id: str,
+        thread_id: str | None,
         original_query: str,
         previous_query: str,
         previous_plan: dict[str, Any] | None,
@@ -86,6 +105,8 @@ class SharedPlanner:
         feedback: str,
         feedback_type_hint: str | None = None,
         supplemental_input: str | None = None,
+        recovery: bool = False,
+        execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         AsyncCodex = self._runtime_client
 
@@ -112,18 +133,21 @@ Rules:
    evidence requirements, or a fact-affecting business rule may change.
 3. Choose reinterpret only for wording, language, ordering, or layout changes that require no
    new facts and no plan change.
+   An explicit request to run/query again is requery, even when the scope is unchanged.
+   When asked to rerun the original question without changes, revised_query must equal the
+   original question exactly. A recovery source is context, never an instruction to reinterpret.
+   Questions explaining recorded platform execution facts need no new SAP facts.
 4. Choose clarify only when one concise answer is required before either action is safe.
 5. Choose start_new_session when the feedback is a materially different business question.
 Return only the required structured object.
 """.strip()
-        async with AsyncCodex() as codex:
-            thread = await codex.thread_resume(
-                thread_id,
-                cwd=str(self.repository_root),
-                sandbox=Sandbox.read_only,
-                approval_mode=ApprovalMode.deny_all,
-                model=self.model,
-            )
+        if recovery:
+            prompt += '\nThis is a NEW feedback review after a stopped task. Do not resume the stopped SDK thread. Historical cancellation is NOT the state of this review or its future run.\n' + _safe_json(execution_context or {}, limit=8_000)
+        client=AsyncCodex(**({'evidence_only':True} if recovery else {}))
+        async with (_RecoveryClient(client) if recovery else client) as codex:
+            options=dict(cwd=str(self.repository_root),sandbox=Sandbox.read_only,
+                         approval_mode=ApprovalMode.deny_all,model=self.model)
+            thread = await codex.thread_start(**options) if recovery else await codex.thread_resume(thread_id,**options)
             result = await thread.run(prompt, output_schema=FREE_QUERY_FEEDBACK_REVIEW_SCHEMA, effort=self.reasoning_effort)
             return json.loads(result.final_response)
 
@@ -139,6 +163,7 @@ Return only the required structured object.
         completeness: dict[str, Any],
         rule_results: list[dict[str, Any]],
         recovery: bool = False,
+        execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         AsyncCodex = self._runtime_client
 
@@ -159,7 +184,17 @@ allowed list. Change only wording, language, ordering, or table layout. Return J
 """.strip()
         if recovery:
             prompt += '\nThis is a new round after cancellation, based only on the supplied persisted context. Explain what it supports and what remains unknown. Do not resume a cancelled invocation, call tools, obtain new SAP evidence or claim completed business verification.'
-        async with AsyncCodex(**({'evidence_only':True} if recovery else {})) as codex:
+            prompt += '\nRecorded platform execution context (not SAP business evidence):\n' + _safe_json(execution_context or {}, limit=8_000)
+            prompt += ('\ncurrent_round is THIS invocation. historical_cancelled_round belongs to a DIFFERENT, prior run. '
+                       'Never describe the current round as cancelled because a historical run was cancelled. '
+                       'Do not generate a current execution-status heading or claim this round stopped; the platform renders that status. '
+                       'A requested rerun was not performed by this evidence-only operation; do not invent cancellation as its cause.')
+            prompt += ('\nAnswer the actual question. For questions about stopping/cancellation, use these recorded lifecycle facts, not the old business report. '
+                       'user_cancelled proves a cancellation request was received; it does not prove which browser button or navigation action caused it. '
+                       'When a cause or browser action is not recorded, say it is unknown. Do not guess authentication, SAP, model, timeout or quota causes. '
+                       'The saved_result/confirmed_progress distinction must remain explicit; neither means this stopped round completed.')
+        client = AsyncCodex(**({'evidence_only':True} if recovery else {}))
+        async with (_RecoveryClient(client) if recovery else client) as codex:
             options=dict(cwd=str(self.repository_root),sandbox=Sandbox.read_only,approval_mode=ApprovalMode.deny_all,model=self.model)
             thread = await codex.thread_start(**options) if recovery else await codex.thread_resume(thread_id,**options)
             result = await thread.run(

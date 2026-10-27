@@ -1,0 +1,12 @@
+{
+  "run_id": "run_f43d68f262024114",
+  "synthetic_replay_only": true,
+  "hard_limit_seconds": 1800,
+  "first_report_elapsed": 977,
+  "second_report_elapsed": 1177,
+  "finalization_seconds": 300,
+  "second_report_generation_ms": 194352,
+  "native_tool_stream_started": "2026-10-27T09:01:12.224+08:00",
+  "failure_code": "runtime_structured_output_missing",
+  "original_cleanup_complete": true
+}

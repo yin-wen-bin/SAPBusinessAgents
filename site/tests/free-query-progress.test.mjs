@@ -240,3 +240,19 @@ test("run status reads are single-flight, hidden-page polling pauses, resuming n
   assert.equal(ui.timers.size, 0);
   assert.equal(ui.events[0].readyState, 2);
 });
+
+for(const locale of ['zh','en'])test(`${locale}: persisted activity restores evidence-reuse progress without inventing admission or SAP reads`,()=>{
+  const ui=consoleHarness(locale);
+  const run={run_id:'saved-run',mode:'free_query',status:'planning',progress:{phase:'preparing_result'},
+    progress_display:{run_id:'saved-run',evidence_reused:true,steps:[]}};
+  ui.ui.render(run);
+  const activity=ui.root.querySelector('[data-runtime-activity]');
+  assert.match(activity.textContent,locale==='zh'?/复用已有证据.*等待进展更新/:/Reusing existing evidence.*Waiting for a progress update/);
+  assert.doesNotMatch(activity.textContent,/正在核对|Checking Runtime/);
+  run.progress_display.activity={type:'agent_runtime_query_submitted',sequence:20,data:{}};
+  ui.ui.render(run);
+  assert.match(activity.textContent,locale==='zh'?/问题已提交/:/submitted/);
+  ui.ui.observeRuntimeEvent('agent_runtime_connected',{run_id:'other-run',sequence:100});
+  assert.match(activity.textContent,locale==='zh'?/问题已提交/:/submitted/);
+  assert.equal(ui.calls.length,0);
+});

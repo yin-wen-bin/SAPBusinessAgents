@@ -14,6 +14,36 @@ from typing import Any, Callable, Protocol
 
 _execution_deadline = ContextVar("runtime_execution_deadline", default=None)
 _cleanup_deadline = ContextVar("runtime_cleanup_deadline", default=None)
+_execution_owner = ContextVar("runtime_platform_execution_owner", default=None)
+
+
+def current_execution_owner():
+    value = _execution_owner.get()
+    if value is None:
+        return None
+    if not value['active']:
+        raise RuntimeContractError('runtime_execution_owner_expired')
+    return value['task_id']
+
+
+@contextmanager
+def execution_owner(task_id):
+    """Explicit platform ownership, not inference from an inherited SDK slot."""
+    if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+        raise RuntimeContractError('runtime_execution_owner_mismatch')
+    previous = current_execution_owner()
+    if previous is not None:
+        if previous != task_id:
+            raise RuntimeContractError('runtime_execution_owner_mismatch')
+        yield
+        return
+    scope = {'task_id': task_id, 'active': True}
+    token = _execution_owner.set(scope)
+    try:
+        yield
+    finally:
+        scope['active'] = False
+        _execution_owner.reset(token)
 
 
 def current_deadline():

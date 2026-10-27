@@ -177,7 +177,12 @@ class WorkBuddyPlanner(SharedPlanner):
                     return await self.tool_broker.handle(session["operation_id"], session["capability"], name, arguments)
             if authoring:
                 payload["max_turns"] = 50
-            task_id = self._feedback_operation.get() or uuid.uuid4().hex
+            from .runtime_contract import current_execution_owner
+            query_owner = current_execution_owner()
+            explicit_owner = self._feedback_operation.get()
+            if query_owner and explicit_owner and query_owner != explicit_owner:
+                raise WorkBuddyError('workbuddy_reservation_owner_mismatch')
+            task_id = explicit_owner or query_owner or uuid.uuid4().hex
             scope = self._driver.turn_owner.get()
             if scope is not None:
                 scope["jobs"].add(task_id)

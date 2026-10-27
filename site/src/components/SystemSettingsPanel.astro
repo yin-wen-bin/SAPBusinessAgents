@@ -930,13 +930,18 @@ const copy = locale === "zh" ? {
     } catch { /* The in-page single-request guard remains in force. */ }
   };
   const updatePhaseMessage = update => {
-    const labels = locale === "zh" ? {version_check:"正在核对版本",downloading:"正在下载",verification:"正在校验完整软件包",waiting_maintenance:"正在申请安装维护窗口",local_resolution:"正在核对本地安装事务",installation:"正在本地安装",version_confirmation:"正在确认SDK与CLI版本",cleanup:"正在清理安装进程"}
-      : {version_check:"Checking versions",downloading:"Downloading",verification:"Verifying complete packages",waiting_maintenance:"Acquiring installation maintenance",local_resolution:"Checking the local install transaction",installation:"Installing locally",version_confirmation:"Confirming SDK and CLI versions",cleanup:"Cleaning up installer processes"};
+    const labels = locale === "zh" ? {version_check:"正在核对版本",downloading:"正在下载",verification:"正在校验完整软件包",waiting_maintenance:"正在申请安装维护窗口",local_resolution:"正在核对本地安装事务",installation:"正在本地安装",version_confirmation:"正在确认SDK与CLI版本",authentication_verification:"正在核对候选环境登录",infrastructure_validation:"正在验证 SDK 基础设施",model_verification:"正在检查当前默认模型（仅一次）",switching:"正在切换运行环境",health_check:"正在核对切换后状态",rollback:"正在恢复旧环境",cleanup:"正在清理安装进程"}
+      : {version_check:"Checking versions",downloading:"Downloading",verification:"Verifying complete packages",waiting_maintenance:"Acquiring installation maintenance",local_resolution:"Checking the local install transaction",installation:"Installing locally",version_confirmation:"Confirming SDK and CLI versions",authentication_verification:"Verifying candidate authentication",infrastructure_validation:"Validating SDK infrastructure",model_verification:"Checking the default model once",switching:"Activating environment",health_check:"Checking activated environment",rollback:"Restoring the old environment",cleanup:"Cleaning up installer processes"};
     if (update.status === "cleanup_pending") return locale === "zh" ? "正在停止安装进程；清理尚未确认完成，请勿重复提交。" : "Stopping installer processes; cleanup is unconfirmed. Do not resubmit.";
     if (update.status === "needs_review" && update.outcome === "candidate_prepared") return authenticationErrors.workbuddy_update_evidence_required;
     if (update.status === "needs_review") return locale === "zh" ? "安装结果待核对。请先检查可用版本，不要重复安装。" : "Installation needs review. Check available versions before another installation.";
+    if (update.status === "rolled_back") return locale === "zh" ? "更新未完成，已恢复旧环境。" : "Update did not complete; the old environment was restored.";
     if (update.status === "completed") return update.phase === "restart_pending" ? copy.restart : copy.updated;
-    if (update.status === "failed") return authenticationErrors[update.error?.code] || maintenanceCopy.failed;
+    if (update.status === "failed" || update.status === "needs_review") {
+      const errors = locale === "zh" ? {workbuddy_update_authentication_failed:"候选环境登录核对未通过，当前环境未切换。",workbuddy_update_model_failed:"默认模型兼容检查未通过，当前环境未切换。",workbuddy_update_infrastructure_failed:"SDK 基础设施检查未通过，当前环境未切换。",sdk_update_binding_changed:"环境或目标版本已变化，请重新核对。"}
+        : {workbuddy_update_authentication_failed:"Candidate authentication failed; the active environment is unchanged.",workbuddy_update_model_failed:"Default-model compatibility failed; the active environment is unchanged.",workbuddy_update_infrastructure_failed:"SDK infrastructure validation failed; the active environment is unchanged.",sdk_update_binding_changed:"The environment or target version changed. Review the current state."};
+      return errors[update.error?.code] || authenticationErrors[update.error?.code] || maintenanceCopy.failed;
+    }
     const file = /^[A-Za-z0-9_.+!-]+\.whl$/.test(update.filename || "") ? update.filename : "";
     const amount = Number.isFinite(update.downloaded_bytes) && update.downloaded_bytes >= 0
       ? ` · ${(update.downloaded_bytes / 1000000).toFixed(1)}${Number.isFinite(update.total_bytes) && update.total_bytes >= update.downloaded_bytes ? ` / ${(update.total_bytes / 1000000).toFixed(1)}` : ""} MB` : "";
@@ -968,24 +973,24 @@ const copy = locale === "zh" ? {
     if (!view?.versionSection) return;
     const sdk = maintenanceSDK(view.sdk), section = view.versionSection, controls = section.controls;
     adoptUpdate(view.sdk);
-    const state = maintenanceState(sdk.provider_id), pinned = sdk.provider_id === "workbuddy" && sdk.update_preparation_supported !== true;
+    const state = maintenanceState(sdk.provider_id), pinned = sdk.provider_id === "workbuddy" && sdk.update_supported !== true;
     const active = ["running","unknown","needs_review","cleanup_pending"].includes(state?.status);
     const blocked = active || view.stale || authenticationActive(sdk.authentication?.operation)
       || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id);
     const recorded = value => value ? `${value} · ${locale === "zh" ? "已记录，待核对" : "recorded; pending verification"}` : copy.notChecked;
     const values = [sdk.current_version || recorded(sdk.recorded_sdk_version), sdk.cli_version || recorded(sdk.recorded_cli_version),
-      pinned ? maintenanceCopy.pinned : sdk.version_check?.status === "failed" ? copy.failedState : sdk.latest_version || copy.notChecked];
+      sdk.version_check?.status === "failed" ? copy.failedState : sdk.latest_version || copy.notChecked];
     section.querySelectorAll(".sdk-version-block strong").forEach((node, index) => { node.textContent = values[index]; });
-    controls.versions.disabled = pinned || view.stale || ["running","cleanup_pending"].includes(state?.status)
+    controls.versions.disabled = sdk.version_check_supported === false || view.stale || ["running","cleanup_pending"].includes(state?.status)
       || authenticationActive(sdk.authentication?.operation) || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id);
     controls.check.disabled = blocked;
     controls.update.disabled = blocked || pinned || !sdk.update_enabled || !sdk.update_available || !sdk.latest_version;
     controls.update.hidden = pinned || !sdk.update_enabled;
     controls.check.textContent = state?.status === "running" && state.kind === "check" ? copy.checking : copy.check;
     controls.versions.textContent = state?.status === "running" && state.kind === "versions" ? maintenanceCopy.checkingVersions : maintenanceCopy.versions;
-    controls.update.textContent = state?.status === "running" && state.kind === "update" ? copy.updating : sdk.provider_id === "workbuddy" ? (locale === "zh" ? "准备SDK升级" : "Prepare SDK upgrade") : copy.update;
+    controls.update.textContent = state?.status === "running" && state.kind === "update" ? copy.updating : sdk.provider_id === "workbuddy" ? (locale === "zh" ? "更新 SDK" : "Update SDK") : copy.update;
     controls.time.textContent = `${maintenanceCopy.versionTime}: ${checkedTime(sdk.version_check?.checked_at)}`;
-    controls.note.textContent = pinned ? (locale === "zh" ? "当前后端尚未确认在线升级准备能力；同版本环境修复不是升级。" : "This backend has not confirmed online upgrade preparation; same-version repair is not an upgrade.") : !sdk.update_enabled ? copy.updateDisabled : sdk.provider_id === "workbuddy" ? (locale === "zh" ? "通过pip在新独立环境准备目标版本；认证和兼容证据审核通过后才能受控切换，当前环境保持不变。" : "Prepare the target with pip in a new isolated environment. Controlled activation requires authentication and compatibility evidence; the current environment remains unchanged.") : maintenanceCopy.readOnly;
+    controls.note.textContent = pinned ? (locale === "zh" ? "当前环境暂不具备在线更新条件；仍可独立检查可用版本。" : "Online update is unavailable for this installation. Version checks remain independent.") : !sdk.update_enabled ? copy.updateDisabled : sdk.provider_id === "workbuddy" ? (locale === "zh" ? "下载并校验目标版本，在独立环境安装；验证通过后切换生效，失败保留或回退旧环境。每次仅检查当前默认模型一次，不查询 SAP。" : "Download and verify the target, install in an isolated environment, then validate and activate it. Failures retain or restore the old environment. One default-model check; no SAP queries.") : maintenanceCopy.readOnly;
     if (view.sdk.update_status?.status === "completed" && view.sdk.update_status.phase === "restart_pending") controls.note.textContent += ` · ${copy.restart}`;
     controls.status.textContent = state?.message || (sdk.version_check?.status === "failed" ? copy.failedState : "");
     controls.status.className = ["unknown","needs_review","cleanup_pending","failed"].includes(state?.status) || sdk.version_check?.status === "failed" ? "sdk-error" : "sdk-update-note";
@@ -999,7 +1004,7 @@ const copy = locale === "zh" ? {
     const view = runtimeViews.get(provider), sdk = maintenanceSDK(view.sdk);
     const prior=maintenanceState(provider);
     if (["running","cleanup_pending"].includes(prior?.status) || ["unknown","needs_review"].includes(prior?.status) && kind !== "versions") return;
-    if (kind === "update" && (!sdk.update_enabled || !sdk.update_available || !sdk.latest_version || sdk.provider_id === "workbuddy" && sdk.update_preparation_supported !== true || !window.confirm(sdk.provider_id === "workbuddy" ? (locale === "zh" ? "仅在新独立环境准备此目标版本，不切换当前环境；证据审核及正式切换需另行受控执行。继续？" : "Prepare this target in a new isolated environment only; keep the current environment unchanged. Evidence review and activation are separate controlled actions. Continue?") : copy.confirmUpdate))) return;
+    if (kind === "update" && (!sdk.update_enabled || !sdk.update_available || !sdk.latest_version || sdk.provider_id === "workbuddy" && sdk.update_supported !== true || !window.confirm(sdk.provider_id === "workbuddy" ? (locale === "zh" ? `将 SDK 从 ${sdk.current_version} 更新至 ${sdk.latest_version}。将在独立环境安装、核对当前账号，并对默认模型 ${sdk.default_model_id || ""} 执行一次兼容检查（可能产生费用，不查询 SAP）；全部通过后切换，失败保留或回退旧环境。继续？` : `Update SDK ${sdk.current_version} to ${sdk.latest_version} in an isolated environment. Verify the current account and check default model ${sdk.default_model_id || ""} once (possible model charges; no SAP). Activate only after verification; retain or restore the old environment on failure. Continue?`) : copy.confirmUpdate))) return;
     const target = sdk.latest_version;
     const submitted_at=Date.now();
     setMaintenance(provider, {kind, status: "running", target, submitted_at, requestPending:true, message: kind === "versions" ? maintenanceCopy.checkingVersions : kind === "update" ? copy.updating : copy.checking});
@@ -1009,6 +1014,13 @@ const copy = locale === "zh" ? {
       const url = kind === "check" ? `${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(provider)}/check`
         : `${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/${kind === "versions" ? "check?scope=versions" : provider === "workbuddy" ? `update?expectedTargetVersion=${encodeURIComponent(target)}` : "update"}`;
       const payload = await request(url, {method: "POST", ...(kind === "update" ? {headers: {"X-SAPBA-Action": "sdk-update"}} : {})});
+      if (provider === "workbuddy" && kind === "update" && payload.item?.maintenance_kind === "online_upgrade" && payload.item?.update_status?.operation_id) {
+        versionReads.delete(provider);
+        const status=payload.item.update_status;
+        setMaintenance(provider,{kind:"update",status:status.status,target,submitted_at,requestPending:false,
+          operation_id:status.operation_id,serverUpdatedAt:status.updated_at,message:updatePhaseMessage(status)});
+        await load(false,{incremental:true,afterMutation:true}).catch(()=>{}); return;
+      }
       if (provider === "workbuddy" && payload.item?.update_status?.outcome === "candidate_prepared") {
         versionReads.set(provider, {...payload.item});
         setMaintenance(provider, {kind:"update",status:"needs_review",target,requestPending:false,
@@ -1024,7 +1036,7 @@ const copy = locale === "zh" ? {
       }
       if (payload.item) {
         const value = {};
-        for (const key of ["current_version", "cli_version", "latest_version", "update_available", "update_enabled", "version_check", "update_preparation_supported", "update_supported", "update_activation_automatic", "environment_digest"]) if (payload.item[key] !== undefined) value[key] = payload.item[key];
+        for (const key of ["current_version", "cli_version", "latest_version", "update_available", "update_enabled", "version_check", "version_check_supported", "update_preparation_supported", "update_supported", "update_activation_automatic", "environment_digest"]) if (payload.item[key] !== undefined) value[key] = payload.item[key];
         versionReads.set(provider, value);
       }
       const failed = payload.item?.version_check?.status === "failed";

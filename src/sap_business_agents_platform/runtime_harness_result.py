@@ -2,6 +2,21 @@
 import time
 from .models import RunPresentation
 
+def outcome_errors(outcome):
+    """Transport failure is not an empty SAP result or a business-evidence gap."""
+    if outcome.status == 'completed':
+        return []
+    if outcome.stop_reason == 'terminal_handoff_failed':
+        code = next((c for c in outcome.missing_evidence if c in {
+            'runtime_structured_output_missing', 'runtime_structured_output_invalid',
+            'runtime_terminal_correction_stalled'}), 'runtime_terminal_handoff_failed')
+        return [{'code': code, 'category': 'runtime_terminal_handoff', 'phase': 'final_handoff',
+                 'message': 'The final structured result handoff did not complete; retained evidence is not a completed result.',
+                 'missing_evidence': outcome.missing_evidence}]
+    return [{'code': 'harness_inconclusive',
+             'message': 'The Agent Runtime could not establish a complete conclusion.',
+             'missing_evidence': outcome.missing_evidence}]
+
 def finalize(settings, store, broker, run_id, payload, *, thread_id, turn_count, run_started):
     from .harness import (HarnessOutcome, _persistent_harness_counts, _budgeted_tool_call_count,
         _evidence_sources_complete, _effective_missing_evidence, _validated_presentation_snapshot)

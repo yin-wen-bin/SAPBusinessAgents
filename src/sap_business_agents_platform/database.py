@@ -6,7 +6,8 @@ import re
 import sqlite3
 import uuid
 from pathlib import Path
-from threading import RLock
+from threading import RLock, local
+from contextlib import contextmanager, nullcontext
 from typing import Any, Literal
 
 from .models import (
@@ -29,6 +30,7 @@ class RunStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        self._free_query_connection = local()
         self._initialize()
 
     def runtime_authentication_blockers(self, provider_id: str) -> list[dict]:
@@ -63,9 +65,26 @@ class RunStore:
         return result
 
     def _connect(self) -> sqlite3.Connection:
+        owned = getattr(self._free_query_connection, 'value', None)
+        if owned is not None:
+            return nullcontext(owned)
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         return connection
+
+    @contextmanager
+    def atomic_free_query(self):
+        """Synchronous receipt/iteration commit; never span await or SDK work."""
+        with self._lock:
+            if getattr(self._free_query_connection, 'value', None) is not None:
+                raise RuntimeError('nested_free_query_transaction')
+            with self._connect() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                self._free_query_connection.value = connection
+                try:
+                    yield
+                finally:
+                    self._free_query_connection.value = None
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -1148,6 +1167,7 @@ class RunStore:
         feedback: str,
         feedback_type_hint: str | None,
         locale: str,
+        submission: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         created_at = utc_now()
         with self._lock, self._connect() as connection:
@@ -1156,7 +1176,7 @@ class RunStore:
                 (feedback_request_id, session_id, base_iteration, status, phase,
                  feedback, feedback_type_hint, locale, decision_json,
                  created_at, updated_at)
-                VALUES (?, ?, ?, 'queued', 'received', ?, ?, ?, '{}', ?, ?)""",
+                 VALUES (?, ?, ?, 'queued', 'received', ?, ?, ?, ?, ?, ?)""",
                 (
                     feedback_request_id,
                     session_id,
@@ -1164,6 +1184,7 @@ class RunStore:
                     feedback,
                     feedback_type_hint,
                     locale,
+                    _dump({'_submission': submission} if submission else {}),
                     created_at,
                     created_at,
                 ),
@@ -1265,7 +1286,9 @@ class RunStore:
                 values.append(value)
         if decision is not None:
             assignments.append("decision_json = ?")
-            values.append(_dump(decision))
+            # Request identity is platform metadata, never model-authored.
+            prior = self.get_free_query_feedback_request(feedback_request_id)['decision'] or {}
+            values.append(_dump({**decision, **{k: prior[k] for k in ('_submission', '_continuation') if k in prior}}))
         if error is not None:
             assignments.append("error_json = ?")
             values.append(_dump(error))

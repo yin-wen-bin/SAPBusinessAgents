@@ -434,7 +434,13 @@ class HarnessToolBroker:
             extension_count=budget["extension_count"],
             next_deadline_at=self._next_deadline_at(run_id, budget),
         )
-        return {**budget, "elapsed_seconds": elapsed}
+        # The hard budget is not the remaining terminal handoff window. Both
+        # transports consume this one elapsed-clock projection; revalidation
+        # must not advertise hundreds of seconds after its shorter deadline.
+        active_deadline = min(hard_limit, terminal_deadline) if terminal_deadline is not None else hard_limit
+        return {**budget, "elapsed_seconds": elapsed,
+                "remaining_seconds": max(0, int(active_deadline - elapsed)),
+                "deadline_scope": "terminal_handoff" if terminal_deadline is not None else "run"}
 
     def _elapsed_seconds(self, run_id: str) -> int:
         record = self.store.get_run(run_id)
@@ -472,6 +478,9 @@ class HarnessToolBroker:
                 if budget["deadline_phase"] != "querying"
                 else budget["query_seconds_granted"]
             )
+            terminal_deadline = self.store.get_harness_state(run_id).get("terminal_handoff_elapsed_deadline")
+            if terminal_deadline is not None:
+                seconds = min(seconds, terminal_deadline)
             return datetime.fromtimestamp(
                 started.timestamp() + seconds, tz=timezone.utc
             ).isoformat()
@@ -2261,11 +2270,15 @@ class HarnessToolBroker:
                 "validation_ref": output["validation_ref"]}
             output['financial_verification'] = presentation.financial_verification
             from .runtime_money import verification_details
-            output['financial_verification_details'] = verification_details(presentation, presentation.financial_verification)
+            output['financial_verification_details'] = verification_details(presentation, presentation.financial_verification, accepted=True)
+            budget = self.review_deadline(run_id)
+            output['terminal_handoff'] = {k: budget[k] for k in (
+                'remaining_seconds', 'deadline_scope', 'deadline_phase')}
+            output['terminal_handoff']['extends_deadline'] = False
             self.store.append_event(run_id, 'report_handoff_ready', {
                 'validation_ref': output['validation_ref'], 'financial_verification': presentation.financial_verification})
             if presentation.financial_verification == 'unverified':
-                output['financial_warning'] = 'Amounts in unbound prose/tables/metrics are not verified; do not claim business completeness. Bind exact metrics from sap_money_aggregate.'
+                output['financial_warning'] = 'Amounts in unbound prose/tables/metrics are not verified; do not claim business completeness. Preserve this limitation and hand off the accepted report unchanged.'
         if issues:
             progress = _acceptance_validation_progress(
                 report=report if presentation is not None else {},

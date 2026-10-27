@@ -107,62 +107,50 @@ still reports **restart pending**, never that the running API has already loaded
 the new SDK. Authentication, integration and model compatibility gates remain
 independent and unchanged; successful package installation grants no PASS.
 
-### WorkBuddy: pip preparation in a new independent environment
+### WorkBuddy: complete online update in an independent environment
 
-The offline implementation adds `WorkBuddyPackageUpdate`, reusing the owned pip,
-verified wheel cache and existing update routes. Codex retains its default
-package, CLI dependency, request and installation budgets. WorkBuddy downloads
-with its independently verified bootstrap, not the platform interpreter. A
-target is frozen; pre/dev/local versions and unreviewed CLI layouts fail closed.
-Currently the reviewed layout is the SDK-bundled Windows CLI: the exact wheel
-member hash binds it to the SDK; its version is observed, never inferred.
+Version checks use the existing explicit `check?scope=versions` endpoint and do
+not depend on installation, authentication or activation eligibility. They read
+the official stable package version only. Opening or refreshing settings never
+starts a check, installer or model probe.
 
-The new helper installs only verified, hash-pinned local wheels with `--no-index`
-into a new environment. It checks installed SDK/dependency versions, pip check,
-bundled CLI bytes/version, and the current worker's imported SDK surface/options.
-It rechecks interpreter metadata and dependencies after moving to the immutable
-final directory. It never reads or changes the active state or credentials.
-Download keeps the existing 1800s/60s idle limits; WorkBuddy preparation retains
-the original 700s owned envelope and individual 60s venv/300s pip limits. Cleanup
-uses the existing 10s active window, retaining reservation if unconfirmed.
+After explicit confirmation, the WorkBuddy update POST freezes
+`expectedTargetVersion` and returns HTTP 202 with an operation ID and live
+`update_status`. The existing SDK status GET exposes progress without replaying
+work. Durable operation receipts under `.local-data/sdk-update-jobs/workbuddy/`
+retain the source binding, original deadline and model-dispatch marker. The
+existing confirmation header remains required; Codex responses are unchanged.
 
-An update response is `maintenance_kind=upgrade_candidate`, `activated=false`,
-with current version unchanged and `needs_review/candidate_prepared`. Preparing
-is not activating, and versions GET/check cannot grant authentication or
-qualification. Same-operation recovery verifies the original request, result
-and immutable candidate without installing again. Existing diagnostic receipts
-block repeated preparation after an interrupted API, including corrupt receipts;
-controlled review is required, not an automatic installer retry.
+The verified wheel cache, owned package helper and independent bootstrap build
+a new immutable candidate. The platform then checks the candidate through the
+official authentication adapter, runs frozen infrastructure checker cases,
+and submits the current default model's memory-only compatibility check once.
+The dispatch marker is saved before submitting. No SAP call or business PASS is
+part of an SDK update. Other model records remain historical and do not qualify
+the new environment automatically.
 
-Activation/rollback are private maintenance primitives, not new REST actions.
-They require writer clearance, an exact source binding, the existing integration
-auditor, the real candidate verification-binding checker and a trusted target
-authentication/model auditor. Missing target auditors/evidence block switching.
-No built-in boolean can grant admission. Rollback audits its target too and
-retains appended certificates, model-check history and switch records rather
-than restoring an old ledger wholesale. The maintenance caller must hold the
-deployment/admission barrier, reserve authentication maintenance, synchronize
-the target official authentication observation, and verify health or perform
-the same guarded rollback; no public update request performs those actions.
-`TargetAdmissionAudit` supplies the concrete read-only target auditor: it checks
-the candidate-configured authentication service's current observation, original
-identity/site/revision, exact candidate environment and owned successful model
-check origin. It does not run a check itself. The maintenance operator must first
-obtain those target proofs through the existing controlled verification tools;
-missing evidence cannot be replaced with copied old SDK records or a boolean.
-New WorkBuddy clients send optional `expectedTargetVersion` on the existing
-update route, refusing a changed target before download; Codex requests are
-unchanged. The response explicitly describes a candidate, not an installed
-active version. Version display caches are bound to the WorkBuddy environment
-so a later controlled switch cannot inherit the old installation's versions.
+Target evidence includes the exact SDK/CLI/worker inventory, actual checker XML,
+checker sources and owned native compatibility-job origin. Current model-check
+v3 provenance is audited under its own protocol rather than the legacy host
+management digest. Missing or failed evidence prevents activation.
 
-The legacy `install-workbuddy-runtime.py` remains the pinned historical
-bootstrap/repair tool, not the new upgrade implementation. Public update no
-longer falls back to that repair path. Same-version repair stays disabled in the
-page. Capability projections explicitly distinguish preparation from automatic
-activation, and the page labels the action “Prepare SDK upgrade”. No real SDK
-upgrade, source lookup, model/SAP call or target qualification is performed by
-the offline test deliverable.
+Download keeps the existing 1800s/60s idle limits; independent installation keeps
+its 700s owned envelope and individual 60s venv/300s pip limits. Infrastructure
+checks have 300s; official account checks and the model probe retain their
+existing limits. The operation has a persisted 3600s execution deadline. Cleanup
+uses the existing 10s active window, then retains the reservation while awaiting
+confirmed process absence. Interrupted operations become `needs_review`; GET
+and restart never reinstall, redispatch a model or reset a deadline.
+
+Activation takes the deployment/admission locks after idle and writer checks,
+atomically switches the environment reference and publishes the freshly
+verified account observation. Subsequent workers load the new immutable
+release; the API does not need to import or upgrade its own SDK packages. Actual
+SDK/CLI versions, target admission, authentication and cleanup must pass before
+success is reported. A post-switch failure uses the same guarded rollback to the
+old release, retaining appended audit/model/switch history. An unconfirmed
+rollback or cleanup retains the maintenance fence and cannot be reported as
+success. The legacy pinned installer is never an online-update fallback.
 
 ## Protection and rollout
 

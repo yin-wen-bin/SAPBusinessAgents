@@ -153,11 +153,11 @@ def test_version_reads_and_candidate_result_are_flat_no_repair_or_switch(tmp_pat
         result=await m.check_versions('codebuddy-agent-sdk')
         assert result['current_version']=='1.0.0' and result['update_available']
         assert not a.updates
-        result=await m.update('codebuddy-agent-sdk')
+        result=await m._update_workbuddy(m._get_sdk('codebuddy-agent-sdk'))
         assert result['maintenance_kind']=='upgrade_candidate' and not result['activated']
         assert result['current_version']=='1.0.0' and result['update_status']['outcome']=='candidate_prepared'
         assert result['update_status']['status']=='needs_review' and s==original
-        with pytest.raises(SDKManagerError):await m.update('codebuddy-agent-sdk')
+        with pytest.raises(SDKManagerError):await m._update_workbuddy(m._get_sdk('codebuddy-agent-sdk'))
         assert events==['download','prepare']
         assert (await m.check_versions('codebuddy-agent-sdk'))['update_status']['status']=='needs_review'
     asyncio.run(scenario())
@@ -175,7 +175,7 @@ def test_source_and_maintenance_gates_rechecked_after_download(tmp_path,block):
                 return {}
             def prepare_candidate(self,*args):pytest.fail('must not install')
         m._workbuddy_updater=lambda:Updater()
-        with pytest.raises(SDKManagerError):await m.update('codebuddy-agent-sdk')
+        with pytest.raises(SDKManagerError):await m._update_workbuddy(m._get_sdk('codebuddy-agent-sdk'))
         assert calls==['download'] and not auth.sdk_maintenance_active
     asyncio.run(scenario())
 
@@ -327,7 +327,7 @@ def test_selected_target_change_blocks_before_download(tmp_path):
     m,a,s=manager(tmp_path)
     m._workbuddy_updater=lambda:pytest.fail('must not download changed target')
     with pytest.raises(SDKManagerError) as caught:
-        asyncio.run(m.update('codebuddy-agent-sdk',expected_target_version='1.2.0'))
+        asyncio.run(m._update_workbuddy(m._get_sdk('codebuddy-agent-sdk'),expected_target_version='1.2.0'))
     assert caught.value.code=='sdk_update_binding_changed' and a.updates==[]
 
 

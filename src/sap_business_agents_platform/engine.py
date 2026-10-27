@@ -21,6 +21,7 @@ from .codex_planner import Planner
 from .config import Settings
 from .database import RunStore
 from .harness import CodexHarnessController, classify_required_assessments
+from .runtime_harness_result import outcome_errors
 from .integrations import IntegrationError
 from .manifests import AgentRepository, ManifestError, is_agent_executable, validate_execution
 from .managed_rules import ManagedRuleError, execute_managed_rule
@@ -1011,6 +1012,7 @@ class RunCoordinator:
                         else None
                     ),
                     "errors": result.errors if result else [],
+                    "execution_facts": self._free_query_execution_facts(record, item),
                     "change_summary": _free_query_change_summary(
                         self.store,
                         session_id,
@@ -1038,6 +1040,17 @@ class RunCoordinator:
             "scheduler_status": scheduler_status,
             "queue_position": queue_position,
         }
+
+    def _free_query_execution_facts(self, record, item):
+        recovery = (item.get('decision') or {}).get('_recovery')
+        anchor = recovery.get('cancelled_run_id') if isinstance(recovery,dict) else None
+        historical = self.store.get_free_query_session_by_run(anchor) if anchor else None
+        cancelled_iteration = next((i['iteration'] for i in self.store.list_free_query_iterations(item['session_id'])
+                                    if i['run_id'] == anchor),None) if historical and historical['session_id']==item['session_id'] else None
+        return {'run_id':record.run_id,'status':record.status.value,'cancel_requested':record.cancel_requested,
+            'evidence_reused':item.get('execution_action')=='reinterpret',
+            'historical_cancelled_iteration':cancelled_iteration,
+            'legacy_recovery_context':bool(recovery and self.store.get_harness_state(record.run_id).get('execution_context_version') != 2)}
 
     def create_free_query_session_from_run(self, run_id: str) -> dict[str, Any]:
         existing = self.store.get_free_query_session_by_run(run_id)
@@ -1089,25 +1102,52 @@ class RunCoordinator:
     ) -> dict[str, Any]:
         lock = self._free_query_session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
-            if payload.recovery_kind is not None:
+            dump = payload.model_dump(mode='json')
+            if payload.continuation_mode is None:
+                dump.pop('continuation_mode', None)
+            fingerprint = _stable_digest(dump)
+            request_id = ('fqfeedback_' + hashlib.sha256(f'{session_id}:{payload.request_id}'.encode()).hexdigest()[:20]
+                          if payload.request_id else f'fqfeedback_{uuid.uuid4().hex[:20]}')
+            if payload.request_id:
+                try: existing = self.store.get_free_query_feedback_request(request_id)
+                except KeyError: existing = None
+                if existing is not None:
+                    decision = existing.get('decision') or {}
+                    expected = (decision.get('_submission') or {}).get('request_digest') or (decision.get('_recovery') or {}).get('request_digest')
+                    if expected != fingerprint:
+                        raise RunExecutionError('This request ID belongs to different content.', code='free_query_request_conflict')
+                    if existing.get('status') == 'iteration_created' and existing.get('run_id'):
+                        pending = self.store.get_run(existing['run_id'])
+                        if (pending.status == RunStatus.queued and not pending.cancel_requested
+                                and not self.store.get_harness_state(pending.run_id).get('feedback_handoff')
+                                and not self.store.latest_execution_job_for_subject(pending.run_id)):
+                            await self._queue_feedback_iteration(pending.run_id)
+                    return self.free_query_feedback_request(session_id, request_id)
+            if payload.recovery_kind is not None and payload.continuation_mode != 'review':
                 return await self._submit_free_query_recovery(session_id, payload)
-            session, _previous = self._validate_free_query_feedback_context(
-                session_id, payload.base_iteration
-            )
+            if payload.recovery_kind is not None:
+                session, _previous, continuation = self._review_recovery_context(session_id, payload)
+            else:
+                session, _previous = self._validate_free_query_feedback_context(session_id, payload.base_iteration)
+                continuation = None
             if self.store.active_free_query_feedback_request(session_id) is not None:
                 raise RunExecutionError(
                     "A feedback review is already active for this session.",
                     code="free_query_iteration_active",
                 )
-            feedback_request_id = f"fqfeedback_{uuid.uuid4().hex[:20]}"
-            request = self.store.create_free_query_feedback_request(
-                feedback_request_id=feedback_request_id,
+            feedback_request_id = request_id
+            with self.store.atomic_free_query():
+                request = self.store.create_free_query_feedback_request(
+                    feedback_request_id=feedback_request_id,
                 session_id=session_id,
                 base_iteration=payload.base_iteration,
                 feedback=payload.feedback,
                 feedback_type_hint=payload.feedback_type_hint,
-                locale=payload.locale,
-            )
+                    locale=payload.locale,
+                    submission={'request_digest':fingerprint, 'payload':dump},
+                )
+                if continuation:
+                    request = self.store.update_free_query_feedback_request(feedback_request_id, decision={'_continuation':continuation})
             if supplemental_input:
                 request = self.store.update_free_query_feedback_request(
                     feedback_request_id,
@@ -1124,6 +1164,49 @@ class RunCoordinator:
                 "scheduler_status": job["status"],
                 "queue_position": self.scheduler.queue_position(job["job_id"]),
             }
+
+    def _review_recovery_context(self, session_id, payload):
+        session = self.store.get_free_query_session(session_id)
+        if session['status'] == 'draft_created':
+            raise RunExecutionError('This session is locked to a draft.',code='free_query_session_locked')
+        if payload.base_iteration != session['current_iteration'] or payload.recovery_iteration > payload.base_iteration:
+            raise RunExecutionError('The session changed.',code='free_query_iteration_conflict')
+        item = self.store.get_free_query_iteration(session_id, session['current_iteration'])
+        latest = self.store.get_run(item['run_id'])
+        anchor = self._free_query_recovery_anchor(session,item,latest)
+        if not anchor:
+            raise RunExecutionError('Recovery is not applicable.',code='free_query_recovery_not_applicable')
+        self._free_query_recovery_clear(latest)
+        if anchor != latest.run_id:
+            self._free_query_recovery_clear(self.store.get_run(anchor))
+        if session['current_iteration'] >= self.settings.max_free_query_iterations:
+            raise RunExecutionError('The session reached its round limit.',code='free_query_iteration_limit')
+        source = self._free_query_recovery_source(session,payload.recovery_iteration,payload.recovery_kind)
+        if _stable_digest(source.result.model_dump(mode='json')) != payload.recovery_digest:
+            raise RunExecutionError('The selected context changed.',code='free_query_recovery_context_changed')
+        self._future_session_binding(session)
+        return session, source, {'iteration':payload.recovery_iteration,'kind':payload.recovery_kind,
+            'context_digest':payload.recovery_digest,'cancelled_run_id':anchor,'previous_run_id':latest.run_id}
+
+    def _continuation_execution_context(self, record, source, recovery, *, action='reinterpret'):
+        historical = self.store.get_run(recovery['cancelled_run_id'])
+        original_session = self.store.get_free_query_session_by_run(historical.run_id)
+        source_session = self.store.get_free_query_session_by_run(source.run_id)
+        if not original_session or not source_session or original_session['session_id'] != source_session['session_id']:
+            raise RunExecutionError('Execution context belongs to another session.',code='free_query_recovery_context_unavailable')
+        events = [event for event in self.store.events_after(historical.run_id) if event.type == 'cancellation_requested']
+        reason = events[-1].data.get('reason') if events else None
+        return {'version':2,
+            'current_round': {'run_id':record.run_id if record else None, 'status':record.status.value if record else 'reviewing',
+                'cancel_requested':bool(record.cancel_requested) if record else False,'sap_reads_authorized':False,
+                'requested_action':action},
+            'reference_source': {'run_id':source.run_id,'iteration':recovery['iteration'],'kind':recovery['kind'],
+                'is_completed_result':recovery['kind']=='saved_result'},
+            'historical_cancelled_round': {'run_id':historical.run_id,'status':historical.status.value,
+                'cancel_requested':historical.cancel_requested,'started_at':historical.started_at,
+                'requested_at':events[-1].created_at if events else None,'completed_at':historical.completed_at,
+                'cancellation_reason':reason if reason in {'user_cancelled','page_left','page_lease_expired','shutdown','service_shutdown'} else 'not_recorded',
+                'browser_action':'not_recorded'}}
 
     def _validate_free_query_feedback_context(
         self, session_id: str, base_iteration: int
@@ -1212,20 +1295,54 @@ class RunCoordinator:
 
     def _free_query_recovery_clear(self, latest):
         state = self.store.get_harness_state(latest.run_id)
-        if (state.get('cleanup_incomplete') or (state.get('cancellation') or {}).get('status') != 'complete'
+        proof = (state.get('cancellation') or {}).get('status') == 'complete'
+        if latest.status == RunStatus.failed:
+            detail = (latest.error or {}).get('detail') or {}
+            receipt = state.get('recovery_cleanup')
+            receipt = receipt if isinstance(receipt, dict) else {}
+            proof = (isinstance(detail, dict) and detail.get('cleanup_complete') is True) or (
+                receipt.get('protocol') == 'sapba.failed-recovery-cleanup/1'
+                and receipt.get('status') == 'complete'
+                and receipt.get('run_id') == latest.run_id
+                and receipt.get('error_digest') == _stable_digest(latest.error)
+                and receipt.get('runtime_digest') == _stable_digest(latest.runtime.model_dump(mode='json') if latest.runtime else {}))
+        if (state.get('cleanup_incomplete') or not proof
                 or self.store.latest_execution_job_for_subject(latest.run_id, statuses=('queued','running','cleanup_pending'))):
             raise RunExecutionError('The stopped round still needs confirmed cleanup.', code='free_query_recovery_cleanup_pending')
         task = self._active_execution_tasks.get(latest.run_id)
         if task is not None and not task.done():
             raise RunExecutionError('The stopped round is still exiting.', code='free_query_recovery_cleanup_pending')
 
+    def _free_query_recovery_anchor(self, session, item, latest):
+        if latest.status == RunStatus.cancelled:
+            return latest.run_id
+        recovery = (item.get('decision') or {}).get('_recovery')
+        if (latest.status != RunStatus.failed or item.get('execution_action') != 'reinterpret'
+                or not isinstance(recovery, dict)
+                or self.store.get_harness_state(latest.run_id).get('recovery') != recovery):
+            return None
+        anchor = recovery.get('cancelled_run_id')
+        try:
+            original = self.store.get_run(anchor)
+            original_session = self.store.get_free_query_session_by_run(anchor)
+        except (KeyError, TypeError):
+            return None
+        if (not original_session or original_session['session_id'] != session['session_id']
+                or original.status != RunStatus.cancelled):
+            return None
+        return anchor
+
     def _free_query_recovery_options(self, session):
-        result = {'recovery_sources':[], 'recovery_blocker':None}
+        result = {'recovery_sources':[], 'recovery_blocker':None, 'recovery_available':False}
         latest_item = self.store.get_free_query_iteration(session['session_id'], session['current_iteration'])
         latest = self.store.get_run(latest_item['run_id'])
-        if latest.status != RunStatus.cancelled or session['status'] == 'draft_created': return result
+        anchor = self._free_query_recovery_anchor(session, latest_item, latest)
+        if not anchor or session['status'] == 'draft_created': return result
+        result['recovery_available'] = True
         try:
             self._free_query_recovery_clear(latest)
+            if anchor != latest.run_id:
+                self._free_query_recovery_clear(self.store.get_run(anchor))
             if session['current_iteration'] >= self.settings.max_free_query_iterations:
                 raise RunExecutionError('The session reached its round limit.', code='free_query_iteration_limit')
         except RunExecutionError as exc:
@@ -1242,7 +1359,9 @@ class RunCoordinator:
 
     async def _submit_free_query_recovery(self, session_id, payload):
         request_id = 'fqfeedback_' + hashlib.sha256(f'{session_id}:{payload.request_id}'.encode()).hexdigest()[:20]
-        fingerprint = _stable_digest(payload.model_dump(mode='json'))
+        body=payload.model_dump(mode='json')
+        if payload.continuation_mode is None: body.pop('continuation_mode',None)
+        fingerprint = _stable_digest(body)
         try: existing = self.store.get_free_query_feedback_request(request_id)
         except KeyError: existing = None
         if existing:
@@ -1254,10 +1373,14 @@ class RunCoordinator:
             raise RunExecutionError('This session is locked to a draft.',code='free_query_session_locked')
         if payload.base_iteration != session['current_iteration'] or payload.recovery_iteration > payload.base_iteration:
             raise RunExecutionError('The session has changed. Recheck the selected context.',code='free_query_iteration_conflict')
-        latest = self.store.get_run(self.store.get_free_query_iteration(session_id,session['current_iteration'])['run_id'])
-        if latest.status != RunStatus.cancelled:
-            raise RunExecutionError('Recovery applies only to a stopped round.',code='free_query_recovery_not_applicable')
+        latest_item = self.store.get_free_query_iteration(session_id,session['current_iteration'])
+        latest = self.store.get_run(latest_item['run_id'])
+        anchor = self._free_query_recovery_anchor(session, latest_item, latest)
+        if not anchor:
+            raise RunExecutionError('Recovery requires a stopped round or its failed recovery.',code='free_query_recovery_not_applicable')
         self._free_query_recovery_clear(latest)
+        if anchor != latest.run_id:
+            self._free_query_recovery_clear(self.store.get_run(anchor))
         if self.store.active_free_query_feedback_request(session_id) is not None:
             raise RunExecutionError('Another request is active.',code='free_query_iteration_active')
         if session['current_iteration'] >= self.settings.max_free_query_iterations:
@@ -1267,29 +1390,31 @@ class RunCoordinator:
             raise RunExecutionError('The selected context changed.',code='free_query_recovery_context_changed')
         runtime = self._future_session_binding(session)  # Original strict account/site/model binding.
         recovery={'iteration':payload.recovery_iteration,'kind':payload.recovery_kind,
-            'context_digest':payload.recovery_digest,'request_digest':fingerprint,'cancelled_run_id':latest.run_id}
+            'context_digest':payload.recovery_digest,'request_digest':fingerprint,'cancelled_run_id':anchor,
+            'previous_run_id':latest.run_id}
         decision={'action':'reinterpret','feedback_type':'presentation','_recovery':recovery,
                   'reason':'Explicit continuation from persisted evidence; no new SAP reads authorized.'}
-        self.store.create_free_query_feedback_request(feedback_request_id=request_id,session_id=session_id,
-            base_iteration=payload.base_iteration,feedback=payload.feedback,feedback_type_hint=payload.feedback_type_hint,locale=payload.locale)
-        self.store.update_free_query_feedback_request(request_id,decision=decision)
-        run_id='run_'+uuid.uuid4().hex[:16]; number=session['current_iteration']+1
-        self.store.create_run(run_id,RunCreate(mode=RunMode.free_query,query=source.query or session['original_query']),
-            runtime=runtime,query_origin=source.query_origin or 'user')
-        self.store.update_harness_state(run_id,{'execution_flow':'harness','recovery':recovery})
-        self.store.create_free_query_iteration(session_id=session_id,iteration=number,run_id=run_id,
-            parent_iteration=payload.base_iteration,feedback=payload.feedback,feedback_type='presentation',
-            execution_action='reinterpret',decision=decision,source_run_id=source.run_id)
-        refs=sorted(_result_evidence_refs(source.result))
-        links={f"fqev_{hashlib.sha256(f'{session_id}:{number}:{ref}'.encode()).hexdigest()[:24]}":ref for ref in refs}
-        self.store.save_free_query_evidence_links(run_id,source.run_id,links)
-        self.store.append_event(run_id,'free_query_recovery_created',{'source_iteration':payload.recovery_iteration,
-            'source_kind':payload.recovery_kind,'cancelled_run_id':latest.run_id,'sap_get_count':0})
-        self.store.update_free_query_feedback_request(request_id,status='iteration_created',phase='completed',
-            decision=decision,run_id=run_id,completed=True,event_type='feedback_iteration_queued',
-            event_data={'iteration':number,'run_id':run_id,'execution_action':'reinterpret','sap_get_expected':False})
-        self.store.update_free_query_session(session_id,status='running',pending_feedback_json=None)
-        await self._schedule_run(run_id,RunMode.free_query)
+        with self.store.atomic_free_query():
+            self.store.create_free_query_feedback_request(feedback_request_id=request_id,session_id=session_id,
+                base_iteration=payload.base_iteration,feedback=payload.feedback,feedback_type_hint=payload.feedback_type_hint,locale=payload.locale)
+            self.store.update_free_query_feedback_request(request_id,decision=decision)
+            run_id='run_'+uuid.uuid4().hex[:16]; number=session['current_iteration']+1
+            self.store.create_run(run_id,RunCreate(mode=RunMode.free_query,query=source.query or session['original_query']),
+                runtime=runtime,query_origin=source.query_origin or 'user')
+            self.store.update_harness_state(run_id,{'execution_flow':'harness','recovery':recovery})
+            self.store.create_free_query_iteration(session_id=session_id,iteration=number,run_id=run_id,
+                parent_iteration=payload.base_iteration,feedback=payload.feedback,feedback_type='presentation',
+                execution_action='reinterpret',decision=decision,source_run_id=source.run_id)
+            refs=sorted(_result_evidence_refs(source.result))
+            links={f"fqev_{hashlib.sha256(f'{session_id}:{number}:{ref}'.encode()).hexdigest()[:24]}":ref for ref in refs}
+            self.store.save_free_query_evidence_links(run_id,source.run_id,links)
+            self.store.append_event(run_id,'free_query_recovery_created',{'source_iteration':payload.recovery_iteration,
+                'source_kind':payload.recovery_kind,'cancelled_run_id':anchor,'previous_run_id':latest.run_id,'sap_get_count':0})
+            self.store.update_free_query_feedback_request(request_id,status='iteration_created',phase='completed',
+                decision=decision,run_id=run_id,completed=True,event_type='feedback_iteration_queued',
+                event_data={'iteration':number,'run_id':run_id,'execution_action':'reinterpret','sap_get_expected':False})
+            self.store.update_free_query_session(session_id,status='running',pending_feedback_json=None)
+        await self._queue_feedback_iteration(run_id)
         return self.free_query_feedback_request(session_id,request_id)
 
     async def _execute_feedback_request(self, feedback_request_id: str) -> None:
@@ -1305,7 +1430,12 @@ class RunCoordinator:
                 if not self.store.get_free_query_feedback_request(feedback_request_id)['cancel_requested']:
                     raise
             except Exception as exc:
-                if not self.store.get_free_query_feedback_request(feedback_request_id)['cancel_requested']:
+                persisted = self.store.get_free_query_feedback_request(feedback_request_id)
+                if persisted['status'] == 'iteration_created':
+                    # The committed queued run is recovered by the existing
+                    # startup scheduler; never turn it into another review.
+                    return
+                if not persisted['cancel_requested']:
                     code = str(getattr(exc, 'code', 'free_query_feedback_review_unavailable'))
                     self.store.update_free_query_feedback_request(feedback_request_id, status='failed', phase='completed',
                         error={'code': code, 'message': str(exc)}, completed=True,
@@ -1321,6 +1451,8 @@ class RunCoordinator:
 
     async def _execute_feedback_request_locked(self, feedback_request_id: str) -> None:
         feedback_request = self.store.get_free_query_feedback_request(feedback_request_id)
+        if feedback_request['status'] == 'iteration_created':
+            return
         if feedback_request['status'] == 'cleanup_pending':
             return  # Never turn uncertain cleanup into a resumed model call.
         if feedback_request["cancel_requested"] or feedback_request["status"] == "cancelled":
@@ -1335,9 +1467,14 @@ class RunCoordinator:
                 feedback_request["session_id"], status="reviewing", pending_feedback_json=None
             )
             return
-        session, previous = self._validate_free_query_feedback_context(
-            feedback_request["session_id"], int(feedback_request["base_iteration"])
-        )
+        continuation = (feedback_request.get('decision') or {}).get('_continuation')
+        if continuation:
+            request_payload = (feedback_request['decision'].get('_submission') or {}).get('payload')
+            session, previous, continuation = self._review_recovery_context(
+                feedback_request['session_id'],FreeQueryFeedback.model_validate(request_payload))
+        else:
+            session, previous = self._validate_free_query_feedback_context(
+                feedback_request["session_id"], int(feedback_request["base_iteration"]))
         session_id = str(session["session_id"])
         runtime_snapshot = self._future_session_binding(session)
         provider_id = str(runtime_snapshot.get("provider_id") or "codex")
@@ -1356,24 +1493,29 @@ class RunCoordinator:
             if provider_id == "workbuddy" or "authentication_binding_revision" in runtime_snapshot:
                 context = self.planner.pin_snapshot(runtime_snapshot)
             with context:
-                decision = await feedback_reviewer(
-                    thread_id=previous.thread_id,
-                    original_query=session["original_query"],
-                    previous_query=str(previous.query or session["original_query"]),
-                    previous_plan=previous.plan,
-                    previous_summary=previous.result.summary,
-                    previous_presentation=(
-                        previous.result.presentation.model_dump(mode="json")
-                        if previous.result.presentation
-                        else None
-                    ),
-                    deterministic_rule_results=previous.result.rule_results,
-                    available_evidence_refs=sorted(_result_evidence_refs(previous.result)),
-                    completeness=previous.result.completeness.model_dump(mode="json"),
-                    feedback=feedback_request["feedback"],
-                    feedback_type_hint=feedback_request["feedback_type_hint"],
-                    supplemental_input=feedback_request["supplemental_input"],
-                )
+                bind_events=getattr(self.planner,'bind_events',None)
+                events=bind_events(lambda name,data:self.store.update_free_query_feedback_request(
+                    feedback_request_id,event_type=name,event_data=data)) if callable(bind_events) else nullcontext()
+                with events:
+                    decision = await feedback_reviewer(
+                        thread_id=None if continuation else previous.thread_id,
+                        original_query=session["original_query"],
+                        previous_query=str(previous.query or session["original_query"]),
+                        previous_plan=previous.plan,
+                        previous_summary=previous.result.summary,
+                        previous_presentation=(
+                            previous.result.presentation.model_dump(mode="json")
+                            if previous.result.presentation
+                            else None
+                        ),
+                        deterministic_rule_results=previous.result.rule_results,
+                        available_evidence_refs=sorted(_result_evidence_refs(previous.result)),
+                        completeness=previous.result.completeness.model_dump(mode="json"),
+                        feedback=feedback_request["feedback"],
+                        feedback_type_hint=feedback_request["feedback_type_hint"],
+                        supplemental_input=feedback_request["supplemental_input"],
+                        **({'recovery':True,'execution_context':self._continuation_execution_context(None,previous,continuation,action='review')} if continuation else {}),
+                    )
         except Exception as exc:
             raise RunExecutionError(
                 "Agent Runtime could not review the correction; no SAP query was started.",
@@ -1386,6 +1528,13 @@ class RunCoordinator:
             feedback_request["feedback_type_hint"],
             available_evidence_refs=_result_evidence_refs(previous.result),
         )
+        submission_payload = ((feedback_request.get('decision') or {}).get('_submission') or {}).get('payload') or {}
+        if submission_payload.get('continuation_mode') == 'evidence_only' and decision['action'] == 'requery':
+            raise RunExecutionError('This request permits evidence reuse only.',code='free_query_evidence_only_requested')
+        if continuation:
+            decision['_continuation'] = continuation
+            if decision['action'] == 'reinterpret':
+                decision['_recovery'] = continuation
         action = decision["action"]
         self.store.update_free_query_feedback_request(
             feedback_request_id,
@@ -1424,81 +1573,98 @@ class RunCoordinator:
             feedback_request_id,
             phase="preparing_iteration",
         )
-        iteration = int(session["current_iteration"]) + 1
-        query = str(decision.get("revised_query") or previous.query or session["original_query"])
-        run_request = RunCreate(mode=RunMode.free_query, query=query)
-        run_id = f"run_{uuid.uuid4().hex[:16]}"
-        self.store.create_run(
-            run_id, run_request, runtime=session["runtime"],
-            query_origin=previous.query_origin or "system",
-        )
-        self.store.update_run(run_id, thread_id=previous.thread_id)
-        source_run_id = previous.run_id if action == "reinterpret" else None
-        if action == "reinterpret":
-            previous_state = self.store.get_harness_state(previous.run_id)
-            self.store.update_harness_state(run_id, {
-                "assessment_intent": copy.deepcopy(previous_state.get("assessment_intent") or {}),
-                "required_assessments": list(previous_state.get("required_assessments") or []),
-                "required_assessments_declared": bool(previous_state.get("required_assessments_declared", True)),
-                "required_assessments_source": "reused_evidence_iteration",
-            })
-        else:
-            assessment_intent = classify_required_assessments(query)
-            self.store.update_harness_state(run_id, {
-                "assessment_intent": assessment_intent,
-                "required_assessments": assessment_intent["required_assessments"],
-                "required_assessments_declared": True,
-                "required_assessments_source": "feedback_requery",
-            })
-        self.store.create_free_query_iteration(
-            session_id=session_id,
-            iteration=iteration,
-            run_id=run_id,
-            parent_iteration=session["current_iteration"],
-            feedback=feedback_request["feedback"],
-            feedback_type=decision["feedback_type"],
-            execution_action=action,
-            decision=decision,
-            source_run_id=source_run_id,
-        )
-        if action == "reinterpret":
-            refs = sorted(_result_evidence_refs(previous.result))
-            links = {
-                f"fqev_{hashlib.sha256(f'{session_id}:{iteration}:{ref}'.encode()).hexdigest()[:24]}": ref
-                for ref in refs
-            }
-            self.store.save_free_query_evidence_links(run_id, previous.run_id, links)
-        self.store.append_event(
-            run_id,
-            "run_queued",
-            {
-                "mode": "free_query",
-                "session_id": session_id,
-                "iteration": iteration,
-                "feedback_type": decision["feedback_type"],
-                "execution_action": action,
-                "runtime_provider_id": provider_id,
-            },
-        )
-        self.store.update_free_query_feedback_request(
-            feedback_request_id,
-            status="iteration_created",
-            phase="completed",
-            decision=decision,
-            run_id=run_id,
-            completed=True,
-            event_type="feedback_iteration_queued",
-            event_data={
-                "iteration": iteration,
-                "run_id": run_id,
-                "execution_action": action,
-                "sap_get_expected": action == "requery",
-            },
-        )
-        self.store.update_free_query_session(
-            session_id, status="running", pending_feedback_json=None
-        )
-        await self._schedule_run(run_id, RunMode.free_query)
+        run_id = self._commit_feedback_iteration(feedback_request, session, previous, decision, provider_id, continuation, runtime_snapshot)
+        await self._queue_feedback_iteration(run_id)
+
+
+    async def _queue_feedback_iteration(self, run_id):
+        await self._schedule_run(run_id,RunMode.free_query)
+        self.store.update_harness_state(run_id,{'feedback_handoff':'queued'})
+
+    def _commit_feedback_iteration(self, feedback_request, session, previous, decision, provider_id, continuation, runtime_snapshot):
+        """Commit iteration, receipt, lineage and session together before enqueue."""
+        feedback_request_id = feedback_request["feedback_request_id"]
+        session_id = session["session_id"]
+        action = decision["action"]
+        with self.store.atomic_free_query():
+            iteration = int(session["current_iteration"]) + 1
+            query = str(decision.get("revised_query") or previous.query or session["original_query"])
+            run_request = RunCreate(mode=RunMode.free_query, query=query)
+            run_id = f"run_{uuid.uuid4().hex[:16]}"
+            self.store.create_run(
+                run_id, run_request, runtime=runtime_snapshot,
+                query_origin=previous.query_origin or "system",
+            )
+            self.store.update_run(run_id, thread_id=None if continuation else previous.thread_id)
+            if continuation:
+                self.store.update_harness_state(run_id,{'execution_flow':'harness','execution_context_version':2,
+                    'continuation_context':continuation, **({'recovery':continuation} if action=='reinterpret' else {})})
+            source_run_id = previous.run_id if action == "reinterpret" else None
+            if action == "reinterpret":
+                previous_state = self.store.get_harness_state(previous.run_id)
+                self.store.update_harness_state(run_id, {
+                    "assessment_intent": copy.deepcopy(previous_state.get("assessment_intent") or {}),
+                    "required_assessments": list(previous_state.get("required_assessments") or []),
+                    "required_assessments_declared": bool(previous_state.get("required_assessments_declared", True)),
+                    "required_assessments_source": "reused_evidence_iteration",
+                })
+            else:
+                assessment_intent = classify_required_assessments(query)
+                self.store.update_harness_state(run_id, {
+                    "assessment_intent": assessment_intent,
+                    "required_assessments": assessment_intent["required_assessments"],
+                    "required_assessments_declared": True,
+                    "required_assessments_source": "feedback_requery",
+                })
+            self.store.create_free_query_iteration(
+                session_id=session_id,
+                iteration=iteration,
+                run_id=run_id,
+                parent_iteration=session["current_iteration"],
+                feedback=feedback_request["feedback"],
+                feedback_type=decision["feedback_type"],
+                execution_action=action,
+                decision=decision,
+                source_run_id=source_run_id,
+            )
+            if action == "reinterpret":
+                refs = sorted(_result_evidence_refs(previous.result))
+                links = {
+                    f"fqev_{hashlib.sha256(f'{session_id}:{iteration}:{ref}'.encode()).hexdigest()[:24]}": ref
+                    for ref in refs
+                }
+                self.store.save_free_query_evidence_links(run_id, previous.run_id, links)
+            self.store.append_event(
+                run_id,
+                "run_queued",
+                {
+                    "mode": "free_query",
+                    "session_id": session_id,
+                    "iteration": iteration,
+                    "feedback_type": decision["feedback_type"],
+                    "execution_action": action,
+                    "runtime_provider_id": provider_id,
+                },
+            )
+            self.store.update_free_query_feedback_request(
+                feedback_request_id,
+                status="iteration_created",
+                phase="completed",
+                decision=decision,
+                run_id=run_id,
+                completed=True,
+                event_type="feedback_iteration_queued",
+                event_data={
+                    "iteration": iteration,
+                    "run_id": run_id,
+                    "execution_action": action,
+                    "sap_get_expected": action == "requery",
+                },
+            )
+            self.store.update_free_query_session(
+                session_id, status="running", pending_feedback_json=None
+            )
+        return run_id
 
     async def provide_free_query_feedback_input(
         self, session_id: str, base_iteration: int, value: str
@@ -1760,7 +1926,10 @@ class RunCoordinator:
                     if self.store.get_run(run_id).cancel_requested:
                         return
                     # Capacity/session waiting does not consume the execution budget.
-                    await asyncio.wait_for(self._execute(run_id), timeout=timeout)
+                    from .runtime_contract import execution_owner
+                    ownership = execution_owner(run_id) if ordinary and record.runtime and record.runtime.provider_id == 'workbuddy' else nullcontext()
+                    with ownership:
+                        await asyncio.wait_for(self._execute(run_id), timeout=timeout)
         execution_task = asyncio.create_task(execute_owned())
         self._active_execution_tasks[run_id] = execution_task
         try:
@@ -3524,14 +3693,25 @@ class RunCoordinator:
             "feedback_reinterpretation_started",
             {"source_run_id": source_run_id, "sap_get_count": 0},
         )
+        execution_context = None
+        if recovery:
+            execution_context = self._continuation_execution_context(self.store.get_run(run_id),source,recovery)
+            self.store.update_harness_state(run_id,{'execution_context_version':2})
+        phase = 'runtime_binding'
         try:
             pin = getattr(self.planner, "pin", None)
             model_id = record.runtime.model if record.runtime else None
-            context = pin(provider_id, model_id, self._future_runtime_binding(record).get("reasoning_effort")) if callable(pin) else nullcontext()
-            if provider_id == "workbuddy" or "authentication_binding_revision" in self._future_runtime_binding(record):
-                context = self.planner.pin_snapshot(self._future_runtime_binding(record))
+            binding = self._future_runtime_binding(record)
+            if provider_id == "workbuddy" or "authentication_binding_revision" in binding:
+                context = self.planner.pin_snapshot(binding)
+            else:
+                context = pin(provider_id, model_id, binding.get("reasoning_effort")) if callable(pin) else nullcontext()
             with context:
-                revised = await presentation_reviser(
+                phase = 'runtime_invocation'
+                bind_events = getattr(self.planner,'bind_events',None)
+                events = bind_events(lambda name,data:self.store.append_event(run_id,name,data)) if callable(bind_events) else nullcontext()
+                with events:
+                    revised = await presentation_reviser(
                     thread_id=None if recovery else str(record.thread_id or source.thread_id or ""),
                     query=str(record.query or source.query or ""),
                     feedback=str(iteration.get("feedback") or ""),
@@ -3539,12 +3719,63 @@ class RunCoordinator:
                     allowed_evidence_refs=sorted(alias_by_source.values()),
                     completeness=source.result.completeness.model_dump(mode="json"),
                     rule_results=source.result.rule_results,
-                    **({'recovery':True} if recovery else {}),
-                )
+                    **({'recovery':True, 'execution_context':execution_context} if recovery else {}),
+                    )
         except Exception as exc:
+            from .runtime_diagnostics import safe_stage_diagnostic, _STAGE_CODES
+            codes = _STAGE_CODES | {
+                'runtime_authentication_binding_changed', 'runtime_authentication_binding_invalid',
+                'runtime_authentication_check_required', 'runtime_authentication_check_failed',
+                'runtime_authentication_operation_active', 'runtime_authentication_state_invalid',
+                'workbuddy_service_site_changed', 'workbuddy_sdk_integration_required',
+                'workbuddy_sdk_operation_not_certified', 'workbuddy_environment_digest_mismatch',
+                'workbuddy_model_identity_changed', 'runtime_model_check_required',
+                'workbuddy_cleanup_pending', 'runtime_disabled', 'runtime_not_selectable',
+                'workbuddy_reservation_owner_mismatch', 'runtime_execution_owner_mismatch',
+                'runtime_execution_owner_expired',
+            }
+            chain, current, seen = [], exc, set()
+            cleanup_confirmed, cleanup_failed = phase == 'runtime_binding', False
+            while current is not None and id(current) not in seen and len(chain) < 4:
+                seen.add(id(current))
+                code = getattr(current, 'code', None)
+                observed = getattr(current, 'detail', None)
+                if isinstance(observed, dict):
+                    cleanup_confirmed = cleanup_confirmed or observed.get('cleanup_complete') is True
+                    cleanup_failed = cleanup_failed or bool(observed.get('cleanup_failure_code'))
+                cleanup_failed = cleanup_failed or code == 'runtime_cleanup_incomplete'
+                kind = type(current).__name__
+                chain.append({'code': code if isinstance(code, str) and code in codes else 'runtime_execution_failed',
+                              'error_class': kind if kind in {
+                                  'TypeError', 'ValueError', 'KeyError', 'AttributeError', 'TimeoutError',
+                                  'PermissionError', 'RuntimeContractError', 'WorkBuddyError',
+                                  'WorkBuddyRuntimeError', 'SDKManagerError', 'RuntimeUnavailableError',
+                              } else 'unknown'})
+                current = current.__cause__
+            raw_detail = getattr(exc, 'detail', None)
+            detail = safe_stage_diagnostic(
+                {**(raw_detail if isinstance(raw_detail, dict) else {}), 'failure_code':chain[0]['code']},
+                schema={}, operation='revise_free_query_presentation', phase=phase)
+            detail.update(cause_code=next((item['code'] for item in chain if item['code'] != 'runtime_execution_failed'),
+                                         'runtime_execution_failed'), causes=chain, automatic_retry=False)
+            detail['cleanup_complete'] = bool(cleanup_confirmed and not cleanup_failed)
+            frames, tb = [], exc.__traceback__
+            while tb is not None:
+                path = Path(tb.tb_frame.f_code.co_filename)
+                if path.resolve().is_relative_to(Path(__file__).resolve().parent):
+                    frames.append({'module':path.name, 'function':tb.tb_frame.f_code.co_name,
+                                   'line':tb.tb_lineno})
+                tb = tb.tb_next
+            detail['platform_frames'] = frames[-8:]
+            detail['exception_sha256'] = hashlib.sha256(str(exc).encode('utf-8',errors='replace')).hexdigest()
+            try:
+                self.store.append_event(run_id, 'feedback_reinterpretation_failed', detail)
+            except Exception:
+                detail['failure_event_delivery_failed'] = True
             raise RunExecutionError(
                 "Agent Runtime could not revise the validated presentation.",
                 code="free_query_presentation_revision_failed",
+                detail=detail,
             ) from exc
         # A resumed Runtime thread may copy a source evidence reference from an
         # earlier turn even though the current prompt contains only aliases.  It
@@ -3748,17 +3979,7 @@ class RunCoordinator:
             summary=outcome.summary,
             presentation=outcome.presentation,
             acceptance_projection=outcome.acceptance_projection,
-            errors=(
-                []
-                if outcome.status == "completed"
-                else [
-                    {
-                        "code": "harness_inconclusive",
-                        "message": "The Codex Harness could not establish a complete conclusion.",
-                        "missing_evidence": outcome.missing_evidence,
-                    }
-                ]
-            ),
+            errors=outcome_errors(outcome),
             thread_id=outcome.thread_id,
             harness=HarnessResult(
                 diagnostics=run_diagnostics(self.store, run_id),
@@ -3928,17 +4149,7 @@ class RunCoordinator:
             summary=outcome.summary,
             presentation=outcome.presentation,
             acceptance_projection=outcome.acceptance_projection,
-            errors=(
-                []
-                if outcome.status == "completed"
-                else [
-                    {
-                        "code": "harness_inconclusive",
-                        "message": "The WorkBuddy Harness could not establish a complete conclusion.",
-                        "missing_evidence": outcome.missing_evidence,
-                    }
-                ]
-            ),
+            errors=outcome_errors(outcome),
             thread_id=outcome.thread_id,
             harness=HarnessResult(
                 runtime="workbuddy_worker",
@@ -4546,6 +4757,10 @@ def _free_query_change_summary(
             "execution_action": current_item["execution_action"],
         }
     previous_item = store.get_free_query_iteration(session_id, iteration - 1)
+    if current_item.get('execution_action') == 'reinterpret' and current_item.get('source_run_id'):
+        source_item=store.get_free_query_iteration_by_run(current_item['source_run_id'])
+        if source_item and source_item['session_id']==session_id:
+            previous_item=source_item
     current = store.get_run(current_item["run_id"])
     previous = store.get_run(previous_item["run_id"])
     current_missing = set(
@@ -4554,10 +4769,34 @@ def _free_query_change_summary(
     previous_missing = set(
         previous.result.completeness.missing_evidence if previous.result else []
     )
+    def canonical_refs(record):
+        aliases={}
+        pending=[record.run_id];seen=set()
+        while pending:
+            rid=pending.pop()
+            if rid in seen: continue
+            seen.add(rid)
+            for link in store.list_free_query_evidence_links(rid):
+                aliases[link['evidence_ref']]=link['source_evidence_ref']
+                pending.append(link['source_run_id'])
+        for ref in aliases:
+            value=aliases[ref];visited={ref}
+            while value in aliases and value not in visited:
+                visited.add(value);value=aliases[value]
+            aliases[ref]=value
+        return aliases
+    def business(record):
+        if not record.result:return None
+        aliases=canonical_refs(record)
+        return {'rules':_replace_evidence_refs(record.result.rule_results,aliases),
+                'sources':sorted({aliases.get(str(e.get('evidence_ref')),str(e.get('evidence_ref')))
+                                  for e in record.result.evidence if e.get('evidence_ref')})}
+    reuse=current_item.get('execution_action')=='reinterpret'
     return {
-        "plan_changed": _stable_digest(current.plan) != _stable_digest(previous.plan),
-        "result_changed": current_item.get("result_digest")
-        != previous_item.get("result_digest"),
+        "plan_changed": False if reuse else _stable_digest(current.plan) != _stable_digest(previous.plan),
+        "result_changed": _stable_digest(business(current)) != _stable_digest(business(previous)),
+        "lineage_changed": current_item.get('source_run_id') is not None,
+        "comparison_iteration": previous_item['iteration'],
         "execution_action": current_item["execution_action"],
         "added_evidence_gaps": sorted(current_missing - previous_missing),
         "resolved_evidence_gaps": sorted(previous_missing - current_missing),

@@ -139,7 +139,7 @@ def report_issues(presentation, calculations, *, required):
     return issues, status
 
 
-def verification_details(presentation, status):
+def verification_details(presentation, status, *, accepted=False):
     """Separate arithmetic provenance from untyped narrative and business proof.
 
     No amount normalization and no new qualification: existing conservative
@@ -150,6 +150,8 @@ def verification_details(presentation, status):
             if block.claim_scope == 'customer_business_fact' and block.type != 'metrics'],
         'unbound_metrics': [f'/blocks/{i}/metrics/{j}' for i, block in enumerate(presentation.blocks)
             for j, metric in enumerate(block.metrics) if not metric.calculation_ref],
-        'repair_action': 'Omit financial_verification (default not_requested) on a new candidate, '
-            'or declare the platform status shown here. Reuse validated_report unchanged in the terminal. '
-            'Non-metric prose and tables are not arithmetic proofs; valid metric bindings do not verify all business facts.'}
+        'repair_action': ('The report was accepted with the platform status shown here. '
+            'Reuse validated_report unchanged in the terminal; a limitation does not require another report submission. '
+            if accepted else 'Omit financial_verification (default not_requested) on a new candidate, '
+            'or declare the platform status shown here. Validate the corrected candidate before handoff. ')
+            + 'Non-metric prose and tables are not arithmetic proofs; valid metric bindings do not verify all business facts.'}
