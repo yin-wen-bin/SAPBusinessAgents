@@ -309,3 +309,5 @@ def require_operation(environment, state, release, operation, mode):
 INFRASTRUCTURE_FILES += ("workbuddy_online_update.py", "workbuddy_online_evidence.py", "workbuddy_sdk_update.py", "workbuddy_sdk_target_audit.py", "../../scripts/verify-workbuddy-update-infrastructure.py")
 
 INFRASTRUCTURE_FILES += ("../../tests/workbuddy_integration_fakes.py", "../../tests/fixtures/workbuddy_protocol_worker.py")
+
+INFRASTRUCTURE_FILES += ('workbuddy_update_switch.py', 'workbuddy_update_recovery.py')

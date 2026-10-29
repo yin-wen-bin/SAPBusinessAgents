@@ -551,9 +551,11 @@ $NodeVersion = $null
 try {
     $env:PUBLIC_SAPBA_API_URL = $ApiUrl
     $env:SAPBA_INTERNAL_API_URL = $ApiUrl
-    if (-not $RestartSiteOnly -and -not $PrepareSiteOnly) {
+    if (-not $PrepareSiteOnly) {
+        if ($RestartSiteOnly -and ($Restart -or $Dev -or $RebuildSite)) { throw '-RestartSiteOnly cannot be combined with restart, rebuild or development.' }
         if ($Dev -and $RebuildSite) { throw '-RebuildSite cannot be combined with -Dev.' }
-        $launcherArguments = @('-I', '-B', (Join-Path $ProjectRoot 'scripts\service-startup.py'), 'ensure', '--root', $ProjectRoot, '--port', [string]$ApiPort, '--site-port', [string]$SitePort, '--timeout', [string]$StartupTimeoutSeconds)
+        $launcherArguments = @('-I', '-B', (Join-Path $ProjectRoot 'scripts\start-active.py'), 'ensure', '--root', $ProjectRoot, '--port', [string]$ApiPort, '--site-port', [string]$SitePort, '--timeout', [string]$StartupTimeoutSeconds)
+        if ($RestartSiteOnly) { $launcherArguments += '--site-only' }
         if ($Restart) { $launcherArguments += '--restart' }
         if ($RebuildSite) { $launcherArguments += '--rebuild' }
         if ($NoBrowser) { $launcherArguments += '--no-browser' }

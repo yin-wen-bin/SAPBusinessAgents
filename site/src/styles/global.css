@@ -5299,6 +5299,20 @@ details[open] > summary .disclosure-chevron {
 .sdk-authentication-progress a { overflow-wrap: anywhere; }
 .sdk-authentication-progress { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 .sdk-authentication-progress > p { flex-basis: 100%; }
+.sdk-update-progress-dialog { width: min(600px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow-y: auto; box-sizing: border-box; border: 1px solid #b8c9e3; border-radius: 12px; padding: 20px; color: #12304e; background: white; }
+.sdk-update-progress-dialog::backdrop { background: rgb(10 25 45 / 45%); }
+.sdk-update-progress-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sdk-update-progress-dialog h2 { font-size: 1.2rem; margin: 0; }
+.sdk-update-progress-dialog p { margin: 10px 0; overflow-wrap: anywhere; }
+.sdk-update-progress-dialog progress { width: 100%; margin-top: 12px; }
+.sdk-update-progress-dialog details { margin-top: 12px; }
+.sdk-update-progress-dialog details code, .sdk-update-progress-dialog details span { display: block; overflow-wrap: anywhere; }
+.sdk-update-progress-dialog footer { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.sdk-update-progress-state { font-weight: 700; font-size: 1.05rem; }
+.sdk-update-feedback-entry { font-size: .85rem; margin: 4px 0; overflow-wrap: anywhere; white-space: normal; }
+.settings-default-strip:has(> .sdk-update-feedback-entry) { flex-wrap: wrap; }
+.settings-default-strip > .sdk-update-feedback-entry { flex: 1 1 100%; min-width: 0; max-width: 100%; text-align: start; }
+@media (max-width: 550px) { .sdk-update-progress-dialog { padding: 14px; } .sdk-update-progress-dialog footer > button { flex: 1 1 130px; } }
 .sdk-card > .sdk-settings-section { padding: .8rem 1rem; }
 @media (max-width: 390px) {
   .sdk-authentication-actions { flex-direction: column; align-items: stretch; }

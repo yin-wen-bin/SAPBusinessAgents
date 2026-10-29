@@ -1,8 +1,10 @@
 """Target-bound infrastructure receipts from actual checks, never business PASS."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 from .sdk_update import OwnedPip, failure
@@ -17,8 +19,10 @@ def infrastructure(registry,record,emit):
     report=area/'results.xml'
     if report.exists():raise failure('sdk_update_outcome_unconfirmed','infrastructure_validation')
     helper=root/'scripts/verify-workbuddy-update-infrastructure.py'
+    remaining=min(300,record.get('deadline_at',time.time()+300)-time.time())
+    if remaining<=0:raise failure('sdk_update_deadline_exceeded','infrastructure_validation')
     OwnedPip().run([],command=[sys.executable,'-I','-B',str(helper),'--output',str(area)],
-        phase='infrastructure_validation',seconds=300,progress=emit)
+        phase='infrastructure_validation',seconds=remaining,progress=emit)
     cases=ET.parse(report).findall('.//testcase')
     if not cases or any(c.findall('failure') or c.findall('error') or c.findall('skipped') for c in cases):
         raise failure('workbuddy_update_infrastructure_failed','infrastructure_validation')
@@ -34,7 +38,11 @@ def certificate(session,source_certificate,report,*,operations=None,supports=Non
     from .workbuddy_sdk_target_audit import target_model_origin
     if not target_model_origin(env,check,state['default_model_id']):
         raise failure('workbuddy_update_evidence_required','model_verification')
-    area='integration-evidence/online-update-'+release['environment_digest']
+    evidence_id=getattr(session,'evidence_id',None) or getattr(session,'operation_id',None)
+    # A fresh infrastructure report must not collide with an immutable report
+    # from an earlier operation against the same SDK installation.
+    area=('integration-evidence/online-update-'+release['environment_digest']+
+          ('/'+digest(evidence_id)+'/'+digest(target['infrastructure']) if evidence_id else ''))
     def save(name,data):
         path=env.root/area/name;path.parent.mkdir(parents=True,exist_ok=True)
         raw=data if isinstance(data,bytes) else json.dumps(data,sort_keys=True,ensure_ascii=False).encode()
@@ -70,37 +78,58 @@ def certificate(session,source_certificate,report,*,operations=None,supports=Non
     return integration.audit(env,release,evidence)
 
 
-def copy_job(source,destination,check):
-    relative='jobs/'+digest(check['source_job_id'])+'.json'
-    path=source.root/relative;target=destination.root/relative
-    data=json.loads(path.read_bytes())
-    if data.get('cleanup_complete') is not True:raise failure('runtime_cleanup_incomplete','model_verification')
-    if target.exists():
-        if target.read_bytes()!=path.read_bytes():raise failure('sdk_update_binding_changed','model_verification')
-    else:atomic_json(target,data)
+def copy_job(source,destination,check,*,reference=None,deadline=None):
+    """Read/hash one locked source snapshot, then publish those exact bytes."""
+    from .workbuddy_job_index import completed_job_path,completed_job_bytes,import_completed_job
+    task=check.get('source_job_id')
+    path=completed_job_path(source.root,task)
+    relative='jobs/'+path.name
+    if reference is not None and (not isinstance(reference,dict)
+            or set(reference)!={'path','sha256'} or reference.get('path')!=relative):
+        raise failure('workbuddy_update_evidence_required','evidence_publication')
+    raw=completed_job_bytes(source.root,task,deadline=deadline)
+    expected=reference['sha256'] if reference is not None else hashlib.sha256(raw).hexdigest()
+    try:
+        data=json.loads(raw.decode('utf-8'))
+    except (UnicodeError,ValueError):
+        raise failure('workbuddy_update_evidence_required','evidence_publication') from None
+    if check.get('source_job_digest') is not None and digest(data)!=check['source_job_digest']:
+        raise failure('workbuddy_update_evidence_required','evidence_publication')
+    import_completed_job(destination.root,raw,task,expected,deadline=deadline)
+    return raw
 
 
-def copy_evidence(source,destination,certificate,check):
+def copy_evidence(source,destination,certificate,check,*,deadline=None):
     seen=set()
+    copied_job=False
     def visit(value):
+        nonlocal copied_job
         if isinstance(value,dict):
             if set(value)=={'path','sha256'}:
                 if digest(value) in seen:return
                 if len(seen)>=512:raise failure('workbuddy_update_evidence_required','version_confirmation')
                 seen.add(digest(value))
-                relative=value['path'];src=(source.root/relative).resolve();dst=(destination.root/relative).resolve()
-                if not src.is_relative_to(source.root.resolve()) or not dst.is_relative_to(destination.root.resolve()) or file_hash(src)!=value['sha256']:
-                    raise failure('workbuddy_update_evidence_required','version_confirmation')
+                relative=value['path']
+                if not isinstance(relative,str):raise failure('workbuddy_update_evidence_required','evidence_publication')
                 if relative.startswith('jobs/'):
-                    copy_job(source,destination,check)
+                    raw=copy_job(source,destination,check,reference=value,deadline=deadline)
+                    copied_job=True
                 else:
+                    src=(source.root/relative).resolve();dst=(destination.root/relative).resolve()
+                    if not src.is_relative_to(source.root.resolve()) or not dst.is_relative_to(destination.root.resolve()):
+                        raise failure('workbuddy_update_evidence_required','evidence_publication')
+                    raw=src.read_bytes()
+                    if hashlib.sha256(raw).hexdigest()!=value['sha256']:
+                        raise failure('workbuddy_update_evidence_required','evidence_publication')
                     dst.parent.mkdir(parents=True,exist_ok=True)
-                    if dst.exists() and dst.read_bytes()!=src.read_bytes():raise failure('sdk_update_binding_changed','version_confirmation')
-                    if not dst.exists():dst.write_bytes(src.read_bytes())
-                if src.suffix=='.json':visit(json.loads(src.read_bytes()))
+                    if dst.exists() and dst.read_bytes()!=raw:raise failure('sdk_update_binding_changed','evidence_publication')
+                    if not dst.exists():
+                        with dst.open('xb') as stream:stream.write(raw)
+                if Path(relative).suffix=='.json':visit(json.loads(raw))
             else:
                 for item in value.values():visit(item)
         elif isinstance(value,list):
             for item in value:visit(item)
     visit(certificate['evidence'])
-    copy_job(source,destination,check)
+    if not copied_job:
+        raise failure('workbuddy_update_evidence_required','evidence_publication')

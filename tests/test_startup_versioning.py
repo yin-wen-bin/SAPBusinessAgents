@@ -52,7 +52,7 @@ def test_runtime_evidence_registry_is_an_exact_frozen_resource(tmp_path):
 def test_plain_cmd_enters_shared_orchestrator_without_powershell_bootstrap():
     source=(ROOT/'start-sap-business-agents.cmd').read_text()
     assert 'if "%~1"=="" goto native' in source
-    assert 'service-startup.py" ensure --root "%~dp0."' in source
+    assert 'start-active.py" ensure --root "%~dp0."' in source
     assert 'set "SAPBA_INTERNAL_API_URL=http://127.0.0.1:8765"' in source
     assert 'Start-SAPBusinessAgents.ps1" %*' in source
     assert '--no-browser --reuse-only' in source
@@ -68,14 +68,23 @@ def test_launcher_settings_do_not_eagerly_import_the_api(tmp_path):
 def test_frozen_runtime_includes_its_native_presentation_validator(tmp_path):
     import subprocess
     import sys
-    manifest=launcher.source_manifest(ROOT)
-    archive=launcher.freeze(ROOT,manifest)
+    # Preserve the production release store even when running the complete suite.
+    import shutil
+    original=launcher.source_manifest(ROOT)
+    isolated=tmp_path/'checkout'
+    for name in original['files']:
+        destination=isolated/name;destination.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(ROOT/name,destination)
+    manifest=launcher.source_manifest(isolated)
+    archive=launcher.freeze(isolated,manifest)
     assert set(launcher.SOURCE_RESOURCES)<=manifest['files'].keys()
     for name in launcher.SOURCE_RESOURCES:
         assert launcher.control.sha(archive/'source'/name)==manifest['files'][name]
     # Isolated cwd prevents the JS fallback from accidentally using checkout
     # resources and hiding an incomplete frozen release.
-    code="import sys;sys.path.insert(0,sys.argv[1]);from sap_business_agents_platform.agent_presentation import authoring_presentation_guidance,inspect_agent_presentation;assert 'Agent presentation contract' in authoring_presentation_guidance();result=inspect_agent_presentation({});assert result['contract_version']!='unavailable',result"
+    # This test covers native frozen resources, not eager FastAPI initialization
+    # (the complete frozen import chain is covered by startup_binding tests).
+    code="import sys,runpy;from pathlib import Path;m=runpy.run_path(str(Path(sys.argv[1])/'sap_business_agents_platform/agent_presentation.py'));assert 'Agent presentation contract' in m['authoring_presentation_guidance']();result=m['inspect_agent_presentation']({});assert result['contract_version']!='unavailable',result"
     subprocess.run([sys.executable,'-I','-B','-c',code,str(archive/'source/src')],cwd=tmp_path,check=True,timeout=20)
 
 
@@ -183,7 +192,7 @@ def orchestrator(tmp_path, monkeypatch):
     manifest = {'digest':'target-source','files':{}}
     health = lambda: {'ok':True,'loopback_only':True,'sap_read':{'selected_provider':'embedded','data':{'read_only':True}},
                       'startup_binding':{'verified':state.current,'source_digest':'target-source' if state.current else 'old','pid':state.ports.get(8765),'boot_id':'offline-test-boot'}}
-    args = SimpleNamespace(root=tmp_path,port=8765,site_port=4321,timeout=90,restart=False,rebuild=False,no_browser=True,dev=False,reuse_only=False)
+    args = SimpleNamespace(root=tmp_path,port=8765,site_port=4321,timeout=90,restart=False,rebuild=False,no_browser=True,dev=False,reuse_only=False,activation=True)
     data = tmp_path/'.local-data'
     control.atomic(data/'site-builds/current.json',{'fingerprint':'ui','dist_path':str(tmp_path/'old-ui'),'pid':200})
     control.atomic(data/'startup-api-current.json',{'archive':str(tmp_path/'old-source'),'source_digest':'old'})
@@ -506,6 +515,7 @@ def test_api_failure_rolls_back_or_keeps_fail_closed_barrier(orchestrator,monkey
         state.ready.append(digest)
     monkeypatch.setattr(launcher,'wait_api',ready)
     with pytest.raises(launcher.control.StartupBlocked):launcher.ensure(args)
-    assert len(state.launches)==2 and state.stopped==[100]
+    # Both old and failed candidate processes now use identity-checked cleanup.
+    assert len(state.launches)==2 and state.stopped==[100,101]
     assert (data/'startup-maintenance.json').exists()==rollback_fails
     if not rollback_fails:assert state.ready==['old']

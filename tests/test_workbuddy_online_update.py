@@ -32,6 +32,7 @@ def rig(tmp_path,monkeypatch,scenario='success'):
     class Backend:
         switch_safe=True
         def __init__(self,*_):pass
+        def anchor(self,receipt,audit):return {'source_environment_digest':'old','target_environment_digest':'new'}
         def preflight(self):
             events.append('preflight')
             if scenario=='busy':raise failure('runtime_authentication_busy','waiting_maintenance')
@@ -180,8 +181,44 @@ def test_rest_update_returns_202_operation_without_claiming_install(tmp_path):
         assert response.json()['item']['current_version']=='1.0.0'
 
 
+def test_request_id_reuses_workbuddy_operation_without_second_pipeline(tmp_path,monkeypatch):
+    async def run():
+        manager,adapter,state,events=rig(tmp_path,monkeypatch)
+        first=await manager.update('codebuddy-agent-sdk',expected_target_version='1.1.0',request_id='explicit-request')
+        assert first['update_status']['request_id']=='explicit-request'
+        again=await manager.update('codebuddy-agent-sdk',expected_target_version='1.1.0',request_id='explicit-request')
+        assert first['operation_id']==again['operation_id']
+        await manager.online_update.task
+        replay=await manager.update('codebuddy-agent-sdk',expected_target_version='1.1.0',request_id='explicit-request')
+        assert replay['update_status']['request_id']=='explicit-request'
+        assert manager.maintenance_status('workbuddy')['request_id']=='explicit-request'
+        assert replay['operation_id']==first['operation_id'] and events.count('install')==1
+        with pytest.raises(SDKManagerError) as error:
+            await manager.update('codebuddy-agent-sdk',expected_target_version='1.2.0',request_id='explicit-request')
+        assert error.value.code=='sdk_update_request_conflict'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('sdk',['codex-python-sdk','codebuddy-agent-sdk'])
+def test_update_rest_forwards_id_and_target_for_both_providers(tmp_path,sdk):
+    from fastapi.testclient import TestClient
+    from sap_business_agents_platform.app import create_app
+    from sap_business_agents_platform.config import Settings
+    from tests.test_sdk_manager import FakeSDKManager,HealthyEmbeddedProvider
+    class Registry(FakeSDKManager):
+        async def update(self,sdk_id,**kwargs):
+            assert sdk_id==sdk and kwargs=={'expected_target_version':'1.1.0','request_id':'same-request'}
+            return {'maintenance_kind':'online_upgrade','operation_id':'update_'+'a'*32,
+                'current_version':'1.0.0','update_status':{'status':'running','phase':'preparing'}}
+    app=create_app(Settings(repository_root=tmp_path,data_root=tmp_path/'data'),sdk_manager=Registry(),embedded_provider=HealthyEmbeddedProvider())
+    with TestClient(app) as client:
+        response=client.post(f'/api/system/sdks/{sdk}/update?expectedTargetVersion=1.1.0&requestId=same-request',headers={'X-SAPBA-Action':'sdk-update'})
+        assert response.status_code==202 and response.json()['item']['current_version']=='1.0.0'
+
+
+@pytest.mark.parametrize('reuse',[False,True])
 @pytest.mark.parametrize('fail_health',[False,True])
-def test_real_candidate_auth_audit_activation_and_rollback_with_synthetic_sdk(tmp_path,monkeypatch,fail_health):
+def test_real_candidate_auth_audit_activation_and_rollback_with_synthetic_sdk(tmp_path,monkeypatch,fail_health,reuse):
     """Real state/account/audit boundaries; only provider, model and OS inventory are synthetic."""
     from sap_business_agents_platform.runtime_authentication import RuntimeAuthenticationService
     from sap_business_agents_platform.workbuddy_online_update import UpdateBackend
@@ -212,7 +249,7 @@ def test_real_candidate_auth_audit_activation_and_rollback_with_synthetic_sdk(tm
         result=await probe_result(SimpleNamespace(environment=self.environment),kwargs)
         from sap_business_agents_platform.workbuddy_environment import atomic_json
         path=self.environment.root/'jobs'/(digest(kwargs['task_id'])+'.json')
-        job=json.loads(path.read_bytes());job.update(environment_digest=kwargs['snapshot']['environment_digest'],
+        job=json.loads(path.read_bytes());job.update(task_id=kwargs['task_id'],environment_digest=kwargs['snapshot']['environment_digest'],
             authentication_revision=kwargs['snapshot']['authentication_revision'],management_digest='observed-host-digest',
             process_identity='synthetic-owned-process',protocol='sapba.workbuddy.worker/1',**configuration(self.environment.state()))
         atomic_json(path,job)
@@ -224,18 +261,47 @@ def test_real_candidate_auth_audit_activation_and_rollback_with_synthetic_sdk(tm
     monkeypatch.setattr(UpdateBackend,'clearance',clearance)
     async def run():
         await auth.check('workbuddy')
+        # Real installations retain a nonzero account revision across upgrades.
+        auth.state['accounts']['workbuddy']['revision']=9
+        auth._save()
+        wm.environment.mutate(lambda state:state.update(authentication_revision=9))
         await wm.check_model('new-model',request_id='existing-old-check')
         from tests.workbuddy_integration_fakes import certificate as source_certificate
         extra=source_certificate(wm,old,{'review_agent_feedback':['trusted_local']})
         wm.environment.mutate(lambda state:state['sdk_integration_records'].__setitem__(extra['id'],extra))
+        from sap_business_agents_platform.workbuddy_job_index import rebuild
+        rebuild(wm.environment,clearance=lambda:clearance(None))
         before=copy.deepcopy(wm.environment.state())
         record={'operation_id':'update_'+'f'*32,'source_binding':__import__('sap_business_agents_platform.workbuddy_sdk_update',fromlist=['source_binding']).source_binding(before)}
         backend=UpdateBackend(m,record)
         # The core check runner is real and only executes owned synthetic processes.
         receipt={'environment_digest':new['environment_digest'],'sdk_version':'1.1.0','cli_version':'2.1.0','source_binding':record['source_binding']}
         claims=[]
-        audit=await backend.verify(receipt,lambda **_:None,lambda:claims.append('model'))
-        assert claims==['model'] and wm.environment.state()['environment_digest']==old['environment_digest']
+        if reuse:
+            from sap_business_agents_platform.workbuddy_online_update import CandidateSession
+            from sap_business_agents_platform.workbuddy_update_recovery import verify_reused
+            from sap_business_agents_platform.workbuddy_environment import file_hash
+            original=CandidateSession(m,record,new['environment_digest'])
+            await original.authenticate()
+            prior=await original.manager.check_model('new-model',request_id=record['operation_id'])
+            candidate_state=original.environment.state()
+            check=prior['check']
+            job=original.environment.root/'jobs'/(digest(check['source_job_id'])+'.json')
+            record={**record,'operation_id':'recovery_'+'e'*32,'parent_operation_id':record['operation_id'],
+                    'deadline_at':time.time()+600,'phase':'recovery_verification','status':'running'}
+            m.online_update.record=record
+            inputs={'receipt':receipt,'state':candidate_state,'check':check,'candidate':original.environment,
+                    'references':{'job':{'sha256':file_hash(job)}}}
+            async def forbidden(*_,**__):pytest.fail('recovery attempted another model call')
+            monkeypatch.setattr('sap_business_agents_platform.workbuddy_manager.WorkBuddyManager.check_model',forbidden)
+            backend=UpdateBackend(m,record)
+            audit=await verify_reused(m.online_update,backend,inputs)
+            await original.close()
+            assert claims==[]
+        else:
+            audit=await backend.verify(receipt,lambda **_:None,lambda:claims.append('model'))
+            assert claims==['model']
+        assert wm.environment.state()['environment_digest']==old['environment_digest']
         backend.activate(receipt,audit)
         assert wm.environment.state()['environment_digest']==new['environment_digest']
         current=wm.integration(wm.environment.state(),new)

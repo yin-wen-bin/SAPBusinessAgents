@@ -398,6 +398,7 @@ def create_app(
     drafts = AgentDraftService(settings, store, agent_runtime)
     query_history = FreeQueryHistory(store, settings.data_root, coordinator)
     query_history.draft_check = drafts.source_eligibility
+    query_history.draft_projection = drafts.source_projection
     drafts.history = query_history
     if not planner_supplied:
         from .workbuddy_harness import WorkBuddyHarnessController
@@ -1528,8 +1529,11 @@ def create_app(
             imported = store.get_draft_import(result["draft_id"]) if result.get("draft_id") else None
             result["managed_draft_id"] = imported["managed_draft_id"] if imported else None
             latest = next((i for i in result["iterations"] if i["iteration"] == result["current_iteration"]), None)
-            blocker = drafts.source_eligibility(latest["run_id"], session_id) if latest else "invalid_execution_plan"
-            result.update(can_create_draft=blocker is None, draft_blocker=blocker)
+            if latest:
+                result.update(drafts.source_projection(latest["run_id"], session_id))
+            else:
+                result.update(can_create_draft=False, draft_blocker="invalid_execution_plan",
+                              draft_creation_mode=None, draft_warnings=[])
             return result
         except KeyError as exc:
             raise HTTPException(404, "Free-query session not found") from exc
@@ -1710,7 +1714,9 @@ def create_app(
     ) -> dict[str, Any]:
         try:
             draft = await drafts.create_from_session(
-                session_id, module=payload.module if payload else None
+                session_id, module=payload.module if payload else None,
+                expected_iteration=payload.expected_iteration if payload else None,
+                expected_result_digest=payload.expected_result_digest if payload else None,
             )
             return attach_management_draft(draft)
         except KeyError as exc:
@@ -1776,8 +1782,7 @@ def create_app(
             if derived:
                 payload["result"]["workflow_presentation"] = derived
         if record.mode.value == "free_query":
-            blocker = drafts.source_eligibility(run_id)
-            payload.update(can_create_draft=blocker is None, draft_blocker=blocker)
+            payload.update(drafts.source_projection(run_id))
         return payload
 
     def workflow_view_for(run_id: str) -> tuple[Any, dict[str, Any]]:
@@ -3335,23 +3340,43 @@ def create_app(
             status_code = 404 if exc.code == "sdk_not_found" else 409
             raise HTTPException(status_code, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
 
+    @app.post("/api/system/sdks/{sdk_id}/update-operations/{operation_id}/recover")
+    async def recover_sdk_update(
+        sdk_id: str, operation_id: str, response: Response,
+        x_sapba_action: str | None = Header(default=None),
+        retry_of: str | None = Query(default=None, alias='retryOf', max_length=64),
+        expected_target_version: str | None = Query(default=None, alias='expectedTargetVersion', max_length=64),
+    ) -> dict[str, Any]:
+        if x_sapba_action != "sdk-update":
+            raise HTTPException(403, "SDK recovery confirmation header is required")
+        try:
+            item = await sdk_registry.recover_update(sdk_id, operation_id, expected_target_version=expected_target_version,
+                **({'retry_of':retry_of} if retry_of is not None else {}))
+        except SDKManagerError as exc:
+            raise HTTPException(404 if exc.code == 'sdk_not_found' else 409,
+                {"code":exc.code,"message":str(exc),"detail":exc.detail}) from exc
+        response.status_code = 202
+        return {"item":item,"operation_id":item["operation_id"],"message":"SDK recovery accepted.","restart_required":False}
+
     @app.post("/api/system/sdks/{sdk_id}/update")
     async def update_sdk(
         sdk_id: str,
         response: Response,
         x_sapba_action: str | None = Header(default=None),
         expected_target_version: str | None = Query(default=None, alias='expectedTargetVersion', max_length=64),
+        request_id: str | None = Query(default=None, alias='requestId', max_length=128),
     ) -> dict[str, Any]:
         if x_sapba_action != "sdk-update":
             raise HTTPException(403, "SDK update confirmation header is required")
         try:
-            item = (await sdk_registry.update(sdk_id,expected_target_version=expected_target_version)
-                    if sdk_id=='codebuddy-agent-sdk' and expected_target_version is not None
+            item = (await sdk_registry.update(sdk_id,expected_target_version=expected_target_version,request_id=request_id)
+                    if request_id is not None else await sdk_registry.update(sdk_id,expected_target_version=expected_target_version)
+                    if expected_target_version is not None
                     else await sdk_registry.update(sdk_id))
         except SDKManagerError as exc:
             status_code = 404 if exc.code == "sdk_not_found" else 409
             raise HTTPException(status_code, {"code": exc.code, "message": str(exc), "detail": exc.detail}) from exc
-        if sdk_id == "codebuddy-agent-sdk" and item.get("maintenance_kind") == "online_upgrade":
+        if item.get("maintenance_kind") == "online_upgrade":
             response.status_code = 202
             return {"item": item, "operation_id": item["operation_id"], "message": "SDK update accepted.", "restart_required": False}
         return {

@@ -77,6 +77,7 @@ class FreeQueryHistory:
         self.coordinator = coordinator
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.draft_check: Callable[[str, str | None], str | None] | None = None
+        self.draft_projection: Callable[[str, str | None], dict[str, Any]] | None = None
         self._protected: Counter[str] = Counter()
         self._task: asyncio.Task[Any] | None = None
 
@@ -126,10 +127,12 @@ class FreeQueryHistory:
             row.pop("anchor_at")
             row["active"] = bool(row["active"])
             reason = "query_not_successful" if row["status"] != "completed" else None
-            if reason is None and self.draft_check:
+            if reason is None and self.draft_check and not self.draft_projection:
                 reason = self.draft_check(row["run_id"], row["session_id"])
             row["can_create_draft"] = reason is None
             row["draft_blocker"] = reason
+            if self.draft_projection:
+                row.update(self.draft_projection(row["run_id"], row["session_id"]))
             imported = self.store.get_draft_import(row["draft_id"]) if row.get("draft_id") else None
             row["managed_draft_id"] = imported["managed_draft_id"] if imported else None
         return {"items": rows, "total": total, "limit": limit, "offset": offset, **self.settings()}

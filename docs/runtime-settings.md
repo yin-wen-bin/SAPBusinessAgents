@@ -14,6 +14,8 @@
 
 SDK升级与模型切换是不同操作。SDK更新后按页面提示重启API，重新读取SDK/CLI版本、刷新目录并检查兼容性；被移除的模型不能用于新会话。配置保存在忽略的本地Runtime状态中，不需要修改Codex Desktop全局模型或`.env`。旧SAPBA_CODEX_MODEL仅参与首次迁移，不持续覆盖页面设置。保留Provider各自的认证及平台验收门禁。
 
+新版更新链路已于 2026-10-28 [受控上线](runtime-version-activation-deployment.md)：后续明确更新 Codex 时，在独立依赖环境准备，等待审核和空闲后由现有启动器受控激活；页面分别显示安装与实际生效。WorkBuddy 保留原独立更新流程。普通刷新只读取状态，响应未知时不重复提交安装。本轮只更新 API／前台及原环境证明，没有实际更新 SDK。
+
 ## English
 
 Open System settings → Agent Runtime and SDK. Fixed Agents and deterministic workflows need no Runtime; free queries, role matching, feedback interpretation and natural-language authoring require an available Runtime.
@@ -39,3 +41,5 @@ Health `ok` means local API liveness. Background catalog statistics can be unkno
 WorkBuddy 的启停事实通过独立的 5 秒展示投影读取，`control_status` 标明修订、检查时间和未知状态，不等待完整资格核对。已启用但资格仍在核对时，页面显示“已启用 · 资格核对中”及确认式停用操作，不显示灰色启用按钮；读取失败不能被解释为已经停用。`status_refresh.running` 表示后台仍在执行，`wait_exceeded` 仅表示超过展示等待时间，不是模型超时或资格失败。可见页面退避读取状态，隐藏时暂停、恢复可见时同步；不重建账号／模型表单或自动发送探针。启停成功结果立即更新页面，旧修订及旧请求不能覆盖新结果。
 
 WorkBuddy enablement facts use a separate five-second display projection. `control_status` identifies its revision, check time and unknown state without waiting for full qualification. An enabled Runtime remains visibly enabled while qualification is pending; it offers confirmed disablement rather than a disabled enable button. A failed read does not mean disabled. `status_refresh.running` denotes continuing background work; `wait_exceeded` is only a display wait, not a model timeout or failed qualification. Visible pages poll with backoff without rebuilding account/model forms or probing a model. Hidden pages pause and resynchronize when shown. Confirmed management responses update immediately and older revisions/responses cannot overwrite them. All execution gates remain unchanged.
+
+SDK 更新使用共用进度弹窗；收起不取消，安装与生效分开，生效后仅局部读取相关状态。断连只核对原操作，不重复安装。详见 [更新进度与结果反馈](sdk-update-feedback.md)。

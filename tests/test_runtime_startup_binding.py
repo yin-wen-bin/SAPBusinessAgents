@@ -106,8 +106,10 @@ def test_full_workbuddy_startup_never_reads_the_default_provider(tmp_path, monke
         assert not (Path(kwargs['payload']['cwd']) / 'agent-package').exists()
         calls.append(kwargs['operation'])
         trace.append('native_boundary')
-        payload = {'status': 'inconclusive', 'intent': 'read', 'clarification_question': '',
-            'input_kind': None, 'input_field': None, 'summary': {'zh': '仅离线启动链测试', 'en': 'Offline startup only'},
+        # Formal acceptance uses the frozen report terminal, not the free-query
+        # clarification envelope. Extra fields must still fail in the negative case.
+        payload = {'status': 'inconclusive', 'intent': 'read',
+            'summary': {'zh': '仅离线启动链测试', 'en': 'Offline startup only'},
             'source_complete': False, 'business_complete': False, 'missing_evidence': ['offline_probe'],
             'evidence_refs': [], 'executed_plans': [], 'presentation': None, 'acceptance_projection': None}
         if failure != 'terminal':

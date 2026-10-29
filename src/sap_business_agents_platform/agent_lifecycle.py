@@ -644,16 +644,18 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                                  "catalog_module": str(package["manifest"].get("module") or "Common"),
                                  "catalog_revision": 1,
                                  "source_result_available": source_result is not None,
+                                 "pending_review": copy.deepcopy(source.origin.get("pending_review")),
                                  "source_summary": copy.deepcopy(source_result.summary) if source_result else None,
                                  "runtime_snapshot": (
                                      source_run.runtime.model_dump(mode="json")
                                      if source_run and source_run.runtime
                                      else self._new_runtime_snapshot()
                                  ),
-                                 "source_evidence_refs": sorted({
+                                 "source_evidence_refs": (list(source.origin["pending_review"]["evidence_refs"])
+                                     if source.origin.get("pending_review") else sorted({
                                      str(item["evidence_ref"]) for item in source_result.evidence
                                      if isinstance(item, dict) and item.get("evidence_ref")
-                                 }) if source_result else [],
+                                 }) if source_result else []),
                                  "private_source_files": sorted(
                                      (set(package.get("files", {})) - _GENERATED_PUBLIC_FILES)
                                      | set(package.get("binary_files", {}))

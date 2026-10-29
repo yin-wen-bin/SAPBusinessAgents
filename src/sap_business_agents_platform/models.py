@@ -464,6 +464,8 @@ class DraftCreate(BaseModel):
     module: Literal["CO", "Common", "FI", "MM", "PP", "SD"] | None = None
     workflow_draft_id: str | None = Field(default=None, alias="workflowDraftId")
     gap_id: str | None = Field(default=None, alias="gapId")
+    expected_iteration: int | None = Field(default=None, ge=1, alias="expectedIteration")
+    expected_result_digest: str | None = Field(default=None, alias="expectedResultDigest")
 
 
 class DraftAuthoringCreate(DraftCreate):

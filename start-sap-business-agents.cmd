@@ -23,7 +23,7 @@ goto result
 :native
 set "PUBLIC_SAPBA_API_URL=http://127.0.0.1:8765"
 set "SAPBA_INTERNAL_API_URL=http://127.0.0.1:8765"
-"%~dp0.venv\Scripts\python.exe" -I -B "%~dp0scripts\service-startup.py" ensure --root "%~dp0." %SAPBA_NATIVE_ARGS%
+"%~dp0.venv\Scripts\python.exe" -I -B "%~dp0scripts\start-active.py" ensure --root "%~dp0." %SAPBA_NATIVE_ARGS%
 
 :result
 if errorlevel 1 (

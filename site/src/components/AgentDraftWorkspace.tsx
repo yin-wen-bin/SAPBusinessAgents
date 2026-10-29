@@ -1066,6 +1066,15 @@ export default function AgentDraftWorkspace({ initialDraft, apiBase, locale, run
     {remoteConflict && <p className="agent-alert error" role="alert">{tr("草稿已在其他操作中生成新修订。当前未保存内容已保留，请复制需要保留的修改，再放弃本地修改并加载最新修订。", "Another operation created a revision. Your unsaved content is retained. Copy any edits you need, then discard local edits and load the latest revision.")}</p>}
     {active && <p className="agent-alert" role="status" ref={progressRef} tabIndex={-1}>{publicationActive ? tr("Agent 发布正在后台执行", "Agent publication is running in the background") : <>{tr("草稿任务", "Draft operation")}: {draftStatus(operation?.status || latestTurn?.status, locale)}</>} {!publicationActive && <button className="agent-secondary-action" disabled={busy || operation?.status === "cancelling"} onClick={cancel}>{tr("取消任务", "Cancel task")}</button>}</p>}
 
+    {draft.metadata?.pending_review && <section className="agent-alert" data-pending-draft-review>
+      <strong>{tr("创建时来源证据不足", "Source evidence was incomplete at creation")}</strong>
+      <p>{tr("用户确认只表示结果符合预期，不授予PASS、执行或发布资格。请补齐业务输出、确定性规则和参数范围，再完成试运行及正式验收。", "User confirmation does not grant PASS, execution or publication eligibility. Complete business output, deterministic rules and parameter scope, then complete trial and formal acceptance.")}</p>
+      <details><summary>{tr("查看创建时的来源与证据缺口（历史记录）", "Source and evidence gaps at creation (historical)")}</summary>
+        <p>{tr("来源轮次", "Source round")}: {draft.metadata.pending_review.accepted_iteration}</p>
+        <ul>{(draft.metadata.pending_review.evidence_gaps || []).map((gap: string, index: number) => <li key={index}>{gap}</li>)}</ul>
+        <p>{tr("这些来源缺口不会被清除；当前修订是否补齐，以后续实际校验结果为准。", "These source gaps are retained; actual subsequent validation determines whether the current revision resolves them.")}</p>
+      </details>
+    </section>}
     <div className="draft-wizard-layout">
       <nav className="agent-steps draft-wizard-nav" aria-label={tr("Agent 编辑步骤", "Agent editing steps")}>{draftStepNames.map((name, index) => { const state = localStepStatus(name); return <button key={name} className={`${step === name ? "active " : ""}wizard-${state}`} aria-current={step === name ? "step" : undefined} onClick={() => setStep(name)}><span className="wizard-step-number">{index + 1}</span><span><strong>{stepLabels[name]}</strong><small>{statusLabels[state] || state}</small></span></button>; })}</nav>
 

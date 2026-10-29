@@ -51,7 +51,7 @@ async function harness(locale = "zh") {
   for (const attribute of ["data-sdk-grid", "data-sdk-alert", "data-no-default"]) {
     const child = new Node("div"); child.setAttribute(attribute, ""); root.append(child);
   }
-  const calls = []; let response = async () => ({ items: [], default_provider_id: "codex" });
+  const calls = [], confirmations = []; let response = async () => ({ items: [], default_provider_id: "codex" });
   const stored = new Map(); const timers = new Map(); let timerId = 0; let confirmed = false;
   const documentEvents = {}; const windowEvents = {};
   const document = {hidden: false, querySelector: () => root, createElement: (tag) => new Node(tag), addEventListener: (name, fn) => {documentEvents[name] = fn;}};
@@ -60,11 +60,12 @@ async function harness(locale = "zh") {
     setTimeout: (fn, ms) => { timers.set(++timerId, {fn, ms}); return timerId; }, clearTimeout: (id) => timers.delete(id),
     sessionStorage: {getItem: (key) => stored.get(key), setItem: (key, value) => stored.set(key, value), removeItem: (key) => stored.delete(key)},
     fetch: async (url, options = {}) => { calls.push({ url, ...options }); return { ok: true, json: () => response(url, options) }; },
-    window: { confirm: () => confirmed, prompt: () => null, addEventListener: (name, fn) => {windowEvents[name] = fn;} },
+    window: { confirm: message => {confirmations.push(message); return confirmed;}, prompt: () => null, addEventListener: (name, fn) => {windowEvents[name] = fn;} },
   });
-  runInContext(`${copyDefinition}\n${script}\nglobalThis.settingsUI = { renderModels, renderAuthentication, loadModels, render, load, applyRuntimeResult, maybeLoadAuthentication, refreshViewForms, runtimeViews, maintenanceSDK };`, context);
+  runInContext(`${copyDefinition}\n${script}\nglobalThis.settingsUI = { renderModels, renderAuthentication, loadModels, render, load, applyRuntimeResult, maybeLoadAuthentication, refreshViewForms, runtimeViews, maintenanceSDK, updateOutcome, updateMatches, updateRetryDelay, maintenanceState, setMaintenance, adoptUpdate, updateDialog };`, context);
   await settle(); calls.length = 0;
-  return { root, calls, stored, timeouts: () => [...timers.values()].map((item) => item.ms), confirm: (value) => { confirmed = value; }, respond: (fn) => { response = fn; },
+  return { root, calls, stored, confirmations, timeouts: () => [...timers.values()].map((item) => item.ms), confirm: (value) => { confirmed = value; }, respond: (fn) => { response = fn; },
+    feedback:context.settingsUI,
     renderRuntimes: (items) => context.settingsUI.render(items, "codex"),
     maintenance: provider => context.settingsUI.runtimeViews.get(provider).versionSection.controls,
     maintenanceValue: sdk => context.settingsUI.maintenanceSDK(sdk),
@@ -85,6 +86,116 @@ const sdk = { provider_id: "codex", name: { zh: "Codex", en: "Codex" }, default_
 const model = (id, selected = false) => ({ model_id: id, display_name: id, selected, check_status: "compatible", selectable: true,
   supported_reasoning_efforts: ["low", "high"], reasoning_effort: "high", saved_reasoning_effort: "high", default_reasoning_effort: "low" });
 const catalog = { catalog_status: "ready", model_catalog_complete: true, items: [model("model-a", true), model("model-b")] };
+
+test('SDK feedback never equates installation, version equality or cleanup with activation',async()=>{
+  const h=await harness(),outcome=h.feedback.updateOutcome;
+  const value={kind:'update',status:'completed',target:'1.1.0'};
+  assert.equal(outcome(value,{current_version:'1.1.0'}),'installed');
+  assert.equal(outcome({...value,outcome:'activated'},{current_version:'1.1.0'}),'unknown');
+  assert.equal(outcome({...value,outcome:'activated',cleanup_complete:false},{current_version:'1.1.0'}),'cleanup');
+  assert.equal(outcome({...value,outcome:'activated',cleanup_complete:true,observed_versions:{sdk:'1.1.0'}}),'active');
+  assert.equal(outcome({...value,phase:'restart_pending'}),'restart');
+  assert.equal(outcome({...value,status:'needs_review',outcome:'candidate_prepared'}),'review');
+  assert.equal(outcome({...value,status:'rolled_back'}),'rolled_back');
+});
+
+test('SDK feedback matches original identity, not target or timestamps',async()=>{
+  const h=await harness(),matches=h.feedback.updateMatches;
+  const local={kind:'update',target:'1.1.0',requestId:'same-request'};
+  assert.equal(matches(local,{operation_id:'new',target_version:'1.1.0',request_id:'same-request'}),true);
+  assert.equal(matches(local,{operation_id:'new',target_version:'1.1.0',started_at:new Date().toISOString()}),false);
+  assert.equal(matches({...local,operation_id:'original'},{operation_id:'another',request_id:'same-request',target_version:'1.1.0'}),false);
+  assert.equal(matches(local,{operation_id:'new',target_version:'2.0.0',request_id:'same-request'}),false);
+  assert.equal(h.feedback.updateRetryDelay(1,1000,1500),1000);
+  assert.equal(h.feedback.updateRetryDelay(2,1000,1500),2000);
+  assert.equal(h.feedback.updateRetryDelay(3,1000,1500),5000);
+  assert.equal(h.feedback.updateRetryDelay(20,1000,121000),null);
+});
+
+for(const provider of ['codex','workbuddy'])test(`${provider}: version checks cannot overwrite an unresolved update`,async()=>{
+  const h=await harness();h.confirm(true);
+  const value={...sdk,provider_id:provider,sdk_id:provider,update_supported:true,update_enabled:true,update_available:true,current_version:'1.0.0',latest_version:'1.1.0'};
+  h.renderRuntimes([value]);
+  h.respond(async(_url,options)=>{if(options.method==='POST')throw Error('synthetic response loss');return {items:[value],default_provider_id:provider};});
+  await h.maintenance(provider).update.fire('click');
+  const before=h.feedback.maintenanceState(provider);
+  assert.equal(before.status,'unknown');assert.ok(before.requestId);
+  assert.equal(h.maintenance(provider).versions.disabled,true);
+  await h.maintenance(provider).versions.fire('click');
+  assert.equal(h.feedback.maintenanceState(provider).requestId,before.requestId);
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
+});
+
+for (const provider of ['codex','workbuddy']) test(`${provider}: activation refresh is once per operation and retains unsaved form nodes`,async()=>{
+  const h=await harness();
+  const value={...sdk,provider_id:provider,model_discovery_supported:true,installed:true,authenticated:true,current_version:'1.0.0'};
+  h.respond(async url=>url.includes('/models')?catalog:{items:[value],default_provider_id:provider});
+  h.renderRuntimes([value]);await settle();
+  const view=h.feedback.runtimeViews.get(provider),field=view.modelSection.querySelector('select');
+  assert.ok(field);field.value='model-b';field.focus();view.dirty=true;
+  h.calls.length=0;
+  h.feedback.setMaintenance(provider,{kind:'update',operation_id:'original',requestId:'request',target:'1.1.0',status:'running'});
+  const active={...value,update_status:{operation_id:'original',request_id:'request',target_version:'1.1.0',status:'completed',outcome:'activated',cleanup_complete:true,observed_versions:{sdk:'1.1.0'},updated_at:new Date().toISOString()}};
+  h.respond(async url=>url.includes('/models')?catalog:{items:[active],default_provider_id:provider});
+  h.feedback.adoptUpdate(active);await settle();await settle();
+  h.feedback.adoptUpdate(active);await settle();
+  assert.equal(h.calls.filter(c=>c.url.includes('/sdk-runtimes?')).length,1);
+  assert.equal(view.modelSection.querySelector('select'),field);
+  assert.equal(field.value,'model-b');assert.equal(field.focused,true);
+  assert.equal(h.calls.filter(c=>c.method==='POST'||c.method==='PUT').length,0);
+  const older={...active,update_status:{...active.update_status,status:'running',outcome:null,updated_at:'2020-01-01T00:00:00Z'}};
+  h.feedback.adoptUpdate(older);assert.equal(h.feedback.maintenanceState(provider).confirmedActive,true);
+});
+
+for(const locale of ['zh','en'])test(`${locale}: update modal opens immediately and minimizing never resubmits`,async()=>{
+  const h=await harness(locale);h.confirm(true);
+  const value={...sdk,sdk_id:'codex-python-sdk',enabled:true,update_enabled:true,update_available:true,current_version:'1.0.0',latest_version:'1.1.0'};
+  h.renderRuntimes([value]);let release;
+  h.respond(async(url,options)=>options.method==='POST'?new Promise(resolve=>{release=resolve;}):{items:[value],default_provider_id:'codex'});
+  const send=h.maintenance('codex').update.fire('click');await settle();
+  assert.match(h.feedback.updateDialog.status.textContent,locale==='zh'?/提交/:/Submitting/);
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
+  await h.feedback.updateDialog.node.querySelector('button').fire('click');
+  assert.equal(h.root.querySelectorAll('.sdk-update-feedback-entry').some(entry=>entry.focused),true);
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
+  const status={operation_id:'original',request_id:new URL(h.calls.find(c=>c.method==='POST').url).searchParams.get('requestId'),status:'running',phase:'downloading',target_version:'1.1.0',started_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+  release({item:{...value,maintenance_kind:'online_upgrade',update_status:status}});await send;
+  assert.equal(h.feedback.maintenanceState('codex').operation_id,'original');
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
+});
+
+for (const locale of ['zh','en']) test(`${locale}: Codex candidate installation is not activation and retries only read status`, async () => {
+  const h=await harness(locale);h.confirm(true);
+  const value={...sdk,sdk_id:'codex-python-sdk',enabled:true,update_enabled:true,update_available:true,
+    current_version:'1.0.0',latest_version:'1.1.0',version_check_supported:true};
+  h.renderRuntimes([value]);
+  const started=new Date().toISOString();
+  let status={operation_id:'update-codex-test',status:'running',phase:'environment_creation',
+    target_version:'1.1.0',before_version:'1.0.0',started_at:started,updated_at:started};
+  h.respond(async(url,options)=>options.method==='POST'
+    ? {item:{...value,maintenance_kind:'online_upgrade',activated:false,update_status:status},operation_id:status.operation_id}
+    : {items:[{...value,update_status:status}],default_provider_id:'codex'});
+  await h.maintenance('codex').update.fire('click');
+  const post=h.calls.filter(c=>c.method==='POST')[0],url=new URL(post.url);
+  assert.equal(url.searchParams.get('expectedTargetVersion'),'1.1.0');
+  assert.match(url.searchParams.get('requestId'),/^[a-f0-9-]{36}$/);
+  assert.equal(h.maintenanceValue(value).current_version,'1.0.0');
+  assert.match(h.maintenance('codex').status.textContent,locale==='zh'?/独立依赖环境/:/independent dependency/);
+  status={...status,phase:'waiting_maintenance',updated_at:new Date(Date.now()+1000).toISOString()};
+  h.renderRuntimes([{...value,update_status:status}]);
+  await h.maintenance('codex').update.fire('click');
+  assert.match(h.maintenance('codex').status.textContent,locale==='zh'?/等待任务/:/Waiting for tasks/);
+  status={...status,phase:'awaiting_review',status:'needs_review',outcome:'candidate_prepared',updated_at:new Date(Date.now()+2000).toISOString()};
+  h.renderRuntimes([{...value,update_status:status}]);
+  assert.match(h.maintenance('codex').status.textContent,locale==='zh'?/尚未生效/:/not active/);
+  status={...status,phase:'activated',status:'completed',outcome:'activated',cleanup_complete:true,observed_versions:{sdk:'1.1.0'},updated_at:new Date(Date.now()+3000).toISOString()};
+  const active={...value,current_version:'1.1.0',update_available:false,update_status:status};
+  h.renderRuntimes([active]);
+  assert.equal(h.maintenanceValue(active).current_version,'1.1.0');
+  assert.match(h.maintenance('codex').status.textContent,locale==='zh'?/已生效/:/is active/);
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
+  assert.equal(h.calls.some(c=>/authentication|models\/check/.test(c.url)),false);
+});
 
 test('maintenance checks finish, keep controls stable, and read versions without authentication requests', async () => {
   const h = await harness();
@@ -138,7 +249,10 @@ for (const locale of ['zh','en']) test(`${locale}: WorkBuddy accepted update sta
   assert.equal(h.maintenance('workbuddy').update.disabled,true);
   await h.maintenance('workbuddy').update.fire('click');
   assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
-  assert.equal(h.calls.filter(c=>c.method==='POST')[0].url,'http://test/api/system/sdks/codebuddy-agent-sdk/update?expectedTargetVersion=1.1.0');
+  const submitted = new URL(h.calls.filter(c=>c.method==='POST')[0].url);
+  assert.equal(submitted.pathname,'/api/system/sdks/codebuddy-agent-sdk/update');
+  assert.equal(submitted.searchParams.get('expectedTargetVersion'),'1.1.0');
+  assert.match(submitted.searchParams.get('requestId'),/^[a-f0-9-]{36}$/);
   const current={...value,environment_digest:'new',current_version:'1.1.0',cli_version:'2.1.0',update_available:false,
     update_status:{...status,status:'completed',phase:'completed',outcome:'activated',updated_at:new Date(Date.now()+1000).toISOString()}};
   h.renderRuntimes([current]);
@@ -835,4 +949,61 @@ test("Codex has no site control and external/active WorkBuddy cannot change site
     assert.equal(section.querySelector(".sdk-service-site").querySelector("select").disabled, true);
     assert.equal(button(section, "保存站点").disabled, true);
   }
+});
+
+
+const recoverySDK = (overrides={}) => ({...sdk,provider_id:'workbuddy',sdk_id:'codebuddy-agent-sdk',enabled:true,
+  update_enabled:true,update_supported:true,update_available:true,current_version:'0.3.247',latest_version:'0.3.999',
+  environment_digest:'old',update_status:{operation_id:'update_'+'a'.repeat(32),status:'failed',phase:'authentication_verification',
+    started_at:'2026-10-27T08:16:37.344Z',updated_at:'2026-10-27T08:19:01.928Z',target_version:'0.3.291',
+    error:{code:'workbuddy_job_index_recovery_required',phase:'evidence_publication'},
+    recovery:{available:true,parent_operation_id:'update_'+'a'.repeat(32),target_version:'0.3.291'}},...overrides});
+for (const locale of ['zh','en']) test(`${locale}: recovery freezes original target and waits for confirmed activation`,async()=>{
+  const h=await harness(locale);h.confirm(true);const value=recoverySDK();h.renderRuntimes([value]);
+  const controls=h.maintenance('workbuddy');assert.equal(controls.recover.hidden,false);assert.equal(controls.recover.disabled,false);
+  assert.equal(controls.update.hidden,true);assert.match(controls.errorPhase.textContent,/evidence_publication/);
+  assert.match(controls.errorPhase.textContent,locale==='zh'?/交接验证证据/:/Publishing verification evidence/);
+  const stamp=new Date().toISOString(),status={operation_id:'recover_'+'b'.repeat(32),status:'running',phase:'recovery_verification',target_version:'0.3.291',started_at:stamp,updated_at:stamp};
+  let current={...value,update_status:status};
+  h.respond(async(url,options)=>options.method==='POST'?{operation_id:status.operation_id,item:{...current,maintenance_kind:'online_recovery'}}:{items:[current],default_provider_id:'workbuddy'});
+  await controls.recover.fire('click');await h.maintenance('workbuddy').recover.fire('click');
+  let posts=h.calls.filter(c=>c.method==='POST');assert.equal(posts.length,1);
+  assert.equal(posts[0].url,`http://test/api/system/sdks/codebuddy-agent-sdk/update-operations/${value.update_status.operation_id}/recover?expectedTargetVersion=0.3.291`);
+  assert.equal(posts[0].headers['X-SAPBA-Action'],'sdk-update');assert.match(h.confirmations[0],/0\.3\.291/);
+  assert.match(h.confirmations[0],locale==='zh'?/不新增模型调用/:/No additional model calls/);
+  assert.match(h.maintenance('workbuddy').status.textContent,locale==='zh'?/核对恢复依据/:/Verifying recovery evidence/);
+  assert.equal(h.maintenanceValue(current).current_version,'0.3.247');
+  current={...current,current_version:'0.3.291',environment_digest:'new',update_status:{...status,status:'completed',phase:'completed',outcome:'activated',updated_at:new Date(Date.now()+1000).toISOString()}};
+  h.renderRuntimes([current]);assert.equal(h.maintenanceValue(current).current_version,'0.3.291');
+  assert.equal(h.calls.some(c=>c.method==='POST'&&!c.url.includes('/recover?')),false);
+});
+for(const locale of ['zh','en']) test(`${locale}: recovery blocking and unresolved switch never submit a mutation`,async()=>{
+  const h=await harness(locale);h.confirm(true);const value=recoverySDK();
+  value.update_status.recovery={...value.update_status.recovery,available:false,blocked_reason:'sdk_update_binding_changed'};
+  h.renderRuntimes([value]);let controls=h.maintenance('workbuddy');assert.equal(controls.recover.hidden,true);
+  assert.equal(controls.recoveryReason.hidden,false);assert.match(controls.recoveryReason.textContent,/sdk_update_binding_changed/);
+  await controls.recover.fire('click');assert.equal(h.calls.filter(c=>c.method==='POST').length,0);
+  const review={...value,update_status:{...value.update_status,status:'needs_review',phase:'reconciliation',error:{code:'sdk_update_outcome_unconfirmed',phase:'reconciliation'}}};
+  h.renderRuntimes([review]);controls=h.maintenance('workbuddy');assert.equal(controls.update.disabled,true);
+  assert.match(controls.status.textContent,locale==='zh'?/维护保护仍保留/:/Maintenance protection remains active/);
+  assert.match(controls.errorPhase.textContent,/reconciliation/);
+  h.respond(async()=>({items:[review],default_provider_id:'workbuddy'}));await controls.reread.fire('click');
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,0);
+});
+
+for (const locale of ['zh','en']) test(`${locale}: explicit successor recovery sends only the server supplied retryOf`,async()=>{
+  const h=await harness(locale);h.confirm(true);const value=recoverySDK(),prior='recovery_'+'b'.repeat(32);
+  value.update_status={...value.update_status,operation_id:prior,parent_operation_id:value.update_status.operation_id,status:'rolled_back',phase:'rolled_back',cleanup_complete:true,
+    recovery:{...value.update_status.recovery,retry_of:prior}};
+  h.renderRuntimes([value]);const controls=h.maintenance('workbuddy');assert.equal(controls.recover.disabled,false);
+  assert.equal(h.calls.filter(c=>c.method==='POST').length,0);
+  const stamp=new Date().toISOString(),status={operation_id:'recovery_'+'c'.repeat(32),parent_operation_id:value.update_status.parent_operation_id,status:'running',phase:'recovery_verification',target_version:'0.3.291',started_at:stamp,updated_at:stamp};
+  h.respond(async(url,options)=>options.method==='POST'?{operation_id:status.operation_id,item:{...value,maintenance_kind:'online_upgrade_recovery',update_status:status}}:{items:[{...value,update_status:status}],default_provider_id:'workbuddy'});
+  await controls.recover.fire('click');await h.maintenance('workbuddy').recover.fire('click');
+  const posts=h.calls.filter(c=>c.method==='POST');assert.equal(posts.length,1);
+  const url=new URL(posts[0].url);assert.equal(url.searchParams.get('retryOf'),prior);
+  assert.equal(url.searchParams.get('expectedTargetVersion'),'0.3.291');
+  assert.ok(url.pathname.endsWith(`/update-operations/${value.update_status.parent_operation_id}/recover`));
+  assert.match(h.confirmations[0],locale==='zh'?/不新增模型调用/:/No additional model calls/);
+  assert.equal(h.maintenanceValue(value).current_version,'0.3.247');
 });

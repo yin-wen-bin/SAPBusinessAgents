@@ -10,6 +10,8 @@
 协议 2 需要逐安装受控激活，不由安装代码或状态查询自动启用。本机后续授权中已经完成激活；判断其他安装时应读取其正式 `qualification_protocol`，不能从本文推定。最初的离线交付与后续真实验证是不同阶段。
 Codex 使用共用验证方法做离线对照，但不迁移其准入或资格存储。
 
+Python 环境与版本激活的当前／回退组合及部署边界见[版本激活闭环](runtime-version-activation.md)。环境绑定与安装结果不等于 SDK 接入认证、模型兼容或业务 PASS；认证承接仍须单独审核并在明确授权下应用。2026-10-28 的受控上线及接入证据追加见[交付记录](runtime-version-activation-deployment.md)，历史业务 PASS 未改写。
+
 ## WorkBuddy 三层准入策略（待受控激活）
 
 策略 `sapba.workbuddy.three-layer/1` 将三种证明独立保存：

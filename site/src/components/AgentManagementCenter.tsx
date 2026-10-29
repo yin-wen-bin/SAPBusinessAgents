@@ -51,7 +51,7 @@ const text = {
     deleteDraftWarning: "此操作会永久删除草稿包、修订和对话，无法恢复。历史验证运行将继续保留。",
     confirmDraftId: "输入完整 Agent ID 确认删除草稿", draftDeleted: "未发布草稿已删除。",
     statusLabels: { unpublished: "未发布草稿", PARTIAL: "部分通过", PENDING: "验证中", UNRECORDED: "未记录", draft: "编辑中", invalid: "检查未通过", validated: "已验证", validating: "正在真机验证", needs_review: "需要复核", published: "已发布", cancelled: "已取消", active: "使用中", inactive: "已停用", PASS: "通过", BLOCKED: "阻塞", NOT_TESTED: "未测试", INCONCLUSIVE: "证据不足", FAIL: "失败" },
-    sourceLabels: { blank: "空白模板", clone: "复制现有 Agent", free_query: "成功自由查询", workflow_gap: "工作流能力缺口" },
+    sourceLabels: { blank: "空白模板", clone: "复制现有 Agent", free_query: "自由查询结果", workflow_gap: "工作流能力缺口" },
   },
   en: {
     eyebrow: "Deterministic Agent lifecycle", heading: "Agent management center",
@@ -93,7 +93,7 @@ const text = {
     deleteDraftWarning: "This permanently deletes the draft package, revisions and conversation. Validation runs remain available.",
     confirmDraftId: "Enter the complete Agent ID to confirm draft deletion", draftDeleted: "The unpublished draft was deleted.",
     statusLabels: { unpublished: "Unpublished draft", PARTIAL: "Partially passed", PENDING: "Validating", UNRECORDED: "Unrecorded", draft: "Editing", invalid: "Checks failed", validated: "Validated", validating: "Live validation running", needs_review: "Needs review", published: "Published", cancelled: "Cancelled", active: "Active", inactive: "Inactive", PASS: "Passed", BLOCKED: "Blocked", NOT_TESTED: "Not tested", INCONCLUSIVE: "Inconclusive", FAIL: "Failed" },
-    sourceLabels: { blank: "Blank template", clone: "Existing Agent copy", free_query: "Successful free query", workflow_gap: "Workflow capability gap" },
+    sourceLabels: { blank: "Blank template", clone: "Existing Agent copy", free_query: "Free-query result", workflow_gap: "Workflow capability gap" },
   },
 };
 

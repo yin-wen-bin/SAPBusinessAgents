@@ -13,7 +13,7 @@ dependencies = [
   "fastapi>=0.115,<1.0",
   "httpx>=0.28,<1.0",
   "jsonschema>=4.23,<5.0",
-  "openai-codex==0.147.0",
+  "openai-codex>=0.147.0,<0.164.0",
   "packaging>=24",
   "openpyxl>=3.1,<4.0",
   "pypdf>=5.0,<7.0",
@@ -28,6 +28,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest==9.0.3", "pip-audit>=2.9,<3"]
+
+# Installation compatibility bounds are not SDK admission. Online activation
+# also requires an exact reviewed version, an environment lock and the existing
+# target integration checks. Extending this list requires a separate review.
+[tool.sapba.codex]
+reviewed_versions = ["0.147.0", "0.162.0", "0.163.0"]
 
 [project.scripts]
 sap-business-agents = "sap_business_agents_platform.cli:main"

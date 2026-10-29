@@ -15,16 +15,33 @@ import urllib.request
 import uuid
 import socket
 import re
+from contextvars import ContextVar
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+ACTIVE_STARTUP_VERSION = 1
+_verification = ContextVar('startup_verification_boundary',default=None)
 spec = importlib.util.spec_from_file_location("startup_control", ROOT / "src/sap_business_agents_platform/startup_control.py")
-control = importlib.util.module_from_spec(spec); spec.loader.exec_module(control)
+control = importlib.util.module_from_spec(spec)
+exec(compile(Path(spec.origin).read_bytes(),spec.origin,'exec'),control.__dict__)
+env_spec = importlib.util.spec_from_file_location('startup_environment', ROOT / 'src/sap_business_agents_platform/runtime_environment.py')
+environments = importlib.util.module_from_spec(env_spec)
+exec(compile(Path(env_spec.origin).read_bytes(),env_spec.origin,'exec'),environments.__dict__)
 LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def verify_environment(binding):
+    """Reuse bytes only in this synchronous preparation/maintenance boundary."""
+    scope=_verification.get()
+    key=('environment',control.digest(binding))
+    if scope is None or key not in scope:
+        environments.verify(binding)
+        if scope is not None:scope[key]=True
 # Read-only validators referenced relative to the loaded platform package.
 # Business data, mutable catalogs, credentials and SDK installations stay at
 # their explicit existing locations; only these reviewed code resources freeze.
 SOURCE_RESOURCES = (
+    'scripts/Start-SAPBusinessAgents.ps1',
     'config/sap-source-semantics.json',
     'config/runtime-evidence-bindings.json',
     'config/agent-presentation-contract.json',
@@ -41,13 +58,12 @@ def settings_for(root):
     # Importing the package solely for Settings eagerly imports the complete
     # FastAPI app via __init__.py. Load the same pure configuration module
     # directly instead; from_env and all its checks remain unchanged.
-    filename = root / 'src/sap_business_agents_platform/config.py'
-    if not filename.exists(): filename = ROOT / 'src/sap_business_agents_platform/config.py'
+    filename = ROOT / 'src/sap_business_agents_platform/config.py'
     module_name = '_sapba_startup_settings'
     definition = importlib.util.spec_from_file_location(module_name, filename)
     module = importlib.util.module_from_spec(definition)
     sys.modules[module_name] = module
-    definition.loader.exec_module(module)
+    exec(compile(filename.read_bytes(),str(filename),'exec'),module.__dict__)
     return module.Settings.from_env(root)
 
 
@@ -61,7 +77,7 @@ def walk_files(directory, *, prune_names=(), prune_paths=()):
             yield base / name
 
 
-def source_manifest(root):
+def source_manifest(root, environment=None):
     files = {}
     for directory in ("src", "scripts"):
         for path in walk_files(root / directory, prune_names={'__pycache__'}):
@@ -79,13 +95,21 @@ def source_manifest(root):
     hashes = hash_files(files.values())
     files = {name: hashes[path] for name, path in files.items()}
     dependencies = {}
-    for name in ("pyproject.toml", "requirements.lock", "uv.lock", ".venv/pyvenv.cfg"):
+    for name in ("pyproject.toml", "requirements.lock", "uv.lock"):
         if (root / name).exists(): dependencies[name] = control.sha(root / name)
-    for path in (root / ".venv/Lib/site-packages").glob("*.dist-info/*"):
-        if path.name in {"METADATA", "RECORD"}:
-            dependencies[path.relative_to(root).as_posix()] = control.sha(path)
-    dependencies["interpreter"] = {"path": sys.executable, "sha256": control.sha(sys.executable), "version": sys.version,
-        "base_sha256": control.sha(getattr(sys, '_base_executable', sys.executable))}
+    if environment is None:
+        current = root/'.local-data/startup-api-current.json'
+        if current.exists():
+            environment = json.loads(current.read_text(encoding='utf-8-sig')).get('environment')
+    if environment:
+        verify_environment(environment)
+        dependencies['environment'] = environment
+    else:
+        if (root/'.venv/pyvenv.cfg').exists():dependencies['.venv/pyvenv.cfg']=control.sha(root/'.venv/pyvenv.cfg')
+        for path in (root/'.venv/Lib/site-packages').glob('*.dist-info/*'):
+            if path.name in {'METADATA','RECORD'}:dependencies[path.relative_to(root).as_posix()]=control.sha(path)
+        dependencies['interpreter']={'path':sys.executable,'sha256':control.sha(sys.executable),'version':sys.version,
+            'base_sha256':control.sha(getattr(sys,'_base_executable',sys.executable))}
     # Bind launch-time configuration without copying any credential bytes.
     from dataclasses import asdict
     settings = settings_for(root)
@@ -127,8 +151,30 @@ def approved_target(root, requested):
             raise ValueError('invalid pointer')
         manifest = json.loads((archive/'manifest.json').read_text(encoding='utf-8-sig'))
         verify_archive(archive, manifest)
-        if manifest['digest'] != key or manifest.get('dependencies') != requested.get('dependencies'):
-            raise ValueError('runtime dependencies changed')
+        if manifest['digest'] != key:
+            raise ValueError('manifest pointer mismatch')
+        environment = record.get('environment') or manifest.get('dependencies', {}).get('environment')
+        if environment:
+            verify_environment(environment)
+            bound = manifest.get('dependencies', {}).get('environment')
+            if bound is not None and bound != environment:
+                raise control.StartupBlocked('startup_environment_binding_mismatch')
+            if bound is None and environments.legacy_binding(root, manifest, artifact_proofs=environment.get('artifact_proofs', ())) != environment:
+                raise control.StartupBlocked('startup_environment_binding_mismatch')
+            # Source-declared dependencies belong to the verified archive, not
+            # the dirty checkout. Live configuration must still match exactly.
+            matching = all(manifest.get('dependencies', {}).get(k) == requested.get('dependencies', {}).get(k)
+                           for k in ('startup_settings_sha256', 'configuration_sha256'))
+        else:
+            matching = manifest.get('dependencies') == requested.get('dependencies')
+        if not matching:
+            # A pip update can leave the source archive intact but change the
+            # interpreter's actual packages. Never re-label that archive or
+            # silently waive its dependency binding just to open the site.
+            blocked = control.StartupBlocked('startup_approved_dependencies_changed')
+            blocked.reason = 'installed_dependencies_differ_from_approved_release'
+            blocked.changes = manifest_changes(manifest, requested)
+            raise blocked
         metadata = json.loads((dist/'sapba-build.json').read_text(encoding='utf-8-sig'))
         if metadata.get('fingerprint') != fingerprint or not (dist/'zh/index.html').is_file() or not (dist/'index.html').is_file():
             raise ValueError('invalid site build')
@@ -155,10 +201,10 @@ def _freeze_owned(root, manifest):
         # edits and exact inventory); do not invent a weaker snapshot policy.
         sys.path.insert(0, str(ROOT / 'src'))
         from sap_business_agents_platform.runtime_validation_store import capture, relative_file
-        native = {name for name in manifest['files'] if Path(name).suffix == '.mjs'}
+        native = {name for name in manifest['files'] if Path(name).suffix in {'.mjs','.ps1'}}
         if not native <= set(SOURCE_RESOURCES):
             raise control.StartupBlocked('startup_native_resource_not_reviewed')
-        # The existing validation archive deliberately does not accept JS.
+        # The existing validation archive deliberately does not accept JS/PS.
         # Keep its policy unchanged and bind the exact reviewed native files
         # with the same path, concurrent-content and inventory checks below.
         captured = capture(root, set(manifest['files']) - native, root / '.local-data/startup-source-archives')
@@ -201,9 +247,75 @@ def verify_archive(target, manifest):
     stored = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
     if stored != manifest or control.digest({k: v for k, v in stored.items() if k != "digest"}) != manifest["digest"]:
         raise control.StartupBlocked("startup_archive_manifest_changed")
-    actual = {p.relative_to(target / "source").as_posix() for p in (target / "source").rglob("*") if p.is_file()}
+    entries = list((target/'source').rglob('*'))
+    if target.resolve()!=target or any(p.is_symlink() or (hasattr(p,'is_junction') and p.is_junction()) for p in [target,target/'source',*entries]):
+        raise control.StartupBlocked('startup_archive_link_rejected')
+    actual = {p.relative_to(target / "source").as_posix() for p in entries if p.is_file()}
     if actual != set(manifest["files"]) or any(control.sha(target / "source" / name) != value for name, value in manifest["files"].items()):
         raise control.StartupBlocked("startup_archive_changed")
+
+
+def bytecode_inventory(archive):
+    """Inspect untrusted cache bytes, never import/execute or certify them."""
+    manifest=json.loads((archive/'manifest.json').read_text(encoding='utf-8-sig'))
+    if control.digest({k:v for k,v in manifest.items() if k!='digest'})!=manifest['digest']:
+        raise control.StartupBlocked('startup_archive_manifest_changed')
+    source=archive/'source';entries=list(source.rglob('*'))
+    if archive.resolve()!=archive or any(p.is_symlink() or (hasattr(p,'is_junction') and p.is_junction()) for p in [archive,source,*entries]):
+        raise control.StartupBlocked('startup_archive_link_rejected')
+    actual={p.relative_to(source).as_posix():p for p in entries if p.is_file()}
+    if any(name not in actual or control.sha(actual[name])!=expected for name,expected in manifest['files'].items()):
+        raise control.StartupBlocked('startup_archive_original_changed')
+    caches=[]
+    for name in sorted(actual.keys()-manifest['files'].keys()):
+        path=actual[name];match=re.fullmatch(r'(.+)\.'+re.escape(sys.implementation.cache_tag)+r'(?:\.opt-[12])?\.pyc',path.name)
+        original=path.parent.parent/(match[1]+'.py') if match and path.parent.name=='__pycache__' else None
+        raw=path.read_bytes()
+        if (not original or original.relative_to(source).as_posix() not in manifest['files']
+                or len(raw)<16 or raw[:4]!=importlib.util.MAGIC_NUMBER
+                or int.from_bytes(raw[4:8],'little') not in {0,1,3}):
+            raise control.StartupBlocked('startup_archive_nonstandard_extra_file')
+        info=path.stat()
+        caches.append({'path':name,'sha256':__import__('hashlib').sha256(raw).hexdigest(),
+                       'size':len(raw),'created_ns':info.st_ctime_ns,'modified_ns':info.st_mtime_ns})
+    return manifest,caches
+
+
+def recover_bytecode(args):
+    root=args.root.resolve();api,site,_=active_records(root)
+    archive=Path(args.archive or api['archive'])
+    if archive!=Path(api['archive']):raise control.StartupBlocked('startup_recovery_not_active_archive')
+    data=settings_for(root).data_root;marker=data/'startup-maintenance.json'
+    log=root/'.local-data/startup'/('bytecode-recovery-'+uuid.uuid4().hex)
+    log.mkdir(parents=True)
+    with control.file_lock(data/'deployment.lock',wait=60),control.file_lock(data/'startup-admission.lock'):
+        if marker.exists() or (root/'.local-data/startup/pending-switch.json').exists():
+            raise control.StartupBlocked('startup_switch_recovery_required')
+        if control.activity(data) or jobs_pending(root):raise control.StartupBlocked('startup_recovery_busy')
+        ports=listeners();assert_writers(root,[ports[p] for p in (args.port,args.site_port) if p in ports])
+        manifest,caches=bytecode_inventory(archive)
+        control.atomic(log/'inventory.json',{'archive':str(archive),'source_digest':manifest['digest'],'files':caches})
+        control.atomic(marker,{'pid':os.getpid(),'kind':'bytecode_recovery','log':str(log)})
+        moved=[]
+        try:
+            if control.activity(data) or jobs_pending(root):raise control.StartupBlocked('startup_recovery_busy')
+            if bytecode_inventory(archive)!=(manifest,caches):raise control.StartupBlocked('startup_recovery_source_changed')
+            for item in caches:
+                origin=archive/'source'/item['path'];destination=log/'quarantine'/item['path']
+                if control.sha(origin)!=item['sha256']:raise control.StartupBlocked('startup_recovery_source_changed')
+                destination.parent.mkdir(parents=True,exist_ok=True);origin.replace(destination)
+                moved.append(item['path'])
+                control.atomic(log/'result.json',{'status':'recovering','moved':moved})
+            verify_archive(archive,manifest)
+            result={'status':'completed','archive':str(archive),'source_digest':manifest['digest'],
+                    'quarantined':len(moved),'manifest_changed':False,'log':str(log)}
+            control.atomic(log/'result.json',result)
+            print(json.dumps(result),flush=True)
+            return result
+        except BaseException:
+            control.atomic(log/'result.json',{'status':'failed','moved':moved,'trust_granted':False})
+            raise
+        finally:marker.unlink(missing_ok=True)
 
 
 def request(url, timeout=2):
@@ -241,6 +353,24 @@ def stop_owned(saved, root):
     subprocess.run(["taskkill.exe", "/PID", str(saved["ProcessId"]), "/T", "/F"], capture_output=True, check=True)
 
 
+def listener_belongs_to(pid, saved, root):
+    """A venv launcher can own a child listener; require the original creation identity."""
+    if not saved or identity(saved['ProcessId'],root)!=saved:return False
+    if pid==saved['ProcessId']:return True
+    rows=json.loads(subprocess.check_output(['powershell.exe','-NoProfile','-Command',
+        'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate | ConvertTo-Json -Compress'],text=True))
+    by_id={v['ProcessId']:v for v in rows};seen=set()
+    while pid in by_id and pid not in seen:
+        seen.add(pid);child=by_id[pid];parent=by_id.get(child['ParentProcessId'])
+        if parent is None:return False
+        c=re.search(r'Date\((\d+)',str(child.get('CreationDate')))
+        p=re.search(r'Date\((\d+)',str(parent.get('CreationDate')))
+        if not c or not p or int(p[1])>int(c[1]):return False
+        if parent['ProcessId']==saved['ProcessId']:return True
+        pid=parent['ProcessId']
+    return False
+
+
 def assert_writers(root, server_pids):
     command = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,Name,CommandLine | ConvertTo-Json -Compress"
     rows = json.loads(subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", command], text=True))
@@ -267,9 +397,23 @@ def assert_writers(root, server_pids):
         raise control.StartupBlocked('startup_other_writers_active:' + ','.join(map(str, unknown)))
 
 
-def jobs_pending(root):
+def jobs_pending(root, owner_operation=None):
     # Reuse the existing strict journal reader; never reconcile or write it.
-    sys.path.insert(0, str(root / "src"))
+    for provider in ('codex','workbuddy'):
+        directory=root/'.local-data/sdk-update-jobs'/provider
+        current=directory/'current.json'
+        if not current.exists():continue
+        try:
+            value=json.loads(current.read_bytes());operation=value['operation_id']
+            if not re.fullmatch(r'(?:update|recovery)_[a-f0-9]{32}',operation):return True
+            record=directory/(operation+'.json')
+            if record.exists():value=json.loads(record.read_bytes())
+            if value.get('operation_id')!=operation:return True
+            if owner_operation==operation:continue
+            if (value.get('status') in {'running','cleanup_pending'} or value.get('cleanup_complete') is False
+                    or value.get('switch_intent') and value.get('status')=='needs_review'):return True
+        except (OSError,ValueError,KeyError,TypeError):return True
+    sys.path.insert(0, str(ROOT / "src"))
     from sap_business_agents_platform.workbuddy_job_index import enabled, paths
     journal = root / ".local-data/runtimes/workbuddy"
     if enabled(journal):
@@ -279,8 +423,27 @@ def jobs_pending(root):
     return any((journal / "jobs").glob("*.json"))
 
 
+def release_environment(root, archive):
+    manifest = json.loads((archive/'manifest.json').read_text(encoding='utf-8-sig'))
+    binding = manifest.get('dependencies', {}).get('environment')
+    if binding is None:
+        for name in ('startup-api-current.json', 'startup-api-previous.json'):
+            path = root/'.local-data'/name
+            if path.exists():
+                record = json.loads(path.read_text(encoding='utf-8-sig'))
+                if record.get('source_digest') == manifest['digest']:
+                    binding = record.get('environment')
+                    if binding:
+                        if environments.legacy_binding(root, manifest, artifact_proofs=binding.get('artifact_proofs', ())) != binding:
+                            raise control.StartupBlocked('startup_environment_binding_mismatch')
+                        break
+    if binding: verify_environment(binding)
+    return binding
+
+
 def launch_api(root, archive, port, log):
-    args = [sys.executable, "-I", "-B", str(archive / "source/scripts/service-startup.py"), "serve", "--root", str(root), "--port", str(port), "--archive", str(archive)]
+    binding = release_environment(root, archive)
+    args = [binding['python'] if binding else sys.executable, "-I", "-B", str(archive / "source/scripts/service-startup.py"), "serve", "--root", str(root), "--port", str(port), "--archive", str(archive)]
     return spawn(args, root, log / "platform")
 
 
@@ -289,7 +452,7 @@ def spawn(args, cwd, log):
     with log.with_suffix(".stdout.log").open("ab") as stdout, log.with_suffix(".stderr.log").open("ab") as stderr:
         # Local preview must use the same root URL as the frozen local build;
         # Astro otherwise falls back to the public GitHub Pages base path.
-        child_environment = {**os.environ, 'PUBLIC_SITE_BASE': '/'}
+        child_environment = {**os.environ, 'PUBLIC_SITE_BASE': '/', 'PYTHONDONTWRITEBYTECODE': '1'}
         return subprocess.Popen(args, cwd=cwd, stdout=stdout, stderr=stderr, env=child_environment, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
@@ -348,6 +511,11 @@ def bind_frozen_imports(archive, manifest):
 
 def serve(args):
     manifest = json.loads((args.archive / "manifest.json").read_text())
+    environment = release_environment(args.root, args.archive)
+    # release_environment just verified these bytes in this same synchronous
+    # boundary. Retain the interpreter check without hashing every package twice.
+    if environment and Path(sys.executable).resolve()!=Path(environment['python']).resolve():
+        raise environments.EnvironmentError('runtime_environment_interpreter_mismatch')
     bind_frozen_imports(args.archive, manifest)
     from sap_business_agents_platform import startup_control
     from sap_business_agents_platform.cli import configure_internal_api_url
@@ -355,8 +523,11 @@ def serve(args):
     from sap_business_agents_platform.app import create_app
     configure_internal_api_url("127.0.0.1", args.port)
     verify_loaded_sources(args.archive, manifest)
-    startup_control._binding = {"verified": True, "source_digest": manifest["digest"], "boot_id": uuid.uuid4().hex, "pid": os.getpid(),
+    startup_control._binding = {"verified": True, "source_digest": manifest["digest"], "boot_id": uuid.uuid4().hex, "pid": os.getpid(), "api_port": args.port,
         "required_imports": {'scripts.run_three_stage_acceptance': manifest['files']['scripts/run_three_stage_acceptance.py']}}
+    if environment:
+        startup_control._binding['environment_digest'] = environment['digest']
+        startup_control._binding['python'] = environment['python']
     import uvicorn
     settings = Settings.from_env(args.root)
     constructed = time.monotonic()
@@ -376,8 +547,14 @@ def serve(args):
 
 
 def _ensure(args):
+    token=_verification.set({})
+    try:return _ensure_core(args)
+    finally:_verification.reset(token)
+
+
+def _ensure_core(args):
     root = args.root.resolve(); data = root / ".local-data"
-    activity_root = settings_for(root).data_root
+    activity_root = data
     log = args.attempt
     began = args.started; phases = args.phases
     def phase(name, action):
@@ -387,7 +564,40 @@ def _ensure(args):
         finally:
             phases[name] = round((time.monotonic() - start) * 1000, 2)
             print(f"[SAPBusinessAgents] {name}: {phases[name]} ms", flush=True)
-    manifest = phase("source_and_dependency_fingerprint", lambda: source_manifest(root))
+    frozen = getattr(args, 'frozen_record', None)
+    def pending_jobs():
+        return jobs_pending(root,getattr(args,'operation',None)) if frozen else jobs_pending(root)
+    def target_manifest():
+        if not frozen: return source_manifest(root)
+        archive = Path(frozen['archive'])
+        value = json.loads((archive/'manifest.json').read_bytes())
+        if archive.resolve() != root/'.local-data/startup-releases'/value['digest'] or value['digest'] != frozen['source_digest']:
+            raise control.StartupBlocked('startup_target_binding_invalid')
+        verify_archive(archive, value)
+        if value['dependencies'].get('environment') != frozen['environment']:
+            raise control.StartupBlocked('startup_environment_binding_mismatch')
+        verify_environment(frozen['environment'])
+        if getattr(args,'active_start',False) or getattr(args,'code_activation',False):
+            from dataclasses import asdict
+            settings = settings_for(root)
+            live_settings = control.digest({key:str(item) for key,item in asdict(settings).items()})
+            hashes = [control.sha(path) for path in (root/'.env',settings.sap_env_file) if path and path.is_file()]
+            if (value['dependencies'].get('startup_settings_sha256') != live_settings
+                    or value['dependencies'].get('configuration_sha256',[]) != hashes):
+                raise control.StartupBlocked('startup_approved_configuration_changed')
+        if getattr(args, 'check_operation', None): args.check_operation()
+        return value
+    def target_site():
+        if not frozen: return site_fingerprint(root, args.site_port, args.port)
+        site = json.loads((data/'site-builds/current.json').read_text(encoding='utf-8-sig'))
+        if site['fingerprint'] != getattr(args,'base_site',args.frozen_site)['fingerprint']:
+            raise control.StartupBlocked('startup_site_binding_changed')
+        return args.frozen_site['fingerprint']
+    pending_path = data/'startup/pending-switch.json'
+    if pending_path.exists():
+        raise control.StartupBlocked('startup_switch_recovery_required')
+    manifest = phase("source_and_dependency_fingerprint", target_manifest)
+    activity_root = settings_for(root).data_root
     requested_manifest = manifest
     url = f"http://127.0.0.1:{args.port}"
     existing = None
@@ -396,7 +606,7 @@ def _ensure(args):
     same = bool(existing and valid_health(existing) and valid_binding(existing, manifest['digest']))
     changed = args.restart or not same
     # Always inspect frontend source content; a healthy old page is not current.
-    fingerprint = phase("site_fingerprint", lambda: site_fingerprint(root, args.site_port, args.port))
+    fingerprint = phase("site_fingerprint", target_site)
     pointer_path = data / "site-builds/current.json"
     pointer = json.loads(pointer_path.read_text(encoding="utf-8-sig")) if pointer_path.exists() else {}
     requested_fingerprint = fingerprint
@@ -405,20 +615,20 @@ def _ensure(args):
     key = deferral_key(root, manifest, fingerprint)
     # A negative cache only defers an unapproved candidate. It cannot certify
     # any release; cold starts still audit the deployed target under the barrier.
-    if not args.dev and deferred_path.exists():
+    if not frozen and not args.dev and deferred_path.exists():
         try:
             saved = json.loads(deferred_path.read_text(encoding='utf-8-sig'))
             if saved.get('key') == key:
                 candidate = approved_target(root, requested_manifest)
                 if saved.get('approved_source_digest') == candidate['manifest']['digest']:
                     deferred = candidate
-        except (OSError, ValueError): pass
+        except (OSError, ValueError, control.StartupBlocked): pass
     if changed and deferred is None and not args.reuse_only:
-        archive = phase('freeze_source', lambda: freeze(root, manifest))
+        archive = Path(frozen['archive']) if frozen else phase('freeze_source', lambda: freeze(root, manifest))
         try:
             phase('admission_preflight', lambda: check_admission(root, archive))
         except control.StartupBlocked as exc:
-            if str(exc) != 'workbuddy_sdk_integration_required' or args.dev:
+            if str(exc) != 'workbuddy_sdk_integration_required' or args.dev or frozen:
                 raise
             deferred = approved_target(root, requested_manifest)
             control.atomic(deferred_path, {'key': key, 'approved_source_digest': deferred['manifest']['digest'],
@@ -431,7 +641,7 @@ def _ensure(args):
     ports = listeners()
     try: actual_site = request(f"http://127.0.0.1:{args.site_port}/sapba-build.json", timeout=1)
     except (OSError, ValueError): actual_site = {}
-    site_changed = args.restart or args.rebuild or pointer.get("fingerprint") != fingerprint or args.site_port not in ports or pointer.get('mode', 'preview') != ('dev' if args.dev else 'preview') or (not args.dev and actual_site.get("fingerprint") != fingerprint)
+    site_changed = args.restart or getattr(args,'site_only',False) or args.rebuild or pointer.get("fingerprint") != fingerprint or args.site_port not in ports or pointer.get('mode', 'preview') != ('dev' if args.dev else 'preview') or (not args.dev and actual_site.get("fingerprint") != fingerprint)
     if args.reuse_only and (changed or site_changed):
         raise control.StartupBlocked('startup_reuse_not_proven_no_update_performed')
     if not changed and not site_changed:
@@ -439,24 +649,25 @@ def _ensure(args):
     else:
         if site_changed:
             prepare = ["node.exe", "scripts/generate-agent-catalog.mjs"] if args.dev else ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(root / "scripts/Start-SAPBusinessAgents.ps1"), "-PrepareSiteOnly", "-ApiPort", str(args.port), *(["-RebuildSite"] if args.rebuild else [])]
-            if deferred is None:
+            if deferred is None and not frozen:
                 phase("prepare_site", lambda: subprocess.run(prepare, cwd=root / 'site' if args.dev else root, check=True))
             phase("site_candidate_ready", lambda: probe_site(root, fingerprint, args, log))
         # Never hold the deployment lock while waiting for business tasks.
         while True:
-            if control.activity(activity_root) or jobs_pending(root):
+            if control.activity(activity_root) or pending_jobs():
                 print("[SAPBusinessAgents] Update pending: waiting for active tasks/cleanup; Ctrl+C leaves tasks running.", flush=True)
                 time.sleep(5); continue
             try:
                 with control.file_lock(activity_root / "deployment.lock", wait=60), control.file_lock(activity_root / "startup-admission.lock"):
-                    if control.activity(activity_root) or jobs_pending(root): continue
-                    current_manifest = phase('source_consistency', lambda: source_manifest(root))
+                    _verification.set({})  # A new lock boundary must reread actual bytes.
+                    if control.activity(activity_root) or pending_jobs(): continue
+                    current_manifest = phase('source_consistency', target_manifest)
                     if current_manifest != requested_manifest:
                         failure = control.StartupBlocked("startup_target_changed_prepare_again")
                         failure.changes = manifest_changes(requested_manifest, current_manifest)
                         raise failure
                     args.current_phase = 'site_consistency'
-                    if site_fingerprint(root, args.site_port, args.port) != requested_fingerprint:
+                    if target_site() != requested_fingerprint:
                         raise control.StartupBlocked("startup_site_source_changed_prepare_again")
                     current = listeners()
                     if any(current.get(port) != ports.get(port) for port in (args.port, args.site_port)):
@@ -488,27 +699,71 @@ def _ensure(args):
                                 raise control.StartupBlocked("startup_rollback_binding_missing")
                             # SDK admission evidence is reviewed before touching the old service.
                             phase("admission_evidence", lambda: check_admission(root, archive))
+                        environment = manifest.get('dependencies', {}).get('environment')
+                        if changed and environment is None and (root/'.venv/pyvenv.cfg').exists():
+                            environment = environments.legacy_binding(root, manifest)
+                        if previous and not previous.get('environment') and (root/'.venv/pyvenv.cfg').exists():
+                            old_manifest = json.loads((Path(previous['archive'])/'manifest.json').read_bytes())
+                            previous = {**previous, 'environment': environments.legacy_binding(root, old_manifest,
+                                artifact_proofs=(environment or {}).get('artifact_proofs', ()))}
+                        if previous and previous.get('environment'):
+                            old_archive=Path(previous['archive'])
+                            verify_archive(old_archive,json.loads((old_archive/'manifest.json').read_bytes()))
+                            verify_environment(previous['environment'])
                         # Recheck after the potentially slow evidence audit too,
                         # especially when migrating a legacy API without this
                         # barrier. Never stop a task accepted during that audit.
-                        if control.activity(activity_root) or jobs_pending(root):
+                        if control.activity(activity_root) or pending_jobs():
                             raise control.StartupBlocked('startup_became_busy_retry')
+                        if frozen: target_manifest()  # Account/config can change during evidence audit.
                         ready_deadline = time.monotonic() + args.timeout
                         site_applied = False
                         api_touched = False
+                        switch = {'version':1,'phase':'prepared','owner_pid':os.getpid(),
+                                  'operation_id':getattr(args,'operation',None),'api_changed':changed,
+                                  'site_changed':site_changed,'previous':previous,'previous_site':pointer,
+                                  'target':{'archive':str(archive),'source_digest':manifest['digest'],'api_port':args.port,'site_port':args.site_port,
+                                            **({'environment':environment} if environment else {})},
+                                  'target_site':fingerprint,'owned':{str(k):v for k,v in owned.items()},
+                                  'log':str(log)}
+                        if not changed:switch['target']=previous
+                        control.atomic(pending_path, switch)
                         try:
+                            if getattr(args,'on_switch',None):args.on_switch()
                             if changed:
                                 remove_marker = False
+                                switch['phase']='stopping'; control.atomic(pending_path,switch)
                                 if args.port in owned: stop_owned(owned[args.port], root)
                                 api_touched = True
+                                switch['phase']='starting'; control.atomic(pending_path,switch)
                                 process = launch_api(root, archive, args.port, log)
+                                switch.update(phase='health',new_pid=process.pid)
+                                # Creation identity is recorded before health polling.
+                                switch['new_identity']=identity(process.pid,root)
+                                control.atomic(pending_path,switch)
                             if site_changed:
                                 remove_marker = False
                                 # The API warms concurrently with frontend startup.
-                                phase("site_switch", lambda: switch_site(root, fingerprint, args, owned.get(args.site_port), pointer, log))
+                                def site_spawned(site_process):
+                                    switch['site_new_identity']=identity(site_process.pid,root)
+                                    control.atomic(pending_path,switch)
+                                args._site_spawn_callback=site_spawned
+                                try:
+                                    phase("site_switch", lambda: switch_site(root, fingerprint, args, owned.get(args.site_port), pointer, log))
+                                finally:
+                                    del args._site_spawn_callback
                                 site_applied = True
                             if changed:
                                 phase("api_ready", lambda: wait_api(url, manifest["digest"], process, max(.1, ready_deadline-time.monotonic())))
+                                if environment:
+                                    health = request(url+'/api/health')
+                                    if health.get('startup_binding',{}).get('environment_digest')!=environment['digest']:
+                                        raise control.StartupBlocked('startup_environment_health_mismatch')
+                            if frozen:
+                                _verification.set({})  # New process and commit boundary.
+                                phase('final_consistency',target_manifest)
+                                if json.loads((data/'site-builds/current.json').read_bytes())['fingerprint']!=fingerprint:
+                                    raise control.StartupBlocked('startup_site_binding_changed')
                         except BaseException as primary:
                             rollback_errors = []
                             if site_applied and pointer.get('dist_path'):
@@ -520,19 +775,28 @@ def _ensure(args):
                             if api_touched:
                                 try:
                                     if process is not None and process.poll() is None:
-                                        subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=True); process.wait(timeout=10)
+                                        stop_owned(switch['new_identity'],root);process.wait(timeout=10)
                                     if previous:
+                                        # Rollback resolves its own interpreter, not the target's.
+                                        control.atomic(data/'startup-api-previous.json',previous)
                                         rollback = launch_api(root, Path(previous["archive"]), args.port, log / "rollback")
                                         wait_api(url, previous["source_digest"], rollback, args.timeout)
+                                        control.atomic(data/'startup-api-current.json',{**previous,'pid':rollback.pid})
                                 except BaseException as failure: rollback_errors.append('api:' + type(failure).__name__)
                             if rollback_errors:
                                 error = control.StartupBlocked('startup_rollback_incomplete'); error.rollback_errors = rollback_errors
                                 raise error from primary
                             remove_marker = True
+                            pending_path.unlink(missing_ok=True)
                             raise
                         if changed:
                             if previous: control.atomic(data / "startup-api-previous.json", previous)
-                            control.atomic(data / "startup-api-current.json", {"archive": str(archive), "source_digest": manifest["digest"], "pid": process.pid})
+                            record = {"archive": str(archive), "source_digest": manifest["digest"], "pid": process.pid, "api_port":args.port,"site_port":args.site_port,
+                                      'listener_identity':identity(listeners()[args.port],root)}
+                            if environment: record['environment'] = environment
+                            control.atomic(data / "startup-api-current.json", record)
+                        switch['phase']='committed'; control.atomic(pending_path,switch)
+                        pending_path.unlink(missing_ok=True)
                         remove_marker = True
                     finally:
                         if remove_marker: marker.unlink(missing_ok=True)
@@ -550,29 +814,212 @@ def _ensure(args):
              "site_cache": {"fingerprint": fingerprint, "reused": not site_changed, "build_duration_ms": phases.get("prepare_site", 0)}}
     state.update(update_deferred=deferred is not None, current_changes_loaded=deferred is None,
                  requested_source_digest=requested_manifest['digest'], requested_site_fingerprint=requested_fingerprint)
-    if source_manifest(root) != requested_manifest or site_fingerprint(root, args.site_port, args.port) != requested_fingerprint:
+    # New process/commit is a fresh consistency boundary. Do not reuse a
+    # pre-maintenance verification across it, or exclude it from elapsed time.
+    if not frozen and target_manifest() != requested_manifest:
         raise control.StartupBlocked("startup_changed_during_launch_not_current")
+    if frozen and getattr(args,'code_activation',False):
+        if json.loads((data/'site-builds/current.json').read_bytes())['fingerprint'] != fingerprint:
+            raise control.StartupBlocked('startup_site_binding_changed')
+    elif not frozen and target_site() != requested_fingerprint:
+        raise control.StartupBlocked('startup_site_binding_changed')
+    state['startup_mode']='active' if getattr(args,'active_start',False) else 'activation'
+    state['workspace_checked']=not bool(frozen)
+    if getattr(args,'active_start',False):state['current_changes_loaded']=None
+    state['active_release_ready']=True
+    state['total_duration_ms']=round((time.monotonic()-began)*1000,2)
     control.atomic(log / "result.json", state)
     control.atomic(data / "startup/last-attempt.json", state)
     control.atomic(data / "startup/latest.json", state)
     if deferred is None:
         deferred_path.unlink(missing_ok=True)
-    print('[SAPBusinessAgents] Ready; verified deployed release is available. Workspace update remains pending.' if deferred else '[SAPBusinessAgents] Ready; current changes are verified as loaded.', flush=True)
+    print('[SAPBusinessAgents] Ready; activated release is available. Checkout changes were not applied.' if getattr(args,'active_start',False) else '[SAPBusinessAgents] Ready; reviewed target is verified as activated.', flush=True)
     if not args.no_browser:
         import webbrowser
         webbrowser.open(f"http://127.0.0.1:{args.site_port}/zh/")
     return state
 
 
+def active_records(root):
+    """Small, non-authorizing projection of the existing two active pointers."""
+    try:
+        data = root / '.local-data'
+        api = json.loads((data/'startup-api-current.json').read_text(encoding='utf-8-sig'))
+        site = json.loads((data/'site-builds/current.json').read_text(encoding='utf-8-sig'))
+        key, fingerprint = api['source_digest'], site['fingerprint']
+        if not all(re.fullmatch('[0-9a-f]{64}', value) for value in (key, fingerprint)):
+            raise ValueError('digest')
+        archive = root/'.local-data/startup-releases'/key
+        dist = root/'.local-data/site-builds'/fingerprint/'dist'
+        if (Path(api['archive']) != archive or archive.resolve() != archive
+                or Path(site['dist_path']) != dist or dist.resolve() != dist
+                or site.get('mode', 'preview') != 'preview'):
+            raise ValueError('path')
+        manifest = json.loads((archive/'manifest.json').read_text(encoding='utf-8-sig'))
+        if manifest['digest'] != key or control.digest({k:v for k,v in manifest.items() if k!='digest'}) != key:
+            raise ValueError('manifest')
+        binding = api.get('environment')
+        if (not binding or binding['digest'] != control.digest({k:v for k,v in binding.items() if k!='digest'})
+                or manifest['dependencies'].get('environment', binding) != binding):
+            raise ValueError('environment')
+        return api, site, manifest
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise control.StartupBlocked('startup_active_binding_unavailable') from exc
+
+
+def service_identities(pids, root):
+    """One bounded inventory for hot-open ownership, not a history/writer scan."""
+    if os.name=='nt':
+        try:
+            found={pid:native_process_identity(pid) for pid in set(pids)}
+            if any(not project_service_command(v['CommandLine'],root) for v in found.values()):
+                raise control.StartupBlocked('startup_foreign_or_unknown_process')
+            return found
+        except (OSError,ValueError):
+            pass  # Unsupported/access-denied native queries never waive ownership.
+    clause = ' OR '.join('ProcessId='+str(int(pid)) for pid in set(pids))
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-Command',
+        "$p=@(Get-CimInstance Win32_Process -Filter '"+clause+"');"
+        "$p | Select-Object ProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress"],
+        capture_output=True, text=True, check=True, timeout=5)
+    values = json.loads(result.stdout) if result.stdout.strip() else []
+    values = values if isinstance(values, list) else [values]
+    found = {v['ProcessId']:v for v in values}
+    if set(found) != set(pids) or any(not v.get('CreationDate') or not project_service_command(v.get('CommandLine'), root) for v in values):
+        raise control.StartupBlocked('startup_foreign_or_unknown_process')
+    return found
+
+
+def native_process_identity(pid):
+    """Read command + creation time from Windows; no shell or mutable cache."""
+    import ctypes
+    from ctypes import wintypes as w
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.OpenProcess.argtypes=[w.DWORD,w.BOOL,w.DWORD];kernel.OpenProcess.restype=w.HANDLE
+    kernel.CloseHandle.argtypes=[w.HANDLE]
+    kernel.GetProcessTimes.argtypes=[w.HANDLE,*([ctypes.POINTER(w.FILETIME)]*4)]
+    kernel.GetProcessTimes.restype=w.BOOL
+    handle=kernel.OpenProcess(0x1000,False,int(pid))
+    if not handle:raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        creation,exit_time,user,system=(w.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(handle,*map(ctypes.byref,(creation,exit_time,user,system))):
+            raise ctypes.WinError(ctypes.get_last_error())
+        query=ctypes.WinDLL('ntdll').NtQueryInformationProcess
+        query.argtypes=[w.HANDLE,w.ULONG,ctypes.c_void_p,w.ULONG,ctypes.POINTER(w.ULONG)]
+        query.restype=w.LONG
+        needed=w.ULONG()
+        query(handle,60,None,0,ctypes.byref(needed))
+        if not 16<=needed.value<=262144:raise ValueError('process_command_unavailable')
+        buffer=ctypes.create_string_buffer(needed.value)
+        if query(handle,60,buffer,len(buffer),ctypes.byref(needed))!=0:
+            raise ValueError('process_command_unavailable')
+        class UnicodeString(ctypes.Structure):
+            _fields_=[('Length',w.USHORT),('MaximumLength',w.USHORT),('Buffer',ctypes.c_void_p)]
+        text=ctypes.cast(buffer,ctypes.POINTER(UnicodeString)).contents
+        start=ctypes.addressof(buffer)
+        if (text.Length%2 or not text.Buffer or text.Length>text.MaximumLength
+                or text.Buffer<start or text.Buffer+text.Length>start+len(buffer)):
+            raise ValueError('process_command_unavailable')
+        command=ctypes.wstring_at(text.Buffer,text.Length//2)
+        ticks=(creation.dwHighDateTime<<32)|creation.dwLowDateTime
+        return {'ProcessId':int(pid),'CreationDate':'/Date('+str((ticks-116444736000000000)//10000)+')/',
+                'CommandLine':command}
+    finally:kernel.CloseHandle(handle)
+
+
+def same_process_identity(saved, observed):
+    if saved==observed:return True
+    if saved.get('ProcessId')!=observed.get('ProcessId') or saved.get('CommandLine')!=observed.get('CommandLine'):
+        return False
+    def birth(value):
+        match=re.fullmatch(r'/Date\((\d+)\)/',str(value))
+        if match:return int(match[1])
+        from datetime import datetime,timezone
+        parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+        if parsed.tzinfo is None:raise ValueError('process_creation_unknown')
+        delta=parsed-datetime(1970,1,1,tzinfo=timezone.utc)
+        return (delta.days*86400+delta.seconds)*1000+delta.microseconds//1000
+    try:return birth(saved.get('CreationDate'))==birth(observed.get('CreationDate'))
+    except (ValueError,TypeError,AttributeError):return False
+
+
+def ensure_active(args):
+    began = time.monotonic()
+    api, site, manifest = active_records(args.root)
+    args.phases['active_records'] = round((time.monotonic()-began)*1000, 2)
+    root = args.root; data = root/'.local-data'
+    if (data/'startup/pending-switch.json').exists() or (data/'startup-maintenance.json').exists():
+        raise control.StartupBlocked('startup_switch_recovery_required')
+    args.current_phase = 'active_services'
+    began = time.monotonic()
+    ports = listeners()
+    identities = service_identities([ports[p] for p in (args.port,args.site_port) if p in ports], root) if any(p in ports for p in (args.port,args.site_port)) else {}
+    health = None; served = None
+    if args.port in ports:
+        try: health = request(f'http://127.0.0.1:{args.port}/api/health', timeout=2)
+        except (OSError,ValueError): pass
+    if args.site_port in ports:
+        try: served = request(f'http://127.0.0.1:{args.site_port}/sapba-build.json', timeout=2)
+        except (OSError,ValueError): pass
+    api_ok = bool(health and valid_health(health) and valid_binding(health,api['source_digest'])
+                  and health['startup_binding'].get('environment_digest')==api['environment']['digest']
+                  and health['startup_binding'].get('pid')==ports.get(args.port))
+    site_ok = bool(served and served.get('fingerprint')==site['fingerprint'])
+    if args.port in ports and not api_ok and not args.restart:
+        raise control.StartupBlocked('startup_running_binding_unconfirmed_use_explicit_restart')
+    if args.site_port in ports and not site_ok and not (args.restart or getattr(args,'site_only',False)):
+        raise control.StartupBlocked('startup_frontend_binding_unconfirmed_use_explicit_restart')
+    # Saved creation identities are checked when present; legacy records are
+    # never silently renewed and still require command ownership + boot binding.
+    for port, record in ((args.port,api),(args.site_port,site)):
+        saved = record.get('listener_identity')
+        if saved and port in ports and not same_process_identity(saved,identities[ports[port]]):
+            raise control.StartupBlocked('startup_process_identity_changed')
+    args.phases['active_services'] = round((time.monotonic()-began)*1000, 2)
+    if api_ok and site_ok and not args.restart and not getattr(args,'site_only',False):
+        state = {'status':'completed','startup_mode':'active','active_release_ready':True,
+                 'workspace_checked':False,'current_changes_loaded':None,'api_reused':True,
+                 'source_digest':api['source_digest'],'site_fingerprint':site['fingerprint'],
+                 'phases':args.phases,'services':{'api':{'pid':ports[args.port],'healthy':True},
+                                               'site':{'pid':ports[args.site_port],'healthy':True}}}
+        return finish_attempt(args,state)
+    if args.reuse_only:
+        raise control.StartupBlocked('startup_reuse_not_proven_no_update_performed')
+    if getattr(args,'site_only',False) and not api_ok:
+        raise control.StartupBlocked('startup_site_only_requires_running_active_api')
+    args.frozen_record = api; args.frozen_site = site; args.active_start = True
+    return _ensure(args)
+
+
+def finish_attempt(args, state):
+    state['total_duration_ms'] = round((time.monotonic()-args.started)*1000,2)
+    control.atomic(args.attempt/'result.json',state)
+    control.atomic(args.root/'.local-data/startup/last-attempt.json',state)
+    control.atomic(args.root/'.local-data/startup/latest.json',state)
+    if not args.no_browser:
+        import webbrowser
+        webbrowser.open(f'http://127.0.0.1:{args.site_port}/zh/')
+    state['total_duration_ms'] = round((time.monotonic()-args.started)*1000,2)
+    control.atomic(args.attempt/'result.json',state)
+    control.atomic(args.root/'.local-data/startup/last-attempt.json',state)
+    control.atomic(args.root/'.local-data/startup/latest.json',state)
+    print('[SAPBusinessAgents] Ready; activated release is available. Checkout changes were not applied.',flush=True)
+    return state
+
+
 def ensure(args):
-    args.started = time.monotonic(); args.phases = {}; args.current_phase = "preflight"
-    args.attempt = args.root / ".local-data/startup" / (time.strftime("%Y%m%dT%H%M%S") + "-versioned-" + str(os.getpid()))
+    args.started = getattr(args,'bootstrap_started',None) or time.monotonic(); args.bootstrap_started=None
+    args.phases = {}; args.current_phase = "preflight"
+    args.attempt = args.root / ".local-data/startup" / (time.strftime("%Y%m%dT%H%M%S") + "-versioned-" + str(os.getpid())+'-'+uuid.uuid4().hex[:8])
     args.attempt.mkdir(parents=True)
     args.preparation_attempts = []
     try:
         for attempt in range(2):
             try:
-                return _ensure(args)
+                if getattr(args,'frozen_record',None) or getattr(args,'activation',False):
+                    return _ensure(args)
+                return ensure_active(args)
             except control.StartupBlocked as exc:
                 # Both checks precede the maintenance marker and any stop/switch.
                 # Unwind both locks, then freeze and validate a fresh target.
@@ -588,9 +1035,10 @@ def ensure(args):
     except BaseException as exc:
         state = {"status": "failed", "phase": args.current_phase, "phases": args.phases,
                  "total_duration_ms": round((time.monotonic()-args.started)*1000, 2),
-                 "error": str(exc) if isinstance(exc, control.StartupBlocked) else type(exc).__name__,
+                 "error": str(exc) if isinstance(exc, (control.StartupBlocked,environments.EnvironmentError)) else type(exc).__name__,
                  "rollback_errors": getattr(exc, 'rollback_errors', []),
                  "original_error": type(exc.__cause__).__name__ if exc.__cause__ else None,
+                 "reason": getattr(exc, 'reason', None),
                  "changes":getattr(exc,'changes',{}),"preparation_attempts":args.preparation_attempts}
         control.atomic(args.attempt / "result.json", state)
         control.atomic(args.root / ".local-data/startup/last-attempt.json", state)
@@ -647,7 +1095,8 @@ def check_admission(root, archive):
                "c=m.integration(s,m.environment.release()) if s.get('enabled') else {'status':'disabled'};"
                "print(json.dumps({'status':c.get('status'),'reason':c.get('reason')}));"
                "sys.exit(3 if s.get('enabled') and c.get('status')!='certified' else 0)")
-    result = subprocess.run([sys.executable, "-I", "-B", "-c", command, str(archive), str(root)],
+    binding = release_environment(root, archive)
+    result = subprocess.run([binding['python'] if binding else sys.executable, "-I", "-B", "-c", command, str(archive), str(root)],
                             capture_output=True, text=True, timeout=90)
     if result.returncode:
         try: reason = json.loads(result.stdout.strip().splitlines()[-1]).get('reason')
@@ -691,7 +1140,9 @@ def switch_site(root, fingerprint, args, owned, previous, log):
     if owned: stop_owned(owned, root)
     process = None
     try:
-        process = start(dist); wait(process, fingerprint, args.dev)
+        process = start(dist)
+        if getattr(args,'_site_spawn_callback',None):args._site_spawn_callback(process)
+        wait(process, fingerprint, args.dev)
         if previous: control.atomic(root / ".local-data/site-builds/previous.json", previous)
         control.atomic(root / ".local-data/site-builds/current.json", {"fingerprint": fingerprint, "dist_path": str(dist), "pid": process.pid, "mode": 'dev' if args.dev else 'preview'})
     except BaseException:
@@ -731,14 +1182,227 @@ def probe_site(root, fingerprint, args, log):
             process.wait(timeout=10)
 
 
+def verify_activation_configuration(root, record):
+    configuration=record['configuration']
+    for filename,expected in configuration['files'].items():
+        file=Path(filename)
+        if (control.sha(file) if file.exists() else None)!=expected:
+            raise control.StartupBlocked('sdk_update_binding_changed')
+    authpath=settings_for(root).data_root/'sdk-runtimes/authentication.json'
+    auth=json.loads(authpath.read_bytes()) if authpath.exists() else {'accounts':{}}
+    keys=('revision','binding_revision','status','authenticated','identity_digest','authentication_source','site_digest')
+    accounts={k:{n:v.get(n) for n in keys} for k,v in auth['accounts'].items()}
+    if accounts!=configuration['accounts']:raise control.StartupBlocked('sdk_update_binding_changed')
+
+
+def recover_switch(args):
+    """Explicit recovery of the original transaction; never reinstall/requery."""
+    root=args.root.resolve();data=root/'.local-data';activity_root=settings_for(root).data_root
+    path=data/'startup/pending-switch.json'
+    with control.file_lock(activity_root/'deployment.lock'), control.file_lock(activity_root/'startup-admission.lock'):
+        if not path.exists():return {'status':'nothing_pending'}
+        saved=json.loads(path.read_bytes())
+        operation=saved.get('operation_id');record=None
+        if operation:
+            if not re.fullmatch(r'update_[a-f0-9]{32}',operation):
+                raise control.StartupBlocked('sdk_update_request_invalid')
+            record_path=data/'sdk-update-jobs/codex'/(operation+'.json')
+            record=json.loads(record_path.read_bytes())
+            if record.get('target')!=saved['target'] or record.get('base',{}).get('source_digest')!=(saved.get('previous') or {}).get('source_digest'):
+                raise control.StartupBlocked('sdk_update_binding_changed')
+            verify_activation_configuration(root,record)
+        if control.activity(activity_root) or jobs_pending(root,saved.get('operation_id')):
+            raise control.StartupBlocked('startup_recovery_busy')
+        # If the owner still exists, this is not a crashed switch.
+        processes=listeners()
+        server_pids=[processes[p] for p in (args.port,args.site_port) if p in processes]
+        assert_writers(root,server_pids)
+        marker=activity_root/'startup-maintenance.json'
+        if marker.exists():
+            value=json.loads(marker.read_bytes())
+            if value.get('pid')!=saved['owner_pid']:
+                raise control.StartupBlocked('startup_recovery_owner_mismatch')
+        current=processes.get(args.port)
+        health={}
+        if current:
+            try:health=request(f'http://127.0.0.1:{args.port}/api/health')
+            except (OSError,ValueError):pass
+        target=saved['target'];previous=saved['previous']
+        healthy_target=(not saved['api_changed'] or valid_health(health) and valid_binding(health,target['source_digest'])
+                        and health.get('startup_binding',{}).get('environment_digest')==target.get('environment',{}).get('digest'))
+        if healthy_target and (not saved['site_changed'] or request(f'http://127.0.0.1:{args.site_port}/sapba-build.json').get('fingerprint')==saved['target_site']):
+            if saved['api_changed'] and not listener_belongs_to(current,saved.get('new_identity'),root):
+                raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+            if saved['site_changed'] and not listener_belongs_to(processes.get(args.site_port),saved.get('site_new_identity'),root):
+                raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+            if saved['api_changed']:
+                verify_archive(Path(target['archive']),json.loads((Path(target['archive'])/'manifest.json').read_bytes()))
+                if target.get('environment'):environments.verify(target['environment'])
+                if previous:control.atomic(data/'startup-api-previous.json',previous)
+                control.atomic(data/'startup-api-current.json',{**target,'pid':current})
+            outcome='activated'
+        else:
+            if saved['api_changed']:
+                if not previous:raise control.StartupBlocked('startup_rollback_binding_missing')
+                if current:
+                    owned=saved.get('new_identity')
+                    # A crash before a PID receipt cannot authorize stopping an
+                    # arbitrary listener, even when its health looks plausible.
+                    old=saved.get('owned',{}).get(str(args.port))
+                    if valid_health(health) and valid_binding(health,previous['source_digest']):
+                        if not listener_belongs_to(current,old,root):
+                            raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+                    else:
+                        if not listener_belongs_to(current,owned,root):raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+                        stop_owned(owned,root);current=None
+                if not current:
+                    control.atomic(data/'startup-api-previous.json',previous)
+                    process=launch_api(root,Path(previous['archive']),args.port,Path(saved['log'])/'recovery')
+                    wait_api(f'http://127.0.0.1:{args.port}',previous['source_digest'],process,args.timeout)
+                    control.atomic(data/'startup-api-current.json',{**previous,'pid':process.pid})
+                else:
+                    control.atomic(data/'startup-api-current.json',{**previous,'pid':current})
+            if saved['site_changed']:
+                prior=saved['previous_site'];pid=listeners().get(args.site_port)
+                if not prior.get('dist_path'):raise control.StartupBlocked('startup_rollback_binding_missing')
+                owned=saved.get('site_new_identity') or saved.get('owned',{}).get(str(args.site_port))
+                if pid and not listener_belongs_to(pid,owned,root):
+                    raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+                rollback_args=argparse.Namespace(**{**vars(args),'dev':prior.get('mode')=='dev'})
+                switch_site(root,prior['fingerprint'],rollback_args,owned if pid else None,{},Path(saved['log'])/'recovery')
+            outcome='rolled_back'
+        if record is not None:
+            record.update(status='completed' if outcome=='activated' else 'failed',phase=outcome,outcome=outcome,cleanup_complete=True)
+            if outcome=='rolled_back':record['error']={'code':'sdk_activation_rolled_back','phase':'recovery'}
+            control.atomic(record_path,record)
+        control.atomic(Path(saved['log'])/'recovery.json',{'outcome':outcome,'operation_id':saved.get('operation_id')})
+        path.unlink();marker.unlink(missing_ok=True)
+        return {'status':'completed','outcome':outcome}
+
+
+def activate_sdk(args):
+    """Gated independent executor. Called only by an explicitly accepted update."""
+    if not re.fullmatch(r'update_[a-f0-9]{32}',args.operation or ''):
+        raise control.StartupBlocked('sdk_update_request_invalid')
+    root=args.root.resolve();directory=root/'.local-data/sdk-update-jobs/codex';area=directory/args.operation
+    path=directory/(args.operation+'.json')
+    record=json.loads(path.read_bytes());ticket=json.loads((area/'handoff.json').read_bytes())
+    if (record['operation_id']!=args.operation or ticket.get('digest')!=control.digest({k:v for k,v in ticket.items() if k!='digest'})
+            or any(ticket.get(k)!=record.get(k) for k in ('base','target','configuration'))):
+        raise control.StartupBlocked('sdk_activation_handoff_unconfirmed')
+    manifest=json.loads((Path(record['base']['archive'])/'manifest.json').read_bytes())
+    bind_frozen_imports(Path(record['base']['archive']),manifest)
+    from sap_business_agents_platform.sdk_activation_handoff import inventory, verify_executor
+    identity_record=verify_executor(inventory(pids=[os.getpid(),ticket['api']['pid']]),os.getpid(),ticket['api']['pid'],ticket['api'],ticket['command'])
+    control.atomic(area/'executor-ready.json',{'ticket_digest':ticket['digest'],'identity':identity_record})
+    while time.time()<ticket['expires_at']:
+        accepted_path=area/'executor-accepted.json'
+        if accepted_path.exists() and json.loads(accepted_path.read_bytes()).get('ticket_digest')==ticket['digest']:break
+        time.sleep(.1)
+    if time.time()>=ticket['expires_at'] or not (area/'executor-accepted.json').exists():return
+    accepted=json.loads((area/'executor-accepted.json').read_bytes())
+    if accepted!={'ticket_digest':ticket['digest'],'identity':identity_record}:
+        raise control.StartupBlocked('sdk_activation_handoff_unconfirmed')
+    args.frozen_record=record['target']
+    args.frozen_site=json.loads((root/'.local-data/site-builds/current.json').read_text(encoding='utf-8-sig'))
+    def check_operation():
+        verify_activation_configuration(root,record)
+        current=json.loads((root/'.local-data/startup-api-current.json').read_text(encoding='utf-8-sig'))
+        if current.get('source_digest') not in {record['base']['source_digest'],record['target']['source_digest']}:
+            raise control.StartupBlocked('sdk_update_binding_changed')
+        environments.verify(record['base']['environment'])
+    args.check_operation=check_operation
+    def on_switch():
+        record.update(status='running',phase='switching',cleanup_complete=False)
+        control.atomic(path,record)
+    args.on_switch=on_switch
+    try:
+        check_operation()
+        result=ensure(args)
+        health=request(f'http://127.0.0.1:{args.port}/api/health')
+        if (not valid_health(health) or not valid_binding(health,record['target']['source_digest'])
+                or health.get('startup_binding',{}).get('environment_digest')!=record['target']['environment']['digest']):
+            raise control.StartupBlocked('startup_environment_health_mismatch')
+        record.update(status='completed',phase='activated',outcome='activated',cleanup_complete=True,
+                      observed_versions={'sdk':record['target_version'],'environment':record['target']['environment']['digest']})
+    except BaseException as exc:
+        record.update(status='needs_review',phase='switching',error={'code':str(exc) if isinstance(exc,control.StartupBlocked) else 'sdk_activation_failed','phase':'switching'})
+    record['updated_at']=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+    control.atomic(path,record)
+
+
+def activate_code(args):
+    """Explicit tested-code handoff; receipts identify targets, never certify them."""
+    if not args.target_record:raise control.StartupBlocked('startup_activation_target_missing')
+    handoff=json.loads(args.target_record.read_text(encoding='utf-8-sig'))
+    current,site,_=active_records(args.root)
+    if handoff['base']!=current or handoff.get('base_site',site)!=site:
+        raise control.StartupBlocked('startup_activation_base_changed')
+    target=handoff['target']
+    if target.get('environment')!=current['environment']:
+        raise control.StartupBlocked('startup_code_activation_cannot_change_environment')
+    if handoff.get('tested_source_digest')!=target['source_digest']:
+        raise control.StartupBlocked('startup_activation_test_binding_missing')
+    args.frozen_record=target;args.frozen_site=handoff.get('site',site)
+    fingerprint=args.frozen_site['fingerprint']
+    if (not re.fullmatch('[0-9a-f]{64}',fingerprint)
+            or Path(args.frozen_site['dist_path'])!=args.root/'.local-data/site-builds'/fingerprint/'dist'
+            or args.frozen_site.get('mode','preview')!='preview'):
+        raise control.StartupBlocked('startup_site_binding_invalid')
+    args.base_site=site;args.code_activation=True
+    def unchanged():
+        actual=json.loads((args.root/'.local-data/startup-api-current.json').read_bytes())
+        if actual['source_digest'] not in {current['source_digest'],target['source_digest']}:
+            raise control.StartupBlocked('startup_activation_base_changed')
+    args.check_operation=unchanged
+    return ensure(args)
+
+
+def development_site(args):
+    """Explicit frontend development, never a production pointer update."""
+    api,site,_=active_records(args.root)
+    if args.site_port==api.get('site_port',4321) or args.restart or args.rebuild:
+        raise control.StartupBlocked('startup_dev_requires_separate_site_port_no_restart')
+    health=request(f'http://127.0.0.1:{args.port}/api/health')
+    if not valid_health(health) or not valid_binding(health,api['source_digest']):
+        raise control.StartupBlocked('startup_dev_requires_running_active_api')
+    if args.site_port in listeners():raise control.StartupBlocked('startup_dev_port_in_use')
+    log=args.root/'.local-data/startup'/('dev-'+uuid.uuid4().hex)
+    process=spawn(['node.exe',str(args.root/'site/node_modules/astro/bin/astro.mjs'),'dev',
+                   '--host','127.0.0.1','--port',str(args.site_port),'--ignore-lock'],args.root/'site',log/'site')
+    print('[SAPBusinessAgents] Development frontend PID '+str(process.pid)+'; activated pointers unchanged.',flush=True)
+    return process.pid
+
+
+def activate_frontend(args):
+    """An explicit rebuild is an update, not an ordinary opening of the app."""
+    current,site,_=active_records(args.root)
+    if args.restart or getattr(args,'site_only',False):
+        raise control.StartupBlocked('startup_frontend_activation_arguments_invalid')
+    subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',
+                    str(args.root/'scripts/Start-SAPBusinessAgents.ps1'),'-PrepareSiteOnly',
+                    '-RebuildSite','-ApiPort',str(args.port),'-SitePort',str(args.site_port)],check=True)
+    fingerprint=site_fingerprint(args.root,args.site_port,args.port)
+    args.frozen_record=current
+    args.frozen_site={'fingerprint':fingerprint,'dist_path':str(args.root/'.local-data/site-builds'/fingerprint/'dist'),'mode':'preview'}
+    args.base_site=site;args.code_activation=True;args.rebuild=False
+    if active_records(args.root)[:2]!=(current,site):
+        raise control.StartupBlocked('startup_activation_base_changed')
+    return ensure(args)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("ensure", "serve", "fingerprint"))
+    parser.add_argument("command", choices=("ensure", "serve", "fingerprint", "activate-code", "activate-sdk", "recover-bytecode", "recover-switch"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--site-port", type=int, default=4321)
     parser.add_argument("--timeout", type=int, default=90)
     parser.add_argument("--archive", type=Path)
+    parser.add_argument('--target-record',type=Path)
+    parser.add_argument('--started',dest='bootstrap_started',type=float,help=argparse.SUPPRESS)
+    parser.add_argument('--site-only',action='store_true')
+    parser.add_argument("--operation", help=argparse.SUPPRESS)
     parser.add_argument("--restart", action="store_true")
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
@@ -747,16 +1411,27 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "serve": serve(arguments)
+        elif arguments.command == 'activate-code': activate_code(arguments)
+        elif arguments.command == 'recover-bytecode': recover_bytecode(arguments)
+        elif arguments.command == 'activate-sdk': activate_sdk(arguments)
+        elif arguments.command == 'recover-switch': recover_switch(arguments)
         elif arguments.command == "fingerprint": print(site_fingerprint(arguments.root, arguments.site_port, arguments.port))
+        elif arguments.dev: development_site(arguments)
+        elif arguments.rebuild: activate_frontend(arguments)
         else: ensure(arguments)
-    except control.StartupBlocked as exc:
+    except (control.StartupBlocked,environments.EnvironmentError) as exc:
         print(f'[SAPBusinessAgents] Startup blocked: {exc}',file=sys.stderr)
+        if isinstance(exc,environments.EnvironmentError):
+            print('[SAPBusinessAgents] The registered Python environment no longer matches its verified binding. Keep the existing service and environment; review the external change. No new binding was granted.',file=sys.stderr)
         if str(exc) in {'startup_target_changed_prepare_again','startup_site_source_changed_prepare_again'}:
             print('[SAPBusinessAgents] Files are still changing. No service was switched. Finish saving in other windows, then run the launcher again.',file=sys.stderr)
         if str(exc) == 'startup_archive_publish_busy':
             print('[SAPBusinessAgents] Windows denied publishing frozen source after bounded retries. The staged archive was retained; no service was switched. Close tools holding startup-releases files and retry. Do not disable security software or delete running releases.',file=sys.stderr)
         if str(exc) == 'startup_archive_target_conflict':
             print('[SAPBusinessAgents] A conflicting source archive exists. It was not overwritten; no service was switched.',file=sys.stderr)
+        if str(exc) == 'startup_approved_dependencies_changed':
+            print('[SAPBusinessAgents] Installed Python dependencies differ from the approved release (for example, after an SDK update). The old dependency binding cannot be reused. Validate and activate a release against the installed packages; do not edit stored digests or downgrade automatically. No service was switched.',file=sys.stderr)
+            print('[SAPBusinessAgents] Changed dependency records: '+', '.join(getattr(exc,'changes',{}).get('dependencies',[])),file=sys.stderr)
         if getattr(arguments,'attempt',None):
             print(f'[SAPBusinessAgents] Details: {arguments.attempt / "result.json"}',file=sys.stderr)
         return 1

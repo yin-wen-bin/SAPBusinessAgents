@@ -7,7 +7,7 @@ const source = await readFile(new URL('../src/components/RunConsole.astro', impo
 const script = source.slice(source.indexOf('  const feedbackStepIndex ='), source.indexOf('  const renderIntegrationActions ='));
 
 function harness() {
-  const node = () => ({hidden: true, dataset: {}, textContent: '', replaceChildren() {}});
+  const node = () => ({hidden: true, dataset: {}, textContent: '', replaceChildren() {}, removeAttribute(name) {delete this[name];}});
   const nodes = new Map();
   const steps = Array.from({length: 4}, () => {
     const classes = new Set();

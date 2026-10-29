@@ -100,6 +100,7 @@ class RuntimeProbe(Protocol):
 
 
 class PythonPackageAdapter:
+    isolated_activation = True
     def __init__(self, *, timeout_seconds: float = 30, update_timeout_seconds: int = 300) -> None:
         self.timeout_seconds = timeout_seconds
         self.update_timeout_seconds = update_timeout_seconds
@@ -129,6 +130,8 @@ class PythonPackageAdapter:
         return latest
 
     async def update(self, definition: SDKDefinition, target_version: str) -> None:
+        if definition.provider_id == 'codex':
+            raise SDKManagerError('Use the candidate environment update.', code='sdk_controlled_activation_required')
         package_name = _validate_python_package(definition.package_name)
         _parse_version(target_version)
         await asyncio.to_thread(
@@ -155,6 +158,8 @@ class PythonPackageAdapter:
         return pipeline,bundle
 
     async def install_prepared(self, definition, prepared, *, progress):
+        if definition.provider_id == 'codex':
+            raise SDKManagerError('Use the candidate environment update.', code='sdk_controlled_activation_required')
         pipeline,bundle=prepared
         return await asyncio.to_thread(pipeline.install,bundle,progress)
 
@@ -318,6 +323,8 @@ class SDKManager:
         self._recover_workbuddy_update()
         from .workbuddy_online_update import OnlineUpdate
         self.online_update = OnlineUpdate(self)
+        from .codex_activation import CodexActivation
+        self.codex_activation = CodexActivation(self)
 
     def _recover_workbuddy_update(self):
         """Existing diagnostic receipts can block a repeat, never authorize it."""
@@ -818,11 +825,27 @@ class SDKManager:
             self._persist_runtime_config()
         return self._snapshot(definition)
 
-    async def update(self, sdk_id: str, *, expected_target_version: str | None = None) -> dict[str, Any]:
+    async def recover_update(self, sdk_id: str, parent_id: str, *, expected_target_version: str | None = None, retry_of: str | None = None):
+        definition = self._get_sdk(sdk_id)
+        if definition.provider_id == 'codex':
+            if retry_of is not None:raise SDKManagerError('Original operation required.',code='sdk_update_request_conflict')
+            return await self.codex_activation.recover(definition,parent_id,expected_target_version)
+        if sdk_id != 'codebuddy-agent-sdk':
+            raise SDKManagerError('Recovery is not supported for this SDK.', code='sdk_update_recovery_unsupported')
+        return await self.online_update.submit_recovery(definition, parent_id, expected_target_version, retry_of=retry_of)
+
+    async def update(self, sdk_id: str, *, expected_target_version: str | None = None, request_id: str | None = None) -> dict[str, Any]:
         definition=self._get_sdk(sdk_id)
         provider_id=definition.provider_id
         if provider_id=='workbuddy':
-            return await self.online_update.submit(definition, expected_target_version or self._state[sdk_id].get('latest_version'))
+            return await self.online_update.submit(definition, expected_target_version or self._state[sdk_id].get('latest_version'),
+                                                   **({'request_id':request_id} if request_id is not None else {}))
+        if provider_id=='codex' and getattr(self.adapters[definition.ecosystem],'isolated_activation',False):
+            target=expected_target_version or self._state[sdk_id].get('latest_version')
+            if not target:
+                await self._check_version_unlocked(definition,legacy=False)
+                target=self._state[sdk_id].get('latest_version')
+            return await self.codex_activation.submit(definition,target,request_id)
         if provider_id=='codex' and callable(getattr(self.adapters[definition.ecosystem],'prepare_update',None)):
             return await self._update_staged(definition)
         if self.authentication_service:
@@ -833,6 +856,9 @@ class SDKManager:
 
     def maintenance_status(self, provider_id):
         definition=self._get_provider(provider_id)
+        if provider_id=='codex' and hasattr(self,'codex_activation'):
+            recorded=self.codex_activation.status()
+            if recorded is not None:return recorded
         with self._updates_lock:
             return _copy_json(self._updates.get(definition.sdk_id))
 

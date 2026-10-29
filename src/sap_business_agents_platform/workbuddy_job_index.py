@@ -6,8 +6,11 @@ until an explicit recovery with stopped-writer clearance; never guess success.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import stat
 import time
+import uuid
 from pathlib import Path
 
 from .workbuddy_record_io import record_lock, read_record
@@ -141,6 +144,126 @@ def write(path, value, *, deadline=None, new=False):
                 index['entries'].pop(path.name, None)
             index['dirty'] = None
             _store(root, index, deadline=deadline)
+
+
+def _linked(path):
+    try:
+        value = path.lstat()
+    except FileNotFoundError:
+        return False
+    return (stat.S_ISLNK(value.st_mode)
+            or bool(getattr(value, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)))
+
+
+def completed_job_path(root, task_id):
+    """Construct a task path without following a substituted jobs directory."""
+    from .workbuddy_environment import WorkBuddyError, digest
+    if not isinstance(task_id, str) or not task_id:
+        raise WorkBuddyError('workbuddy_job_import_invalid')
+    root = Path(root).resolve()
+    directory = root / 'jobs'
+    path = directory / (digest(task_id) + '.json')
+    for candidate in (directory, path, path.with_name(path.name + '.read-write.lock')):
+        # Reject the reparse point itself. Comparing resolve() output while a
+        # peer atomically publishes a file can spuriously fail on Windows.
+        if _linked(candidate):
+            raise WorkBuddyError('workbuddy_job_import_invalid')
+    return path
+
+
+def _atomic_bytes_owned(path, raw, *, deadline=None):
+    """Publish the checked bytes; JSON serialization would change evidence SHA."""
+    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with temporary.open('xb') as stream:
+            stream.write(raw)
+        for attempt in range(3):
+            try:
+                os.replace(temporary, path)
+                return
+            except OSError as error:
+                delay = (0.01, 0.02)[min(attempt, 1)]
+                if (getattr(error, 'winerror', None) not in {32, 33} or attempt == 2
+                        or deadline is not None and time.monotonic() + delay >= deadline):
+                    raise
+                time.sleep(delay)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _import_coordination_paths(root):
+    from .workbuddy_environment import WorkBuddyError
+    for path in (marker(root), _path(root), _path(root).with_name(_path(root).name + '.read-write.lock')):
+        if _linked(path):
+            raise WorkBuddyError('workbuddy_job_import_invalid')
+
+
+def completed_job_bytes(root, task_id, *, deadline=None):
+    """Read one source snapshot under index -> job locks, never across roots."""
+    from .workbuddy_environment import WorkBuddyError
+    root = Path(root).resolve()
+    path = completed_job_path(root, task_id)
+    _import_coordination_paths(root)
+    with record_lock(_path(root), deadline=deadline):
+        index = _load(root) if enabled(root) else None
+        with record_lock(path, deadline=deadline):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('completed job snapshot deadline exceeded')
+            completed_job_path(root, task_id)
+            if index is not None and path.name in index['entries']:
+                raise WorkBuddyError('workbuddy_job_import_conflict')
+            return path.read_bytes()
+
+
+def import_completed_job(root, raw_bytes, expected_task_id, expected_sha256, *, deadline=None):
+    """Idempotently import one terminal model proof without weakening write().
+
+    Take the index lock even for a legacy destination so an explicit index
+    migration cannot interleave between selecting the mode and taking the job
+    lock. Only the existing migration/maintenance path can create an index.
+    """
+    from .workbuddy_environment import WorkBuddyError
+    if (not isinstance(raw_bytes, bytes) or not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+            or any(c not in '0123456789abcdef' for c in expected_sha256)
+            or hashlib.sha256(raw_bytes).hexdigest() != expected_sha256):
+        raise WorkBuddyError('workbuddy_job_import_invalid')
+    try:
+        value = json.loads(raw_bytes.decode('utf-8'))
+    except (UnicodeError, ValueError):
+        raise WorkBuddyError('workbuddy_job_import_invalid') from None
+    if (not isinstance(value, dict) or value.get('task_id') != expected_task_id
+            or value.get('operation') != 'model_check' or value.get('status') != 'completed'
+            or value.get('cleanup_complete') is not True):
+        raise WorkBuddyError('workbuddy_job_import_invalid')
+    root = Path(root).resolve()
+    path = completed_job_path(root, expected_task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _import_coordination_paths(root)
+    with record_lock(_path(root), deadline=deadline):
+        index = _load(root) if enabled(root) else None
+        with record_lock(path, deadline=deadline):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('completed job import deadline exceeded')
+            completed_job_path(root, expected_task_id)
+            if index is not None and path.name in index['entries']:
+                raise WorkBuddyError('workbuddy_job_import_conflict')
+            if path.exists():
+                if not path.is_file() or path.read_bytes() != raw_bytes:
+                    raise WorkBuddyError('workbuddy_job_import_conflict')
+                return 'already_present'
+            if index is not None:
+                index.update(dirty=path.name, revision=index['revision'] + 1)
+                _store(root, index, deadline=deadline)
+            _atomic_bytes_owned(path, raw_bytes, deadline=deadline)
+            if index is not None:
+                # Terminal evidence never becomes an unfinished business job.
+                index['dirty'] = None
+                _store(root, index, deadline=deadline)
+            return 'created'
 
 
 def claim(root, binding, *, deadline):

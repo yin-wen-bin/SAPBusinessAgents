@@ -72,6 +72,56 @@ class AgentDraftService:
 
     def source_eligibility(self, run_id: str, session_id: str | None = None) -> str | None:
         """One conversion gate shared by API creation and history summaries."""
+        return self.source_projection(run_id, session_id)["draft_blocker"]
+
+    def source_projection(self, run_id: str, session_id: str | None = None) -> dict[str, Any]:
+        from .pending_draft_source import PendingSourceError
+        projection = {"can_create_draft": False, "draft_creation_mode": None, "draft_warnings": []}
+        try:
+            review = self._pending_source(run_id, session_id)
+            if review:
+                return {**projection, "can_create_draft": True, "draft_creation_mode": "needs_review",
+                        "draft_warnings": review["evidence_gaps"], "draft_blocker": None}
+        except PendingSourceError as exc:
+            return {**projection, "draft_blocker": exc.code}
+        except (KeyError, DraftError, ManifestError, OSError, ValueError, TypeError):
+            return {**projection, "draft_blocker": "invalid_execution_plan"}
+        blocker = self._standard_source_eligibility(run_id, session_id)
+        return {**projection, "can_create_draft": blocker is None, "draft_blocker": blocker,
+                "draft_creation_mode": "standard" if blocker is None else None}
+
+    def _pending_source(self, run_id: str, session_id: str | None = None) -> dict[str, Any] | None:
+        """Only the new incomplete-result path requires an accepted, audited source."""
+        from .pending_draft_source import PendingSourceError, audit
+        run = self.store.get_run(run_id)
+        if (run.mode != RunMode.free_query or run.status not in {RunStatus.completed, RunStatus.inconclusive}
+                or not run.result or (run.status == RunStatus.completed
+                    and run.result.completeness.source_complete and run.result.completeness.business_complete
+                    and not run.result.completeness.missing_evidence)):
+            return None
+        linked = self.store.get_free_query_session_by_run(run_id)
+        if not session_id and linked:
+            session_id = linked["session_id"]
+        if not session_id:
+            return None  # Unconfirmed legacy runs retain their strict old gate.
+        session = self.store.get_free_query_session(session_id)
+        item = self.store.get_free_query_iteration(session_id, session["current_iteration"])
+        if (session.get("status") not in {"satisfied", "draft_created"}
+                or item["run_id"] != run_id or self.store.active_free_query_feedback_request(session_id)):
+            raise PendingSourceError("confirmed_source_required")
+        with self.store._connect() as db:
+            last_feedback = db.execute("SELECT status FROM free_query_feedback_requests WHERE session_id=? AND base_iteration=? ORDER BY created_at DESC,feedback_request_id DESC LIMIT 1",
+                                       (session_id, session["current_iteration"])).fetchone()
+        if last_feedback and last_feedback[0] not in {"completed", "iteration_created", "new_session_required"}:
+            raise PendingSourceError("confirmed_source_required")
+        execution_run = self._resolve_session_execution_run(session_id, item, allow_incomplete=True)
+        plan = self._replay_plan(execution_run)
+        if not plan or _contains_write_operation(plan):
+            raise PendingSourceError("invalid_execution_plan")
+        validate_execution(_manifest_from_run("free-query-validation", str(run.query or "SAP query"), plan, ""))
+        return audit(self.settings, self.store, session, item, run, execution_run, plan)
+
+    def _standard_source_eligibility(self, run_id: str, session_id: str | None = None) -> str | None:
         try:
             run = self.store.get_run(run_id)
             if run.mode != RunMode.free_query or run.status != RunStatus.completed:
@@ -113,6 +163,17 @@ class AgentDraftService:
     ) -> DraftRecord:
         context = self.history.protect(run_id=run_id) if self.history else nullcontext()
         with context:
+            from .pending_draft_source import PendingSourceError
+            try:
+                review = self._pending_source(run_id)
+            except PendingSourceError as exc:
+                raise DraftError("The confirmed source cannot be converted safely.",
+                                 code="free_query_source_ineligible", blocker=exc.code) from exc
+            if review and not (origin or {}).get("free_query_session"):
+                if origin or correction or execution_plan:
+                    raise DraftError("Use the confirmed session to create an incomplete-result scaffold.",
+                                     blocker="confirmed_source_required")
+                return await self.create_from_session(review["source_session_id"], module=module)
             return await self._create_from_run_request(run_id, correction, origin=origin,
                 execution_plan=execution_plan, module=module)
 
@@ -146,6 +207,7 @@ class AgentDraftService:
         if blocker is not None:
             raise DraftError("Only a successful latest query with a validated plan can become an Agent draft.",
                              code="free_query_source_ineligible", blocker=blocker)
+        review = self._pending_source(run_id)
         slug = f"free-query-{draft_id[-8:]}"
         draft_dir = (self.settings.draft_root / draft_id).resolve()
         if self.settings.draft_root.resolve() not in draft_dir.parents:
@@ -155,6 +217,17 @@ class AgentDraftService:
         manifest = _manifest_from_run(slug, query, draft_plan, correction)
         manifest["module"] = module or infer_catalog_module(draft_plan)
         origin = json.loads(json.dumps(origin or {}))
+        if review:
+            from .pending_draft_source import digest
+            if digest(draft_plan) != review["plan_digest"]:
+                raise DraftError("The frozen source plan changed.", blocker="invalid_execution_plan")
+            # This audit is derived from saved platform facts, never client origin.
+            origin["pending_review"] = review
+            manifest["authoring"]["source"] = "confirmed_incomplete_free_query"
+            manifest["authoring"]["pendingReview"] = review
+            manifest["summary"] = {"zh": "待完善只读草稿；来源证据不足，尚未试运行或正式验收。",
+                                   "en": "Read-only scaffold with evidence gaps; trial and formal acceptance are not tested."}
+            manifest["validation"] = {"verdict": "NOT_TESTED", "executable": False}
         if origin:
             if origin.get("workflow_draft_id") or origin.get("gap_id"):
                 manifest.setdefault("authoring", {})["workflowGap"] = {
@@ -172,8 +245,8 @@ class AgentDraftService:
         }
         author_draft = getattr(self.author, "author_draft", None)
         supports = getattr(self.author, "supports", None)
-        authoring_supported = not callable(supports) or bool(supports("author_draft"))
-        if callable(author_draft) and authoring_supported and run.thread_id:
+        authoring_supported = not review and (not callable(supports) or bool(supports("author_draft")))
+        if not review and callable(author_draft) and authoring_supported and run.thread_id:
             try:
                 pin = getattr(self.author, "pin", None)
                 provider_id = run.runtime.provider_id if run.runtime else "codex"
@@ -195,12 +268,19 @@ class AgentDraftService:
                     "The selected Agent Runtime could not author the bilingual draft content; "
                     "no draft files were written."
                 ) from exc
+        if review and self._pending_source(run_id) != review:
+            raise DraftError("The accepted source changed before creation.", blocker="confirmed_source_required")
         draft_dir.mkdir(parents=True, exist_ok=False)
         (draft_dir / "agent.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         (draft_dir / "README.md").write_text(
-            _readme(slug, query, correction), encoding="utf-8"
+            (_readme(slug, query, correction) if not review else
+             f"# {query[:80]}\n\n待完善草稿 / Draft requiring completion\n\n"
+             "用户确认不代表业务验收通过。来源、证据缺口和待办见 docs/pending-review.json。\n"
+             "User confirmation is not PASS. Review provenance, gaps and todos in docs/pending-review.json.\n"
+             "必须补齐业务输出和确定性规则，再执行试运行、正式验收与发布检查。\n"
+             "Complete business output and deterministic rules; trial, acceptance and publication gates still apply.\n"), encoding="utf-8"
         )
         (draft_dir / "content.zh.md").write_text(
             f"# {query[:80]}\n\n{authored['content_zh'].strip()}\n",
@@ -244,6 +324,8 @@ class AgentDraftService:
         )
         docs_dir = draft_dir / "docs"
         docs_dir.mkdir()
+        if review:
+            (docs_dir / "pending-review.json").write_text(json.dumps(review, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         (docs_dir / "data-contract.json").write_text(
             json.dumps(
                 {
@@ -282,10 +364,15 @@ class AgentDraftService:
         self.store.save_draft(draft)
         return self.validate(draft_id)
 
-    async def create_from_session(self, session_id: str, *, module: str | None = None) -> DraftRecord:
+    async def create_from_session(self, session_id: str, *, module: str | None = None,
+                                  expected_iteration: int | None = None, expected_result_digest: str | None = None) -> DraftRecord:
         context = self.history.protect(session_id=session_id) if self.history else nullcontext()
         with context:
             async with self._creation_locks.setdefault(f"session:{session_id}", asyncio.Lock()):
+                session = self.store.get_free_query_session(session_id)
+                if ((expected_iteration is not None and expected_iteration != session.get("accepted_iteration"))
+                        or (expected_result_digest is not None and expected_result_digest != session.get("accepted_result_digest"))):
+                    raise DraftError("The confirmed result changed; review it again.", blocker="confirmed_source_required")
                 return await self._create_from_session(session_id, module=module)
 
     async def _create_from_session(self, session_id: str, *, module: str | None) -> DraftRecord:
@@ -311,7 +398,8 @@ class AgentDraftService:
                              code="free_query_source_ineligible", blocker=blocker)
         if run.result is None:
             raise DraftError("The accepted free-query result is unavailable.")
-        execution_run = self._resolve_session_execution_run(session_id, iteration)
+        review = self._pending_source(run.run_id, session_id)
+        execution_run = self._resolve_session_execution_run(session_id, iteration, allow_incomplete=bool(review))
         execution_plan = self._replay_plan(execution_run)
         feedback_history = [
             {
@@ -341,8 +429,9 @@ class AgentDraftService:
                 "plan_digest": _content_digest(execution_plan),
                 "accepted_iteration_plan_digest": iteration.get("plan_digest"),
                 "execution_source_run_id": execution_run.run_id,
-                "runtime": session.get("runtime"),
-                "thread_id": session.get("thread_id"),
+                "runtime": ({k: (session.get("runtime") or {}).get(k) for k in
+                             ("provider_id", "sdk_id", "version", "model", "configuration_digest")} if review else session.get("runtime")),
+                "thread_id": None if review else session.get("thread_id"),
                 "expectation_statuses": [
                     expectation.get("status")
                     for item in feedback_history
@@ -367,13 +456,27 @@ class AgentDraftService:
         )
         _parameterize_session_draft(Path(draft.path), execution_plan)
         draft = self.validate(draft.draft_id)
-        self.store.update_free_query_session(
-            session_id, status="draft_created", draft_id=draft.draft_id
-        )
+        # Do not overwrite a concurrently reopened or newly accepted session.
+        # A process interruption leaves the creation reservation/package intact,
+        # so retrying this same accepted source recovers rather than regenerates.
+        with self.store._lock, self.store._connect() as db:
+            bound = db.execute("UPDATE free_query_sessions SET status='draft_created',draft_id=?,updated_at=? "
+                               "WHERE session_id=? AND status='satisfied' AND current_iteration=? "
+                               "AND accepted_iteration=? AND accepted_result_digest=?",
+                               (draft.draft_id, utc_now(), session_id, session["current_iteration"],
+                                session["accepted_iteration"], session["accepted_result_digest"])).rowcount
+        if not bound:
+            current = self.store.get_free_query_session(session_id)
+            if (current.get("draft_id") == draft.draft_id and current.get("status") == "draft_created"
+                    and current.get("accepted_iteration") == session["accepted_iteration"]
+                    and current.get("accepted_result_digest") == session["accepted_result_digest"]):
+                return draft
+            raise DraftError("The confirmed source changed while creating its draft; no new session binding was applied.",
+                             blocker="confirmed_source_required")
         return draft
 
     def _resolve_session_execution_run(
-        self, session_id: str, iteration: dict[str, Any]
+        self, session_id: str, iteration: dict[str, Any], *, allow_incomplete: bool = False
     ) -> Any:
         """Follow presentation-only lineage to the latest real query run."""
 
@@ -390,7 +493,7 @@ class AgentDraftService:
             current = source_iteration
         source_run = self.store.get_run(str(current.get("run_id") or ""))
         if (
-            source_run.status != RunStatus.completed
+            source_run.status not in ({RunStatus.completed, RunStatus.inconclusive} if allow_incomplete else {RunStatus.completed})
             or source_run.result is None
             or source_run.plan is None
         ):
@@ -473,6 +576,8 @@ class AgentDraftService:
                 _gap_contract_issues(manifest, (draft.origin or {}).get("gap_contract"))
             )
             session_origin = (draft.origin or {}).get("free_query_session")
+            if draft.origin.get("pending_review"):
+                review_issues.append("Complete business output and deterministic rules, then run trial and formal acceptance; source confirmation grants no PASS.")
             if isinstance(session_origin, dict):
                 if session_origin.get("requires_parameterization_review"):
                     review_issues.append(

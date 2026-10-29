@@ -84,7 +84,7 @@ const labels = locale === "zh" ? {
   catalogModule: "所属模块",
   continueDraft: "继续创建草稿",
   close: "取消",
-  manageDraft: "管理此草稿", retryImport: "接入管理中心", importFailed: "草稿已生成，接入管理中心失败。请重试接入。", sourceDraftReady: "草稿已生成，可接入管理中心继续编辑。",
+  manageDraft: "查看固定Agent草稿", retryImport: "接入管理中心", importFailed: "草稿已生成，接入管理中心失败。请重试接入。", sourceDraftReady: "草稿已生成，可接入管理中心继续编辑。",
   continueCorrection: "继续修正此结果",
   returnWorkflow: "返回工作流查看缺口",
   reconnect: "重新连接",
@@ -200,7 +200,9 @@ const labels = locale === "zh" ? {
     feedbackPrompt: "请说明哪些结果不正确，以及你期望系统如何核对。用户期望会与SAP证据比较，不会直接覆盖事实。",
     feedbackPlaceholder: "例如：当前只返回订单抬头，我还需要发票、清账和付款凭证证据",
     submitFeedback: "提交反馈并继续", accepting: "正在确认…", accepted: "已确认当前结果",
-    reopen: "继续修正", createDraft: "生成固定 Agent 草稿", draftCreated: "Agent草稿已生成",
+    reopen: "继续修正", createDraft: "生成固定 Agent 草稿", pendingDraft: "生成待完善草稿",
+    pendingDraftNotice: "保留 {n} 项证据缺口及后续待办；仅创建待完善草稿，不授予PASS或发布资格。",
+    draftCreated: "Agent草稿已生成",
     waiting: "请补充反馈信息", startNew: "该反馈属于另一个问题，请开始新的自由查询。",
     chips: { scope_or_filter: "查询范围不对", relationship: "业务关联不对", missing_evidence: "缺少证据", business_rule: "业务判断不对", presentation: "展示方式不对" },
     planChanged: "查询计划已变化", resultChanged: "业务结果已变化", summaryChanged: "业务说明已调整",
@@ -287,7 +289,7 @@ const labels = locale === "zh" ? {
   catalogModule: "Catalog module",
   continueDraft: "Continue creating draft",
   close: "Cancel",
-  manageDraft: "Manage this draft", retryImport: "Import into management", importFailed: "Draft generated, but management import failed. Retry the import.", sourceDraftReady: "Draft generated. Import it into management to continue editing.",
+  manageDraft: "View fixed Agent draft", retryImport: "Import into management", importFailed: "Draft generated, but management import failed. Retry the import.", sourceDraftReady: "Draft generated. Import it into management to continue editing.",
   continueCorrection: "Continue correcting this result",
   returnWorkflow: "Return to workflow gap",
   reconnect: "Reconnect",
@@ -403,7 +405,9 @@ const labels = locale === "zh" ? {
     feedbackPrompt: "Describe what is incorrect and how it should be checked. Expectations are compared with SAP evidence and never overwrite facts.",
     feedbackPlaceholder: "Example: the result only shows the order header; include invoice, clearing, and payment-document evidence",
     submitFeedback: "Submit feedback and continue", accepting: "Accepting…", accepted: "Current result accepted",
-    reopen: "Continue correcting", createDraft: "Generate fixed Agent draft", draftCreated: "Agent draft generated",
+    reopen: "Continue correcting", createDraft: "Generate fixed Agent draft", pendingDraft: "Generate draft for completion",
+    pendingDraftNotice: "Preserves {n} evidence gaps and follow-up tasks. Creates a review scaffold only, not PASS or publication eligibility.",
+    draftCreated: "Agent draft generated",
     waiting: "Provide clarification for the feedback", startNew: "This feedback is a different question. Start a new free query.",
     chips: { scope_or_filter: "Wrong query scope", relationship: "Wrong business relationship", missing_evidence: "Missing evidence", business_rule: "Wrong business judgment", presentation: "Wrong presentation" },
     planChanged: "Query plan changed", resultChanged: "Business result changed", summaryChanged: "Business explanation changed",
@@ -563,7 +567,9 @@ const labels = locale === "zh" ? {
       <button type="button" class="secondary-button" data-session-continue>{locale === 'zh' ? '继续对话' : 'Continue conversation'}</button>
       <button type="button" class="secondary-button" data-session-reopen hidden>{labels.freeQuerySession.reopen}</button>
       <button type="button" data-session-draft hidden>{labels.freeQuerySession.createDraft}</button>
+      <a class="secondary-button" data-session-draft-view hidden>{labels.manageDraft}</a>
     </div>
+    <p class="free-query-draft-blocker" data-session-draft-blocker aria-live="polite" hidden></p>
     <section class="free-query-feedback-progress" data-feedback-progress tabindex="-1" aria-live="polite" hidden>
       <div class="free-query-feedback-progress-heading">
         <strong>{labels.freeQuerySession.feedbackProgress}</strong>
@@ -647,6 +653,7 @@ const labels = locale === "zh" ? {
   <dialog class="run-draft-module-dialog" data-draft-module-dialog aria-labelledby={`run-draft-module-title-${locale}`}>
     <h2 id={`run-draft-module-title-${locale}`}>{labels.draftModuleTitle}</h2>
     <p>{labels.draftModuleHelp}</p>
+    <p data-draft-module-warning hidden></p>
     <label>{labels.catalogModule}<select data-draft-module-select>
       {['CO', 'Common', 'FI', 'MM', 'PP', 'SD'].map((module) => <option value={module} selected={module === 'Common'}>{module}</option>)}
     </select></label>
@@ -1881,6 +1888,25 @@ const labels = locale === "zh" ? {
   };
   const iterationViews = new Map();
   let iterationSessionId = null;
+  const draftConversionBlocker = (session, latest) => {
+    if (session.can_create_draft === true) return '';
+    const messages = locale === 'zh' ? {
+      query_not_successful: latest?.status === 'inconclusive'
+        ? '当前查询已结束，但业务证据仍不足。“结果符合预期”只记录用户确认，不能代替业务校验；补齐证据并完成成功查询后，才能生成固定Agent草稿。'
+        : '当前轮次尚未满足草稿生成条件，请先完成查询及反馈处理。',
+      incomplete_evidence: '当前结果的查询范围或业务证据不完整，暂不能生成固定Agent草稿。请先补齐证据。',
+      invalid_execution_plan: '当前结果缺少可验证的只读执行计划，暂不能生成固定Agent草稿。',
+      unknown: '草稿生成条件尚待核对，请重新读取页面状态。',
+    } : {
+      query_not_successful: latest?.status === 'inconclusive'
+        ? 'The query ended with insufficient business evidence. Accepting the result records your confirmation, not business validation. Complete the evidence and a successful query before generating a fixed Agent draft.'
+        : 'This round is not eligible for a draft yet. Complete the query and feedback processing first.',
+      incomplete_evidence: 'The query scope or business evidence is incomplete. Complete the evidence before generating a fixed Agent draft.',
+      invalid_execution_plan: 'The result has no verifiable read-only execution plan and cannot become a fixed Agent draft yet.',
+      unknown: 'Draft eligibility has not been confirmed. Read the page status again.',
+    };
+    return messages[session.draft_blocker] || messages.unknown;
+  };
   const renderFreeQuerySession = (session) => {
     if (currentSession?.session_id===session.session_id &&
         Number(session.current_iteration)<Number(currentSession.current_iteration)) return;
@@ -1973,12 +1999,25 @@ const labels = locale === "zh" ? {
     const latest = (session.iterations || []).find((item) => Number(item.iteration) === Number(session.current_iteration));
     const latestReviewable = latest && ["completed", "inconclusive"].includes(latest.status) && Boolean(latest.result_digest);
     const actions = root.querySelector("[data-session-actions]");
-    actions.hidden = session.status==='draft_created';
+    actions.hidden = false;
     root.querySelector("[data-session-accept]").hidden = session.status !== "reviewing" || !latestReviewable;
     root.querySelector("[data-session-reopen]").hidden = session.status !== "satisfied";
     const continueButton=root.querySelector('[data-session-continue]');
-    if(continueButton)continueButton.hidden=session.status==='satisfied';
-    root.querySelector("[data-session-draft]").hidden = session.status !== "satisfied" || session.can_create_draft === false;
+    if(continueButton)continueButton.hidden=['satisfied','draft_created'].includes(session.status);
+    const draftButton = root.querySelector('[data-session-draft]');
+    const pendingReview = session.draft_creation_mode === 'needs_review';
+    draftButton.textContent = pendingReview ? labels.freeQuerySession.pendingDraft : labels.freeQuerySession.createDraft;
+    draftButton.hidden = Boolean(session.draft_id) || session.status !== 'satisfied';
+    draftButton.disabled = session.can_create_draft !== true || draftButton.dataset.creating === 'true';
+    const blocker = root.querySelector('[data-session-draft-blocker]');
+    blocker.hidden = draftButton.hidden || (session.can_create_draft === true && !pendingReview);
+    blocker.textContent = blocker.hidden ? '' : pendingReview
+      ? labels.freeQuerySession.pendingDraftNotice.replace('{n}', String((session.draft_warnings || []).length))
+      : draftConversionBlocker(session, latest);
+    const draftView = root.querySelector('[data-session-draft-view]');
+    draftView.hidden = !session.draft_id || typeof session.managed_draft_id !== 'string' || !session.managed_draft_id;
+    if (!draftView.hidden) draftView.href = `${root.dataset.managementPath}?draft=${encodeURIComponent(session.managed_draft_id)}`;
+    else draftView.removeAttribute('href');
     renderFeedbackComposer(session,latest,latestReviewable);
     if (session.status === "draft_created" && session.draft_id) showDraftManagement({ draft_id: session.draft_id, managed_draft_id: session.managed_draft_id });
   };
@@ -2341,16 +2380,34 @@ const labels = locale === "zh" ? {
     }
   });
   let sourceDraftId = "";
+  const draftFailureMessage = (payload) => {
+    const detail = payload?.detail;
+    if (detail?.blocker === 'query_not_successful' || detail?.code === 'query_not_successful') {
+      return locale === 'zh' ? '当前查询结果尚未满足生成条件，暂不能生成固定Agent草稿。' : 'The current query result is not eligible; a fixed Agent draft cannot be generated yet.';
+    }
+    return typeof detail === 'string' && detail.trim() ? detail
+      : typeof detail?.message === 'string' && detail.message.trim() ? detail.message : labels.unavailable;
+  };
   const showDraftManagement = (payload) => {
-    sourceDraftId = String(payload.draft_id || sourceDraftId);
+    if (typeof payload.draft_id === 'string' && payload.draft_id) sourceDraftId = payload.draft_id;
+    const managedId = typeof payload.managed_draft_id === 'string' ? payload.managed_draft_id : '';
     const link = root.querySelector("[data-managed-draft-link]");
     const retry = root.querySelector("[data-import-draft]");
     const status = root.querySelector("[data-import-draft-status]");
-    link.hidden = !payload.managed_draft_id;
-    retry.hidden = Boolean(payload.managed_draft_id) || !sourceDraftId;
-    status.hidden = Boolean(payload.managed_draft_id);
-    if (payload.managed_draft_id) link.href = `${root.dataset.managementPath}?draft=${encodeURIComponent(payload.managed_draft_id)}`;
+    link.hidden = !managedId;
+    retry.hidden = Boolean(managedId) || !sourceDraftId;
+    status.hidden = Boolean(managedId);
+    if (managedId) link.href = `${root.dataset.managementPath}?draft=${encodeURIComponent(managedId)}`;
     else status.textContent = payload.management_import_status === "failed" ? labels.importFailed : labels.sourceDraftReady;
+    if (sessionId && sourceDraftId) {
+      root.querySelector('[data-session-draft]').hidden = true;
+      const view = root.querySelector('[data-session-draft-view]');
+      view.hidden = !managedId;
+      if (managedId) {
+        view.href = link.href;
+        root.querySelector('[data-session-actions]').hidden = false;
+      } else view.removeAttribute('href');
+    }
   };
   root?.querySelector("[data-import-draft]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget; button.disabled = true;
@@ -2378,8 +2435,15 @@ const labels = locale === "zh" ? {
     return groups.find(([, keywords]) => keywords.some((keyword) => content.includes(keyword)))?.[0] || "Common";
   };
   const openDraftModuleDialog = (kind, button) => {
-    pendingDraftCreation = { kind, button };
+    pendingDraftCreation = { kind, button,
+      expectedIteration: currentSession?.accepted_iteration,
+      expectedResultDigest: currentSession?.accepted_result_digest };
     const dialog = root.querySelector("[data-draft-module-dialog]");
+    const warning = dialog.querySelector('[data-draft-module-warning]');
+    if (warning) {
+      warning.hidden = kind !== 'session' || currentSession?.draft_creation_mode !== 'needs_review';
+      warning.textContent = warning.hidden ? '' : labels.freeQuerySession.pendingDraftNotice.replace('{n}', String((currentSession.draft_warnings || []).length));
+    }
     dialog.querySelector("[data-draft-module-select]").value = inferDraftModule();
     if (!dialog.open) dialog.showModal();
     dialog.querySelector("[data-draft-module-select]").focus();
@@ -2584,6 +2648,9 @@ const labels = locale === "zh" ? {
       });
       if (!response.ok) throw new Error(await response.text());
       renderFreeQuerySession(await response.json());
+      // Acceptance records user confirmation, not Factory eligibility. Read
+      // its existing GET projection before enabling draft generation.
+      await loadSession();
     } catch (error) { showAlert(String(error?.message || error)); }
     finally { button.disabled = false; }
   });
@@ -2602,10 +2669,11 @@ const labels = locale === "zh" ? {
   root?.querySelector("[data-draft-module-confirm]")?.addEventListener("click", async (event) => {
     if (!pendingDraftCreation) return;
     const confirm = event.currentTarget;
-    const { kind, button } = pendingDraftCreation;
+    const { kind, button, expectedIteration, expectedResultDigest } = pendingDraftCreation;
     const module = root.querySelector("[data-draft-module-select]").value;
     confirm.disabled = true;
     button.disabled = true;
+    button.dataset.creating = 'true';
     root.querySelector("[data-draft-module-dialog]").close();
     try {
       if (kind === "run") {
@@ -2614,23 +2682,26 @@ const labels = locale === "zh" ? {
         const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}/create-agent-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const payload = await response.json();
         if (response.ok) showDraftManagement(payload);
-        button.textContent = response.ok ? `${payload.draft_id} · ${payload.status}` : String(payload.detail?.message || payload.detail || "Draft failed");
+        if (response.ok) button.textContent = `${payload.draft_id} · ${payload.status}`;
+        else showAlert(draftFailureMessage(payload));
         if (response.ok && workflowDraft && gap) {
           const returnLink = root.querySelector("[data-gap-return]");
           returnLink.href = `${root.dataset.workflowsPath}?draft=${encodeURIComponent(workflowDraft)}`;
           returnLink.hidden = false;
         } else if (!response.ok) button.disabled = false;
       } else {
-        const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/agent-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ module }) });
+        const response = await fetch(`${apiBase}/api/free-query-sessions/${encodeURIComponent(sessionId)}/agent-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ module, expectedIteration, expectedResultDigest }) });
         const payload = await response.json();
-        button.textContent = response.ok ? `${labels.freeQuerySession.draftCreated} · ${payload.draft_id}` : String(payload.detail || "Draft failed");
-        if (response.ok) { await loadSession(); showDraftManagement(payload); } else button.disabled = false;
+        if (response.ok) { showDraftManagement(payload); await loadSession(); }
+        else { showAlert(draftFailureMessage(payload)); button.disabled = false; }
       }
     } catch (_) {
       button.disabled = false;
       showAlert(labels.unavailable);
     } finally {
       confirm.disabled = false;
+      delete button.dataset.creating;
+      if (kind === 'session') button.disabled = currentSession?.can_create_draft !== true;
       pendingDraftCreation = null;
     }
   });
@@ -2656,6 +2727,8 @@ const labels = locale === "zh" ? {
   .free-query-history { margin-top: .75rem; }
   .free-query-history > summary { padding: .75rem 0; cursor: pointer; font-weight: 650; }
   .free-query-session-actions { display: flex; flex-wrap: wrap; gap: .65rem; }
+  .free-query-session-actions > a.secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; box-sizing: border-box; padding: 7px 13px; border: 1px solid var(--color-border-strong); border-radius: 4px; background: #fff; color: var(--color-text); font-weight: 650; text-decoration: none; }
+  .free-query-draft-blocker { margin: .75rem 0 0; padding: .65rem .8rem; border-left: 3px solid #b77a12; background: #fff8e8; color: #72500f; overflow-wrap: anywhere; }
   .free-query-composer-dialog { width: min(640px, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); box-sizing: border-box; padding: 0; border: 1px solid #b8c7df; border-radius: .9rem; color: #17385e; overflow: auto; }
   .free-query-composer-dialog::backdrop { background: rgb(15 35 60 / .45); }
   .free-query-composer-dialog > header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem; background: #fff; position: sticky; top: 0; z-index: 1; }

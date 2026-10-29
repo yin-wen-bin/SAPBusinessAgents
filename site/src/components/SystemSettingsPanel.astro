@@ -16,7 +16,7 @@ const copy = locale === "zh" ? {
   checkedAt: "检查时间", notChecked: "尚未检查", notInstalled: "未安装", check: "检查安装与登录", checking: "正在检查…",
   update: "更新到最新版本", updating: "正在更新…", currentState: "已是最新版本", updateState: "发现新版本", failedState: "检查失败", pendingState: "等待检查",
   updateDisabled: "此 SDK 不能由平台更新。", restart: "目标版本已安装，待重启生效；当前服务不会自动切换。", updated: "目标版本已确认安装。",
-  confirmUpdate: "将更新本机 SDK 依赖，运行中的任务不会自动切换版本。确定继续吗？",
+  confirmUpdate: "将在独立环境准备目标 SDK，不修改当前环境。验证通过并等待任务结束后受控重启 API；缺少证据时保留候选，失败保留或回退旧版本。不自动登录或调用模型。继续吗？",
   provider: "Runtime Provider", enabled: "已启用", disabled: "已停用", enable: "启用 Runtime", enabling: "正在启用…", disable: "停用 Runtime", disabling: "正在停用…",
   confirmDisable: "请输入 Runtime Provider ID 以确认停用：", disabledDone: "Runtime 已停用。新 Runtime 任务将被阻止。", enabledDone: "Runtime 已启用。是否作为默认 Runtime 仍需单独设置。",
   authentication: "登录状态", authenticated: "已复用本机登录", unauthenticated: "登录不可用", authUnknown: "尚未检查",
@@ -56,7 +56,7 @@ const copy = locale === "zh" ? {
   checkedAt: "Last checked", notChecked: "Not checked", notInstalled: "Not installed", check: "Check installation and login", checking: "Checking…",
   update: "Update to latest", updating: "Updating…", currentState: "Up to date", updateState: "Update available", failedState: "Check failed", pendingState: "Not checked",
   updateDisabled: "This SDK cannot be updated by the platform.", restart: "Target version installed; restart required to take effect. The running service has not switched automatically.", updated: "The target version is confirmed installed.",
-  confirmUpdate: "This will update a local SDK dependency. Running tasks will not switch versions automatically. Continue?",
+  confirmUpdate: "Prepare the SDK in an independent environment, leaving the current one unchanged. After verification and tasks finish, restart the API under maintenance. Missing evidence leaves the candidate pending; failures retain or restore the old version. No automatic sign-in or model calls. Continue?",
   provider: "Runtime provider", enabled: "Enabled", disabled: "Disabled", enable: "Enable Runtime", enabling: "Enabling…", disable: "Disable Runtime", disabling: "Disabling…",
   confirmDisable: "Enter the Runtime provider ID to confirm disabling:", disabledDone: "The Runtime was disabled. New Runtime tasks will be blocked.", enabledDone: "The Runtime was enabled. Setting it as the default is a separate action.",
   authentication: "Login status", authenticated: "Local login available", unauthenticated: "Login unavailable", authUnknown: "Not checked",
@@ -539,14 +539,20 @@ const copy = locale === "zh" ? {
     const issuedInstance = sdk.display_status?.instance_id;
     const applicable = () => !navigationEnabled || !view || (!view.stale && bindingSignature(view.sdk) === issuedBinding
       && view.sdk.display_status?.instance_id === issuedInstance);
+    const present = payload => {
+      // A background version refresh may read the catalog, but must not
+      // replace a model/reasoning form that still contains the user's input.
+      if (view?.dirty || view?.stale) { view.modelRefreshDeferred = true; return; }
+      if (applicable()) renderModels(sdk, section, payload);
+    };
     if (sdk.provider_id === "workbuddy") {
-      try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/models${sdk.display_status ? "?view=summary" : ""}`); if (applicable()) renderModels(sdk, section, payload); }
+      try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/workbuddy/models${sdk.display_status ? "?view=summary" : ""}`); present(payload); }
       catch (error) { section.append(element("p", "sdk-error", String(error.message || error))); }
       return;
     }
-    if (!sdk.model_discovery_supported) { section.append(element("h3", "", copy.modelCatalog), element("p", "sdk-update-note", copy.catalogUnavailable)); return; }
-    try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models`); if (applicable()) renderModels(sdk, section, payload); }
-    catch (error) { section.replaceChildren(element("h3", "", copy.modelCatalog), element("p", "sdk-error", String(error.message || error))); }
+    if (!sdk.model_discovery_supported) { if (!view?.dirty && !view?.stale) section.replaceChildren(element("h3", "", copy.modelCatalog), element("p", "sdk-update-note", copy.catalogUnavailable)); return; }
+    try { const payload = await request(`${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(sdk.provider_id)}/models`); present(payload); }
+    catch (error) { if (!view?.dirty && !view?.stale) section.replaceChildren(element("h3", "", copy.modelCatalog), element("p", "sdk-error", String(error.message || error))); }
   };
 
   const authenticationCopy = locale === "zh" ? {
@@ -900,7 +906,7 @@ const copy = locale === "zh" ? {
     repairNote: "旧版固定版本重建入口不用于在线升级，可能改变环境及认证绑定。页面暂不开放修复，请按受控维护说明操作。",
     readOnly: "“检查可用版本”仅读取软件包版本；“检查安装与登录”仍执行完整核对。", unknown: "更新结果待核对。请重新读取状态并核对安装版本；不要重复提交更新。",
     failed: "操作失败，请查看原因后重试。", complete: "检查完成。", noUpdate: "未发现更新。", available: "发现可用版本。",
-    reread: "重新读取状态", diagnosticDetails: "完整诊断资料", riskNote: "以下操作会影响新任务或本机登录，请确认后执行。",
+    recover: "继续完成更新", recoveryNote: "复用已完成的安装及兼容检查，重新核对证据后完成切换；不新增模型调用，不查询 SAP。", recoveryBlocked: "此更新暂不能继续，请查看阻断原因。", reread: "重新读取状态", diagnosticDetails: "完整诊断资料", riskNote: "以下操作会影响新任务或本机登录，请确认后执行。",
   } : {
     title: "Versions and maintenance", diagnostics: "Diagnostics and validation", risks: "Risk-sensitive actions", versions: "Check available versions",
     versionTime: "Version checked", environmentTime: "Environment checked", checkingVersions: "Reading versions…",
@@ -908,7 +914,7 @@ const copy = locale === "zh" ? {
     repairNote: "The legacy pinned-version rebuild is not an online upgrade and may change environment and authentication bindings. In-app repair is disabled; use controlled maintenance instructions.",
     readOnly: "Version checks only read package versions; installation and sign-in checks still perform full verification.", unknown: "Update outcome is unknown. Read status and verify the installed version; do not submit another update.",
     failed: "The operation failed. Review the reason before retrying.", complete: "Check completed.", noUpdate: "No update found.", available: "A newer version is available.",
-    reread: "Read status again", diagnosticDetails: "Full diagnostic information", riskNote: "These actions affect new tasks or local sign-in. Confirm before proceeding.",
+    recover: "Continue update", recoveryNote: "Reuse the completed installation and compatibility check, verify the evidence, then activate. No additional model calls or SAP queries.", recoveryBlocked: "This update cannot continue yet. Review the blocking reason.", reread: "Read status again", diagnosticDetails: "Full diagnostic information", riskNote: "These actions affect new tasks or local sign-in. Confirm before proceeding.",
   };
   const maintenanceStates = new Map(), versionReads = new Map();
   const maintenanceStorage = provider => `sapba:sdk-maintenance:${provider}`;
@@ -917,7 +923,7 @@ const copy = locale === "zh" ? {
       try {
         const saved = JSON.parse(sessionStorage.getItem(maintenanceStorage(provider)) || "null");
         // A lost/closed installation request is not permission to install again.
-        if (saved?.kind === "update" && ["running", "unknown", "needs_review", "cleanup_pending"].includes(saved.status)) maintenanceStates.set(provider, {...saved, requestPending:false, status: "unknown", message: maintenanceCopy.unknown});
+        if (saved?.kind === "update" && !saved.acknowledged) maintenanceStates.set(provider, {...saved, requestPending:false, restored:true, message: maintenanceCopy.unknown});
       } catch { /* Storage is optional; never an authority for installation. */ }
     }
     return maintenanceStates.get(provider);
@@ -925,46 +931,181 @@ const copy = locale === "zh" ? {
   const setMaintenance = (provider, state) => {
     maintenanceStates.set(provider, state);
     try {
-      if (state.kind === "update" && ["running", "unknown", "needs_review", "cleanup_pending"].includes(state.status)) sessionStorage.setItem(maintenanceStorage(provider), JSON.stringify(state));
+      if (state.kind === "update" && !state.acknowledged) sessionStorage.setItem(maintenanceStorage(provider), JSON.stringify(state));
       else sessionStorage.removeItem(maintenanceStorage(provider));
     } catch { /* The in-page single-request guard remains in force. */ }
   };
+  // SDK feedback is presentation only. Neither stored state nor a version
+  // number can authorize installation, activation, authentication or a model.
+  const updateOutcome = (state, sdk = {}) => {
+    if (!state || state.kind !== "update") return "none";
+    if (state.confirmedActive) return "active";
+    if (state.reconnecting) return "reconnecting";
+    if (state.requestPending && !state.operation_id) return "submitting";
+    if (state.status === "cleanup_pending" || state.cleanup_complete === false && state.status === "completed") return "cleanup";
+    if (state.status === "rolled_back" || state.outcome === "rolled_back") return "rolled_back";
+    if (state.status === "failed") return "failed";
+    if (state.status === "completed" && state.outcome === "activated" && state.cleanup_complete === true
+        && state.target && (state.observed_versions?.sdk || sdk.current_version) === state.target) return "active";
+    if (state.phase === "awaiting_review" || state.outcome === "candidate_prepared") return "review";
+    if (state.phase === "restart_pending") return "restart";
+    if (["unknown", "needs_review"].includes(state.status) || state.status === "completed" && state.outcome === "activated") return "unknown";
+    if (state.status === "completed") return "installed";
+    if (state.phase === "waiting_maintenance") return "waiting";
+    if (["switching", "health_check", "environment_commit", "account_publication", "reconciliation"].includes(state.phase)) return "switching";
+    return "running";
+  };
+  const updateMatches = (local, server) => {
+    if (local?.kind !== "update") return true;
+    if (local.target && server.target_version && local.target !== server.target_version) return false;
+    if (local.operation_id) return local.operation_id === server.operation_id;
+    if (local.parent_operation_id) return local.parent_operation_id === server.parent_operation_id && (local.retry_of || null) === (server.retry_of || null);
+    return Boolean(local.requestId && server.request_id === local.requestId);
+  };
+  const updateRetryDelay = (failures, began, now = Date.now()) => !began || now - began >= 120000 ? null : failures <= 1 ? 1000 : failures === 2 ? 2000 : 5000;
+  const feedbackCopy = locale === "zh" ? {
+    title:"SDK 更新进度",submitting:"正在提交更新",running:"正在更新",waiting:"等待空闲",review:"候选已准备，待审核",switching:"正在切换",active:"目标版本已生效",failed:"更新失败",rolled_back:"已恢复旧环境",unknown:"更新结果待核对",cleanup:"进程清理尚未确认",restart:"已安装，待重启生效",installed:"目标版本已确认安装",reconnecting:"正在重新连接，更新结果尚未确认",
+    close:"收起",read:"重新读取状态",ack:"确认结果",elapsed:"已耗时",details:"诊断详情",view:"查看更新进度／结果",refreshError:"版本已生效，但页面信息读取失败；请重新读取状态。",unknownNote:"只核对原操作，不自动重新安装或切换环境。",readStopped:"自动重连已暂停，可手动重新读取；原操作没有被取消。",restored:"上次记录已生效，正在核对当前信息。"
+  } : {
+    title:"SDK update progress",submitting:"Submitting update",running:"Updating",waiting:"Waiting for idle",review:"Candidate prepared; review required",switching:"Activating",active:"Target version is active",failed:"Update failed",rolled_back:"Old environment restored",unknown:"Update outcome needs review",cleanup:"Process cleanup is unconfirmed",restart:"Installed; restart required",installed:"Target version confirmed installed",reconnecting:"Reconnecting; update outcome is unconfirmed",
+    close:"Minimize",read:"Read status again",ack:"Acknowledge result",elapsed:"Elapsed",details:"Diagnostic details",view:"View update progress / result",refreshError:"The version is active, but page information could not be read. Read status again.",unknownNote:"Only the original operation is checked; installation or activation is not resubmitted.",readStopped:"Automatic reconnection paused. Read status manually; the original operation was not cancelled.",restored:"Previously recorded as active; checking current information."
+  };
+  const updateDialog = {provider:null, returnFocus:null};
+  const progressEntries = new Map();
+  const makeUpdateDialog = () => {
+    if (updateDialog.node) return;
+    const dialog = element("dialog", "sdk-update-progress-dialog"), header = element("header"), title = element("h2", "", feedbackCopy.title);
+    title.id = "sdk-update-progress-title"; dialog.setAttribute("aria-labelledby", title.id);
+    const close = element("button", "secondary-button", "×"); close.type="button"; close.setAttribute("aria-label",feedbackCopy.close);
+    const identity=element("p", "sdk-update-progress-identity"), status=element("p", "sdk-update-progress-state"), phase=element("p"), elapsed=element("small"), note=element("p"), download=element("progress");
+    status.setAttribute("role","status"); status.setAttribute("aria-live","polite");
+    const details=element("details"), code=element("code"), technicalPhase=element("span");
+    details.append(element("summary","",feedbackCopy.details),code,technicalPhase);
+    const footer=element("footer"), minimize=element("button","secondary-button",feedbackCopy.close), reread=element("button","secondary-button",feedbackCopy.read), ack=element("button","sdk-update-button",feedbackCopy.ack);
+    for (const button of [minimize,reread,ack]) button.type="button";
+    const hide=() => {
+      if (typeof dialog.close === "function") dialog.close(); else dialog.hidden=true;
+      const opener=updateDialog.returnFocus;
+      const focus=opener && !opener.disabled && opener.isConnected !== false ? opener : progressEntries.get(updateDialog.provider)?.[0];
+      focus?.focus?.();
+    };
+    close.addEventListener("click",hide); minimize.addEventListener("click",hide);
+    dialog.addEventListener("cancel",event=>{ event.preventDefault(); hide(); });
+    reread.addEventListener("click",()=>rereadUpdate(updateDialog.provider));
+    ack.addEventListener("click",()=>{const state=maintenanceState(updateDialog.provider); if(state) setMaintenance(updateDialog.provider,{...state,acknowledged:true}); hide();});
+    header.append(title,close);footer.append(minimize,reread,ack);
+    dialog.append(header,identity,status,phase,elapsed,download,note,details,footer);root.append(dialog);
+    Object.assign(updateDialog,{node:dialog,identity,status,phase,elapsed,note,download,details,code,technicalPhase,ack});
+  };
+  const showUpdateDialog = (provider, opener) => {
+    makeUpdateDialog();updateDialog.provider=provider;updateDialog.returnFocus=opener || document.activeElement;
+    updateDialog.node.hidden=false;
+    renderUpdateFeedback(provider);
+    if (!updateDialog.node.open && typeof updateDialog.node.showModal === "function") updateDialog.node.showModal();
+    else updateDialog.node.setAttribute("open", "");
+  };
+  const rereadUpdate = async provider => {
+    const state=maintenanceState(provider);
+    if (state?.kind === "update") setMaintenance(provider,{...state,reconnectStartedAt:null,reconnectFailures:0,reconnecting:false,reconnectStopped:false,refreshError:false});
+    try { await load(false,{incremental:true,afterMutation:true}); }
+    catch { renderUpdateFeedback(provider); }
+  };
+  const renderUpdateFeedback = provider => {
+    const state=maintenanceState(provider),view=runtimeViews.get(provider);
+    if (state?.kind !== "update" || !view) return;
+    const outcome=updateOutcome(state,view.sdk),label=feedbackCopy[outcome] || feedbackCopy.running;
+    if (!progressEntries.has(provider)) {
+      const top=element("button","secondary-button sdk-update-feedback-entry"),inside=element("button","secondary-button sdk-update-feedback-entry");
+      for(const button of [top,inside]) { button.type="button";button.addEventListener("click",()=>showUpdateDialog(provider,button)); }
+      (root.querySelector(".settings-default-strip") || root).append(top);view.versionSection.append(inside);
+      progressEntries.set(provider,[top,inside]);
+    }
+    for (const entry of progressEntries.get(provider)) entry.textContent=`${localized(view.sdk.name) || provider} · ${label} · ${feedbackCopy.view}`;
+    activity(view.card,["running","submitting","switching","waiting","cleanup"].includes(outcome) ? (locale === "zh" ? "操作进行中" : "Operation in progress") : label);
+    if (updateDialog.provider !== provider || !updateDialog.node) return;
+    updateDialog.identity.textContent=`${localized(view.sdk.name) || provider} · ${state.before_version || "—"} → ${state.target || "—"}`;
+    updateDialog.status.textContent=label;
+    updateDialog.phase.textContent=state.requestPending ? "" : updatePhaseMessage({...state,target_version:state.target});
+    const start=Date.parse(state.started_at || "") || state.submitted_at, end=["active","failed","rolled_back","installed","restart","review"].includes(outcome) ? Date.parse(state.serverUpdatedAt || "") || Date.now() : Date.now();
+    updateDialog.elapsed.textContent=`${feedbackCopy.elapsed}: ${start ? Math.max(0,Math.floor((end-start)/1000))+" s" : "—"}`;
+    updateDialog.note.textContent=state.refreshError ? feedbackCopy.refreshError : state.reconnectStopped ? feedbackCopy.readStopped : state.restored && state.confirmedActive ? feedbackCopy.restored : ["unknown","reconnecting"].includes(outcome) ? feedbackCopy.unknownNote : "";
+    const total=state.total_bytes,done=state.downloaded_bytes;
+    updateDialog.download.hidden=!(state.phase === "downloading" && Number.isFinite(total) && total>0 && Number.isFinite(done) && done>=0 && done<=total);
+    if(!updateDialog.download.hidden){updateDialog.download.max=total;updateDialog.download.value=done;updateDialog.download.setAttribute("aria-label",updatePhaseLabels.downloading);}
+    updateDialog.code.textContent=/^[a-z][a-z0-9_]{1,127}$/.test(state.code || "") ? state.code : "";
+    updateDialog.technicalPhase.textContent=/^[a-z][a-z0-9_]{1,127}$/.test(state.phase || "") ? state.phase : "";
+    updateDialog.details.hidden=!updateDialog.code.textContent;
+    updateDialog.ack.hidden=!["active","failed","rolled_back","installed","restart"].includes(outcome);
+  };
+  const refreshActivatedUpdate = (provider,state) => {
+    const key=state.operation_id || state.requestId;
+    if (!key || state.refreshedFor === key) return;
+    state.refreshedFor=key;versionReads.delete(provider);setMaintenance(provider,state);
+    const view=runtimeViews.get(provider);
+    if(view){view.authenticationKey=null;view.modelSummaryKey=null;view.modelsLoaded=false;}
+    Promise.resolve().then(()=>load(false,{incremental:true,afterMutation:true})).then(()=>{
+      const current=maintenanceState(provider);if(current?.refreshedFor===key){setMaintenance(provider,{...current,refreshError:false});renderUpdateFeedback(provider);}
+    }).catch(()=>{
+      const current=maintenanceState(provider);if(current?.refreshedFor===key){setMaintenance(provider,{...current,refreshError:true});renderUpdateFeedback(provider);}
+    });
+  };
+  const updatePhaseLabels = locale === "zh" ? {version_check:"正在核对版本",downloading:"正在下载",verification:"正在校验完整软件包",waiting_maintenance:"正在申请安装维护窗口",local_resolution:"正在核对本地安装事务",installation:"正在本地安装",version_confirmation:"正在确认SDK与CLI版本",authentication_verification:"正在核对候选环境登录",infrastructure_validation:"正在验证 SDK 基础设施",model_verification:"正在检查当前默认模型（仅一次）",switching:"正在切换运行环境",health_check:"正在核对切换后状态",rollback:"正在恢复旧环境",cleanup:"正在清理进程",recovery_verification:"正在核对恢复依据",target_audit:"正在审核目标环境",evidence_publication:"正在交接验证证据",environment_commit:"正在提交环境切换",account_publication:"正在发布账号状态",reconciliation:"正在核对切换结果"}
+      : {version_check:"Checking versions",downloading:"Downloading",verification:"Verifying complete packages",waiting_maintenance:"Acquiring installation maintenance",local_resolution:"Checking the local install transaction",installation:"Installing locally",version_confirmation:"Confirming SDK and CLI versions",authentication_verification:"Verifying candidate authentication",infrastructure_validation:"Validating SDK infrastructure",model_verification:"Checking the default model once",switching:"Activating environment",health_check:"Checking activated environment",rollback:"Restoring the old environment",cleanup:"Cleaning up processes",recovery_verification:"Verifying recovery evidence",target_audit:"Auditing target environment",evidence_publication:"Publishing verification evidence",environment_commit:"Committing environment switch",account_publication:"Publishing account state",reconciliation:"Reconciling switch outcome"};
   const updatePhaseMessage = update => {
-    const labels = locale === "zh" ? {version_check:"正在核对版本",downloading:"正在下载",verification:"正在校验完整软件包",waiting_maintenance:"正在申请安装维护窗口",local_resolution:"正在核对本地安装事务",installation:"正在本地安装",version_confirmation:"正在确认SDK与CLI版本",authentication_verification:"正在核对候选环境登录",infrastructure_validation:"正在验证 SDK 基础设施",model_verification:"正在检查当前默认模型（仅一次）",switching:"正在切换运行环境",health_check:"正在核对切换后状态",rollback:"正在恢复旧环境",cleanup:"正在清理安装进程"}
-      : {version_check:"Checking versions",downloading:"Downloading",verification:"Verifying complete packages",waiting_maintenance:"Acquiring installation maintenance",local_resolution:"Checking the local install transaction",installation:"Installing locally",version_confirmation:"Confirming SDK and CLI versions",authentication_verification:"Verifying candidate authentication",infrastructure_validation:"Validating SDK infrastructure",model_verification:"Checking the default model once",switching:"Activating environment",health_check:"Checking activated environment",rollback:"Restoring the old environment",cleanup:"Cleaning up installer processes"};
-    if (update.status === "cleanup_pending") return locale === "zh" ? "正在停止安装进程；清理尚未确认完成，请勿重复提交。" : "Stopping installer processes; cleanup is unconfirmed. Do not resubmit.";
+    if (update.confirmedActive || updateOutcome({kind:"update",...update,target:update.target || update.target_version}) === "active") return locale === "zh" ? "目标版本已生效。" : "The target version is active.";
+    if (update.phase === "awaiting_review") return locale === "zh" ? "候选版本尚未生效，等待目标接入证据审核；当前服务保持不变。" : "The candidate is not active. Target integration evidence needs review; the current service is unchanged.";
+    if (update.phase === "environment_creation") return locale === "zh" ? "正在准备独立依赖环境；当前环境不变。" : "Preparing an independent dependency environment; the current environment is unchanged.";
+    if (update.phase === "waiting_maintenance") return locale === "zh" ? "候选已准备，等待任务与清理结束后受控切换。" : "Candidate prepared. Waiting for tasks and cleanup before controlled activation.";
+    if (update.status === "cleanup_pending") return locale === "zh" ? "正在清理进程；清理尚未确认完成，请勿重复提交。" : "Cleaning up processes; cleanup is unconfirmed. Do not resubmit.";
     if (update.status === "needs_review" && update.outcome === "candidate_prepared") return authenticationErrors.workbuddy_update_evidence_required;
-    if (update.status === "needs_review") return locale === "zh" ? "安装结果待核对。请先检查可用版本，不要重复安装。" : "Installation needs review. Check available versions before another installation.";
+    if (update.status === "needs_review") return locale === "zh" ? "更新结果待核对。维护保护仍保留，请重新读取状态，不要重复提交或切换环境。" : "The update outcome needs review. Maintenance protection remains active. Read status again; do not resubmit or switch environments.";
     if (update.status === "rolled_back") return locale === "zh" ? "更新未完成，已恢复旧环境。" : "Update did not complete; the old environment was restored.";
     if (update.status === "completed") return update.phase === "restart_pending" ? copy.restart : copy.updated;
     if (update.status === "failed" || update.status === "needs_review") {
-      const errors = locale === "zh" ? {workbuddy_update_authentication_failed:"候选环境登录核对未通过，当前环境未切换。",workbuddy_update_model_failed:"默认模型兼容检查未通过，当前环境未切换。",workbuddy_update_infrastructure_failed:"SDK 基础设施检查未通过，当前环境未切换。",sdk_update_binding_changed:"环境或目标版本已变化，请重新核对。"}
-        : {workbuddy_update_authentication_failed:"Candidate authentication failed; the active environment is unchanged.",workbuddy_update_model_failed:"Default-model compatibility failed; the active environment is unchanged.",workbuddy_update_infrastructure_failed:"SDK infrastructure validation failed; the active environment is unchanged.",sdk_update_binding_changed:"The environment or target version changed. Review the current state."};
+      const errors = locale === "zh" ? {workbuddy_update_authentication_failed:"候选环境登录核对未通过，当前环境未切换。",workbuddy_update_model_failed:"默认模型兼容检查未通过，当前环境未切换。",workbuddy_update_infrastructure_failed:"SDK 基础设施检查未通过，当前环境未切换。",sdk_update_binding_changed:"环境或目标版本已变化，请重新核对。",workbuddy_update_recovery_unavailable:"此次候选无法复用，恢复未启动。",workbuddy_update_anchor_required:"缺少恢复依据，需先核对维护记录。",workbuddy_update_anchor_invalid:"恢复依据不一致，需先核对维护记录。",sdk_update_recovery_unsupported:"当前环境不支持恢复此更新。",workbuddy_update_evidence_required:"验证证据缺失或不适用，请核对候选环境。",workbuddy_job_import_conflict:"验证记录与已有记录冲突，证据交接已停止。",workbuddy_job_import_invalid:"验证记录未通过完整性校验，证据交接已停止。",workbuddy_job_index_recovery_required:"任务索引阻止了验证记录写入，请核对维护记录。",sdk_update_outcome_unconfirmed:"更新结果尚未确认，请重新读取状态，不要重复提交。"}
+        : {workbuddy_update_authentication_failed:"Candidate authentication failed; the active environment is unchanged.",workbuddy_update_model_failed:"Default-model compatibility failed; the active environment is unchanged.",workbuddy_update_infrastructure_failed:"SDK infrastructure validation failed; the active environment is unchanged.",sdk_update_binding_changed:"The environment or target version changed. Review the current state.",workbuddy_update_recovery_unavailable:"This candidate cannot be reused. Recovery has not started.",workbuddy_update_anchor_required:"Recovery evidence is missing. Review the maintenance records.",workbuddy_update_anchor_invalid:"Recovery evidence is inconsistent. Review the maintenance records.",sdk_update_recovery_unsupported:"This environment cannot recover this update.",workbuddy_update_evidence_required:"Verification evidence is missing or inapplicable. Review the candidate environment.",workbuddy_job_import_conflict:"Verification records conflict with existing records. Evidence publication stopped.",workbuddy_job_import_invalid:"Verification records failed integrity checks. Evidence publication stopped.",workbuddy_job_index_recovery_required:"The task index blocked verification-record publication. Review the maintenance records.",sdk_update_outcome_unconfirmed:"The update outcome is unconfirmed. Read status again; do not resubmit."};
       return errors[update.error?.code] || authenticationErrors[update.error?.code] || maintenanceCopy.failed;
     }
     const file = /^[A-Za-z0-9_.+!-]+\.whl$/.test(update.filename || "") ? update.filename : "";
     const amount = Number.isFinite(update.downloaded_bytes) && update.downloaded_bytes >= 0
       ? ` · ${(update.downloaded_bytes / 1000000).toFixed(1)}${Number.isFinite(update.total_bytes) && update.total_bytes >= update.downloaded_bytes ? ` / ${(update.total_bytes / 1000000).toFixed(1)}` : ""} MB` : "";
-    return `${labels[update.phase] || copy.updating}${file ? ` · ${file}` : ""}${amount}`;
+    return `${updatePhaseLabels[update.phase] || copy.updating}${file ? ` · ${file}` : ""}${amount}`;
   };
   const adoptUpdate = sdk => {
     const server=sdk.update_status, local=maintenanceState(sdk.provider_id);
     if (!server?.operation_id) return;
     const live=["running","cleanup_pending"].includes(server.status);
     if (!live && local && local.kind !== "update") return;
-    if (local?.kind === "update") {
-      if (local.target && server.target_version && local.target !== server.target_version) return;
-      if (local.requestPending && !local.operation_id && !live) return;
-      if (local.operation_id && local.operation_id !== server.operation_id && Date.parse(server.started_at) <= (local.submitted_at || 0)) return;
-      if (!local.operation_id && local.submitted_at && Date.parse(server.started_at) < local.submitted_at) return;
+    if (local?.kind === "update" && !local.acknowledged) {
+      if (!updateMatches(local,server)) {
+        if(!local.requestPending && !local.confirmedActive){
+          const began=local.reconnectStartedAt || Date.now(),failures=(local.reconnectFailures || 0)+1;
+          setMaintenance(sdk.provider_id,{...local,status:"unknown",reconnecting:true,reconnectStartedAt:began,reconnectFailures:failures,reconnectStopped:updateRetryDelay(failures,began)===null,message:maintenanceCopy.unknown});
+        }
+        return;
+      }
       if (local.operation_id === server.operation_id && Date.parse(local.serverUpdatedAt) > Date.parse(server.updated_at)) return;
     }
-    setMaintenance(sdk.provider_id,{kind:"update",status:server.status,target:server.target_version,
+    const uncertain=server.status === "needs_review" && server.error?.code === "sdk_update_outcome_unconfirmed";
+    const reconnectStartedAt=uncertain ? local?.reconnectStartedAt || Date.now() : null;
+    const next={...local,kind:"update",confirmedActive:false,status:server.status,target:server.target_version,
       operation_id:server.operation_id,serverUpdatedAt:server.updated_at,submitted_at:Date.parse(server.started_at),
-      requestPending:Boolean(local?.requestPending),code:server.error?.code,phase:server.phase,message:updatePhaseMessage(server)});
+      requestId:server.request_id || local?.requestId,before_version:server.before_version,started_at:server.started_at,
+      outcome:server.outcome,cleanup_complete:server.cleanup_complete,observed_versions:server.observed_versions,
+      downloaded_bytes:server.downloaded_bytes,total_bytes:server.total_bytes,
+      acknowledged:local?.acknowledged || !local && !live,restored:false,
+      reconnecting:uncertain,reconnectStartedAt,reconnectFailures:uncertain ? (local?.reconnectFailures || 0)+1 : 0,
+      reconnectStopped:uncertain && updateRetryDelay(1,reconnectStartedAt)===null,
+      requestPending:false,code:server.error?.code,errorPhase:server.error?.phase,phase:server.phase,message:updatePhaseMessage(server)};
+    if(updateOutcome(next,sdk)==="active"){next.confirmedActive=true;next.message=feedbackCopy.active;}
+    setMaintenance(sdk.provider_id,next);
+    if(next.confirmedActive && !next.acknowledged)refreshActivatedUpdate(sdk.provider_id,next);
   };
   const maintenanceSDK = sdk => {
     const local = versionReads.get(sdk.provider_id);
+    if (local && sdk.update_status?.outcome === "activated" && sdk.current_version && local.current_version !== sdk.current_version) {
+      versionReads.delete(sdk.provider_id); return sdk;
+    }
     if (sdk.provider_id === "workbuddy" && local?.environment_digest && sdk.environment_digest
         && local.environment_digest !== sdk.environment_digest) { versionReads.delete(sdk.provider_id); return sdk; }
     return local && (!sdk.version_check?.checked_at || local.version_check?.checked_at >= sdk.version_check.checked_at) ? {...sdk, ...local} : sdk;
@@ -982,43 +1123,72 @@ const copy = locale === "zh" ? {
       sdk.version_check?.status === "failed" ? copy.failedState : sdk.latest_version || copy.notChecked];
     section.querySelectorAll(".sdk-version-block strong").forEach((node, index) => { node.textContent = values[index]; });
     controls.versions.disabled = sdk.version_check_supported === false || view.stale || ["running","cleanup_pending"].includes(state?.status)
+      || state?.kind === "update" && active
       || authenticationActive(sdk.authentication?.operation) || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id);
     controls.check.disabled = blocked;
     controls.update.disabled = blocked || pinned || !sdk.update_enabled || !sdk.update_available || !sdk.latest_version;
-    controls.update.hidden = pinned || !sdk.update_enabled;
+    const recovery = view.sdk.update_status?.recovery;
+    const recoverable = ["workbuddy", "codex"].includes(sdk.provider_id) && recovery?.available === true;
+    controls.update.hidden = pinned || !sdk.update_enabled || recoverable;
+    controls.recover.hidden = !recoverable;
+    const recoveryBlocked = sdk.provider_id === "codex"
+      ? ["running","unknown","cleanup_pending"].includes(state?.status) || view.stale || authenticationActive(sdk.authentication?.operation) || authenticationPending.has(sdk.provider_id) || sitePending.has(sdk.provider_id)
+      : blocked;
+    controls.recover.disabled = recoveryBlocked || !recoverable || !recovery?.parent_operation_id || !recovery?.target_version;
+    controls.recover.textContent = maintenanceCopy.recover;
     controls.check.textContent = state?.status === "running" && state.kind === "check" ? copy.checking : copy.check;
     controls.versions.textContent = state?.status === "running" && state.kind === "versions" ? maintenanceCopy.checkingVersions : maintenanceCopy.versions;
     controls.update.textContent = state?.status === "running" && state.kind === "update" ? copy.updating : sdk.provider_id === "workbuddy" ? (locale === "zh" ? "更新 SDK" : "Update SDK") : copy.update;
     controls.time.textContent = `${maintenanceCopy.versionTime}: ${checkedTime(sdk.version_check?.checked_at)}`;
     controls.note.textContent = pinned ? (locale === "zh" ? "当前环境暂不具备在线更新条件；仍可独立检查可用版本。" : "Online update is unavailable for this installation. Version checks remain independent.") : !sdk.update_enabled ? copy.updateDisabled : sdk.provider_id === "workbuddy" ? (locale === "zh" ? "下载并校验目标版本，在独立环境安装；验证通过后切换生效，失败保留或回退旧环境。每次仅检查当前默认模型一次，不查询 SAP。" : "Download and verify the target, install in an isolated environment, then validate and activate it. Failures retain or restore the old environment. One default-model check; no SAP queries.") : maintenanceCopy.readOnly;
+    if (recoverable || view.sdk.update_status?.parent_operation_id || recovery?.operation_id) controls.note.textContent = maintenanceCopy.recoveryNote;
+    controls.recoveryReason.hidden = !recovery?.blocked_reason || recoverable;
+    const reason = recovery?.blocked_reason;
+    controls.recoveryReason.textContent = !reason ? "" : `${maintenanceCopy.recoveryBlocked} ${updatePhaseMessage({status:"failed",error:{code:reason}})}${/^[a-z][a-z0-9_]{1,127}$/.test(reason) ? ` (${reason})` : ""}`;
     if (view.sdk.update_status?.status === "completed" && view.sdk.update_status.phase === "restart_pending") controls.note.textContent += ` · ${copy.restart}`;
     controls.status.textContent = state?.message || (sdk.version_check?.status === "failed" ? copy.failedState : "");
     controls.status.className = ["unknown","needs_review","cleanup_pending","failed"].includes(state?.status) || sdk.version_check?.status === "failed" ? "sdk-error" : "sdk-update-note";
     const failure = state?.code ? state : sdk.version_check?.error;
     controls.error.hidden = !failure?.code;
     controls.errorCode.textContent = /^[a-z][a-z0-9_]{1,127}$/.test(failure?.code || "") ? failure.code : "";
-    controls.errorPhase.textContent = ["downloading","verification","local_resolution","cleanup","installation", "version_check", "version_confirmation"].includes(failure?.phase) ? failure.phase : "";
+    const failurePhase = /^[a-z][a-z0-9_]{1,127}$/.test(failure?.errorPhase || failure?.phase || "") ? failure.errorPhase || failure.phase : "";
+    controls.errorPhase.textContent = failurePhase ? `${updatePhaseLabels[failurePhase] || failurePhase} · ${failurePhase}` : "";
     controls.reread.hidden = !["unknown","needs_review","cleanup_pending"].includes(state?.status);
+    renderUpdateFeedback(sdk.provider_id);
   };
   const runMaintenance = async (provider, kind) => {
     const view = runtimeViews.get(provider), sdk = maintenanceSDK(view.sdk);
-    const prior=maintenanceState(provider);
-    if (["running","cleanup_pending"].includes(prior?.status) || ["unknown","needs_review"].includes(prior?.status) && kind !== "versions") return;
-    if (kind === "update" && (!sdk.update_enabled || !sdk.update_available || !sdk.latest_version || sdk.provider_id === "workbuddy" && sdk.update_supported !== true || !window.confirm(sdk.provider_id === "workbuddy" ? (locale === "zh" ? `将 SDK 从 ${sdk.current_version} 更新至 ${sdk.latest_version}。将在独立环境安装、核对当前账号，并对默认模型 ${sdk.default_model_id || ""} 执行一次兼容检查（可能产生费用，不查询 SAP）；全部通过后切换，失败保留或回退旧环境。继续？` : `Update SDK ${sdk.current_version} to ${sdk.latest_version} in an isolated environment. Verify the current account and check default model ${sdk.default_model_id || ""} once (possible model charges; no SAP). Activate only after verification; retain or restore the old environment on failure. Continue?`) : copy.confirmUpdate))) return;
-    const target = sdk.latest_version;
+    const prior=maintenanceState(provider), recovery=view.sdk.update_status?.recovery;
+    const updating = kind === "update" || kind === "recover", stateKind = updating ? "update" : kind;
+    if (["running","cleanup_pending"].includes(prior?.status) || ["unknown","needs_review"].includes(prior?.status) && (kind !== "versions" || prior.kind === "update") && !(kind === "recover" && provider === "codex" && prior.status === "needs_review")) return;
+    if (kind === "update" && (!sdk.update_enabled || !sdk.update_available || !sdk.latest_version || sdk.provider_id === "workbuddy" && sdk.update_supported !== true || !window.confirm(sdk.provider_id === "workbuddy" ? (locale === "zh" ? `将 SDK 从 ${sdk.current_version} 更新至 ${sdk.latest_version}。将在独立环境安装、核对当前账号，并对默认模型 ${sdk.default_model_id || ""} 执行一次兼容检查（可能产生费用，不查询 SAP）；全部通过后切换，失败保留或回退旧环境。继续？` : `Update SDK ${sdk.current_version} to ${sdk.latest_version} in an isolated environment. Verify the current account and check default model ${sdk.default_model_id || ""} once (possible model charges; no SAP). Activate only after verification; retain or restore the old environment on failure. Continue?`) : `${sdk.current_version || copy.notChecked} → ${sdk.latest_version}\n${copy.confirmUpdate}`))) return;
+    if (kind === "recover") {
+      if (!["workbuddy","codex"].includes(provider) || recovery?.available !== true || !recovery.parent_operation_id || !recovery.target_version) return;
+      const confirmation = provider === "codex"
+        ? (locale === "zh" ? `核对原候选 SDK ${recovery.target_version} 的环境、绑定和接入证据，空闲后继续切换。不重复安装、不调用模型或 SAP。继续？` : `Verify the original SDK ${recovery.target_version} candidate, bindings and integration evidence, then activate when idle. No reinstall, model or SAP calls. Continue?`)
+        : (locale === "zh" ? `继续将 SDK 从 ${sdk.current_version} 更新至 ${recovery.target_version}。复用已完成的安装和兼容检查，重新核对当前账号与验证证据后完成切换；不新增模型调用，不查询 SAP。结果待核对时保留维护保护。继续？` : `Continue updating SDK ${sdk.current_version} to ${recovery.target_version}. Reuse the completed installation and compatibility check, verify the current account and evidence, then activate. No additional model calls or SAP queries. Keep maintenance protection if the outcome is unconfirmed. Continue?`);
+      if (!window.confirm(confirmation)) return;
+    }
+    const target = kind === "recover" ? recovery.target_version : sdk.latest_version;
     const submitted_at=Date.now();
-    setMaintenance(provider, {kind, status: "running", target, submitted_at, requestPending:true, message: kind === "versions" ? maintenanceCopy.checkingVersions : kind === "update" ? copy.updating : copy.checking});
+    const requestId = kind === "update" ? crypto.randomUUID() : null;
+    setMaintenance(provider, {kind:stateKind, status: "running", target, submitted_at, requestId, before_version:sdk.current_version, parent_operation_id:kind === "recover" ? recovery.parent_operation_id : null,retry_of:recovery?.retry_of,requestPending:true, message: kind === "versions" ? maintenanceCopy.checkingVersions : updating ? copy.updating : copy.checking});
+    if(updating)showUpdateDialog(provider);
     updateMaintenanceView(view);
-    if (kind === "update") load(false,{incremental:true}).catch(() => {});
+    if (updating) load(false,{incremental:true}).catch(() => {});
     try {
       const url = kind === "check" ? `${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(provider)}/check`
-        : `${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/${kind === "versions" ? "check?scope=versions" : provider === "workbuddy" ? `update?expectedTargetVersion=${encodeURIComponent(target)}` : "update"}`;
-      const payload = await request(url, {method: "POST", ...(kind === "update" ? {headers: {"X-SAPBA-Action": "sdk-update"}} : {})});
-      if (provider === "workbuddy" && kind === "update" && payload.item?.maintenance_kind === "online_upgrade" && payload.item?.update_status?.operation_id) {
+        : kind === "recover" ? `${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/update-operations/${encodeURIComponent(recovery.parent_operation_id)}/recover?expectedTargetVersion=${encodeURIComponent(target)}${recovery.retry_of ? `&retryOf=${encodeURIComponent(recovery.retry_of)}` : ""}`
+        : `${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/${kind === "versions" ? "check?scope=versions" : `update?expectedTargetVersion=${encodeURIComponent(target)}&requestId=${encodeURIComponent(requestId)}`}`;
+      const payload = await request(url, {method: "POST", ...(updating ? {headers: {"X-SAPBA-Action": "sdk-update"}} : {})});
+      if (updating && (kind === "recover" || payload.item?.maintenance_kind === "online_upgrade") && payload.item?.update_status?.operation_id) {
         versionReads.delete(provider);
         const status=payload.item.update_status;
-        setMaintenance(provider,{kind:"update",status:status.status,target,submitted_at,requestPending:false,
-          operation_id:status.operation_id,serverUpdatedAt:status.updated_at,message:updatePhaseMessage(status)});
+        const current=maintenanceState(provider);
+        if(current?.operation_id===status.operation_id && Date.parse(current.serverUpdatedAt)>Date.parse(status.updated_at))return;
+        setMaintenance(provider,{...maintenanceState(provider),kind:"update",status:status.status,target,submitted_at,requestPending:false,
+          requestId,operation_id:status.operation_id,serverUpdatedAt:status.updated_at,code:status.error?.code,phase:status.phase,message:updatePhaseMessage(status)});
+        adoptUpdate({...sdk,...payload.item});
         await load(false,{incremental:true,afterMutation:true}).catch(()=>{}); return;
       }
       if (provider === "workbuddy" && payload.item?.update_status?.outcome === "candidate_prepared") {
@@ -1030,8 +1200,8 @@ const copy = locale === "zh" ? {
       if (kind === "versions" && (["unknown","needs_review"].includes(prior?.status) && !payload.item?.update_status || payload.item?.update_status?.status === "needs_review")) {
         setMaintenance(provider,{...prior,requestPending:false,status:"unknown",message:maintenanceCopy.unknown}); return;
       }
-      if (kind === "update" && payload.item?.current_version !== target) {
-        setMaintenance(provider, {kind, status: "unknown", target, message: maintenanceCopy.unknown});
+      if (updating && payload.item?.current_version !== target) {
+        setMaintenance(provider, {kind:stateKind, status: "unknown", target, message: maintenanceCopy.unknown});
         return;
       }
       if (payload.item) {
@@ -1040,16 +1210,17 @@ const copy = locale === "zh" ? {
         versionReads.set(provider, value);
       }
       const failed = payload.item?.version_check?.status === "failed";
-      setMaintenance(provider, {kind, status: failed ? "failed" : "completed", ...(failed ? payload.item.version_check.error : {}), message: failed ? authenticationErrors[payload.item.version_check.error?.code] || copy.failedState
-        : kind === "update" ? (payload.restart_required ? copy.restart : copy.updated)
+      setMaintenance(provider, {kind:stateKind, status: failed ? "failed" : "completed", ...(failed ? payload.item.version_check.error : {}), message: failed ? authenticationErrors[payload.item.version_check.error?.code] || copy.failedState
+        : updating ? (payload.restart_required ? copy.restart : copy.updated)
         : kind === "versions" ? (payload.item?.update_available ? maintenanceCopy.available : maintenanceCopy.noUpdate) : maintenanceCopy.complete});
       // Refresh failure does not replace a confirmed installation/check result.
       await load(false, {incremental: true, afterMutation: true}).catch(() => {});
     } catch (error) {
-      const unknown = kind === "update" && (!error.confirmed || error.outcome === "unknown");
-      setMaintenance(provider, {kind, status: unknown ? "unknown" : "failed", target, submitted_at, requestPending:false,
+      if(updating && maintenanceState(provider)?.confirmedActive){updateMaintenanceView(view);return;}
+      const unknown = updating && (!error.confirmed || error.outcome === "unknown");
+      setMaintenance(provider, {...maintenanceState(provider),kind:stateKind, status: unknown ? "unknown" : "failed", target, submitted_at, requestId, requestPending:false,
         code: error.code, phase: error.phase, message: unknown ? maintenanceCopy.unknown : String(error.message || maintenanceCopy.failed)});
-      if (kind === "update") load(false,{incremental:true}).catch(() => {});
+      if (updating) load(false,{incremental:true}).catch(() => {});
     } finally { updateMaintenanceView(runtimeViews.get(provider)); }
   };
   const renderMaintenanceVersions = sdk => {
@@ -1061,17 +1232,17 @@ const copy = locale === "zh" ? {
     }
     const actions = element("div", "settings-version-actions");
     const controls = {versions: element("button", "secondary-button", maintenanceCopy.versions), check: element("button", "secondary-button", copy.check),
-      update: element("button", "sdk-update-button", copy.update), reread: element("button", "secondary-button", maintenanceCopy.reread),
+      update: element("button", "sdk-update-button", copy.update), recover: element("button", "sdk-update-button sdk-recovery-button", maintenanceCopy.recover), recoveryReason: element("p", "sdk-error"), reread: element("button", "secondary-button", maintenanceCopy.reread),
       time: element("small", "sdk-update-note"), note: element("p", "sdk-update-note"), status: element("p", "sdk-update-note"),
       error: element("details", "settings-maintenance-error"), errorCode: element("code"), errorPhase: element("span")};
-    for (const kind of ["versions", "check", "update"]) {
+    for (const kind of ["versions", "check", "update", "recover"]) {
       const button = controls[kind]; button.type = "button"; button.addEventListener("click", () => runMaintenance(sdk.provider_id, kind)); actions.append(button);
     }
     controls.reread.type = "button"; controls.reread.hidden = true;
     controls.reread.addEventListener("click", () => load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")));
     controls.status.setAttribute("role", "status"); controls.status.setAttribute("aria-live", "polite");
     controls.error.append(element("summary", "", locale === "zh" ? "失败诊断" : "Failure diagnostics"), controls.errorCode, controls.errorPhase);
-    section.append(versions, controls.time, actions, controls.note, controls.status, controls.error, controls.reread); section.controls = controls;
+    section.append(versions, controls.time, actions, controls.note, controls.recoveryReason, controls.status, controls.error, controls.reread); section.controls = controls;
     return section;
   };
   const renderRuntime = (sdk) => {
@@ -1264,13 +1435,20 @@ const copy = locale === "zh" ? {
   let listRequest;
   let latestPayload;
   let statusReadFailed = false;
-  const needsRefresh = (sdk) => [sdk.status_refresh, sdk.display_status, sdk.control_status].some(status =>
+  const needsRefresh = (sdk) => !(maintenanceState(sdk.provider_id)?.kind === "update" && maintenanceState(sdk.provider_id)?.reconnectStopped) && ([sdk.status_refresh, sdk.display_status, sdk.control_status].some(status =>
     status && (status.running || status.status === "refreshing"
       || !status.error_code && status.status !== "failed" && (status.stale || status.status === "unknown")))
-    || ["running","cleanup_pending"].includes(sdk.update_status?.status) || maintenanceState(sdk.provider_id)?.status === "running";
+    || ["running","cleanup_pending"].includes(sdk.update_status?.status) || maintenanceState(sdk.provider_id)?.status === "running"
+    || maintenanceState(sdk.provider_id)?.reconnecting && !maintenanceState(sdk.provider_id)?.reconnectStopped);
   const scheduleStatus = () => {
     clearTimeout(statusTimer);
-    if (document.hidden || statusReadFailed || !(latestPayload?.items || []).some(sdk => needsRefresh(sdk) || sdk.control_status?.running)) { statusPolls = 0; return; }
+    const reconnecting=[...maintenanceStates.values()].filter(state=>state.kind === "update" && state.reconnecting && !state.reconnectStopped);
+    if (document.hidden || statusReadFailed && !reconnecting.length || !(latestPayload?.items || []).some(sdk => needsRefresh(sdk) || sdk.control_status?.running)) { statusPolls = 0; return; }
+    if(reconnecting.length){
+      const delays=reconnecting.map(state=>updateRetryDelay(state.reconnectFailures,state.reconnectStartedAt)).filter(value=>value!==null);
+      if(!delays.length)return;
+      statusTimer=setTimeout(()=>load(false,{incremental:true}).catch(()=>{}),Math.min(...delays));return;
+    }
     const delay = latestPayload.items.some(sdk => sdk.control_status?.running || sdk.display_status?.running || ["running","cleanup_pending"].includes(sdk.update_status?.status) || maintenanceState(sdk.provider_id)?.status === "running") ? 2000 : statusPolls < 15 ? 2000 : statusPolls < 30 ? 5000 : 15000;
     statusPolls++;
     statusTimer = setTimeout(() => load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")), delay);
@@ -1285,9 +1463,16 @@ const copy = locale === "zh" ? {
     listRequest = (async () => {
       try {
         const payload = await request(apiBase + "/api/system/sdk-runtimes?view=summary", {cache: "no-store"});
+        const recoveredRead = statusReadFailed;
         statusReadFailed = false;
-        if (generation === stateGeneration) { latestPayload = payload; render(payload.items || [], payload.default_provider_id, incremental); }
+        if (generation === stateGeneration) { if (recoveredRead) alert.hidden = true; latestPayload = payload; render(payload.items || [], payload.default_provider_id, incremental); }
       } catch (error) {
+        for(const [provider,state] of maintenanceStates){
+          if(state.kind !== "update" || state.confirmedActive || !["running","unknown","cleanup_pending","needs_review"].includes(state.status))continue;
+          const began=state.reconnectStartedAt || Date.now(),failures=(state.reconnectFailures || 0)+1;
+          setMaintenance(provider,{...state,reconnecting:true,reconnectStartedAt:began,reconnectFailures:failures,reconnectStopped:updateRetryDelay(failures,began)===null});
+          renderUpdateFeedback(provider);
+        }
         statusReadFailed = true; throw error;
       } finally { listRequest = null; scheduleStatus(); }
     })();

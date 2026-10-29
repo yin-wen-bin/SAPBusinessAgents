@@ -711,7 +711,17 @@ class HarnessToolBroker:
             except ValueError as exc:
                 adapter_error = exc
         calls = self.store.list_harness_tool_calls(run_id)
-        call_id = str(arguments.pop("tool_call_id", "") or f"call_{uuid.uuid4().hex[:16]}")
+        invocation_id = str(arguments.pop("tool_call_id", "") or "")
+        if invocation_id:
+            # SDK invocation IDs are local to a run; the database call_id is
+            # globally unique. Preserve old IDs only in their original run so
+            # historical retries keep their existing hashes and saved results.
+            legacy = next((call for call in calls if call.get("call_id") == invocation_id), None)
+            call_id = invocation_id if legacy is not None else "call_" + hashlib.sha256(
+                json.dumps([run_id, invocation_id], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+        else:
+            call_id = f"call_{uuid.uuid4().hex[:16]}"
         safe_input = _safe_tool_input(arguments)
         request_hash = hashlib.sha256(
             json.dumps(
@@ -746,7 +756,7 @@ class HarnessToolBroker:
             prior_id = next((call for call in calls if call.get("call_id") == call_id), None)
             if prior_id is not None and prior_id.get("request_hash") != request_hash:
                 return {"ok": False, "code": "harness_tool_call_conflict"}
-        if tool_name in {"sap_query_validate", "sap_query_execute"}:
+        if tool_name not in {"sap_money_aggregate", "sap_final_report_validate"}:
             prior_id = next((call for call in calls if call.get('call_id') == call_id), None)
             salted = hashlib.sha256(f'{request_hash}:{call_id}'.encode()).hexdigest()
             if prior_id is not None:
@@ -2459,7 +2469,7 @@ def _mcp_overrides(
                 (
                     f"mcp_servers.{server_name}.args="
                     + json.dumps(
-                        ["-m", "sap_business_agents_platform.mcp_server", "--mode", mode]
+                        ["-B", "-m", "sap_business_agents_platform.mcp_server", "--mode", mode]
                     )
                 ),
                 f"mcp_servers.{server_name}.enabled=true",

@@ -114,7 +114,7 @@ def _with_authoring_mcp(client: Any, session: dict[str, str]) -> Any:
     name = "sap_authoring_catalog"
     values = [
         f"mcp_servers.{name}.command={json.dumps(sys.executable)}",
-        f"mcp_servers.{name}.args={json.dumps(['-m', 'sap_business_agents_platform.mcp_server', '--mode', 'authoring'])}",
+        f"mcp_servers.{name}.args={json.dumps(['-B', '-m', 'sap_business_agents_platform.mcp_server', '--mode', 'authoring'])}",
         f"mcp_servers.{name}.enabled=true",
         f"mcp_servers.{name}.env.SAPBA_INTERNAL_API_URL={json.dumps(session['internal_api_url'])}",
         f"mcp_servers.{name}.env.SAPBA_HARNESS_RUN_ID={json.dumps(session['operation_id'])}",

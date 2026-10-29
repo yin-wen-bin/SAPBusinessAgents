@@ -4,13 +4,15 @@ import asyncio
 import copy
 import json
 import os
+import re
 import time
 import uuid
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .sdk_update import failure
-from .startup_control import atomic, file_lock
+from .startup_control import atomic, file_lock, digest
 from .workbuddy_sdk_update import source_binding, activate_candidate, rollback_candidate
 
 BUSY = {'running', 'needs_review', 'cleanup_pending'}
@@ -26,12 +28,23 @@ class OnlineUpdate:
         self.held_guard = None
         self.held_barrier = None
         self.record = None
+        self._record_lock = threading.RLock()
         self.recover()
 
     def recover(self):
         if not self.path.exists(): return
         try:
             record = json.loads(self.path.read_bytes())
+            import re
+            operation_id=record.get('operation_id','')
+            if not re.fullmatch(r'(?:update|recovery)_[a-f0-9]{32}',operation_id):
+                raise ValueError('invalid_operation_id')
+            operation_path=self.root/(operation_id+'.json')
+            if operation_path.exists():
+                authoritative=json.loads(operation_path.read_bytes())
+                if authoritative.get('operation_id')!=operation_id:
+                    raise ValueError('operation_identity_changed')
+                record=authoritative
             if (record.get('version') != 1 or not isinstance(record.get('operation_id'), str)
                     or record.get('status') not in BUSY | TERMINAL):
                 raise ValueError('invalid_receipt')
@@ -41,7 +54,12 @@ class OnlineUpdate:
                     record['cleanup_complete']=False
                 record.update(status='needs_review', error={'code':'sdk_update_outcome_unconfirmed',
                     'phase':record.get('phase','version_confirmation')})
+                if record.get('rollback_anchor'):
+                    from .workbuddy_update_switch import observation
+                    record['reconciliation'] = observation(self.registry, self.root, record)
+                atomic(self.root/(record['operation_id']+'.json'),record)
                 atomic(self.path, record)
+            atomic(self.path,record)
             self.record = record
             self.publish()
         except (ValueError, OSError, TypeError):
@@ -52,26 +70,53 @@ class OnlineUpdate:
     def publish(self):
         if self.record is None: return
         public = {k:copy.deepcopy(v) for k,v in self.record.items() if k in {
-            'operation_id','status','phase','started_at','updated_at','target_version','before_version',
+            'operation_id','request_id','status','phase','started_at','updated_at','target_version','before_version',
             'candidate_environment_digest','error','outcome','cleanup_complete','observed_versions',
-            'downloaded_bytes','total_bytes','filename','cache_reused','model_submitted','model_check_limit'}}
+            'downloaded_bytes','total_bytes','filename','cache_reused','model_submitted','model_check_limit',
+            'parent_operation_id','recovery','checkpoints','reconciliation','primary_failure','retry_of'}}
+        if 'recovery' not in public or self.record.get('status')=='rolled_back':
+            from .workbuddy_update_recovery import recovery_offer
+            public['recovery'] = recovery_offer(self.registry, self.record)
         with self.registry._updates_lock:
             self.registry._updates['codebuddy-agent-sdk'] = public
 
     def emit(self, **change):
-        self.record.update(change, updated_at=datetime.fromtimestamp(time.time(),timezone.utc).isoformat())
-        atomic(self.path,self.record)
-        atomic(self.root/(self.record['operation_id']+'.json'),self.record)
-        self.publish()
+        with self._record_lock:
+            self.record.update(change, updated_at=datetime.fromtimestamp(time.time(),timezone.utc).isoformat())
+            # Per-operation record is authoritative; current is only its projection.
+            atomic(self.root/(self.record['operation_id']+'.json'),self.record)
+            atomic(self.path,self.record)
+            self.publish()
+
+    async def submit_recovery(self, definition, parent_id, target, *, retry_of=None):
+        from .workbuddy_update_recovery import submit
+        return await submit(self, definition, parent_id, target, retry_of=retry_of)
 
     def bind_authentication_service(self):
         if (self.record and self.record.get('status') in BUSY
                 and (self.record.get('cleanup_complete') is False or self.record.get('switch_intent'))):
             self.registry.authentication_service.sdk_maintenance_active.add('workbuddy')
+            if self.record.get('rollback_anchor'):
+                from .workbuddy_update_switch import observation
+                self.emit(reconciliation=observation(self.registry,self.root,self.record))
 
-    async def submit(self, definition, target):
+    async def submit(self, definition, target, *, request_id=None):
         registry = self.registry
         if not definition.update_enabled: raise failure('sdk_update_disabled','version_check')
+        request_path=None
+        def replay():
+            if request_path is None or not request_path.exists():return None
+            saved=json.loads(request_path.read_bytes())
+            if saved['target_version']!=target:raise failure('sdk_update_request_conflict','version_check')
+            record=json.loads((self.root/(saved['operation_id']+'.json')).read_bytes())
+            return {'provider_id':'workbuddy','sdk_id':definition.sdk_id,'operation_id':record['operation_id'],
+                'maintenance_kind':'online_upgrade','activated':record.get('status')=='completed','restart_required':False,
+                'update_status':{k:v for k,v in record.items() if k in {'operation_id','request_id','status','phase','target_version','started_at','updated_at','outcome','error','cleanup_complete','observed_versions'}}}
+        if request_id is not None:
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',request_id):raise failure('sdk_update_request_invalid','version_check')
+            request_path=self.root/'requests'/(digest(request_id)+'.json')
+            original=replay()
+            if original:return original
         prior=registry.maintenance_status('workbuddy') or {}
         if prior.get('status') in BUSY:
             raise failure('sdk_update_busy' if prior['status']=='running' else 'sdk_update_outcome_unconfirmed','version_check')
@@ -83,6 +128,8 @@ class OnlineUpdate:
         if version.is_prerelease or version.is_devrelease or version.local:
             raise failure('workbuddy_update_target_unsupported','version_check')
         with file_lock(self.root/'submission.lock',wait=0):
+            original=replay()
+            if original:return original
             if self.task is not None and not self.task.done(): raise failure('sdk_update_busy','version_check')
             if self.record is None: self.recover()
             prior=registry.maintenance_status('workbuddy') or {}
@@ -93,12 +140,14 @@ class OnlineUpdate:
             release=await asyncio.to_thread(registry.workbuddy.environment.release)
             if Version(target)<=Version(release['sdk_version']): raise failure('sdk_already_current','version_check')
             now=time.time()
-            self.record={'version':1,'operation_id':'update_'+uuid.uuid4().hex,'status':'running',
+            self.record={'version':1,'operation_id':'update_'+uuid.uuid4().hex,'request_id':request_id,'status':'running',
                 'phase':'version_check','target_version':str(version),'before_version':release['sdk_version'],
                 'source_binding':source_binding(state),'source_environment_digest':release['environment_digest'],
                 'started_at':datetime.fromtimestamp(now,timezone.utc).isoformat(),
                 'deadline_at':now+3600,'model_submitted':False,'model_check_limit':1,'cleanup_complete':True}
             self.emit()
+            if request_path:
+                atomic(request_path,{'operation_id':self.record['operation_id'],'target_version':target})
             self.task=asyncio.create_task(self.run(definition),name=self.record['operation_id'])
         return {'provider_id':'workbuddy','sdk_id':definition.sdk_id,'operation_id':self.record['operation_id'],
             'current_version':release['sdk_version'],'cli_version':release['cli_version'],
@@ -147,33 +196,11 @@ class OnlineUpdate:
                 self.check_binding()
                 target=await backend.verify(receipt,self.emit,self.claim_model)
                 self.check_binding()
-                # No await between final clearance, atomic environment switch and account publication.
-                self.emit(phase='switching',switch_intent=True)
-                barrier=await asyncio.to_thread(backend.enter_switch)
-                self.held_barrier=barrier
-                try:
-                    await asyncio.to_thread(backend.activate,receipt,target)
-                    activated=True
-                    self.emit(phase='health_check',activated=True)
-                    await asyncio.to_thread(backend.health,receipt,target)
-                    if not backend.cleanup_complete():raise failure('runtime_cleanup_incomplete','health_check')
-                except BaseException:
-                    if not backend.is_target(receipt) and registry.workbuddy.environment.state()['environment_digest']==self.record['source_environment_digest']:
-                        backend.switch_safe=True
-                    if backend.is_target(receipt):
-                        self.emit(phase='rollback')
-                        await backend.rollback(self.emit)
-                        activated=False
-                        self.emit(status='rolled_back',phase='rolled_back',outcome='old_environment_restored',cleanup_complete=True)
-                    raise
-                finally:
-                    if backend.switch_safe and backend.cleanup_complete():
-                        await asyncio.to_thread(backend.leave_switch,barrier)
-                        self.held_barrier=None
-                self.emit(status='completed',phase='completed',outcome='activated',activated=True,
-                    cleanup_complete=True,observed_versions={'sdk':receipt['sdk_version'],'cli':receipt['cli_version']},error=None)
+                from .workbuddy_update_switch import switch
+                await switch(self,backend,receipt,target)
+
         except BaseException as exc:
-            phase=self.record.get('phase','version_check')
+            phase=getattr(exc,'update_failure_phase',self.record.get('phase','version_check'))
             code=getattr(exc,'code','sdk_update_interrupted' if isinstance(exc,asyncio.CancelledError) else
                 'sdk_update_deadline_exceeded' if isinstance(exc,TimeoutError) else 'sdk_update_failed')
             try: clean=(backend.cleanup_complete() if backend else True) and self.record.get('cleanup_complete') is not False
@@ -201,18 +228,19 @@ class OnlineUpdate:
 
 class CandidateSession:
     """Independent state/journal; immutable installed binaries stay in their original release."""
-    def __init__(self,registry,record,key,*,rollback=False):
+    def __init__(self,registry,record,key,*,rollback=False,initial_state=None):
         from .workbuddy_manager import WorkBuddyManager
         from .workbuddy_environment import WorkBuddyEnvironment,atomic_json
         from .workbuddy_supervisor import WorkBuddySupervisor
         from .runtime_authentication import RuntimeAuthenticationService
         from .runtime_authentication_adapters import OfficialAuthenticationAdapter
+        self.operation_id=record['operation_id']
         original=registry.workbuddy.environment
         area=registry.repository_root/'.local-data/sdk-update-jobs/workbuddy'/record['operation_id']/('rollback' if rollback else 'candidate')
         self.manager=WorkBuddyManager(area)
         self.environment=self.manager.environment
         self.environment.release=lambda environment_digest=None:original.release(environment_digest or key)
-        state=copy.deepcopy(original.state());state.update(environment_digest=key,authentication_environment=None)
+        state=copy.deepcopy(initial_state if initial_state is not None else original.state());state.update(environment_digest=key,authentication_environment=None)
         atomic_json(self.environment.state_path,state)
         self.manager.supervisor=WorkBuddySupervisor(self.environment)
         self.adapter=OfficialAuthenticationAdapter(registry.repository_root,'workbuddy',self.manager)
@@ -239,8 +267,14 @@ class CandidateSession:
 
 
 class UpdateBackend:
-    def __init__(self,registry,record):
+    def __init__(self,registry,record,*,anchor=None):
         self.registry=registry;self.record=record;self.session=None;self.rollback_session=None;self.switch_safe=True
+        if anchor is not None:
+            for name,value in anchor['backend'].items():
+                if name not in {'old_account','old_state','old_snapshot','old_certificates','old_operations','old_certificate','old_check'}:
+                    raise failure('workbuddy_update_anchor_invalid','reconciliation')
+                setattr(self,name,copy.deepcopy(value))
+            return
         self.old_account=copy.deepcopy(registry.authentication_service._account('workbuddy'))
         self.old_state=copy.deepcopy(registry.workbuddy.environment.state())
         self.old_snapshot={**registry.workbuddy.runtime_snapshot(require_enabled=False),'authentication_binding_revision':self.old_account['revision']}
@@ -249,6 +283,17 @@ class UpdateBackend:
         self.old_operations=copy.deepcopy(integration['operations'])
         self.old_certificate=self.old_certificates[-1]
         self.old_check=self.old_state['models'][self.old_state['default_model_id']]
+
+    def anchor(self,receipt,audit):
+        return {'version':1,'operation_id':self.record['operation_id'],
+            'parent_operation_id':self.record.get('parent_operation_id'),
+            'source_environment_digest':self.old_state['environment_digest'],
+            'target_environment_digest':receipt['environment_digest'],
+            'receipt':copy.deepcopy(receipt),
+            'target_account':copy.deepcopy(self.session.authentication._account('workbuddy')),
+            'target_certificate':copy.deepcopy(audit.certificate),'target_check':copy.deepcopy(audit.model_check),
+            'backend':{name:copy.deepcopy(getattr(self,name)) for name in (
+                'old_account','old_state','old_snapshot','old_certificates','old_operations','old_certificate','old_check')}}
 
     def preflight(self):
         supervisor=self.registry.workbuddy.supervisor
@@ -277,12 +322,14 @@ class UpdateBackend:
         self.preflight()
         if self.session.authentication.view('workbuddy').get('authentication_context_status')!='current':
             emit(phase='authentication_verification');await self.session.authenticate()
+        emit(phase='target_audit')
         cert=await asyncio.to_thread(certificate,self.session,self.old_certificate,report,operations=self.old_operations,supports=self.old_certificates)
         self.session.environment.mutate(lambda s:s.setdefault('sdk_integration_records',{}).__setitem__(cert['id'],cert))
         snapshot=self.session.authentication.bind('workbuddy',self.session.manager.runtime_snapshot(require_enabled=False))
         audit=TargetAdmissionAudit(self.session.authentication,cert,check,snapshot)
         audit(self.registry.workbuddy.environment.release(receipt['environment_digest']),self.old_state)
-        await asyncio.to_thread(copy_evidence,self.session.environment,self.registry.workbuddy.environment,cert,check)
+        emit(phase='evidence_publication')
+        await self.registry._await_update(asyncio.to_thread(copy_evidence,self.session.environment,self.registry.workbuddy.environment,cert,check))
         return audit
 
     def clearance(self):
@@ -335,8 +382,13 @@ class UpdateBackend:
             auth._save()
 
     def activate(self,receipt,audit):
+        from .workbuddy_update_switch import checkpoint
+        checkpoint(self,'environment_commit','intent')
         activate_candidate(self.registry.workbuddy.environment,receipt,verify_target=audit,clearance=self.clearance)
+        checkpoint(self,'environment_commit','completed')
+        checkpoint(self,'account_publication','intent')
         self.sync_account(self.session)
+        checkpoint(self,'account_publication','completed')
 
     def is_target(self,receipt):
         return self.registry.workbuddy.environment.state()['environment_digest']==receipt['environment_digest']
@@ -348,24 +400,31 @@ class UpdateBackend:
         if release['sdk_version']!=receipt['sdk_version'] or release['cli_version']!=receipt['cli_version']:
             raise failure('sdk_update_not_applied','health_check')
         snapshot=registry.workbuddy.runtime_snapshot(require_enabled=False)
+        snapshot['authentication_binding_revision']=snapshot['authentication_revision']
         audit.authentication.assert_binding('workbuddy',snapshot)
         account=registry.authentication_service.view('workbuddy')
         if account.get('authenticated') is not True or account.get('authentication_context_status')!='current':
             raise failure('workbuddy_update_authentication_failed','health_check')
         if self.registry.workbuddy.supervisor.pending():raise failure('runtime_cleanup_incomplete','health_check')
+        from .workbuddy_update_switch import checkpoint
+        checkpoint(self,'health_check','completed')
         self.switch_safe=True
 
     async def rollback(self,emit):
         from .workbuddy_sdk_target_audit import TargetAdmissionAudit
-        self.rollback_session=CandidateSession(self.registry,self.record,self.old_state['environment_digest'],rollback=True)
+        self.switch_safe=False
+        self.rollback_session=CandidateSession(self.registry,self.record,self.old_state['environment_digest'],rollback=True,initial_state=self.old_state)
         from .workbuddy_online_evidence import copy_job
         copy_job(self.registry.workbuddy.environment,self.rollback_session.environment,self.old_check)
         self.rollback_session.environment.mutate(lambda s:s.setdefault('models',{}).__setitem__(s['default_model_id'],self.old_check))
         await self.rollback_session.authenticate()
         env=self.registry.workbuddy.environment
         audit=TargetAdmissionAudit(self.rollback_session.authentication,self.old_certificate,self.old_check,self.old_snapshot)
-        await asyncio.to_thread(rollback_candidate,env,self.old_state['environment_digest'],verify_target=audit,clearance=self.clearance)
+        from .workbuddy_update_switch import checkpoint
+        checkpoint(self,'rollback','intent')
+        await self.registry._await_update(asyncio.to_thread(rollback_candidate,env,self.old_state['environment_digest'],verify_target=audit,clearance=self.clearance))
         self.sync_account(self.rollback_session)
+        checkpoint(self,'rollback','completed')
         env.assert_verification_binding(self.old_snapshot)
         self.rollback_session.authentication.assert_binding('workbuddy',self.old_snapshot)
         self.switch_safe=True
