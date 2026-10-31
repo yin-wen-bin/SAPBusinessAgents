@@ -19,16 +19,16 @@ export function initializeSettingsNavigation() {
   const picker = shell.querySelector<HTMLSelectElement>("[data-runtime-picker]")!;
   const more = shell.querySelector<HTMLSelectElement>("[data-runtime-more]")!;
   const others = shell.querySelector<HTMLElement>("[data-other-runtimes]")!;
-  const defaultLabel = shell.querySelector<HTMLElement>("[data-default-summary]")!;
   const previous = new Map<string, boolean>();
   let items: Runtime[] = [], currentDefault: string | null = null;
   let active = new URL(location.href).searchParams.get("provider") || "";
   let section = new URL(location.href).searchParams.get("section") === "history" ? "history" : "runtime";
-  let signature = "", received = false;
+  let signature = "";
   const name = (item: Runtime) => item.name?.[shell.dataset.locale!] || item.name?.en || item.provider_id;
   const label = (item: Runtime) => {
     const operation = item.authentication?.operation?.status;
-    const activity = shell.querySelector<HTMLElement>(`[data-provider-panel="${CSS.escape(item.provider_id)}"]`)?.dataset.activity;
+    const panel = shell.querySelector<HTMLElement>(`[data-provider-panel="${CSS.escape(item.provider_id)}"]`);
+    const activity = panel?.dataset.updateActivity || panel?.dataset.activity;
     const status = activity || (operation && ["queued", "running", "waiting_authentication", "cancelling", "cleanup_pending"].includes(operation) ? text("操作进行中", "Operation in progress") : item.authentication?.failure_code ? text("需处理", "Needs attention") : item.enabled === true ? text("已启用", "Enabled") : item.enabled === false ? text("已停用", "Disabled") : text("待核对", "Not confirmed"));
     return `${name(item)} · ${status}${item.provider_id === currentDefault ? text(" · 系统默认", " · System default") : ""}`;
   };
@@ -45,6 +45,10 @@ export function initializeSettingsNavigation() {
   }
   function choose(provider: string, push = true) {
     active = provider; section = "runtime"; updateURL(push); display();
+    requestRead();
+  }
+  function requestRead() {
+    if (section === "runtime" && active) document.dispatchEvent(new CustomEvent("sapba:settings-read", {detail: {provider: active}}));
   }
   function display() {
     if (items.length && !items.some(item => item.provider_id === active)) {
@@ -54,8 +58,6 @@ export function initializeSettingsNavigation() {
     shell.querySelectorAll<HTMLElement>("[data-settings-pane]").forEach(pane => { pane.hidden = pane.dataset.settingsPane !== section; });
     shell.querySelectorAll<HTMLElement>("[data-settings-section]").forEach(link => { if (link.dataset.settingsSection === section) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current"); });
     shell.querySelectorAll<HTMLElement>("[data-provider-panel]").forEach(panel => { panel.hidden = panel.dataset.providerPanel !== active; });
-    const selected = items.find(item => item.provider_id === currentDefault);
-    defaultLabel.textContent = selected ? `${text("系统默认", "System default")}: ${name(selected)} · ${selected.default_model_id || text("模型待核对", "Model not confirmed")}` : !received ? text("正在读取系统默认 Runtime…", "Reading the system-default Runtime…") : currentDefault ? `${text("系统默认", "System default")}: ${currentDefault} · ${text("状态待核对", "State not confirmed")}` : text("尚未设置系统默认 Runtime", "No system-default Runtime");
     const grouped = runtimeGroups(items, currentDefault, previous);
     const main = grouped.filter(entry => entry.main).map(entry => entry.item);
     const secondary = grouped.filter(entry => !entry.main).map(entry => entry.item);
@@ -97,10 +99,10 @@ export function initializeSettingsNavigation() {
   picker.addEventListener("change", () => choose(picker.value)); more.addEventListener("change", () => { if (more.value) choose(more.value); });
   shell.querySelectorAll<HTMLAnchorElement>("[data-settings-section]").forEach(link => link.addEventListener("click", event => {
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-    event.preventDefault(); section = link.dataset.settingsSection!; updateURL(true); display();
+    event.preventDefault(); section = link.dataset.settingsSection!; updateURL(true); display(); requestRead();
   }));
-  window.addEventListener("popstate", () => { const params = new URL(location.href).searchParams; active = params.get("provider") || ""; section = params.get("section") === "history" ? "history" : "runtime"; display(); });
-  document.addEventListener("sapba:settings-state", ((event: CustomEvent) => { received = true; items = event.detail.items; currentDefault = event.detail.defaultProviderId; display(); }) as EventListener);
+  window.addEventListener("popstate", () => { const params = new URL(location.href).searchParams; active = params.get("provider") || ""; section = params.get("section") === "history" ? "history" : "runtime"; display(); requestRead(); });
+  document.addEventListener("sapba:settings-state", ((event: CustomEvent) => { items = event.detail.items; currentDefault = event.detail.defaultProviderId; display(); }) as EventListener);
   document.addEventListener("sapba:settings-activity", () => display());
   display(); document.dispatchEvent(new CustomEvent("sapba:settings-request-state"));
 }

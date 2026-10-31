@@ -92,7 +92,6 @@ const copy = locale === "zh" ? {
   <header class="plugin-manager-header">
     <div><p class="runtime-eyebrow"><Settings size={16} aria-hidden="true" />{copy.eyebrow}</p><h1>{copy.title}</h1><p>{copy.body}</p></div>
   </header>
-  <div class="settings-default-strip"><strong data-default-summary>{copy.loading}</strong><button type="button" class="secondary-button" data-reread><RefreshCw size={16} aria-hidden="true" />{locale === "zh" ? "重新读取状态" : "Read status again"}</button></div>
   <div class="settings-runtime-navigation">
     <div role="tablist" aria-label={locale === "zh" ? "查看 Runtime" : "View Runtime"} data-runtime-tabs></div>
     <label class="settings-more" hidden>{locale === "zh" ? "更多" : "More"}<select data-runtime-more aria-label={locale === "zh" ? "更多 Runtime" : "More runtimes"}></select></label>
@@ -747,12 +746,12 @@ const copy = locale === "zh" ? {
           const result = await authRequest(base);
           const next = result.authentication;
           if (next?.revision !== authentication.revision || next?.service_site_digest !== authentication.service_site_digest) {
-            await load(false, {incremental: true}); return;
+            await load(false, {incremental: true,provider}); return;
           }
           section.updateAuthenticationSummary?.(sdk, next);
           if (!authenticationSyncPending(next)) {
             const view = runtimeViews.get(provider); if (view) view.authenticationKey = null;
-            await load(false, {incremental: true});
+            await load(false, {incremental: true,provider});
           }
         } catch {
           syncNote.hidden = false;
@@ -971,6 +970,7 @@ const copy = locale === "zh" ? {
     close:"Minimize",read:"Read status again",ack:"Acknowledge result",elapsed:"Elapsed",details:"Diagnostic details",view:"View update progress / result",refreshError:"The version is active, but page information could not be read. Read status again.",unknownNote:"Only the original operation is checked; installation or activation is not resubmitted.",readStopped:"Automatic reconnection paused. Read status manually; the original operation was not cancelled.",restored:"Previously recorded as active; checking current information."
   };
   const updateDialog = {provider:null, returnFocus:null};
+  let finalRefreshProvider = null;
   const progressEntries = new Map();
   const makeUpdateDialog = () => {
     if (updateDialog.node) return;
@@ -984,18 +984,22 @@ const copy = locale === "zh" ? {
     const footer=element("footer"), minimize=element("button","secondary-button",feedbackCopy.close), reread=element("button","secondary-button",feedbackCopy.read), ack=element("button","sdk-update-button",feedbackCopy.ack);
     for (const button of [minimize,reread,ack]) button.type="button";
     const hide=() => {
+      pauseUpdateTracking();
       if (typeof dialog.close === "function") dialog.close(); else dialog.hidden=true;
       const opener=updateDialog.returnFocus;
-      const focus=opener && !opener.disabled && opener.isConnected !== false ? opener : progressEntries.get(updateDialog.provider)?.[0];
+      const visible=node=>node && !node.disabled && node.isConnected !== false && !node.closest?.("details:not([open])") && !node.closest?.("[hidden]");
+      const focus=visible(opener) ? opener : root.querySelector?.(`[data-runtime-tab="${updateDialog.provider}"]`)
+        || root.querySelector?.("[data-runtime-picker]") || runtimeViews.get(updateDialog.provider)?.card;
+      if(focus?.tagName === "ARTICLE") focus.setAttribute("tabindex","-1");
       focus?.focus?.();
     };
     close.addEventListener("click",hide); minimize.addEventListener("click",hide);
     dialog.addEventListener("cancel",event=>{ event.preventDefault(); hide(); });
     reread.addEventListener("click",()=>rereadUpdate(updateDialog.provider));
-    ack.addEventListener("click",()=>{const state=maintenanceState(updateDialog.provider); if(state) setMaintenance(updateDialog.provider,{...state,acknowledged:true}); hide();});
+    ack.addEventListener("click",()=>{const state=maintenanceState(updateDialog.provider); if(state) setMaintenance(updateDialog.provider,{...state,acknowledged:true}); renderUpdateFeedback(updateDialog.provider); hide();});
     header.append(title,close);footer.append(minimize,reread,ack);
     dialog.append(header,identity,status,phase,elapsed,download,note,details,footer);root.append(dialog);
-    Object.assign(updateDialog,{node:dialog,identity,status,phase,elapsed,note,download,details,code,technicalPhase,ack});
+    Object.assign(updateDialog,{node:dialog,identity,status,phase,elapsed,note,download,details,code,technicalPhase,ack,hide});
   };
   const showUpdateDialog = (provider, opener) => {
     makeUpdateDialog();updateDialog.provider=provider;updateDialog.returnFocus=opener || document.activeElement;
@@ -1003,25 +1007,29 @@ const copy = locale === "zh" ? {
     renderUpdateFeedback(provider);
     if (!updateDialog.node.open && typeof updateDialog.node.showModal === "function") updateDialog.node.showModal();
     else updateDialog.node.setAttribute("open", "");
+    if(!maintenanceState(provider)?.requestPending)rereadUpdate(provider);else scheduleUpdateTracking();
   };
   const rereadUpdate = async provider => {
     const state=maintenanceState(provider);
     if (state?.kind === "update") setMaintenance(provider,{...state,reconnectStartedAt:null,reconnectFailures:0,reconnecting:false,reconnectStopped:false,refreshError:false});
-    try { await load(false,{incremental:true,afterMutation:true}); }
+    try { await load(false,{incremental:true,provider,purpose:"operation"}); }
     catch { renderUpdateFeedback(provider); }
+    finally { scheduleUpdateTracking(); }
   };
   const renderUpdateFeedback = provider => {
     const state=maintenanceState(provider),view=runtimeViews.get(provider);
     if (state?.kind !== "update" || !view) return;
     const outcome=updateOutcome(state,view.sdk),label=feedbackCopy[outcome] || feedbackCopy.running;
     if (!progressEntries.has(provider)) {
-      const top=element("button","secondary-button sdk-update-feedback-entry"),inside=element("button","secondary-button sdk-update-feedback-entry");
-      for(const button of [top,inside]) { button.type="button";button.addEventListener("click",()=>showUpdateDialog(provider,button)); }
-      (root.querySelector(".settings-default-strip") || root).append(top);view.versionSection.append(inside);
-      progressEntries.set(provider,[top,inside]);
+      const inside=element("button","secondary-button sdk-update-feedback-entry");
+      inside.type="button";inside.addEventListener("click",()=>showUpdateDialog(provider,inside));
+      view.versionSection.append(inside);progressEntries.set(provider,[inside]);
     }
-    for (const entry of progressEntries.get(provider)) entry.textContent=`${localized(view.sdk.name) || provider} · ${label} · ${feedbackCopy.view}`;
-    activity(view.card,["running","submitting","switching","waiting","cleanup"].includes(outcome) ? (locale === "zh" ? "操作进行中" : "Operation in progress") : label);
+    for (const entry of progressEntries.get(provider)) { entry.textContent=`${label} · ${feedbackCopy.view}`; entry.setAttribute("aria-label",`${localized(view.sdk.name) || provider} · ${entry.textContent}`); }
+    const working=["running","submitting","switching","waiting","cleanup","reconnecting"].includes(outcome);
+    view.card.dataset.updateActivity=state.acknowledged ? "" : working ? (locale === "zh" ? "更新中" : "Updating")
+      : ["failed","rolled_back","unknown","review"].includes(outcome) ? (locale === "zh" ? "需处理" : "Needs attention") : "";
+    activity(view.card,working || authenticationActive(view.sdk.authentication?.operation) ? (locale === "zh" ? "操作进行中" : "Operation in progress") : "");
     if (updateDialog.provider !== provider || !updateDialog.node) return;
     updateDialog.identity.textContent=`${localized(view.sdk.name) || provider} · ${state.before_version || "—"} → ${state.target || "—"}`;
     updateDialog.status.textContent=label;
@@ -1043,7 +1051,7 @@ const copy = locale === "zh" ? {
     state.refreshedFor=key;versionReads.delete(provider);setMaintenance(provider,state);
     const view=runtimeViews.get(provider);
     if(view){view.authenticationKey=null;view.modelSummaryKey=null;view.modelsLoaded=false;}
-    Promise.resolve().then(()=>load(false,{incremental:true,afterMutation:true})).then(()=>{
+    Promise.resolve().then(()=>load(false,{incremental:true,afterMutation:true,provider})).then(()=>{
       const current=maintenanceState(provider);if(current?.refreshedFor===key){setMaintenance(provider,{...current,refreshError:false});renderUpdateFeedback(provider);}
     }).catch(()=>{
       const current=maintenanceState(provider);if(current?.refreshedFor===key){setMaintenance(provider,{...current,refreshError:true});renderUpdateFeedback(provider);}
@@ -1073,15 +1081,18 @@ const copy = locale === "zh" ? {
   };
   const adoptUpdate = sdk => {
     const server=sdk.update_status, local=maintenanceState(sdk.provider_id);
-    if (!server?.operation_id) return;
+    const unconfirmed = () => {
+      if(local?.kind !== "update" || local.acknowledged || local.requestPending || local.confirmedActive
+          || !["running","unknown","needs_review","cleanup_pending"].includes(local.status))return;
+      const began=local.reconnectStartedAt || Date.now(),failures=(local.reconnectFailures || 0)+1;
+      setMaintenance(sdk.provider_id,{...local,status:"unknown",reconnecting:true,reconnectStartedAt:began,reconnectFailures:failures,reconnectStopped:updateRetryDelay(failures,began)===null,message:maintenanceCopy.unknown});
+    };
+    if (!server?.operation_id) { unconfirmed();return; }
     const live=["running","cleanup_pending"].includes(server.status);
     if (!live && local && local.kind !== "update") return;
     if (local?.kind === "update" && !local.acknowledged) {
       if (!updateMatches(local,server)) {
-        if(!local.requestPending && !local.confirmedActive){
-          const began=local.reconnectStartedAt || Date.now(),failures=(local.reconnectFailures || 0)+1;
-          setMaintenance(sdk.provider_id,{...local,status:"unknown",reconnecting:true,reconnectStartedAt:began,reconnectFailures:failures,reconnectStopped:updateRetryDelay(failures,began)===null,message:maintenanceCopy.unknown});
-        }
+        unconfirmed();
         return;
       }
       if (local.operation_id === server.operation_id && Date.parse(local.serverUpdatedAt) > Date.parse(server.updated_at)) return;
@@ -1099,7 +1110,8 @@ const copy = locale === "zh" ? {
       requestPending:false,code:server.error?.code,errorPhase:server.error?.phase,phase:server.phase,message:updatePhaseMessage(server)};
     if(updateOutcome(next,sdk)==="active"){next.confirmedActive=true;next.message=feedbackCopy.active;}
     setMaintenance(sdk.provider_id,next);
-    if(next.confirmedActive && !next.acknowledged)refreshActivatedUpdate(sdk.provider_id,next);
+    if(next.confirmedActive && !next.acknowledged && (trackingVisible() || finalRefreshProvider === sdk.provider_id) && !document.hidden && viewedSection === "runtime"
+        && (!viewedProvider || viewedProvider === sdk.provider_id))refreshActivatedUpdate(sdk.provider_id,next);
   };
   const maintenanceSDK = sdk => {
     const local = versionReads.get(sdk.provider_id);
@@ -1175,7 +1187,6 @@ const copy = locale === "zh" ? {
     setMaintenance(provider, {kind:stateKind, status: "running", target, submitted_at, requestId, before_version:sdk.current_version, parent_operation_id:kind === "recover" ? recovery.parent_operation_id : null,retry_of:recovery?.retry_of,requestPending:true, message: kind === "versions" ? maintenanceCopy.checkingVersions : updating ? copy.updating : copy.checking});
     if(updating)showUpdateDialog(provider);
     updateMaintenanceView(view);
-    if (updating) load(false,{incremental:true}).catch(() => {});
     try {
       const url = kind === "check" ? `${apiBase}/api/system/sdk-runtimes/${encodeURIComponent(provider)}/check`
         : kind === "recover" ? `${apiBase}/api/system/sdks/${encodeURIComponent(sdk.sdk_id)}/update-operations/${encodeURIComponent(recovery.parent_operation_id)}/recover?expectedTargetVersion=${encodeURIComponent(target)}${recovery.retry_of ? `&retryOf=${encodeURIComponent(recovery.retry_of)}` : ""}`
@@ -1189,13 +1200,13 @@ const copy = locale === "zh" ? {
         setMaintenance(provider,{...maintenanceState(provider),kind:"update",status:status.status,target,submitted_at,requestPending:false,
           requestId,operation_id:status.operation_id,serverUpdatedAt:status.updated_at,code:status.error?.code,phase:status.phase,message:updatePhaseMessage(status)});
         adoptUpdate({...sdk,...payload.item});
-        await load(false,{incremental:true,afterMutation:true}).catch(()=>{}); return;
+        if(trackingVisible())await load(false,{incremental:true,afterMutation:true,provider,purpose:"operation"}).catch(()=>{}); return;
       }
       if (provider === "workbuddy" && payload.item?.update_status?.outcome === "candidate_prepared") {
         versionReads.set(provider, {...payload.item});
         setMaintenance(provider, {kind:"update",status:"needs_review",target,requestPending:false,
           operation_id:payload.item.update_status.operation_id,message:updatePhaseMessage(payload.item.update_status)});
-        await load(false,{incremental:true,afterMutation:true}).catch(()=>{}); return;
+        if(trackingVisible())await load(false,{incremental:true,afterMutation:true,provider,purpose:"operation"}).catch(()=>{}); return;
       }
       if (kind === "versions" && (["unknown","needs_review"].includes(prior?.status) && !payload.item?.update_status || payload.item?.update_status?.status === "needs_review")) {
         setMaintenance(provider,{...prior,requestPending:false,status:"unknown",message:maintenanceCopy.unknown}); return;
@@ -1220,8 +1231,8 @@ const copy = locale === "zh" ? {
       const unknown = updating && (!error.confirmed || error.outcome === "unknown");
       setMaintenance(provider, {...maintenanceState(provider),kind:stateKind, status: unknown ? "unknown" : "failed", target, submitted_at, requestId, requestPending:false,
         code: error.code, phase: error.phase, message: unknown ? maintenanceCopy.unknown : String(error.message || maintenanceCopy.failed)});
-      if (updating) load(false,{incremental:true}).catch(() => {});
-    } finally { updateMaintenanceView(runtimeViews.get(provider)); }
+      if (updating && trackingVisible())load(false,{incremental:true,provider,purpose:"operation"}).catch(() => {});
+    } finally { updateMaintenanceView(runtimeViews.get(provider));if(updating)scheduleUpdateTracking(); }
   };
   const renderMaintenanceVersions = sdk => {
     const section = element("section", "settings-maintenance-versions");
@@ -1239,7 +1250,7 @@ const copy = locale === "zh" ? {
       const button = controls[kind]; button.type = "button"; button.addEventListener("click", () => runMaintenance(sdk.provider_id, kind)); actions.append(button);
     }
     controls.reread.type = "button"; controls.reread.hidden = true;
-    controls.reread.addEventListener("click", () => load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")));
+    controls.reread.addEventListener("click", () => requestDisplayRead(sdk.provider_id));
     controls.status.setAttribute("role", "status"); controls.status.setAttribute("aria-live", "polite");
     controls.error.append(element("summary", "", locale === "zh" ? "失败诊断" : "Failure diagnostics"), controls.errorCode, controls.errorPhase);
     section.append(versions, controls.time, actions, controls.note, controls.recoveryReason, controls.status, controls.error, controls.reread); section.controls = controls;
@@ -1323,7 +1334,7 @@ const copy = locale === "zh" ? {
     if (sdk.status_refresh?.stale || ["refreshing", "unknown", "failed"].includes(sdk.status_refresh?.status)) return;
     view.modelsLoaded = true; loadModels(sdk, view.modelSection);
   };
-  const render = (sdks, defaultProviderId, incremental = false) => {
+  const render = (sdks, defaultProviderId, incremental = false, operationOnly = false) => {
     listedProviders = new Set(sdks.map(sdk => sdk.provider_id));
     if (!incremental && !navigationEnabled) { grid.replaceChildren(); runtimeViews.clear(); }
     latestDefault = defaultProviderId; noDefault.hidden = Boolean(defaultProviderId);
@@ -1361,7 +1372,7 @@ const copy = locale === "zh" ? {
           old.accountSection.updateOperation?.(sdk.authentication.operation);
           old.operationSignature = JSON.stringify(sdk.authentication.operation);
         }
-        if (navigationEnabled && (old.binding !== bindingSignature(sdk) || old.formSignature !== formSignature(sdk) || !incremental)) {
+        if (!operationOnly && navigationEnabled && (old.binding !== bindingSignature(sdk) || old.formSignature !== formSignature(sdk) || !incremental)) {
           if (old.acceptedFormChange && !old.stale) { refreshViewForms(old); }
           else if ((old.dirty || old.card.dataset.busy === "true") && old.formSignature !== formSignature(sdk)) {
             old.stale = true;
@@ -1376,8 +1387,7 @@ const copy = locale === "zh" ? {
           } else if (!old.dirty && old.card.dataset.busy !== "true" && !authenticationPending.has(sdk.provider_id) && !sitePending.has(sdk.provider_id)) refreshViewForms(old);
         }
         if (!old.accountSection.children.length && sdk.authentication) renderAuthentication(sdk, old.accountSection, sdk.authentication);
-        maybeLoadModels(sdk, old);
-        maybeLoadAuthentication(sdk, old);
+        if (!operationOnly) { maybeLoadModels(sdk, old); maybeLoadAuthentication(sdk, old); }
         organizeView(old);
         continue;
       }
@@ -1411,7 +1421,8 @@ const copy = locale === "zh" ? {
       const view = {sdk, card, badge, accountSection, modelSection, maintenance, mainActions, maintenanceActions, diagnostics, versionSection, runtimeSection: parts.runtimeSection, actions: parts.actions, modelsLoaded: false, actionSignature: actionSignature(sdk), binding: bindingSignature(sdk), formSignature: formSignature(sdk), dirty:false};
       if (navigationEnabled) {
         for (const name of ["input", "change"]) card.addEventListener(name, event => { if (event.target.matches("input,select,textarea")) view.dirty = true; });
-        card.addEventListener("click", event => { if (view.stale && !view.bindingWarning?.contains(event.target)) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+        card.addEventListener("click", event => { if (view.stale && !view.bindingWarning?.contains(event.target) && !view.readNote?.contains(event.target)
+          && !event.target.closest?.(".sdk-update-feedback-entry")) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
       }
       runtimeViews.set(sdk.provider_id, view);
       modelSection.append(element("h3", "", copy.modelCatalog), element("p", "sdk-update-note", locale === "zh" ? "正在读取已保存状态…" : "Loading saved status…"));
@@ -1430,67 +1441,143 @@ const copy = locale === "zh" ? {
     const items = [...runtimeViews.values()].filter(view => !navigationEnabled || listedProviders.has(view.sdk.provider_id)).map(view => view.sdk.provider_id === item.provider_id ? item : view.sdk);
     render(items, latestDefault, true);
   };
-  let statusPolls = 0;
-  let statusTimer;
-  let listRequest;
-  let latestPayload;
-  let statusReadFailed = false;
-  const needsRefresh = (sdk) => !(maintenanceState(sdk.provider_id)?.kind === "update" && maintenanceState(sdk.provider_id)?.reconnectStopped) && ([sdk.status_refresh, sdk.display_status, sdk.control_status].some(status =>
-    status && (status.running || status.status === "refreshing"
-      || !status.error_code && status.status !== "failed" && (status.stale || status.status === "unknown")))
-    || ["running","cleanup_pending"].includes(sdk.update_status?.status) || maintenanceState(sdk.provider_id)?.status === "running"
-    || maintenanceState(sdk.provider_id)?.reconnecting && !maintenanceState(sdk.provider_id)?.reconnectStopped);
-  const scheduleStatus = () => {
-    clearTimeout(statusTimer);
-    const reconnecting=[...maintenanceStates.values()].filter(state=>state.kind === "update" && state.reconnecting && !state.reconnectStopped);
-    if (document.hidden || statusReadFailed && !reconnecting.length || !(latestPayload?.items || []).some(sdk => needsRefresh(sdk) || sdk.control_status?.running)) { statusPolls = 0; return; }
-    if(reconnecting.length){
-      const delays=reconnecting.map(state=>updateRetryDelay(state.reconnectFailures,state.reconnectStartedAt)).filter(value=>value!==null);
-      if(!delays.length)return;
-      statusTimer=setTimeout(()=>load(false,{incremental:true}).catch(()=>{}),Math.min(...delays));return;
+  // A display read is a bounded transaction, never a page-wide polling loop.
+  const readRequests = new Map(), displayReads = new Map();
+  let readSequence = 0, defaultSequence = 0, navigationLoaded = false;
+  const currentProvider = () => runtimeViews.has(viewedProvider) ? viewedProvider : runtimeViews.has(latestDefault) ? latestDefault : runtimeViews.keys().next().value || null;
+  const readPending = sdk => [sdk?.display_status,sdk?.control_status,sdk?.status_refresh]
+    .some(status=>status?.running === true || status?.status === "refreshing");
+  const readNotice = (provider, message = "", retry = false) => {
+    const view=runtimeViews.get(provider);if(!view)return;
+    if(!view.readNote){
+      const note=element("div","sdk-display-read-note"),text=element("p","sdk-update-note"),button=element("button","secondary-button",locale === "zh" ? "重试读取" : "Retry reading");
+      note.setAttribute("role","status");button.type="button";button.addEventListener("click",()=>requestDisplayRead(provider));
+      note.append(text,button);Object.assign(view,{readNote:note,readText:text,readRetry:button});
     }
-    const delay = latestPayload.items.some(sdk => sdk.control_status?.running || sdk.display_status?.running || ["running","cleanup_pending"].includes(sdk.update_status?.status) || maintenanceState(sdk.provider_id)?.status === "running") ? 2000 : statusPolls < 15 ? 2000 : statusPolls < 30 ? 5000 : 15000;
-    statusPolls++;
-    statusTimer = setTimeout(() => load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")), delay);
+    view.readText.textContent=message + (message && view.lastReadAt ? ` · ${locale === "zh" ? "上次读取" : "Last read"}: ${checkedTime(view.lastReadAt)}` : "");
+    view.readRetry.hidden=!retry;view.readNote.hidden=!message;
+    (navigationEnabled && view.mainActions || view.card).append(view.readNote);
   };
-  const load = (showLoading = true, {incremental = false, afterMutation = false} = {}) => {
-    if (listRequest) {
-      if (afterMutation || !incremental) return listRequest.catch(() => {}).then(() => load(showLoading, {incremental}));
-      return listRequest;
+  const abortedRead = () => {const error=new Error("display_read_aborted");error.name="AbortError";return error;};
+  const load = (showLoading = true, {incremental = false, afterMutation = false, provider = navigationLoaded ? currentProvider() : null, purpose = "display", signal, timeout = 10000} = {}) => {
+    const key=provider || "navigation",prior=readRequests.get(key);
+    if(prior){
+      if(afterMutation)return prior.catch(()=>{}).then(()=>load(showLoading,{incremental:true,provider,purpose,signal,timeout}));
+      return prior;
     }
-    if (showLoading) showMessage(copy.loading);
-    const generation = stateGeneration;
-    listRequest = (async () => {
-      try {
-        const payload = await request(apiBase + "/api/system/sdk-runtimes?view=summary", {cache: "no-store"});
-        const recoveredRead = statusReadFailed;
-        statusReadFailed = false;
-        if (generation === stateGeneration) { if (recoveredRead) alert.hidden = true; latestPayload = payload; render(payload.items || [], payload.default_provider_id, incremental); }
-      } catch (error) {
-        for(const [provider,state] of maintenanceStates){
-          if(state.kind !== "update" || state.confirmedActive || !["running","unknown","cleanup_pending","needs_review"].includes(state.status))continue;
-          const began=state.reconnectStartedAt || Date.now(),failures=(state.reconnectFailures || 0)+1;
-          setMaintenance(provider,{...state,reconnecting:true,reconnectStartedAt:began,reconnectFailures:failures,reconnectStopped:updateRetryDelay(failures,began)===null});
-          renderUpdateFeedback(provider);
+    if(signal?.aborted)return Promise.reject(abortedRead());
+    if(showLoading)showMessage(copy.loading);
+    const generation=stateGeneration,sequence=++readSequence,controller=new AbortController();
+    let timer,abort;
+    const interrupted=new Promise((_,reject)=>{
+      abort=()=>{controller.abort();reject(abortedRead());};signal?.addEventListener("abort",abort,{once:true});
+      timer=setTimeout(()=>{controller.abort();reject(new Error(locale === "zh" ? "展示读取超时，保留已有信息。" : "Display read timed out; previous information is retained."));},Math.max(1,Math.min(10000,timeout)));
+    });
+    const reading=(async()=>{
+      try{
+        const payload=await Promise.race([request(apiBase+"/api/system/sdk-runtimes?view=summary"+(provider ? `&provider_id=${encodeURIComponent(provider)}` : ""),{cache:"no-store",signal:controller.signal}),interrupted]);
+        if(signal?.aborted)throw abortedRead();
+        if(generation===stateGeneration){
+          const defaultProvider=sequence>=defaultSequence ? payload.default_provider_id : latestDefault;
+          if(sequence>=defaultSequence)defaultSequence=sequence;
+          const incoming=new Map((payload.items || []).filter(item=>!provider || item.provider_id===provider).map(item=>[item.provider_id,item]));
+          const merged=provider ? [...runtimeViews.values()].filter(view=>listedProviders.has(view.sdk.provider_id)).map(view=>incoming.get(view.sdk.provider_id)||view.sdk) : [...incoming.values()];
+          for(const [id,item] of incoming)if(!merged.some(value=>value.provider_id===id))merged.push(item);
+          const previousRefresh=finalRefreshProvider;
+          finalRefreshProvider=purpose === "operation" ? null : provider || currentProvider();
+          try{render(merged.map(item=>({...item,selected:item.provider_id===defaultProvider})),defaultProvider,incremental || Boolean(provider),purpose === "operation");}
+          finally{finalRefreshProvider=previousRefresh;}
+          if(!provider)navigationLoaded=true;
+          for(const item of incoming.values()){
+            const view=runtimeViews.get(item.provider_id);
+            if(view && !readPending(item)){view.lastReadAt=new Date().toISOString();readNotice(item.provider_id);}
+          }
+          if(!provider)alert.hidden=true;
         }
-        statusReadFailed = true; throw error;
-      } finally { listRequest = null; scheduleStatus(); }
+        return payload;
+      }catch(error){
+        if(error.name!=="AbortError" && purpose === "operation" && provider){
+          const state=maintenanceState(provider);
+          if(state?.kind === "update" && !state.confirmedActive){
+            const began=state.reconnectStartedAt || Date.now(),failures=(state.reconnectFailures || 0)+1;
+            setMaintenance(provider,{...state,reconnecting:true,reconnectStartedAt:began,reconnectFailures:failures,reconnectStopped:updateRetryDelay(failures,began)===null});
+            renderUpdateFeedback(provider);
+          }
+        }
+        throw error;
+      }finally{clearTimeout(timer);signal?.removeEventListener("abort",abort);if(readRequests.get(key)===reading)readRequests.delete(key);}
     })();
-    return listRequest;
+    readRequests.set(key,reading);return reading;
   };
-  document.addEventListener("visibilitychange", () => { clearTimeout(statusTimer); for (const timer of authenticationSyncTimers.values()) clearTimeout(timer); if (!document.hidden) { for (const view of runtimeViews.values()) if (view.sdk.provider_id === "workbuddy") view.authenticationKey = null; load(false, {incremental: true}).catch(() => showMessage(copy.unavailable, "error")); } });
-  window.addEventListener("pagehide", () => { clearTimeout(statusTimer); for (const timer of authenticationSyncTimers.values()) clearTimeout(timer); });
-  root?.querySelector("[data-check-all]")?.addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; showMessage(copy.checking); try { const payload = await request(apiBase + "/api/system/sdk-runtimes/check", { method: "POST" }); render(payload.items || [], payload.default_provider_id); } catch (error) { showMessage(String(error.message || error), "error"); } finally { button.disabled = false; } });
-  root?.querySelector("[data-reread]")?.addEventListener("click", () => {
-    for (const view of runtimeViews.values()) { view.authenticationKey = null; view.modelSummaryKey = null; }
-    load(false, {incremental:true}).catch(() => showMessage(copy.unavailable, "error"));
+  const stopDisplayRead = provider => {
+    const active=displayReads.get(provider);if(!active)return;
+    active.done=true;clearTimeout(active.timer);clearTimeout(active.deadline);active.controller.abort();displayReads.delete(provider);active.resolve();
+  };
+  const requestDisplayRead = (provider, {initial,started=Date.now()} = {}) => {
+    if(!provider || document.hidden || viewedSection!=="runtime")return Promise.resolve();
+    if(displayReads.has(provider))return displayReads.get(provider).promise;
+    const active={controller:new AbortController(),started,reads:initial ? 1 : 0,done:false};
+    active.promise=new Promise(resolve=>{active.resolve=resolve;});displayReads.set(provider,active);
+    const finish=(message="",retry=false)=>{if(active.done)return;readNotice(provider,message,retry);stopDisplayRead(provider);};
+    const waiting=locale === "zh" ? "仍待核对；本次展示读取已停止，已有信息保留。" : "Still unconfirmed. This display read stopped; previous information is retained.";
+    const advance=payload=>{
+      if(active.done)return;
+      const item=(payload.items || []).find(item=>item.provider_id===provider);
+      const statuses=[item?.display_status,item?.control_status,item?.status_refresh];
+      const failed=statuses.find(status=>status?.status === "failed" || status?.error_code);
+      if(failed){finish(locale === "zh" ? "展示读取失败，已有信息保留；可重试读取。" : "Display read failed; previous information retained. Retry reading.",true);return;}
+      if(!item || !readPending(item)){finish(statuses.some(status=>status?.stale) ? waiting : "",statuses.some(status=>status?.stale));return;}
+      if(active.reads>=4 || Date.now()-started>=10000){finish(waiting,true);return;}
+      readNotice(provider,locale === "zh" ? "正在读取当前SDK的展示信息…" : "Reading this SDK's display information…");
+      const delay=[1000,2000,5000][active.reads-1];
+      if(Date.now()-started+delay>=10000){finish(waiting,true);return;}
+      active.timer=setTimeout(run,delay);
+    };
+    const run=async()=>{
+      if(active.done)return;active.reads++;
+      try{advance(await load(false,{incremental:true,provider,signal:active.controller.signal,timeout:10000-(Date.now()-started)}));}
+      catch(error){if(!active.done)finish(error.name === "AbortError" ? waiting : `${locale === "zh" ? "读取失败，保留已有信息" : "Read failed; previous information retained"}: ${error.message}`,true);}
+    };
+    active.deadline=setTimeout(()=>finish(waiting,true),Math.max(1,10000-(Date.now()-started)));
+    const view=runtimeViews.get(provider);if(view){view.authenticationKey=null;view.modelSummaryKey=null;view.modelsLoaded=false;}
+    if(initial)advance(initial);else run();return active.promise;
+  };
+  let updateTimer,updateReadAbort;
+  const trackingVisible = () => !document.hidden && viewedSection === "runtime" && updateDialog.node?.open && !updateDialog.node.hidden;
+  const pauseUpdateTracking = () => {clearTimeout(updateTimer);updateReadAbort?.abort();updateReadAbort=null;};
+  const scheduleUpdateTracking = () => {
+    clearTimeout(updateTimer);if(!trackingVisible())return;
+    const provider=updateDialog.provider,state=maintenanceState(provider),outcome=updateOutcome(state,runtimeViews.get(provider)?.sdk);
+    if(["active","failed","rolled_back","installed","restart","review","none"].includes(outcome) || state?.reconnectStopped)return;
+    const delay=state?.reconnecting ? updateRetryDelay(state.reconnectFailures,state.reconnectStartedAt) : 2000;
+    if(delay===null)return;
+    updateTimer=setTimeout(async()=>{
+      if(!trackingVisible())return;updateReadAbort=new AbortController();
+      try{await load(false,{incremental:true,provider,purpose:"operation",signal:updateReadAbort.signal});}
+      catch{/* Keep the original operation; load records safe reconnect facts. */}
+      finally{updateReadAbort=null;scheduleUpdateTracking();}
+    },delay);
+  };
+  document.addEventListener("visibilitychange",()=>{
+    for(const provider of [...displayReads.keys()])stopDisplayRead(provider);
+    pauseUpdateTracking();for(const timer of authenticationSyncTimers.values())clearTimeout(timer);
+    if(trackingVisible())rereadUpdate(updateDialog.provider);
   });
+  window.addEventListener("pagehide",()=>{for(const provider of [...displayReads.keys()])stopDisplayRead(provider);pauseUpdateTracking();for(const timer of authenticationSyncTimers.values())clearTimeout(timer);});
+  root?.querySelector("[data-check-all]")?.addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; showMessage(copy.checking); try { const payload = await request(apiBase + "/api/system/sdk-runtimes/check", { method: "POST" }); render(payload.items || [], payload.default_provider_id); } catch (error) { showMessage(String(error.message || error), "error"); } finally { button.disabled = false; } });
   if (navigationEnabled) {
     document.addEventListener("sapba:settings-request-state", notifySettings);
     document.addEventListener("sapba:settings-select", event => {
+      const changed=viewedProvider!==event.detail.provider || viewedSection!==event.detail.section;
       viewedProvider = event.detail.provider; viewedSection = event.detail.section;
-      for (const view of runtimeViews.values()) { view.card.hidden = sdkHidden(view.sdk.provider_id); maybeLoadModels(view.sdk, view); maybeLoadAuthentication(view.sdk, view); }
+      if(changed){for(const provider of [...displayReads.keys()])stopDisplayRead(provider);pauseUpdateTracking();if(updateDialog.node?.open)updateDialog.hide();}
+      for (const view of runtimeViews.values()) view.card.hidden = sdkHidden(view.sdk.provider_id);
     });
+    document.addEventListener("sapba:settings-read",event=>requestDisplayRead(event.detail.provider));
   }
-  load().catch(() => showMessage(copy.unavailable, "error"));
+  const navigationStarted=Date.now();
+  load().then(payload=>{
+    const provider=currentProvider();
+    if(viewedSection === "runtime" && (payload.items || []).some(item=>item.provider_id===provider && readPending(item)))requestDisplayRead(provider,{initial:payload,started:navigationStarted});
+  }).catch(()=>showMessage(copy.unavailable,"error"));
 </script>

@@ -325,6 +325,80 @@ class RunPresentation(BaseModel):
     validation_ref: str | None = None
     financial_verification: Literal["not_requested", "unverified", "verified_metrics_only"] = Field(default="not_requested", description="Platform-derived verification status. Omit on a new report, or use the reported expected status. Non-metric business prose/tables remain unverified even when all numeric metrics bind. Copy the returned validated_report unchanged into the terminal.")
 
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):
+        if cls is RunPresentation and isinstance(obj, dict) and obj.get("schema_version") == "2.0":
+            return RunPresentationV2.model_validate(obj, *args, **kwargs)
+        return super().model_validate(obj, *args, **kwargs)
+
+
+class ValueBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["source", "calculation"]
+    evidence_ref: str | None = None
+    source_key: dict[str, str | int] = Field(default_factory=dict)
+    source_field: str | None = None
+    currency_field: str | None = None
+    calculation_ref: str | None = None
+    calculation_item: str | None = None
+    calculation_field: Literal["amount", "count"] | None = None
+    currency: str | None = None
+
+    @model_validator(mode="after")
+    def validate_binding(self):
+        if self.kind == "source":
+            if not self.evidence_ref or not self.source_key or not self.source_field or any(
+                    (self.calculation_ref, self.calculation_item, self.calculation_field, self.currency)):
+                raise ValueError("Source bindings require an owned row key and field, not a calculation")
+        elif (not self.calculation_ref or not self.calculation_item or not self.calculation_field
+              or self.source_key or self.source_field or self.currency_field):
+            raise ValueError("Calculation bindings require a calculation item and field, not a source row")
+        return self
+
+
+class VerificationDimension(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["verified", "needs_evidence", "failed", "not_requested"] = "not_requested"
+    verified_paths: list[str] = Field(default_factory=list)
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class ReportVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: Literal["sapba.report-verification/2"] = "sapba.report-verification/2"
+    summary_amounts: VerificationDimension = Field(default_factory=VerificationDimension)
+    detail_amounts: VerificationDimension = Field(default_factory=VerificationDimension)
+    business_facts: VerificationDimension = Field(default_factory=VerificationDimension)
+    coverage: VerificationDimension = Field(default_factory=VerificationDimension)
+    scope_receipt: dict[str, Any] = Field(default_factory=dict)
+
+
+class PresentationRowV2(PresentationRow):
+    value_bindings: dict[str, ValueBinding] = Field(default_factory=dict)
+
+
+class PresentationBlockV2(PresentationBlock):
+    rows: list[PresentationRowV2] = Field(default_factory=list, max_length=200)
+    text_template: LocalizedText | None = None
+    value_bindings: dict[str, ValueBinding] = Field(default_factory=dict)
+    fact_rule: Literal["open_items_exist"] | None = None
+    row_set_binding: ValueBinding | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def template_display(cls, value):
+        if isinstance(value, dict) and value.get('text') is None and value.get('text_template') is not None:
+            return {**value, 'text': value['text_template']}
+        return value
+
+
+class RunPresentationV2(RunPresentation):
+    schema_version: Literal["2.0"] = "2.0"
+    blocks: list[PresentationBlockV2]
+    verification: ReportVerification | None = Field(default=None, description="Platform-derived. Omit on a new candidate; copy the canonical validated report unchanged.")
+
 
 class HarnessLimitUsage(BaseModel):
     limit: int | None = None
@@ -406,7 +480,8 @@ class RunResult(BaseModel):
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     completeness: Completeness = Field(default_factory=Completeness)
     summary: dict[str, str] = Field(default_factory=dict)
-    presentation: RunPresentation | None = None
+    presentation: RunPresentationV2 | RunPresentation | None = None
+    verification: ReportVerification | None = Field(default=None, exclude_if=lambda v: v is None)
     # Populated only by the Runtime's acceptance mode. Ordinary free-query
     # callers keep this null and continue to use the business presentation.
     acceptance_projection: dict[str, Any] | None = None

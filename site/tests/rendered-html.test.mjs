@@ -370,7 +370,9 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /cell\.dataset\.key = column\.key/);
   assert.doesNotMatch(run, /\.innerHTML\s*=/);
   assert.match(run, /技术详情（供 IT 支持和审计使用）/);
-  assert.match(run, /<details class="run-technical-details">/);
+  // Astro may append its scoped-style attribute; the details container and
+  // technical class are still required, not an exact serialized tag string.
+  assert.match(run, /<details\b(?=[^>]*\bclass="run-technical-details")[^>]*>/);
   assert.match(run, /原始 SAP 证据/);
   assert.match(run, /未执行付款准备复核：没有可复核的上游证据/);
   assert.match(run, /node_skipped_empty_input/);
@@ -401,7 +403,7 @@ test("dual-mode prototype renders free-query and run pages", async () => {
   assert.match(run, /选择 Agent 所属模块/);
   assert.match(runEn, /Choose the Agent catalog module/);
   assert.match(run, /inferDraftModule/);
-  assert.match(run, /JSON\.stringify\(\{ module \}\)/);
+  assert.match(run, /JSON\.stringify\(\{ module, expectedIteration, expectedResultDigest \}\)/);
   assert.match(run, /本轮没有新增SAP查询/);
   assert.match(run, /反馈处理进度/);
   assert.match(run, /Agent Runtime正在理解反馈/);

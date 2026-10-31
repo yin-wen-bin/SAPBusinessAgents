@@ -27,17 +27,21 @@ export function installQueryLifecycle(options, browser = globalThis) {
   let storage;
   try { storage = browser.sessionStorage; } catch { /* Denied storage cannot block manual actions. */ }
   let cancellation;
+  let backPending;
+  let backRequested;
+  let feedbackStopped = false;
   let claimedSession;
   const claimedRuns = new Set();
   const owner = () => claimedRuns.has(getRunId()) || Boolean(claimedSession && claimedSession === getSessionId())
     || ownsQuery(getRunId(), getSessionId(), storage);
   const active = () => !getRun() ? Boolean(owner())
-    : getRun().mode === 'free_query' && (!terminal.has(getRun().status) || Boolean(feedbackId?.()));
+    : getRun().mode === 'free_query' && (!terminal.has(getRun().status)
+      || getRun().cleanup_pending || ['stopping','cleanup_pending'].includes(getRun().cancellation?.status) || Boolean(feedbackId?.()));
   const cancel = () => {
     if (cancellation) return cancellation;
     const run = getRunId();
     if (!run || !active()) return Promise.resolve();
-    cancellation = (async () => {
+    const pending = (async () => {
       const feedback = feedbackId?.();
       const requests = [];
       if (feedback && getSessionId()) {
@@ -45,14 +49,31 @@ export function installQueryLifecycle(options, browser = globalThis) {
           method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
           body: JSON.stringify({reason: 'user_cancelled'}),
         }).then(async response => {
-          if (!response.ok || (await response.json()).status === 'cleanup_pending') throw new Error('cancellation_unconfirmed');
+          if (!response.ok) throw new Error('cancellation_unconfirmed');
+          const state = (await response.json()).status;
+          feedbackStopped = ['cancelled','completed','failed'].includes(state);
+          if (!feedbackStopped) throw new Error('cancellation_unconfirmed');
         }));
       }
       requests.push(browser.fetch(`${apiBase}/api/runs/${encodeURIComponent(run)}/cancel`, {method: 'POST', keepalive: true})
         .then(response => {if (!response.ok) throw new Error('cancellation_unconfirmed');}));
       await Promise.all(requests);
     })();
+    cancellation = pending;
+    // A failed/unknown HTTP response cannot poison every later manual attempt.
+    // A retry still targets only the same idempotent cancellation, never /runs.
+    pending.catch(() => { if (cancellation === pending) cancellation = undefined; });
     return cancellation;
+  };
+  const stopped = run => Boolean(run && run.run_id === getRunId() && terminal.has(run.status)
+    && !run.cleanup_pending
+    && !['stopping','cleanup_pending'].includes(run.cancellation?.status)
+    && (!feedbackId?.() || feedbackStopped));
+  const observe = run => {
+    if (backRequested?.run === run?.run_id && backRequested.session === getSessionId() && stopped(run)) {
+      backRequested = undefined;
+      window.location.href = backUrl;
+    }
   };
   const depart = () => { if (owner() && active()) void cancel().catch(() => {}); };
   const navigate = event => {
@@ -78,23 +99,37 @@ export function installQueryLifecycle(options, browser = globalThis) {
       claimedSession = getSessionId();
       rememberQueryOwner(getRunId(), claimedSession, storage);
       cancellation = undefined;
+      backRequested = undefined;
+      feedbackStopped = false;
     },
+    isActive: active,
+    observe,
     cancel,
-    async back() {
+    back() {
+      if (backPending) return backPending;
+      const pending = (async () => {
       if (!active()) { window.location.href = backUrl; return; }
+      backRequested = {run:getRunId(),session:getSessionId()};
       error(locale === 'zh' ? '正在停止当前查询并清理进程…' : 'Stopping this query and cleaning up its process…');
       try {
-        await cancel();
-        const run = await reloadRun();
-        if (run?.cancellation?.status === 'cleanup_pending' || run?.cancel_requested && !terminal.has(run.status)) {
+        // Inspect an already-requested stop rather than posting again.
+        let run = getRun();
+        if (!run?.cancel_requested) await cancel();
+        run = await reloadRun();
+        if (!stopped(run)) {
           error(locale === 'zh' ? '停止请求已受理，但进程清理尚未确认。不会重发查询，请保留此页核对。' : 'Stopping was accepted, but process cleanup is not confirmed. Keep this page open; the query will not be resubmitted.');
           return;
         }
-        window.location.href = backUrl;
+        observe(run);
       } catch {
         error(locale === 'zh' ? '未能确认查询已停止，正在核对原任务；不会重复执行。' : 'Could not confirm the query stopped. Check the original task; it will not be resubmitted.');
         void reloadRun().catch(() => {});
       }
+      })();
+      backPending = pending;
+      const release = () => { if (backPending === pending) backPending = undefined; };
+      pending.then(release, release);
+      return pending;
     },
   };
 }

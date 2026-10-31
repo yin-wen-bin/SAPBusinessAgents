@@ -226,7 +226,11 @@ def test_enable_disable_api_publish_confirmed_controls_after_invalidation(tmp_pa
 
 
 def test_controlled_restart_can_preserve_every_existing_site_build():
+    import re
     from pathlib import Path
     source = (Path(__file__).resolve().parents[1] / 'scripts/Start-SAPBusinessAgents.ps1').read_text(encoding='utf-8')
     assert '[switch]$PreserveSiteBuilds' in source
-    assert 'if (-not $PreserveSiteBuilds) { Remove-OldSiteBuilds -CurrentFingerprint $SiteFingerprint }' in source
+    # Normal startup no longer performs cache cleanup at all. Preserve the
+    # compatibility switch and require the stronger no-cleanup invariant,
+    # rather than requiring the old conditional destructive call to return.
+    assert not re.findall(r'(?im)^(?!\s*function\b).*?\bRemove-OldSiteBuilds\b', source)

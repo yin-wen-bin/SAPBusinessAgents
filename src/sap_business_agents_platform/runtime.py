@@ -232,15 +232,29 @@ class RuntimeRouter:
     def snapshot(self, provider_id: str | None = None) -> dict[str, Any]:
         selected = provider_id or self.current_provider_id
         from .runtime_admission import selected_status
-        item = selected_status(self.manager, selected)
-        if not isinstance(item, dict) or item.get("selectable") is not True:
-            blockers = item.get("blockers") if isinstance(item, dict) else []
-            raise RuntimeUnavailableError(
-                "The selected Agent Runtime is not ready for new tasks"
-                + (f": {', '.join(str(value) for value in blockers)}" if blockers else "."),
-                code="runtime_not_selectable",
-            )
-        snapshot = self.manager.runtime_snapshot(selected)
+        prepare = getattr(self.manager, 'prepare_runtime_snapshot', None)
+        if selected != 'workbuddy' and callable(prepare):
+            from .sdk_manager import SDKManagerError
+            try:
+                snapshot = prepare(selected)
+            except SDKManagerError as exc:
+                if exc.code != 'runtime_not_selectable':
+                    raise
+                blockers = (exc.detail or {}).get('blockers', [])
+                raise RuntimeUnavailableError(
+                    "The selected Agent Runtime is not ready for new tasks"
+                    + (f": {', '.join(str(value) for value in blockers)}" if blockers else "."),
+                    code="runtime_not_selectable") from exc
+        else:
+            item = selected_status(self.manager, selected)
+            if not isinstance(item, dict) or item.get("selectable") is not True:
+                blockers = item.get("blockers") if isinstance(item, dict) else []
+                raise RuntimeUnavailableError(
+                    "The selected Agent Runtime is not ready for new tasks"
+                    + (f": {', '.join(str(value) for value in blockers)}" if blockers else "."),
+                    code="runtime_not_selectable",
+                )
+            snapshot = self.manager.runtime_snapshot(selected)
         model = snapshot.get("model")
         self._provider(selected, str(model) if model else None, snapshot.get("reasoning_effort"))
         snapshot["configuration_digest"] = hashlib.sha256(

@@ -129,7 +129,7 @@ class HarnessToolBroker:
         # Skill catalogue. Ordinary free queries keep their existing behavior.
         self._sample_contexts: dict[str, Any] = {}
         self._read_scopes: dict[str, Any] = {}
-        self._run_clocks: dict[str, tuple[str, float]] = {}
+        self._run_clocks: dict[str, tuple[Any, float]] = {}
         self._tool_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._closed_runs: set[str] = set()
         self._report_locks: dict[str, asyncio.Lock] = {}
@@ -324,11 +324,18 @@ class HarnessToolBroker:
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
         from datetime import timedelta
+        # A resumed input control gets a fresh scoped authorization, never the
+        # expired pre-pause token. Its expiry follows the *remaining* run budget.
+        if state.get("execution_clock") is not None:
+            started = datetime.now(timezone.utc)
+            remaining = max(0, self.budget_snapshot(run_id)["hard_limit_seconds"] - self._elapsed_seconds(run_id))
+        else:
+            remaining = self.budget_snapshot(run_id)["hard_limit_seconds"]
         return AssistantToolContext(
             kind=kind,
             request_digest=self._run_request_digest(run_id, state),
             target_id=run_id, revision=state.get("draft_revision"),
-            expires_at=started + timedelta(seconds=self.budget_snapshot(run_id)["hard_limit_seconds"]),
+            expires_at=started + timedelta(seconds=remaining),
         )
 
     def budget_snapshot(self, run_id: str) -> dict[str, Any]:
@@ -443,6 +450,10 @@ class HarnessToolBroker:
                 "deadline_scope": "terminal_handoff" if terminal_deadline is not None else "run"}
 
     def _elapsed_seconds(self, run_id: str) -> int:
+        from .runtime_query_clock import RunClock
+        active_elapsed = RunClock(self.store, self._run_clocks).elapsed(run_id)
+        if active_elapsed is not None:
+            return int(active_elapsed)
         record = self.store.get_run(run_id)
         # Queue time is not execution time. Anchor once, then use a monotonic
         # clock so wall-clock corrections cannot extend an active task.
@@ -464,6 +475,18 @@ class HarnessToolBroker:
             return 0
 
     def _next_deadline_at(self, run_id: str, budget: dict[str, Any]) -> str | None:
+        from .runtime_query_clock import RunClock, checked
+        clock = checked(self.store.get_harness_state(run_id))
+        if clock is not None:
+            if clock["mode"] != "active":
+                return None
+            from datetime import timedelta
+            seconds = budget["query_seconds_granted"] if budget["deadline_phase"] == "querying" else budget["hard_limit_seconds"]
+            terminal = self.store.get_harness_state(run_id).get("terminal_handoff_elapsed_deadline")
+            if terminal is not None:
+                seconds = min(seconds, terminal)
+            elapsed = RunClock(self.store, self._run_clocks).elapsed(run_id)
+            return (datetime.now(timezone.utc) + timedelta(seconds=max(0, seconds - elapsed))).isoformat()
         record = self.store.get_run(run_id)
         anchor = self.store.get_harness_state(run_id).get("budget_start") or {}
         execution_start = anchor.get("execution_started_at") if anchor.get("source_started_at") == record.started_at else record.started_at
@@ -513,6 +536,11 @@ class HarnessToolBroker:
 
     def bind_read_scope(self, run_id: str, scope: Any) -> None:
         scope.normalizer = self.normalizer
+        from .runtime_relations import check
+        scope.relation_checker = lambda plan: check(self, run_id, plan)
+        self.store.update_harness_state(run_id, {'read_scope_binding': {
+            'constraints': scope.constraints, 'bounds': [{**b, 'day': b['day'].isoformat()} for b in scope.bounds],
+            'unresolved': scope.unresolved}})
         self._read_scopes[run_id] = scope
 
     def close_session(self, run_id: str) -> None:
@@ -595,7 +623,7 @@ class HarnessToolBroker:
     async def handle(
         self, run_id: str, token: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
-        if (tool_name in {"request_query_clarification", "request_secure_receipt_reference", "sap_final_report_validate", "sap_query_validate", "sap_query_execute", "sap_money_aggregate"} and run_id not in self._authoring_sessions
+        if (tool_name in {"request_query_clarification", "request_secure_receipt_reference", "sap_final_report_validate", "sap_query_validate", "sap_query_execute", "sap_money_aggregate", "sap_relation_resolve"} and run_id not in self._authoring_sessions
                 and self.authenticate(run_id, token)):
             async with self._report_locks.setdefault(run_id, asyncio.Lock()):
                 return await self._handle_run(run_id, token, tool_name, arguments)
@@ -1057,6 +1085,9 @@ class HarnessToolBroker:
     async def _dispatch(
         self, run_id: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if tool_name == 'sap_relation_resolve':
+            from .runtime_relations import resolve
+            return resolve(self, run_id, arguments)
         if tool_name == 'sap_money_aggregate':
             if set(arguments) != {'evidence_ref'}:
                 from .runtime_money import reject
@@ -1531,6 +1562,13 @@ class HarnessToolBroker:
         required = monetary_request(self.store.get_run(run_id).query) or any(
             column.format == 'currency' for block in presentation.blocks for column in block.columns) or any(
             metric.currency for block in presentation.blocks for metric in block.metrics)
+        if presentation.schema_version == '2.0':
+            from .report_verification import verify
+            issues, status, verification = verify(self, run_id, presentation, required=required)
+            if presentation.verification is not None and presentation.verification != verification:
+                issues.append({'code': 'verification_claim_invalid', 'path': '/verification', 'constraint': 'platform_derived_status'})
+            presentation.verification = verification
+            return issues, status
         records = state.get('money_calculations') or {}
         refs = {m.calculation_ref for b in presentation.blocks for m in b.metrics if m.calculation_ref}
         for ref in refs:
@@ -2259,7 +2297,7 @@ class HarnessToolBroker:
             "report_validated": not issues,
             "validation_issues": issues,
             "report_hash": report_hash,
-            "presentation_contract": "sapba.presentation-money/1",
+            "presentation_contract": "sapba.presentation-verification/2" if presentation is not None and presentation.schema_version == '2.0' else "sapba.presentation-money/1",
             "validation_ref": f"validation_{report_hash.removeprefix('sha256:')[:24]}" if not issues else None,
             "repair_feedback": repair_feedback(issues, acceptance=spec is not None),
             **({"code": "acceptance_report_validation_failed"} if issues else {}),
@@ -2278,7 +2316,12 @@ class HarnessToolBroker:
                 output['source_reassessment_refs'] = [r['receipt_ref'] for r in reassessment['receipts']]
             output["validated_report"] = {**presentation.model_dump(mode="json"),
                 "validation_ref": output["validation_ref"]}
+            from .runtime_strict_schema import NativeContract
+            from .runtime_report_contract import supported_presentation_schema
+            output['native_validated_report'] = NativeContract(supported_presentation_schema(strict=True)).encode(output['validated_report'])
             output['financial_verification'] = presentation.financial_verification
+            if presentation.schema_version == '2.0':
+                output['verification'] = presentation.verification.model_dump(mode='json')
             from .runtime_money import verification_details
             output['financial_verification_details'] = verification_details(presentation, presentation.financial_verification, accepted=True)
             budget = self.review_deadline(run_id)

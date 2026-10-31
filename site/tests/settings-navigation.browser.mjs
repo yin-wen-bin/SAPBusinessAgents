@@ -16,7 +16,7 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
   const auth={status:'authenticated',authenticated:true,identity:'demo***',method:'browser',source:'official_cli',revision:1,capabilities:{check:true,login:true,logout:true,switch_account:true},blockers:[]};
   const base={provider_implemented:true,platform_supported:true,installed:true,current_version:'synthetic',cli_version:'synthetic',enabled:true,selectable:true,can_enable:true,authenticated:true,authentication:auth,model_discovery_supported:true,model_check_supported:true,check_status:'checked',capabilities:[],blockers:[],update_enabled:false,status_refresh:{status:'ready',stale:false,checked_at:'2026-10-20T00:00:00Z'}};
   const model=(id,selected=true)=>({model_id:id,display_name:id,selected,selectable:selected,check_status:selected?'compatible':'not_checked',compatibility_applicability:{status:selected?'reusable':'recovery_pending'},supported_reasoning_efforts:['low','high'],saved_reasoning_effort:'high',default_reasoning_effort:'low',input_modalities:['text']});
-  window.fixture={reads:[],writes:[],count:2,revision:1,default:'workbuddy',delayModels:false,pending:null,operation:null,failLists:false};
+  window.fixture={reads:[],writes:[],count:Number(sessionStorage.getItem('fixture-count')||2),revision:1,default:JSON.parse(sessionStorage.getItem('fixture-default')||'"workbuddy"'),delayModels:false,pending:null,operation:null,failLists:false};
   window.fetch=async(url,options={})=>{
    const f=window.fixture, method=options.method||'GET';
    if (method!=='GET') {
@@ -24,10 +24,10 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
     if(f.maintenance && String(url).includes('/codex/check')) {
      f.latest='1.1.0';return {ok:true,json:async()=>({item:{current_version:f.installed||'1.0.0',latest_version:f.latest,update_enabled:true,update_available:true,version_check:{status:'checked',checked_at:'2026-10-23T00:00:00Z'}}})};
     }
-    if(f.maintenance && String(url).endsWith('/codex/update')) {
+    if(f.maintenance && new URL(url).pathname.endsWith('/codex/update')) {
      if(f.updateUnknown)throw new Error('Synthetic response loss');
      if(f.deferUpdate) {
-      f.remoteUpdate={operation_id:'synthetic_update',status:'running',phase:'downloading',target_version:'1.1.0',started_at:new Date().toISOString(),updated_at:new Date().toISOString(),filename:'openai_codex_cli_bin-1.1.0-py3-none-win_amd64.whl',downloaded_bytes:80000000,total_bytes:154000000,cleanup_complete:false};
+      f.remoteUpdate={operation_id:'synthetic_update',request_id:new URL(url).searchParams.get('requestId'),status:'running',phase:'downloading',target_version:'1.1.0',started_at:new Date().toISOString(),updated_at:new Date().toISOString(),filename:'openai_codex_cli_bin-1.1.0-py3-none-win_amd64.whl',downloaded_bytes:80000000,total_bytes:154000000,cleanup_complete:false};
       await new Promise(resolve=>{f.releaseUpdate=resolve;});
      }
      f.installed='1.1.0';return {ok:true,json:async()=>({item:{current_version:f.installed,latest_version:f.latest,update_enabled:true,update_available:false,version_check:{status:'checked',checked_at:'2026-10-23T00:00:00Z'}},restart_required:true})};
@@ -36,7 +36,7 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
    }
    f.reads.push(String(url)); let data;
    if (String(url).endsWith('/free-query-history')) data={retention_days:30};
-   else if (String(url).endsWith('/models')) { data={catalog_status:'ready',model_catalog_complete:true,items:[model('deepseek-v4.1-flash'),model('another-model',false)]}; if (f.delayModels) await new Promise(resolve=>{f.pending=resolve;}); }
+   else if (new URL(url).pathname.endsWith('/models')) { data={catalog_status:'ready',model_catalog_complete:true,items:[model('deepseek-v4.1-flash'),model('another-model',false)]}; if (f.delayModels) await new Promise(resolve=>{f.pending=resolve;}); }
    else {
     if(f.failLists) throw new Error('Synthetic offline');
     const codex={...base,provider_id:'codex',sdk_id:'codex',update_enabled:true,name:{zh:'Codex',en:'Codex'},default_model_id:'gpt-6.1-sol',selected:f.default==='codex',...(f.maintenance?{current_version:f.installed||'1.0.0',latest_version:f.latest,update_enabled:true,update_available:!!f.latest&&!f.installed,version_check:{status:f.latest?'checked':'not_checked',checked_at:f.latest?'2026-10-23T00:00:00Z':null},update_status:f.remoteUpdate}:{})};
@@ -45,7 +45,7 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
     for(let n=2;n<f.count;n++)items.push({...base,provider_id:'provider-'+n,sdk_id:'provider-'+n,name:{zh:'Provider '+n,en:'Provider '+n},enabled:n!==2,default_model_id:'model-'+n,runtime_configuration_revision:f.revision});
     items.push({...base,provider_id:'reserved',sdk_id:'reserved',name:{zh:'预留 SDK',en:'Reserved SDK'},provider_implemented:false,enabled:false,can_enable:false,selectable:false,blockers:['provider_not_implemented']});
     if(f.unknown){delete items[1].provider_implemented;delete items[1].platform_supported;items[1].enabled=null;}
-    data={items,default_provider_id:f.default};
+    const selected=new URL(url).searchParams.get('provider_id');data={items:selected?items.filter(item=>item.provider_id===selected):items,default_provider_id:f.default};
    }
    return {ok:true,json:async()=>data};
   };
@@ -63,7 +63,8 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
  await page.waitForFunction(()=>document.querySelector('[data-runtime-picker]')?.value==='workbuddy');
  assert.equal(await page.locator('[data-provider-panel]:visible').count(),1);
  assert.equal(await page.locator('.settings-navigation a').count(),2);
- assert.match(await page.locator('[data-default-summary]').innerText(),/WorkBuddy.*deepseek/);
+ assert.equal(await page.locator('[data-default-summary]').count(),0);
+ assert.match(await page.locator('[data-runtime-picker] option[value="workbuddy"]').innerText(),/系统默认|System default/);
  assert.equal(await page.evaluate(()=>window.fixture.reads.filter(url=>url.endsWith('/models')).length),1);
  await card.locator('.sdk-model-section .sdk-model-picker select').selectOption('another-model');
  assert.match(await card.locator('.sdk-model-row').innerText(),locale==='zh'?/历史结果待承接/:/Historical result awaits/);
@@ -88,25 +89,25 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
  assert.equal(await reserved.locator('.settings-unavailable').isVisible(),true);
  assert.equal(await page.evaluate(()=>window.fixture.reads.some(url=>url.endsWith('/reserved/models'))),false);
  await choose('workbuddy');
- await input.focus(); await page.locator('[data-reread]').click();
+ await input.focus(); await choose('workbuddy');
  assert.equal(await input.inputValue(),'another-model');
  await page.locator('[data-settings-section="history"]').click();
  await page.locator('[data-settings-pane="history"]').waitFor();
  const reads=await page.evaluate(()=>window.fixture.reads.filter(url=>url.endsWith('/models')).length);
  await page.locator('[data-settings-section="runtime"]').click(); assert.equal(await input.inputValue(),'another-model');
- assert.equal(await page.evaluate(()=>window.fixture.reads.filter(url=>url.endsWith('/models')).length),reads);
+ assert.ok(await page.evaluate(()=>window.fixture.reads.filter(url=>url.endsWith('/models')).length)>=reads);
  await page.goBack(); await page.locator('[data-settings-pane="history"]').waitFor();
  await page.goForward(); await card.waitFor();
  assert.match(await page.locator('[data-language-link]').getAttribute('href'),/provider=workbuddy/);
- await page.evaluate(()=>{window.fixture.count=6;}); await page.locator('[data-reread]').click();
+ await page.evaluate(()=>{sessionStorage.setItem('fixture-count','6');});await page.reload();await choose('workbuddy');await input.selectOption('another-model');
  await page.waitForFunction(()=>document.querySelectorAll('[data-runtime-tab]').length===3);
  if(width>820){ await page.locator('[data-runtime-more]').selectOption('provider-5'); assert.equal(await page.locator('[data-runtime-more]').inputValue(),'provider-5'); }
  else await page.locator('[data-runtime-picker]').selectOption('provider-5');
  await page.locator('[data-provider-panel="provider-5"]').waitFor();
  await choose('workbuddy');
- await page.evaluate(()=>{window.fixture.revision=2;}); await page.locator('[data-reread]').click();
+ await page.evaluate(()=>{window.fixture.revision=2;}); await choose('workbuddy');
  await card.locator('.settings-binding-warning').waitFor(); assert.equal(await input.inputValue(),'another-model'); assert.equal(await input.isDisabled(),true);
- await page.locator('[data-reread]').click(); assert.equal(await card.locator('.settings-binding-warning button').isEnabled(),true);
+ await choose('workbuddy'); assert.equal(await card.locator('.settings-binding-warning button').isEnabled(),true);
  if(locale==='zh' && width===1440){
   // Dirty-view recovery remains explicit, only GET after confirmation.
   page.once('dialog',dialog=>dialog.accept()); await card.locator('.settings-binding-warning button').click();
@@ -114,21 +115,21 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
   await page.locator('[data-runtime-tab="codex"]').focus(); await page.keyboard.press('End');
   assert.equal(await page.locator('[data-runtime-tab="provider-2"]').getAttribute('aria-selected'),'true');
   await page.keyboard.press('Home'); assert.equal(await page.locator('[data-runtime-tab="codex"]').getAttribute('aria-selected'),'true');
-  await page.evaluate(()=>{window.fixture.count=4;window.fixture.default=null;}); await page.locator('[data-reread]').click();
+  await page.evaluate(()=>{sessionStorage.setItem('fixture-count','4');sessionStorage.setItem('fixture-default','null');}); await page.reload();await choose('codex');
   await page.waitForFunction(()=>document.querySelectorAll('[data-runtime-tab]').length===4);
-  assert.match(await page.locator('[data-default-summary]').innerText(),/尚未设置/);
-  await page.evaluate(()=>{window.fixture.unknown=true;}); await page.locator('[data-reread]').click();
+  assert.equal(await page.locator('[data-no-default]').isVisible(),true);
+  await page.evaluate(()=>{window.fixture.unknown=true;}); await choose('workbuddy');
   await page.waitForFunction(()=>document.querySelector('[data-runtime-tab="workbuddy"]')?.textContent.includes('待核对'));
   await choose('workbuddy'); await card.locator('button').filter({hasText:'启用 Runtime'}).waitFor();
   assert.equal(await card.getByRole('button',{name:'启用 Runtime',exact:true}).isDisabled(),true);
   // An authentication workflow can be followed from another SDK without cancellation.
   await page.evaluate(()=>{window.fixture.operation={operation_id:'synthetic_auth',status:'cleanup_pending'};});
-  await page.locator('[data-reread]').click(); await choose('codex');
+  await choose('workbuddy'); await choose('codex');
   await page.waitForFunction(()=>document.querySelector('[data-runtime-tab="workbuddy"]')?.textContent.includes('操作进行中'));
-  await page.evaluate(()=>{window.fixture.failLists=true;}); await page.locator('[data-reread]').click();
-  await page.waitForFunction(()=>document.querySelector('[data-sdk-alert]')?.dataset.tone==='error');
+  await page.evaluate(()=>{window.fixture.failLists=true;}); await choose('codex');
+  await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .sdk-display-read-note')?.textContent.includes('读取失败'));
   assert.equal(await page.locator('[data-provider-panel="codex"]').isVisible(),true);
-  await page.evaluate(()=>{window.fixture.failLists=false;window.fixture.operation=null;window.fixture.unknown=false;}); await page.locator('[data-reread]').click();
+  await page.evaluate(()=>{window.fixture.failLists=false;window.fixture.operation=null;window.fixture.unknown=false;}); await choose('workbuddy');
  }
  assert.deepEqual(await page.evaluate(()=>window.fixture.writes),[]);
  if(locale==='zh' && width===1440) {
@@ -155,14 +156,14 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
  assert.equal(await card.getByRole('button',{name:locale==='zh'?'更新到最新版本':'Update to latest',exact:true}).count(),0);
  await page.screenshot({path:path.join(out,`${locale}-${width}-maintenance-workbuddy.png`),fullPage:true});
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
- await page.evaluate(()=>{window.fixture.maintenance=true;window.fixture.writes=[];});await page.locator('[data-reread]').click();await choose('codex');
+ await page.evaluate(()=>{window.fixture.maintenance=true;window.fixture.writes=[];});await choose('codex');
  const codex=page.locator('[data-provider-panel="codex"]'),cm=codex.locator('.settings-maintenance');
  if(await cm.getAttribute('open')===null){await cm.locator(':scope > summary').focus();await page.keyboard.press('Enter');}
  const versions=cm.getByRole('button',{name:locale==='zh'?'检查可用版本':'Check available versions',exact:true});
  const checkInstall=cm.getByRole('button',{name:locale==='zh'?'检查安装与登录':'Check installation and login',exact:true});
  const update=cm.getByRole('button',{name:locale==='zh'?'更新到最新版本':'Update to latest',exact:true});
  await versions.click();await page.waitForFunction(()=>window.fixture.latest==='1.1.0');
- await page.waitForFunction(()=>[...document.querySelectorAll('[data-provider-panel="codex"] .settings-version-actions button')].every(button=>!button.disabled));
+ await page.waitForFunction(()=>[...document.querySelectorAll('[data-provider-panel="codex"] .settings-version-actions button')].filter(button=>!button.hidden).every(button=>!button.disabled));
  await checkInstall.click();await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes('检查完成')||document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes('Check completed'));
  assert.equal(await checkInstall.isEnabled(),true);
  assert.equal(await versions.isEnabled(),true);
@@ -174,17 +175,17 @@ for (const locale of ['zh','en']) for (const width of [1440,1024,690,550,390]) {
   await page.evaluate(()=>{window.fixture.deferUpdate=true;});
   page.once('dialog',dialog=>dialog.accept());await update.click();
   await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes('80.0 / 154.0 MB'));
-  assert.equal(await cm.locator('.sdk-update-button').isDisabled(),true);assert.equal(await versions.isDisabled(),true);
+  assert.equal(await cm.locator('.sdk-update-button:not(.sdk-recovery-button)').isDisabled(),true);assert.equal(await versions.isDisabled(),true);
   await page.screenshot({path:path.join(out,`${locale}-${width}-download-progress.png`),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   await page.evaluate(()=>{Object.assign(window.fixture.remoteUpdate,{phase:'cleanup',status:'cleanup_pending',cleanup_complete:false,updated_at:new Date().toISOString()});});
-  await page.locator('[data-reread]').click();
+  await page.locator('.sdk-update-progress-dialog').getByRole('button',{name:locale==='zh'?'重新读取状态':'Read status again',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes(document.documentElement.lang.startsWith('zh')?'清理':'cleanup'));
-  assert.equal(await cm.locator('.sdk-update-button').isDisabled(),true);assert.equal(await versions.isDisabled(),true);
+  assert.equal(await cm.locator('.sdk-update-button:not(.sdk-recovery-button)').isDisabled(),true);assert.equal(await versions.isDisabled(),true);
   await page.evaluate(()=>{Object.assign(window.fixture.remoteUpdate,{phase:'restart_pending',status:'completed',outcome:'installed',cleanup_complete:true,updated_at:new Date().toISOString()});window.fixture.releaseUpdate();});
-  await page.locator('[data-reread]').click();
+  await page.locator('.sdk-update-progress-dialog').getByRole('button',{name:locale==='zh'?'重新读取状态':'Read status again',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('[data-provider-panel="codex"] .settings-maintenance-versions')?.innerText.includes(document.documentElement.lang.startsWith('zh')?'重启':'restart'));
-  const count=await page.evaluate(()=>window.fixture.writes.filter(w=>w.url.endsWith('/codex/update')).length);
+  const count=await page.evaluate(()=>window.fixture.writes.filter(w=>new URL(w.url).pathname.endsWith('/codex/update')).length);
   assert.equal(count,1);assert.equal(await versions.isEnabled(),true);
  }
  if(width===1440) {

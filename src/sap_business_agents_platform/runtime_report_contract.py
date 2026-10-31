@@ -7,11 +7,12 @@ import json
 import os
 from pathlib import Path
 import uuid
+from functools import lru_cache
 from typing import Any
 
-from .models import RunPresentation
+from .models import RunPresentation, RunPresentationV2
 
-VERSION = "sapba.report-contract/1"
+VERSION = "sapba.report-contract/2"
 HANDOFF_DEFINITION = (
     "For report handoff, 'unchanged presentation' means the successful platform-returned "
     "validated_report including its existing defaults and validation_ref, not the pre-normalization candidate."
@@ -21,6 +22,9 @@ CHECKER_FILES = ("models.py", "acceptance_projection.py", "harness.py",
                 "runtime_report_contract.py", "runtime_report_convergence.py",
                 "runtime_query_contract.py", "runtime_money.py", "source_semantics.py", "source_reassessment.py", "runtime_evidence_bindings.py",
                 "runtime_harness_contract.py", "runtime_harness_result.py", "runtime_terminal_contract.py", "mcp_server.py")
+CHECKER_FILES += ("report_verification.py", "report_scope.py", "runtime_relations.py")
+CHECKER_FILES += ("runtime_strict_schema.py",)
+CHECKER_FILES += ("runtime_query_clock.py",)
 
 
 def checker_binding():
@@ -40,8 +44,15 @@ def digest(value: Any) -> str:
         sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def presentation_schema(*, strict: bool = False) -> dict[str, Any]:
-    source = RunPresentation.model_json_schema()
+def presentation_schema(*, strict: bool = False, version=1) -> dict[str, Any]:
+    # Pure code-defined schemas only, not credentials, evidence or admission.
+    # Callers get their own copy so SDKs cannot mutate another request's schema.
+    return copy.deepcopy(_presentation_schema(strict=strict, version=version))
+
+
+@lru_cache(maxsize=4)
+def _presentation_schema(*, strict: bool = False, version=1) -> dict[str, Any]:
+    source = (RunPresentationV2 if version == 2 else RunPresentation).model_json_schema()
     definitions = source.get("$defs", {})
 
     def expand(node):
@@ -67,8 +78,12 @@ def presentation_schema(*, strict: bool = False) -> dict[str, Any]:
     return expand(source)
 
 
+def supported_presentation_schema(*, strict=False):
+    return {"anyOf": [presentation_schema(strict=strict), presentation_schema(strict=strict, version=2)]}
+
+
 def tool_schema(spec=None):
-    properties = {"report": presentation_schema(),
+    properties = {"report": supported_presentation_schema(),
         "tool_call_id": {"type": "string", "description": "Optional idempotency key."}}
     if spec is not None:
         from .acceptance_projection import AcceptanceProjectionSpec, projection_schema
@@ -79,6 +94,15 @@ def tool_schema(spec=None):
 
 def instructions(*, acceptance: bool = False) -> str:
     return (
+        'For new reports use schema_version="2.0". Bind table cells using row.value_bindings keyed by column key. '
+        'A source binding has kind=source, evidence_ref, the complete source_key, source_field and the exact currency_field for an amount. '
+        'A calculation binding has kind=calculation, calculation_ref, calculation_item, calculation_field and currency. '
+        'For text/notice use text_template with {{name}} slots in BOTH locales and value_bindings keyed by name; '
+        'supply text equal to that template, or copy the canonical rendered text on handoff. Never invent prose amounts. '
+        'verification is host-owned: omit it on a candidate, then copy the entire validated_report unchanged. '
+        'Unstructured narrative remains a business-proof limitation; changing claim_scope cannot verify it. '
+        'Question scope is frozen: an extra filter cannot silently narrow the answer. Request a user clarification for an answer_scope change. '
+        'Cross-service identities require reviewed mappings or sap_relation_resolve with owned complete evidence and authoritative metadata; never infer Supplier=InvoicingParty. '
         "Report handoff contract: sap_final_report_validate takes {\"report\": <presentation>}, "
         "not the complete final envelope. report.title is a bilingual {zh,en} object and "
         "report.blocks is an array of typed blocks, never an object. Follow its declared Schema. "
@@ -115,7 +139,7 @@ def freeze(run_id, request_digest, runtime, spec=None):
     body = {"version": VERSION, "run_id": run_id, "request_digest": request_digest,
         "checker_binding": checker_binding(),
         "runtime_digest": digest(runtime), "acceptance_spec": spec,
-        "input_schema": tool_schema(spec), "presentation_schema": presentation_schema(strict=True),
+        "input_schema": tool_schema(spec), "presentation_schema": supported_presentation_schema(strict=True),
         "instructions": instructions(acceptance=spec is not None),
         "query_contract": frozen_contract()}
     return {**body, "digest": digest(body)}
@@ -130,7 +154,7 @@ def verify(contract, *, run_id=None):
     from .runtime_legacy_protocol import supported
     if (contract.get("input_schema") != tool_schema(contract.get("acceptance_spec"))
             or (contract.get("checker_binding") != checker_binding() and not supported(contract.get("checker_binding")))
-            or contract.get("presentation_schema") != presentation_schema(strict=True)
+            or contract.get("presentation_schema") != supported_presentation_schema(strict=True)
             or contract.get("instructions") != instructions(acceptance=contract.get("acceptance_spec") is not None)):
         raise ReportContractError()
     from .runtime_query_contract import frozen_contract
@@ -222,7 +246,7 @@ def schema_feedback(report, errors):
     """Only trusted schema metadata and input TYPE, never input VALUE."""
     result = []
     for error in errors[:50]:
-        current, raw, path = presentation_schema(), report, ["report"]
+        current, raw, path = presentation_schema(version=2 if isinstance(report, dict) and report.get('schema_version') == '2.0' else 1), report, ["report"]
         parent, parent_path = current, list(path)
         for part in error.get("loc") or []:
             parent, parent_path = current, list(path)

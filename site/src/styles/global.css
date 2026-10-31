@@ -5310,8 +5310,6 @@ details[open] > summary .disclosure-chevron {
 .sdk-update-progress-dialog footer { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 18px; }
 .sdk-update-progress-state { font-weight: 700; font-size: 1.05rem; }
 .sdk-update-feedback-entry { font-size: .85rem; margin: 4px 0; overflow-wrap: anywhere; white-space: normal; }
-.settings-default-strip:has(> .sdk-update-feedback-entry) { flex-wrap: wrap; }
-.settings-default-strip > .sdk-update-feedback-entry { flex: 1 1 100%; min-width: 0; max-width: 100%; text-align: start; }
 @media (max-width: 550px) { .sdk-update-progress-dialog { padding: 14px; } .sdk-update-progress-dialog footer > button { flex: 1 1 130px; } }
 .sdk-card > .sdk-settings-section { padding: .8rem 1rem; }
 @media (max-width: 390px) {

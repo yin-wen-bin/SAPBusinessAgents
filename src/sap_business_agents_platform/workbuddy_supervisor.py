@@ -528,7 +528,7 @@ class WorkBuddySupervisor:
                             if terminal_checks is not None and payload.get("terminal_v2") and message.get("tool") == "sap_final_report_validate" and value.get("ok") is True:
                                 try:
                                     terminal_checks.report_ready(deadline, payload.get("terminal_finalization_seconds", 300),
-                                        validated_report=value.get('validated_report'))
+                                        validated_report=value.get('native_validated_report', value.get('validated_report')))
                                 except ValueError:
                                     raise WorkBuddyError('workbuddy_validated_report_schema_mismatch') from None
                             response = {"kind": "tool_result", "call_id": message["call_id"], "result": value}

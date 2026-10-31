@@ -111,13 +111,13 @@ def test_unknown_entity_diagnostic_requires_schema_without_inventing_filters_or_
     assert result[0]["scope_issue"] == "authoritative_schema_required"
     assert plan == before
     assert "4500000001" not in json.dumps(result)
-    # Only authoritative full metadata can prove date/org are not local fields.
+    # Metadata proves local fields; it cannot authorize dropping frozen org scope.
     value.record_schema({"ok": True, "data": {"schema_authority": True, "fields_truncated": False,
         "service": {"service_name": "MaterialService", "odata_version": "2.0"},
         "fields": [{"entity_set": "MaterialItems", "field_name": "PurchaseOrder", "data_type": "Edm.String"}]}})
-    value.check(plan)
+    assert issues(value, plan)[0]['scope_issue'] == 'service_scope_mapping_or_verified_relation_required'
     plan["filters"][0]["value"] = "different-order"
-    assert issues(value, plan)[0]["scope_issue"] == "value_outside_scope"
+    assert any(i['scope_issue'] == 'value_outside_scope' for i in issues(value, plan))
 
 
 def test_missing_filter_and_range_instead_of_exact_filter_have_value_free_diagnostics():

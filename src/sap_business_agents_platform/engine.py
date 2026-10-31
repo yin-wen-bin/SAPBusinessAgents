@@ -976,7 +976,8 @@ class RunCoordinator:
                 "required_assessments_declared": True,
                 "required_assessments_source": "user_query_with_clarification",
             })
-        self.store.update_run(run_id, query=query, status=RunStatus.queued, error_json=None)
+        from .runtime_query_clock import queue_legacy_input
+        queue_legacy_input(self.store, run_id, query)
         event_payload = {"mode": "clarification"}
         if sensitive_inputs:
             event_payload["secure_fields"] = sorted(sensitive_inputs)
@@ -1853,16 +1854,68 @@ class RunCoordinator:
         return task
 
     async def cancel(self, run_id: str, *, reason='user_cancelled') -> None:
-        task = self._request_cancellation(run_id, reason=reason)
+        task = self.request_cancel(run_id, reason=reason)
         if task:
             # HTTP disconnection does not abandon the platform's owned cleanup.
             await asyncio.shield(task)
+
+    def request_cancel(self, run_id: str, *, reason='user_cancelled'):
+        """Persist intent and revoke tools immediately; HTTP need not await SDK exit."""
+        return self._request_cancellation(run_id, reason=reason)
+
+    async def _settle_query_cancellation(self, run_id, controller, checks, tool_cleanup, execution, interrupt):
+        from .runtime_cancellation import cleanup_confirmed
+        record = self.store.get_run(run_id)
+        if not record.cancel_requested or record.status in TERMINAL_STATUSES:
+            return True
+        state = self.store.get_harness_state(run_id)
+        native_complete = cleanup_confirmed(record, state)
+        # A closed, positively confirmed client cannot answer a pending interrupt
+        # RPC. Cancel only that local waiter, never another SDK/process operation.
+        execution_done = execution is None or execution.done()
+        tools_done = tool_cleanup is None or (tool_cleanup.done() and not tool_cleanup.cancelled()
+            and tool_cleanup.exception() is None and tool_cleanup.result() is True)
+        if native_complete and execution_done and tools_done and interrupt is not None and not interrupt.done():
+            interrupt.cancel()
+            return False
+        pending = [task for task in checks if not task.done()]
+        complete = not pending and tools_done
+        for task in checks:
+            if task.done() and not task.cancelled() and task.exception() is not None:
+                if task is not interrupt or not native_complete:
+                    complete = False
+        complete = complete and (not state.get('cleanup_incomplete') or native_complete)
+        supervisor = getattr(getattr(controller, 'manager', None), 'supervisor', None)
+        worker_active = bool(supervisor and run_id in supervisor.active)
+        if worker_active:
+            complete = False
+        if not complete:
+            reasons = []
+            if not execution_done: reasons.append('execution_unwinding')
+            if not tools_done: reasons.append('tools_not_drained')
+            if interrupt is not None and not interrupt.done(): reasons.append('sdk_interrupt_waiting')
+            if state.get('cleanup_incomplete') and not native_complete: reasons.append('runtime_cleanup_unconfirmed')
+            if worker_active: reasons.append('native_worker_active')
+            if not reasons: reasons.append('cleanup_task_failed')
+            cancellation = {**(state.get('cancellation') or {}), 'pending_checks': reasons}
+            if cancellation != state.get('cancellation'):
+                self.store.update_harness_state(run_id, {'cancellation': cancellation})
+            return False
+        job = self.store.latest_execution_job_for_subject(run_id, statuses=('queued', 'running'))
+        if job:
+            await self.scheduler.cancel(job['job_id'])
+        self.store.update_harness_state(run_id, {'cancellation': {
+            **(state.get('cancellation') or {}), 'status': 'complete', 'pending_checks': []}, 'cleanup_incomplete': False})
+        self._finish_cancelled(run_id)
+        self.store.delete_run_secrets(run_id)
+        return True
 
     async def _cancel_owned_query(self, run_id, controller, broker):
         from .runtime_contract import cleanup_scope
         with cleanup_scope():
             checks = set()
             tool_cleanup = None
+            interrupt = None
             if broker:
                 tool_cleanup = asyncio.create_task(broker.cancel_tools(run_id, timeout=10))
                 checks.add(tool_cleanup)
@@ -1873,38 +1926,34 @@ class RunCoordinator:
             # Task cancellation drives native cleanup. Interrupt also covers a
             # native process registered just before the execution task unwinds.
             if controller and callable(getattr(controller, 'interrupt', None)):
-                checks.add(asyncio.create_task(controller.interrupt(run_id)))
+                interrupt = asyncio.create_task(controller.interrupt(run_id))
+                checks.add(interrupt)
             if checks:
                 done, pending = await asyncio.wait(checks, timeout=10)
             else:
                 done, pending = set(), set()
-            complete = not pending
-            for task in done:
-                if task.cancelled():
-                    continue
-                try:
-                    # False from interrupt means no active native turn; process
-                    # cleanup is established by the execution/driver, not that flag.
-                    if task.result() is False and task is tool_cleanup:
-                        complete = False
-                except BaseException:
-                    complete = False
+            if await self._settle_query_cancellation(run_id, controller, checks, tool_cleanup, execution, interrupt):
+                return
             state = self.store.get_harness_state(run_id)
-            complete = complete and not state.get('cleanup_incomplete')
-            supervisor = getattr(getattr(controller, 'manager', None), 'supervisor', None)
-            if supervisor and run_id in supervisor.active:
-                complete = False
             self.store.update_harness_state(run_id, {'cancellation': {
-                **(state.get('cancellation') or {}), 'status': 'complete' if complete else 'cleanup_pending'},
-                'cleanup_incomplete': not complete})
-            if complete:
-                job = self.store.latest_execution_job_for_subject(run_id, statuses=('queued', 'running'))
-                if job:
-                    await self.scheduler.cancel(job['job_id'])
-                self._finish_cancelled(run_id)
-                self.store.delete_run_secrets(run_id)
-            else:
-                self.store.append_event(run_id, 'query_cleanup_pending', {})
+                **(state.get('cancellation') or {}), 'status': 'cleanup_pending'}, 'cleanup_incomplete': True})
+            self.store.append_event(run_id, 'query_cleanup_pending', {'pending_checks': len(pending)})
+            # Observe the original cleanup's completion, with no second cleanup
+            # window, SDK request, process stop, probe or business retry.
+            async def settle_later():
+                try:
+                    await self._settle_query_cancellation(run_id, controller, checks, tool_cleanup, execution, interrupt)
+                except Exception as error:
+                    self.store.append_event(run_id, 'query_cleanup_reconciliation_failed', {'error_type': type(error).__name__})
+            def observed(_):
+                current = self._cancellation_tasks.get(run_id)
+                if current is not None and not current.done():
+                    return
+                task = asyncio.create_task(settle_later(), name='query-cleanup-observed-' + run_id)
+                self._cancellation_tasks[run_id] = task
+                task.add_done_callback(lambda value: None if value.cancelled() else value.exception())
+            for task in pending:
+                task.add_done_callback(observed)
 
     async def _execute_scheduled_run(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
@@ -2007,7 +2056,10 @@ class RunCoordinator:
         if record.mode == RunMode.agent:
             await self._execute_agent(run_id)
         elif record.mode == RunMode.free_query:
-            await self._execute_free_query(run_id)
+            from .runtime_admission import tracing
+            with tracing('dispatch', self.store, run_id):
+                self.store.append_event(run_id, 'runtime_dispatch_started', {})
+                await self._execute_free_query(run_id)
         else:
             await self._execute_workflow(run_id)
 
@@ -3584,6 +3636,18 @@ class RunCoordinator:
     async def _execute_free_query(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
         self._require_harness_history(record)
+        # A queue wait is a new safety boundary, not a reusable submit receipt.
+        callback = getattr(self.planner, 'prepare_admission', None)
+        if record.runtime and record.runtime.provider_id == 'codex' and callable(callback):
+            from .runtime_admission import prepare, RuntimeAdmissionRequest
+            frozen = self._future_runtime_binding(record)
+            checked = await prepare(self.planner, RuntimeAdmissionRequest(
+                provider_id='codex', snapshot=frozen, operation='free_query'))
+            for key in ('provider_id', 'model', 'version', 'cli_version', 'reasoning_effort', 'authentication_binding_revision'):
+                if frozen.get(key) != checked.get(key):
+                    raise RunExecutionError('The frozen Runtime binding is no longer current.', code='runtime_binding_changed')
+            if self.store.get_run(run_id).cancel_requested:
+                return
         if (record.runtime.provider_id if record.runtime else "codex") == "codex":
             check = getattr(self.planner, "require_harness_available", None)
             if callable(check):
@@ -3925,7 +3989,9 @@ class RunCoordinator:
                 },
             )
             self._set_progress(
-                run_id, phase="preparing", state="waiting_input", determinate=False
+                run_id, phase="preparing", state="waiting_input", determinate=False,
+                elapsed_seconds=outcome.elapsed_seconds,
+                hard_limit_seconds=outcome.hard_limit_seconds or self.settings.free_query_run_seconds,
             )
             self.store.append_event(
                 run_id,
@@ -3978,6 +4044,7 @@ class RunCoordinator:
             ],
             summary=outcome.summary,
             presentation=outcome.presentation,
+            verification=getattr(outcome.presentation, 'verification', None),
             acceptance_projection=outcome.acceptance_projection,
             errors=outcome_errors(outcome),
             thread_id=outcome.thread_id,
@@ -4095,7 +4162,9 @@ class RunCoordinator:
                 },
             )
             self._set_progress(
-                run_id, phase="preparing", state="waiting_input", determinate=False
+                run_id, phase="preparing", state="waiting_input", determinate=False,
+                elapsed_seconds=outcome.elapsed_seconds,
+                hard_limit_seconds=outcome.hard_limit_seconds or self.settings.free_query_run_seconds,
             )
             self.store.append_event(
                 run_id,
@@ -4148,6 +4217,7 @@ class RunCoordinator:
             ],
             summary=outcome.summary,
             presentation=outcome.presentation,
+            verification=getattr(outcome.presentation, 'verification', None),
             acceptance_projection=outcome.acceptance_projection,
             errors=outcome_errors(outcome),
             thread_id=outcome.thread_id,
@@ -4527,6 +4597,11 @@ class RunCoordinator:
         completed_units: int | None = None,
         total_units: int | None = None,
         determinate: bool | None = None,
+        elapsed_seconds: int | None = None,
+        hard_limit_seconds: int | None = None,
+        deadline_phase: str | None = None,
+        next_deadline_at: str | None = None,
+        extension_count: int | None = None,
     ) -> None:
         self.store.set_progress(
             run_id,
@@ -4538,6 +4613,11 @@ class RunCoordinator:
             completed_units=completed_units,
             total_units=total_units,
             determinate=determinate,
+            elapsed_seconds=elapsed_seconds,
+            hard_limit_seconds=hard_limit_seconds,
+            deadline_phase=deadline_phase,
+            next_deadline_at=next_deadline_at,
+            extension_count=extension_count,
         )
         record = self.store.get_run(run_id)
         if not record.parent_run_id:

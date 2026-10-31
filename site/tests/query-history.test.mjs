@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 test("both languages render a history list, conversion decisions and retention settings", async () => {
   for (const locale of ["zh", "en"]) {
-    const read = (page) => readFile(new URL(`../dist/${locale}/${page}/index.html`, import.meta.url), "utf8");
+    const read = (page) => readFile(path.join(process.env.SAPBA_BROWSER_DIST || "dist", locale, page, "index.html"), "utf8");
     const ask = await read("ask");
     assert.match(ask, new RegExp(`/SAPBusinessAgents/${locale}/query-history/`));
     assert.match(ask, /data-query-history-link/);

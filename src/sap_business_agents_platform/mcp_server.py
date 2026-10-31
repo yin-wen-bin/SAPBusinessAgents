@@ -75,6 +75,8 @@ _ADT_INPUT_SCHEMA: dict[str, Any] = {
 
 
 _SAP_TOOLS = [
+    {"name": "sap_relation_resolve", "description": "Resolve a deployment-reviewed relation from complete run-owned evidence. Requires authoritative source and target metadata; no guessed aliases or external reads.",
+     "inputSchema": _schema({"relation_id": {"type": "string"}, "evidence_ref": {"type": "string"}}, ["relation_id", "evidence_ref"])},
     {"name": "sap_money_aggregate",
      "description": "Compute exact Decimal amounts/counts from one owned, complete saved SAP evidence set using reviewed source keys, classifications and currency pairs. No new SAP read. Preserve every row; unknown classifications remain unknown. Keep ledger, currency, record kind and historical status groups separate. Bind report metrics to returned calculation_ref and item id; values must be exact canonical strings.",
      "inputSchema": _schema({"evidence_ref": {"type": "string", "pattern": "^ev_[0-9a-f]{24}$"},

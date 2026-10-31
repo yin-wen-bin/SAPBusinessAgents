@@ -22,7 +22,7 @@ class Node {
     }
   }
   replaceChildren(...children) { for (const child of this.children) child.parent = null; this.children = []; this.append(...children); }
-  setAttribute(name, value) { this.attributes[name] = String(value); }
+  setAttribute(name, value) { this.attributes[name] = String(value); if(name === 'open')this.open=true; }
   getAttribute(name) { return this.attributes[name]; }
   addEventListener(name, listener) { (this.listeners[name] ||= []).push(listener); }
   async fire(name) {
@@ -46,23 +46,25 @@ class Node {
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-async function harness(locale = "zh") {
+async function harness(locale = "zh", {clock = false} = {}) {
   const root = new Node("section"); root.dataset.apiBase = "http://test";
   for (const attribute of ["data-sdk-grid", "data-sdk-alert", "data-no-default"]) {
     const child = new Node("div"); child.setAttribute(attribute, ""); root.append(child);
   }
   const calls = [], confirmations = []; let response = async () => ({ items: [], default_provider_id: "codex" });
   const stored = new Map(); const timers = new Map(); let timerId = 0; let confirmed = false;
+  let now=Date.now();
+  class ClockDate extends Date { constructor(...args){super(...(args.length ? args : [now]));} static now(){return now;} }
   const documentEvents = {}; const windowEvents = {};
   const document = {hidden: false, querySelector: () => root, createElement: (tag) => new Node(tag), addEventListener: (name, fn) => {documentEvents[name] = fn;}};
   const context = createContext({ locale, document,
-    crypto: { randomUUID }, AbortController,
-    setTimeout: (fn, ms) => { timers.set(++timerId, {fn, ms}); return timerId; }, clearTimeout: (id) => timers.delete(id),
+    crypto: { randomUUID }, AbortController, Date:clock ? ClockDate : Date,
+    setTimeout: (fn, ms) => { timers.set(++timerId, {fn, ms,at:now+ms}); return timerId; }, clearTimeout: (id) => timers.delete(id),
     sessionStorage: {getItem: (key) => stored.get(key), setItem: (key, value) => stored.set(key, value), removeItem: (key) => stored.delete(key)},
     fetch: async (url, options = {}) => { calls.push({ url, ...options }); return { ok: true, json: () => response(url, options) }; },
     window: { confirm: message => {confirmations.push(message); return confirmed;}, prompt: () => null, addEventListener: (name, fn) => {windowEvents[name] = fn;} },
   });
-  runInContext(`${copyDefinition}\n${script}\nglobalThis.settingsUI = { renderModels, renderAuthentication, loadModels, render, load, applyRuntimeResult, maybeLoadAuthentication, refreshViewForms, runtimeViews, maintenanceSDK, updateOutcome, updateMatches, updateRetryDelay, maintenanceState, setMaintenance, adoptUpdate, updateDialog };`, context);
+  runInContext(`${copyDefinition}\n${script}\nglobalThis.settingsUI = { renderModels, renderAuthentication, loadModels, render, load, applyRuntimeResult, maybeLoadAuthentication, refreshViewForms, runtimeViews, maintenanceSDK, updateOutcome, updateMatches, updateRetryDelay, maintenanceState, setMaintenance, adoptUpdate, updateDialog, requestDisplayRead, showUpdateDialog, pauseUpdateTracking, readPending };`, context);
   await settle(); calls.length = 0;
   return { root, calls, stored, confirmations, timeouts: () => [...timers.values()].map((item) => item.ms), confirm: (value) => { confirmed = value; }, respond: (fn) => { response = fn; },
     feedback:context.settingsUI,
@@ -76,6 +78,7 @@ async function harness(locale = "zh") {
     visible: async (visible) => {document.hidden = !visible; documentEvents.visibilitychange?.(); await settle();},
     hidePage: () => windowEvents.pagehide?.(),
     loadModels: (sdk, section) => context.settingsUI.loadModels(sdk, section),
+    advance: async milliseconds => {const end=now+milliseconds;let steps=0;while(true){const next=[...timers.entries()].filter(([,v])=>v.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;if(++steps>1000)throw Error('timer loop');timers.delete(next[0]);now=next[1].at;next[1].fn();await settle();await settle();}now=end;await settle();},
     renderAuthentication: (sdk, payload) => { const section = new Node("section"); context.settingsUI.renderAuthentication(sdk, section, payload); return section; },
     poll: async () => { const scheduled = [...timers.entries()].find(([, v]) => [2000, 5000, 15000].includes(v.ms)); if (scheduled) { timers.delete(scheduled[0]); await scheduled[1].fn(); } },
     render: (sdk, payload) => {
@@ -112,6 +115,82 @@ test('SDK feedback matches original identity, not target or timestamps',async()=
   assert.equal(h.feedback.updateRetryDelay(20,1000,121000),null);
 });
 
+test('idle ten minutes, render notifications and visibility add no state reads',async()=>{
+  const h=await harness('zh',{clock:true});const value={...sdk,enabled:true};h.renderRuntimes([value]);
+  h.respond(async()=>({items:[value],default_provider_id:'codex'}));
+  await h.feedback.requestDisplayRead('codex');const before=h.calls.length;
+  for(let i=0;i<10;i++)h.renderRuntimes([value]);
+  await h.visible(false);await h.visible(true);await h.advance(600000);
+  assert.equal(h.calls.length,before);assert.deepEqual(h.timeouts(),[]);
+});
+
+test('targeted result merges rather than deleting unrelated SDK tabs',async()=>{
+  const h=await harness();h.renderRuntimes([{...sdk,enabled:true},{...sdk,provider_id:'workbuddy',enabled:false}]);
+  h.respond(async url=>{assert.equal(new URL(url).searchParams.get('provider_id'),'workbuddy');return {items:[{...sdk,provider_id:'workbuddy',enabled:true}],default_provider_id:'codex'};});
+  await h.feedback.requestDisplayRead('workbuddy');
+  assert.equal(h.feedback.runtimeViews.size,2);assert.equal(h.feedback.runtimeViews.get('workbuddy').sdk.enabled,true);
+  assert.equal(h.feedback.runtimeViews.get('codex').sdk.selected,true);
+  assert.equal(h.calls.filter(call=>call.url.includes('/sdk-runtimes?')).length,1);assert.equal(h.calls.some(call=>call.method),false);
+});
+
+test('an unresponsive read times out by ten seconds and a retry can use the slot',async()=>{
+  const h=await harness('zh',{clock:true});h.renderRuntimes([sdk]);let release;
+  h.respond(async()=>new Promise(resolve=>{release=resolve;}));
+  const reading=h.feedback.requestDisplayRead('codex');await settle();await h.advance(10001);await reading;
+  assert.match(h.root.textContent,/仍待核对|超时/);assert.deepEqual(h.timeouts(),[]);
+  h.respond(async()=>({items:[{...sdk,enabled:true}],default_provider_id:'codex'}));
+  await h.feedback.requestDisplayRead('codex');
+  release({items:[{...sdk,enabled:false}],default_provider_id:'workbuddy'});await settle();
+  assert.equal(h.feedback.runtimeViews.get('codex').sdk.enabled,true);
+});
+
+test('hiding a display read stops followups, and restoring visibility does not restart it',async()=>{
+  const h=await harness('zh',{clock:true}),value={...sdk,status_refresh:{running:true}};h.renderRuntimes([value]);
+  h.respond(async()=>({items:[value],default_provider_id:'codex'}));
+  const reading=h.feedback.requestDisplayRead('codex');await settle();
+  await h.visible(false);await reading;const count=h.calls.length;
+  await h.visible(true);await h.advance(600000);assert.equal(h.calls.length,count);assert.deepEqual(h.timeouts(),[]);
+});
+
+test('provider display requests coalesce, including repeated explicit clicks',async()=>{
+  const h=await harness();h.renderRuntimes([sdk]);let release;
+  h.respond(async()=>new Promise(resolve=>{release=resolve;}));
+  const a=h.feedback.requestDisplayRead('codex'),b=h.feedback.requestDisplayRead('codex');
+  assert.equal(a,b);assert.equal(h.calls.length,1);await settle();release({items:[sdk],default_provider_id:'codex'});await a;
+});
+
+test('update modal alone polls; closing pauses and reopening only reads original operation',async()=>{
+  const h=await harness('zh',{clock:true});const stamp=new Date().toISOString();
+  const status={operation_id:'original',request_id:'request',target_version:'1.1.0',status:'running',phase:'downloading',started_at:stamp,updated_at:stamp};
+  const value={...sdk,current_version:'1.0.0',update_status:status};h.renderRuntimes([value]);
+  h.respond(async()=>({items:[value],default_provider_id:'codex'}));
+  h.feedback.showUpdateDialog('codex');await settle();const opened=h.calls.length;
+  await h.advance(4000);assert.equal(h.calls.length,opened+2);
+  h.feedback.updateDialog.hide();const closed=h.calls.length;await h.advance(600000);assert.equal(h.calls.length,closed);
+  h.feedback.showUpdateDialog('codex');await settle();assert.equal(h.calls.length,closed+1);
+  assert.equal(h.feedback.maintenanceState('codex').operation_id,'original');assert.equal(h.calls.some(c=>c.method),false);
+});
+
+test('visible modal reconnection stops at 120 seconds without reinstalling',async()=>{
+  const h=await harness('zh',{clock:true});
+  h.renderRuntimes([{...sdk,update_status:{operation_id:'original',target_version:'1.1.0',status:'running'}}]);
+  h.respond(async()=>{throw Error('synthetic API restart');});
+  h.feedback.showUpdateDialog('codex');await settle();await h.advance(126000);
+  const count=h.calls.length;await h.advance(600000);assert.equal(h.calls.length,count);
+  assert.equal(h.feedback.maintenanceState('codex').reconnectStopped,true);
+  assert.equal(h.calls.some(c=>c.method),false);
+});
+
+test('a successful GET without the accepted operation also stops after 120 seconds',async()=>{
+  const h=await harness('zh',{clock:true});h.renderRuntimes([sdk]);
+  h.feedback.setMaintenance('codex',{kind:'update',requestId:'lost-request',target:'1.1.0',status:'unknown'});
+  h.respond(async()=>({items:[sdk],default_provider_id:'codex'}));
+  h.feedback.showUpdateDialog('codex');await settle();await h.advance(126000);
+  const count=h.calls.length;await h.advance(600000);assert.equal(h.calls.length,count);
+  assert.equal(h.feedback.maintenanceState('codex').reconnectStopped,true);
+  assert.equal(h.calls.some(c=>c.method),false);
+});
+
 for(const provider of ['codex','workbuddy'])test(`${provider}: version checks cannot overwrite an unresolved update`,async()=>{
   const h=await harness();h.confirm(true);
   const value={...sdk,provider_id:provider,sdk_id:provider,update_supported:true,update_enabled:true,update_available:true,current_version:'1.0.0',latest_version:'1.1.0'};
@@ -137,9 +216,9 @@ for (const provider of ['codex','workbuddy']) test(`${provider}: activation refr
   h.feedback.setMaintenance(provider,{kind:'update',operation_id:'original',requestId:'request',target:'1.1.0',status:'running'});
   const active={...value,update_status:{operation_id:'original',request_id:'request',target_version:'1.1.0',status:'completed',outcome:'activated',cleanup_complete:true,observed_versions:{sdk:'1.1.0'},updated_at:new Date().toISOString()}};
   h.respond(async url=>url.includes('/models')?catalog:{items:[active],default_provider_id:provider});
-  h.feedback.adoptUpdate(active);await settle();await settle();
+  h.feedback.showUpdateDialog(provider);await settle();await settle();await settle();
   h.feedback.adoptUpdate(active);await settle();
-  assert.equal(h.calls.filter(c=>c.url.includes('/sdk-runtimes?')).length,1);
+  assert.equal(h.calls.filter(c=>c.url.includes('/sdk-runtimes?')).length,2);
   assert.equal(view.modelSection.querySelector('select'),field);
   assert.equal(field.value,'model-b');assert.equal(field.focused,true);
   assert.equal(h.calls.filter(c=>c.method==='POST'||c.method==='PUT').length,0);
@@ -156,7 +235,7 @@ for(const locale of ['zh','en'])test(`${locale}: update modal opens immediately 
   assert.match(h.feedback.updateDialog.status.textContent,locale==='zh'?/提交/:/Submitting/);
   assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
   await h.feedback.updateDialog.node.querySelector('button').fire('click');
-  assert.equal(h.root.querySelectorAll('.sdk-update-feedback-entry').some(entry=>entry.focused),true);
+  assert.equal(h.root.querySelector('.sdk-card').focused,true);
   assert.equal(h.calls.filter(c=>c.method==='POST').length,1);
   const status={operation_id:'original',request_id:new URL(h.calls.find(c=>c.method==='POST').url).searchParams.get('requestId'),status:'running',phase:'downloading',target_version:'1.1.0',started_at:new Date().toISOString(),updated_at:new Date().toISOString()};
   release({item:{...value,maintenance_kind:'online_upgrade',update_status:status}});await send;
@@ -312,7 +391,8 @@ for (const locale of ['zh','en']) test(`${locale}: staged installer progress use
   let controls=h.maintenance('codex');
   assert.match(controls.status.textContent,/80.0 \/ 154.0 MB/);
   assert.ok(controls.update.disabled && controls.versions.disabled);
-  assert.ok(h.timeouts().includes(2000));
+  assert.equal(h.timeouts().includes(2000),false);
+  h.feedback.showUpdateDialog('codex');await settle();assert.ok(h.timeouts().includes(2000));
   h.respond(async()=>({items:[{...base,update_status:{...status,updated_at:new Date(now+50).toISOString(),downloaded_bytes:1000}}],default_provider_id:'codex'}));
   await h.loadRuntimes();assert.match(h.maintenance('codex').status.textContent,/80.0 \/ 154.0 MB/);
   h.respond(async()=>({items:[{...base,update_status:{...status,updated_at:new Date(now+200).toISOString(),status:'cleanup_pending',phase:'cleanup'}}],default_provider_id:'codex'}));
@@ -538,8 +618,8 @@ for (const locale of ["zh", "en"]) test(`${locale}: enabled fact is visible whil
   assert.match(ui.root.textContent, locale === "zh" ? /状态待核对/ : /State not confirmed/);
 });
 
-test("status polls survive the old eight-poll limit and preserve account/model nodes and catalog selection", async () => {
-  const ui = await harness();
+test("bounded reads stop at four and preserve account/model nodes and catalog selection", async () => {
+  const ui = await harness('zh',{clock:true});
   const ready = runtimeItem({status_refresh: {status: "ready", stale: false, running: false}, authentication});
   ui.respond(async (url) => url.endsWith("/models") ? catalog : {items: [ready], default_provider_id: "codex"});
   ui.renderRuntimes([ready]); await settle();
@@ -550,44 +630,44 @@ test("status polls survive the old eight-poll limit and preserve account/model n
   input.value = "model-b"; await input.fire("change"); input.focus();
   const slow = runtimeItem({authentication});
   ui.respond(async (url) => url.endsWith("/models") ? catalog : {items: [slow], default_provider_id: "codex"});
-  await ui.loadRuntimes();
-  for (let i = 0; i < 35; i++) await ui.poll();
-  assert.ok(ui.calls.filter(call => call.url.endsWith("/sdk-runtimes?view=summary")).length > 8);
-  assert.ok(ui.timeouts().includes(15000));
+  const before=ui.calls.length;
+  const reading=ui.feedback.requestDisplayRead('workbuddy');await settle();await ui.advance(10000);await reading;
+  assert.equal(ui.calls.slice(before).filter(call => call.url.includes("/sdk-runtimes?view=summary&provider_id=workbuddy")).length,4);
+  assert.deepEqual(ui.timeouts(),[]);
   assert.equal(ui.root.querySelector(".sdk-card"), card);
   assert.equal(card.querySelector(".sdk-authentication-section"), account);
   assert.equal(card.querySelector(".sdk-model-section").querySelector(".sdk-model-picker").querySelector("select"), input);
   assert.equal(input.value, "model-b"); assert.equal(input.focused, true);
   assert.equal(ui.calls.filter(call => call.url.endsWith("/models")).length, 1);
-  ui.respond(async () => ({items: [ready], default_provider_id: "codex"})); await ui.poll();
+  ui.respond(async () => ({items: [ready], default_provider_id: "codex"})); await ui.feedback.requestDisplayRead('workbuddy');
   assert.doesNotMatch(card.querySelector(".sdk-status").textContent, /资格核对中/);
   assert.deepEqual(ui.timeouts(), []);
 });
 
-test("hidden pages pause status polls, visible pages resume and list reads are single-flight", async () => {
+test("idle visibility does not refresh and provider reads are single-flight", async () => {
   const ui = await harness();
   ui.respond(async () => ({items: [runtimeItem()], default_provider_id: "codex"}));
   await ui.loadRuntimes(); await ui.visible(false);
   const count = ui.calls.length; await ui.poll(); assert.equal(ui.calls.length, count);
-  await ui.visible(true); assert.equal(ui.calls.length, count + 1);
+  await ui.visible(true); assert.equal(ui.calls.length, count);
   let release; const held = new Promise(resolve => {release = resolve;});
   ui.respond(async () => {await held; return {items: [runtimeItem()], default_provider_id: "codex"};});
   const first = ui.loadRuntimes(); const second = ui.loadRuntimes();
-  assert.equal(ui.calls.length, count + 2);
+  assert.equal(ui.calls.length, count + 1);
   release(); await Promise.all([first, second]);
   ui.hidePage(); assert.deepEqual(ui.timeouts(), []);
 });
 
-for (const status of ['unknown','ready']) test(`full ${status}/stale idle result continues polling until ready`, async () => {
+for (const status of ['unknown','ready']) test(`full ${status}/stale idle result does not poll`, async () => {
   const ui = await harness();
   const pending = runtimeItem({status_refresh:{status,stale:true,running:false},
     display_status:{stale:false,running:false,instance_id:'boot',snapshot_id:1,binding:'same'}});
   const ready = {...pending,status_refresh:{status:'ready',stale:false,running:false}};
   ui.respond(async url => url.includes('/models') ? catalog : {items:[pending],default_provider_id:'workbuddy'});
   await ui.loadRuntimes(); await settle();
-  assert.ok(ui.timeouts().includes(2000));
+  assert.deepEqual(ui.timeouts(),[]);
   ui.respond(async url => url.includes('/models') ? catalog : {items:[ready],default_provider_id:'workbuddy'});
-  await ui.poll(); await settle();
+  await ui.feedback.requestDisplayRead('workbuddy'); await settle();
   assert.deepEqual(ui.timeouts(),[]);
   assert.equal(ui.calls.some(call=>call.url.endsWith('/authentication')),false);
   assert.equal(ui.calls.some(call=>call.method),false);
@@ -626,14 +706,15 @@ test('authentication summary reuses complete checks and updates capability contr
   assert.equal(ui.calls.some(call=>call.url.endsWith('/authentication')),false);
 });
 
-test('failed status GET stops automatic retry and visibility recovery only reads GET',async()=>{
-  const ui=await harness();
+test('failed display read stops and only explicit retry recovers',async()=>{
+  const ui=await harness('zh',{clock:true});
   ui.respond(async()=>({items:[runtimeItem()],default_provider_id:'workbuddy'}));
-  await ui.loadRuntimes();assert.ok(ui.timeouts().includes(2000));
+  const reading=ui.feedback.requestDisplayRead('workbuddy');await settle();assert.ok(ui.timeouts().includes(1000));
   ui.respond(async()=>{throw new Error('synthetic network failure');});
-  await ui.poll();assert.deepEqual(ui.timeouts(),[]);
+  await ui.advance(1000);await reading;assert.deepEqual(ui.timeouts(),[]);
   ui.respond(async()=>({items:[runtimeItem({status_refresh:{status:'ready',stale:false,running:false}})],default_provider_id:'workbuddy'}));
-  await ui.visible(false);await ui.visible(true);assert.deepEqual(ui.timeouts(),[]);
+  const count=ui.calls.length;await ui.visible(false);await ui.visible(true);assert.equal(ui.calls.length,count);
+  await ui.feedback.requestDisplayRead('workbuddy');assert.deepEqual(ui.timeouts(),[]);
   assert.equal(ui.calls.some(call=>call.method),false);
 });
 
@@ -709,7 +790,7 @@ test("a genuine status failure offers a read-only retry without authentication o
   ui.respond(async () => ({items: [failed], default_provider_id: "codex"}));
   await button(ui.root, "重新读取状态").fire("click");
   assert.equal(ui.calls.length, 1); assert.equal(ui.calls[0].method, undefined);
-  assert.match(ui.calls[0].url, /\/sdk-runtimes\?view=summary$/);
+  assert.match(ui.calls[0].url, /\/sdk-runtimes\?view=summary&provider_id=workbuddy$/);
   assert.deepEqual(ui.timeouts(), []);
 });
 for (const locale of ["zh", "en"]) test(`${locale}: shared authentication renders without automatic probes and sign-in does not enable runtime`, async () => {

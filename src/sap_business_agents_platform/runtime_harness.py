@@ -128,7 +128,8 @@ async def run(self, driver, run_id, query, thread_id=None, model=None, reasoning
     if auth:
         record = self.store.get_run(run_id)
         snapshot = record.runtime.model_dump(mode="json") if record.runtime else {}
-        async with auth.use(driver.provider_id, snapshot):
+        from .runtime_admission import measured_authentication
+        async with measured_authentication(auth, driver.provider_id, snapshot):
             result = await _reserved_run(self, driver, run_id, query, thread_id, model, reasoning_effort)
             auth.assert_binding(driver.provider_id, snapshot)
             return result
@@ -149,8 +150,27 @@ async def _reserved_run(self, driver, run_id, query, thread_id=None, model=None,
             if anchor.get("source_started_at") != record.started_at or not anchor.get("execution_started_at"):
                 self.store.update_harness_state(run_id, {"budget_start": {
                     "source_started_at": record.started_at, "execution_started_at": utc_now()}})
+        from .runtime_query_clock import RunClock
+        # Formal acceptance remains an uninterrupted bounded task, not a user pause.
+        clock = RunClock(self.store, getattr(self.broker, "_run_clocks", None)) if parallel else None
+        if clock:
+            initial_elapsed = self.broker._elapsed_seconds(run_id)
+            clock.transition(run_id, "start", initial_elapsed=initial_elapsed)
         with cleanup_binding():
-            return await _run(self, driver, run_id, query, thread_id, model, reasoning_effort)
+            try:
+                result = await _run(self, driver, run_id, query, thread_id, model, reasoning_effort)
+            except BaseException:
+                if clock:
+                    clock.transition(run_id, "stop")
+                raise
+            if clock:
+                recorded = clock.transition(run_id, "pause" if result.status == "waiting_input" else "stop")
+                result.elapsed_seconds = int(recorded["elapsed_seconds"])
+                budget = self.broker.budget_snapshot(run_id)
+                for field in ("hard_limit_seconds", "query_seconds_granted", "finalization_seconds_reserved",
+                              "extension_count", "extension_reasons"):
+                    setattr(result, field, budget[field])
+            return result
 
 
 async def _run(
@@ -172,6 +192,8 @@ async def _run(
     guarded = preflight(self.settings, state, thread_id=thread_id, started=run_started)
     if guarded:
         return guarded
+    # A previous input-pause/turn's cleanup cannot certify this new SDK call.
+    self.store.update_harness_state(run_id, {"cleanup_confirmation": None})
     from .runtime_contract import RuntimeSession, RuntimeContractError
     if isinstance(thread_id, RuntimeSession):
         thread_id = thread_id.require_provider(driver.provider_id)
@@ -181,11 +203,22 @@ async def _run(
     if "terminal_protocol" not in state:
         state = self.store.update_harness_state(run_id, {"terminal_protocol": 1 if state.get("execution_snapshot") else 2})
     protocol = state["terminal_protocol"]
+    from .runtime_admission import measure, current_trace
+    self.store.append_event(run_id, 'runtime_execution_preparing', {})
+    from .runtime_harness_contract import terminal_schema
+    from .runtime_strict_schema import NativeContract
+    try:
+        with measure('schema'):
+            native_contract = NativeContract(terminal_schema(state.get('acceptance_spec'), version=protocol))
+    except RuntimeContractError as error:
+        self.store.append_event(run_id, 'runtime_output_contract_rejected', {'code':error.code, **error.detail})
+        raise
     scope = ReadScope(query, self.store.get_run(run_id).input)
     # Unsupported mappings are platform scope-contract failures, not a vague
     # model question. Engine error persistence preserves these value-free issues.
     scope.require_resolved()
-    capability = self.broker.open_session(run_id)
+    with measure('tools'):
+        capability = self.broker.open_session(run_id)
     if callable(getattr(self.broker, "bind_read_scope", None)):
         self.broker.bind_read_scope(run_id, scope)
     session = self.store.get_free_query_session_by_run(run_id)
@@ -203,9 +236,11 @@ async def _run(
     )
     try:
         from .runtime_admission import driver_binding
-        snapshot = copy.deepcopy(await driver_binding(driver, run_id, state, model, reasoning_effort))
+        with measure('binding'):
+            snapshot = copy.deepcopy(await driver_binding(driver, run_id, state, model, reasoning_effort))
         if engineering is not None:
-            engineering.prepare(None, current_source=True)
+            with measure('workspace'):
+                engineering.prepare(None, current_source=True)
             workspace = engineering.source
             snapshot.update({"workspace_id": engineering.root.name,
                              "base_commit": engineering.base_commit,
@@ -234,10 +269,15 @@ async def _run(
     context = {"run_id": run_id, "state": state, "workspace": workspace, "capability": capability,
         "thread_id": thread_id, "turn_count": turn_count, "cleanup_state": cleanup_state, "final_response": "", "read_scope": scope}
     context["report_contract"] = self.broker.report_contract(run_id)
+    context["native_output_contract"] = native_contract
     from .runtime_input_control import InputPause, outcome as input_outcome
     final_response = ""
     try:
         from .runtime_contract import await_business
+        trace = current_trace()
+        if trace is not None and trace.kind == 'dispatch':
+            trace.finish()
+        self.store.append_event(run_id, 'runtime_sdk_connecting', {})
         result = await await_business(driver.harness_turn(request, context), deadline=request.deadline)
         from .runtime_report_convergence import raise_if_stopped
         raise_if_stopped(self.store.get_harness_state(run_id))
@@ -531,6 +571,8 @@ async def _run(
         begin_cleanup()
         try:
             await drain_cleanup(driver.cleanup(run_id, context))
+            from .runtime_cancellation import record_cleanup_confirmation
+            record_cleanup_confirmation(self.store, run_id, driver.provider_id, cleanup_state)
         except BaseException as cleanup_error:
             self.store.update_harness_state(run_id, {"cleanup_incomplete": True})
             if primary is None:

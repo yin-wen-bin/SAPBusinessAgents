@@ -107,7 +107,29 @@ def finalize(settings, store, broker, run_id, payload, *, thread_id, turn_count,
             raise
         business_complete = False
         missing_evidence.append('source_reassessment_required')
-    if presentation is not None and presentation.financial_verification == 'unverified':
+    if presentation is not None and presentation.schema_version == '2.0' and final_report_validated:
+        from .report_verification import verify
+        from .runtime_money import monetary_request
+        required = monetary_request(store.get_run(run_id).query) or any(
+            m.currency for b in presentation.blocks for m in b.metrics) or any(
+            c.format == 'currency' for b in presentation.blocks for c in b.columns)
+        proof_errors, _, proof = verify(broker, run_id, presentation, required=required)
+        if proof_errors or presentation.verification != proof:
+            business_complete = False
+            missing_evidence.append('report_verification_receipt_changed')
+        else:
+            missing_evidence = [g for g in missing_evidence if g not in {
+                'source_business_completeness_unproven', 'monetary_claims_unverified'}]
+            business_complete = any(d.status == 'verified' for d in (
+                proof.summary_amounts, proof.detail_amounts, proof.business_facts))
+            for name, gap in (('summary_amounts', 'monetary_claims_unverified'),
+                              ('detail_amounts', 'monetary_claims_unverified'),
+                              ('business_facts', 'business_claims_unverified'),
+                              ('coverage', 'source_business_completeness_unproven')):
+                if getattr(proof, name).status in {'needs_evidence', 'failed'}:
+                    business_complete = False
+                    missing_evidence.append(gap)
+    elif presentation is not None and presentation.financial_verification == 'unverified':
         business_complete = False
         missing_evidence.append('monetary_claims_unverified')
     if presentation is not None:

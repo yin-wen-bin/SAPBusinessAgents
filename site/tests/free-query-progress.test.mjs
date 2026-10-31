@@ -20,6 +20,7 @@ class Node {
   children = [];
   append(...children) {this.children.push(...children);}
   replaceChildren(...children) {this.children = children;}
+  remove() {this.removed = true;}
 }
 
 function formHarness(locale) {
@@ -95,7 +96,7 @@ function consoleHarness(locale = "zh") {
   const reading = runSource.slice(runSource.indexOf("  const readRun ="), runSource.indexOf("  root?.querySelector(\"[data-reconnect]\")"));
   const completeness = runSource.slice(runSource.indexOf("  const renderCompleteness ="), runSource.indexOf("  const eventDetail ="));
   const nodes = new Map();
-  const root = {querySelector(selector) {if (!nodes.has(selector)) nodes.set(selector, new Node()); return nodes.get(selector);}, querySelectorAll() {return [];}};
+  const root = {dataset:{},querySelector(selector) {if (!nodes.has(selector)) nodes.set(selector, new Node()); return nodes.get(selector);}, querySelectorAll() {return [];}};
   const calls = [], events = [], timers = new Map(), documentEvents = {}, windowEvents = {};
   let next = 0, now = Date.parse("2026-10-16T10:00:00Z"), responder = async () => ({run_id: "saved-run", mode: "free_query", status: "planning", started_at: "2026-10-16T09:59:00Z", progress: {phase: "preparing"}});
   class EventSource {
@@ -126,7 +127,7 @@ function consoleHarness(locale = "zh") {
     ${completeness}
     ${reading}
     globalThis.ui = {connect, loadRun, observeRuntimeEvent, startProgressUpdates, executionInterruption, renderCompleteness,
-      render: renderRun, lastActivity: () => runtimeActivity};`, context);
+      render: renderRun, lastActivity: () => runtimeActivity, statusUnavailable:labels.unavailable};`, context);
   return {ui: context.ui, root, nodes, calls, events, timers,
     respond(fn) {responder = fn;},
     tick(seconds) {now += seconds * 1000; for (const timer of [...timers.values()]) if (timer.interval) timer.fn();},
@@ -135,6 +136,19 @@ function consoleHarness(locale = "zh") {
     hidePage() {windowEvents.pagehide();},
   };
 }
+
+for(const locale of ['zh','en'])for(const provider of ['codex','workbuddy'])test(`${locale}/${provider}: invalid native contract is a platform failure, never an empty SAP result`,()=>{
+  const ui=consoleHarness(locale);
+  for(const code of ['runtime_output_contract_invalid','runtime_native_schema_rejected','run_failed']){
+    const run={mode:'free_query',status:'failed',runtime:{provider_id:provider},result:null,error:{code,
+      message:code==='run_failed'?"invalid_json_schema:Invalid schema for response_format 'codex_output_schema': properties is required.":code}};
+    const original=JSON.stringify(run),message=ui.ui.executionInterruption(run);
+    assert.match(message.headline,locale==='zh'?/平台输出契约不兼容/:/Platform output contract is incompatible/);
+    assert.match(message.overview,locale==='zh'?/请勿重复提交/:/Do not resubmit/);
+    ui.ui.renderCompleteness(run);
+    assert.equal(ui.calls.length,0);assert.equal(JSON.stringify(run),original);
+  }
+});
 
 for (const locale of ["zh", "en"]) test(`${locale}: subscribe to native milestones, keep wait honest and tick without model/SAP calls`, async () => {
   const ui = consoleHarness(locale);
@@ -224,6 +238,26 @@ for (const locale of ["zh", "en"]) {
   });
 }
 
+for (const locale of ['zh', 'en']) test(`${locale}: waiting for clarification freezes execution time across long waits and refresh`, () => {
+  const ui = consoleHarness(locale);
+  const run = {run_id:'saved-run', mode:'free_query', status:'waiting_input',
+    progress:{state:'waiting_input',phase:'preparing',elapsed_seconds:48,hard_limit_seconds:1800,updated_at:'2026-10-16T10:00:00Z'}};
+  ui.ui.render(run);
+  const message = ui.root.querySelector('[data-progress-message]');
+  const original = message.textContent;
+  assert.match(original, /48/);
+  assert.match(original, locale === 'zh' ? /不计执行预算/ : /does not consume/);
+  ui.tick(2083);
+  ui.ui.render(run);
+  assert.equal(message.textContent, original);
+  assert.equal(ui.calls.length, 0);
+  run.status='inconclusive';
+  run.progress={...run.progress,state:'inconclusive',elapsed_seconds:61};
+  ui.ui.render(run);
+  assert.match(message.textContent,/61/);
+  assert.doesNotMatch(message.textContent,/2083/);
+});
+
 test("run status reads are single-flight, hidden-page polling pauses, resuming never submits a query", async () => {
   const ui = consoleHarness();
   const wait = deferred(); ui.respond(() => wait.promise);
@@ -241,6 +275,23 @@ test("run status reads are single-flight, hidden-page polling pauses, resuming n
   assert.equal(ui.events[0].readyState, 2);
 });
 
+for (const locale of ['zh','en']) test(`${locale}: a failed status GET recovers only the original run and never asserts service shutdown`, async () => {
+  const ui=consoleHarness(locale);
+  const alert=ui.root.querySelector('[data-run-alert]');alert.hidden=false;alert.textContent=ui.ui.statusUnavailable;
+  ui.respond(()=>Promise.reject(new Error('synthetic read timeout')));
+  ui.ui.startProgressUpdates();
+  await assert.rejects(ui.ui.loadRun(),/synthetic read timeout/);
+  ui.respond(async()=>({run_id:'saved-run',mode:'free_query',status:'planning',progress:{phase:'preparing'}}));
+  await ui.poll();
+  assert.equal(alert.hidden,true);
+  alert.textContent='A different operation requires attention';alert.hidden=false;
+  await ui.ui.loadRun();
+  assert.equal(alert.hidden,false);
+  assert.equal(ui.calls.length,3);
+  assert.ok(ui.calls.every(c=>c.url.endsWith('/api/runs/saved-run') && !c.options.method));
+  assert.doesNotMatch(runSource,/unavailable: "无法连接本机查询服务|unavailable: "Cannot reach the local query service/);
+});
+
 for(const locale of ['zh','en'])test(`${locale}: persisted activity restores evidence-reuse progress without inventing admission or SAP reads`,()=>{
   const ui=consoleHarness(locale);
   const run={run_id:'saved-run',mode:'free_query',status:'planning',progress:{phase:'preparing_result'},
@@ -255,4 +306,17 @@ for(const locale of ['zh','en'])test(`${locale}: persisted activity restores evi
   ui.ui.observeRuntimeEvent('agent_runtime_connected',{run_id:'other-run',sequence:100});
   assert.match(activity.textContent,locale==='zh'?/问题已提交/:/submitted/);
   assert.equal(ui.calls.length,0);
+});
+
+for(const locale of ['zh','en'])test(`${locale}: requested cancellation freezes the execution clock and never looks like ongoing SDK work`,()=>{
+  const ui=consoleHarness(locale);
+  const run={run_id:'saved-run',mode:'free_query',status:'planning',cancel_requested:true,
+    cancellation:{status:'cleanup_pending'},progress:{phase:'preparing',state:'active',elapsed_seconds:10,
+      hard_limit_seconds:1800,updated_at:'2026-10-16T10:00:00Z'}};
+  ui.ui.render(run);
+  const message=ui.root.querySelector('[data-progress-message]');
+  assert.match(message.textContent,locale==='zh'?/正在停止/:/Stopping/);
+  const original=message.textContent;ui.tick(60);ui.ui.render(run);
+  assert.equal(message.textContent,original);
+  assert.match(ui.root.querySelector('[data-progress-indicator]').className,/is-paused/);
 });

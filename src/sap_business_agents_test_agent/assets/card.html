@@ -1,0 +1,81 @@
+<div id="__ROOT_ID__" aria-label="SAPBusinessAgents 自动测试">
+  <div class="viz-grid" data-choices></div>
+  <div class="table-responsive" data-results hidden></div>
+  <div class="viz-row" data-actions></div>
+  <p class="text-small" aria-live="polite" data-feedback></p>
+  <textarea class="form-control" aria-label="提交到当前 Codex 聊天的操作" data-fallback hidden readonly></textarea>
+</div>
+<script>
+(() => {
+  const root = document.getElementById('__ROOT_ID__');
+  const payload = __PAYLOAD__;
+  const choices = root.querySelector('[data-choices]');
+  const actions = root.querySelector('[data-actions]');
+  const feedback = root.querySelector('[data-feedback]');
+  const fallback = root.querySelector('[data-fallback]');
+  const checkboxInputs = [];
+  const selected = () => checkboxInputs.filter(input => input.checked).map(input => input.value);
+  const showState = state => {
+    if(payload.stage !== 'select' || state?.modelContent?.inventory_digest !== payload.inventory_digest) return;
+    const values = state.modelContent.selected;
+    if(Array.isArray(values)) checkboxInputs.forEach(input => { input.checked = values.includes(input.value); });
+    updateCount();
+  };
+  function updateCount() { feedback.textContent = `已选择 ${selected().length} 类功能`; }
+  const button = (label, operation, body, primary = false) => {
+    const item = document.createElement('button');
+    item.type = 'button'; item.className = primary ? 'btn btn-primary' : 'btn'; item.textContent = label;
+    item.addEventListener('click', async () => {
+      const fields = typeof body === 'function' ? body() : body;
+      if(payload.stage === 'select' && !fields.selected.length) {feedback.textContent = '请至少选择一个功能';return;}
+      const prompt = `$sapba-auto-test ${operation}\n` + JSON.stringify({repository:payload.repository,...fields});
+      if(typeof window.openai?.sendFollowUpMessage !== 'function') {
+        fallback.hidden = false; fallback.value = prompt;
+        feedback.textContent = '将此操作复制到当前聊天发送。'; return;
+      }
+      item.disabled = true;
+      try {
+        await window.openai.sendFollowUpMessage({prompt, title:label});
+        feedback.textContent = '已提交到当前聊天';
+      } catch {
+        item.disabled = false; feedback.textContent = '未提交，可重试';
+      }
+    });
+    actions.append(item);
+  };
+  if(payload.stage === 'select') {
+    for(const feature of payload.features) {
+      const label = document.createElement('label'); label.className = 'form-check';
+      const input = document.createElement('input'); input.className = 'form-check-input'; input.type = 'checkbox';
+      input.value = feature.id; input.checked = feature.default;
+      const text = document.createElement('span'); text.className = 'form-check-label'; text.textContent = feature.title;
+      label.append(input,text); choices.append(label); checkboxInputs.push(input);
+      input.addEventListener('change', () => {
+        updateCount();
+        window.openai?.setWidgetState?.({modelContent:{inventory_digest:payload.inventory_digest,selected:selected()},privateContent:null})?.catch(() => {});
+      });
+    }
+    updateCount(); showState(window.openai?.widgetState);
+    window.addEventListener('openai:set_globals', event => showState(event.detail?.globals?.widgetState));
+    button('生成测试脚本','prepare',() => ({selected:selected(),inventory_digest:payload.inventory_digest}),true);
+  } else {
+    const area = root.querySelector('[data-results]'); area.hidden = false;
+    const table = document.createElement('table'); table.className = 'table table-sm';
+    const head = table.createTHead().insertRow();
+    for(const name of ['场景','验证类型','状态']) {const cell = document.createElement('th');cell.textContent=name;head.append(cell);}
+    const body = table.createTBody();
+    for(const entry of payload.cases || payload.report.cases) {
+      const row = body.insertRow();
+      for(const value of [entry.scenario,entry.mode,entry.status || '已生成']) row.insertCell().textContent=value;
+    }
+    area.append(table);
+    if(payload.stage === 'start') button('开始测试','start',{plan_id:payload.plan_id,plan_digest:payload.plan_digest},true);
+    else {
+      button('停止','cancel',{task_id:payload.task_id});
+      button('继续上次测试','resume',{task_id:payload.task_id});
+      button('重测失败项','retest',{task_id:payload.task_id});
+      feedback.textContent = `${payload.report.phase} · ${payload.report.verdict}`;
+    }
+  }
+})();
+</script>

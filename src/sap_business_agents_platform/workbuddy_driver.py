@@ -369,6 +369,9 @@ class WorkBuddyHarnessDriver:
 
     async def harness_turn(self, request, context):
         import copy
+        from .runtime_strict_schema import NativeContract, preflight
+        native_contract = context.get('native_output_contract') or NativeContract(request.output_schema)
+        preflight(native_contract.schema)
         from .runtime_contract import RuntimeContractError
         from .runtime_harness import tool_call
         from .runtime_diagnostics import output_diagnostic
@@ -416,8 +419,8 @@ class WorkBuddyHarnessDriver:
             response = await owner.manager.supervisor.run(task_id=run_id, snapshot=snapshot,
                 operation=request.operation, payload={"prompt": request.prompt + ("\nPlatform-owned conversation context:\n" +
                     json.dumps(request.context, ensure_ascii=False) if request.context else ""),
-                    "system_prompt": (request.instructions or "") + native_terminal_instructions(request.output_schema),
-                    "cwd": request.cwd, "tools": tools, "output_schema": request.output_schema,
+                    "system_prompt": (request.instructions or "") + native_contract.instructions() + native_terminal_instructions(native_contract.schema),
+                    "cwd": request.cwd, "tools": tools, "output_schema": native_contract.schema,
                     "terminal_contract": terminal_contract,
                     "timeout_ms": int(request.remaining() * 1000),
                     "terminal_v2": context["state"].get("terminal_protocol") == 2,
@@ -428,7 +431,8 @@ class WorkBuddyHarnessDriver:
             raise_if_stopped(owner.store.get_harness_state(run_id))
             if response.get("output_format") != "native_json_schema":
                 raise WorkBuddyError("workbuddy_structured_output_missing")
-            raw = parse_output(response.get("text"), request.output_schema, formal=bool(context["state"].get("acceptance_spec")))
+            raw = parse_output(response.get("text"), native_contract.schema, formal=bool(context["state"].get("acceptance_spec")))
+            raw = native_contract.decode(raw)
             owner.store.append_event(run_id, 'terminal_handoff_accepted', {'provider_id': 'workbuddy'})
             handle_id = "workbuddy:" + run_id
             context.update(thread_id=handle_id, final_response=json.dumps(raw, ensure_ascii=False))

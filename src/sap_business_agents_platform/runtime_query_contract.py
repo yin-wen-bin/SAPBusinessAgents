@@ -27,6 +27,7 @@ BINDING = obj({"field": IDENTIFIER, "source_step_id": {"type": "string"}, "sourc
                "fanout": {"type": "boolean"}, "fetch_all_for_binding": {"type": "boolean"}},
               ("field", "source_step_id", "source_field"))
 PROPERTIES = {
+    "scope_relation_ref": {"type": "string", "pattern": "^relation_[0-9a-f]{64}$"},
     "schema_version": {"type": "string", "const": "1.0", "description": 'Query plan version is the JSON string "1.0", never the Skill version integer 1.'},
     "service_name": SERVICE, "odata_version": {"enum": ["2.0", "4.0"]}, "entity_set": IDENTIFIER,
     "http_method": {"const": "GET"}, "httpMethod": {"const": "GET"}, "method": {"const": "GET"}, "step_id": {"type": "string"},
@@ -240,6 +241,7 @@ class ReadScope:
             if match:
                 inputs.setdefault(name, match[1])
         self.constraints, self.unresolved = [], False
+        self.answer_filters = []
         self.bounds, self.input_issues = [], []
         def input_issue(name, code):
             safe = name if isinstance(name, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name) else None
@@ -247,6 +249,11 @@ class ReadScope:
             self.input_issues.append({"code": code, "path": "/input" + ("/" + safe if safe else ""),
                                       "constraint": "scope_input", **({"input_field": safe} if safe else {})})
         for name, value in inputs.items():
+            if name == 'answer_scope':
+                from .report_scope import confirmed_scope
+                from types import SimpleNamespace
+                self.answer_filters = confirmed_scope(SimpleNamespace(input={'answer_scope': value}))['filters']
+                continue
             if value is None or value == "" or value == []:
                 continue
             if name in DATE_BOUNDS:
@@ -274,6 +281,7 @@ class ReadScope:
         self.date_fields = set()
         self.bound_date_fields = {}
         self.normalizer = None
+        self.relation_checker = None
         from .runtime_evidence_bindings import registry
         self.evidence_bindings = registry()
 
@@ -404,7 +412,23 @@ class ReadScope:
         scoped_steps = {}
         for step in candidates:
             fields = self.schemas.get(tuple(step.get(k) for k in ("service_name", "odata_version", "entity_set")))
+            if step.get('scope_relation_ref'):
+                try:
+                    if self.relation_checker is None or self.relation_checker(step) is not True:
+                        raise ValueError('runtime_relation_not_owned')
+                except ValueError as exc:
+                    reject('runtime_query_scope_rejected', '/scope_relation_ref', issues=[{
+                        'code': 'runtime_query_scope_rejected', 'path': '/scope_relation_ref',
+                        'constraint': 'scope', 'scope_issue': str(exc)}])
+                continue
             self._check_bounds(step, fields)
+            for expected in self.answer_filters:
+                if (fields is None or expected['field'] not in fields or not any(
+                        f.get('field') == expected['field'] and f.get('operator', 'eq') == expected['operator']
+                        and str(f.get('value')) == str(expected['value']) for f in step.get('filters') or [])):
+                    reject('runtime_query_scope_rejected', '/filters', issues=[{
+                        'code':'runtime_query_scope_rejected', 'path':'/filters', 'constraint':'scope',
+                        'scope_issue':'confirmed_answer_filter_required', 'required_fields':[expected['field']]}])
             if not self.constraints and self.bounds and fields is not None and any(set(b["fields"]).intersection(fields) for b in self.bounds):
                 continue
             filters = step.get("filters") or []
@@ -428,7 +452,8 @@ class ReadScope:
                 for name in {name for names, _ in applicable for name in names}}
             proven = {name: set(values) for name, values in exact.items()
                 if values and name in authorized and set(values).issubset(authorized[name])}
-            if applicable and all(any(name in proven for name in names) for names, _ in applicable):
+            complete_dimensions = len(applicable) == len(constraints)
+            if applicable and complete_dimensions and all(any(name in proven for name in names) for names, _ in applicable):
                 if step.get("step_id"):
                     scoped_steps[step["step_id"]] = proven
                 continue
@@ -443,7 +468,7 @@ class ReadScope:
                     inherited[target] = values
             literal_constraints_ok = all(any(name in inherited or name in proven for name in names)
                 for names, _ in applicable)
-            if applicable and inherited and literal_constraints_ok:
+            if applicable and complete_dimensions and inherited and literal_constraints_ok:
                 if step.get("step_id"):
                     scoped_steps[step["step_id"]] = {**proven, **inherited}
                 continue
@@ -466,7 +491,7 @@ class ReadScope:
                         "entity_sets": [step["entity_set"]], "max_fields": 5000},
                 }])
             issues = []
-            if not applicable:
+            if not applicable or not complete_dimensions:
                 issues.append({'code': 'runtime_query_scope_rejected', 'path': '/filters', 'constraint': 'scope',
                     'scope_issue': 'service_scope_mapping_or_verified_relation_required',
                     'required_fields': [name for names, _ in self.constraints for name in names],

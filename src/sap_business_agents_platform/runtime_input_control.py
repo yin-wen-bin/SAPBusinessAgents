@@ -136,6 +136,8 @@ def resume(store, run_id, *, request_id, value, sensitive, protector):
             text = "A bank receipt reference was supplied through the protected input channel."
         else:
             text = value.strip()
+        from .runtime_query_clock import resume_wait, now
+        resume_wait(state, now())
         item.update(status="consumed", consumed_at=utc_now())
         state["input_control"] = item
         state["platform_clarification_question"] = None
@@ -161,6 +163,9 @@ def recover(store, run_id, *, cleanup_complete):
             "detail": {"input_request_id": item["id"], "phase": "input_pause", "cleanup_complete": False}})
         return True
     formal = store.get_harness_state(run_id).get("acceptance_spec") is not None
+    if not formal:
+        from .runtime_query_clock import RunClock
+        RunClock(store).transition(run_id, "pause")
     item = {**item, "status": "missing_input" if formal else "waiting", "cleanup_confirmed_at": utc_now()}
     secure = item["tool"] == "request_secure_receipt_reference"
     store.update_harness_state(run_id, {"input_control": item, "cleanup_incomplete": False})

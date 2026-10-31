@@ -1826,6 +1826,9 @@ class RunStore:
                 if value is not None:
                     updates[key] = value
             # None is a meaningful reset for current activity identifiers.
+            if state == "waiting_input":
+                # There is no wall-clock execution deadline while awaiting input.
+                updates["next_deadline_at"] = None
             updates.update(
                 {
                     "current_step_id": current_step_id,

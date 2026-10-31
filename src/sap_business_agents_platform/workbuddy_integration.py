@@ -45,6 +45,8 @@ INFRASTRUCTURE_FILES += ('workbuddy_auth_recovery.py', 'runtime.py', 'plugins.py
 INFRASTRUCTURE_FILES += ('workbuddy_job_index.py',)
 INFRASTRUCTURE_FILES += ('runtime_capacity.py',)
 INFRASTRUCTURE_FILES += ('runtime_legacy_protocol.py', 'runtime_terminal_contract.py', 'runtime_report_convergence.py', 'runtime_report_contract.py')
+INFRASTRUCTURE_FILES += ('runtime_strict_schema.py', 'runtime_harness.py')
+INFRASTRUCTURE_FILES += ('runtime_query_clock.py',)
 
 
 def manifest(names, root=None):

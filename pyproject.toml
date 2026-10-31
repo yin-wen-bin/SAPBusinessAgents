@@ -37,6 +37,7 @@ reviewed_versions = ["0.147.0", "0.162.0", "0.163.0"]
 
 [project.scripts]
 sap-business-agents = "sap_business_agents_platform.cli:main"
+sapba-auto-test = "sap_business_agents_test_agent.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -46,6 +47,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 sap_business_agents_platform = ["workbuddy_contracts.json"]
+sap_business_agents_test_agent = ["assets/*.html", "assets/*.mjs"]
 
 [tool.pytest.ini_options]
 testpaths = ["agents", "tests"]

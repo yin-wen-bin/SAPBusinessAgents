@@ -58,6 +58,7 @@ try {
   const card=page.locator(`[data-provider-panel=${provider}]`),maintenance=card.locator('.settings-maintenance');await card.waitFor();
   const open=async()=>{if(!await maintenance.evaluate(n=>n.open))await maintenance.locator(':scope > summary').click();};await open();
   const section=card.locator('.settings-maintenance-versions'),button=section.locator('.sdk-update-button:not(.sdk-recovery-button)');
+  const readCurrent=async()=>{const tab=page.locator(`[data-runtime-tab="${provider}"]`);if(await tab.isVisible())await tab.click();else await page.locator('[data-runtime-picker]').selectOption(provider);};
   assert.equal(await page.evaluate(()=>window.fixture.posts.length),0);await button.click();
   await page.waitForFunction(()=>window.fixture.posts.length===1);
   const modal=page.locator('.sdk-update-progress-dialog');await modal.waitFor({state:'visible'});
@@ -66,11 +67,11 @@ try {
   await page.reload();await card.waitFor();await open();
   assert.equal(await section.locator('.sdk-version-block strong').first().innerText(),'0.162.0');
   if(lost){
-   await page.evaluate(()=>{window.fixture.offline=true;document.dispatchEvent(new Event('visibilitychange'));});
-   await page.locator('.settings-default-strip .sdk-update-feedback-entry').click();
+   await page.evaluate(()=>{window.fixture.offline=true;});
+   await section.locator('.sdk-update-feedback-entry').click();
    await page.waitForFunction(text=>document.querySelector('.sdk-update-progress-state')?.textContent.includes(text),locale==='zh'?'重新连接':'Reconnecting');
    await modal.locator('footer button').first().click();
-   await page.evaluate(()=>{window.fixture.offline=false;document.dispatchEvent(new Event('visibilitychange'));});
+   await page.evaluate(()=>{window.fixture.offline=false;});
   }
   for(const [phase,status,zh,en] of [
    ['waiting_maintenance','running','等待任务','Waiting for tasks'],
@@ -78,13 +79,14 @@ try {
    ['switching','running','切换','Activating'],
    ['cleanup','cleanup_pending','清理','Cleaning'],
    ['activated','completed','已生效','is active']]) {
-   await page.evaluate(({phase,status})=>{window.fixture.stage(phase,status);document.dispatchEvent(new Event('visibilitychange'));},{phase,status});
+   await page.evaluate(({phase,status})=>{window.fixture.stage(phase,status);},{phase,status});
+   if(status==='completed')await section.locator('.sdk-update-feedback-entry').click();else await readCurrent();
    await page.waitForFunction(text=>document.querySelector('.settings-maintenance-versions')?.textContent.includes(text),locale==='zh'?zh:en);
    if(status!=='completed')assert.equal(await section.locator('.sdk-version-block strong').first().innerText(),'0.162.0');
    if(phase==='awaiting_review')await page.screenshot({path:path.join(out,`${provider}-${locale}-${width}-${lost?'lost':'accepted'}.png`),fullPage:true});
   }
   assert.equal(await section.locator('.sdk-version-block strong').first().innerText(),'0.163.0');
-  await page.locator('.settings-default-strip .sdk-update-feedback-entry').click();await modal.waitFor({state:'visible'});
+  await modal.waitFor({state:'visible'});
   await page.waitForFunction(text=>document.querySelector('.sdk-update-progress-state')?.textContent.includes(text),locale==='zh'?'已生效':'is active');
   await page.waitForFunction(text=>document.querySelector('.sdk-update-progress-dialog')?.textContent.includes(text),locale==='zh'?'页面信息读取失败':'page information');
   await modal.locator('footer button').nth(1).click();

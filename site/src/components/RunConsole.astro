@@ -3,6 +3,7 @@ import { Ban, ChevronDown, Download, FilePlus, RefreshCw, Send } from "@lucide/a
 import type { Locale } from "../lib/types";
 import { agentManagementPath, workflowsPath, askPath } from "../lib/urls";
 import lifecycleUrl from '../lib/free-query-lifecycle.mjs?url';
+import verificationUrl from '../lib/report-verification.mjs?url';
 
 interface Props { locale: Locale }
 const { locale } = Astro.props;
@@ -13,6 +14,8 @@ const labels = locale === "zh" ? {
   title: "SAP 业务查询",
   noRun: "链接中没有查询编号。请从 Agent 页面或“自由查询”页面重新发起查询。",
   connecting: "正在连接查询服务…",
+  initialStatus: "查询状态待核对",
+  queryReference: "本次查询",
   progress: "查询进度",
   progressHint: "页面会自动更新，查询期间无需反复刷新。",
   elapsedRunning: "已运行 {seconds} 秒",
@@ -28,6 +31,10 @@ const labels = locale === "zh" ? {
   back: "返回自由查询",
   lifecycleHelp: "后退或跳转离开本页将停止所属查询；刷新、切换标签页不取消。关闭页面或失联时由任务超时兜底，重开只恢复查看原任务。",
   runtimeActivity: {
+    runtime_dispatch_started: "正在复核派发条件",
+    runtime_execution_preparing: "正在准备本轮执行",
+    runtime_sdk_connecting: "正在连接 SDK",
+    codex_turn_started: "问题已提交，等待模型回复",
     agent_runtime_turn_started: "已启动模型分析轮次",
     agent_runtime_connected: "已连接 SDK",
     agent_runtime_query_submitted: "问题已提交，等待模型回复",
@@ -89,7 +96,7 @@ const labels = locale === "zh" ? {
   returnWorkflow: "返回工作流查看缺口",
   reconnect: "重新连接",
   downloads: "下载业务报告与明细",
-  unavailable: "无法连接本机查询服务。请先启动 SAPBusinessAgents。",
+  unavailable: "暂时无法取得服务响应，请重新连接以核对原任务。此提示不代表任务失败或服务未启动，请勿重复提交。",
   historyExpired: "查询历史已过期或删除，请返回自由查询重新执行。",
   empty: "暂无",
   phaseLabels: ["接收请求", "准备查询", "读取 SAP", "核验证据", "生成结果"],
@@ -218,6 +225,8 @@ const labels = locale === "zh" ? {
   title: "SAP business query",
   noRun: "The link has no run ID. Start a query from an Agent or the free-query page.",
   connecting: "Connecting to the query service…",
+  initialStatus: "Query status awaiting confirmation",
+  queryReference: "This query",
   progress: "Query progress",
   progressHint: "This page updates automatically. You do not need to refresh it.",
   elapsedRunning: "Running for {seconds}s",
@@ -233,6 +242,10 @@ const labels = locale === "zh" ? {
   back: "Back to free query",
   lifecycleHelp: "Back or navigation away stops this page's query. Reloading or switching tabs does not cancel. Closed or disconnected pages rely on the task timeout; reopening only views the original task.",
   runtimeActivity: {
+    runtime_dispatch_started: "Checking dispatch conditions",
+    runtime_execution_preparing: "Preparing this execution",
+    runtime_sdk_connecting: "Connecting to the SDK",
+    codex_turn_started: "Query submitted; waiting for the model",
     agent_runtime_turn_started: "Model analysis turn started",
     agent_runtime_connected: "SDK connected",
     agent_runtime_query_submitted: "Question submitted; waiting for the model",
@@ -294,7 +307,7 @@ const labels = locale === "zh" ? {
   returnWorkflow: "Return to workflow gap",
   reconnect: "Reconnect",
   downloads: "Download report and details",
-  unavailable: "Cannot reach the local query service. Start SAPBusinessAgents first.",
+  unavailable: "The service response is temporarily unavailable. Reconnect to check the original task; this does not establish failure or a stopped service. Do not resubmit.",
   historyExpired: "Query history expired or was deleted. Return to free query to run it again.",
   empty: "None",
   phaseLabels: ["Receive request", "Prepare query", "Read SAP", "Validate evidence", "Prepare result"],
@@ -422,7 +435,8 @@ const labels = locale === "zh" ? {
 };
 ---
 
-<section class="run-console" data-run-console data-api-base={apiBase} data-ask-path={askPath(base, locale)} data-workflows-path={workflowDestination} data-management-path={agentManagementPath(base, locale)}>
+<section class="run-console" data-run-console data-run-initial-state="loading" aria-busy="true" data-api-base={apiBase} data-ask-path={askPath(base, locale)} data-workflows-path={workflowDestination} data-management-path={agentManagementPath(base, locale)}>
+  <noscript>{locale === 'zh' ? '请启用 JavaScript 后查看查询状态；请勿重复提交查询。' : 'Enable JavaScript to view the query status; do not submit the query again.'}</noscript>
   <header class="run-console-header">
     <div>
       <p class="runtime-eyebrow">SAPBusinessAgents</p>
@@ -439,7 +453,7 @@ const labels = locale === "zh" ? {
         <p data-session-original></p>
       </details>
     </div>
-    <span class="run-status" data-run-status aria-live="polite">{labels.connecting}</span>
+    <span class="run-status" data-run-status aria-live="polite">{labels.initialStatus}</span>
   </header>
 
   <div class="run-alert" data-run-alert hidden>{labels.noRun}</div>
@@ -664,7 +678,7 @@ const labels = locale === "zh" ? {
   </dialog>
 </section>
 
-<script is:inline define:vars={{ labels, locale, lifecycleUrl }}>
+<script is:inline define:vars={{ labels, locale, lifecycleUrl, verificationUrl }}>
   const root = document.querySelector("[data-run-console]");
   const queryParams = new URLSearchParams(window.location.search);
   let runId = queryParams.get("run");
@@ -688,10 +702,21 @@ const labels = locale === "zh" ? {
   let inputDisplayMode = "";
   let pendingDraftCreation = null;
   let queryLifecycle;
+  // Keep the actual query page and its navigation visible during the first GET.
+  // A URL identifies the task, not its current execution or authorization state.
+  if (runId) root.querySelector("[data-run-identity]").textContent = `${labels.queryReference} · ${runId}`;
 
   const showAlert = (message) => {
     const alert = root?.querySelector("[data-run-alert]");
-    if (alert) { alert.textContent = message; alert.hidden = false; }
+    if (alert) {
+      alert.textContent = message; alert.hidden = false;
+      if (message === labels.unavailable) alert.dataset.kind = 'connection';
+      else delete alert.dataset.kind;
+    }
+    if (root && root.dataset.runInitialState !== "ready") {
+      root.dataset.runInitialState = "error";
+      root.setAttribute("aria-busy", "false");
+    }
   };
   const localized = (value) => {
     if (value && typeof value === "object" && !Array.isArray(value)) return String(value[locale] || value.zh || value.en || "");
@@ -1577,6 +1602,7 @@ const labels = locale === "zh" ? {
   };
 
   const renderCompleteness = (run) => {
+    root.querySelector('[data-report-verification]')?.remove();
     const node = root.querySelector("[data-completeness]"); node.replaceChildren();
     const interruption = executionInterruption(run);
     if (interruption) {
@@ -1611,6 +1637,34 @@ const labels = locale === "zh" ? {
     const reason = document.createElement("p"); reason.textContent = businessCompletenessReason(completeness);
     const help = document.createElement("small"); help.textContent = labels.completeHelp;
     node.append(heading, reason, help);
+    const proof = run.result?.verification || run.result?.presentation?.verification;
+    if (proof?.version === 'sapba.report-verification/2') {
+      const snapshot = run.run_id;
+      void import(verificationUrl).then(({verificationRows}) => {
+        if (currentRun?.run_id !== snapshot || (currentRun.result?.verification || currentRun.result?.presentation?.verification) !== proof) return;
+        const list = document.createElement('ul'); list.dataset.reportVerification = 'true';
+        list.setAttribute('aria-label', locale === 'zh' ? '核验结果' : 'Verification results');
+        list.style.overflowWrap = 'anywhere';
+        for (const row of verificationRows(proof, locale)) {
+          const item = document.createElement('li'); item.dataset.status = row.status;
+          item.textContent = `${row.label}：${row.text}`;
+          const messages = [...new Set(row.issues.map(issue => issue.message))];
+          if (messages.length) { const explanation = document.createElement('p'); explanation.textContent = messages.join(' '); item.append(explanation); }
+          const details = document.createElement('details');
+          const summary = document.createElement('summary'); summary.textContent = locale === 'zh' ? '查看核验位置和证据' : 'Verification locations and evidence';
+          details.append(summary);
+          for (const issue of row.issues) {
+            const detail = document.createElement('small');
+            detail.textContent = ` ${issue.code}${issue.path ? ` (${issue.path})` : ''}${issue.evidence_ref ? ` · ${issue.evidence_ref}` : ''}`;
+            details.append(detail);
+          }
+          if (row.issues.length) item.append(details);
+          list.append(item);
+        }
+        root.querySelector('[data-report-verification]')?.remove();
+        root.querySelector('[data-business-overview]')?.after(list);
+      });
+    }
   };
 
   const eventDetail = (name, payload) => {
@@ -1639,6 +1693,13 @@ const labels = locale === "zh" ? {
   };
   const progressPhases = ["received", "preparing", "reading_sap", "validating_evidence", "preparing_result"];
   const executionInterruption = (run) => {
+    if (['runtime_output_contract_invalid','runtime_native_schema_rejected'].includes(run.error?.code)
+        || run.error?.code === 'run_failed' && /^invalid_json_schema:Invalid schema for response_format /.test(run.error?.message || '')) {
+      return {tone:'error',noReads:false,
+        headline:locale==='zh'?'平台输出契约不兼容，查询未完成':'Platform output contract is incompatible; query not completed',
+        overview:locale==='zh'?'未生成有效业务结果，不能据此判断SAP中没有数据。需要修复平台契约；请勿重复提交查询。'
+          :'No valid business result was produced; this does not show that SAP has no data. The platform contract needs repair. Do not resubmit the query.'};
+    }
     // Historical result facts only; no SDK calls, inferred model error or history rewrite.
     const handoff = run.result?.harness?.diagnostics?.terminal_handoff_failure;
     if (run.mode === 'free_query' && ['inconclusive','failed'].includes(run.status)
@@ -1716,9 +1777,11 @@ const labels = locale === "zh" ? {
     const activity = activityId ? friendlyId(activityId) : "";
     const phaseText = labels.phaseLabels[index] || labels.phaseLabels[0];
     const active = !terminal.has(run.status);
+    const stopping = Boolean(active && run.cancel_requested);
     const anchor = Number(progress.hard_limit_seconds) > 0 ? progress.updated_at : (run.started_at || run.created_at);
     const since = Date.parse(anchor || "");
-    const delta = active && Number.isFinite(since) ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
+    const delta = active && !stopping && !waiting && run.status !== "waiting_input" && run.status !== "queued" && Number.isFinite(since)
+      ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
     const elapsed = Math.max(0, Number(progress.hard_limit_seconds) > 0 ? Number(progress.elapsed_seconds || 0) + delta : delta);
     const elapsedText = run.status === 'queued'
       ? labels.queueElapsed.replace('{seconds}', String(Math.max(0, Math.floor((Date.now() - Date.parse(run.created_at || '')) / 1000)) || 0))
@@ -1731,17 +1794,20 @@ const labels = locale === "zh" ? {
       : Number(progress.extension_count || 0) > 0
         ? labels.freeQuerySession.extended.replace("{count}", String(progress.extension_count))
         : "";
-    root.querySelector("[data-progress-message]").textContent = [interruption?.headline || labels.progressState[state] || phaseText, activity, unitText, elapsedText, deadlineText].filter(Boolean).join(" · ");
+    const pausedText = waiting || run.status === "waiting_input"
+      ? (locale === "zh" ? "等待补充信息期间不计执行预算" : "Waiting for input does not consume the execution budget") : "";
+    root.querySelector("[data-progress-message]").textContent = [stopping ? labels.queryStopping : interruption?.headline || labels.progressState[state] || phaseText, activity, unitText, elapsedText, deadlineText, pausedText].filter(Boolean).join(" · ");
     const runtimeStatus = root.querySelector("[data-runtime-activity]");
     runtimeStatus.hidden = run.mode !== "free_query" || !active;
     runtimeStatus.textContent = run.cancellation?.status === 'cleanup_pending' ? labels.cleanupPending
       : run.cancel_requested ? labels.queryStopping
       : run.status === 'queued' ? [labels.queueWaiting, run.queue_position ? labels.queuePosition.replace('{position}', String(run.queue_position)) : ''].filter(Boolean).join(' · ')
+      : waiting || run.status === 'waiting_input' ? (locale === 'zh' ? '等待补充查询条件' : 'Waiting for the required query input')
       : [reuse ? (locale === 'zh' ? '复用已有证据，本轮不新增 SAP 读取' : 'Reusing existing evidence; no new SAP reads') : '',
          runtimeActivity?.runId === run.run_id ? runtimeActivity.text :
          (locale === 'zh' ? '等待进展更新' : 'Waiting for a progress update')].filter(Boolean).join(' · ');
     const indicator = root.querySelector("[data-progress-indicator]");
-    indicator.className = `run-progress-indicator ${finished ? "is-complete" : failed ? "is-stopped" : waiting ? "is-paused" : "is-active"}`;
+    indicator.className = `run-progress-indicator ${finished ? "is-complete" : failed ? "is-stopped" : waiting || stopping ? "is-paused" : "is-active"}`;
     let percent;
     if (finished) percent = 100;
     else if (showUnits) percent = Math.max(4, Number(progress.completed_units || 0) / Number(progress.total_units) * 92);
@@ -1752,8 +1818,8 @@ const labels = locale === "zh" ? {
       const skipped = projected === 'skipped' || (reuse && stepIndex === 2);
       step.classList.toggle('is-skipped',skipped);
       step.classList.toggle("is-complete", !skipped && (projected ? projected === 'completed' : finished));
-      step.classList.toggle("is-active", !skipped && (projected ? projected === 'active' : stepIndex === index && !finished && !failed && !waiting));
-      step.classList.toggle("is-paused", stepIndex === index && waiting);
+      step.classList.toggle("is-active", !stopping && !skipped && (projected ? projected === 'active' : stepIndex === index && !finished && !failed && !waiting));
+      step.classList.toggle("is-paused", stepIndex === index && (waiting || stopping));
       step.classList.toggle("is-stopped", failed && stepIndex === Math.min(index, labels.phaseLabels.length - 1));
       const caption=step.querySelector?.('b');
       if (caption) caption.textContent=skipped ? (locale==='zh'?'本轮未读取 SAP':'No SAP read this round') : labels.phaseLabels[stepIndex];
@@ -2153,7 +2219,9 @@ const labels = locale === "zh" ? {
       : "";
     root.querySelector("[data-run-identity]").textContent = `${modeLabel}${subject ? ` · ${subject}` : ""}${runtimeIdentity} · ${run.run_id}`;
     const progressState = run.progress?.state || (terminal.has(run.status) ? run.status : "active");
-    root.querySelector("[data-run-status]").textContent = executionInterruption(run)?.headline || labels.progressState[progressState] || labels.phaseLabels[progressIndex(run)] || labels.connecting;
+    root.querySelector("[data-run-status]").textContent = run.cancel_requested
+      ? (run.cancellation?.status === 'cleanup_pending' ? labels.cleanupPending : terminal.has(run.status) ? labels.progressState[progressState] : labels.queryStopping)
+      : executionInterruption(run)?.headline || labels.progressState[progressState] || labels.phaseLabels[progressIndex(run)] || labels.connecting;
     const progressDisclosure = root.querySelector("[data-progress-disclosure]");
     const progressMode = terminal.has(run.status) ? "terminal" : "active";
     if (progressDisclosure.dataset.displayMode !== progressMode) {
@@ -2207,8 +2275,12 @@ const labels = locale === "zh" ? {
       link.textContent = labels.artifact[artifact.name] || artifact.name; link.download = artifact.name; downloadLinks.append(link);
     });
     downloads.hidden = downloadLinks.querySelectorAll("a").length === 0;
-    root.querySelector("[data-cancel]").hidden = terminal.has(run.status);
+    root.querySelector("[data-cancel]").hidden = run.mode === "free_query" || terminal.has(run.status);
     if (terminal.has(run.status)) stopProgressUpdates();
+    // Only reveal a real, fully rendered run; never flash the empty SSR template.
+    root.dataset.runInitialState = "ready";
+    root.setAttribute("aria-busy", "false");
+    queryLifecycle?.observe?.(run);
   };
 
   const readRun = async () => {
@@ -2221,12 +2293,25 @@ const labels = locale === "zh" ? {
     const requestedRun = runId;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8000);
+    let readPhase = 'request';
     try {
       const response = await fetch(`${apiBase}/api/runs/${encodeURIComponent(requestedRun)}`, {signal: controller.signal, cache: "no-store"});
-      if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
+      if (!response.ok) { const error = new Error('run_status_read_failed'); error.status = response.status; throw error; }
+      readPhase = 'decode';
       const run = await response.json();
-      if (requestedRun === runId) renderRun(run);
+      if (requestedRun === runId) {
+        readPhase = 'render';
+        renderRun(run);
+        delete root.dataset.statusReadError;
+        const alert = root.querySelector('[data-run-alert]');
+        if (alert?.textContent === labels.unavailable) { alert.textContent = ''; alert.hidden = true; }
+      }
       return run;
+    } catch (error) {
+      if (requestedRun === runId) root.dataset.statusReadError = error?.name === 'AbortError'
+        ? 'timeout' : Number.isInteger(error?.status) ? `http_${error.status}`
+        : readPhase === 'request' ? 'network' : readPhase === 'decode' ? 'invalid_response' : 'render_failed';
+      throw error;
     } finally { window.clearTimeout(timeout); }
   };
   const loadRun = () => {
@@ -2707,12 +2792,25 @@ const labels = locale === "zh" ? {
   });
   void import(lifecycleUrl).then(({installQueryLifecycle}) => {
     queryLifecycle = installQueryLifecycle({apiBase, getRunId: () => runId, getSessionId: () => sessionId,
-      getRun: () => currentRun, reloadRun: loadRun, feedbackId: () => currentSession?.active_feedback_request?.feedback_request_id,
+      getRun: () => currentRun, reloadRun: async () => {
+        const run = await loadRun();
+        if (sessionId) await loadSession();
+        queryLifecycle?.observe?.(run);
+        return run;
+      }, feedbackId: () => currentSession?.active_feedback_request?.feedback_request_id,
       backUrl: root.dataset.askPath, locale, error: showAlert});
     const back = root.querySelector('[data-stop-back]');
+    if (!currentRun && runId) {
+      back.hidden = false;
+      back.textContent = queryLifecycle.isActive() ? labels.stopBack : labels.back;
+    }
     back.disabled = false;
     back.title = labels.lifecycleHelp;
-    back.addEventListener('click', () => void queryLifecycle.back());
+    back.addEventListener('click', async () => {
+      back.disabled = true;
+      try { await queryLifecycle.back(); }
+      finally { back.disabled = false; }
+    });
   }).catch(() => showAlert(labels.unavailable));
   if (runId || sessionId) {
     startProgressUpdates();
@@ -2724,6 +2822,9 @@ const labels = locale === "zh" ? {
 </script>
 
 <style>
+  [data-run-alert][data-kind="connection"] { color: #526580; border-left: 3px solid #9aabc4; padding: .65rem .8rem; background: #f5f8fc; }
+  .run-console:not([data-run-initial-state="ready"]) > :not(.run-console-header):not([data-run-alert]):not(.run-actions):not(noscript) { display: none; }
+  .run-console:not([data-run-initial-state="ready"]) > .run-actions { margin: 0; }
   .free-query-history { margin-top: .75rem; }
   .free-query-history > summary { padding: .75rem 0; cursor: pointer; font-weight: 650; }
   .free-query-session-actions { display: flex; flex-wrap: wrap; gap: .65rem; }

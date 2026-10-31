@@ -33,6 +33,10 @@ def budgeted_tool_response(result, *, broker, run_id, deadline, tool_name):
                 "Report validation passed. Submit the full StructuredOutput terminal now using "
                 "that unchanged validated report. A validated candidate is not a native terminal."
             )
+    if tool_name == 'sap_final_report_validate' and result.get('ok') is True and 'native_validated_report' in result:
+        notice['instruction'] = ('Report validation passed. Copy native_validated_report unchanged into the full native '
+            'terminal presentation, using the declared lossless strict-output transport. All evidence bindings '
+            'and platform proof values are retained. A candidate is not a native terminal. No new external reads.')
     return {**result, "platform_time_budget": notice}
 
 

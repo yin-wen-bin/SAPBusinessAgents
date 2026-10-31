@@ -15,6 +15,7 @@ import logging
 from pathlib import Path
 import threading
 import time
+from .runtime_admission import metered, measure
 
 _current = ContextVar('workbuddy_local_inspection', default=None)
 
@@ -71,6 +72,7 @@ class Inspection:
             changed()
         self.guards[key] = getter, value
 
+    @metered('consistency')
     def verify(self):
         if self.closed or self.yielded:
             changed()
@@ -95,7 +97,10 @@ class Inspection:
             changed()
         if key not in self.values:
             started = time.perf_counter()
-            value = loader()  # Never memoize failures.
+            phase = {'release': 'installation', 'sdk_certificate': 'binding',
+                     'model_check': 'model', 'state': 'status'}.get(key[0], 'material')
+            with measure(phase):
+                value = loader()  # Never memoize failures.
             self.statistics[key[0]] = self.statistics.get(key[0], 0) + (time.perf_counter() - started)
             self.values[key] = copy.deepcopy(value)
         return copy.deepcopy(self.values[key])

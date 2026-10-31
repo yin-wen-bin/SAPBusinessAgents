@@ -61,6 +61,8 @@ def terminal_schema(acceptance_spec=None, *, version=1):
                     "For missing frozen inputs return waiting_input and a clarification_question; "
                     "do not request a new secure-reference exchange or use a query parameter name."}
     if version == 2:
+        result['properties']['presentation'] = {'anyOf': [
+            presentation_schema(strict=True), presentation_schema(strict=True, version=2), {'type': 'null'}]}
         for name in ("input_kind", "input_field", "clarification_question"):
             result["properties"].pop(name, None)
         result["required"] = list(result["properties"])
@@ -69,7 +71,7 @@ def terminal_schema(acceptance_spec=None, *, version=1):
         raise ValueError("runtime_terminal_version_unsupported")
     return result
 
-from .runtime_report_contract import presentation_schema, instructions as report_instructions
+from .runtime_report_contract import presentation_schema, supported_presentation_schema, instructions as report_instructions
 
 _PRESENTATION_SCHEMA = presentation_schema(strict=True)
 

@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 import httpx
 from packaging.version import InvalidVersion, Version
+from .runtime_admission import metered
 
 
 _SDK_ID = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
@@ -105,6 +106,7 @@ class PythonPackageAdapter:
         self.timeout_seconds = timeout_seconds
         self.update_timeout_seconds = update_timeout_seconds
 
+    @metered('installation')
     def installed_version(self, definition: SDKDefinition) -> str | None:
         _validate_python_package(definition.package_name)
         try:
@@ -365,6 +367,24 @@ class SDKManager:
         if provider_id == "workbuddy":
             return self._snapshot(self._get_provider(provider_id), admission=True)
         return self._snapshot(self._get_provider(provider_id))
+
+    def prepare_runtime_snapshot(self, provider_id: str) -> dict[str, Any]:
+        """One full gate, not a display projection or a cross-request receipt."""
+        from .runtime_admission import measure
+        with measure('lock_wait'):
+            self._config_lock.acquire()
+        try:
+            revision = self.configuration_revision
+            result = self.runtime_snapshot(provider_id)
+            definition = self._get_provider(provider_id)
+            with measure('consistency'):
+                if (self.configuration_revision != revision
+                        or self.adapters[definition.ecosystem].installed_version(definition) != result['version']
+                        or self._client_version(definition) != result['cli_version']):
+                    raise SDKManagerError('Runtime changed during admission.', code='runtime_binding_changed')
+            return result
+        finally:
+            self._config_lock.release()
 
     def installation_status(self, provider_id: str) -> dict[str, Any]:
         """Installation metadata only; never a model or execution admission."""
@@ -1286,6 +1306,7 @@ class SDKManager:
             checks.pop(key, None)
         self._persist_runtime_config()
 
+    @metered('status')
     def _snapshot(self, definition: SDKDefinition, *, admission=False) -> dict[str, Any]:
         value = (self.workbuddy.snapshot(definition, selected=self.default_provider_id == "workbuddy", admission=True)
                  if admission and definition.provider_id == "workbuddy" else self._snapshot_raw(definition))
@@ -1592,6 +1613,7 @@ class SDKManager:
     def _model_check_key(self, provider_id: str, model_id: str, reasoning_effort: str) -> str:
         return f"{provider_id}:{model_id}:{reasoning_effort}"
 
+    @metered('model')
     def _current_model_check(
         self, definition: SDKDefinition, model_id: str | None = None, reasoning_effort: str | None = None
     ) -> dict[str, Any] | None:
@@ -1664,6 +1686,7 @@ class SDKManager:
                 ready=self._catalog_status(definition) == "ready" and effort_error is None),
         }
 
+    @metered('client_version')
     def _client_version(self, definition: SDKDefinition) -> str | None:
         probe = self.runtime_probes.get(definition.provider_id)
         method = getattr(probe, "client_version", None)

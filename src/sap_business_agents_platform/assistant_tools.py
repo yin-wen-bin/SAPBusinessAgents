@@ -17,7 +17,7 @@ CATALOG_VERSION = "1.0"
 
 _SAP_READ = frozenset({
     "list_all_approved_skills", "sap_catalog_search", "sap_schema_get",
-    "sap_query_validate", "sap_query_execute", "sap_evidence_read",
+    "sap_query_validate", "sap_query_execute", "sap_evidence_read", "sap_relation_resolve",
     "sap_evidence_assess", "sap_skill_execute", "sap_inventory_fifo_assess",
     "sap_month_end_status_assess", "sap_final_report_validate",
 })
@@ -36,6 +36,7 @@ _PURPOSE: dict[str, tuple[str, str]] = {
     "sap_skill_execute": ("执行获批只读 Skill", "Run an approved read-only Skill"),
     "list_all_approved_skills": ("查看获批 Skill 契约", "Inspect approved Skill contracts"),
     "sap_final_report_validate": ("校验业务报告证据", "Validate report evidence"),
+    "sap_relation_resolve": ("核验跨接口凭证关联", "Resolve reviewed cross-service scope"),
     "sap_ddic_field_labels_get": ("核对 DDIC 字段中英文标签", "Verify bilingual DDIC field labels"),
     "tool_catalog_search": ("查找当前任务的工具", "Find task-relevant tools"),
     "tool_catalog_inspect": ("查看工具资格和契约", "Inspect tool eligibility and contract"),

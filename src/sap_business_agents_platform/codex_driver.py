@@ -482,6 +482,9 @@ class CodexHarnessDriver:
 
     async def harness_turn(self, request, context):
         import asyncio
+        from .runtime_strict_schema import NativeContract, preflight
+        native_contract = context.get('native_output_contract') or NativeContract(request.output_schema)
+        preflight(native_contract.schema)
         from .runtime_execution import owned_client, command_preflight, public_tool_event
         from .runtime_harness import report_tool_completed
         from .harness import (_safe_codex, _approval_mode, _sandbox, _event_item,
@@ -519,7 +522,7 @@ class CodexHarnessDriver:
                     thread = await codex.thread_resume(
                         thread_id,
                         approval_mode=_approval_mode(),
-                        developer_instructions=request.instructions,
+                        developer_instructions=(request.instructions or '') + native_contract.instructions(),
                         cwd=str(workspace),
                         model=model,
                         sandbox=_sandbox(full_access=full_access),
@@ -527,7 +530,7 @@ class CodexHarnessDriver:
                 else:
                     thread = await codex.thread_start(
                         approval_mode=_approval_mode(),
-                        developer_instructions=request.instructions,
+                        developer_instructions=(request.instructions or '') + native_contract.instructions(),
                         cwd=str(workspace),
                         model=model,
                         sandbox=_sandbox(full_access=full_access),
@@ -540,7 +543,7 @@ class CodexHarnessDriver:
                     effort=reasoning_effort,
                     approval_mode=_approval_mode(),
                     model=model,
-                    output_schema=request.output_schema,
+                    output_schema=native_contract.schema,
                     sandbox=_sandbox(full_access=full_access),
                 )
                 self._active_turns[run_id] = turn
@@ -575,6 +578,11 @@ class CodexHarnessDriver:
                                 "codex_turn_failed",
                                 {"turn_id": turn.id, "code": turn_error[0], "message": turn_error[1]},
                             )
+                            if turn_error[0] == 'invalid_json_schema':
+                                from .runtime_contract import RuntimeContractError
+                                error = RuntimeContractError('runtime_native_schema_rejected')
+                                error.detail.update(phase='output_contract', provider_id='codex', native_code=turn_error[0])
+                                raise error
                             raise RuntimeError(f"{turn_error[0]}:{turn_error[1]}")
                     custom_kind, custom_topic = _custom_tool_kind(item, full_access=full_access)
                     if custom_kind == "forbidden":
@@ -667,6 +675,8 @@ class CodexHarnessDriver:
                 if not final_response:
                     read = await thread.read(include_turns=True)
                     final_response = _last_agent_message(read.model_dump(mode="json", by_alias=True))
+                if not completed_from_validated_report:
+                    final_response = json.dumps(native_contract.read(final_response), ensure_ascii=False)
         finally:
             if deadline_monitor is not None:
                 deadline_monitor.cancel()

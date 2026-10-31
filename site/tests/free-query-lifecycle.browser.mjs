@@ -12,9 +12,10 @@ const base = process.env.SAPBA_BROWSER_BASE ?? '/SAPBusinessAgents';
 const browser = await chromium.launch({headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined});
 const results = [];
 try {
-  for (const locale of ['zh', 'en']) for (const width of [1440, 690, 550, 390]) {
+  for (const locale of ['zh', 'en']) for (const width of [1440, 642, 550, 390]) {
     const context = await browser.newContext({viewport: {width, height: 950}});
     const page = await context.newPage(), calls = [], errors = [], denied = [];
+    let stopShouldWait = false;
     let run = {run_id: 'run-a', mode: 'free_query', status: 'queued', query: 'Synthetic offline query', input: {},
       created_at: new Date().toISOString(), started_at: null, cancel_requested: false,
       plan: null, result: null, progress: {phase: 'preparing', state: 'active', event_sequence: 1},
@@ -26,8 +27,9 @@ try {
       window.EventSource = class {
         static CLOSED = 2;
         readyState = 1;
-        constructor() {queueMicrotask(() => this.onopen?.());}
-        addEventListener() {}
+        handlers = {};
+        constructor() {window.syntheticStream = this; queueMicrotask(() => this.onopen?.());}
+        addEventListener(name, handler) {this.handlers[name] = handler;}
         close() {this.readyState = 2;}
       };
     });
@@ -40,8 +42,9 @@ try {
         let payload;
         if (req.method() === 'GET' && u.pathname === '/api/runs/run-a') payload = run;
         else if (req.method() === 'POST' && u.pathname === '/api/runs/run-a/cancel') {
-          run = {...run, status: 'cancelled', cancel_requested: true, cancellation: {status: 'complete'},
-            progress: {...run.progress, state: 'cancelled', event_sequence: 2}};
+          run = {...run, status: stopShouldWait ? 'planning' : 'cancelled', cancel_requested: true,
+            cleanup_pending: stopShouldWait, cancellation: {status: stopShouldWait ? 'cleanup_pending' : 'complete'},
+            progress: {...run.progress, state: stopShouldWait ? 'active' : 'cancelled', event_sequence: 2}};
           payload = {run_id: 'run-a', status: 'cancellation_requested'};
         } else {denied.push(req.method() + ' ' + u.pathname); return route.abort();}
         return route.fulfill({status: 200, headers, contentType: 'application/json', body: JSON.stringify(payload)});
@@ -91,7 +94,32 @@ try {
     await page.reload();
     await page.waitForFunction(() => /清理尚未确认|cleanup is not confirmed/.test(document.querySelector('[data-runtime-activity]').textContent));
     assert(!calls.some(c => c.method !== 'GET'));
+    assert.equal(await page.locator('[data-cancel]').isVisible(), false);
     await back.focus(); await page.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelector('[data-run-alert]').textContent.includes(document.documentElement.lang.startsWith('zh') ? '清理尚未确认' : 'cleanup is not confirmed'));
+    assert.match(page.url(), /\/run\//);
+    assert(!calls.some(c => c.method !== 'GET'));
+    // GET confirmation of the original stop, not another POST or business run.
+    run = {...run, status: 'cancelled', cleanup_pending: false, cancellation: {status: 'complete'},
+      progress: {...run.progress, state: 'cancelled', event_sequence: 6}};
+    await back.click();
+    await page.waitForURL(new RegExp(`/${locale}/ask/`));
+    assert.equal(calls.filter(c => c.path.endsWith('/cancel')).length, 0);
+    // HTTP acknowledgement is not cleanup confirmation. A later event reloads
+    // the same run and completes the already-requested return without a retry.
+    stopShouldWait = true;
+    run = {...run, status: 'planning', cancel_requested: false, cleanup_pending: false, cancellation: null,
+      progress: {...run.progress, state: 'active', event_sequence: 7}};
+    await page.goto(`${origin}${base}/${locale}/run/?run=run-a`);
+    await page.waitForFunction(() => document.querySelector('[data-run-console]').dataset.runInitialState === 'ready');
+    await back.click();
+    await page.waitForFunction(() => /清理尚未确认|cleanup is not confirmed/.test(document.querySelector('[data-run-alert]').textContent));
+    assert.match(page.url(), /\/run\//);
+    assert.equal(calls.filter(c => c.path.endsWith('/cancel')).length, 1);
+    assert.match(await page.locator('[data-run-status]').innerText(), locale === 'zh' ? /清理尚未确认/ : /cleanup is not confirmed/);
+    run = {...run, status: 'cancelled', cleanup_pending: false, cancellation: {status: 'complete'},
+      progress: {...run.progress, state: 'cancelled', event_sequence: 8}};
+    await page.evaluate(() => window.syntheticStream.handlers.run_cancelled({data: JSON.stringify({sequence: 8})}));
     await page.waitForURL(new RegExp(`/${locale}/ask/`));
     assert.equal(calls.filter(c => c.path.endsWith('/cancel')).length, 1);
     assert(!calls.some(c => c.path === '/api/runs' && c.method === 'POST'));
@@ -99,6 +127,7 @@ try {
     assert.deepEqual(errors, []);
     results.push({locale, width, queued_not_admission: true, reload_not_resubmit: true, stop_back: true,
       restored_running: true, restored_result: true, restored_cancelled: true, restored_cleanup_pending: true, no_heartbeats: true,
+      late_cleanup_returns_automatically: true, acknowledgement_not_stop: true,
       requests: calls.length, model_calls: 0, sap_calls: 0});
     await context.close();
   }

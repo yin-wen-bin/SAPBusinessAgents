@@ -108,7 +108,15 @@ def schema_definition(schema, path):
         for keyword in ('anyOf', 'oneOf'):
             candidates.extend(resolve(branch, parts, depth + 1) for branch in node.get(keyword, []))
         candidates = [value for value in candidates if value is not None]
-        return candidates[0] if candidates and all(value == candidates[0] for value in candidates) else None
+        if candidates and all(value == candidates[0] for value in candidates):
+            return candidates[0]
+        # Versioned object/array containers may add children while keeping
+        # shared paths. Return only identical metadata, never a guessed branch.
+        if candidates and candidates[0].get('type') in {'object', 'array'} and all(
+                value.get('type') == candidates[0]['type'] for value in candidates):
+            return {key: value for key, value in candidates[0].items()
+                    if all(other.get(key) == value for other in candidates)}
+        return None
     if not isinstance(path, str) or not path.startswith('/') or len(path) > 256: return None
     parts = [] if path == '/' else [p.replace('~1', '/').replace('~0', '~') for p in path[1:].split('/')]
     return resolve(schema, parts)
@@ -127,6 +135,15 @@ def schema_issues(raw, schema):
             types = [types] if isinstance(types, str) else types
             if types and any(Draft202012Validator.TYPE_CHECKER.is_type(error.instance, kind) for kind in types):
                 matching.append(index)
+        # Versioned objects have the same JSON type. Select a branch only when
+        # its declared discriminator proves it, never from similarity/content.
+        if len(matching) > 1 and isinstance(error.instance, dict):
+            tagged = [index for index in matching if any(
+                name in error.instance and definition.get('enum') == [error.instance[name]]
+                for name, definition in branches[index].get('properties', {}).items()
+                if name == 'schema_version')]
+            if len(tagged) == 1:
+                matching = tagged
         if len(matching) == 1:
             for child in error.context:
                 if child.schema_path and child.schema_path[0] == matching[0]:

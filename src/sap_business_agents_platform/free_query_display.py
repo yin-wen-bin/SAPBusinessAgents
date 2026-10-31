@@ -2,6 +2,7 @@
 import json
 
 ACTIVITY_EVENTS = ('agent_runtime_turn_started','agent_runtime_connected','agent_runtime_query_submitted',
+    'runtime_dispatch_started','runtime_execution_preparing','runtime_sdk_connecting','codex_turn_started',
     'agent_runtime_activity','agent_runtime_response_received','agent_runtime_result_received',
     'agent_runtime_sdk_closing','agent_runtime_sdk_closed','agent_runtime_turn_completed',
     'agent_runtime_turn_failed','workbuddy_native_failure','workbuddy_formatter_progress',
@@ -28,7 +29,7 @@ def project(store, record, iteration):
     phase = record.progress.phase
     complete = {
         'received':bool(record.started_at or 'run_started' in observed),
-        'preparing':bool(observed & {'plan_created','plan_grounded','agent_runtime_connected'}),
+        'preparing':bool(observed & {'plan_created','plan_grounded','agent_runtime_connected','codex_turn_started'}),
         'reading_sap':bool('evidence_received' in observed),
         'validating_evidence':bool(observed & {'summary_started','harness_completed'}),
         'preparing_result':done,

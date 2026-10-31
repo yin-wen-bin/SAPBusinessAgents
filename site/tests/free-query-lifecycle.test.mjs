@@ -169,3 +169,36 @@ test('native Back before the initial status arrives still cancels an owned query
   await tick();
   assert.equal(h.calls.filter(c => c.url.endsWith('/run-a/cancel')).length, 1);
 });
+
+test('a failed cancellation request does not poison a later explicit stop attempt',async()=>{
+  const h=harness();h.respond(async()=>({ok:false,status:503}));
+  await h.ui.back();
+  assert.equal(h.window.location.href,'http://local/run/?run=run-a');
+  h.setRun({run_id:'run-a',mode:'free_query',status:'running'});
+  h.respond(async()=>({ok:true,status:202}));
+  await h.ui.back();
+  assert.equal(h.calls.length,2);
+  assert.equal(h.window.location.href,'/ask/');
+  assert(h.calls.every(call=>call.url.endsWith('/run-a/cancel')));
+});
+
+test('already-requested cleanup is observed without another POST, then returns automatically',async()=>{
+  const h=harness({pending:true});
+  h.setRun({run_id:'run-a',mode:'free_query',status:'planning',cancel_requested:true,cancellation:{status:'cleanup_pending'}});
+  await h.ui.back();
+  assert.equal(h.calls.length,0);
+  h.ui.observe({run_id:'other',status:'cancelled',cancellation:{status:'complete'}});
+  assert.equal(h.window.location.href,'http://local/run/?run=run-a');
+  const confirmed={run_id:'run-a',mode:'free_query',status:'cancelled',cancel_requested:true,cancellation:{status:'complete'}};
+  h.setRun(confirmed);h.ui.observe(confirmed);
+  assert.equal(h.window.location.href,'/ask/');
+  assert.equal(h.calls.length,0);
+});
+
+test('a terminal label cannot bypass an explicit cleanup-pending blocker',async()=>{
+  const h=harness({pending:true});
+  h.setRun({run_id:'run-a',mode:'free_query',status:'cancelled',cancel_requested:true,cleanup_pending:true,cancellation:{status:'cleanup_pending'}});
+  await h.ui.back();
+  assert.equal(h.window.location.href,'http://local/run/?run=run-a');
+  assert.equal(h.calls.length,0);
+});

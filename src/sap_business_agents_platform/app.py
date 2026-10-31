@@ -546,6 +546,7 @@ def create_app(
         allow_origins=list(settings.local_ui_origins),
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
+        expose_headers=["Server-Timing", "X-Runtime-Trace"],
     )
     app.state.settings = settings
     app.state.store = store
@@ -575,6 +576,19 @@ def create_app(
 
     from .startup_control import install_barrier
     install_barrier(app, settings)
+
+    @app.middleware("http")
+    async def trace_runtime_admission(request: Request, call_next):
+        if request.method != 'POST' or request.url.path != '/api/runs':
+            return await call_next(request)
+        from .runtime_admission import tracing, measure
+        with tracing('submission', store) as trace:
+            request.state.runtime_admission_trace = trace
+            with measure('request'):
+                response = await call_next(request)
+            response.headers['Server-Timing'] = trace.header()
+            response.headers['X-Runtime-Trace'] = trace.trace_id
+            return response
 
     @app.middleware("http")
     async def invalidate_sdk_display(request: Request, call_next):
@@ -1446,12 +1460,15 @@ def create_app(
             raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
 
     @app.post("/api/runs", status_code=202)
-    async def create_run(payload: RunCreate) -> dict[str, Any]:
+    async def create_run(payload: RunCreate, request: Request) -> dict[str, Any]:
         try:
             run_id = await coordinator.submit(
                 payload, query_origin="user" if payload.acceptance_spec is None else "system"
             )
             response: dict[str, Any] = {"run_id": run_id, "status": "queued"}
+            trace = getattr(request.state, 'runtime_admission_trace', None)
+            if trace is not None:
+                trace.run_id = run_id
             if payload.mode.value == "free_query":
                 session = store.get_free_query_session_by_run(run_id)
                 if session is not None:
@@ -1759,6 +1776,7 @@ def create_app(
         lifecycle_state = store.get_harness_state(run_id)
         payload['page_lease'] = {'enabled': False}  # Legacy clients; no page lifetime control.
         payload['cancellation'] = lifecycle_state.get('cancellation')
+        payload['cleanup_pending'] = lifecycle_state.get('cleanup_incomplete') is True
         job = store.latest_execution_job_for_subject(run_id, statuses=('queued', 'running'))
         payload['queue_position'] = coordinator.scheduler.queue_position(job['job_id']) if job and job['status'] == 'queued' else None
         free_query_session = store.get_free_query_session_by_run(run_id)
@@ -2205,7 +2223,7 @@ def create_app(
     @app.post("/api/runs/{run_id}/cancel", status_code=202)
     async def cancel_run(run_id: str) -> dict[str, str]:
         try:
-            await coordinator.cancel(run_id)
+            coordinator.request_cancel(run_id)
         except KeyError as exc:
             raise HTTPException(404, "Run not found") from exc
         return {"run_id": run_id, "status": "cancellation_requested"}
@@ -3041,10 +3059,14 @@ def create_app(
         }
 
     @app.get("/api/system/sdk-runtimes")
-    def list_sdk_runtimes(response: Response, view: str | None = None) -> dict[str, Any]:
+    def list_sdk_runtimes(response: Response, view: str | None = None, provider_id: str | None = None) -> dict[str, Any]:
         response.headers["Cache-Control"] = "no-store"
-        items=([(sdk_display.get_summary(provider_id) if view=='summary' else sdk_display.get(provider_id))
-                for provider_id in provider_ids] if sdk_display else sdk_registry.list())
+        if provider_id is not None and provider_id not in provider_ids:
+            raise HTTPException(404, {"code": "runtime_not_found"})
+        selected_providers = provider_ids if provider_id is None else [provider_id]
+        items=([(sdk_display.get_summary(selected) if view=='summary' else sdk_display.get(selected))
+                for selected in selected_providers] if sdk_display else
+               [item for item in sdk_registry.list() if provider_id is None or item['provider_id'] == provider_id])
         maintenance=getattr(sdk_registry,'maintenance_status',None)
         if callable(maintenance):
             # Live installer facts do not invalidate cached auth/model/evidence
