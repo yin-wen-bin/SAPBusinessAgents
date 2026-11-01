@@ -62,7 +62,7 @@ def effective_assessments(calls, receipts, *, run_id, binding):
     from .source_semantics import plan_context, issue
     by_id = {c.get('call_id'):c for c in calls}
     known = {c.get('evidence_ref') for c in calls if c.get('status') == 'completed'
-        and (c.get('tool') or c.get('tool_name')) == 'sap_query_execute' and c.get('evidence_ref')}
+        and (c.get('tool') or c.get('tool_name')) in {'sap_query_execute','sap_financial_classification_read'} and c.get('evidence_ref')}
     replaced, invalid = {}, False
     for receipt in receipts:
         source = by_id.get(receipt.get('source_call_id')) if isinstance(receipt, dict) else None

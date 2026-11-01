@@ -660,6 +660,17 @@ class CodexHarnessDriver:
                     }:
                         await _best_effort_interrupt(turn)
                         raise RuntimeError(f"capability_isolation_failed:{item_type}")
+                    # The approved run-bound shell bridge invokes the same Broker
+                    # as native MCP. Complete from its SAVED validated pair,
+                    # never command stdout or a model-declared validation flag.
+                    if event.method == "item/completed" and (
+                            custom_kind == "engineering" or item_type == "commandExecution"):
+                        recovered_payload = await report_tool_completed(self, run_id, turn)
+                        if recovered_payload is not None:
+                            final_response = json.dumps(recovered_payload, ensure_ascii=False)
+                            completed_from_validated_report = True
+                            context["native_complete"] = True
+                            break
                 from .runtime_input_control import pending, InputPause
                 if pending(self.store, run_id):
                     raise InputPause()

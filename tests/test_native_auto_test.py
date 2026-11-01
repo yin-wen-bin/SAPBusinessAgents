@@ -301,6 +301,16 @@ def test_zero_results_truncation_drift_duplicates_and_missing_fields():
     assert compare(base, envelope(base["rows"] * 2), contract)["code"] == "duplicate_business_keys"
 
 
+def test_explicit_null_date_matches_only_the_same_verified_baseline_value():
+    contract = {"keys": ["id"], "required_fields": ["id", "clearing_date"]}
+    base = envelope([{"id": "1", "clearing_date": None}])
+    assert compare(base, base, contract, base)["status"] == "passed"
+    assert compare(base, envelope([{"id": "1"}]), contract)["code"] == "required_fields_missing"
+    assert compare(base, envelope([{"id": "1", "clearing_date": "2020-01-01"}]), contract)["status"] == "failed"
+    assert compare(envelope([{"id": "1", "clearing_date": "2020-01-01"}]), base, contract)["status"] == "failed"
+    assert compare(base, envelope([{"id": None, "clearing_date": None}]), contract)["status"] == "failed"
+
+
 def test_target_binding_proves_disposable_site_and_api(repository):
     store, plan, task = start_task(repository)
     proof = targets.marker(store, task["id"])

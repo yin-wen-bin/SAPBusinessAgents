@@ -38,7 +38,7 @@ def refs_in_report(presentation):
     return refs
 
 
-def same_filters(plan, read_scope, question, answer):
+def same_filters(plan, read_scope, question, answer, frozen=None):
     """Only exact authorized dimensions plus an explicitly confirmed subset."""
     filters = plan.get("filters") or []
     actual = [(f.get("field"), f.get("operator", "eq"), str(f.get("value"))) for f in filters]
@@ -65,6 +65,22 @@ def same_filters(plan, read_scope, question, answer):
             return False
         expected.append(candidates[0])
     expected.extend((f["field"], f["operator"], str(f["value"])) for f in answer["filters"])
+    # Deployment-reviewed role semantics can explain an existing predicate;
+    # they never insert a filter or authorize any other narrowing dimension.
+    if frozen is not None:
+        from .source_semantics import profile
+        p = profile(plan, frozen)
+        confirmed = {name for names, values in read_scope.constraints for name in names if len(values) == 1}
+        for role in (p or {}).get('scope_predicates', []):
+            predicate = role['predicate']
+            item = (predicate['field'], predicate['operator'], str(predicate['value']))
+            if (role.get('review_reference') and role['anchor_field'] in confirmed
+                    and any(all(term.casefold() in question.casefold() for term in terms)
+                            for terms in role['question_terms'].values())
+                    and not any(term.casefold() in question.casefold()
+                                for term in role.get('excluded_question_terms', []))
+                    and item in actual and item not in expected):
+                expected.append(item)
     # Additional predicates, limits and unverified joins cannot prove full scope.
     return (set(actual) == set(expected) and len(actual) == len(set(actual))
             and not plan.get("top") and not plan.get("tuple_filters") and not plan.get("filter_from_previous"))
@@ -84,11 +100,19 @@ def assess_coverage(broker, run_id, presentation, prior_issues=()):
                                 bounds=[{**b, 'day': date.fromisoformat(b['day'])} for b in saved['bounds']])
     used = refs_in_report(presentation)
     calls = broker.store.list_harness_tool_calls(run_id)
+    # A late verified proof is append-only. Coverage must use the same fresh
+    # reassessment as money and handoff, while retaining the original read.
+    _, reassessment = broker.source_reassessment(run_id, for_handoff=True)
+    fresh = {r['source_evidence_ref']: r['after'] for r in reassessment['receipts']}
+    frozen = broker.store.get_harness_state(run_id)['source_semantics_catalog']
     sources = [c for c in calls if c.get("tool_name") in {"sap_query_execute", "sap_skill_execute"}
                and c.get("status") == "completed" and c.get("evidence_ref")]
     issues = list(prior_issues)
     covers, roles, digests = [], {}, {}
+    proof_refs = {p['evidence_ref'] for p in broker._configuration_proofs(run_id)}
     for c in sources:
+        if c['evidence_ref'] in proof_refs:
+            continue
         ref, output = c["evidence_ref"], c.get("output") or {}
         roles[ref] = "final" if ref in used else "exploration"
         if ref not in used:
@@ -98,14 +122,15 @@ def assess_coverage(broker, run_id, presentation, prior_issues=()):
         if (output.get("ok") is not True or output.get("source_complete") is not True
                 or meta.get("source_complete") is not True):
             issues.append({"code": "source_scope_incomplete", "evidence_ref": ref})
-        contexts = output.get("source_semantics") or []
+        contexts = fresh.get(ref, output.get("source_semantics") or [])
         plan = (c.get("safe_input") or {}).get("plan") or {}
         if not contexts:
             from .source_semantics import assess, public_assessment
             from .harness import _extract_rows
             assessment = assess(plan, _extract_rows(raw),
                 broker.store.get_harness_state(run_id)['source_semantics_catalog'],
-                source_complete=output.get('source_complete') is True)
+                source_complete=output.get('source_complete') is True,
+                configurations=broker._configuration_proofs(run_id))
             if assessment is not None:
                 contexts = [public_assessment(assessment)]
             else:
@@ -120,7 +145,7 @@ def assess_coverage(broker, run_id, presentation, prior_issues=()):
         if answer["categories"] and any(set(ctx.get("record_kind_counts", {})) and any(
                 count and kind not in answer["categories"] for kind, count in ctx["record_kind_counts"].items()) for ctx in contexts):
             issues.append({"code": "source_categories_outside_answer_scope", "evidence_ref": ref})
-        if c["tool_name"] == "sap_query_execute" and same_filters(plan, scope, run.query or "", answer):
+        if c["tool_name"] == "sap_query_execute" and same_filters(plan, scope, run.query or "", answer, frozen):
             covers.append(ref)
         elif plan.get('scope_relation_ref'):
             proof = (broker.store.get_harness_state(run_id).get('scope_relations') or {}).get(plan['scope_relation_ref'])
@@ -138,18 +163,29 @@ def assess_coverage(broker, run_id, presentation, prior_issues=()):
                 source = next((s for s in sources if s['evidence_ref'] == proof['source_ref']), None)
                 if source:
                     source_plan = (source.get('safe_input') or {}).get('plan') or {}
-                    source_contexts = (source.get('output') or {}).get('source_semantics') or []
+                    source_contexts = fresh.get(source['evidence_ref'], (source.get('output') or {}).get('source_semantics') or [])
                     source_raw, source_meta = broker._read_evidence(run_id, proof['source_ref'])
                     from .harness import _extract_rows
                     if (digest(_extract_rows(source_raw)) == proof['source_digest']
                             and source_meta.get('source_complete') is True
                             and (source.get('output') or {}).get('source_complete') is True
                             and all(ctx.get('business_complete') is True and not ctx.get('issues') for ctx in source_contexts)
-                            and same_filters(source_plan, scope, run.query or '', answer)):
+                            and same_filters(source_plan, scope, run.query or '', answer, frozen)):
                         roles[proof['source_ref']] = 'prerequisite'
                         digests[proof['source_ref']] = digest(source_raw)
                         covers.append(ref)
-    missing = used - {c["evidence_ref"] for c in sources}
+    # Registered configuration proofs support classification; they never stand
+    # in for a business source or count as full question coverage. Recompute
+    # their owned immutable proof before recognizing the reference.
+    configuration_refs = {p['evidence_ref'] for p in broker._configuration_proofs(run_id)}
+    for ref in used & configuration_refs:
+        raw, meta = broker._read_evidence(run_id, ref)
+        if meta.get('source_complete') is True:
+            roles[ref] = 'configuration'
+            digests[ref] = digest(raw)
+        else:
+            issues.append({'code': 'source_configuration_evidence_incomplete', 'evidence_ref': ref})
+    missing = used - {c["evidence_ref"] for c in sources} - configuration_refs
     if missing:
         issues.append({"code": "source_scope_evidence_not_owned"})
     if used and not covers:

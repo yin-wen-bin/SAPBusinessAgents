@@ -39,7 +39,8 @@ def resolve(broker, run_id, binding):
             raise ValueError("value_calculation_not_owned")
         if broker._calculate_money(run_id, record["evidence_ref"]) != record:
             raise ValueError("money_calculation_changed")
-        item = next((m for m in record["metrics"] if m["id"] == binding.calculation_item), None)
+        items = [*record['metrics'], *record.get('row_sets', [])]
+        item = next((m for m in items if m['id'] == binding.calculation_item), None)
         field = binding.calculation_field
         if item is None or item.get(field) is None:
             raise ValueError("value_calculation_item_invalid")

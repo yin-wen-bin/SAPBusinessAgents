@@ -24,7 +24,7 @@ CHECKER_FILES = ("models.py", "acceptance_projection.py", "harness.py",
                 "runtime_harness_contract.py", "runtime_harness_result.py", "runtime_terminal_contract.py", "mcp_server.py")
 CHECKER_FILES += ("report_verification.py", "report_scope.py", "runtime_relations.py")
 CHECKER_FILES += ("runtime_strict_schema.py",)
-CHECKER_FILES += ("runtime_query_clock.py",)
+CHECKER_FILES += ("runtime_query_clock.py", "financial_classification.py")
 
 
 def checker_binding():
@@ -97,6 +97,25 @@ def instructions(*, acceptance: bool = False) -> str:
         'For new reports use schema_version="2.0". Bind table cells using row.value_bindings keyed by column key. '
         'A source binding has kind=source, evidence_ref, the complete source_key, source_field and the exact currency_field for an amount. '
         'A calculation binding has kind=calculation, calculation_ref, calculation_item, calculation_field and currency. '
+        'For a complete financial review, a reliable minimal report is a table of ALL original rows plus bound metrics; '
+        'business identity fields belong in bound table columns. Keep every requested raw field in the evidence. '
+        'sap_money_aggregate returns row_sets alongside metrics. For a full-source table set row_set_binding to '
+        '{"kind":"calculation","calculation_ref":"<returned calculation_ref>",'
+        '"calculation_item":"<row_sets item id>","calculation_field":"count","currency":null}. '
+        'For a subset table use an existing calculation metric whose row_keys_digest proves EXACTLY those rows; '
+        'never bind a full set to a subset or invent a mode=all/source row-set binding. '
+        'Table cell strings must be the exact owned canonical values in both locales: preserve source date strings '
+        'and use an empty string for null. Do not reformat dates or replace empty values with prose. '
+        'Only include a factual text/notice when its declared fact_rule proves the ENTIRE statement. '
+        'For open_items_exist the exact bilingual text_template is '
+        '{"zh":"存在未清项目，数量为 {{count}}。","en":"Open items exist; count: {{count}}."}; '
+        'bind count to an owned open_at_cutoff calculation count. Other narrative, including identity sentences '
+        'and method notices, remains unproven even with value slots; use bound table cells and metric labels instead. '
+        'Do not relabel an unproven statement to evade verification. '
+        'The financial-classification evidence_ref is a configuration proof handle, not a business-row table; '
+        'recompute money on its source_evidence_ref. In a continuation create current-run reads and proofs; '
+        'prior-run references are history, never current evidence. '
+
         'For text/notice use text_template with {{name}} slots in BOTH locales and value_bindings keyed by name; '
         'supply text equal to that template, or copy the canonical rendered text on handoff. Never invent prose amounts. '
         'verification is host-owned: omit it on a candidate, then copy the entire validated_report unchanged. '

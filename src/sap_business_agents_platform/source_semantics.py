@@ -83,6 +83,7 @@ def issue(code, path="/select_fields", **details):
     actions = {
         "source_detail_grain_incomplete": "Retain the live-validated technical key and classification dimensions. Do not remove filters or deduplicate rows.",
         "source_amount_currency_pair_required": "Select the exact amount and its corresponding currency together.",
+        "source_configuration_applicability_missing": "If registered, call sap_financial_classification_read with this original owned evidence reference; retain all items and historical scope. Never infer historical validity from current configuration.",
         "source_summary_scope_unverified": "A ledger summary needs an explicitly confirmed ledger scope; do not silently select one.",
         "source_scope_definition_required": "Review and freeze sourceSemantics in a new business-contract revision before formal acceptance; do not change the source to obtain MATCH.",
     }
@@ -201,6 +202,15 @@ def historical_state(row, p, cutoff):
     return "open_at_cutoff"
 
 
+def _record_configuration_applies(c, row, p):
+    key = c.get('record_key')
+    return (c.get('proof_basis') == 'posted_document_status' and c.get('source_id') == p['id']
+        and isinstance(key, dict) and set(key) == set(p['technical_key'])
+        and all(key[k] not in (None, '') and key[k] == row.get(k) for k in key)
+        and bool(c.get('source_evidence_ref')) and day(c.get('posting_date')) is not None
+        and day(c['posting_date']) == day(row.get(p['posting_date_field'])))
+
+
 def classify(row, p, configurations=(), *, configuration_time="posting_date"):
     carry = p["carryforward"]
     matches = [str(row.get(k)) in values for k, values in carry.items()]
@@ -221,9 +231,10 @@ def classify(row, p, configurations=(), *, configuration_time="posting_date"):
     applicable = [c for c in configurations if c.get("account_type") == row.get(p["account_type_field"])
                   and c.get("code") == code and c.get("verified") is True and c.get("evidence_ref")
                   and ("company_code" not in c or c['company_code'] == row.get('CompanyCode'))
-                  and (configuration_time == "current" or (day(c.get("valid_from")) is not None
+                  and (_record_configuration_applies(c, row, p) if 'record_key' in c else
+                       (configuration_time == "current" or (day(c.get("valid_from")) is not None
                       and day(c.get("valid_to")) is not None and day(row.get(p["posting_date_field"])) is not None
-                      and day(c["valid_from"]) <= day(row[p["posting_date_field"]]) <= day(c["valid_to"])))]
+                      and day(c["valid_from"]) <= day(row[p["posting_date_field"]]) <= day(c["valid_to"]))))]
     if len(applicable) != 1 or not isinstance(applicable[0].get("noted_item"), bool):
         return "unknown", [issue("source_configuration_applicability_missing", "/rows")]
     return ("noted_item" if applicable[0]["noted_item"] else "posted_special"), []

@@ -56,7 +56,8 @@ def compare(baseline, observed, contract, anchor=None):
         raise TestAgentError("observed_rows_invalid")
     keys = contract.get("keys", [])
     required = contract.get("required_fields", keys)
-    if not keys or any(any(k not in row or row[k] is None for k in required) for row in actual):
+    if not keys or any(any(k not in row or row[k] is None for k in keys)
+                       or any(k not in row for k in required) for row in actual):
         return {"status": "failed", "code": "required_fields_missing"}
     if any(any(k not in row or row[k] is None for k in keys) for row in expected):
         return {"status": "inconclusive", "code": "baseline_keys_missing"}
@@ -75,6 +76,11 @@ def compare(baseline, observed, contract, anchor=None):
     if not matches:
         return {"status": "failed", "code": "business_key_or_count_mismatch"}
     for row_key in right.keys() & left.keys():
+        # SAP's explicit nullable clearing dates are values, not absent fields.
+        # Accept null only against the identical independently read null. Never
+        # turn a missing field or a null business key into a successful match.
+        if any((left[row_key].get(name) is None) != (right[row_key][name] is None) for name in required):
+            return {"status": "failed", "code": "required_fields_missing"}
         for name, definition in contract.get("fields", {}).items():
             if name not in left[row_key] or name not in right[row_key]:
                 return {"status": "failed", "code": "comparison_field_missing", "field": name}

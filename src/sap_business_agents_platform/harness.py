@@ -623,7 +623,7 @@ class HarnessToolBroker:
     async def handle(
         self, run_id: str, token: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
-        if (tool_name in {"request_query_clarification", "request_secure_receipt_reference", "sap_final_report_validate", "sap_query_validate", "sap_query_execute", "sap_money_aggregate", "sap_relation_resolve"} and run_id not in self._authoring_sessions
+        if (tool_name in {"request_query_clarification", "request_secure_receipt_reference", "sap_final_report_validate", "sap_query_validate", "sap_query_execute", "sap_money_aggregate", "sap_relation_resolve", "sap_financial_classification_read"} and run_id not in self._authoring_sessions
                 and self.authenticate(run_id, token)):
             async with self._report_locks.setdefault(run_id, asyncio.Lock()):
                 return await self._handle_run(run_id, token, tool_name, arguments)
@@ -1085,6 +1085,9 @@ class HarnessToolBroker:
     async def _dispatch(
         self, run_id: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if tool_name == 'sap_financial_classification_read':
+            from .financial_classification import read
+            return await read(self, run_id, arguments)
         if tool_name == 'sap_relation_resolve':
             from .runtime_relations import resolve
             return resolve(self, run_id, arguments)
@@ -1180,6 +1183,13 @@ class HarnessToolBroker:
                     normalized_plan if isinstance(normalized_plan, dict) else plan
                 ) if result.get("ok") else None,
             }
+            if any(i.get('code') == 'source_configuration_applicability_missing'
+                   for s in response.get('source_semantics') or [] for i in s.get('issues') or []):
+                entries = self.report_contract(run_id)['query_contract']['evidence_bindings']['configuration_sources']
+                if any(r.get('kind') == 'adt-posted-item-classification/1' and all(r.get(k) == plan.get(k)
+                       for k in ('service_name','odata_version','entity_set')) for r in entries):
+                    response['configuration_reader'] = {'tool':'sap_financial_classification_read',
+                        'arguments':{'evidence_ref':evidence_ref}, 'reason':'Exact posted-document classification is required; preserve this full source.'}
             if business_advisories:
                 response["advisories"] = business_advisories
             return response
@@ -1432,8 +1442,8 @@ class HarnessToolBroker:
         """Only consume owned, complete, registered configuration reads.
 
         No model argument can register a source, mark it verified or recover
-        arbitrary files. Restricted configuration artifacts need their own
-        approved platform reader and remain unavailable on this path.
+        arbitrary files. The registered ADT reader consumes encrypted rows
+        internally and proves exact document keys and posting dates.
         """
         from .runtime_evidence_bindings import configuration_rows
         from .runtime_contract import RuntimeContractError
@@ -1449,7 +1459,7 @@ class HarnessToolBroker:
                     or output.get('ok') is not True or not ref or ref in seen):
                 continue
             plan = (call.get('safe_input') or {}).get('plan') or {}
-            records = [r for r in sources if all(r[k] == plan.get(k)
+            records = [r for r in sources if r.get('kind') != 'adt-posted-item-classification/1' and all(r[k] == plan.get(k)
                 for k in ('service_name', 'odata_version', 'entity_set'))]
             if not records:
                 continue
@@ -1463,6 +1473,18 @@ class HarnessToolBroker:
                 raise RuntimeContractError('source_configuration_evidence_incomplete')
             proofs.extend(configuration_rows(records[0], rows, evidence_ref=ref, source_plan=plan))
             seen.add(ref)
+        from .financial_classification import TOOL, load_proof
+        frozen = contract or self.report_contract(run_id)
+        for call in self.store.list_harness_tool_calls(run_id):
+            output = call.get('output') or {}
+            ref = call.get('evidence_ref')
+            if (call.get('tool_name') == TOOL and call.get('status') == 'completed'
+                    and output.get('ok') is True and ref and ref not in seen):
+                if (call.get('safe_input') or {}).get('evidence_ref') != output.get('source_evidence_ref'):
+                    from .runtime_contract import RuntimeContractError
+                    raise RuntimeContractError('classification_proof_source_mismatch')
+                proofs.extend(load_proof(self, run_id, ref, frozen))
+                seen.add(ref)
         return proofs
 
     def source_reassessment(self, run_id, *, for_handoff=False):

@@ -26,6 +26,12 @@ def registry():
             raise ValueError('runtime_evidence_registry_unreviewed')
         if not all(isinstance(record.get(k), str) and record[k] for k in ('service_name', 'odata_version', 'entity_set')):
             raise ValueError('runtime_evidence_registry_invalid')
+    for record in value['configuration_sources']:
+        if record.get('kind') not in {None, 'adt-posted-item-classification/1'}:
+            raise ValueError('runtime_evidence_registry_invalid')
+        if record.get('kind') and (record.get('skill_id') != 'sap-adt-table-export' or set(record) != {
+                'kind','service_name','odata_version','entity_set','skill_id','review_reference'}):
+            raise ValueError('runtime_evidence_registry_invalid')
     if 'relations' in value:
         from .runtime_relations import validate_rules
         validate_rules(value['relations'])

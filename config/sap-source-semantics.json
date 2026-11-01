@@ -7,11 +7,43 @@
       "odata_version": "2.0",
       "entity_set": "GLAccountLineItem",
       "view": "ledger_lines",
-      "detail_fields": ["SourceLedger", "CompanyCode", "FiscalYear", "AccountingDocument", "LedgerGLLineItem", "Ledger", "GLAccount", "FinancialAccountType", "SpecialGLCode", "BusinessTransactionType", "FiscalPeriod", "AccountingDocumentCategory"],
-      "technical_key": ["SourceLedger", "CompanyCode", "FiscalYear", "AccountingDocument", "LedgerGLLineItem", "Ledger"],
-      "business_key": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem"],
-      "summary_fields": ["SourceLedger", "Ledger", "GLAccount"],
-      "ledger_fields": ["SourceLedger", "Ledger"],
+      "detail_fields": [
+        "SourceLedger",
+        "CompanyCode",
+        "FiscalYear",
+        "AccountingDocument",
+        "LedgerGLLineItem",
+        "Ledger",
+        "GLAccount",
+        "FinancialAccountType",
+        "SpecialGLCode",
+        "BusinessTransactionType",
+        "FiscalPeriod",
+        "AccountingDocumentCategory"
+      ],
+      "technical_key": [
+        "SourceLedger",
+        "CompanyCode",
+        "FiscalYear",
+        "AccountingDocument",
+        "LedgerGLLineItem",
+        "Ledger"
+      ],
+      "business_key": [
+        "CompanyCode",
+        "FiscalYear",
+        "AccountingDocument",
+        "AccountingDocumentItem"
+      ],
+      "summary_fields": [
+        "SourceLedger",
+        "Ledger",
+        "GLAccount"
+      ],
+      "ledger_fields": [
+        "SourceLedger",
+        "Ledger"
+      ],
       "account_type_field": "FinancialAccountType",
       "special_code_field": "SpecialGLCode",
       "posting_date_field": "PostingDate",
@@ -19,9 +51,27 @@
       "clearing_document_field": "ClearingAccountingDocument",
       "clearing_year_field": "ClearingDocFiscalYear",
       "noted_item_field": "IsNotedItmWithoutBalUpdt",
-      "carryforward": {"BusinessTransactionType": ["RFBC"], "FiscalPeriod": ["0", "000"], "AccountingDocumentCategory": ["C"]},
-      "amount_pairs": {"AmountInCompanyCodeCurrency": "CompanyCodeCurrency", "AmountInTransactionCurrency": "TransactionCurrency"},
-      "coverage": ["posted_normal", "posted_special", "balance_carryforward"],
+      "carryforward": {
+        "BusinessTransactionType": [
+          "RFBC"
+        ],
+        "FiscalPeriod": [
+          "0",
+          "000"
+        ],
+        "AccountingDocumentCategory": [
+          "C"
+        ]
+      },
+      "amount_pairs": {
+        "AmountInCompanyCodeCurrency": "CompanyCodeCurrency",
+        "AmountInTransactionCurrency": "TransactionCurrency"
+      },
+      "coverage": [
+        "posted_normal",
+        "posted_special",
+        "balance_carryforward"
+      ],
       "knowledge_ref": "data/api_skills/API_GLACCOUNTLINEITEM/skill.md"
     },
     {
@@ -30,9 +80,26 @@
       "odata_version": "2.0",
       "entity_set": "A_OperationalAcctgDocItemCube",
       "view": "account_items",
-      "detail_fields": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem", "FinancialAccountType", "SpecialGLCode"],
-      "technical_key": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem"],
-      "business_key": ["CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem"],
+      "detail_fields": [
+        "CompanyCode",
+        "FiscalYear",
+        "AccountingDocument",
+        "AccountingDocumentItem",
+        "FinancialAccountType",
+        "SpecialGLCode"
+      ],
+      "technical_key": [
+        "CompanyCode",
+        "FiscalYear",
+        "AccountingDocument",
+        "AccountingDocumentItem"
+      ],
+      "business_key": [
+        "CompanyCode",
+        "FiscalYear",
+        "AccountingDocument",
+        "AccountingDocumentItem"
+      ],
       "summary_fields": [],
       "ledger_fields": [],
       "account_type_field": "FinancialAccountType",
@@ -43,9 +110,44 @@
       "clearing_year_field": "ClearingDocFiscalYear",
       "noted_item_field": "IsNotedItmWithoutBalUpdt",
       "carryforward": {},
-      "amount_pairs": {"AmountInCompanyCodeCurrency": "CompanyCodeCurrency", "AmountInTransactionCurrency": "TransactionCurrency"},
-      "coverage": ["posted_normal", "posted_special", "noted_item"],
-      "knowledge_ref": "data/api_skills/API_OPLACCTGDOCITEMCUBE_SRV/skill.md"
+      "amount_pairs": {
+        "AmountInCompanyCodeCurrency": "CompanyCodeCurrency",
+        "AmountInTransactionCurrency": "TransactionCurrency"
+      },
+      "coverage": [
+        "posted_normal",
+        "posted_special",
+        "noted_item"
+      ],
+      "knowledge_ref": "data/api_skills/API_OPLACCTGDOCITEMCUBE_SRV/skill.md",
+      "scope_predicates": [
+        {
+          "role": "supplier_invoice_account",
+          "anchor_field": "Supplier",
+          "predicate": {
+            "field": "FinancialAccountType",
+            "operator": "eq",
+            "value": "K"
+          },
+          "question_terms": {
+            "zh": [
+              "供应商",
+              "发票"
+            ],
+            "en": [
+              "supplier",
+              "invoice"
+            ]
+          },
+          "review_reference": "docs/query-source-semantics.md#supplier-invoice-scope",
+          "excluded_question_terms": [
+            "全部账户类型",
+            "所有账户类型",
+            "all account types",
+            "不要限制账户类型"
+          ]
+        }
+      ]
     }
   ]
 }

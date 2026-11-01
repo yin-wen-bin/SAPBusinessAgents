@@ -19,11 +19,12 @@ _SAP_READ = frozenset({
     "list_all_approved_skills", "sap_catalog_search", "sap_schema_get",
     "sap_query_validate", "sap_query_execute", "sap_evidence_read", "sap_relation_resolve",
     "sap_evidence_assess", "sap_skill_execute", "sap_inventory_fifo_assess",
-    "sap_month_end_status_assess", "sap_final_report_validate",
+    "sap_month_end_status_assess", "sap_final_report_validate", "sap_financial_classification_read",
 })
 _CATALOG = frozenset({"tool_catalog_search", "tool_catalog_inspect"})
 from .runtime_input_control import NAMES as _INPUT_CONTROLS
 _PURPOSE: dict[str, tuple[str, str]] = {
+    "sap_financial_classification_read": ("读取本轮项目的配置与历史凭证分类证据", "Read owned item configuration and posted-document classification"),
     "sap_money_aggregate": ("核对已保存证据的分币种金额", "Compute evidence-bound monetary metrics"),
     "sap_catalog_search": ("查找 SAP OData 服务", "Find SAP OData services"),
     "sap_schema_get": ("读取实时 OData 元数据", "Read live OData metadata"),

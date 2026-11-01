@@ -139,6 +139,11 @@ _SAP_TOOLS = [
         ),
     },
     {
+        "name": "sap_financial_classification_read",
+        "description": "Close a registered financial classification gap using the SAME platform-managed ADT connection. Supply only the original complete OData evidence_ref. The host selects bounded T074U configuration and exact posted BKPF documents, verifies connection identity, live metadata, keys and posting dates, and keeps raw ADT rows encrypted. Current configuration never becomes historical validity. Recompute sap_money_aggregate afterwards and retain the full original scope.",
+        "inputSchema": _schema({"evidence_ref": {"type": "string"}}, ["evidence_ref"]),
+    },
+    {
         "name": "sap_evidence_assess",
         "description": "Deterministically assess evidence completeness and issue a run-, Skill-, and input-bound single-use token for an approved read-only Skill only after the OData-first gate.",
         "inputSchema": _schema(

@@ -76,3 +76,35 @@ certificate blocks rollout; offline tests cannot become a new real business PASS
 After tests, require the existing deployment lock, maintenance barrier, idle writers and
 confirmed process cleanup. Verify only health/version/configuration GETs. Rollback retains
 history and does not downgrade records; do not start acceptance, SAP reads or model probes.
+
+## Document-bound ADT classification
+
+The reviewed operational-account-item adapter uses the existing approved
+`sap-adt-table-export` capability and its internally selected default connection.
+The host checks the same SAP target/client and TLS policy without exposing or
+copying connection values. No new SAP credentials or caller-selected destinations
+are accepted. OData catalog, live schema, validation and complete owned evidence
+are required before these bounded supplementary reads.
+
+Live DDIC confirms T074U KOART/UMSKZ and MERKP (noted item without balance
+update), plus the BKPF full document key and BUDAT/BSTAT. Current T074U is
+current-only evidence. Historical classification uses the exact posted document
+key and posting date, with the live BSTAT domain confirming blank as normal
+document and S as noted items. Other statuses, missing/duplicate keys, incomplete
+pages, metadata or client mismatches remain unproved. No validity dates are
+invented and no supplier, company, fiscal year or special-GL values are hardcoded.
+
+Raw ADT rows stay in the existing encrypted restricted-artifact store. The
+Broker recomputes record-bound proofs from owned immutable evidence at money
+calculation, report validation and handoff. Proofs cannot apply to another item,
+source or posting date. Reassessment receipts are append-only; original reads,
+reports and historical PASS records remain unchanged.
+
+## Supplier invoice scope
+
+For the registered operational account-item source only, a confirmed Supplier identifier and a supplier-invoice question explain an existing FinancialAccountType=K predicate (vendor subledger). This reviewed role mapping preserves the original supplier/date/account scope; it does not create a predicate or admit posting-key, company, fiscal-year, ledger or current-clearing restrictions. Unrelated supplier-dimension queries and other sources retain exact-filter matching.
+
+The live KOART domain review confirms K = Suppliers. Questions without supplier-invoice terms, or an explicit request to retain all account types, do not acquire this role explanation; no general exception for additional filters exists.
+
+
+完整财务来源跨越多个分组时，sap_money_aggregate 的 row_sets 提供仅含数量与来源主键集合摘要的完整集合证明。报告表使用 calculation/count 型 row_set_binding；不新增跨币种金额。已重算并验证的配置证明引用只作为 configuration 支持证据，不能替代完整业务范围。原生 MCP 与批准的 shell bridge 均从平台持久化的规范报告及配套证明完成收尾，不信任命令输出中的通过标记。

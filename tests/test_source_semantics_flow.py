@@ -65,7 +65,7 @@ def test_shared_native_harness_reaches_actual_metadata_and_query_guard(tmp_path,
     sap, trace = provider_with_memory_http(tmp_path, {'SpecialGLCode':'UNPROVEN'} if unclassified else None)
     settings = Settings(repository_root=ROOT, data_root=tmp_path/'state')
     store = RunStore(settings.database_path)
-    query = 'Inspect the confirmed company; do not infer another source.'
+    query = 'Inspect company code 1710; do not infer another source.'
     store.create_run('isolated', RunCreate(mode=RunMode.free_query, query=query))
     store.update_run('isolated', status='planning')
     broker = HarnessToolBroker(settings, store, sap, FakeSkills())
@@ -89,7 +89,7 @@ def test_shared_native_harness_reaches_actual_metadata_and_query_guard(tmp_path,
                 assert not validated['ok']
                 assert 'source_detail_grain_incomplete' in {i['code'] for i in validated['validation_issues']}
                 assert 'data' not in trace
-                body = {'status':'inconclusive','intent':'read','clarification_question':'','input_kind':None,'input_field':None,
+                body = {'status':'inconclusive','intent':'read',
                     'summary':{'zh':'缺少明细粒度','en':'Detail grain missing'},'source_complete':False,'business_complete':False,
                     'missing_evidence':['source_detail_grain_incomplete'],'evidence_refs':[], 'executed_plans':[], 'presentation':None}
             else:
@@ -102,11 +102,22 @@ def test_shared_native_harness_reaches_actual_metadata_and_query_guard(tmp_path,
                 cap_record = store.get_harness_state(rid)['source_semantics_catalog']
                 assert cap_record == catalog()
                 refs = [read['evidence_ref']]
-                report = {'title':{'zh':'本地回归','en':'Offline regression'}, 'blocks':[
-                    {'type':'text','text':{'zh':'已读取明细','en':'Source lines read'},'claim_scope':'customer_business_fact','evidence_refs':refs}]}
+                from sap_business_agents_platform.source_semantics import profile
+                fields = profile(candidate, catalog())['technical_key']
+                record = row(**({'SpecialGLCode':'UNPROVEN'} if unclassified else {}))
+                # This fixture tests the real current report contract. Source-bound
+                # key cells replace the obsolete unverified narrative fixture;
+                # every existing business assertion and failure guard is retained.
+                report = {'schema_version':'2.0','title':{'zh':'本地回归','en':'Offline regression'}, 'blocks':[
+                    {'type':'table','claim_scope':'customer_business_fact','evidence_refs':refs,
+                     'columns':[{'key':name,'label':{'zh':name,'en':name},'format':'text'} for name in fields],
+                     'rows':[{'values':[{'zh':str(record[name]),'en':str(record[name])} for name in fields],
+                              'evidence_refs':refs,'value_bindings':{name:{'kind':'source','evidence_ref':refs[0],
+                                'source_key':{key:record[key] for key in fields},'source_field':name,'currency_field':None}
+                                for name in fields}}]}]}
                 validated_report = await broker.handle(rid, cap, 'sap_final_report_validate', {'report':report})
                 assert validated_report['ok'], validated_report
-                body = {'status':'completed','intent':'read','clarification_question':'','input_kind':None,'input_field':None,
+                body = {'status':'completed','intent':'read',
                     'summary':{'zh':'离线完成','en':'Offline complete'},'source_complete':True,'business_complete':True,
                     'missing_evidence':[], 'evidence_refs':refs, 'executed_plans':[], 'presentation':validated_report['validated_report']}
             context['thread_id'] = 'offline-thread'

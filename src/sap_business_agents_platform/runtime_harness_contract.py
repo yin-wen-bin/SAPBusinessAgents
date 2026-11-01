@@ -177,6 +177,12 @@ input-bound gap token. Never expose SAP
 URLs, credentials, clients, local paths, raw rows, connection profiles, or hidden reasoning.
 For sap-adt-table-export, order_by is optional. Omit it unless a trusted live-DDIC result supplied
 the exact complete stable key; never infer a stable key from familiar table names or selected fields.
+For source_configuration_applicability_missing on a registered financial item source, call
+sap_financial_classification_read with the ORIGINAL complete all-item evidence_ref BEFORE
+sap_money_aggregate and report validation. It uses the existing approved ADT capability and
+selects only source-owned document keys. Retain the complete original item scope; invoice-only
+supplements do not replace it. Use its posted-document historical proof, not current configuration
+as a historical validity interval. Never guess DDIC object/field inputs or mark model proofs verified.
 For a current-date K4 month-end readiness assessment, ADT rows with business status values remain
 encrypted restricted artifacts. After obtaining complete T001, T001B, TABA, and MARV Skill evidence,
 call sap_month_end_status_assess with those four evidence references plus the complete company metadata

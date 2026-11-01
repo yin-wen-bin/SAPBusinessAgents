@@ -93,7 +93,13 @@ def calculate(*, run_id, binding, evidence_ref, rows, plan, frozen, source_compl
         'evidence_ref': evidence_ref, 'source_rows_digest': digest(rows),
         'catalog_digest': frozen['digest'], 'source_complete': True,
         'business_complete': assessed['business_complete'], 'issues': assessed['issues'],
-        'row_count': len(rows), 'all_keys_digest': digest(sorted(seen)), 'metrics': metrics}
+        'row_count': len(rows), 'all_keys_digest': digest(sorted(seen)), 'metrics': metrics,
+        # A complete source set can span several currency/status groups. This
+        # count-only receipt proves its keys without inventing a mixed balance.
+        'row_sets': [{'id': 'rows_all', 'count': str(len(rows)), 'amount': None,
+                      'currency': None, 'scope': 'complete_source',
+                      'row_keys_digest': digest(sorted(
+                          [[r[k] for k in p['technical_key']] for r in rows], key=str))}]}
     if configurations:
         body['configuration_proofs_digest'] = digest(configurations)
         body['configuration_evidence_refs'] = sorted({c['evidence_ref'] for c in configurations})
